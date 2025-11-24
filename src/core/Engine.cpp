@@ -4,6 +4,7 @@
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/TimelineWindow.hpp"
 #include "entity/ui/StageWindow.hpp"
+#include "entity/ui/MediaBinWindow.hpp"
 #include "entity/systems/TestSystem.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/BufferSystem.hpp"
@@ -134,31 +135,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     });
 
     // Register windows with window manager
+    m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
     m_windowManager->registerWindow(std::make_unique<TimelineWindow>(m_timeline.get()));
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
 
-    // Create 10 test tracks with clips for scrolling test
-    for (int i = 0; i < 10; i++) {
-        std::string trackName = "Video Track " + std::to_string(i + 1);
-        entt::entity track = m_timeline->createTrack(trackName);
-        auto& trackComponent = m_registry.get<TimelineTrack>(track);
-
-        // Add 2-3 clips per track at varied positions
-        int clipCount = 2 + (i % 2); // Alternate between 2 and 3 clips per track
-        for (int j = 0; j < clipCount; j++) {
-            entt::entity clip = m_registry.create();
-            auto& clipData = m_registry.emplace<Clip>(clip);
-
-            clipData.filepath = "test_video_" + std::to_string(i) + "_" + std::to_string(j) + ".mov";
-            clipData.startFrame = j * 200 + (i * 10);  // Stagger clips
-            clipData.duration = 100 + (j * 20);        // Vary clip lengths
-            clipData.framerate = 30.0;
-
-            trackComponent.addClip(clip);
-        }
-    }
-
-    std::cout << "Created test timeline with 10 tracks for scrolling test" << std::endl;
+    // Create 1 empty track as placeholder
+    m_timeline->createTrack("Video Track 1");
+    std::cout << "Created initial empty track" << std::endl;
 
     // TODO: Initialize transport
     // m_transport = std::make_unique<Transport>();
@@ -785,15 +768,54 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     std::cout << "  Frame rate: " << m_decoder->getFrameRate() << " fps" << std::endl;
     std::cout << "  Has alpha: " << (m_decoder->hasAlpha() ? "yes" : "no") << std::endl;
 
+    // Add to loaded media files list
+    m_loadedMediaFiles.push_back(filePath);
+
+    // Create clip entity and add to timeline
+    entt::entity clipEntity = m_registry.create();
+    auto& clip = m_registry.emplace<Clip>(clipEntity);
+
+    // Set clip properties from decoder
+    clip.filepath = filePath;
+    clip.mediaType = mediaType;
+    clip.width = m_decoder->getWidth();
+    clip.height = m_decoder->getHeight();
+    clip.framerate = m_decoder->getFrameRate();
+    clip.duration = m_decoder->getDuration();
+    clip.hasAlpha = m_decoder->hasAlpha();
+    clip.startFrame = 0;  // Place at timeline start
+    clip.mediaStartFrame = 0;
+    clip.loaded = true;
+
+    // Get or create first track
+    if (m_timeline->getTrackCount() == 0) {
+        m_timeline->createTrack("Video Track 1");
+    }
+
+    // Add clip to first track
+    const auto& tracks = m_timeline->getTracks();
+    if (!tracks.empty()) {
+        auto& track = m_registry.get<TimelineTrack>(tracks[0]);
+        track.addClip(clipEntity);
+        std::cout << "Added clip to track 1" << std::endl;
+    }
+
+    // Set timeline duration to match clip duration (convert frames to microseconds)
+    double durationSeconds = clip.duration / clip.framerate;
+    Timecode durationTimecode = static_cast<Timecode>(durationSeconds * 1000000.0);
+    m_timeline->setDuration(durationTimecode);
+    m_timeline->setFrameRate(clip.framerate);
+
     // Create initial decoded frame for display
     m_currentFrame = std::make_unique<DecodedFrame>();
     m_currentFrame->allocate(m_decoder->getWidth(), m_decoder->getHeight());
 
+    std::cout << "Clip created and added to timeline" << std::endl;
+    std::cout << "Timeline duration set to " << clip.duration << " frames (" << durationSeconds << " seconds)" << std::endl;
     std::cout << "Ready for playback" << std::endl;
     std::cout << "========================================\n" << std::endl;
 
     // TODO: Later phases
-    // - Create clip entity and add to timeline
     // - Start decode thread with FrameRingBuffer
     // - Implement frame-accurate timeline synchronization
 }

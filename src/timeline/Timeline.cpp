@@ -19,7 +19,7 @@ Timeline::Timeline(entt::registry& registry)
 void Timeline::update(double deltaTime) {
     if (m_playbackState == PlaybackState::Playing) {
         // Advance current time based on deltaTime
-        Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000.0); // Convert seconds to milliseconds
+        Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000000.0); // Convert seconds to microseconds
         m_currentTime += deltaTimecode;
 
         // Clamp to duration

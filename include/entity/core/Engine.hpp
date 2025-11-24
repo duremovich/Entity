@@ -107,6 +107,17 @@ public:
     const DecodedFrame* getCurrentVideoFrame() const;
 
     /**
+     * Get list of loaded media files.
+     */
+    const std::vector<std::string>& getLoadedMediaFiles() const { return m_loadedMediaFiles; }
+
+    /**
+     * Get the current decoder (for metadata access).
+     * Returns nullptr if no media is loaded.
+     */
+    const Decoder* getDecoder() const { return m_decoder.get(); }
+
+    /**
      * Register a system with the engine.
      * Systems are updated in registration order.
      */
@@ -209,6 +220,9 @@ private:
     // Video playback
     std::unique_ptr<Decoder> m_decoder;
     std::unique_ptr<DecodedFrame> m_currentFrame;
+
+    // Media library
+    std::vector<std::string> m_loadedMediaFiles;
 };
 
 } // namespace entity

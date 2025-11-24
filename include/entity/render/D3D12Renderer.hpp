@@ -84,6 +84,29 @@ public:
      */
     void endImGuiFrame();
 
+    /**
+     * Upload RGBA video frame data to GPU texture.
+     * Creates texture on first call, updates on subsequent calls.
+     *
+     * @param rgbaData Pointer to RGBA pixel data (4 bytes per pixel)
+     * @param width Width of the frame in pixels
+     * @param height Height of the frame in pixels
+     * @return ImTextureID for use with ImGui::Image, or nullptr on failure
+     */
+    void* uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, uint32_t height);
+
+    /**
+     * Get the current video texture ID for ImGui.
+     * Returns nullptr if no video frame has been uploaded.
+     */
+    void* getVideoTextureID() const;
+
+    /**
+     * Get video texture dimensions.
+     */
+    uint32_t getVideoTextureWidth() const { return m_videoTextureWidth; }
+    uint32_t getVideoTextureHeight() const { return m_videoTextureHeight; }
+
 private:
     // Helper methods for initialization
     Result createDevice();
@@ -136,6 +159,14 @@ private:
 
     // ImGui objects
     ComPtr<ID3D12DescriptorHeap> m_imguiSrvHeap;  // Descriptor heap for ImGui fonts/textures
+
+    // Video texture objects
+    ComPtr<ID3D12Resource> m_videoTexture;        // GPU texture for video frames
+    ComPtr<ID3D12Resource> m_videoUploadBuffer;   // Upload heap for texture data
+    D3D12_GPU_DESCRIPTOR_HANDLE m_videoTextureGpuHandle{};  // GPU handle for ImGui
+    uint32_t m_videoTextureWidth{0};
+    uint32_t m_videoTextureHeight{0};
+    uint32_t m_srvDescriptorSize{0};
 
     // Constant buffer structure (must match HLSL)
     struct LayerConstants {

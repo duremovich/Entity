@@ -808,10 +808,10 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
 // ============================================================================
 
 Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
-    // Create descriptor heap for ImGui SRV (fonts/textures)
+    // Create descriptor heap for ImGui SRV (fonts/textures + video texture)
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 1;  // One for font texture
+    heapDesc.NumDescriptors = 2;  // One for font texture, one for video texture
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
     HRESULT hr = m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
@@ -819,6 +819,9 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
         std::cerr << "Failed to create ImGui descriptor heap!" << std::endl;
         return Result::Failure;
     }
+
+    // Store descriptor size for later use
+    m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -867,6 +870,189 @@ void D3D12Renderer::endImGuiFrame() {
 
     // Render ImGui draw data
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
+}
+
+// ============================================================================
+// Video Texture Upload
+// ============================================================================
+
+void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, uint32_t height) {
+    if (!m_initialized || !rgbaData || width == 0 || height == 0) {
+        return nullptr;
+    }
+
+    HRESULT hr;
+
+    // Check if we need to recreate the texture (size changed)
+    if (m_videoTexture && (m_videoTextureWidth != width || m_videoTextureHeight != height)) {
+        // Wait for GPU before releasing resources
+        waitForGpu();
+        m_videoTexture.Reset();
+        m_videoUploadBuffer.Reset();
+        m_videoTextureWidth = 0;
+        m_videoTextureHeight = 0;
+    }
+
+    // Create texture if it doesn't exist
+    if (!m_videoTexture) {
+        // Create the texture resource
+        D3D12_RESOURCE_DESC textureDesc = {};
+        textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        textureDesc.Width = width;
+        textureDesc.Height = height;
+        textureDesc.DepthOrArraySize = 1;
+        textureDesc.MipLevels = 1;
+        textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        textureDesc.SampleDesc.Count = 1;
+        textureDesc.SampleDesc.Quality = 0;
+        textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        hr = m_device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &textureDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&m_videoTexture)
+        );
+
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create video texture resource!" << std::endl;
+            return nullptr;
+        }
+
+        // Create upload buffer
+        UINT64 uploadBufferSize = 0;
+        m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+
+        D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+        uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+        D3D12_RESOURCE_DESC uploadBufferDesc = {};
+        uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        uploadBufferDesc.Width = uploadBufferSize;
+        uploadBufferDesc.Height = 1;
+        uploadBufferDesc.DepthOrArraySize = 1;
+        uploadBufferDesc.MipLevels = 1;
+        uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uploadBufferDesc.SampleDesc.Count = 1;
+        uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        hr = m_device->CreateCommittedResource(
+            &uploadHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &uploadBufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_videoUploadBuffer)
+        );
+
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create video upload buffer!" << std::endl;
+            m_videoTexture.Reset();
+            return nullptr;
+        }
+
+        // Create SRV for the texture (at descriptor index 1, after ImGui font)
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
+        cpuHandle.ptr += m_srvDescriptorSize;  // Offset to slot 1
+
+        m_device->CreateShaderResourceView(m_videoTexture.Get(), &srvDesc, cpuHandle);
+
+        // Store GPU handle for ImGui
+        m_videoTextureGpuHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
+        m_videoTextureGpuHandle.ptr += m_srvDescriptorSize;  // Offset to slot 1
+
+        m_videoTextureWidth = width;
+        m_videoTextureHeight = height;
+
+        std::cout << "Created video texture: " << width << "x" << height << std::endl;
+    }
+
+    // Upload texture data
+    D3D12_RESOURCE_DESC textureDesc = m_videoTexture->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+
+    m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+
+    // Map upload buffer and copy data
+    void* mappedData = nullptr;
+    D3D12_RANGE readRange = { 0, 0 };  // We don't read from this buffer
+    hr = m_videoUploadBuffer->Map(0, &readRange, &mappedData);
+    if (FAILED(hr)) {
+        std::cerr << "Failed to map video upload buffer!" << std::endl;
+        return nullptr;
+    }
+
+    // Copy row by row (handling pitch differences)
+    uint8_t* dstPtr = static_cast<uint8_t*>(mappedData) + footprint.Offset;
+    const uint8_t* srcPtr = rgbaData;
+    UINT srcRowPitch = width * 4;
+
+    for (UINT row = 0; row < numRows; ++row) {
+        memcpy(dstPtr + row * footprint.Footprint.RowPitch,
+               srcPtr + row * srcRowPitch,
+               srcRowPitch);
+    }
+
+    m_videoUploadBuffer->Unmap(0, nullptr);
+
+    // Record copy command
+    // First, transition texture to COPY_DEST state if needed
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = m_videoTexture.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    // Only transition if texture was previously used
+    static bool firstUpload = true;
+    if (!firstUpload) {
+        m_commandList->ResourceBarrier(1, &barrier);
+    }
+    firstUpload = false;
+
+    // Copy from upload buffer to texture
+    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+    srcLocation.pResource = m_videoUploadBuffer.Get();
+    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLocation.PlacedFootprint = footprint;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+    dstLocation.pResource = m_videoTexture.Get();
+    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLocation.SubresourceIndex = 0;
+
+    m_commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+
+    // Transition texture back to shader resource state
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    return reinterpret_cast<void*>(m_videoTextureGpuHandle.ptr);
+}
+
+void* D3D12Renderer::getVideoTextureID() const {
+    if (m_videoTextureGpuHandle.ptr != 0) {
+        return reinterpret_cast<void*>(m_videoTextureGpuHandle.ptr);
+    }
+    return nullptr;
 }
 
 } // namespace entity

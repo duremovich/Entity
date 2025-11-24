@@ -110,6 +110,7 @@ target_sources(EntityMediaCore
         src/ui/WindowManager.cpp
         src/ui/TimelineWindow.cpp
         src/ui/StageWindow.cpp
+        src/ui/MediaBinWindow.cpp
 
         # Systems (to be implemented)
         # src/systems/DecodeSystem.cpp

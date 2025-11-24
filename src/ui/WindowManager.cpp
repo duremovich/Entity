@@ -159,7 +159,7 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
 
     // Split the dockspace into regions:
     // - Bottom 30% for Timeline
-    // - Top 70% split: Left 25% for Properties, Right 75% for Stage
+    // - Top 70% split: Left 25% for Media Bin, Right 75% for Stage
 
     ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Down, 0.3f, nullptr, &dockspaceId);
     ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.25f, nullptr, &dockspaceId);
@@ -167,12 +167,12 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
 
     // Dock windows to their designated nodes
     ImGui::DockBuilderDockWindow("Timeline", dockBottom);
-    ImGui::DockBuilderDockWindow("Properties", dockLeft);
+    ImGui::DockBuilderDockWindow("Media Bin", dockLeft);
     ImGui::DockBuilderDockWindow("Stage", dockCenter);
 
     ImGui::DockBuilderFinish(dockspaceId);
 
-    std::cout << "Default layout created: Timeline (bottom), Properties (left), Stage (center)" << std::endl;
+    std::cout << "Default layout created: Timeline (bottom), Media Bin (left), Stage (center)" << std::endl;
 }
 
 std::string WindowManager::openVideoFileDialog() {

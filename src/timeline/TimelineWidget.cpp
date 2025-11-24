@@ -32,7 +32,7 @@ void TimelineWidget::render() {
     // Calculate timeline dimensions
     int trackCount = static_cast<int>(m_timeline->getTrackCount());
     float tracksHeight = trackCount * (TRACK_HEIGHT + TRACK_PADDING);
-    float durationSeconds = m_timeline->getDuration() / 1000.0f;
+    float durationSeconds = m_timeline->getDuration() / 1000000.0f;
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
 
     // Reserve space for controls at bottom (approximately 40 pixels)
@@ -104,7 +104,7 @@ void TimelineWidget::render() {
 
     // Display current time
     Timecode currentTime = m_timeline->getCurrentTime();
-    float currentSeconds = currentTime / 1000.0f;
+    float currentSeconds = currentTime / 1000000.0f;
     int minutes = static_cast<int>(currentSeconds / 60.0f);
     float seconds = currentSeconds - (minutes * 60.0f);
     ImGui::Text("Time: %02d:%06.3f", minutes, seconds);
@@ -135,7 +135,7 @@ void TimelineWidget::renderTimeRuler() {
     drawList->AddRectFilled(rulerMin, rulerMax, IM_COL32(40, 40, 40, 255));
 
     // Draw time markers
-    float durationSeconds = m_timeline->getDuration() / 1000.0f;
+    float durationSeconds = m_timeline->getDuration() / 1000000.0f;
 
     // Determine marker interval based on zoom
     float markerIntervalSeconds = 1.0f;
@@ -147,7 +147,7 @@ void TimelineWidget::renderTimeRuler() {
 
     // Draw markers
     for (float t = 0.0f; t <= durationSeconds; t += markerIntervalSeconds) {
-        float x = windowPos.x + timeToPixel(static_cast<Timecode>(t * 1000.0f));
+        float x = windowPos.x + timeToPixel(static_cast<Timecode>(t * 1000000.0f));
 
         if (x < windowPos.x || x > rulerMax.x) continue;
 
@@ -237,11 +237,11 @@ void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex) {
     // Calculate clip position and size (no RULER_HEIGHT offset - clips are in tracks child window)
     float trackY = windowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
 
-    // Convert frame timing to milliseconds
+    // Convert frame timing to microseconds (Timecode units)
     float startSeconds = clip->startFrame / clip->framerate;
     float durationSeconds = clip->duration / clip->framerate;
-    Timecode startTime = static_cast<Timecode>(startSeconds * 1000.0f);
-    Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000.0f);
+    Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
+    Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
     float clipX = windowPos.x + timeToPixel(startTime);
     float clipWidth = timeToPixel(endTime - startTime);
@@ -376,7 +376,7 @@ void TimelineWidget::handleInteraction() {
             if (registry.valid(m_selectedClip)) {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
-                    float newStartSeconds = newStartTime / 1000.0f;
+                    float newStartSeconds = newStartTime / 1000000.0f;
                     clip->startFrame = static_cast<FrameNumber>(newStartSeconds * clip->framerate);
                 }
             }
@@ -401,7 +401,7 @@ void TimelineWidget::handleInteraction() {
                     auto* clip = registry.try_get<Clip>(clipUnderMouse);
                     if (clip) {
                         float startSeconds = clip->startFrame / clip->framerate;
-                        Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000.0f);
+                        Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                         float clipX = windowPos.x + timeToPixel(clipStartTime);
                         m_dragOffsetX = mousePos.x - clipX;
                         m_clipDragStartTime = clipStartTime;
@@ -443,8 +443,8 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
             // Calculate clip bounds
             float startSeconds = clip->startFrame / clip->framerate;
             float durationSeconds = clip->duration / clip->framerate;
-            Timecode startTime = static_cast<Timecode>(startSeconds * 1000.0f);
-            Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000.0f);
+            Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
+            Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
             float clipX = windowPos.x + timeToPixel(startTime);
             float clipWidth = timeToPixel(endTime - startTime);
@@ -462,13 +462,13 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
 }
 
 float TimelineWidget::timeToPixel(Timecode time) const {
-    float seconds = time / 1000.0f;
+    float seconds = time / 1000000.0f;  // Timecode is in microseconds
     return seconds * m_pixelsPerSecond;
 }
 
 Timecode TimelineWidget::pixelToTime(float pixel) const {
     float seconds = pixel / m_pixelsPerSecond;
-    return static_cast<Timecode>(seconds * 1000.0f);
+    return static_cast<Timecode>(seconds * 1000000.0f);  // Timecode is in microseconds
 }
 
 void TimelineWidget::handleRulerInteraction() {
@@ -541,7 +541,7 @@ void TimelineWidget::handleTracksInteraction() {
             if (registry.valid(m_selectedClip)) {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
-                    float newStartSeconds = newStartTime / 1000.0f;
+                    float newStartSeconds = newStartTime / 1000000.0f;
                     clip->startFrame = static_cast<FrameNumber>(newStartSeconds * clip->framerate);
                 }
             }
@@ -568,7 +568,7 @@ void TimelineWidget::handleTracksInteraction() {
                     auto* clip = registry.try_get<Clip>(clipUnderMouse);
                     if (clip) {
                         float startSeconds = clip->startFrame / clip->framerate;
-                        Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000.0f);
+                        Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                         float clipX = windowPos.x + timeToPixel(clipStartTime) - m_syncScrollX;
                         m_dragOffsetX = mousePos.x - clipX;
                         m_clipDragStartTime = clipStartTime;
@@ -592,7 +592,7 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
 
     // Calculate moving clip's time range at new position
     float durationSeconds = movingClip->duration / movingClip->framerate;
-    Timecode newEndTime = newStartTime + static_cast<Timecode>(durationSeconds * 1000.0f);
+    Timecode newEndTime = newStartTime + static_cast<Timecode>(durationSeconds * 1000000.0f);
 
     // Get the track
     const auto& tracks = m_timeline->getTracks();
@@ -618,15 +618,15 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
         // Calculate other clip's time range
         float otherStartSeconds = otherClip->startFrame / otherClip->framerate;
         float otherDurationSeconds = otherClip->duration / otherClip->framerate;
-        Timecode otherStartTime = static_cast<Timecode>(otherStartSeconds * 1000.0f);
-        Timecode otherEndTime = otherStartTime + static_cast<Timecode>(otherDurationSeconds * 1000.0f);
+        Timecode otherStartTime = static_cast<Timecode>(otherStartSeconds * 1000000.0f);
+        Timecode otherEndTime = otherStartTime + static_cast<Timecode>(otherDurationSeconds * 1000000.0f);
 
         // Check for overlap
         bool overlaps = (newStartTime < otherEndTime && newEndTime > otherStartTime);
 
         if (overlaps) {
             // Calculate snap positions (before or after the other clip)
-            Timecode snapBefore = otherStartTime - static_cast<Timecode>(durationSeconds * 1000.0f);
+            Timecode snapBefore = otherStartTime - static_cast<Timecode>(durationSeconds * 1000000.0f);
             Timecode snapAfter = otherEndTime;
 
             // Choose the snap position closest to the desired position

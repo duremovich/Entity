@@ -5,6 +5,7 @@
   "description": "High-Performance Realtime Media Server and Projection Mapping Engine",
   "dependencies": [
     "entt",
+    "ffmpeg",
     "glfw3",
     "gtest",
     "imgui",
