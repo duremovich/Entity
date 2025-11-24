@@ -1,0 +1,341 @@
+================================================================================
+  PNGSequenceDecoder - Architecture Diagram
+================================================================================
+
+1. DECODER FACTORY PATTERN
+========================
+
+    detectMediaType("frame_001.png")
+            |
+            v
+    MediaType::PNGSequence
+            |
+            v
+    createDecoder(MediaType::PNGSequence)
+            |
+            v
+    std::make_unique<PNGSequenceDecoder>()
+            |
+            v
+    std::unique_ptr<Decoder>
+
+
+2. CLASS HIERARCHY
+==================
+
+    Decoder (abstract base)
+       |
+       +-- ProResDecoder
+       |
+       +-- HAPDecoder
+       |
+       +-- PNGSequenceDecoder <-- YOU ARE HERE
+       |
+       +-- DPXSequenceDecoder (future)
+
+
+3. PNGSEQUENCEDECODER INTERNAL FLOW
+====================================
+
+    PUBLIC INTERFACE
+    ----------------
+
+    open(filepath)
+        |
+        +-- scanDirectory()
+        |       |
+        |       +-- std::filesystem::directory_iterator
+        |       +-- Find all .png files
+        |       +-- std::sort() alphabetically
+        |
+        +-- loadPNG(m_fileList[0])
+                |
+                +-- File I/O (std::ifstream)
+                +-- stbi_load_from_memory()
+                +-- premultiplyAlpha()
+                |
+                v
+        Properties set:
+        - m_width, m_height (from first frame)
+        - m_duration (file count)
+        - m_hasAlpha (alpha channel detection)
+
+
+    decodeFrame(frameNumber)
+        |
+        +-- Validate frameNumber in range [0, duration)
+        |
+        +-- loadPNG(m_fileList[frameNumber])
+                |
+                +-- File I/O (std::ifstream)
+                +-- stbi_load_from_memory()
+                +-- premultiplyAlpha()
+                |
+                v
+        Returns: DecodedFrame (RGBA8 data)
+
+
+    seek(frameNumber)
+        |
+        +-- Validate frameNumber in range [0, duration)
+        +-- Update m_currentFrame
+        |
+        v
+    Returns: Result
+
+
+    close()
+        |
+        +-- Clear m_fileList
+        +-- Reset all state
+        |
+        v
+    Cleanup complete
+
+
+4. PNG DECODING PROCESS
+=======================
+
+    Input: "C:\sequences\frame_001.png"
+            |
+            v
+    std::ifstream load full file into memory
+            |
+            v
+    stbi_load_from_memory(buffer, size, ?, ?, ?, 4)
+            |   Force RGBA output (4 channels)
+            |
+            v
+    unsigned char* imageData (raw RGBA, straight alpha)
+            |
+            v
+    premultiplyAlpha(imageData, width, height)
+            |
+            +-- For each pixel:
+            |   R_out = (R * A) / 255
+            |   G_out = (G * A) / 255
+            |   B_out = (B * A) / 255
+            |   A_out = A (unchanged)
+            |
+            v
+    Copy to DecodedFrame.data (std::vector<uint8_t>)
+            |
+            v
+    stbi_image_free(imageData)
+            |
+            v
+    Output: DecodedFrame (RGBA8 premultiplied)
+
+
+5. MEMORY LAYOUT (Example: 1920x1080)
+=====================================
+
+    INPUT: PNG file on disk
+    ---------------------
+    Compressed PNG data: variable size (depends on compression)
+
+
+    DURING DECODING: std::vector<uint8_t> buffer
+    ---------
+    Full PNG file: 500KB - 5MB
+
+
+    DECODED OUTPUT: uint8_t* imageData (stb_image)
+    ------------------
+    1920 * 1080 * 4 bytes = 8.3 MB (RGBA8)
+
+
+    FINAL OUTPUT: DecodedFrame.data
+    ----------------
+    1920 * 1080 * 4 bytes = 8.3 MB (RGBA8 premultiplied)
+
+    Memory freed:
+    - std::ifstream buffer (automatic cleanup)
+    - stb_image imageData (stbi_image_free)
+    - Temporary allocations released
+
+
+6. ECS INTEGRATION
+==================
+
+    Component: Clip
+    ===============
+    struct Clip {
+        std::string filepath;  // "C:\sequences\frame_001.png"
+        FrameNumber startFrame;
+        FrameNumber duration;
+    }
+
+
+    DecodeSystem (owns decoders)
+    ===============
+    class DecodeSystem {
+        std::unordered_map<EntityID, std::unique_ptr<Decoder>> decoders;
+
+        for entity in registry.view<Clip, FrameBuffer>:
+            decoder = createDecoder(detectMediaType(clip.filepath))
+            decoder.open(clip.filepath)
+
+            decodedFrame = decoder.decodeFrame(targetFrame)
+            frameBuffer.push(decodedFrame)
+    }
+
+
+    Component: FrameBuffer (ring buffer)
+    ==============
+    class FrameBuffer {
+        std::vector<DecodedFrame> frames;  // 32 frames
+        std::atomic<uint32_t> writeIndex;
+        std::atomic<uint32_t> readIndex;
+
+        bool push(DecodedFrame&& frame)  // from decoder
+        bool pop(DecodedFrame& frame)    // to compositor
+    }
+
+
+    CompositorSystem
+    ===============
+    for entity in registry.view<VideoTexture, FrameBuffer>:
+        frame = frameBuffer.pop()
+        uploadTexture(frame, videoTexture)  // GPU upload
+
+
+    RenderSystem
+    ============
+    for entity in registry.view<VideoTexture, Transform>:
+        renderTexture(videoTexture, transform)
+
+
+7. DATA FLOW DIAGRAM
+====================
+
+    TIMELINE (frame 0, 1, 2, ...)
+            |
+            v
+    TimelineSystem.update()
+    [Sets FrameBuffer.targetFrame]
+            |
+            v
+    DecodeSystem.update()
+    Calls decoder.decodeFrame(targetFrame)
+            |
+            v
+    PNGSequenceDecoder.decodeFrame()
+    |
+    +-- scanDirectory() [cached]
+    +-- loadPNG()
+        |
+        +-- File I/O
+        +-- stb_image decode
+        +-- Alpha premultiplication
+        |
+        v
+    Returns: DecodedFrame (RGBA8)
+            |
+            v
+    FrameBuffer.push(decodedFrame)
+    [Ring buffer with 32 frames]
+            |
+            v
+    CompositorSystem.update()
+    Reads from FrameBuffer
+    Uploads texture to GPU
+            |
+            v
+    RenderSystem.update()
+    Renders texture to screen
+
+
+8. THREAD MODEL
+===============
+
+    Main Thread              Decode Thread
+    ===========              ==============
+
+    TimelineSystem.update()
+    [Sets targetFrame]
+           |
+           |-- Thread safe flag
+           v
+                             DecodeSystem.update()
+                             [Reads targetFrame]
+                             |
+                             v
+                             decoder.decodeFrame()
+                             [CPU intensive work]
+                             |
+                             v
+                             FrameBuffer.push()
+                             [Lock-free atomic ops]
+
+    CompositorSystem.update()
+    [Reads from FrameBuffer]
+           |
+           |-- Thread safe ring buffer
+           v
+                             (Decode continues...)
+
+    RenderSystem.update()
+    [Uses GPU textures]
+
+
+9. ERROR HANDLING FLOW
+======================
+
+    open(filepath)
+        |
+        +-- FileNotFound (directory doesn't exist)
+        +-- FileNotFound (no PNGs in directory)
+        +-- DecoderError (first frame decode failed)
+        +-- Success
+
+
+    decodeFrame(frameNumber)
+        |
+        +-- Failure (decoder not open)
+        +-- InvalidParameter (frame out of range)
+        +-- DecoderError (PNG decode failed)
+        +-- Success
+
+
+10. PERFORMANCE CHARACTERISTICS
+================================
+
+    Operation            Time        Memory      Notes
+    ---------            ----        ------      -----
+
+    scanDirectory()      1-5 ms      Minimal     One-time, cached
+
+    loadPNG()            5-15 ms     16-20 MB    File I/O + decode
+                                                 Depends on PNG size
+                                                 and compression
+
+    premultiplyAlpha()   0.5-2 ms    In-place    Simple pixel math
+
+    seek()               <1 ms       None        Just updates state
+
+    Total frame decode   5-15 ms     8.3 MB      For 1920x1080
+
+    Per-frame memory     8.3 MB      Peak 16 MB  During decode
+
+
+11. FILENAME CONVENTIONS
+=======================
+
+    SUPPORTED PATTERNS:
+
+    frame_001.png       ✓ Alphabetic sort works
+    frame_002.png       ✓
+    frame_010.png       ✓ (zero-padded for correct sort)
+
+    image_001.png       ✓
+    seq_0001.png        ✓
+
+    AVOID THESE:
+
+    frame_1.png         ✗ Alphabetic sort fails:
+    frame_2.png         ✗   frame_1, frame_10, frame_2 (WRONG ORDER)
+    frame_10.png        ✗ Use zero-padding: frame_01, frame_02, ..., frame_10
+
+
+================================================================================

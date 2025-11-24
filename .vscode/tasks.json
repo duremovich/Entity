@@ -1,0 +1,100 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "CMake: Configure",
+            "type": "shell",
+            "command": "C:/cmake-3.31.1-windows-x86_64/bin/cmake.exe",
+            "args": [
+                "-B",
+                "build2",
+                "-S",
+                ".",
+                "-G",
+                "Visual Studio 17 2022",
+                "-A",
+                "x64",
+                "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "CMake: Build Debug",
+            "type": "shell",
+            "command": "C:/cmake-3.31.1-windows-x86_64/bin/cmake.exe",
+            "args": [
+                "--build",
+                "build2",
+                "--config",
+                "Debug"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$msCompile",
+            "dependsOn": []
+        },
+        {
+            "label": "CMake: Build Release",
+            "type": "shell",
+            "command": "C:/cmake-3.31.1-windows-x86_64/bin/cmake.exe",
+            "args": [
+                "--build",
+                "build2",
+                "--config",
+                "Release"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "CMake: Clean",
+            "type": "shell",
+            "command": "C:/cmake-3.31.1-windows-x86_64/bin/cmake.exe",
+            "args": [
+                "--build",
+                "build2",
+                "--target",
+                "clean"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "CMake: Rebuild",
+            "type": "shell",
+            "command": "C:/cmake-3.31.1-windows-x86_64/bin/cmake.exe",
+            "args": [
+                "--build",
+                "build2",
+                "--config",
+                "Release",
+                "--clean-first"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}

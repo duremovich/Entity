@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "entity-media-server",
+  "version-string": "0.1.0",
+  "description": "High-Performance Realtime Media Server and Projection Mapping Engine",
+  "dependencies": [
+    "entt",
+    "glfw3",
+    "gtest",
+    "imgui",
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "dx12-binding",
+        "glfw-binding"
+      ]
+    },
+    "glm",
+    "stb"
+  ],
+  "builtin-baseline": "9edb1b8e590cc086563301d735cae4b6e732d2d2"
+}

@@ -1,0 +1,19 @@
+{
+    "files.associations": {
+        "*.hpp": "cpp",
+        "*.cpp": "cpp",
+        "*.hlsl": "hlsl",
+        "*.hlsli": "hlsl"
+    },
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "cmake.configureOnOpen": false,
+    "cmake.buildDirectory": "${workspaceFolder}/build2",
+    "cmake.generator": "Visual Studio 17 2022",
+    "cmake.configureSettings": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+    },
+    "cmake.cmakePath": "C:/cmake-3.31.1-windows-x86_64/bin/cmake.exe",
+    "terminal.integrated.env.windows": {
+        "PATH": "${env:PATH};C:\\cmake-3.31.1-windows-x86_64\\bin"
+    }
+}
