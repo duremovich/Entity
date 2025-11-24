@@ -473,14 +473,27 @@ Result D3D12Renderer::createFence() {
 }
 
 void D3D12Renderer::waitForGpu() {
-    // Signal fence with current value
-    const uint64_t fenceValue = m_fenceValues[m_currentBackBufferIndex];
-    m_commandQueue->Signal(m_fence.Get(), fenceValue);
+    // Schedule a signal command in the queue
+    // Use a fence value higher than any frame's current value to ensure all work completes
+    uint64_t maxFenceValue = 0;
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        if (m_fenceValues[i] > maxFenceValue) {
+            maxFenceValue = m_fenceValues[i];
+        }
+    }
 
-    // Wait until fence is reached
-    if (m_fence->GetCompletedValue() < fenceValue) {
-        m_fence->SetEventOnCompletion(fenceValue, m_fenceEvent);
+    const uint64_t fenceValueToWaitFor = maxFenceValue;
+    m_commandQueue->Signal(m_fence.Get(), fenceValueToWaitFor);
+
+    // Wait until the GPU has completed all work up to this fence point
+    if (m_fence->GetCompletedValue() < fenceValueToWaitFor) {
+        m_fence->SetEventOnCompletion(fenceValueToWaitFor, m_fenceEvent);
         WaitForSingleObject(m_fenceEvent, INFINITE);
+    }
+
+    // Update all fence values to be at least this value since we know all work is done
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        m_fenceValues[i] = fenceValueToWaitFor + 1;
     }
 }
 

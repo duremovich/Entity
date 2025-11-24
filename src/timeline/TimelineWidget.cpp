@@ -24,41 +24,66 @@ void TimelineWidget::render() {
         return;
     }
 
-    // NoMove flag prevents dragging the window from anywhere except the title bar
-    ImGui::Begin("Timeline", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
+    // Note: Window Begin/End is now handled by TimelineWindow wrapper
+    // This render() method only renders the timeline content
 
-    ImVec2 windowPos = ImGui::GetCursorScreenPos();
-    ImVec2 windowSize = ImGui::GetContentRegionAvail();
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 contentRegion = ImGui::GetContentRegionAvail();
 
     // Calculate timeline dimensions
-    float totalHeight = RULER_HEIGHT;
     int trackCount = static_cast<int>(m_timeline->getTrackCount());
-    totalHeight += trackCount * (TRACK_HEIGHT + TRACK_PADDING);
-
-    // Create a child window for scrolling
-    ImGui::BeginChild("TimelineScroll", ImVec2(0, 0), false,
-                      ImGuiWindowFlags_HorizontalScrollbar);
-
-    // Calculate timeline width based on duration
+    float tracksHeight = trackCount * (TRACK_HEIGHT + TRACK_PADDING);
     float durationSeconds = m_timeline->getDuration() / 1000.0f;
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
 
-    // Set cursor position for custom drawing
-    ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+    // Reserve space for controls at bottom (approximately 40 pixels)
+    float controlsHeight = 40.0f;
+    float availableHeight = contentRegion.y - controlsHeight;
 
-    // Make space for our custom content
-    ImGui::Dummy(ImVec2(timelineWidth, totalHeight));
+    // === STICKY RULER (Fixed at top) ===
+    ImGui::BeginChild("TimelineRuler", ImVec2(0, RULER_HEIGHT), false,
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-    // Render components
+    // Set scroll to synced position
+    ImGui::SetScrollX(m_syncScrollX);
+
+    // Save ruler position for playhead rendering
+    m_rulerScreenPos = ImGui::GetCursorScreenPos();
+
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    ImGui::InvisibleButton("##rulerArea", ImVec2(timelineWidth, RULER_HEIGHT));
+    ImGui::SetCursorPos(ImVec2(0, 0));
+
     renderTimeRuler();
-    renderTracks();
-    renderPlayhead();
-
-    // Handle interaction
-    handleInteraction();
+    handleRulerInteraction();
 
     ImGui::EndChild();
+
+    // === SCROLLABLE TRACKS (Vertically scrollable) ===
+    float tracksWindowHeight = availableHeight - RULER_HEIGHT;
+    ImGui::BeginChild("TimelineTracks", ImVec2(0, tracksWindowHeight), false,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+
+    // Set scroll to synced position
+    ImGui::SetScrollX(m_syncScrollX);
+
+    // Save tracks position for playhead rendering
+    m_tracksScreenPos = ImGui::GetCursorScreenPos();
+
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    ImGui::InvisibleButton("##tracksArea", ImVec2(timelineWidth, tracksHeight));
+    ImGui::SetCursorPos(ImVec2(0, 0));
+
+    renderTracks();
+    handleTracksInteraction();
+
+    // Save scroll position for next frame (from whichever window was scrolled)
+    m_syncScrollX = ImGui::GetScrollX();
+    m_tracksHeight = tracksHeight;
+
+    ImGui::EndChild();
+
+    // Render playhead (spans across both ruler and tracks)
+    renderPlayhead();
 
     // Controls below timeline
     ImGui::Separator();
@@ -92,7 +117,7 @@ void TimelineWidget::render() {
     ImGui::SetNextItemWidth(100.0f);
     ImGui::SliderFloat("##zoom", &m_pixelsPerSecond, 10.0f, 500.0f, "%.0f px/s");
 
-    ImGui::End();
+    // Note: ImGui::End() is now handled by TimelineWindow wrapper
 }
 
 void TimelineWidget::renderTimeRuler() {
@@ -170,8 +195,8 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
     const auto* track = registry.try_get<TimelineTrack>(trackEntity);
     if (!track) return;
 
-    // Calculate track bounds
-    float trackY = windowPos.y + RULER_HEIGHT + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
+    // Calculate track bounds (no RULER_HEIGHT offset - tracks are in separate child window)
+    float trackY = windowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
     ImVec2 trackMin = ImVec2(windowPos.x, trackY);
     ImVec2 trackMax = ImVec2(windowPos.x + windowSize.x, trackY + TRACK_HEIGHT);
 
@@ -209,8 +234,8 @@ void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex) {
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) return;
 
-    // Calculate clip position and size
-    float trackY = windowPos.y + RULER_HEIGHT + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
+    // Calculate clip position and size (no RULER_HEIGHT offset - clips are in tracks child window)
+    float trackY = windowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
 
     // Convert frame timing to milliseconds
     float startSeconds = clip->startFrame / clip->framerate;
@@ -255,31 +280,32 @@ void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex) {
 void TimelineWidget::renderPlayhead() {
     if (!m_timeline) return;
 
-    ImVec2 windowPos = ImGui::GetCursorScreenPos();
-    ImVec2 windowSize = ImGui::GetContentRegionAvail();
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    // Use foreground draw list to render on top of child windows
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-    // Calculate playhead position
+    // Calculate playhead X position (accounting for scroll)
     Timecode currentTime = m_timeline->getCurrentTime();
-    float playheadX = windowPos.x + timeToPixel(currentTime);
+    float playheadPixel = timeToPixel(currentTime) - m_syncScrollX;
 
-    // Calculate total height
-    int trackCount = static_cast<int>(m_timeline->getTrackCount());
-    float totalHeight = RULER_HEIGHT + trackCount * (TRACK_HEIGHT + TRACK_PADDING);
+    // Playhead X in ruler space
+    float playheadXRuler = m_rulerScreenPos.x + playheadPixel;
 
-    // Draw playhead line
+    // Playhead X in tracks space
+    float playheadXTracks = m_tracksScreenPos.x + playheadPixel;
+
+    // Draw playhead line spanning from ruler through tracks
     drawList->AddLine(
-        ImVec2(playheadX, windowPos.y),
-        ImVec2(playheadX, windowPos.y + totalHeight),
+        ImVec2(playheadXRuler, m_rulerScreenPos.y),
+        ImVec2(playheadXTracks, m_tracksScreenPos.y + m_tracksHeight),
         IM_COL32(255, 100, 100, 255),
         2.0f
     );
 
-    // Draw playhead triangle at top
+    // Draw playhead triangle at top of ruler
     ImVec2 trianglePoints[3] = {
-        ImVec2(playheadX, windowPos.y),
-        ImVec2(playheadX - 6.0f, windowPos.y + 10.0f),
-        ImVec2(playheadX + 6.0f, windowPos.y + 10.0f)
+        ImVec2(playheadXRuler, m_rulerScreenPos.y),
+        ImVec2(playheadXRuler - 6.0f, m_rulerScreenPos.y + 10.0f),
+        ImVec2(playheadXRuler + 6.0f, m_rulerScreenPos.y + 10.0f)
     };
     drawList->AddTriangleFilled(trianglePoints[0], trianglePoints[1], trianglePoints[2],
                                 IM_COL32(255, 100, 100, 255));
@@ -401,8 +427,8 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
         const auto* track = registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
 
-        // Calculate track Y bounds
-        float trackY = windowPos.y + RULER_HEIGHT + i * (TRACK_HEIGHT + TRACK_PADDING);
+        // Calculate track Y bounds (no RULER_HEIGHT - called from tracks child window)
+        float trackY = windowPos.y + i * (TRACK_HEIGHT + TRACK_PADDING);
 
         // Check if mouse Y is within this track
         if (mousePos.y < trackY || mousePos.y > trackY + TRACK_HEIGHT) {
@@ -443,6 +469,185 @@ float TimelineWidget::timeToPixel(Timecode time) const {
 Timecode TimelineWidget::pixelToTime(float pixel) const {
     float seconds = pixel / m_pixelsPerSecond;
     return static_cast<Timecode>(seconds * 1000.0f);
+}
+
+void TimelineWidget::handleRulerInteraction() {
+    if (!m_timeline) return;
+
+    ImVec2 windowPos = ImGui::GetCursorScreenPos();
+    ImVec2 windowSize = ImGui::GetContentRegionAvail();
+    ImVec2 mousePos = ImGui::GetMousePos();
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Check if mouse is over the ruler window
+    bool overRuler = (mousePos.x >= windowPos.x &&
+                      mousePos.x <= windowPos.x + windowSize.x &&
+                      mousePos.y >= windowPos.y &&
+                      mousePos.y <= windowPos.y + RULER_HEIGHT);
+
+    // Handle Alt + Mouse Wheel for zoom
+    if (overRuler && io.MouseWheel != 0.0f && io.KeyAlt) {
+        float zoomFactor = io.MouseWheel > 0.0f ? 1.2f : 0.8f;
+        float newZoom = m_pixelsPerSecond * zoomFactor;
+
+        // Clamp zoom to reasonable range
+        newZoom = std::max(10.0f, std::min(500.0f, newZoom));
+
+        m_pixelsPerSecond = newZoom;
+    }
+
+    // Handle ruler click and drag for seeking/scrubbing
+    if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        m_isDraggingRuler = true;
+        float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        Timecode newTime = pixelToTime(relativeX);
+        m_timeline->seek(newTime);
+    }
+
+    if (m_isDraggingRuler) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // Continue dragging - update time as mouse moves
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            Timecode newTime = pixelToTime(relativeX);
+            m_timeline->seek(newTime);
+        } else {
+            // Mouse released - stop dragging
+            m_isDraggingRuler = false;
+        }
+    }
+}
+
+void TimelineWidget::handleTracksInteraction() {
+    if (!m_timeline) return;
+
+    ImVec2 windowPos = ImGui::GetCursorScreenPos();
+    ImVec2 mousePos = ImGui::GetMousePos();
+
+    // Handle clip dragging
+    if (m_isDraggingClip) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // Calculate desired new clip position based on mouse
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX - m_dragOffsetX;
+            Timecode desiredStartTime = pixelToTime(relativeX);
+
+            // Clamp to valid range (>= 0)
+            if (desiredStartTime < 0) desiredStartTime = 0;
+
+            // Check for collisions and snap to valid position
+            Timecode newStartTime = checkClipCollision(m_selectedClip, desiredStartTime, m_selectedClipTrackIndex);
+
+            // Update clip's start frame
+            auto& registry = m_timeline->getRegistry();
+            if (registry.valid(m_selectedClip)) {
+                auto* clip = registry.try_get<Clip>(m_selectedClip);
+                if (clip) {
+                    float newStartSeconds = newStartTime / 1000.0f;
+                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * clip->framerate);
+                }
+            }
+        } else {
+            // Mouse released - stop dragging
+            m_isDraggingClip = false;
+            m_selectedClipTrackIndex = -1;
+        }
+    } else if (!m_isDraggingRuler) {
+        // Only check for clip selection if not dragging ruler or clip
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            int trackIndex = -1;
+            entt::entity clipUnderMouse = findClipAtPosition(mousePos, windowPos, trackIndex);
+
+            if (clipUnderMouse != entt::null) {
+                // Start dragging this clip
+                m_selectedClip = clipUnderMouse;
+                m_isDraggingClip = true;
+                m_selectedClipTrackIndex = trackIndex;
+
+                // Calculate drag offset (where in the clip the user clicked)
+                auto& registry = m_timeline->getRegistry();
+                if (registry.valid(clipUnderMouse)) {
+                    auto* clip = registry.try_get<Clip>(clipUnderMouse);
+                    if (clip) {
+                        float startSeconds = clip->startFrame / clip->framerate;
+                        Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000.0f);
+                        float clipX = windowPos.x + timeToPixel(clipStartTime) - m_syncScrollX;
+                        m_dragOffsetX = mousePos.x - clipX;
+                        m_clipDragStartTime = clipStartTime;
+                    }
+                }
+            } else {
+                // Clicked on empty space - deselect
+                m_selectedClip = entt::null;
+                m_selectedClipTrackIndex = -1;
+            }
+        }
+    }
+}
+
+Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode newStartTime, int trackIndex) {
+    if (!m_timeline) return newStartTime;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto* movingClip = registry.try_get<Clip>(clipEntity);
+    if (!movingClip) return newStartTime;
+
+    // Calculate moving clip's time range at new position
+    float durationSeconds = movingClip->duration / movingClip->framerate;
+    Timecode newEndTime = newStartTime + static_cast<Timecode>(durationSeconds * 1000.0f);
+
+    // Get the track
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) {
+        return newStartTime;
+    }
+
+    entt::entity trackEntity = tracks[trackIndex];
+    const auto* track = registry.try_get<TimelineTrack>(trackEntity);
+    if (!track) return newStartTime;
+
+    // Check for collisions with other clips on the same track
+    Timecode snapPosition = newStartTime;
+    float minDistance = std::numeric_limits<float>::max();
+
+    for (entt::entity otherClipEntity : track->clips) {
+        // Skip the clip we're moving
+        if (otherClipEntity == clipEntity) continue;
+
+        const auto* otherClip = registry.try_get<Clip>(otherClipEntity);
+        if (!otherClip) continue;
+
+        // Calculate other clip's time range
+        float otherStartSeconds = otherClip->startFrame / otherClip->framerate;
+        float otherDurationSeconds = otherClip->duration / otherClip->framerate;
+        Timecode otherStartTime = static_cast<Timecode>(otherStartSeconds * 1000.0f);
+        Timecode otherEndTime = otherStartTime + static_cast<Timecode>(otherDurationSeconds * 1000.0f);
+
+        // Check for overlap
+        bool overlaps = (newStartTime < otherEndTime && newEndTime > otherStartTime);
+
+        if (overlaps) {
+            // Calculate snap positions (before or after the other clip)
+            Timecode snapBefore = otherStartTime - static_cast<Timecode>(durationSeconds * 1000.0f);
+            Timecode snapAfter = otherEndTime;
+
+            // Choose the snap position closest to the desired position
+            float distBefore = std::abs(static_cast<float>(snapBefore - newStartTime));
+            float distAfter = std::abs(static_cast<float>(snapAfter - newStartTime));
+
+            Timecode candidateSnap = (distBefore < distAfter) ? snapBefore : snapAfter;
+            float candidateDistance = std::min(distBefore, distAfter);
+
+            // Keep track of the closest valid position
+            if (candidateDistance < minDistance) {
+                minDistance = candidateDistance;
+                snapPosition = candidateSnap;
+            }
+        }
+    }
+
+    // Clamp snap position to valid range (>= 0)
+    if (snapPosition < 0) snapPosition = 0;
+
+    return snapPosition;
 }
 
 } // namespace entity

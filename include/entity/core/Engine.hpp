@@ -15,7 +15,9 @@ namespace entity {
 // Forward declarations
 class D3D12Renderer;
 class Timeline;
-class TimelineWidget;
+class WindowManager;
+class Decoder;
+struct DecodedFrame;
 // class Transport;
 
 /**
@@ -99,6 +101,12 @@ public:
     uint64_t getFrameCount() const { return m_frameCount; }
 
     /**
+     * Get the current decoded video frame for display.
+     * Returns nullptr if no frame is available.
+     */
+    const DecodedFrame* getCurrentVideoFrame() const;
+
+    /**
      * Register a system with the engine.
      * Systems are updated in registration order.
      */
@@ -149,6 +157,12 @@ private:
      */
     void createTestEntities();
 
+    /**
+     * Handle video file selection from File > Open Video menu.
+     * Called when user selects a video file from the file dialog.
+     */
+    void onVideoFileSelected(const std::string& filePath);
+
 private:
     // ECS registry
     entt::registry m_registry;
@@ -156,7 +170,7 @@ private:
     // Core subsystems
     std::unique_ptr<D3D12Renderer> m_renderer;
     std::unique_ptr<Timeline> m_timeline;
-    std::unique_ptr<TimelineWidget> m_timelineWidget;
+    std::unique_ptr<WindowManager> m_windowManager;
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;
@@ -191,6 +205,10 @@ private:
     bool m_resizePending{false};
     uint32_t m_pendingWidth{0};
     uint32_t m_pendingHeight{0};
+
+    // Video playback
+    std::unique_ptr<Decoder> m_decoder;
+    std::unique_ptr<DecodedFrame> m_currentFrame;
 };
 
 } // namespace entity

@@ -106,6 +106,11 @@ target_sources(EntityMediaCore
         # src/timeline/Transport.cpp (to be implemented later)
         # src/timeline/TimeMapping.cpp (to be implemented later)
 
+        # UI
+        src/ui/WindowManager.cpp
+        src/ui/TimelineWindow.cpp
+        src/ui/StageWindow.cpp
+
         # Systems (to be implemented)
         # src/systems/DecodeSystem.cpp
         src/systems/CompositorSystem.cpp

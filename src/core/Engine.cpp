@@ -1,11 +1,15 @@
 #include "entity/core/Engine.hpp"
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/timeline/Timeline.hpp"
-#include "entity/timeline/TimelineWidget.hpp"
+#include "entity/ui/WindowManager.hpp"
+#include "entity/ui/TimelineWindow.hpp"
+#include "entity/ui/StageWindow.hpp"
 #include "entity/systems/TestSystem.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/BufferSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
+#include "entity/media/Decoder.hpp"
+#include "entity/media/FrameRingBuffer.hpp"
 #include <imgui.h>
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -120,50 +124,41 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Initialize timeline
     m_timeline = std::make_unique<Timeline>(m_registry);
 
-    // Initialize timeline widget
-    m_timelineWidget = std::make_unique<TimelineWidget>(m_timeline.get());
+    // Initialize window manager
+    m_windowManager = std::make_unique<WindowManager>();
+    m_windowManager->initialize();
 
-    // Create test tracks and clips for timeline
-    entt::entity track1 = m_timeline->createTrack("Video Track 1");
-    entt::entity track2 = m_timeline->createTrack("Video Track 2");
+    // Set up video file callback
+    m_windowManager->setVideoFileCallback([this](const std::string& filePath) {
+        this->onVideoFileSelected(filePath);
+    });
 
-    // Add test clips to tracks
-    {
-        auto& trackComponent = m_registry.get<TimelineTrack>(track1);
+    // Register windows with window manager
+    m_windowManager->registerWindow(std::make_unique<TimelineWindow>(m_timeline.get()));
+    m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
 
-        // Clip 1: 0-5 seconds
-        entt::entity clip1 = m_registry.create();
-        auto& clip1Data = m_registry.emplace<Clip>(clip1);
-        clip1Data.filepath = "test_video_1.mov";
-        clip1Data.startFrame = 0;
-        clip1Data.duration = 150;  // 5 seconds at 30fps
-        clip1Data.framerate = 30.0;
-        trackComponent.addClip(clip1);
+    // Create 10 test tracks with clips for scrolling test
+    for (int i = 0; i < 10; i++) {
+        std::string trackName = "Video Track " + std::to_string(i + 1);
+        entt::entity track = m_timeline->createTrack(trackName);
+        auto& trackComponent = m_registry.get<TimelineTrack>(track);
 
-        // Clip 2: 6-10 seconds
-        entt::entity clip2 = m_registry.create();
-        auto& clip2Data = m_registry.emplace<Clip>(clip2);
-        clip2Data.filepath = "test_video_2.mov";
-        clip2Data.startFrame = 180;  // Start at 6 seconds
-        clip2Data.duration = 120;    // 4 seconds at 30fps
-        clip2Data.framerate = 30.0;
-        trackComponent.addClip(clip2);
+        // Add 2-3 clips per track at varied positions
+        int clipCount = 2 + (i % 2); // Alternate between 2 and 3 clips per track
+        for (int j = 0; j < clipCount; j++) {
+            entt::entity clip = m_registry.create();
+            auto& clipData = m_registry.emplace<Clip>(clip);
+
+            clipData.filepath = "test_video_" + std::to_string(i) + "_" + std::to_string(j) + ".mov";
+            clipData.startFrame = j * 200 + (i * 10);  // Stagger clips
+            clipData.duration = 100 + (j * 20);        // Vary clip lengths
+            clipData.framerate = 30.0;
+
+            trackComponent.addClip(clip);
+        }
     }
 
-    {
-        auto& trackComponent = m_registry.get<TimelineTrack>(track2);
-
-        // Clip 3: 2-8 seconds on second track
-        entt::entity clip3 = m_registry.create();
-        auto& clip3Data = m_registry.emplace<Clip>(clip3);
-        clip3Data.filepath = "overlay_video.mov";
-        clip3Data.startFrame = 60;   // Start at 2 seconds
-        clip3Data.duration = 180;    // 6 seconds at 30fps
-        clip3Data.framerate = 30.0;
-        trackComponent.addClip(clip3);
-    }
-
-    std::cout << "Created test timeline with 2 tracks and 3 clips" << std::endl;
+    std::cout << "Created test timeline with 10 tracks for scrolling test" << std::endl;
 
     // TODO: Initialize transport
     // m_transport = std::make_unique<Transport>();
@@ -287,11 +282,38 @@ void Engine::update() {
         m_timeline->update(m_deltaTime);
     }
 
+    // Decode frame based on timeline current time
+    if (m_decoder && m_decoder->isOpen() && m_currentFrame) {
+        // Get current frame number from timeline
+        FrameNumber currentFrame = m_timeline->getCurrentFrame();
+
+        // Only decode if frame number changed
+        if (currentFrame != m_currentFrame->frameNumber) {
+            // Decode the frame
+            Result result = m_decoder->decodeFrame(currentFrame, *m_currentFrame);
+            if (result == Result::Success) {
+                // Frame decoded successfully, it's now valid for display
+                m_currentFrame->valid = true;
+            } else {
+                // Decode failed, mark frame as invalid
+                m_currentFrame->valid = false;
+                // Note: We don't log every frame decode failure to avoid spam
+            }
+        }
+    }
+
     // Update all registered systems except CompositorSystem (index 0)
     // CompositorSystem is called in render() between beginFrame/endFrame
     for (size_t i = 1; i < m_systems.size(); ++i) {
         m_systems[i]->update(m_registry, static_cast<float>(m_deltaTime));
     }
+}
+
+const DecodedFrame* Engine::getCurrentVideoFrame() const {
+    if (m_currentFrame && m_currentFrame->valid) {
+        return m_currentFrame.get();
+    }
+    return nullptr;
 }
 
 void Engine::render() {
@@ -325,9 +347,9 @@ void Engine::render() {
         // Begin ImGui frame for UI rendering
         m_renderer->beginImGuiFrame();
 
-        // Render timeline widget
-        if (m_timelineWidget) {
-            m_timelineWidget->render();
+        // Render window manager (DockSpace and all windows)
+        if (m_windowManager) {
+            m_windowManager->render();
         }
 
         // End ImGui frame and render UI
@@ -719,6 +741,61 @@ void Engine::createTestEntities() {
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Entities Created! ✓" << std::endl;
     std::cout << "========================================\n" << std::endl;
+}
+
+void Engine::onVideoFileSelected(const std::string& filePath) {
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "Video File Selected" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "File: " << filePath << std::endl;
+
+    // Detect media type from file extension
+    MediaType mediaType = detectMediaType(filePath);
+    if (mediaType == MediaType::Unknown) {
+        std::cerr << "ERROR: Unsupported media type: " << filePath << std::endl;
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
+    std::cout << "Detected media type: " << MediaTypeToString(mediaType) << std::endl;
+
+    // Create decoder for the media type
+    m_decoder = createDecoder(mediaType);
+    if (!m_decoder) {
+        std::cerr << "ERROR: Failed to create decoder for media type: "
+                  << MediaTypeToString(mediaType) << std::endl;
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
+    std::cout << "Created decoder: " << MediaTypeToString(mediaType) << std::endl;
+
+    // Open the media file
+    Result result = m_decoder->open(filePath);
+    if (result != Result::Success) {
+        std::cerr << "ERROR: Failed to open media file: " << filePath << std::endl;
+        m_decoder.reset();
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
+    std::cout << "Media opened successfully:" << std::endl;
+    std::cout << "  Resolution: " << m_decoder->getWidth() << "x" << m_decoder->getHeight() << std::endl;
+    std::cout << "  Duration: " << m_decoder->getDuration() << " frames" << std::endl;
+    std::cout << "  Frame rate: " << m_decoder->getFrameRate() << " fps" << std::endl;
+    std::cout << "  Has alpha: " << (m_decoder->hasAlpha() ? "yes" : "no") << std::endl;
+
+    // Create initial decoded frame for display
+    m_currentFrame = std::make_unique<DecodedFrame>();
+    m_currentFrame->allocate(m_decoder->getWidth(), m_decoder->getHeight());
+
+    std::cout << "Ready for playback" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    // TODO: Later phases
+    // - Create clip entity and add to timeline
+    // - Start decode thread with FrameRingBuffer
+    // - Implement frame-accurate timeline synchronization
 }
 
 } // namespace entity

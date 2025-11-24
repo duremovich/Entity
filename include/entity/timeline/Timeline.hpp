@@ -56,6 +56,17 @@ public:
     PlaybackState getPlaybackState() const { return m_playbackState; }
     double getFrameRate() const { return m_frameRate; }
 
+    /**
+     * Get current frame number based on timeline position.
+     * Converts current time (in microseconds) to frame number using frame rate.
+     * @return Frame number (0-based)
+     */
+    FrameNumber getCurrentFrame() const {
+        // Convert microseconds to seconds, multiply by frame rate
+        double seconds = m_currentTime / 1000000.0;
+        return static_cast<FrameNumber>(seconds * m_frameRate);
+    }
+
     // Time setters
     void setDuration(Timecode duration) { m_duration = duration; }
     void setFrameRate(double frameRate) { m_frameRate = frameRate; }

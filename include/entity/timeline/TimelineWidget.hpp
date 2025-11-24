@@ -92,10 +92,26 @@ private:
     void handleInteraction();
 
     /**
+     * Handle ruler-specific interactions (scrubbing, zooming).
+     */
+    void handleRulerInteraction();
+
+    /**
+     * Handle tracks-specific interactions (clip dragging, selection).
+     */
+    void handleTracksInteraction();
+
+    /**
      * Find the clip entity at the given screen position.
      * Returns entt::null if no clip is found.
      */
     entt::entity findClipAtPosition(ImVec2 mousePos, ImVec2 windowPos, int& outTrackIndex);
+
+    /**
+     * Check if a clip would collide with other clips on the same track.
+     * Returns the nearest valid position (snapped to avoid collision).
+     */
+    Timecode checkClipCollision(entt::entity clipEntity, Timecode newStartTime, int trackIndex);
 
 private:
     Timeline* m_timeline{nullptr};
@@ -103,6 +119,12 @@ private:
     // View settings
     float m_pixelsPerSecond{100.0f};  // Zoom level
     float m_scrollX{0.0f};             // Horizontal scroll position
+    float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks
+
+    // Cached positions for rendering playhead across child windows
+    ImVec2 m_rulerScreenPos{0, 0};
+    ImVec2 m_tracksScreenPos{0, 0};
+    float m_tracksHeight{0.0f};
 
     // Layout constants
     static constexpr float RULER_HEIGHT = 30.0f;
@@ -114,6 +136,7 @@ private:
     entt::entity m_selectedClip{entt::null};
     bool m_isDraggingClip{false};
     bool m_isDraggingRuler{false};
+    int m_selectedClipTrackIndex{-1};
     Timecode m_clipDragStartTime{0};
     float m_dragOffsetX{0.0f};
 };
