@@ -62,6 +62,19 @@ public:
     using VideoFileCallback = std::function<void(const std::string&)>;
     void setVideoFileCallback(VideoFileCallback callback) { m_videoFileCallback = callback; }
 
+    /**
+     * Set callback for save project action.
+     */
+    using SaveProjectCallback = std::function<void()>;
+    void setSaveProjectCallback(SaveProjectCallback callback) { m_saveProjectCallback = callback; }
+
+    /**
+     * Set callback for open project action.
+     * Callback receives the selected file path.
+     */
+    using OpenProjectCallback = std::function<void(const std::string&)>;
+    void setOpenProjectCallback(OpenProjectCallback callback) { m_openProjectCallback = callback; }
+
 private:
     /**
      * Render the menu bar with window visibility toggles.
@@ -80,12 +93,20 @@ private:
      */
     std::string openVideoFileDialog();
 
+    /**
+     * Open Windows native file dialog for project selection.
+     * Returns the selected file path, or empty string if cancelled.
+     */
+    std::string openProjectFileDialog();
+
 private:
     std::vector<std::unique_ptr<EditorWindow>> m_windows;
     ImGuiID m_dockspaceId{0};
     bool m_firstFrame{true};
     bool m_layoutResetRequested{false};
     VideoFileCallback m_videoFileCallback;
+    SaveProjectCallback m_saveProjectCallback;
+    OpenProjectCallback m_openProjectCallback;
 };
 
 } // namespace entity

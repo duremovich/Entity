@@ -52,6 +52,9 @@ message(STATUS "  ImGui: Found")
 find_package(glm CONFIG REQUIRED)
 message(STATUS "  GLM: Found")
 
+find_package(nlohmann_json CONFIG REQUIRED)
+message(STATUS "  nlohmann_json: Found")
+
 # FFmpeg - optional for now (will add later)
 find_package(FFMPEG COMPONENTS avcodec avformat swscale swresample)
 if(NOT FFMPEG_FOUND)
@@ -95,10 +98,7 @@ target_sources(EntityMediaCore
 
         # Render
         src/render/D3D12Renderer.cpp
-        # src/render/D3D12Device.cpp (to be implemented later)
-        # src/render/TextureUploader.cpp (to be implemented later)
-        # src/render/Compositor.cpp (to be implemented later)
-        # src/render/DisplayManager.cpp (to be implemented later)
+        src/render/OutputManager.cpp
 
         # Timeline
         src/timeline/Timeline.cpp
@@ -111,12 +111,17 @@ target_sources(EntityMediaCore
         src/ui/TimelineWindow.cpp
         src/ui/StageWindow.cpp
         src/ui/MediaBinWindow.cpp
+        src/ui/PropertyWindow.cpp
+        src/ui/MappingWindow.cpp
 
-        # Systems (to be implemented)
-        # src/systems/DecodeSystem.cpp
+        # Systems
+        src/systems/DecodeSystem.cpp
         src/systems/CompositorSystem.cpp
         # src/systems/RenderSystem.cpp
         # src/systems/TimelineSystem.cpp
+
+        # Project
+        src/project/ProjectSerializer.cpp
 )
 
 target_include_directories(EntityMediaCore
@@ -141,6 +146,7 @@ target_link_libraries(EntityMediaCore
     PRIVATE
         glfw
         imgui::imgui
+        nlohmann_json::nlohmann_json
 )
 
 # Windows-specific libraries

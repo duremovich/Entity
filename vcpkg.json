@@ -9,6 +9,7 @@
     "glfw3",
     "gtest",
     "imgui",
+    "nlohmann-json",
     {
       "name": "imgui",
       "features": [

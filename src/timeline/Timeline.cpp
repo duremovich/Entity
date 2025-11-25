@@ -6,7 +6,14 @@
 
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
+#include "entity/components/Clip.hpp"
+#include "entity/components/Transform.hpp"
+#include "entity/components/MediaLayer.hpp"
+#include "entity/components/VideoTexture.hpp"
+#include "entity/components/FrameBuffer.hpp"
+#include "entity/media/FrameRingBuffer.hpp"
 #include <iostream>
+#include <algorithm>
 
 namespace entity {
 
@@ -116,6 +123,288 @@ void Timeline::deleteTrack(entt::entity track) {
             }
         }
     }
+}
+
+void Timeline::clear() {
+    std::cout << "[Timeline] Clearing all tracks and clips..." << std::endl;
+
+    // Delete all tracks and their clips
+    for (entt::entity trackEntity : m_tracks) {
+        if (m_registry.valid(trackEntity)) {
+            auto* trackComponent = m_registry.try_get<TimelineTrack>(trackEntity);
+            if (trackComponent) {
+                // Delete all clips in this track
+                for (entt::entity clipEntity : trackComponent->clips) {
+                    if (m_registry.valid(clipEntity)) {
+                        m_registry.destroy(clipEntity);
+                    }
+                }
+            }
+            // Delete track entity
+            m_registry.destroy(trackEntity);
+        }
+    }
+
+    // Clear tracks list
+    m_tracks.clear();
+
+    // Reset selection
+    m_selectedClip = entt::null;
+
+    // Reset timeline state
+    m_currentTime = 0;
+    m_playbackState = PlaybackState::Stopped;
+
+    std::cout << "[Timeline] Cleared" << std::endl;
+}
+
+void Timeline::deleteClip(entt::entity clipEntity) {
+    if (!m_registry.valid(clipEntity)) {
+        return;
+    }
+
+    // Find the track containing this clip
+    entt::entity trackEntity = findTrackForClip(clipEntity);
+    if (trackEntity != entt::null) {
+        auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+        if (track) {
+            track->removeClip(clipEntity);
+        }
+    }
+
+    // Destroy the clip entity
+    m_registry.destroy(clipEntity);
+    std::cout << "[Timeline] Deleted clip entity=" << static_cast<uint32_t>(clipEntity) << std::endl;
+}
+
+entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame) {
+    // Validate clip entity
+    if (!m_registry.valid(clipEntity)) {
+        std::cout << "[Timeline] splitClip: Invalid clip entity" << std::endl;
+        return entt::null;
+    }
+
+    auto* clip = m_registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cout << "[Timeline] splitClip: Clip component not found" << std::endl;
+        return entt::null;
+    }
+
+    // Check if split point is within the clip
+    FrameNumber clipEnd = clip->startFrame + clip->duration;
+    if (splitFrame <= clip->startFrame || splitFrame >= clipEnd) {
+        std::cout << "[Timeline] splitClip: Split frame " << splitFrame
+                  << " is outside clip range [" << clip->startFrame << ", " << clipEnd << ")" << std::endl;
+        return entt::null;
+    }
+
+    // Find the track containing this clip
+    entt::entity trackEntity = findTrackForClip(clipEntity);
+    if (trackEntity == entt::null) {
+        std::cout << "[Timeline] splitClip: Clip not found in any track" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+    if (!track) {
+        return entt::null;
+    }
+
+    // Calculate timing for both halves
+    FrameNumber leftDuration = splitFrame - clip->startFrame;
+    FrameNumber rightStart = splitFrame;
+    FrameNumber rightDuration = clipEnd - splitFrame;
+    FrameNumber rightMediaStart = clip->mediaStartFrame + leftDuration;
+
+    std::cout << "[Timeline] Splitting clip at frame " << splitFrame
+              << ": left=[" << clip->startFrame << ", dur=" << leftDuration << "]"
+              << ", right=[" << rightStart << ", dur=" << rightDuration << ", mediaStart=" << rightMediaStart << "]"
+              << std::endl;
+
+    // Create new clip entity for the right half
+    entt::entity newClipEntity = m_registry.create();
+
+    // Copy Clip component for right half
+    auto& newClip = m_registry.emplace<Clip>(newClipEntity);
+    newClip.filepath = clip->filepath;
+    newClip.mediaType = clip->mediaType;
+    newClip.startFrame = rightStart;
+    newClip.duration = rightDuration;
+    newClip.mediaStartFrame = rightMediaStart;
+    newClip.framerate = clip->framerate;
+    newClip.width = clip->width;
+    newClip.height = clip->height;
+    newClip.hasAlpha = clip->hasAlpha;
+    // Note: FFmpeg contexts (formatContext, codecContext, etc.) are NOT copied
+    // They will be initialized when the decoder is created for this clip
+    newClip.loaded = false;
+    newClip.decoding = false;
+
+    // Copy Transform if exists
+    auto* srcTransform = m_registry.try_get<Transform>(clipEntity);
+    if (srcTransform) {
+        auto& newTransform = m_registry.emplace<Transform>(newClipEntity);
+        newTransform.position = srcTransform->position;
+        newTransform.rotation = srcTransform->rotation;
+        newTransform.scale = srcTransform->scale;
+        newTransform.dirty = true;
+    }
+
+    // Copy MediaLayer if exists
+    auto* srcLayer = m_registry.try_get<MediaLayer>(clipEntity);
+    if (srcLayer) {
+        auto& newLayer = m_registry.emplace<MediaLayer>(newClipEntity);
+        newLayer.zOrder = srcLayer->zOrder;
+        newLayer.opacity = srcLayer->opacity;
+        newLayer.blendMode = srcLayer->blendMode;
+        newLayer.visible = srcLayer->visible;
+    }
+
+    // Create new VideoTexture (blank - will be populated by decoder)
+    auto* srcVideoTex = m_registry.try_get<VideoTexture>(clipEntity);
+    if (srcVideoTex) {
+        auto& newVideoTex = m_registry.emplace<VideoTexture>(newClipEntity);
+        newVideoTex.width = srcVideoTex->width;
+        newVideoTex.height = srcVideoTex->height;
+        // Note: texture, uploadBuffer, and srvHandle are NOT copied
+        // They will be created fresh by the decoder
+    }
+
+    // Create new FrameBuffer (with fresh ring buffer)
+    auto* srcFrameBuffer = m_registry.try_get<FrameBuffer>(clipEntity);
+    if (srcFrameBuffer) {
+        auto& newFrameBuffer = m_registry.emplace<FrameBuffer>(newClipEntity);
+        newFrameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>(32);
+        newFrameBuffer.currentPTS.store(0);
+        newFrameBuffer.targetFrame.store(0);
+        newFrameBuffer.isBuffering.store(true);
+        newFrameBuffer.bufferedFrames.store(0);
+    }
+
+    // Modify original clip to be the left half
+    clip->duration = leftDuration;
+
+    // Add new clip to the same track
+    track->clips.push_back(newClipEntity);
+
+    // Clear selection to avoid confusion
+    m_selectedClip = entt::null;
+
+    std::cout << "[Timeline] Split complete: original entity=" << static_cast<uint32_t>(clipEntity)
+              << ", new entity=" << static_cast<uint32_t>(newClipEntity) << std::endl;
+
+    return newClipEntity;
+}
+
+entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
+    // Validate clip entity
+    if (!m_registry.valid(clipEntity)) {
+        std::cout << "[Timeline] duplicateClip: Invalid clip entity" << std::endl;
+        return entt::null;
+    }
+
+    auto* clip = m_registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cout << "[Timeline] duplicateClip: Clip component not found" << std::endl;
+        return entt::null;
+    }
+
+    // Find the track containing this clip
+    entt::entity trackEntity = findTrackForClip(clipEntity);
+    if (trackEntity == entt::null) {
+        std::cout << "[Timeline] duplicateClip: Clip not found in any track" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+    if (!track) {
+        return entt::null;
+    }
+
+    // Calculate position for duplicate (immediately after original)
+    FrameNumber newStartFrame = clip->startFrame + clip->duration;
+
+    std::cout << "[Timeline] Duplicating clip at frame " << clip->startFrame
+              << " to frame " << newStartFrame << std::endl;
+
+    // Create new clip entity
+    entt::entity newClipEntity = m_registry.create();
+
+    // Copy Clip component
+    auto& newClip = m_registry.emplace<Clip>(newClipEntity);
+    newClip.filepath = clip->filepath;
+    newClip.mediaType = clip->mediaType;
+    newClip.startFrame = newStartFrame;
+    newClip.duration = clip->duration;
+    newClip.mediaStartFrame = clip->mediaStartFrame;  // Same media start
+    newClip.framerate = clip->framerate;
+    newClip.width = clip->width;
+    newClip.height = clip->height;
+    newClip.hasAlpha = clip->hasAlpha;
+    newClip.loaded = false;
+    newClip.decoding = false;
+
+    // Copy Transform if exists
+    auto* srcTransform = m_registry.try_get<Transform>(clipEntity);
+    if (srcTransform) {
+        auto& newTransform = m_registry.emplace<Transform>(newClipEntity);
+        newTransform.position = srcTransform->position;
+        newTransform.rotation = srcTransform->rotation;
+        newTransform.scale = srcTransform->scale;
+        newTransform.dirty = true;
+    }
+
+    // Copy MediaLayer if exists
+    auto* srcLayer = m_registry.try_get<MediaLayer>(clipEntity);
+    if (srcLayer) {
+        auto& newLayer = m_registry.emplace<MediaLayer>(newClipEntity);
+        newLayer.zOrder = srcLayer->zOrder;
+        newLayer.opacity = srcLayer->opacity;
+        newLayer.blendMode = srcLayer->blendMode;
+        newLayer.visible = srcLayer->visible;
+    }
+
+    // Create new VideoTexture
+    auto* srcVideoTex = m_registry.try_get<VideoTexture>(clipEntity);
+    if (srcVideoTex) {
+        auto& newVideoTex = m_registry.emplace<VideoTexture>(newClipEntity);
+        newVideoTex.width = srcVideoTex->width;
+        newVideoTex.height = srcVideoTex->height;
+    }
+
+    // Create new FrameBuffer with fresh ring buffer
+    auto* srcFrameBuffer = m_registry.try_get<FrameBuffer>(clipEntity);
+    if (srcFrameBuffer) {
+        auto& newFrameBuffer = m_registry.emplace<FrameBuffer>(newClipEntity);
+        newFrameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>(32);
+        newFrameBuffer.currentPTS.store(0);
+        newFrameBuffer.targetFrame.store(0);
+        newFrameBuffer.isBuffering.store(true);
+        newFrameBuffer.bufferedFrames.store(0);
+    }
+
+    // Add new clip to the same track
+    track->clips.push_back(newClipEntity);
+
+    // Select the new clip
+    m_selectedClip = newClipEntity;
+
+    std::cout << "[Timeline] Duplicate complete: new entity=" << static_cast<uint32_t>(newClipEntity) << std::endl;
+
+    return newClipEntity;
+}
+
+entt::entity Timeline::findTrackForClip(entt::entity clipEntity) const {
+    for (entt::entity trackEntity : m_tracks) {
+        const auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+        if (track) {
+            auto it = std::find(track->clips.begin(), track->clips.end(), clipEntity);
+            if (it != track->clips.end()) {
+                return trackEntity;
+            }
+        }
+    }
+    return entt::null;
 }
 
 } // namespace entity

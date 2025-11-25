@@ -77,9 +77,48 @@ public:
     const std::vector<entt::entity>& getTracks() const { return m_tracks; }
     size_t getTrackCount() const { return m_tracks.size(); }
 
+    /**
+     * Clear all tracks and clips from the timeline.
+     * Used when loading a new project.
+     */
+    void clear();
+
+    /**
+     * Delete a clip from its track.
+     * Removes clip from track's clip list and destroys the entity.
+     */
+    void deleteClip(entt::entity clipEntity);
+
+    /**
+     * Split a clip at the given frame.
+     * Creates a new clip for the portion after the split point.
+     * @param clipEntity The clip to split
+     * @param splitFrame The frame number to split at (relative to timeline)
+     * @return The new clip entity (right side), or entt::null if split failed
+     */
+    entt::entity splitClip(entt::entity clipEntity, FrameNumber splitFrame);
+
+    /**
+     * Duplicate a clip.
+     * Creates a copy positioned immediately after the original.
+     * @param clipEntity The clip to duplicate
+     * @return The new clip entity, or entt::null if duplication failed
+     */
+    entt::entity duplicateClip(entt::entity clipEntity);
+
+    /**
+     * Find which track contains a clip.
+     * @return Track entity containing the clip, or entt::null if not found
+     */
+    entt::entity findTrackForClip(entt::entity clipEntity) const;
+
     // Get registry reference
     entt::registry& getRegistry() { return m_registry; }
     const entt::registry& getRegistry() const { return m_registry; }
+
+    // Selection management
+    void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
+    entt::entity getSelectedClip() const { return m_selectedClip; }
 
 private:
     entt::registry& m_registry;
@@ -92,6 +131,9 @@ private:
 
     // Track entities (stored in ECS)
     std::vector<entt::entity> m_tracks;
+
+    // Selection state
+    entt::entity m_selectedClip{entt::null};
 };
 
 } // namespace entity

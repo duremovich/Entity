@@ -35,6 +35,11 @@ public:
         ImGui::PopStyleVar();
     }
 
+    /**
+     * Get the underlying TimelineWidget for callback setup.
+     */
+    TimelineWidget* getWidget() { return m_widget.get(); }
+
 private:
     std::unique_ptr<TimelineWidget> m_widget;
 };

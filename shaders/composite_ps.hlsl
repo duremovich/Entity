@@ -2,7 +2,7 @@
  * Composite Pixel Shader
  *
  * Samples layer texture and applies opacity.
- * Assumes premultiplied alpha input for correct alpha blending.
+ * Uses straight (non-premultiplied) alpha from FFmpeg video decode.
  */
 
 #include "common.hlsli"
@@ -12,14 +12,14 @@ Texture2D layerTexture : register(t0);
 SamplerState samplerState : register(s0);
 
 float4 PSMain(PSInput input) : SV_TARGET {
-    // Sample the texture
+    // Sample the texture (straight alpha)
     float4 color = layerTexture.Sample(samplerState, input.texCoord);
 
-    // Apply layer opacity
-    // Since we're using premultiplied alpha, we multiply both RGB and A by opacity
-    color *= opacity;
+    // Apply layer opacity to alpha channel only
+    // RGB stays unchanged - blend state will handle multiplication
+    color.a *= opacity;
 
-    // Return premultiplied alpha color
-    // The blend state (SRC_ALPHA, INV_SRC_ALPHA) will handle compositing correctly
+    // Return straight alpha color
+    // Blend state (SRC_ALPHA, INV_SRC_ALPHA) handles compositing
     return color;
 }

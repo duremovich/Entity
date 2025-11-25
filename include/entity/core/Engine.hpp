@@ -6,6 +6,8 @@
 #include <memory>
 #include <chrono>
 #include <vector>
+#include <unordered_map>
+#include <filesystem>
 
 // Forward declarations
 struct GLFWwindow;
@@ -17,6 +19,7 @@ class D3D12Renderer;
 class Timeline;
 class WindowManager;
 class Decoder;
+class DecodeSystem;
 struct DecodedFrame;
 // class Transport;
 
@@ -135,6 +138,25 @@ public:
      */
     void onKeyEvent(int key, int scancode, int action, int mods);
 
+    /**
+     * Save the current project to a file.
+     * @param filepath Path to save to (empty = use current project path or prompt)
+     * @return True if save was successful
+     */
+    bool saveProject(const std::filesystem::path& filepath = "");
+
+    /**
+     * Load a project from a file.
+     * @param filepath Path to load from
+     * @return True if load was successful
+     */
+    bool loadProject(const std::filesystem::path& filepath);
+
+    /**
+     * Get the current project file path.
+     */
+    const std::filesystem::path& getProjectPath() const { return m_projectPath; }
+
 private:
     /**
      * Update all systems for the current frame.
@@ -174,6 +196,28 @@ private:
      */
     void onVideoFileSelected(const std::string& filePath);
 
+    /**
+     * Handle media dropped onto timeline track.
+     * Creates a clip at the specified track and position.
+     */
+    void onMediaDroppedOnTimeline(const std::string& filePath, int trackIndex, Timecode position);
+
+    /**
+     * Update all clip video textures based on current timeline position.
+     * Decodes frames for active clips and uploads to GPU.
+     */
+    void updateClipVideos();
+
+    /**
+     * Check if a clip is active at the given frame.
+     */
+    bool isClipActiveAtFrame(const struct Clip& clip, FrameNumber frame) const;
+
+    /**
+     * Map timeline frame to media frame for a clip.
+     */
+    FrameNumber mapToMediaFrame(const struct Clip& clip, FrameNumber timelineFrame) const;
+
 private:
     // ECS registry
     entt::registry m_registry;
@@ -185,6 +229,7 @@ private:
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;
+    DecodeSystem* m_decodeSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
 
     // TODO: implement when class is ready
     // std::unique_ptr<Transport> m_transport;
@@ -217,12 +262,20 @@ private:
     uint32_t m_pendingWidth{0};
     uint32_t m_pendingHeight{0};
 
-    // Video playback
+    // Video playback (legacy single-clip for backwards compatibility)
     std::unique_ptr<Decoder> m_decoder;
     std::unique_ptr<DecodedFrame> m_currentFrame;
 
+    // Multi-clip video playback (per-entity decoders and frames)
+    std::unordered_map<entt::entity, std::unique_ptr<Decoder>> m_clipDecoders;
+    std::unordered_map<entt::entity, std::unique_ptr<DecodedFrame>> m_clipFrames;
+    std::unordered_map<entt::entity, FrameNumber> m_lastDecodedFrame;  // Track last decoded frame per clip
+
     // Media library
     std::vector<std::string> m_loadedMediaFiles;
+
+    // Project file
+    std::filesystem::path m_projectPath;
 };
 
 } // namespace entity

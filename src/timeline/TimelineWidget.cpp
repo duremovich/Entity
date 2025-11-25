@@ -7,9 +7,12 @@
 #include "entity/timeline/TimelineWidget.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/FrameBuffer.hpp"
+#include "entity/media/FrameRingBuffer.hpp"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
+#include <cmath>
 
 namespace entity {
 
@@ -117,6 +120,48 @@ void TimelineWidget::render() {
     ImGui::SetNextItemWidth(100.0f);
     ImGui::SliderFloat("##zoom", &m_pixelsPerSecond, 10.0f, 500.0f, "%.0f px/s");
 
+    ImGui::SameLine();
+    ImGui::Separator();
+    ImGui::SameLine();
+
+    // Add Track button
+    if (ImGui::Button("+ Add Track")) {
+        std::ostringstream trackName;
+        trackName << "Video Track " << (m_timeline->getTrackCount() + 1);
+        m_timeline->createTrack(trackName.str());
+    }
+
+    // Buffer status indicator for selected clip
+    if (m_selectedClip != entt::null) {
+        auto& registry = m_timeline->getRegistry();
+        auto* frameBuffer = registry.try_get<FrameBuffer>(m_selectedClip);
+        if (frameBuffer && frameBuffer->ringBuffer) {
+            ImGui::SameLine();
+            ImGui::Separator();
+            ImGui::SameLine();
+
+            uint32_t bufferedFrames = frameBuffer->ringBuffer->getCount();
+            uint32_t capacity = frameBuffer->ringBuffer->getCapacity();
+            float fillPct = frameBuffer->ringBuffer->getFillPercentage();
+
+            // Color based on buffer level
+            ImVec4 bufferColor;
+            if (fillPct > 0.5f) {
+                bufferColor = ImVec4(0.2f, 0.8f, 0.2f, 1.0f);  // Green - healthy
+            } else if (fillPct > 0.2f) {
+                bufferColor = ImVec4(0.8f, 0.8f, 0.2f, 1.0f);  // Yellow - low
+            } else {
+                bufferColor = ImVec4(0.8f, 0.2f, 0.2f, 1.0f);  // Red - critical
+            }
+
+            ImGui::TextColored(bufferColor, "Buffer: %u/%u (%.0f%%)",
+                bufferedFrames, capacity, fillPct * 100.0f);
+        }
+    }
+
+    // Handle context menus
+    handleContextMenus();
+
     // Note: ImGui::End() is now handled by TimelineWindow wrapper
 }
 
@@ -218,6 +263,35 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
         labelStream.str().c_str()
     );
 
+    // Handle drag-drop target for this track BEFORE rendering clips
+    // This allows drag-drop from Media Bin while not blocking clip interaction
+    ImGui::SetCursorScreenPos(trackMin);
+    std::ostringstream dropTargetId;
+    dropTargetId << "##trackDropTarget" << trackIndex;
+
+    // Use Dummy + BeginDragDropTarget for drop detection without blocking clicks
+    ImGui::Dummy(ImVec2(trackMax.x - trackMin.x, TRACK_HEIGHT));
+
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MEDIA_FILE")) {
+            // Extract the file path from the payload
+            const char* droppedPath = static_cast<const char*>(payload->Data);
+            std::string filepath(droppedPath);
+
+            // Calculate the drop position in timeline time
+            ImVec2 mousePos = ImGui::GetMousePos();
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            Timecode dropTime = pixelToTime(relativeX);
+            if (dropTime < 0) dropTime = 0;
+
+            // Call the callback if set
+            if (m_mediaDropCallback) {
+                m_mediaDropCallback(filepath, trackIndex, dropTime);
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
     // Render clips in this track
     for (entt::entity clipEntity : track->clips) {
         renderClip(clipEntity, trackIndex);
@@ -275,6 +349,71 @@ void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex) {
         IM_COL32(255, 255, 255, 255),
         filename.c_str()
     );
+
+    // Draw buffer progress bar at bottom of clip
+    const auto* frameBuffer = registry.try_get<FrameBuffer>(clipEntity);
+    if (frameBuffer && frameBuffer->ringBuffer) {
+        float fillPct = frameBuffer->ringBuffer->getFillPercentage();
+
+        // Progress bar dimensions
+        float barHeight = 4.0f;
+        float barY = clipMax.y - barHeight - 2.0f;
+        float barWidth = clipWidth - 6.0f;
+
+        // Background bar
+        ImVec2 barMin(clipMin.x + 3.0f, barY);
+        ImVec2 barMax(clipMin.x + 3.0f + barWidth, barY + barHeight);
+        drawList->AddRectFilled(barMin, barMax, IM_COL32(30, 30, 30, 200), 2.0f);
+
+        // Fill bar (color based on level)
+        ImU32 fillColor;
+        if (fillPct > 0.5f) {
+            fillColor = IM_COL32(50, 200, 50, 255);  // Green
+        } else if (fillPct > 0.2f) {
+            fillColor = IM_COL32(200, 200, 50, 255); // Yellow
+        } else {
+            fillColor = IM_COL32(200, 50, 50, 255);  // Red
+        }
+
+        ImVec2 fillMax(barMin.x + barWidth * fillPct, barMax.y);
+        if (fillPct > 0.01f) {
+            drawList->AddRectFilled(barMin, fillMax, fillColor, 2.0f);
+        }
+    }
+
+    // Draw trim handles at clip edges
+    // Show handles when clip is selected or when actively trimming this clip
+    bool showHandles = isSelected || (m_isTrimmingClip && m_trimClip == clipEntity);
+
+    if (showHandles && clipWidth > TRIM_EDGE_WIDTH * 4) {
+        // Handle dimensions
+        float handleWidth = TRIM_EDGE_WIDTH - 2.0f;
+        float handleHeight = TRACK_HEIGHT - CLIP_PADDING * 4;
+        float handleY = clipMin.y + (TRACK_HEIGHT - CLIP_PADDING * 2 - handleHeight) / 2;
+
+        // Left trim handle
+        ImVec2 leftHandleMin(clipMin.x + 1.0f, handleY);
+        ImVec2 leftHandleMax(clipMin.x + 1.0f + handleWidth, handleY + handleHeight);
+
+        // Highlight if actively trimming this edge
+        ImU32 leftHandleColor = (m_isTrimmingClip && m_trimClip == clipEntity && m_trimEdge == ClipEdge::Left)
+            ? IM_COL32(255, 200, 100, 255)   // Orange when trimming
+            : IM_COL32(200, 200, 200, 180);  // Gray normally
+
+        drawList->AddRectFilled(leftHandleMin, leftHandleMax, leftHandleColor, 2.0f);
+        drawList->AddRect(leftHandleMin, leftHandleMax, IM_COL32(255, 255, 255, 200), 2.0f);
+
+        // Right trim handle
+        ImVec2 rightHandleMin(clipMax.x - 1.0f - handleWidth, handleY);
+        ImVec2 rightHandleMax(clipMax.x - 1.0f, handleY + handleHeight);
+
+        ImU32 rightHandleColor = (m_isTrimmingClip && m_trimClip == clipEntity && m_trimEdge == ClipEdge::Right)
+            ? IM_COL32(255, 200, 100, 255)   // Orange when trimming
+            : IM_COL32(200, 200, 200, 180);  // Gray normally
+
+        drawList->AddRectFilled(rightHandleMin, rightHandleMax, rightHandleColor, 2.0f);
+        drawList->AddRect(rightHandleMin, rightHandleMax, IM_COL32(255, 255, 255, 200), 2.0f);
+    }
 }
 
 void TimelineWidget::renderPlayhead() {
@@ -309,6 +448,32 @@ void TimelineWidget::renderPlayhead() {
     };
     drawList->AddTriangleFilled(trianglePoints[0], trianglePoints[1], trianglePoints[2],
                                 IM_COL32(255, 100, 100, 255));
+
+    // Draw snap indicator when actively snapping
+    if (m_isSnapping) {
+        float snapPixel = timeToPixel(m_snapTargetTime) - m_syncScrollX;
+        float snapXRuler = m_rulerScreenPos.x + snapPixel;
+        float snapXTracks = m_tracksScreenPos.x + snapPixel;
+
+        // Draw bright cyan snap line (wider than playhead)
+        drawList->AddLine(
+            ImVec2(snapXRuler, m_rulerScreenPos.y),
+            ImVec2(snapXTracks, m_tracksScreenPos.y + m_tracksHeight),
+            IM_COL32(0, 255, 255, 200),  // Cyan color
+            3.0f
+        );
+
+        // Draw small diamonds at top and bottom of snap line
+        float diamondSize = 5.0f;
+        ImVec2 topDiamond[4] = {
+            ImVec2(snapXRuler, m_rulerScreenPos.y - diamondSize),
+            ImVec2(snapXRuler - diamondSize, m_rulerScreenPos.y),
+            ImVec2(snapXRuler, m_rulerScreenPos.y + diamondSize),
+            ImVec2(snapXRuler + diamondSize, m_rulerScreenPos.y)
+        };
+        drawList->AddQuadFilled(topDiamond[0], topDiamond[1], topDiamond[2], topDiamond[3],
+                                IM_COL32(0, 255, 255, 255));
+    }
 }
 
 void TimelineWidget::handleInteraction() {
@@ -461,6 +626,66 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
     return entt::null;
 }
 
+ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPos, entt::entity& outClip, int& outTrackIndex) {
+    if (!m_timeline) {
+        outClip = entt::null;
+        outTrackIndex = -1;
+        return ClipEdge::None;
+    }
+
+    auto& registry = m_timeline->getRegistry();
+    const auto& tracks = m_timeline->getTracks();
+
+    // Check each track
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        entt::entity trackEntity = tracks[i];
+        const auto* track = registry.try_get<TimelineTrack>(trackEntity);
+        if (!track) continue;
+
+        // Calculate track Y bounds
+        float trackY = windowPos.y + i * (TRACK_HEIGHT + TRACK_PADDING);
+
+        // Check if mouse Y is within this track
+        if (mousePos.y < trackY || mousePos.y > trackY + TRACK_HEIGHT) {
+            continue;
+        }
+
+        // Check each clip in this track
+        for (entt::entity clipEntity : track->clips) {
+            const auto* clip = registry.try_get<Clip>(clipEntity);
+            if (!clip) continue;
+
+            // Calculate clip bounds
+            float startSeconds = clip->startFrame / static_cast<float>(clip->framerate);
+            float durationSeconds = clip->duration / static_cast<float>(clip->framerate);
+            Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
+            Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
+
+            float clipX = windowPos.x + timeToPixel(startTime) - m_syncScrollX;
+            float clipWidth = timeToPixel(endTime - startTime);
+            float clipEndX = clipX + clipWidth;
+
+            // Check if mouse is near the left edge
+            if (mousePos.x >= clipX - TRIM_EDGE_WIDTH / 2 && mousePos.x <= clipX + TRIM_EDGE_WIDTH / 2) {
+                outClip = clipEntity;
+                outTrackIndex = static_cast<int>(i);
+                return ClipEdge::Left;
+            }
+
+            // Check if mouse is near the right edge
+            if (mousePos.x >= clipEndX - TRIM_EDGE_WIDTH / 2 && mousePos.x <= clipEndX + TRIM_EDGE_WIDTH / 2) {
+                outClip = clipEntity;
+                outTrackIndex = static_cast<int>(i);
+                return ClipEdge::Right;
+            }
+        }
+    }
+
+    outClip = entt::null;
+    outTrackIndex = -1;
+    return ClipEdge::None;
+}
+
 float TimelineWidget::timeToPixel(Timecode time) const {
     float seconds = time / 1000000.0f;  // Timecode is in microseconds
     return seconds * m_pixelsPerSecond;
@@ -523,7 +748,123 @@ void TimelineWidget::handleTracksInteraction() {
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
     ImVec2 mousePos = ImGui::GetMousePos();
 
-    // Handle clip dragging
+    // Only handle new interactions if this child window is hovered
+    bool isWindowHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    auto& registry = m_timeline->getRegistry();
+
+    // Handle clip trimming (priority over dragging)
+    if (m_isTrimmingClip) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // Calculate mouse position in timeline time
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            Timecode mouseTime = pixelToTime(relativeX);
+            if (mouseTime < 0) mouseTime = 0;
+
+            // Get the clip being trimmed
+            if (registry.valid(m_trimClip)) {
+                auto* clip = registry.try_get<Clip>(m_trimClip);
+                if (clip) {
+                    FrameNumber mouseFrame = static_cast<FrameNumber>(mouseTime / 1000000.0f * clip->framerate);
+
+                    // Find the track this clip is on for collision detection
+                    int trimTrackIndex = -1;
+                    const auto& tracks = m_timeline->getTracks();
+                    for (size_t i = 0; i < tracks.size(); ++i) {
+                        const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
+                        if (track) {
+                            for (entt::entity clipEnt : track->clips) {
+                                if (clipEnt == m_trimClip) {
+                                    trimTrackIndex = static_cast<int>(i);
+                                    break;
+                                }
+                            }
+                        }
+                        if (trimTrackIndex >= 0) break;
+                    }
+
+                    if (m_trimEdge == ClipEdge::Left) {
+                        // Trim left edge - adjust start and duration
+                        // Don't allow trimming past original end
+                        FrameNumber originalEnd = m_trimOriginalStart + m_trimOriginalDuration;
+                        if (mouseFrame < originalEnd - 1) {  // Keep at least 1 frame
+                            // Don't allow trimming before 0
+                            if (mouseFrame < 0) mouseFrame = 0;
+
+                            // Check for collision with previous clip
+                            FrameNumber minStartFrame = 0;
+                            if (trimTrackIndex >= 0 && trimTrackIndex < static_cast<int>(tracks.size())) {
+                                const auto* track = registry.try_get<TimelineTrack>(tracks[trimTrackIndex]);
+                                if (track) {
+                                    for (entt::entity otherClip : track->clips) {
+                                        if (otherClip == m_trimClip) continue;
+                                        const auto* other = registry.try_get<Clip>(otherClip);
+                                        if (other) {
+                                            FrameNumber otherEnd = other->startFrame + other->duration;
+                                            // If other clip ends before our original start, it could limit us
+                                            if (otherEnd <= m_trimOriginalStart && otherEnd > minStartFrame) {
+                                                minStartFrame = otherEnd;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Clamp to minimum (collision boundary)
+                            if (mouseFrame < minStartFrame) {
+                                mouseFrame = minStartFrame;
+                            }
+
+                            FrameNumber framesDelta = mouseFrame - m_trimOriginalStart;
+                            clip->startFrame = mouseFrame;
+                            clip->duration = m_trimOriginalDuration - framesDelta;
+
+                            // Adjust media start to keep sync
+                            clip->mediaStartFrame = m_trimOriginalMediaStart + framesDelta;
+                        }
+                    } else if (m_trimEdge == ClipEdge::Right) {
+                        // Trim right edge - adjust duration only
+                        FrameNumber newDuration = mouseFrame - clip->startFrame;
+                        if (newDuration >= 1) {  // Keep at least 1 frame
+                            // Check for collision with next clip
+                            FrameNumber maxEndFrame = std::numeric_limits<FrameNumber>::max();
+                            if (trimTrackIndex >= 0 && trimTrackIndex < static_cast<int>(tracks.size())) {
+                                const auto* track = registry.try_get<TimelineTrack>(tracks[trimTrackIndex]);
+                                if (track) {
+                                    for (entt::entity otherClip : track->clips) {
+                                        if (otherClip == m_trimClip) continue;
+                                        const auto* other = registry.try_get<Clip>(otherClip);
+                                        if (other) {
+                                            // If other clip starts after our start, it could limit us
+                                            if (other->startFrame > clip->startFrame && other->startFrame < maxEndFrame) {
+                                                maxEndFrame = other->startFrame;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Clamp duration to not exceed collision boundary
+                            FrameNumber maxDuration = maxEndFrame - clip->startFrame;
+                            if (newDuration > maxDuration) {
+                                newDuration = maxDuration;
+                            }
+
+                            clip->duration = newDuration;
+                        }
+                    }
+                }
+            }
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        } else {
+            // Mouse released - stop trimming
+            m_isTrimmingClip = false;
+            m_trimEdge = ClipEdge::None;
+            m_trimClip = entt::null;
+        }
+        return;  // Don't process other interactions while trimming
+    }
+
+    // Handle clip dragging (continue even if not hovered, to allow drag outside window)
     if (m_isDraggingClip) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             // Calculate desired new clip position based on mouse
@@ -533,11 +874,111 @@ void TimelineWidget::handleTracksInteraction() {
             // Clamp to valid range (>= 0)
             if (desiredStartTime < 0) desiredStartTime = 0;
 
+            // Snap to playhead and other clips if enabled
+            m_isSnapping = false;  // Reset snap state
+            if (m_snappingEnabled && registry.valid(m_selectedClip)) {
+                auto* clip = registry.try_get<Clip>(m_selectedClip);
+                if (clip) {
+                    Timecode playheadTime = m_timeline->getCurrentTime();
+                    float durationSeconds = clip->duration / static_cast<float>(clip->framerate);
+                    Timecode clipDuration = static_cast<Timecode>(durationSeconds * 1000000.0f);
+                    Timecode desiredEndTime = desiredStartTime + clipDuration;
+
+                    // Convert snap threshold from pixels to time
+                    Timecode snapThresholdTime = pixelToTime(SNAP_THRESHOLD_PIXELS);
+
+                    // Track best snap candidate
+                    Timecode bestSnapTime = 0;
+                    Timecode bestSnapDistance = snapThresholdTime + 1;  // Start with invalid distance
+                    bool snapToStart = true;  // Whether to snap clip start (true) or end (false)
+
+                    // Check snap to playhead - start edge
+                    Timecode distToPlayheadStart = std::abs(desiredStartTime - playheadTime);
+                    if (distToPlayheadStart < bestSnapDistance) {
+                        bestSnapDistance = distToPlayheadStart;
+                        bestSnapTime = playheadTime;
+                        snapToStart = true;
+                    }
+
+                    // Check snap to playhead - end edge
+                    Timecode distToPlayheadEnd = std::abs(desiredEndTime - playheadTime);
+                    if (distToPlayheadEnd < bestSnapDistance) {
+                        bestSnapDistance = distToPlayheadEnd;
+                        bestSnapTime = playheadTime;
+                        snapToStart = false;
+                    }
+
+                    // Check snap to other clips on the same track
+                    if (m_selectedClipTrackIndex >= 0) {
+                        const auto& tracks = m_timeline->getTracks();
+                        if (m_selectedClipTrackIndex < static_cast<int>(tracks.size())) {
+                            const auto* track = registry.try_get<TimelineTrack>(tracks[m_selectedClipTrackIndex]);
+                            if (track) {
+                                for (entt::entity otherClipEntity : track->clips) {
+                                    if (otherClipEntity == m_selectedClip) continue;
+
+                                    const auto* otherClip = registry.try_get<Clip>(otherClipEntity);
+                                    if (!otherClip) continue;
+
+                                    float otherStartSec = otherClip->startFrame / static_cast<float>(otherClip->framerate);
+                                    float otherDurSec = otherClip->duration / static_cast<float>(otherClip->framerate);
+                                    Timecode otherStartTime = static_cast<Timecode>(otherStartSec * 1000000.0f);
+                                    Timecode otherEndTime = static_cast<Timecode>((otherStartSec + otherDurSec) * 1000000.0f);
+
+                                    // Our start to other's start
+                                    Timecode dist1 = std::abs(desiredStartTime - otherStartTime);
+                                    if (dist1 < bestSnapDistance) {
+                                        bestSnapDistance = dist1;
+                                        bestSnapTime = otherStartTime;
+                                        snapToStart = true;
+                                    }
+
+                                    // Our start to other's end
+                                    Timecode dist2 = std::abs(desiredStartTime - otherEndTime);
+                                    if (dist2 < bestSnapDistance) {
+                                        bestSnapDistance = dist2;
+                                        bestSnapTime = otherEndTime;
+                                        snapToStart = true;
+                                    }
+
+                                    // Our end to other's start
+                                    Timecode dist3 = std::abs(desiredEndTime - otherStartTime);
+                                    if (dist3 < bestSnapDistance) {
+                                        bestSnapDistance = dist3;
+                                        bestSnapTime = otherStartTime;
+                                        snapToStart = false;
+                                    }
+
+                                    // Our end to other's end
+                                    Timecode dist4 = std::abs(desiredEndTime - otherEndTime);
+                                    if (dist4 < bestSnapDistance) {
+                                        bestSnapDistance = dist4;
+                                        bestSnapTime = otherEndTime;
+                                        snapToStart = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Apply best snap if found
+                    if (bestSnapDistance < snapThresholdTime) {
+                        if (snapToStart) {
+                            desiredStartTime = bestSnapTime;
+                        } else {
+                            desiredStartTime = bestSnapTime - clipDuration;
+                        }
+                        if (desiredStartTime < 0) desiredStartTime = 0;
+                        m_isSnapping = true;
+                        m_snapTargetTime = bestSnapTime;
+                    }
+                }
+            }
+
             // Check for collisions and snap to valid position
             Timecode newStartTime = checkClipCollision(m_selectedClip, desiredStartTime, m_selectedClipTrackIndex);
 
             // Update clip's start frame
-            auto& registry = m_timeline->getRegistry();
             if (registry.valid(m_selectedClip)) {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
@@ -549,9 +990,38 @@ void TimelineWidget::handleTracksInteraction() {
             // Mouse released - stop dragging
             m_isDraggingClip = false;
             m_selectedClipTrackIndex = -1;
+            m_isSnapping = false;  // Clear snap indicator
         }
-    } else if (!m_isDraggingRuler) {
-        // Only check for clip selection if not dragging ruler or clip
+    } else if (!m_isDraggingRuler && isWindowHovered) {
+        // Check for clip edge hover (for trimming cursor)
+        entt::entity edgeClip = entt::null;
+        int edgeTrackIndex = -1;
+        ClipEdge edge = findClipEdgeAtPosition(mousePos, windowPos, edgeClip, edgeTrackIndex);
+
+        if (edge != ClipEdge::None) {
+            // Show resize cursor when hovering over clip edge
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+            // Start trimming on click
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                m_isTrimmingClip = true;
+                m_trimEdge = edge;
+                m_trimClip = edgeClip;
+                m_selectedClip = edgeClip;
+                m_timeline->setSelectedClip(edgeClip);
+
+                // Store original clip state for trim calculations
+                auto* clip = registry.try_get<Clip>(edgeClip);
+                if (clip) {
+                    m_trimOriginalStart = clip->startFrame;
+                    m_trimOriginalDuration = clip->duration;
+                    m_trimOriginalMediaStart = clip->mediaStartFrame;
+                }
+                return;
+            }
+        }
+
+        // Only check for clip selection if not hovering edge
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             int trackIndex = -1;
             entt::entity clipUnderMouse = findClipAtPosition(mousePos, windowPos, trackIndex);
@@ -562,8 +1032,10 @@ void TimelineWidget::handleTracksInteraction() {
                 m_isDraggingClip = true;
                 m_selectedClipTrackIndex = trackIndex;
 
+                // Sync selection to Timeline for PropertyWindow
+                m_timeline->setSelectedClip(clipUnderMouse);
+
                 // Calculate drag offset (where in the clip the user clicked)
-                auto& registry = m_timeline->getRegistry();
                 if (registry.valid(clipUnderMouse)) {
                     auto* clip = registry.try_get<Clip>(clipUnderMouse);
                     if (clip) {
@@ -575,9 +1047,37 @@ void TimelineWidget::handleTracksInteraction() {
                     }
                 }
             } else {
-                // Clicked on empty space - deselect
+                // Clicked on empty space within timeline - deselect
                 m_selectedClip = entt::null;
                 m_selectedClipTrackIndex = -1;
+
+                // Sync deselection to Timeline
+                m_timeline->setSelectedClip(entt::null);
+            }
+        }
+
+        // Handle right-click for context menus (only if window is hovered)
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            int trackIndex = -1;
+            entt::entity clipUnderMouse = findClipAtPosition(mousePos, windowPos, trackIndex);
+
+            if (clipUnderMouse != entt::null) {
+                // Right-clicked on a clip
+                m_rightClickedClip = clipUnderMouse;
+                m_rightClickedTrackIndex = trackIndex;
+                m_showClipContextMenu = true;
+                m_showTrackContextMenu = false;
+                ImGui::OpenPopup("ClipContextMenu");
+            } else {
+                // Check if right-clicked on a track (empty area)
+                int trackAtY = findTrackAtY(mousePos.y, windowPos.y);
+                if (trackAtY >= 0) {
+                    m_rightClickedTrackIndex = trackAtY;
+                    m_rightClickedClip = entt::null;
+                    m_showTrackContextMenu = true;
+                    m_showClipContextMenu = false;
+                    ImGui::OpenPopup("TrackContextMenu");
+                }
             }
         }
     }
@@ -648,6 +1148,83 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
     if (snapPosition < 0) snapPosition = 0;
 
     return snapPosition;
+}
+
+int TimelineWidget::findTrackAtY(float mouseY, float windowY) const {
+    if (!m_timeline) return -1;
+
+    int trackCount = static_cast<int>(m_timeline->getTrackCount());
+    for (int i = 0; i < trackCount; ++i) {
+        float trackY = windowY + i * (TRACK_HEIGHT + TRACK_PADDING);
+        if (mouseY >= trackY && mouseY <= trackY + TRACK_HEIGHT) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void TimelineWidget::handleContextMenus() {
+    if (!m_timeline) return;
+
+    // Clip context menu
+    if (ImGui::BeginPopup("ClipContextMenu")) {
+        if (m_rightClickedClip != entt::null) {
+            if (ImGui::MenuItem("Delete Clip")) {
+                // Clear selection if we're deleting the selected clip
+                if (m_selectedClip == m_rightClickedClip) {
+                    m_selectedClip = entt::null;
+                    m_selectedClipTrackIndex = -1;
+                }
+                m_timeline->deleteClip(m_rightClickedClip);
+                m_rightClickedClip = entt::null;
+            }
+            ImGui::Separator();
+
+            // Get clip info for display
+            auto& registry = m_timeline->getRegistry();
+            const auto* clip = registry.try_get<Clip>(m_rightClickedClip);
+            if (clip) {
+                ImGui::TextDisabled("Duration: %d frames", clip->duration);
+                ImGui::TextDisabled("Start: frame %d", clip->startFrame);
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // Track context menu
+    if (ImGui::BeginPopup("TrackContextMenu")) {
+        if (m_rightClickedTrackIndex >= 0) {
+            std::ostringstream label;
+            label << "Delete Track " << (m_rightClickedTrackIndex + 1);
+            if (ImGui::MenuItem(label.str().c_str())) {
+                const auto& tracks = m_timeline->getTracks();
+                if (m_rightClickedTrackIndex < static_cast<int>(tracks.size())) {
+                    entt::entity trackToDelete = tracks[m_rightClickedTrackIndex];
+                    m_timeline->deleteTrack(trackToDelete);
+                }
+                m_rightClickedTrackIndex = -1;
+            }
+
+            ImGui::Separator();
+
+            // Option to add a new track
+            if (ImGui::MenuItem("Add Track Above")) {
+                // For now, just add at the end (track ordering would need more work)
+                std::ostringstream trackName;
+                trackName << "Video Track " << (m_timeline->getTrackCount() + 1);
+                m_timeline->createTrack(trackName.str());
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Track %d", m_rightClickedTrackIndex + 1);
+        }
+        ImGui::EndPopup();
+    }
+}
+
+void TimelineWidget::renderTrackHeaders() {
+    // This function is reserved for future use when we implement
+    // a separate track header area on the left side of the timeline
 }
 
 } // namespace entity

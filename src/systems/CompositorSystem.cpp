@@ -3,12 +3,20 @@
  *
  * Renders visible layers by querying entities with Transform and MediaLayer,
  * sorting by z-order, and issuing draw calls.
+ *
+ * Timeline-aware: Only renders clips that are active at the current frame.
+ * For entities with VideoTexture components, renders video frames.
+ * Falls back to colored quads for entities without video textures.
  */
 
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/render/D3D12Renderer.hpp"
+#include "entity/timeline/Timeline.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
+#include "entity/components/VideoTexture.hpp"
+#include "entity/components/Clip.hpp"
+#include "entity/components/MappingSurface.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -23,26 +31,22 @@ CompositorSystem::CompositorSystem(D3D12Renderer* renderer)
 }
 
 void CompositorSystem::initialize(entt::registry& registry) {
-    // Nothing to initialize for now
+    std::cout << "CompositorSystem initialized" << std::endl;
 }
 
 void CompositorSystem::update(entt::registry& registry, float deltaTime) {
-    static int frameCount = 0;
-    if (frameCount++ % 60 == 0) {
-        std::cout << "[CompositorSystem] Update called (frame " << frameCount << ")" << std::endl;
+    if (!m_renderer || !m_renderer->isInitialized()) {
+        return;
     }
 
-    if (!m_renderer || !m_renderer->isInitialized()) {
-        std::cerr << "[CompositorSystem] Renderer not initialized!" << std::endl;
-        return;
+    // Get current timeline frame for visibility checks
+    FrameNumber currentFrame = 0;
+    if (m_timeline) {
+        currentFrame = m_timeline->getCurrentFrame();
     }
 
     // Query all entities with Transform and MediaLayer components
     auto view = registry.view<Transform, MediaLayer>();
-
-    if (frameCount % 60 == 1) {
-        std::cout << "[CompositorSystem] Found " << view.size_hint() << " entities with Transform+MediaLayer" << std::endl;
-    }
 
     // Collect and sort entities by z-order
     std::vector<entt::entity> sortedEntities;
@@ -50,9 +54,17 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
 
     for (auto entity : view) {
         auto& layer = view.get<MediaLayer>(entity);
-        if (layer.visible) {
-            sortedEntities.push_back(entity);
+        if (!layer.visible) continue;
+
+        // Check if this entity has a Clip component - if so, verify it's active
+        auto* clip = registry.try_get<Clip>(entity);
+        if (clip) {
+            if (!isClipActiveAtFrame(*clip, currentFrame)) {
+                continue;  // Clip is not active at current frame, skip
+            }
         }
+
+        sortedEntities.push_back(entity);
     }
 
     // Sort by z-order (lower values render first, higher values on top)
@@ -62,6 +74,14 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
             const auto& layerB = view.get<MediaLayer>(b);
             return layerA.zOrder < layerB.zOrder;
         });
+
+    if (m_debugLogging) {
+        static int frameCount = 0;
+        if (frameCount++ % 60 == 0) {
+            std::cout << "[CompositorSystem] Rendering " << sortedEntities.size()
+                      << " layers at frame " << currentFrame << std::endl;
+        }
+    }
 
     // Render each visible layer
     for (auto entity : sortedEntities) {
@@ -79,32 +99,96 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
             glmMatrix[3][0], glmMatrix[3][1], glmMatrix[3][2], glmMatrix[3][3]
         );
 
-        // For Phase 1, use a default color based on entity ID (for variety)
-        // In Phase 2, this will sample from VideoTexture
-        uint32_t entityId = static_cast<uint32_t>(entity);
-        DirectX::XMFLOAT4 color(
-            ((entityId * 137) % 256) / 255.0f,  // R: pseudo-random but stable per entity
-            ((entityId * 211) % 256) / 255.0f,  // G
-            ((entityId * 97) % 256) / 255.0f,   // B
-            1.0f                                // A
-        );
-
-        // Draw the quad
-        if (frameCount % 60 == 1) {
-            std::cout << "[CompositorSystem] Drawing entity " << static_cast<uint32_t>(entity)
-                      << " with color (" << color.x << ", " << color.y << ", " << color.z
-                      << ") opacity=" << layer.opacity << std::endl;
+        // Check if entity has a valid video texture
+        auto* videoTex = registry.try_get<VideoTexture>(entity);
+        if (videoTex && videoTex->isValid() && videoTex->srvHandle.ptr != 0) {
+            // Draw textured quad for video layers
+            m_renderer->drawTexturedQuad(videoTex->srvHandle, transformMatrix, layer.opacity);
+        } else {
+            // Fallback to colored quad for non-video layers
+            uint32_t entityId = static_cast<uint32_t>(entity);
+            DirectX::XMFLOAT4 color(
+                ((entityId * 137) % 256) / 255.0f,
+                ((entityId * 211) % 256) / 255.0f,
+                ((entityId * 97) % 256) / 255.0f,
+                1.0f
+            );
+            m_renderer->drawColoredQuad(transformMatrix, color, layer.opacity);
         }
-        m_renderer->drawColoredQuad(transformMatrix, color, layer.opacity);
-    }
-
-    if (frameCount % 60 == 1) {
-        std::cout << "[CompositorSystem] Drew " << sortedEntities.size() << " quads" << std::endl;
     }
 }
 
 void CompositorSystem::shutdown(entt::registry& registry) {
-    // Nothing to clean up for now
+    std::cout << "CompositorSystem shutdown" << std::endl;
+}
+
+bool CompositorSystem::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
+    return frame >= clip.startFrame && frame < (clip.startFrame + clip.duration);
+}
+
+void CompositorSystem::renderMappingSurfaces(entt::registry& registry, D3D12_GPU_DESCRIPTOR_HANDLE textureSrv) {
+    if (!m_renderer || !m_renderer->isInitialized() || textureSrv.ptr == 0) {
+        return;
+    }
+
+    // Query all mapping surfaces
+    auto view = registry.view<MappingSurface>();
+
+    // Collect visible surfaces sorted by index
+    std::vector<std::pair<entt::entity, uint32_t>> sortedSurfaces;
+
+    for (auto [entity, surface] : view.each()) {
+        if (surface.visible) {
+            sortedSurfaces.push_back({entity, surface.surfaceIndex});
+        }
+    }
+
+    // Sort by surface index (lower indices render first)
+    std::sort(sortedSurfaces.begin(), sortedSurfaces.end(),
+        [](const auto& a, const auto& b) {
+            return a.second < b.second;
+        });
+
+    if (m_debugLogging && !sortedSurfaces.empty()) {
+        static int frameCount = 0;
+        if (frameCount++ % 60 == 0) {
+            std::cout << "[CompositorSystem] Rendering through " << sortedSurfaces.size()
+                      << " mapping surfaces" << std::endl;
+        }
+    }
+
+    // Render texture through each visible mapping surface
+    for (const auto& [entity, index] : sortedSurfaces) {
+        auto& surface = registry.get<MappingSurface>(entity);
+
+        // Convert corner positions from glm to DirectX
+        DirectX::XMFLOAT2 corners[4];
+        DirectX::XMFLOAT2 sourceUVs[4];
+
+        for (int i = 0; i < 4; ++i) {
+            corners[i] = DirectX::XMFLOAT2(surface.corners[i].x, surface.corners[i].y);
+            sourceUVs[i] = DirectX::XMFLOAT2(surface.sourceUVs[i].x, surface.sourceUVs[i].y);
+        }
+
+        // Pack soft edge values (left, right, top, bottom)
+        DirectX::XMFLOAT4 softEdges(
+            surface.softEdge.left,
+            surface.softEdge.right,
+            surface.softEdge.top,
+            surface.softEdge.bottom
+        );
+
+        // Render through this surface
+        m_renderer->drawMappingSurface(
+            textureSrv,
+            corners,
+            sourceUVs,
+            softEdges,
+            surface.brightness,
+            surface.gamma,
+            1.0f  // Per-surface opacity could be added later
+        );
+    }
 }
 
 } // namespace entity

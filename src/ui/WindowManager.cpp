@@ -109,7 +109,22 @@ void WindowManager::renderMenuBar() {
     if (ImGui::BeginMenuBar()) {
         // File menu
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Video...", "Ctrl+O")) {
+            if (ImGui::MenuItem("Open Project...", nullptr)) {
+                std::string filePath = openProjectFileDialog();
+                if (!filePath.empty() && m_openProjectCallback) {
+                    m_openProjectCallback(filePath);
+                }
+            }
+
+            if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
+                if (m_saveProjectCallback) {
+                    m_saveProjectCallback();
+                }
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("Import Video...", nullptr)) {
                 std::string filePath = openVideoFileDialog();
                 if (!filePath.empty() && m_videoFileCallback) {
                     m_videoFileCallback(filePath);
@@ -159,20 +174,23 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
 
     // Split the dockspace into regions:
     // - Bottom 30% for Timeline
-    // - Top 70% split: Left 25% for Media Bin, Right 75% for Stage
+    // - Top 70% split: Left 20% for Media Bin, Center for Stage, Right 20% for Properties
 
     ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Down, 0.3f, nullptr, &dockspaceId);
-    ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.25f, nullptr, &dockspaceId);
+    ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.2f, nullptr, &dockspaceId);
+    ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Right, 0.25f, nullptr, &dockspaceId);
     ImGuiID dockCenter = dockspaceId;  // Remaining center area is for Stage
 
     // Dock windows to their designated nodes
     ImGui::DockBuilderDockWindow("Timeline", dockBottom);
     ImGui::DockBuilderDockWindow("Media Bin", dockLeft);
     ImGui::DockBuilderDockWindow("Stage", dockCenter);
+    ImGui::DockBuilderDockWindow("Mapping", dockCenter);  // Tabbed with Stage
+    ImGui::DockBuilderDockWindow("Properties", dockRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
 
-    std::cout << "Default layout created: Timeline (bottom), Media Bin (left), Stage (center)" << std::endl;
+    std::cout << "Default layout created: Timeline (bottom), Media Bin (left), Stage/Mapping (center tabs), Properties (right)" << std::endl;
 }
 
 std::string WindowManager::openVideoFileDialog() {
@@ -197,6 +215,37 @@ std::string WindowManager::openVideoFileDialog() {
 
     if (GetOpenFileNameA(&ofn) == TRUE) {
         std::cout << "Selected file: " << ofn.lpstrFile << std::endl;
+        return std::string(ofn.lpstrFile);
+    }
+
+    return "";  // User cancelled
+#else
+    std::cerr << "File dialog not implemented for this platform" << std::endl;
+    return "";
+#endif
+}
+
+std::string WindowManager::openProjectFileDialog() {
+#ifdef _WIN32
+    // Windows native file dialog for project files
+    OPENFILENAMEA ofn;
+    char szFile[260] = {0};
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile);
+    ofn.lpstrFilter = "Entity Project Files\0*.entity\0"
+                      "All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFileTitle = NULL;
+    ofn.nMaxFileTitle = 0;
+    ofn.lpstrInitialDir = NULL;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameA(&ofn) == TRUE) {
+        std::cout << "Selected project file: " << ofn.lpstrFile << std::endl;
         return std::string(ofn.lpstrFile);
     }
 

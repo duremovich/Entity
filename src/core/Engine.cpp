@@ -5,12 +5,16 @@
 #include "entity/ui/TimelineWindow.hpp"
 #include "entity/ui/StageWindow.hpp"
 #include "entity/ui/MediaBinWindow.hpp"
+#include "entity/ui/PropertyWindow.hpp"
+#include "entity/ui/MappingWindow.hpp"
 #include "entity/systems/TestSystem.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/BufferSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
+#include "entity/systems/DecodeSystem.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/FrameRingBuffer.hpp"
+#include "entity/project/ProjectSerializer.hpp"
 #include <imgui.h>
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -28,6 +32,7 @@
 
 #include <iostream>
 #include <cassert>
+#include <algorithm>
 
 namespace entity {
 
@@ -125,6 +130,19 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Initialize timeline
     m_timeline = std::make_unique<Timeline>(m_registry);
 
+    // Set timeline on CompositorSystem (system 0) for frame-accurate rendering
+    if (!m_systems.empty()) {
+        if (auto* compositor = dynamic_cast<CompositorSystem*>(m_systems[0].get())) {
+            compositor->setTimeline(m_timeline.get());
+        }
+    }
+
+    // Register decode system (needs timeline for frame position)
+    auto decodeSystem = std::make_unique<DecodeSystem>();
+    decodeSystem->setTimeline(m_timeline.get());
+    m_decodeSystem = decodeSystem.get();  // Keep raw pointer for direct access
+    registerSystem(std::move(decodeSystem));
+
     // Initialize window manager
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
@@ -134,10 +152,30 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         this->onVideoFileSelected(filePath);
     });
 
+    // Set up project save/load callbacks
+    m_windowManager->setSaveProjectCallback([this]() {
+        this->saveProject();
+    });
+    m_windowManager->setOpenProjectCallback([this](const std::string& filePath) {
+        this->loadProject(filePath);
+    });
+
     // Register windows with window manager
     m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
-    m_windowManager->registerWindow(std::make_unique<TimelineWindow>(m_timeline.get()));
+
+    // Create and configure TimelineWindow
+    auto timelineWindow = std::make_unique<TimelineWindow>(m_timeline.get());
+    if (auto* widget = timelineWindow->getWidget()) {
+        // Set up callback for media dropped onto timeline tracks
+        widget->setMediaDropCallback([this](const std::string& filepath, int trackIndex, Timecode position) {
+            this->onMediaDroppedOnTimeline(filepath, trackIndex, position);
+        });
+    }
+    m_windowManager->registerWindow(std::move(timelineWindow));
+
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
+    m_windowManager->registerWindow(std::make_unique<PropertyWindow>(m_timeline.get()));
+    m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
 
     // Create 1 empty track as placeholder
     m_timeline->createTrack("Video Track 1");
@@ -265,23 +303,15 @@ void Engine::update() {
         m_timeline->update(m_deltaTime);
     }
 
-    // Decode frame based on timeline current time
-    if (m_decoder && m_decoder->isOpen() && m_currentFrame) {
-        // Get current frame number from timeline
-        FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    // Update all clip video textures (multi-clip support)
+    updateClipVideos();
 
-        // Only decode if frame number changed
+    // Legacy single-clip decode (for backwards compatibility)
+    if (m_decoder && m_decoder->isOpen() && m_currentFrame) {
+        FrameNumber currentFrame = m_timeline->getCurrentFrame();
         if (currentFrame != m_currentFrame->frameNumber) {
-            // Decode the frame
             Result result = m_decoder->decodeFrame(currentFrame, *m_currentFrame);
-            if (result == Result::Success) {
-                // Frame decoded successfully, it's now valid for display
-                m_currentFrame->valid = true;
-            } else {
-                // Decode failed, mark frame as invalid
-                m_currentFrame->valid = false;
-                // Note: We don't log every frame decode failure to avoid spam
-            }
+            m_currentFrame->valid = (result == Result::Success);
         }
     }
 
@@ -293,6 +323,23 @@ void Engine::update() {
 }
 
 const DecodedFrame* Engine::getCurrentVideoFrame() const {
+    // First check multi-clip frames (new system)
+    if (m_timeline) {
+        FrameNumber currentFrame = m_timeline->getCurrentFrame();
+
+        // Find first active clip with a valid frame
+        auto view = m_registry.view<Clip, VideoTexture>();
+        for (auto [entity, clip, videoTex] : view.each()) {
+            if (isClipActiveAtFrame(clip, currentFrame)) {
+                auto frameIt = m_clipFrames.find(entity);
+                if (frameIt != m_clipFrames.end() && frameIt->second && frameIt->second->valid) {
+                    return frameIt->second.get();
+                }
+            }
+        }
+    }
+
+    // Fall back to legacy single frame
     if (m_currentFrame && m_currentFrame->valid) {
         return m_currentFrame.get();
     }
@@ -385,18 +432,176 @@ void Engine::onWindowResize(uint32_t width, uint32_t height) {
 void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     // Mark unused parameters to avoid warnings
     (void)scancode;
-    (void)mods;
+
+    // Only handle key press events (not release or repeat)
+    if (action != GLFW_PRESS) return;
+
+    // Check for Ctrl modifier
+    bool ctrlPressed = (mods & GLFW_MOD_CONTROL) != 0;
 
     // Handle ESC key to quit
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+    if (key == GLFW_KEY_ESCAPE) {
         std::cout << "ESC pressed, requesting exit..." << std::endl;
         requestExit();
+        return;
     }
 
-    // TODO: Add more input handling as needed
-    // For now, log other keys for debugging
-    if (action == GLFW_PRESS) {
-        std::cout << "Key pressed: " << key << std::endl;
+    // Timeline keyboard shortcuts (only if timeline exists)
+    if (m_timeline) {
+        switch (key) {
+            case GLFW_KEY_SPACE:
+                // Toggle play/pause
+                if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+                    m_timeline->pause();
+                } else {
+                    m_timeline->play();
+                }
+                break;
+
+            case GLFW_KEY_K:
+                // K = Pause (industry standard)
+                m_timeline->pause();
+                break;
+
+            case GLFW_KEY_J:
+                // J = Step backward (simplified - full J/K/L would need speed control)
+                if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+                    m_timeline->pause();
+                }
+                {
+                    Timecode currentTime = m_timeline->getCurrentTime();
+                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
+                    if (currentTime > frameTime) {
+                        m_timeline->seek(currentTime - frameTime);
+                    } else {
+                        m_timeline->seek(0);
+                    }
+                }
+                break;
+
+            case GLFW_KEY_L:
+                // L = Step forward (simplified - full J/K/L would need speed control)
+                if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+                    m_timeline->pause();
+                }
+                {
+                    Timecode currentTime = m_timeline->getCurrentTime();
+                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
+                    Timecode newTime = currentTime + frameTime;
+                    if (newTime < m_timeline->getDuration()) {
+                        m_timeline->seek(newTime);
+                    }
+                }
+                break;
+
+            case GLFW_KEY_LEFT:
+                // Left arrow = Step back one frame
+                {
+                    Timecode currentTime = m_timeline->getCurrentTime();
+                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
+                    if (currentTime > frameTime) {
+                        m_timeline->seek(currentTime - frameTime);
+                    } else {
+                        m_timeline->seek(0);
+                    }
+                }
+                break;
+
+            case GLFW_KEY_RIGHT:
+                // Right arrow = Step forward one frame
+                {
+                    Timecode currentTime = m_timeline->getCurrentTime();
+                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
+                    Timecode newTime = currentTime + frameTime;
+                    if (newTime < m_timeline->getDuration()) {
+                        m_timeline->seek(newTime);
+                    }
+                }
+                break;
+
+            case GLFW_KEY_HOME:
+                // Home = Go to start
+                m_timeline->seek(0);
+                break;
+
+            case GLFW_KEY_END:
+                // End = Go to end
+                m_timeline->seek(m_timeline->getDuration());
+                break;
+
+            case GLFW_KEY_S:
+                // S = Split clip at playhead
+                {
+                    entt::entity selectedClip = m_timeline->getSelectedClip();
+                    if (selectedClip != entt::null) {
+                        FrameNumber currentFrame = m_timeline->getCurrentFrame();
+                        entt::entity newClip = m_timeline->splitClip(selectedClip, currentFrame);
+                        if (newClip != entt::null) {
+                            std::cout << "Split clip at frame " << currentFrame << std::endl;
+                        }
+                    }
+                }
+                break;
+
+            case GLFW_KEY_D:
+                // Ctrl+D = Duplicate selected clip
+                if (ctrlPressed) {
+                    entt::entity selectedClip = m_timeline->getSelectedClip();
+                    if (selectedClip != entt::null) {
+                        entt::entity newClip = m_timeline->duplicateClip(selectedClip);
+                        if (newClip != entt::null) {
+                            std::cout << "Duplicated clip" << std::endl;
+                        }
+                    }
+                }
+                break;
+
+            case GLFW_KEY_DELETE:
+                // Delete = Delete selected clip
+                {
+                    entt::entity selectedClip = m_timeline->getSelectedClip();
+                    if (selectedClip != entt::null) {
+                        m_timeline->deleteClip(selectedClip);
+                        m_timeline->setSelectedClip(entt::null);
+                        std::cout << "Deleted selected clip" << std::endl;
+                    }
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    // Global shortcuts (work even without timeline focus)
+    switch (key) {
+        case GLFW_KEY_S:
+            // Ctrl+S = Save project
+            if (ctrlPressed) {
+                if (m_projectPath.empty()) {
+                    // Default to project.entity in current directory
+                    m_projectPath = "project.entity";
+                }
+                saveProject(m_projectPath);
+            }
+            break;
+
+        case GLFW_KEY_O:
+            // Ctrl+O = Open project (use default path for now)
+            if (ctrlPressed) {
+                // TODO: Integrate with file dialog
+                // For now, try to load project.entity if it exists
+                std::filesystem::path defaultPath = "project.entity";
+                if (std::filesystem::exists(defaultPath)) {
+                    loadProject(defaultPath);
+                } else {
+                    std::cout << "[Engine] No project file found at " << defaultPath.string() << std::endl;
+                }
+            }
+            break;
+
+        default:
+            break;
     }
 }
 
@@ -771,11 +976,11 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     // Add to loaded media files list
     m_loadedMediaFiles.push_back(filePath);
 
-    // Create clip entity and add to timeline
+    // Create clip entity with all required components for rendering
     entt::entity clipEntity = m_registry.create();
-    auto& clip = m_registry.emplace<Clip>(clipEntity);
 
-    // Set clip properties from decoder
+    // Add Clip component with metadata
+    auto& clip = m_registry.emplace<Clip>(clipEntity);
     clip.filepath = filePath;
     clip.mediaType = mediaType;
     clip.width = m_decoder->getWidth();
@@ -787,18 +992,59 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     clip.mediaStartFrame = 0;
     clip.loaded = true;
 
-    // Get or create first track
+    // Add Transform component (identity transform = fullscreen)
+    auto& transform = m_registry.emplace<Transform>(clipEntity);
+    transform.setPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+    transform.setScale(glm::vec3(1.0f, 1.0f, 1.0f));
+    transform.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
+
+    // Add MediaLayer component for rendering
+    auto& layer = m_registry.emplace<MediaLayer>(clipEntity);
+    layer.opacity = 1.0f;
+    layer.visible = true;
+    layer.blendMode = BlendMode::Normal;
+    // zOrder will be set based on track (done below)
+
+    // Add VideoTexture component and allocate texture slot
+    auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
+    videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
+    if (videoTex.descriptorSlot == UINT32_MAX) {
+        std::cerr << "ERROR: Failed to allocate video texture slot!" << std::endl;
+    } else {
+        std::cout << "Allocated video texture slot: " << videoTex.descriptorSlot << std::endl;
+    }
+
+    // Add FrameBuffer component for threaded decoding
+    auto& frameBuffer = m_registry.emplace<FrameBuffer>(clipEntity);
+    frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
+    frameBuffer.isBuffering.store(true);
+    std::cout << "Created FrameBuffer with ring buffer for threaded decoding" << std::endl;
+
+    // Store decoder and create frame buffer for this clip (legacy path)
+    m_clipDecoders[clipEntity] = std::move(m_decoder);  // Transfer ownership
+    m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
+    m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
+    m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
+
+    // Re-create m_decoder as nullptr (no longer used for this clip)
+    m_decoder = nullptr;
+
+    // Get or create track and add clip
+    uint32_t trackIndex = 0;
     if (m_timeline->getTrackCount() == 0) {
         m_timeline->createTrack("Video Track 1");
     }
 
-    // Add clip to first track
     const auto& tracks = m_timeline->getTracks();
     if (!tracks.empty()) {
         auto& track = m_registry.get<TimelineTrack>(tracks[0]);
         track.addClip(clipEntity);
-        std::cout << "Added clip to track 1" << std::endl;
+        trackIndex = track.trackIndex;
+        std::cout << "Added clip to track " << (trackIndex + 1) << std::endl;
     }
+
+    // Set z-order based on track index (higher tracks render on top)
+    layer.zOrder = trackIndex;
 
     // Set timeline duration to match clip duration (convert frames to microseconds)
     double durationSeconds = clip.duration / clip.framerate;
@@ -806,18 +1052,361 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     m_timeline->setDuration(durationTimecode);
     m_timeline->setFrameRate(clip.framerate);
 
-    // Create initial decoded frame for display
+    // Legacy: Also create m_currentFrame for backwards compatibility with StageWindow
     m_currentFrame = std::make_unique<DecodedFrame>();
-    m_currentFrame->allocate(m_decoder->getWidth(), m_decoder->getHeight());
+    m_currentFrame->allocate(clip.width, clip.height);
+
+    std::cout << "Clip created with VideoTexture, Transform, MediaLayer components" << std::endl;
+    std::cout << "Timeline duration set to " << clip.duration << " frames (" << durationSeconds << " seconds)" << std::endl;
+    std::cout << "Ready for multi-layer compositing!" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+}
+
+void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackIndex, Timecode position) {
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "Media Dropped on Timeline" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "File: " << filePath << std::endl;
+    std::cout << "Track: " << (trackIndex + 1) << std::endl;
+    std::cout << "Position: " << (position / 1000000.0) << " seconds" << std::endl;
+
+    // Detect media type from file extension
+    MediaType mediaType = detectMediaType(filePath);
+    if (mediaType == MediaType::Unknown) {
+        std::cerr << "ERROR: Unsupported media type: " << filePath << std::endl;
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
+    // Create a new decoder for this clip
+    auto decoder = createDecoder(mediaType);
+    if (!decoder) {
+        std::cerr << "ERROR: Failed to create decoder for media type: "
+                  << MediaTypeToString(mediaType) << std::endl;
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
+    // Open the media file
+    Result result = decoder->open(filePath);
+    if (result != Result::Success) {
+        std::cerr << "ERROR: Failed to open media file: " << filePath << std::endl;
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
+    std::cout << "Media info:" << std::endl;
+    std::cout << "  Resolution: " << decoder->getWidth() << "x" << decoder->getHeight() << std::endl;
+    std::cout << "  Duration: " << decoder->getDuration() << " frames" << std::endl;
+    std::cout << "  Frame rate: " << decoder->getFrameRate() << " fps" << std::endl;
+
+    // Add to loaded media files list if not already there
+    auto it = std::find(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(), filePath);
+    if (it == m_loadedMediaFiles.end()) {
+        m_loadedMediaFiles.push_back(filePath);
+    }
+
+    // Create clip entity with all required components
+    entt::entity clipEntity = m_registry.create();
+
+    // Calculate start frame from drop position
+    float frameRate = decoder->getFrameRate();
+    float positionSeconds = position / 1000000.0f;
+    FrameNumber startFrame = static_cast<FrameNumber>(positionSeconds * frameRate);
+
+    // Add Clip component with metadata
+    auto& clip = m_registry.emplace<Clip>(clipEntity);
+    clip.filepath = filePath;
+    clip.mediaType = mediaType;
+    clip.width = decoder->getWidth();
+    clip.height = decoder->getHeight();
+    clip.framerate = frameRate;
+    clip.duration = decoder->getDuration();
+    clip.hasAlpha = decoder->hasAlpha();
+    clip.startFrame = startFrame;
+    clip.mediaStartFrame = 0;
+    clip.loaded = true;
+
+    // Add Transform component (identity transform = fullscreen)
+    auto& transform = m_registry.emplace<Transform>(clipEntity);
+    transform.setPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+    transform.setScale(glm::vec3(1.0f, 1.0f, 1.0f));
+    transform.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
+
+    // Add MediaLayer component for rendering
+    auto& layer = m_registry.emplace<MediaLayer>(clipEntity);
+    layer.opacity = 1.0f;
+    layer.visible = true;
+    layer.blendMode = BlendMode::Normal;
+    layer.zOrder = static_cast<uint32_t>(trackIndex);
+
+    // Add VideoTexture component and allocate texture slot
+    auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
+    videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
+    if (videoTex.descriptorSlot == UINT32_MAX) {
+        std::cerr << "ERROR: Failed to allocate video texture slot!" << std::endl;
+    }
+
+    // Add FrameBuffer component for threaded decoding
+    auto& frameBuffer = m_registry.emplace<FrameBuffer>(clipEntity);
+    frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
+    frameBuffer.isBuffering.store(true);
+
+    // Store decoder and create frame buffer for this clip (legacy path)
+    m_clipDecoders[clipEntity] = std::move(decoder);
+    m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
+    m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
+    m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
+
+    // Get track and add clip
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex >= 0 && trackIndex < static_cast<int>(tracks.size())) {
+        auto& track = m_registry.get<TimelineTrack>(tracks[trackIndex]);
+        track.addClip(clipEntity);
+        std::cout << "Added clip to track " << (trackIndex + 1) << " at frame " << startFrame << std::endl;
+    } else {
+        std::cerr << "ERROR: Invalid track index: " << trackIndex << std::endl;
+    }
+
+    // Extend timeline duration if needed
+    float clipEndSeconds = (startFrame + clip.duration) / clip.framerate;
+    Timecode clipEndTimecode = static_cast<Timecode>(clipEndSeconds * 1000000.0);
+    if (clipEndTimecode > m_timeline->getDuration()) {
+        m_timeline->setDuration(clipEndTimecode);
+        std::cout << "Extended timeline duration to " << clipEndSeconds << " seconds" << std::endl;
+    }
 
     std::cout << "Clip created and added to timeline" << std::endl;
-    std::cout << "Timeline duration set to " << clip.duration << " frames (" << durationSeconds << " seconds)" << std::endl;
-    std::cout << "Ready for playback" << std::endl;
     std::cout << "========================================\n" << std::endl;
+}
 
-    // TODO: Later phases
-    // - Start decode thread with FrameRingBuffer
-    // - Implement frame-accurate timeline synchronization
+bool Engine::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
+    // Check if the timeline frame falls within the clip's range
+    return frame >= clip.startFrame && frame < (clip.startFrame + clip.duration);
+}
+
+FrameNumber Engine::mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame) const {
+    // Map timeline frame to the clip's internal media frame
+    return clip.mediaStartFrame + (timelineFrame - clip.startFrame);
+}
+
+void Engine::updateClipVideos() {
+    if (!m_renderer || !m_timeline) {
+        return;
+    }
+
+    FrameNumber currentFrame = m_timeline->getCurrentFrame();
+
+    // Iterate over all entities with Clip and VideoTexture components
+    auto view = m_registry.view<Clip, VideoTexture>();
+
+    for (auto [entity, clip, videoTex] : view.each()) {
+        // Skip if no texture slot allocated
+        if (!videoTex.isAllocated()) {
+            continue;
+        }
+
+        // Check if clip is active at current frame
+        if (!isClipActiveAtFrame(clip, currentFrame)) {
+            continue;
+        }
+
+        // Map timeline frame to media frame
+        FrameNumber mediaFrame = mapToMediaFrame(clip, currentFrame);
+
+        // Only process if frame number changed
+        auto lastFrameIt = m_lastDecodedFrame.find(entity);
+        FrameNumber lastFrame = (lastFrameIt != m_lastDecodedFrame.end()) ? lastFrameIt->second : UINT32_MAX;
+
+        if (mediaFrame == lastFrame) {
+            continue;  // Frame hasn't changed, skip
+        }
+
+        // Try to get frame from FrameRingBuffer first (threaded decode path)
+        auto* frameBuffer = m_registry.try_get<FrameBuffer>(entity);
+        if (frameBuffer && frameBuffer->ringBuffer) {
+            DecodedFrame ringFrame;
+            if (frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame)) {
+                // Got frame from ring buffer - upload to GPU
+                D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
+                bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
+                    videoTex.descriptorSlot,
+                    ringFrame.data.data(),
+                    ringFrame.width,
+                    ringFrame.height,
+                    &srvHandle
+                );
+
+                if (uploadSuccess) {
+                    videoTex.srvHandle = srvHandle;
+                    videoTex.width = ringFrame.width;
+                    videoTex.height = ringFrame.height;
+                    m_lastDecodedFrame[entity] = mediaFrame;
+                }
+                continue;  // Frame processed from ring buffer, skip legacy path
+            }
+            // Frame not in ring buffer - fall through to legacy decode
+        }
+
+        // Legacy path: synchronous decode on main thread
+        auto decoderIt = m_clipDecoders.find(entity);
+        auto frameIt = m_clipFrames.find(entity);
+
+        if (decoderIt == m_clipDecoders.end() || frameIt == m_clipFrames.end()) {
+            continue;
+        }
+
+        Decoder* decoder = decoderIt->second.get();
+        DecodedFrame* frame = frameIt->second.get();
+
+        if (!decoder || !decoder->isOpen() || !frame) {
+            continue;
+        }
+
+        // Decode the frame synchronously
+        Result result = decoder->decodeFrame(mediaFrame, *frame);
+
+        if (result == Result::Success) {
+            frame->valid = true;
+            m_lastDecodedFrame[entity] = mediaFrame;
+
+            // Upload frame to GPU texture slot
+            D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
+            bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
+                videoTex.descriptorSlot,
+                frame->data.data(),
+                frame->width,
+                frame->height,
+                &srvHandle
+            );
+
+            if (uploadSuccess) {
+                videoTex.srvHandle = srvHandle;
+                videoTex.width = frame->width;
+                videoTex.height = frame->height;
+            }
+        } else {
+            frame->valid = false;
+        }
+    }
+}
+
+bool Engine::saveProject(const std::filesystem::path& filepath) {
+    std::filesystem::path savePath = filepath;
+
+    // Use current project path if empty
+    if (savePath.empty()) {
+        if (m_projectPath.empty()) {
+            savePath = "project.entity";
+        } else {
+            savePath = m_projectPath;
+        }
+    }
+
+    std::cout << "[Engine] Saving project to " << savePath.string() << "..." << std::endl;
+
+    if (!m_timeline) {
+        std::cerr << "[Engine] Cannot save: No timeline!" << std::endl;
+        return false;
+    }
+
+    bool success = ProjectSerializer::save(*m_timeline, savePath);
+
+    if (success) {
+        m_projectPath = savePath;
+        std::cout << "[Engine] Project saved successfully!" << std::endl;
+    } else {
+        std::cerr << "[Engine] Save failed: " << ProjectSerializer::getLastError() << std::endl;
+    }
+
+    return success;
+}
+
+bool Engine::loadProject(const std::filesystem::path& filepath) {
+    std::cout << "[Engine] Loading project from " << filepath.string() << "..." << std::endl;
+
+    if (!m_timeline) {
+        std::cerr << "[Engine] Cannot load: No timeline!" << std::endl;
+        return false;
+    }
+
+    // Clear existing clip resources before loading
+    for (auto& [entity, decoder] : m_clipDecoders) {
+        decoder.reset();
+    }
+    m_clipDecoders.clear();
+    m_clipFrames.clear();
+    m_lastDecodedFrame.clear();
+    m_loadedMediaFiles.clear();
+
+    // Define media load callback to recreate decoders for loaded clips
+    ProjectSerializer::MediaLoadCallback loadCallback = [this](entt::entity clipEntity, const std::string& mediaPath) {
+        // Check if file exists
+        if (!std::filesystem::exists(mediaPath)) {
+            std::cerr << "[Engine] Media file not found: " << mediaPath << std::endl;
+            return;
+        }
+
+        // Detect media type and create decoder
+        MediaType mediaType = detectMediaType(mediaPath);
+        if (mediaType == MediaType::Unknown) {
+            std::cerr << "[Engine] Unsupported media type: " << mediaPath << std::endl;
+            return;
+        }
+
+        auto decoder = createDecoder(mediaType);
+        if (!decoder) {
+            std::cerr << "[Engine] Failed to create decoder for: " << mediaPath << std::endl;
+            return;
+        }
+
+        Result result = decoder->open(mediaPath);
+        if (result != Result::Success) {
+            std::cerr << "[Engine] Failed to open media: " << mediaPath << std::endl;
+            return;
+        }
+
+        // Add VideoTexture if not present
+        if (!m_registry.all_of<VideoTexture>(clipEntity)) {
+            auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
+            videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
+            videoTex.width = decoder->getWidth();
+            videoTex.height = decoder->getHeight();
+        }
+
+        // Add FrameBuffer if not present
+        if (!m_registry.all_of<FrameBuffer>(clipEntity)) {
+            auto& frameBuffer = m_registry.emplace<FrameBuffer>(clipEntity);
+            frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
+            frameBuffer.isBuffering.store(true);
+        }
+
+        // Store decoder and create frame buffer
+        m_clipDecoders[clipEntity] = std::move(decoder);
+        m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
+
+        auto& clip = m_registry.get<Clip>(clipEntity);
+        m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
+        m_lastDecodedFrame[clipEntity] = UINT32_MAX;
+
+        // Add to loaded media files
+        if (std::find(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(), mediaPath) == m_loadedMediaFiles.end()) {
+            m_loadedMediaFiles.push_back(mediaPath);
+        }
+
+        std::cout << "[Engine] Loaded media: " << mediaPath << std::endl;
+    };
+
+    bool success = ProjectSerializer::load(*m_timeline, filepath, loadCallback);
+
+    if (success) {
+        m_projectPath = filepath;
+        std::cout << "[Engine] Project loaded successfully!" << std::endl;
+    } else {
+        std::cerr << "[Engine] Load failed: " << ProjectSerializer::getLastError() << std::endl;
+    }
+
+    return success;
 }
 
 } // namespace entity

@@ -4,12 +4,7 @@
 #include <cstdint>
 
 #ifdef _WIN32
-#include <wrl/client.h>
-using Microsoft::WRL::ComPtr;
-
-// Forward declarations for D3D12 types
-struct ID3D12Resource;
-struct D3D12_GPU_DESCRIPTOR_HANDLE;
+#include <d3d12.h>  // For D3D12_GPU_DESCRIPTOR_HANDLE
 #endif
 
 // Forward declaration for FFmpeg
@@ -24,31 +19,38 @@ namespace entity {
  * One texture per video layer.
  */
 struct VideoTexture {
-#ifdef _WIN32
-    ComPtr<ID3D12Resource> gpuTexture;      // Texture on DEFAULT heap (GPU)
-    ComPtr<ID3D12Resource> uploadBuffer;    // Staging buffer on UPLOAD heap
-    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};  // Shader Resource View handle
-#endif
+    // Slot index in D3D12Renderer's texture slot array (UINT32_MAX = not allocated)
+    uint32_t descriptorSlot{UINT32_MAX};
 
+    // Texture dimensions (set after upload)
     uint32_t width{0};
     uint32_t height{0};
     PixelFormat format{PixelFormat::RGBA8};
 
+    // Frame data to upload (owned by decode system, not this component)
     bool needsUpload{false};                // True if new frame ready for upload
     AVFrame* currentFrame{nullptr};         // Frame to upload (owned by FrameBuffer)
 
     // Synchronization
     uint64_t fenceValue{0};                 // Fence value for upload completion
 
+#ifdef _WIN32
+    // GPU descriptor handle for rendering (populated by renderer on upload)
+    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
+#endif
+
     /**
-     * Check if texture is valid and ready for rendering.
+     * Check if texture slot is allocated and ready for use.
+     */
+    bool isAllocated() const {
+        return descriptorSlot != UINT32_MAX;
+    }
+
+    /**
+     * Check if texture has been uploaded and is ready for rendering.
      */
     bool isValid() const {
-#ifdef _WIN32
-        return gpuTexture.Get() != nullptr && width > 0 && height > 0;
-#else
-        return false;
-#endif
+        return isAllocated() && width > 0 && height > 0;
     }
 };
 

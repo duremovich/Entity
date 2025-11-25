@@ -50,7 +50,21 @@ void MediaBinWindow::render() {
                 std::string filename = (lastSlash != std::string::npos)
                     ? filepath.substr(lastSlash + 1)
                     : filepath;
-                ImGui::Text("%s", filename.c_str());
+
+                // Make the row selectable and a drag source
+                ImGui::Selectable(filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+
+                // Drag source for dragging media to timeline
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                    // Store the file path as payload
+                    ImGui::SetDragDropPayload("MEDIA_FILE", filepath.c_str(), filepath.size() + 1);
+
+                    // Show preview while dragging
+                    ImGui::Text("Drag to Timeline:");
+                    ImGui::Text("%s", filename.c_str());
+
+                    ImGui::EndDragDropSource();
+                }
 
                 // Check if this file matches the current decoder
                 bool hasMetadata = decoder && decoder->isOpen() && decoder->getFilePath() == filepath;
