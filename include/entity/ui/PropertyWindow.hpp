@@ -44,6 +44,11 @@ private:
      */
     void renderClipInfo();
 
+    /**
+     * Render timeline properties (when no clip selected).
+     */
+    void renderTimelineProperties();
+
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
 };

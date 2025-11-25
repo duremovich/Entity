@@ -218,6 +218,12 @@ private:
      */
     FrameNumber mapToMediaFrame(const struct Clip& clip, FrameNumber timelineFrame) const;
 
+    /**
+     * Handle new clip creation (from split/duplicate).
+     * Creates decoder and GPU resources for the new clip.
+     */
+    void onClipCreated(entt::entity clipEntity, const std::string& filepath);
+
 private:
     // ECS registry
     entt::registry m_registry;

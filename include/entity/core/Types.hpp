@@ -68,7 +68,7 @@ enum class Result {
 using EntityID = uint64_t;
 using FrameNumber = int64_t;
 using Timestamp = int64_t;  // In microseconds
-using Timecode = int64_t;   // In milliseconds (timeline position)
+using Timecode = int64_t;   // In microseconds (timeline position)
 
 // Constants
 constexpr uint32_t INVALID_ENTITY_ID = 0;

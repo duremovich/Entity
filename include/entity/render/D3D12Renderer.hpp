@@ -178,6 +178,51 @@ public:
                             float gamma,
                             float opacity);
 
+    // ========================================================================
+    // Offscreen Compose Target (for multi-clip compositing)
+    // ========================================================================
+
+    /**
+     * Create the offscreen compose target at specified resolution.
+     * @param width Target width in pixels
+     * @param height Target height in pixels
+     * @return true on success
+     */
+    bool createComposeTarget(uint32_t width, uint32_t height);
+
+    /**
+     * Begin rendering to the compose target (clears it first).
+     * Call before drawing clips, end with endComposeTarget().
+     */
+    void beginComposeTarget();
+
+    /**
+     * End rendering to compose target and transition for sampling.
+     */
+    void endComposeTarget();
+
+    /**
+     * Get the compose target as ImGui texture ID for display.
+     * @return ImTextureID for ImGui::Image, or nullptr if not ready
+     */
+    void* getComposeTargetTextureID() const;
+
+    /**
+     * Get compose target GPU handle for use with drawTexturedQuad.
+     */
+    D3D12_GPU_DESCRIPTOR_HANDLE getComposeTargetSrvHandle() const { return m_composeTargetSrvHandle; }
+
+    /**
+     * Get compose target dimensions.
+     */
+    uint32_t getComposeTargetWidth() const { return m_composeTargetWidth; }
+    uint32_t getComposeTargetHeight() const { return m_composeTargetHeight; }
+
+    /**
+     * Check if compose target is ready.
+     */
+    bool isComposeTargetReady() const { return m_composeTargetReady; }
+
 private:
     // Helper methods for initialization
     Result createDevice();
@@ -296,6 +341,14 @@ private:
         float padding2;
         float padding3;
     };
+
+    // Offscreen compose target (for multi-clip compositing)
+    ComPtr<ID3D12Resource> m_composeTarget;           // Render target texture
+    ComPtr<ID3D12DescriptorHeap> m_composeTargetRtvHeap;  // RTV for rendering to it
+    D3D12_GPU_DESCRIPTOR_HANDLE m_composeTargetSrvHandle{};  // SRV for sampling
+    uint32_t m_composeTargetWidth{0};
+    uint32_t m_composeTargetHeight{0};
+    bool m_composeTargetReady{false};
 
     // State
     uint32_t m_currentBackBufferIndex;

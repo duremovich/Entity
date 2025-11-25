@@ -1,6 +1,7 @@
 #include "entity/ui/MediaBinWindow.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/media/Decoder.hpp"
+#include "entity/components/Clip.hpp"
 #include <imgui.h>
 #include <iostream>
 
@@ -34,9 +35,6 @@ void MediaBinWindow::render() {
             ImGui::TableSetupScrollFreeze(0, 1);  // Freeze header row
             ImGui::TableHeadersRow();
 
-            // Get decoder for metadata (currently we only support one loaded file)
-            const Decoder* decoder = m_engine->getDecoder();
-
             // Render each media item
             for (size_t i = 0; i < mediaFiles.size(); i++) {
                 const std::string& filepath = mediaFiles[i];
@@ -66,25 +64,43 @@ void MediaBinWindow::render() {
                     ImGui::EndDragDropSource();
                 }
 
-                // Check if this file matches the current decoder
-                bool hasMetadata = decoder && decoder->isOpen() && decoder->getFilePath() == filepath;
+                // Find metadata from Clip components (search all clips for matching filepath)
+                bool hasMetadata = false;
+                uint32_t width = 0, height = 0;
+                FrameNumber duration = 0;
+                double framerate = 0.0;
+                bool hasAlpha = false;
+
+                auto& registry = m_engine->getRegistry();
+                auto clipView = registry.view<Clip>();
+                for (auto [entity, clip] : clipView.each()) {
+                    if (clip.filepath == filepath) {
+                        hasMetadata = true;
+                        width = clip.width;
+                        height = clip.height;
+                        duration = clip.duration;
+                        framerate = clip.framerate;
+                        hasAlpha = clip.hasAlpha;
+                        break;
+                    }
+                }
 
                 // Resolution column
                 ImGui::TableSetColumnIndex(1);
                 if (hasMetadata) {
-                    ImGui::Text("%ux%u", decoder->getWidth(), decoder->getHeight());
+                    ImGui::Text("%ux%u", width, height);
                 } else {
                     ImGui::TextDisabled("--");
                 }
 
                 // Duration column
                 ImGui::TableSetColumnIndex(2);
-                if (hasMetadata) {
-                    double durationSec = static_cast<double>(decoder->getDuration()) / decoder->getFrameRate();
+                if (hasMetadata && framerate > 0) {
+                    double durationSec = static_cast<double>(duration) / framerate;
                     int minutes = static_cast<int>(durationSec) / 60;
                     int seconds = static_cast<int>(durationSec) % 60;
-                    int frames = decoder->getDuration() % static_cast<int64_t>(decoder->getFrameRate());
-                    ImGui::Text("%d:%02d:%02lld", minutes, seconds, static_cast<long long>(frames));
+                    int frames = duration % static_cast<FrameNumber>(framerate);
+                    ImGui::Text("%d:%02d:%02d", minutes, seconds, static_cast<int>(frames));
                 } else {
                     ImGui::TextDisabled("--");
                 }
@@ -92,7 +108,7 @@ void MediaBinWindow::render() {
                 // FPS column
                 ImGui::TableSetColumnIndex(3);
                 if (hasMetadata) {
-                    ImGui::Text("%.2f", decoder->getFrameRate());
+                    ImGui::Text("%.2f", framerate);
                 } else {
                     ImGui::TextDisabled("--");
                 }
@@ -100,7 +116,7 @@ void MediaBinWindow::render() {
                 // Alpha column
                 ImGui::TableSetColumnIndex(4);
                 if (hasMetadata) {
-                    ImGui::Text("%s", decoder->hasAlpha() ? "Yes" : "No");
+                    ImGui::Text("%s", hasAlpha ? "Yes" : "No");
                 } else {
                     ImGui::TextDisabled("--");
                 }

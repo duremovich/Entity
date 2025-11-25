@@ -293,6 +293,11 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
     std::cout << "[Timeline] Split complete: original entity=" << static_cast<uint32_t>(clipEntity)
               << ", new entity=" << static_cast<uint32_t>(newClipEntity) << std::endl;
 
+    // Notify Engine to create decoder/resources for new clip
+    if (m_clipCreatedCallback) {
+        m_clipCreatedCallback(newClipEntity, newClip.filepath);
+    }
+
     return newClipEntity;
 }
 
@@ -391,6 +396,11 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
 
     std::cout << "[Timeline] Duplicate complete: new entity=" << static_cast<uint32_t>(newClipEntity) << std::endl;
 
+    // Notify Engine to create decoder/resources for new clip
+    if (m_clipCreatedCallback) {
+        m_clipCreatedCallback(newClipEntity, newClip.filepath);
+    }
+
     return newClipEntity;
 }
 
@@ -405,6 +415,47 @@ entt::entity Timeline::findTrackForClip(entt::entity clipEntity) const {
         }
     }
     return entt::null;
+}
+
+bool Timeline::moveClipToTrack(entt::entity clipEntity, int newTrackIndex) {
+    // Validate target track index
+    if (newTrackIndex < 0 || newTrackIndex >= static_cast<int>(m_tracks.size())) {
+        return false;
+    }
+
+    // Find current track containing the clip
+    entt::entity currentTrackEntity = findTrackForClip(clipEntity);
+    if (currentTrackEntity == entt::null) {
+        return false;
+    }
+
+    // Get current and target track components
+    auto* currentTrack = m_registry.try_get<TimelineTrack>(currentTrackEntity);
+    auto* targetTrack = m_registry.try_get<TimelineTrack>(m_tracks[newTrackIndex]);
+
+    if (!currentTrack || !targetTrack) {
+        return false;
+    }
+
+    // Check if already on target track
+    if (currentTrackEntity == m_tracks[newTrackIndex]) {
+        return true;  // Already on correct track
+    }
+
+    // Remove from current track
+    auto it = std::find(currentTrack->clips.begin(), currentTrack->clips.end(), clipEntity);
+    if (it != currentTrack->clips.end()) {
+        currentTrack->clips.erase(it);
+    }
+
+    // Add to target track
+    targetTrack->clips.push_back(clipEntity);
+
+    std::cout << "[Timeline] Moved clip entity=" << static_cast<uint32_t>(clipEntity)
+              << " from track " << currentTrack->trackIndex
+              << " to track " << targetTrack->trackIndex << std::endl;
+
+    return true;
 }
 
 } // namespace entity

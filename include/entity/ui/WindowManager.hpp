@@ -75,6 +75,12 @@ public:
     using OpenProjectCallback = std::function<void(const std::string&)>;
     void setOpenProjectCallback(OpenProjectCallback callback) { m_openProjectCallback = callback; }
 
+    /**
+     * Set callback for exit action.
+     */
+    using ExitCallback = std::function<void()>;
+    void setExitCallback(ExitCallback callback) { m_exitCallback = callback; }
+
 private:
     /**
      * Render the menu bar with window visibility toggles.
@@ -107,6 +113,7 @@ private:
     VideoFileCallback m_videoFileCallback;
     SaveProjectCallback m_saveProjectCallback;
     OpenProjectCallback m_openProjectCallback;
+    ExitCallback m_exitCallback;
 };
 
 } // namespace entity

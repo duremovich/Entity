@@ -223,16 +223,19 @@ void TimelineWidget::renderTimeRuler() {
 void TimelineWidget::renderTracks() {
     if (!m_timeline) return;
 
+    // Get base window position ONCE at the start
+    // This prevents cursor drift from InvisibleButtons affecting subsequent tracks
+    ImVec2 baseWindowPos = ImGui::GetCursorScreenPos();
+
     const auto& tracks = m_timeline->getTracks();
     for (size_t i = 0; i < tracks.size(); ++i) {
-        renderTrack(tracks[i], static_cast<int>(i));
+        renderTrack(tracks[i], static_cast<int>(i), baseWindowPos);
     }
 }
 
-void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
+void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec2 baseWindowPos) {
     if (!m_timeline) return;
 
-    ImVec2 windowPos = ImGui::GetCursorScreenPos();
     ImVec2 windowSize = ImGui::GetContentRegionAvail();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
@@ -240,10 +243,10 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
     const auto* track = registry.try_get<TimelineTrack>(trackEntity);
     if (!track) return;
 
-    // Calculate track bounds (no RULER_HEIGHT offset - tracks are in separate child window)
-    float trackY = windowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
-    ImVec2 trackMin = ImVec2(windowPos.x, trackY);
-    ImVec2 trackMax = ImVec2(windowPos.x + windowSize.x, trackY + TRACK_HEIGHT);
+    // Calculate track bounds using base window position (prevents cursor drift)
+    float trackY = baseWindowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
+    ImVec2 trackMin = ImVec2(baseWindowPos.x, trackY);
+    ImVec2 trackMax = ImVec2(baseWindowPos.x + windowSize.x, trackY + TRACK_HEIGHT);
 
     // Draw track background (alternating colors)
     ImU32 trackColor = (trackIndex % 2 == 0)
@@ -263,14 +266,20 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
         labelStream.str().c_str()
     );
 
-    // Handle drag-drop target for this track BEFORE rendering clips
-    // This allows drag-drop from Media Bin while not blocking clip interaction
+    // Render clips in this track FIRST (so we can handle clip clicks before drag-drop)
+    for (entt::entity clipEntity : track->clips) {
+        renderClip(clipEntity, trackIndex, baseWindowPos);
+    }
+
+    // Handle drag-drop target for this track AFTER rendering clips
+    // Use InvisibleButton with AllowOverlap to not block clip interaction
     ImGui::SetCursorScreenPos(trackMin);
     std::ostringstream dropTargetId;
     dropTargetId << "##trackDropTarget" << trackIndex;
 
-    // Use Dummy + BeginDragDropTarget for drop detection without blocking clicks
-    ImGui::Dummy(ImVec2(trackMax.x - trackMin.x, TRACK_HEIGHT));
+    // Allow this button to overlap with other items (clip rendering uses draw list, not ImGui widgets)
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton(dropTargetId.str().c_str(), ImVec2(trackMax.x - trackMin.x, TRACK_HEIGHT));
 
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MEDIA_FILE")) {
@@ -280,7 +289,7 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
 
             // Calculate the drop position in timeline time
             ImVec2 mousePos = ImGui::GetMousePos();
-            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
             Timecode dropTime = pixelToTime(relativeX);
             if (dropTime < 0) dropTime = 0;
 
@@ -291,25 +300,19 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex) {
         }
         ImGui::EndDragDropTarget();
     }
-
-    // Render clips in this track
-    for (entt::entity clipEntity : track->clips) {
-        renderClip(clipEntity, trackIndex);
-    }
 }
 
-void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex) {
+void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos) {
     if (!m_timeline) return;
 
-    ImVec2 windowPos = ImGui::GetCursorScreenPos();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     auto& registry = m_timeline->getRegistry();
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) return;
 
-    // Calculate clip position and size (no RULER_HEIGHT offset - clips are in tracks child window)
-    float trackY = windowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
+    // Calculate clip position and size using base window position (prevents cursor drift)
+    float trackY = baseWindowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
 
     // Convert frame timing to microseconds (Timecode units)
     float startSeconds = clip->startFrame / clip->framerate;
@@ -317,7 +320,7 @@ void TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex) {
     Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
     Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
-    float clipX = windowPos.x + timeToPixel(startTime);
+    float clipX = baseWindowPos.x + timeToPixel(startTime);
     float clipWidth = timeToPixel(endTime - startTime);
 
     ImVec2 clipMin = ImVec2(clipX, trackY + CLIP_PADDING);
@@ -745,7 +748,8 @@ void TimelineWidget::handleRulerInteraction() {
 void TimelineWidget::handleTracksInteraction() {
     if (!m_timeline) return;
 
-    ImVec2 windowPos = ImGui::GetCursorScreenPos();
+    // Use cached tracks position (saved in render() before cursor is moved by widgets)
+    ImVec2 windowPos = m_tracksScreenPos;
     ImVec2 mousePos = ImGui::GetMousePos();
 
     // Only handle new interactions if this child window is hovered
@@ -988,6 +992,14 @@ void TimelineWidget::handleTracksInteraction() {
             }
         } else {
             // Mouse released - stop dragging
+            // Check if we need to move the clip to a different track
+            int finalTrackIndex = findTrackAtY(mousePos.y, windowPos.y);
+            if (finalTrackIndex >= 0 && finalTrackIndex != m_selectedClipTrackIndex) {
+                // Move clip to new track
+                m_timeline->moveClipToTrack(m_selectedClip, finalTrackIndex);
+                m_selectedClipTrackIndex = finalTrackIndex;
+            }
+
             m_isDraggingClip = false;
             m_selectedClipTrackIndex = -1;
             m_isSnapping = false;  // Clear snap indicator

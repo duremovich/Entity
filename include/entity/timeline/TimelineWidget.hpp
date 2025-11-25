@@ -84,13 +84,15 @@ private:
 
     /**
      * Render a single track lane.
+     * @param baseWindowPos Base window position to use for all tracks (prevents cursor drift)
      */
-    void renderTrack(entt::entity trackEntity, int trackIndex);
+    void renderTrack(entt::entity trackEntity, int trackIndex, ImVec2 baseWindowPos);
 
     /**
      * Render a clip within a track.
+     * @param baseWindowPos Base window position to use for positioning
      */
-    void renderClip(entt::entity clipEntity, int trackIndex);
+    void renderClip(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos);
 
     /**
      * Render the playhead indicator.

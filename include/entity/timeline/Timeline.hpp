@@ -4,8 +4,13 @@
 #include <entt/entt.hpp>
 #include <vector>
 #include <string>
+#include <functional>
 
 namespace entity {
+
+// Callback for when a new clip is created (split, duplicate)
+// Parameters: new clip entity, source clip filepath
+using ClipCreatedCallback = std::function<void(entt::entity, const std::string&)>;
 
 /**
  * PlaybackState - Current state of timeline playback
@@ -112,6 +117,14 @@ public:
      */
     entt::entity findTrackForClip(entt::entity clipEntity) const;
 
+    /**
+     * Move a clip from one track to another.
+     * @param clipEntity The clip to move
+     * @param newTrackIndex The target track index
+     * @return True if move was successful
+     */
+    bool moveClipToTrack(entt::entity clipEntity, int newTrackIndex);
+
     // Get registry reference
     entt::registry& getRegistry() { return m_registry; }
     const entt::registry& getRegistry() const { return m_registry; }
@@ -120,12 +133,18 @@ public:
     void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
     entt::entity getSelectedClip() const { return m_selectedClip; }
 
+    /**
+     * Set callback for when new clips are created (split, duplicate).
+     * Engine uses this to create decoders and GPU resources.
+     */
+    void setClipCreatedCallback(ClipCreatedCallback callback) { m_clipCreatedCallback = callback; }
+
 private:
     entt::registry& m_registry;
 
     // Timeline state
     Timecode m_currentTime{0};
-    Timecode m_duration{90000};  // Default: 90 seconds at 1000 ticks/sec = 90000
+    Timecode m_duration{600000000};  // Default: 10 minutes = 600 seconds = 600,000,000 microseconds
     PlaybackState m_playbackState{PlaybackState::Stopped};
     double m_frameRate{30.0};
 
@@ -134,6 +153,9 @@ private:
 
     // Selection state
     entt::entity m_selectedClip{entt::null};
+
+    // Callback for clip creation
+    ClipCreatedCallback m_clipCreatedCallback;
 };
 
 } // namespace entity

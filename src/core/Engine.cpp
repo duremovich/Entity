@@ -130,10 +130,16 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Initialize timeline
     m_timeline = std::make_unique<Timeline>(m_registry);
 
+    // Set up callback for when new clips are created (split, duplicate)
+    m_timeline->setClipCreatedCallback([this](entt::entity clipEntity, const std::string& filepath) {
+        this->onClipCreated(clipEntity, filepath);
+    });
+
     // Set timeline on CompositorSystem (system 0) for frame-accurate rendering
     if (!m_systems.empty()) {
         if (auto* compositor = dynamic_cast<CompositorSystem*>(m_systems[0].get())) {
             compositor->setTimeline(m_timeline.get());
+            compositor->setDebugLogging(false);  // Debug logging disabled
         }
     }
 
@@ -160,6 +166,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         this->loadProject(filePath);
     });
 
+    // Set up exit callback
+    m_windowManager->setExitCallback([this]() {
+        this->requestExit();
+    });
+
     // Register windows with window manager
     m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
 
@@ -177,9 +188,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<PropertyWindow>(m_timeline.get()));
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
 
-    // Create 1 empty track as placeholder
-    m_timeline->createTrack("Video Track 1");
-    std::cout << "Created initial empty track" << std::endl;
+    // Create 5 empty tracks as default
+    for (int i = 1; i <= 5; ++i) {
+        m_timeline->createTrack("Video Track " + std::to_string(i));
+    }
+    std::cout << "Created 5 initial empty tracks" << std::endl;
 
     // TODO: Initialize transport
     // m_transport = std::make_unique<Transport>();
@@ -197,7 +210,8 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     testComponents();
 
     // Create test entities for rendering (Phase 4.1)
-    createTestEntities();
+    // NOTE: Disabled - test entities obscure video content
+    // createTestEntities();
 
     std::cout << "Engine initialized successfully!" << std::endl;
 
@@ -303,8 +317,8 @@ void Engine::update() {
         m_timeline->update(m_deltaTime);
     }
 
-    // Update all clip video textures (multi-clip support)
-    updateClipVideos();
+    // NOTE: updateClipVideos() moved to render() - must be called AFTER beginFrame()
+    // because beginFrame() resets the command list
 
     // Legacy single-clip decode (for backwards compatibility)
     if (m_decoder && m_decoder->isOpen() && m_currentFrame) {
@@ -333,6 +347,17 @@ const DecodedFrame* Engine::getCurrentVideoFrame() const {
             if (isClipActiveAtFrame(clip, currentFrame)) {
                 auto frameIt = m_clipFrames.find(entity);
                 if (frameIt != m_clipFrames.end() && frameIt->second && frameIt->second->valid) {
+                    // Verify frame number is close to expected (avoid stale frame flash)
+                    FrameNumber expectedMediaFrame = mapToMediaFrame(clip, currentFrame);
+                    FrameNumber cachedFrameNum = frameIt->second->frameNumber;
+
+                    // Allow some tolerance for decode-ahead, but reject obviously stale frames
+                    int64_t frameDelta = static_cast<int64_t>(cachedFrameNum) - static_cast<int64_t>(expectedMediaFrame);
+                    if (std::abs(frameDelta) > 16) {
+                        // Stale frame from a different position - don't display it
+                        continue;
+                    }
+
                     return frameIt->second.get();
                 }
             }
@@ -364,6 +389,9 @@ void Engine::render() {
 
     if (m_renderer && m_renderer->isInitialized()) {
         m_renderer->beginFrame();
+
+        // Upload video textures to GPU - MUST be after beginFrame() or commands get discarded!
+        updateClipVideos();
 
         // Clear to a nice teal/cyan color (to warm your heart!)
         m_renderer->clear(0.0f, 0.5f, 0.6f, 1.0f);
@@ -610,10 +638,14 @@ void Engine::testComponents() {
     std::cout << "Phase 3: Testing ECS Components" << std::endl;
     std::cout << "========================================\n" << std::endl;
 
+    // Track all test entities for cleanup
+    std::vector<entt::entity> testEntities;
+
     // Test 1: Transform Component
     std::cout << "Test 1: Transform Component" << std::endl;
     {
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         auto& transform = m_registry.emplace<Transform>(entity);
 
         transform.setPosition(glm::vec3(100.0f, 200.0f, 0.0f));
@@ -635,6 +667,7 @@ void Engine::testComponents() {
     std::cout << "\nTest 2: MediaLayer Component" << std::endl;
     {
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         auto& layer = m_registry.emplace<MediaLayer>(entity);
 
         layer.zOrder = 5;
@@ -665,6 +698,7 @@ void Engine::testComponents() {
         TimelineSystem timelineSystem;
 
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         auto& clip = m_registry.emplace<Clip>(entity);
 
         clip.filepath = "test_video.mov";
@@ -696,6 +730,7 @@ void Engine::testComponents() {
     std::cout << "\nTest 4: VideoTexture Component" << std::endl;
     {
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         auto& texture = m_registry.emplace<VideoTexture>(entity);
 
         texture.width = 1920;
@@ -718,6 +753,7 @@ void Engine::testComponents() {
         BufferSystem bufferSystem;
 
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         auto& frameBuffer = m_registry.emplace<FrameBuffer>(entity);
 
         // Note: Full ring buffer functionality requires FrameRingBuffer class
@@ -741,14 +777,18 @@ void Engine::testComponents() {
     std::cout << "\nTest 6: TimelineTrack Component" << std::endl;
     {
         auto trackEntity = m_registry.create();
+        testEntities.push_back(trackEntity);
         auto& track = m_registry.emplace<TimelineTrack>(trackEntity);
 
         track.trackIndex = 0;
 
         // Create some clip entities and add them to track
         auto clip1 = m_registry.create();
+        testEntities.push_back(clip1);
         auto clip2 = m_registry.create();
+        testEntities.push_back(clip2);
         auto clip3 = m_registry.create();
+        testEntities.push_back(clip3);
 
         track.addClip(clip1);
         track.addClip(clip2);
@@ -768,6 +808,7 @@ void Engine::testComponents() {
     std::cout << "\nTest 7: OutputMapping Component" << std::endl;
     {
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         auto& output = m_registry.emplace<OutputMapping>(entity);
 
         output.displayIndex = 0;
@@ -795,6 +836,7 @@ void Engine::testComponents() {
         // Create multiple entities with different component combinations
         for (int i = 0; i < 5; i++) {
             auto entity = m_registry.create();
+            testEntities.push_back(entity);
             m_registry.emplace<Transform>(entity);
             m_registry.emplace<MediaLayer>(entity);
 
@@ -833,6 +875,7 @@ void Engine::testComponents() {
     std::cout << "\nTest 9: Component Removal" << std::endl;
     {
         auto entity = m_registry.create();
+        testEntities.push_back(entity);
         m_registry.emplace<Transform>(entity);
         m_registry.emplace<MediaLayer>(entity);
 
@@ -858,6 +901,14 @@ void Engine::testComponents() {
         assert(m_registry.valid(entity) == false);
 
         std::cout << "  ✓ Entity destruction works" << std::endl;
+    }
+
+    // Clean up all test entities
+    std::cout << "\nCleaning up " << testEntities.size() << " test entities..." << std::endl;
+    for (auto entity : testEntities) {
+        if (m_registry.valid(entity)) {
+            m_registry.destroy(entity);
+        }
     }
 
     std::cout << "\n========================================" << std::endl;
@@ -1046,10 +1097,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     // Set z-order based on track index (higher tracks render on top)
     layer.zOrder = trackIndex;
 
-    // Set timeline duration to match clip duration (convert frames to microseconds)
-    double durationSeconds = clip.duration / clip.framerate;
-    Timecode durationTimecode = static_cast<Timecode>(durationSeconds * 1000000.0);
-    m_timeline->setDuration(durationTimecode);
+    // Set timeline frame rate to match clip (duration remains at default 10 minutes)
     m_timeline->setFrameRate(clip.framerate);
 
     // Legacy: Also create m_currentFrame for backwards compatibility with StageWindow
@@ -1057,7 +1105,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     m_currentFrame->allocate(clip.width, clip.height);
 
     std::cout << "Clip created with VideoTexture, Transform, MediaLayer components" << std::endl;
-    std::cout << "Timeline duration set to " << clip.duration << " frames (" << durationSeconds << " seconds)" << std::endl;
+    std::cout << "Clip duration: " << clip.duration << " frames at " << clip.framerate << " fps" << std::endl;
     std::cout << "Ready for multi-layer compositing!" << std::endl;
     std::cout << "========================================\n" << std::endl;
 }
@@ -1226,7 +1274,17 @@ void Engine::updateClipVideos() {
         auto* frameBuffer = m_registry.try_get<FrameBuffer>(entity);
         if (frameBuffer && frameBuffer->ringBuffer) {
             DecodedFrame ringFrame;
-            if (frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame)) {
+            bool gotFrame = false;
+
+            // During playback, consume frames to keep buffer flowing
+            // During scrubbing/paused, just peek without consuming
+            if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+                gotFrame = frameBuffer->ringBuffer->consumeUpTo(mediaFrame, ringFrame);
+            } else {
+                gotFrame = frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame);
+            }
+
+            if (gotFrame) {
                 // Got frame from ring buffer - upload to GPU
                 D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
                 bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
@@ -1242,13 +1300,25 @@ void Engine::updateClipVideos() {
                     videoTex.width = ringFrame.width;
                     videoTex.height = ringFrame.height;
                     m_lastDecodedFrame[entity] = mediaFrame;
+
+                    // Also update m_clipFrames so getCurrentVideoFrame() returns this frame
+                    auto frameIt = m_clipFrames.find(entity);
+                    if (frameIt != m_clipFrames.end() && frameIt->second) {
+                        *frameIt->second = ringFrame;
+                    }
                 }
                 continue;  // Frame processed from ring buffer, skip legacy path
             }
-            // Frame not in ring buffer - fall through to legacy decode
+
+            // Frame not in ring buffer during playback - SKIP to avoid blocking main thread
+            // The decode thread will catch up, and we'll show the next available frame
+            if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+                continue;
+            }
+            // During paused/scrubbing - fall through to legacy decode (blocking is OK)
         }
 
-        // Legacy path: synchronous decode on main thread
+        // Legacy path: synchronous decode on main thread (only used when paused/scrubbing)
         auto decoderIt = m_clipDecoders.find(entity);
         auto frameIt = m_clipFrames.find(entity);
 
@@ -1263,7 +1333,7 @@ void Engine::updateClipVideos() {
             continue;
         }
 
-        // Decode the frame synchronously
+        // Decode the frame synchronously (blocking - only for scrub/pause)
         Result result = decoder->decodeFrame(mediaFrame, *frame);
 
         if (result == Result::Success) {
@@ -1407,6 +1477,61 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     }
 
     return success;
+}
+
+void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath) {
+    std::cout << "[Engine] Setting up resources for new clip entity=" << static_cast<uint32_t>(clipEntity)
+              << ", file=" << filepath << std::endl;
+
+    // Detect media type
+    MediaType mediaType = detectMediaType(filepath);
+    if (mediaType == MediaType::Unknown) {
+        std::cerr << "[Engine] Unsupported media type for: " << filepath << std::endl;
+        return;
+    }
+
+    // Create decoder
+    auto decoder = createDecoder(mediaType);
+    if (!decoder) {
+        std::cerr << "[Engine] Failed to create decoder for: " << filepath << std::endl;
+        return;
+    }
+
+    // Open the media file
+    Result result = decoder->open(filepath);
+    if (result != Result::Success) {
+        std::cerr << "[Engine] Failed to open media: " << filepath << std::endl;
+        return;
+    }
+
+    // Get clip info
+    auto* clip = m_registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[Engine] Clip component not found for entity" << std::endl;
+        return;
+    }
+
+    // Update clip's loaded state
+    clip->loaded = true;
+
+    // Allocate video texture slot if VideoTexture component exists
+    auto* videoTex = m_registry.try_get<VideoTexture>(clipEntity);
+    if (videoTex && videoTex->descriptorSlot == 0) {
+        videoTex->descriptorSlot = m_renderer->allocateVideoTextureSlot();
+        if (videoTex->descriptorSlot == UINT32_MAX) {
+            std::cerr << "[Engine] Failed to allocate video texture slot!" << std::endl;
+        } else {
+            std::cout << "[Engine] Allocated video texture slot: " << videoTex->descriptorSlot << std::endl;
+        }
+    }
+
+    // Store decoder and create frame buffer
+    m_clipDecoders[clipEntity] = std::move(decoder);
+    m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
+    m_clipFrames[clipEntity]->allocate(clip->width, clip->height);
+    m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
+
+    std::cout << "[Engine] New clip resources created successfully" << std::endl;
 }
 
 } // namespace entity

@@ -99,6 +99,17 @@ public:
     bool getFrame(FrameNumber frameNumber, DecodedFrame& outFrame) const;
 
     /**
+     * Consume frames up to and including the specified frame number.
+     * Searches the buffer for the frame, pops all frames from head up to it,
+     * and returns the requested frame. This keeps the buffer flowing during playback.
+     *
+     * @param frameNumber Frame number to consume up to
+     * @param outFrame Frame to receive data if found
+     * @return true if frame found and consumed, false otherwise
+     */
+    bool consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFrame);
+
+    /**
      * Clear all frames from the buffer.
      */
     void clear();

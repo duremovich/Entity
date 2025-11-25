@@ -39,6 +39,11 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
         return;
     }
 
+    // Ensure compose target exists (create at 1920x1080 if not)
+    if (!m_renderer->isComposeTargetReady()) {
+        m_renderer->createComposeTarget(1920, 1080);
+    }
+
     // Get current timeline frame for visibility checks
     FrameNumber currentFrame = 0;
     if (m_timeline) {
@@ -52,6 +57,9 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
     std::vector<entt::entity> sortedEntities;
     sortedEntities.reserve(view.size_hint());
 
+    static int collectDebugFrame = 0;
+    bool logCollection = m_debugLogging && (collectDebugFrame++ % 60 == 0);
+
     for (auto entity : view) {
         auto& layer = view.get<MediaLayer>(entity);
         if (!layer.visible) continue;
@@ -60,11 +68,27 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
         auto* clip = registry.try_get<Clip>(entity);
         if (clip) {
             if (!isClipActiveAtFrame(*clip, currentFrame)) {
+                if (logCollection) std::cout << "  [Compositor] Entity " << static_cast<uint32_t>(entity)
+                    << ": SKIPPED (clip not active at frame " << currentFrame
+                    << ", start=" << clip->startFrame << " dur=" << clip->duration << ")" << std::endl;
                 continue;  // Clip is not active at current frame, skip
             }
         }
 
         sortedEntities.push_back(entity);
+
+        // Log when a clip entity is queued for rendering
+        if (logCollection && clip) {
+            auto* videoTex = registry.try_get<VideoTexture>(entity);
+            std::cout << "  [Compositor] Entity " << static_cast<uint32_t>(entity)
+                << ": QUEUED (clip active, videoTex=" << (videoTex ? "yes" : "no");
+            if (videoTex) {
+                std::cout << " valid=" << videoTex->isValid()
+                    << " srv=" << videoTex->srvHandle.ptr
+                    << " " << videoTex->width << "x" << videoTex->height;
+            }
+            std::cout << ")" << std::endl;
+        }
     }
 
     // Sort by z-order (lower values render first, higher values on top)
@@ -83,7 +107,15 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
         }
     }
 
-    // Render each visible layer
+    // DEBUG: Log entity count (only when debug logging enabled)
+    static int debugFrame = 0;
+    bool logThisFrame = m_debugLogging && (debugFrame++ % 60 == 0);  // Every second at 60fps
+
+    // Begin rendering to compose target (offscreen texture)
+    m_renderer->beginComposeTarget();
+
+    // Render each visible layer to the compose target
+    int drawIndex = 0;
     for (auto entity : sortedEntities) {
         const auto& transform = view.get<Transform>(entity);
         const auto& layer = view.get<MediaLayer>(entity);
@@ -101,6 +133,8 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
 
         // Check if entity has a valid video texture
         auto* videoTex = registry.try_get<VideoTexture>(entity);
+        auto* clip = registry.try_get<Clip>(entity);
+
         if (videoTex && videoTex->isValid() && videoTex->srvHandle.ptr != 0) {
             // Draw textured quad for video layers
             m_renderer->drawTexturedQuad(videoTex->srvHandle, transformMatrix, layer.opacity);
@@ -113,9 +147,27 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
                 ((entityId * 97) % 256) / 255.0f,
                 1.0f
             );
+            if (logThisFrame) {
+                std::cout << "  [" << drawIndex << "] Entity " << entityId
+                          << ": COLORED";
+                if (clip) {
+                    std::cout << " (HAS CLIP: " << clip->filepath << ")";
+                }
+                if (videoTex) {
+                    std::cout << " (VideoTex: slot=" << videoTex->descriptorSlot
+                              << " valid=" << videoTex->isValid()
+                              << " srv=" << videoTex->srvHandle.ptr
+                              << " " << videoTex->width << "x" << videoTex->height << ")";
+                }
+                std::cout << std::endl;
+            }
             m_renderer->drawColoredQuad(transformMatrix, color, layer.opacity);
         }
+        drawIndex++;
     }
+
+    // End rendering to compose target (transitions back to main render target)
+    m_renderer->endComposeTarget();
 }
 
 void CompositorSystem::shutdown(entt::registry& registry) {

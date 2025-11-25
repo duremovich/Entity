@@ -1,6 +1,9 @@
 #include "entity/ui/StageWindow.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/render/D3D12Renderer.hpp"
+#include "entity/timeline/Timeline.hpp"
+#include "entity/components/MediaLayer.hpp"
+#include "entity/components/Transform.hpp"
 #include "entity/media/FrameRingBuffer.hpp"  // For DecodedFrame definition
 
 namespace entity {
@@ -17,35 +20,34 @@ void StageWindow::render() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
 
-    // Get current video frame from Engine
-    const DecodedFrame* frame = m_engine ? m_engine->getCurrentVideoFrame() : nullptr;
     D3D12Renderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
+    Timeline* timeline = m_engine ? m_engine->getTimeline() : nullptr;
 
-    if (frame && frame->valid && !frame->data.empty() && renderer) {
-        // Upload frame to GPU texture
-        void* textureID = renderer->uploadVideoFrame(
-            frame->data.data(),
-            frame->width,
-            frame->height
-        );
+    // Try to display the composited result from CompositorSystem
+    if (renderer && renderer->isComposeTargetReady()) {
+        void* textureID = renderer->getComposeTargetTextureID();
 
         if (textureID) {
+            // Get compose target dimensions
+            uint32_t composeWidth = renderer->getComposeTargetWidth();
+            uint32_t composeHeight = renderer->getComposeTargetHeight();
+
             // Calculate aspect ratio fit
-            float videoAspect = static_cast<float>(frame->width) / static_cast<float>(frame->height);
+            float composeAspect = static_cast<float>(composeWidth) / static_cast<float>(composeHeight);
             float windowAspect = contentSize.x / contentSize.y;
 
             ImVec2 imageSize;
             ImVec2 imageOffset(0.0f, 0.0f);
 
-            if (videoAspect > windowAspect) {
-                // Video is wider than window - fit to width
+            if (composeAspect > windowAspect) {
+                // Compose target is wider than window - fit to width
                 imageSize.x = contentSize.x;
-                imageSize.y = contentSize.x / videoAspect;
+                imageSize.y = contentSize.x / composeAspect;
                 imageOffset.y = (contentSize.y - imageSize.y) * 0.5f;
             } else {
-                // Video is taller than window - fit to height
+                // Compose target is taller than window - fit to height
                 imageSize.y = contentSize.y;
-                imageSize.x = contentSize.y * videoAspect;
+                imageSize.x = contentSize.y * composeAspect;
                 imageOffset.x = (contentSize.x - imageSize.x) * 0.5f;
             }
 
@@ -56,7 +58,7 @@ void StageWindow::render() {
                 IM_COL32(0, 0, 0, 255)
             );
 
-            // Display the video texture
+            // Display the composited texture (transforms already applied by CompositorSystem)
             ImVec2 imagePos(windowPos.x + imageOffset.x, windowPos.y + imageOffset.y);
             ImGui::SetCursorScreenPos(imagePos);
             ImGui::Image(
@@ -64,32 +66,27 @@ void StageWindow::render() {
                 imageSize,
                 ImVec2(0.0f, 0.0f),  // UV start
                 ImVec2(1.0f, 1.0f),  // UV end
-                ImVec4(1.0f, 1.0f, 1.0f, 1.0f),  // Tint (white = no tint)
+                ImVec4(1.0f, 1.0f, 1.0f, 1.0f),  // Full opacity (compositing already done)
                 ImVec4(0.0f, 0.0f, 0.0f, 0.0f)   // Border (none)
             );
 
-            // Overlay frame info in corner (optional - can be toggled)
-            char frameInfo[64];
-            snprintf(frameInfo, sizeof(frameInfo), "Frame %lld | %ux%u",
-                     static_cast<long long>(frame->frameNumber),
-                     frame->width, frame->height);
+            // Overlay frame info in corner
+            if (timeline) {
+                FrameNumber currentFrame = timeline->getCurrentFrame();
+                char frameInfo[64];
+                snprintf(frameInfo, sizeof(frameInfo), "Frame %u | %ux%u",
+                         currentFrame, composeWidth, composeHeight);
 
-            ImVec2 infoPos(windowPos.x + 5.0f, windowPos.y + 5.0f);
-            drawList->AddText(infoPos, IM_COL32(255, 255, 255, 180), frameInfo);
-        } else {
-            // Texture upload failed, show error
-            drawList->AddRectFilled(
-                windowPos,
-                ImVec2(windowPos.x + contentSize.x, windowPos.y + contentSize.y),
-                IM_COL32(80, 0, 0, 255)  // Red to indicate error
-            );
+                ImVec2 infoPos(windowPos.x + 5.0f, windowPos.y + 5.0f);
+                drawList->AddText(infoPos, IM_COL32(255, 255, 255, 180), frameInfo);
+            }
 
-            const char* errorText = "Texture Upload Failed";
-            ImVec2 textSize = ImGui::CalcTextSize(errorText);
-            ImVec2 center(windowPos.x + contentSize.x * 0.5f, windowPos.y + contentSize.y * 0.5f);
-            drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y), IM_COL32(255, 255, 255, 255), errorText);
+            return;  // Successfully rendered compose target
         }
-    } else {
+    }
+
+    // Fallback: No compose target ready, show placeholder
+    {
         // No video loaded, display test pattern
         drawList->AddRectFilledMultiColor(
             windowPos,

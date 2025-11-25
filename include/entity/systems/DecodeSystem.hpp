@@ -34,6 +34,7 @@ struct DecodeWorker {
     std::atomic<FrameNumber> seekTarget{0};      // Frame to seek to
     std::atomic<FrameNumber> currentFrame{0};    // Last decoded frame
     std::atomic<FrameNumber> targetFrame{0};     // Target frame to decode ahead to
+    std::atomic<FrameNumber> lastRequestedFrame{UINT32_MAX}; // Last frame requested by render (for discontinuity detection)
 
     // Synchronization for pause/resume
     std::mutex mutex;
@@ -43,11 +44,17 @@ struct DecodeWorker {
 /**
  * DecodeSystem - ECS system for managing background decode threads.
  *
+ * ALWAYS-WARM BUFFERING FOR ZERO-LATENCY PLAYBACK:
+ * Decode workers run continuously, targeting the current timeline position
+ * regardless of playback state (playing, paused, or stopped). This ensures
+ * buffers are always warm at the playhead position - when Play is pressed,
+ * frames are already decoded and playback starts instantly.
+ *
  * Responsibilities:
  * - Spawn/manage decode threads for each clip with a FrameBuffer
- * - Fill FrameRingBuffers with decoded frames ahead of playback
- * - Handle seek events (clear buffer, seek decoder, resume)
- * - Throttle decode rate to maintain buffer without over-decoding
+ * - Fill FrameRingBuffers with decoded frames ahead of current position
+ * - Handle seek/scrub events (clear buffer, seek decoder, refill)
+ * - Keep buffers warm even when timeline is paused (critical for live use)
  *
  * Threading Model:
  * - Main thread: update() called each frame, manages worker state
@@ -58,6 +65,7 @@ struct DecodeWorker {
  * - Decoders are NOT thread-safe, each worker owns its decoder
  * - Ring buffers are lock-free for producer/consumer access
  * - Seek events clear buffer and signal decode thread to reposition
+ * - Workers NEVER pause based on timeline state (always-warm buffering)
  */
 class DecodeSystem : public System {
 public:
@@ -119,8 +127,9 @@ public:
 private:
     /**
      * Create and start a decode worker for a clip entity.
+     * @param initialFrame The media frame to start buffering from (usually current playhead position)
      */
-    void createWorker(entt::entity entity, entt::registry& registry);
+    void createWorker(entt::entity entity, entt::registry& registry, FrameNumber initialFrame = 0);
 
     /**
      * Stop and remove a decode worker.
@@ -147,8 +156,9 @@ private:
     std::atomic<bool> m_globalPaused{false};
 
     // Decode-ahead configuration
-    static constexpr uint32_t DECODE_AHEAD_FRAMES = 16;  // Frames to buffer ahead
-    static constexpr uint32_t MIN_BUFFER_FRAMES = 4;     // Minimum before resuming decode
+    // Reduced from 16 to 8 for faster buffer refill on seek (always-warm buffering)
+    static constexpr uint32_t DECODE_AHEAD_FRAMES = 8;   // Frames to buffer ahead
+    static constexpr uint32_t MIN_BUFFER_FRAMES = 2;     // Minimum before resuming decode
 };
 
 } // namespace entity

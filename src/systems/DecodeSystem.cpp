@@ -37,14 +37,18 @@ void DecodeSystem::initialize(entt::registry& registry) {
 void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     if (!m_timeline) return;
 
-    // Handle playback state changes
-    PlaybackState playbackState = m_timeline->getPlaybackState();
-    bool shouldPause = (playbackState == PlaybackState::Paused || playbackState == PlaybackState::Stopped);
+    // ALWAYS-WARM BUFFERING: Never pause decode workers based on timeline state!
+    // This ensures buffers are always ready at the playhead position for zero-latency playback.
+    // Decode workers only pause when the ring buffer is full, not when timeline is paused.
+    //
+    // Old behavior (caused playback delay):
+    //   Timeline paused → pause workers → buffers go cold → Play pressed → delay while buffering
+    //
+    // New behavior (zero-latency):
+    //   Timeline paused → workers keep running → buffers stay warm → Play pressed → instant start
 
-    // Update global pause state based on timeline
-    if (shouldPause && !m_globalPaused.load()) {
-        pauseAll();
-    } else if (!shouldPause && m_globalPaused.load()) {
+    // Ensure all workers are running (in case they were previously paused)
+    if (m_globalPaused.load()) {
         resumeAll();
     }
 
@@ -61,8 +65,20 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         auto workerIt = m_workers.find(entity);
 
         if (workerIt == m_workers.end()) {
-            // Create worker for new clip
-            createWorker(entity, registry);
+            // Create worker for new clip - pass the initial media frame based on current timeline position
+            FrameNumber initialMediaFrame = 0;
+            if (currentTimelineFrame >= clip.startFrame &&
+                currentTimelineFrame < clip.startFrame + clip.duration) {
+                // Timeline is within clip - start at current position
+                initialMediaFrame = clip.mediaStartFrame + (currentTimelineFrame - clip.startFrame);
+            } else if (currentTimelineFrame < clip.startFrame) {
+                // Timeline is before clip - start at clip's media start
+                initialMediaFrame = clip.mediaStartFrame;
+            } else {
+                // Timeline is after clip - start at end (but this shouldn't happen for active clips)
+                initialMediaFrame = clip.mediaStartFrame;
+            }
+            createWorker(entity, registry, initialMediaFrame);
             workerIt = m_workers.find(entity);
             if (workerIt == m_workers.end()) continue;
         }
@@ -79,19 +95,34 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // Update target frame for decode-ahead
             worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
 
-            // Check if we need to seek (e.g., timeline jumped or scrubbing)
-            FrameNumber lastDecoded = worker->currentFrame.load();
-            FrameNumber bufferStart = lastDecoded > DECODE_AHEAD_FRAMES ? lastDecoded - DECODE_AHEAD_FRAMES : 0;
+            // Check if we need to seek based on DISCONTINUITY detection
+            // Only seek when the user actually jumped to a different position (scrub/click)
+            // NOT during normal sequential playback (frame N to frame N+1)
+            FrameNumber lastRequested = worker->lastRequestedFrame.load();
+            bool needsSeek = false;
 
-            // Seek if:
-            // 1. Requested frame is before buffer start (scrubbed backwards)
-            // 2. Requested frame is too far ahead (scrubbed far forward)
-            // 3. Buffer is empty and we need frames
-            bool needsSeek = (mediaFrame < bufferStart) ||
-                            (mediaFrame > lastDecoded + DECODE_AHEAD_FRAMES * 2) ||
-                            (frameBuffer.ringBuffer && frameBuffer.ringBuffer->isEmpty() && lastDecoded != mediaFrame);
+            if (!worker->seekPending.load() && lastRequested != UINT32_MAX) {
+                // Calculate the jump distance
+                int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
+
+                // Only seek on actual discontinuities:
+                // - Jumped backwards (any amount, user scrubbed back)
+                // - Jumped forward more than a reasonable decode-ahead window
+                if (frameDelta < 0) {
+                    // Jumped backwards - need to seek
+                    needsSeek = true;
+                } else if (frameDelta > DECODE_AHEAD_FRAMES + 8) {
+                    // Jumped way forward (beyond what decode-ahead can cover)
+                    needsSeek = true;
+                }
+                // frameDelta of 0, 1, or small positive = normal playback, let decode catch up
+            }
+
+            // Update last requested frame BEFORE seeking (so next frame sees correct delta)
+            worker->lastRequestedFrame.store(mediaFrame);
 
             if (needsSeek) {
+                std::cout << "Seek: jump from " << lastRequested << " to " << mediaFrame << std::endl;
                 seekClip(entity, mediaFrame);
             }
 
@@ -149,8 +180,6 @@ void DecodeSystem::seekClip(entt::entity clipEntity, FrameNumber frame) {
     worker->seekTarget.store(frame);
     worker->seekPending.store(true);
     worker->cv.notify_all();
-
-    std::cout << "Seek requested for clip to frame " << frame << std::endl;
 }
 
 void DecodeSystem::pauseAll() {
@@ -180,7 +209,7 @@ const DecodeWorker* DecodeSystem::getWorker(entt::entity clipEntity) const {
     return nullptr;
 }
 
-void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry) {
+void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, FrameNumber initialFrame) {
     auto* clip = registry.try_get<Clip>(entity);
     auto* frameBuffer = registry.try_get<FrameBuffer>(entity);
 
@@ -209,13 +238,18 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry) {
         frameBuffer->ringBuffer = std::make_shared<FrameRingBuffer>();
     }
 
-    // Create worker
+    // Create worker - start at the initial frame position (usually current playhead)
+    // This ensures buffering starts at the right position for instant playback
     auto worker = std::make_unique<DecodeWorker>();
     worker->decoder = std::move(decoder);
     worker->ringBuffer = frameBuffer->ringBuffer;
     worker->running.store(true);
-    worker->currentFrame.store(0);
-    worker->targetFrame.store(DECODE_AHEAD_FRAMES);
+    worker->currentFrame.store(initialFrame);
+    worker->targetFrame.store(initialFrame + DECODE_AHEAD_FRAMES);
+
+    // Set up initial seek to the correct position
+    worker->seekTarget.store(initialFrame);
+    worker->seekPending.store(true);
 
     // Start decode thread
     DecodeWorker* workerPtr = worker.get();
@@ -223,7 +257,8 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry) {
 
     m_workers[entity] = std::move(worker);
 
-    std::cout << "Created decode worker for clip: " << clip->filepath << std::endl;
+    std::cout << "Created decode worker for clip: " << clip->filepath
+              << " starting at frame " << initialFrame << std::endl;
 }
 
 void DecodeSystem::destroyWorker(entt::entity entity) {

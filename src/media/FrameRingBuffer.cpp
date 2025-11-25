@@ -90,6 +90,63 @@ bool FrameRingBuffer::getFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
     return false;
 }
 
+bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFrame) {
+    // Get current count and read index
+    uint32_t count = m_count.load(std::memory_order_acquire);
+    if (count == 0) {
+        return false; // Buffer empty
+    }
+
+    uint32_t readIdx = m_readIndex.load(std::memory_order_acquire);
+
+    // Find the best frame to return:
+    // 1. If exact frame found, use it
+    // 2. Otherwise, use the oldest frame in buffer (for smooth playback)
+    int32_t foundOffset = -1;
+    int32_t bestOffset = 0; // Default to oldest frame
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t idx = (readIdx + i) % m_capacity;
+        const DecodedFrame& frame = m_frames[idx];
+
+        if (frame.valid && frame.frameNumber == frameNumber) {
+            foundOffset = static_cast<int32_t>(i);
+            break;
+        }
+    }
+
+    // Use exact frame if found, otherwise use oldest available frame
+    if (foundOffset >= 0) {
+        bestOffset = foundOffset;
+    } else {
+        // Exact frame not found - use the oldest frame in buffer
+        // This ensures smooth playback even if decode is slightly behind
+        bestOffset = 0;
+    }
+
+    // Copy the frame
+    uint32_t frameIdx = (readIdx + static_cast<uint32_t>(bestOffset)) % m_capacity;
+    const DecodedFrame& selectedFrame = m_frames[frameIdx];
+    if (!selectedFrame.valid) {
+        return false; // No valid frame
+    }
+    outFrame = selectedFrame;
+
+    // Pop all frames from head up to and including the selected frame
+    uint32_t framesToConsume = static_cast<uint32_t>(bestOffset) + 1;
+
+    for (uint32_t i = 0; i < framesToConsume; ++i) {
+        uint32_t idx = m_readIndex.load(std::memory_order_acquire);
+        m_frames[idx].clear();
+
+        uint32_t nextReadIdx = (idx + 1) % m_capacity;
+        m_readIndex.store(nextReadIdx, std::memory_order_release);
+        m_count.fetch_sub(1, std::memory_order_release);
+    }
+
+    return true;
+}
+
 void FrameRingBuffer::clear() {
     // Clear all frames
     for (auto& frame : m_frames) {

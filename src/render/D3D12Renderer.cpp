@@ -595,6 +595,8 @@ Result D3D12Renderer::compileShader(const std::wstring& filename, const char* en
     if (FAILED(hr)) {
         if (errorBlob) {
             std::cerr << "Shader compilation failed: " << (char*)errorBlob->GetBufferPointer() << std::endl;
+        } else {
+            std::wcerr << L"Shader file not found or inaccessible: " << filename << std::endl;
         }
         return Result::Failure;
     }
@@ -603,11 +605,17 @@ Result D3D12Renderer::compileShader(const std::wstring& filename, const char* en
 }
 
 Result D3D12Renderer::createRootSignature() {
-    // Define root parameter for constant buffer
+    // Define root parameter using 32-bit constants (not CBV!)
+    // This ensures each draw call gets its own constant values, because
+    // SetGraphicsRoot32BitConstants copies data into the command buffer
+    // at record time, unlike CBV which just stores a pointer.
+    //
+    // LayerConstants = 24 floats = 96 bytes (transform 16 + color 4 + opacity+padding 4)
     D3D12_ROOT_PARAMETER rootParameter = {};
-    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParameter.Descriptor.ShaderRegister = 0; // b0
-    rootParameter.Descriptor.RegisterSpace = 0;
+    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameter.Constants.ShaderRegister = 0; // b0
+    rootParameter.Constants.RegisterSpace = 0;
+    rootParameter.Constants.Num32BitValues = 24; // sizeof(LayerConstants) / 4
     rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Define root signature
@@ -828,28 +836,24 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
         return;
     }
 
-    // Update constant buffer
-    updateConstantBuffer(transform, color, opacity);
+    // Build constants structure
+    LayerConstants constants;
+    DirectX::XMStoreFloat4x4(&constants.transform, DirectX::XMMatrixTranspose(transform));
+    constants.color = color;
+    constants.opacity = opacity;
+    constants.padding1 = 0.0f;
+    constants.padding2 = 0.0f;
+    constants.padding3 = 0.0f;
 
     // Set pipeline state
     m_commandList->SetPipelineState(m_pipelineState.Get());
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
 
-    // Set root constant buffer view
-    m_commandList->SetGraphicsRootConstantBufferView(0, m_constantBuffer->GetGPUVirtualAddress());
+    // Set root constants (copies data into command buffer - each draw gets its own values!)
+    m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
 
-    // Set viewport and scissor rect
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-
-    D3D12_RECT scissorRect = {};
-    scissorRect.right = m_width;
-    scissorRect.bottom = m_height;
-
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissorRect);
+    // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginFrame) sets these
+    // This allows drawColoredQuad to work correctly with both main window and offscreen targets
 
     // Set vertex buffer and draw
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -865,10 +869,11 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     // Create descriptor heap for ImGui SRV (fonts/textures + video textures)
     // Slot 0: ImGui font texture
     // Slot 1: Legacy single video texture (for backwards compatibility)
-    // Slots 2+: Multi-texture slots for compositing layers
+    // Slot 2: Compose target (offscreen render target for compositing)
+    // Slots 3 to 3+N-1: Multi-texture slots for compositing layers
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 2 + MAX_VIDEO_TEXTURE_SLOTS;  // Font + legacy + N layer slots
+    heapDesc.NumDescriptors = 3 + MAX_VIDEO_TEXTURE_SLOTS;  // Font + legacy + compose + N layer slots
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
     HRESULT hr = m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
@@ -1240,7 +1245,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         }
 
         // Create SRV for the texture
-        // Slots are at indices 2+ (0 = ImGui font, 1 = legacy video texture)
+        // Slots are at indices 3+ (0=font, 1=legacy, 2=compose target)
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -1248,7 +1253,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         srvDesc.Texture2D.MipLevels = 1;
         srvDesc.Texture2D.MostDetailedMip = 0;
 
-        uint32_t descriptorIndex = 2 + slot;  // Offset past font and legacy texture
+        uint32_t descriptorIndex = 3 + slot;  // Offset past font, legacy, and compose target
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
         cpuHandle.ptr += descriptorIndex * m_srvDescriptorSize;
 
@@ -1340,16 +1345,17 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
 
 Result D3D12Renderer::createTexturedRootSignature() {
     // Root parameters:
-    // [0] CBV for LayerConstants (b0)
+    // [0] Root constants for LayerConstants (b0) - 24 floats = 96 bytes
     // [1] Descriptor table for texture SRV (t0)
     // Static sampler for texture sampling
 
     D3D12_ROOT_PARAMETER rootParameters[2] = {};
 
-    // Parameter 0: Constant buffer
-    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParameters[0].Descriptor.ShaderRegister = 0; // b0
-    rootParameters[0].Descriptor.RegisterSpace = 0;
+    // Parameter 0: Root constants (not CBV - ensures each draw gets its own values)
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[0].Constants.ShaderRegister = 0; // b0
+    rootParameters[0].Constants.RegisterSpace = 0;
+    rootParameters[0].Constants.Num32BitValues = 24; // sizeof(LayerConstants) / 4
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Parameter 1: Descriptor table for texture
@@ -1486,9 +1492,14 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         return;
     }
 
-    // Update constant buffer with white color (texture provides the color)
-    DirectX::XMFLOAT4 whiteColor(1.0f, 1.0f, 1.0f, 1.0f);
-    updateConstantBuffer(transform, whiteColor, opacity);
+    // Build constants structure with white color (texture provides the color)
+    LayerConstants constants;
+    DirectX::XMStoreFloat4x4(&constants.transform, DirectX::XMMatrixTranspose(transform));
+    constants.color = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+    constants.opacity = opacity;
+    constants.padding1 = 0.0f;
+    constants.padding2 = 0.0f;
+    constants.padding3 = 0.0f;
 
     // Set textured pipeline state
     m_commandList->SetPipelineState(m_texturedPipelineState.Get());
@@ -1498,22 +1509,12 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
     m_commandList->SetDescriptorHeaps(1, heaps);
 
-    // Set root parameters
-    m_commandList->SetGraphicsRootConstantBufferView(0, m_constantBuffer->GetGPUVirtualAddress());
+    // Set root parameters - use root constants (copied into command buffer)
+    m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
     m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
 
-    // Set viewport and scissor rect
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-
-    D3D12_RECT scissorRect = {};
-    scissorRect.right = m_width;
-    scissorRect.bottom = m_height;
-
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissorRect);
+    // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginFrame) sets these
+    // This allows drawTexturedQuad to work correctly with both main window and offscreen targets
 
     // Set vertex buffer and draw
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -1837,6 +1838,195 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->IASetVertexBuffers(0, 1, &m_mappingSurfaceVertexBufferView);
     m_commandList->DrawInstanced(6, 1, 0, 0);
+}
+
+// ========================================================================
+// Compose Target (Offscreen Render Target for Multi-Clip Compositing)
+// ========================================================================
+
+bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
+    if (!m_initialized || !m_device) {
+        std::cerr << "Cannot create compose target: renderer not initialized" << std::endl;
+        return false;
+    }
+
+    // Wait for GPU before modifying resources
+    waitForGpu();
+
+    // Release existing resources if any
+    m_composeTarget.Reset();
+    m_composeTargetRtvHeap.Reset();
+    m_composeTargetReady = false;
+
+    std::cout << "Creating compose target: " << width << "x" << height << std::endl;
+
+    // Create RTV descriptor heap for compose target
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = 1;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    HRESULT hr = m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_composeTargetRtvHeap));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create compose target RTV heap!" << std::endl;
+        return false;
+    }
+
+    // Create the render target texture
+    D3D12_RESOURCE_DESC textureDesc = {};
+    textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    textureDesc.Width = width;
+    textureDesc.Height = height;
+    textureDesc.DepthOrArraySize = 1;
+    textureDesc.MipLevels = 1;
+    textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.SampleDesc.Quality = 0;
+    textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    clearValue.Color[0] = 0.0f;
+    clearValue.Color[1] = 0.0f;
+    clearValue.Color[2] = 0.0f;
+    clearValue.Color[3] = 1.0f;
+
+    hr = m_device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &textureDesc,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,  // Start in shader resource state
+        &clearValue,
+        IID_PPV_ARGS(&m_composeTarget)
+    );
+
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create compose target texture!" << std::endl;
+        return false;
+    }
+
+    // Create RTV for the compose target
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    rtvDesc.Texture2D.MipSlice = 0;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_composeTargetRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_device->CreateRenderTargetView(m_composeTarget.Get(), &rtvDesc, rtvHandle);
+
+    // Create SRV for the compose target in the ImGui heap
+    // Heap layout: 0=fonts, 1=legacy, 2=compose, 3-18=multi-tex
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels = 1;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+
+    // Compose target uses slot 2 (reserved for it, video texture slots start at 3)
+    uint32_t composeTargetSlot = 2;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    cpuHandle.ptr += m_srvDescriptorSize * composeTargetSlot;
+
+    m_device->CreateShaderResourceView(m_composeTarget.Get(), &srvDesc, cpuHandle);
+
+    // Store GPU handle
+    m_composeTargetSrvHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    m_composeTargetSrvHandle.ptr += m_srvDescriptorSize * composeTargetSlot;
+
+    m_composeTargetWidth = width;
+    m_composeTargetHeight = height;
+    m_composeTargetReady = true;
+
+    std::cout << "Compose target created successfully: " << width << "x" << height << std::endl;
+    std::cout << "  Compose target slot: " << composeTargetSlot << std::endl;
+    std::cout << "  SRV descriptor size: " << m_srvDescriptorSize << std::endl;
+    std::cout << "  GPU handle ptr: " << m_composeTargetSrvHandle.ptr << std::endl;
+    std::cout << "  Heap start ptr: " << m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart().ptr << std::endl;
+
+    return true;
+}
+
+void D3D12Renderer::beginComposeTarget() {
+    if (!m_composeTargetReady || !m_composeTarget) {
+        return;
+    }
+
+    // Transition compose target from shader resource to render target
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = m_composeTarget.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    // Get RTV handle
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_composeTargetRtvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    // Set compose target as render target
+    m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // Clear to black (compose target background)
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+
+    // Set viewport and scissor for compose target
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_composeTargetWidth);
+    viewport.Height = static_cast<float>(m_composeTargetHeight);
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissorRect = {};
+    scissorRect.right = m_composeTargetWidth;
+    scissorRect.bottom = m_composeTargetHeight;
+
+    m_commandList->RSSetViewports(1, &viewport);
+    m_commandList->RSSetScissorRects(1, &scissorRect);
+}
+
+void D3D12Renderer::endComposeTarget() {
+    if (!m_composeTargetReady || !m_composeTarget) {
+        return;
+    }
+
+    // Transition compose target from render target to shader resource
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = m_composeTarget.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    // Restore the main render target (back buffer)
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
+    m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // Restore viewport for main render target
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissorRect = {};
+    scissorRect.right = m_width;
+    scissorRect.bottom = m_height;
+
+    m_commandList->RSSetViewports(1, &viewport);
+    m_commandList->RSSetScissorRects(1, &scissorRect);
+}
+
+void* D3D12Renderer::getComposeTargetTextureID() const {
+    if (m_composeTargetReady && m_composeTargetSrvHandle.ptr != 0) {
+        return reinterpret_cast<void*>(m_composeTargetSrvHandle.ptr);
+    }
+    return nullptr;
 }
 
 } // namespace entity

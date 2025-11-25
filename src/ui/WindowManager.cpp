@@ -134,7 +134,9 @@ void WindowManager::renderMenuBar() {
             ImGui::Separator();
 
             if (ImGui::MenuItem("Exit", "Esc")) {
-                // TODO: Signal application to exit
+                if (m_exitCallback) {
+                    m_exitCallback();
+                }
             }
 
             ImGui::EndMenu();
@@ -155,6 +157,48 @@ void WindowManager::renderMenuBar() {
             // Layout reset
             if (ImGui::MenuItem("Reset Layout")) {
                 resetLayout();
+            }
+
+            ImGui::EndMenu();
+        }
+
+        // Help menu
+        if (ImGui::BeginMenu("Help")) {
+            if (ImGui::BeginMenu("Keyboard Shortcuts")) {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Playback:");
+                ImGui::BulletText("Space        - Play/Pause");
+                ImGui::BulletText("J            - Step backward (1 frame)");
+                ImGui::BulletText("K            - Pause");
+                ImGui::BulletText("L            - Step forward (1 frame)");
+                ImGui::BulletText("Left Arrow   - Step backward (1 frame)");
+                ImGui::BulletText("Right Arrow  - Step forward (1 frame)");
+                ImGui::BulletText("Home         - Go to start");
+                ImGui::BulletText("End          - Go to end");
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Timeline Editing:");
+                ImGui::BulletText("S            - Split clip at playhead");
+                ImGui::BulletText("Delete       - Delete selected clip");
+                ImGui::BulletText("Ctrl+D       - Duplicate selected clip");
+                ImGui::BulletText("Drag clip    - Move horizontally or to another track");
+                ImGui::BulletText("Drag edges   - Trim in/out points");
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Project:");
+                ImGui::BulletText("Ctrl+S       - Save project");
+                ImGui::BulletText("Ctrl+O       - Open project");
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Timeline View:");
+                ImGui::BulletText("Alt+Scroll   - Zoom in/out");
+
+                ImGui::EndMenu();
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("About Entity Media Server")) {
+                // Could open an about dialog in the future
             }
 
             ImGui::EndMenu();
