@@ -146,10 +146,12 @@ public:
      * @param textureSrv GPU descriptor handle for the texture
      * @param transform Transformation matrix
      * @param opacity Layer opacity (0.0 - 1.0)
+     * @param blendMode Blend mode (default: Normal)
      */
     void drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                           const DirectX::XMMATRIX& transform,
-                          float opacity);
+                          float opacity,
+                          BlendMode blendMode = BlendMode::Normal);
 
     /**
      * Get the D3D12 device (for external texture creation if needed).
@@ -223,6 +225,24 @@ public:
      */
     bool isComposeTargetReady() const { return m_composeTargetReady; }
 
+    // ========================================================================
+    // Screenshot Capture
+    // ========================================================================
+
+    /**
+     * Capture the compose target (video output) to a PNG file.
+     * @param filepath Destination path for PNG file
+     * @return true on success
+     */
+    bool captureComposeTargetToPNG(const std::string& filepath);
+
+    /**
+     * Capture the current back buffer (full window) to a PNG file.
+     * @param filepath Destination path for PNG file
+     * @return true on success
+     */
+    bool captureBackBufferToPNG(const std::string& filepath);
+
 private:
     // Helper methods for initialization
     Result createDevice();
@@ -256,6 +276,13 @@ private:
     // Helper methods for ImGui
     Result initializeImGui(GLFWwindow* window);
     void shutdownImGui();
+
+    // Helper methods for screenshot capture
+    bool ensureScreenshotStagingBuffer(uint32_t width, uint32_t height);
+    bool readbackTextureToPNG(ID3D12Resource* sourceTexture,
+                               D3D12_RESOURCE_STATES sourceState,
+                               uint32_t width, uint32_t height,
+                               const std::string& filepath);
 
 private:
     static constexpr uint32_t FRAME_COUNT = 2; // Double buffering
@@ -308,7 +335,10 @@ private:
 
     // Textured rendering pipeline (for drawTexturedQuad)
     ComPtr<ID3D12RootSignature> m_texturedRootSignature;
-    ComPtr<ID3D12PipelineState> m_texturedPipelineState;
+    ComPtr<ID3D12PipelineState> m_texturedPipelineState;         // Normal blend
+    ComPtr<ID3D12PipelineState> m_texturedPipelineStateAdd;      // Additive blend
+    ComPtr<ID3D12PipelineState> m_texturedPipelineStateMultiply; // Multiply blend
+    ComPtr<ID3D12PipelineState> m_texturedPipelineStateScreen;   // Screen blend
 
     // Mapping surface rendering pipeline (for projection mapping)
     ComPtr<ID3D12RootSignature> m_mappingSurfaceRootSignature;
@@ -337,7 +367,7 @@ private:
         DirectX::XMFLOAT4X4 transform;
         DirectX::XMFLOAT4 color;
         float opacity;
-        float padding1;
+        uint32_t blendMode;    // 0=Normal, 1=Add, 2=Multiply, 3=Screen
         float padding2;
         float padding3;
     };
@@ -356,6 +386,12 @@ private:
     uint32_t m_width;
     uint32_t m_height;
     bool m_initialized;
+
+    // Screenshot capture staging buffer
+    ComPtr<ID3D12Resource> m_screenshotStagingBuffer;
+    uint32_t m_screenshotStagingWidth{0};
+    uint32_t m_screenshotStagingHeight{0};
+    uint64_t m_screenshotStagingRowPitch{0};
 };
 
 } // namespace entity

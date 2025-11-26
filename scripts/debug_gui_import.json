@@ -1,0 +1,21 @@
+{
+    "version": 1,
+    "description": "Test import overlap detection with GUI screenshots",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "LogClipState"},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/gui_timeline.png", "region": "fullWindow"},
+        {"type": "CaptureScreenshot", "filepath": "debug/compose_frame0.png"},
+
+        {"type": "Exit"}
+    ]
+}

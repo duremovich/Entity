@@ -148,15 +148,19 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
 }
 
 void FrameRingBuffer::clear() {
-    // Clear all frames
+    // IMPORTANT: Set count to 0 FIRST to prevent data race
+    // Other threads check count before accessing frames, so this ensures
+    // they see empty buffer before we start clearing frame data
+    m_count.store(0, std::memory_order_seq_cst);
+
+    // Reset indices
+    m_writeIndex.store(0, std::memory_order_release);
+    m_readIndex.store(0, std::memory_order_release);
+
+    // Now safe to clear frame data - other threads won't access with count=0
     for (auto& frame : m_frames) {
         frame.clear();
     }
-
-    // Reset indices and count
-    m_writeIndex.store(0, std::memory_order_release);
-    m_readIndex.store(0, std::memory_order_release);
-    m_count.store(0, std::memory_order_release);
 }
 
 } // namespace entity

@@ -81,6 +81,13 @@ public:
     using ExitCallback = std::function<void()>;
     void setExitCallback(ExitCallback callback) { m_exitCallback = callback; }
 
+    /**
+     * Set callback for run script action.
+     * Callback receives the selected script file path.
+     */
+    using RunScriptCallback = std::function<void(const std::string&)>;
+    void setRunScriptCallback(RunScriptCallback callback) { m_runScriptCallback = callback; }
+
 private:
     /**
      * Render the menu bar with window visibility toggles.
@@ -105,6 +112,12 @@ private:
      */
     std::string openProjectFileDialog();
 
+    /**
+     * Open Windows native file dialog for script selection.
+     * Returns the selected file path, or empty string if cancelled.
+     */
+    std::string openScriptFileDialog();
+
 private:
     std::vector<std::unique_ptr<EditorWindow>> m_windows;
     ImGuiID m_dockspaceId{0};
@@ -114,6 +127,7 @@ private:
     SaveProjectCallback m_saveProjectCallback;
     OpenProjectCallback m_openProjectCallback;
     ExitCallback m_exitCallback;
+    RunScriptCallback m_runScriptCallback;
 };
 
 } // namespace entity

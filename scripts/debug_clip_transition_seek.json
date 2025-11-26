@@ -1,0 +1,26 @@
+{
+    "version": 1,
+    "description": "Test clip transitions by seeking directly to each clip's start frame",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 1000000},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 2000000},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "LogClipState"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_clip1_red.png"},
+
+        {"type": "SeekToFrame", "frame": 35},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_clip2_blue.png"},
+
+        {"type": "SeekToFrame", "frame": 65},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_clip3_green.png"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

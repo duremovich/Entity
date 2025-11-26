@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <functional>
+#include <unordered_set>
 
 namespace entity {
 
@@ -133,6 +134,18 @@ public:
     void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
     entt::entity getSelectedClip() const { return m_selectedClip; }
 
+    // Expansion state (for twirl-down property tracks)
+    void setClipExpanded(entt::entity clip, bool expanded) {
+        if (expanded) {
+            m_expandedClips.insert(static_cast<uint32_t>(clip));
+        } else {
+            m_expandedClips.erase(static_cast<uint32_t>(clip));
+        }
+    }
+    bool isClipExpanded(entt::entity clip) const {
+        return m_expandedClips.count(static_cast<uint32_t>(clip)) > 0;
+    }
+
     /**
      * Set callback for when new clips are created (split, duplicate).
      * Engine uses this to create decoders and GPU resources.
@@ -153,6 +166,7 @@ private:
 
     // Selection state
     entt::entity m_selectedClip{entt::null};
+    std::unordered_set<uint32_t> m_expandedClips;
 
     // Callback for clip creation
     ClipCreatedCallback m_clipCreatedCallback;

@@ -1,0 +1,47 @@
+{
+    "version": 1,
+    "description": "Test freeze at clip boundaries - seek before boundary, play through it",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 12400000},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 24800000},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+        {"type": "SelectTab", "tabName": "Stage"},
+
+        {"type": "SeekToFrame", "frame": 360},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "CaptureScreenshot", "filepath": "debug/boundary_before_play1.png"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/boundary_after_play1.png"},
+
+        {"type": "SeekToFrame", "frame": 360},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/boundary_after_play2.png"},
+
+        {"type": "SeekToFrame", "frame": 730},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/boundary_after_play3.png"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 600},
+        {"type": "Pause"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "Test script: Import a video file and play it",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/test_video.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "screenshots/test_frame_0.png"},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "screenshots/test_frame_90.png"}
+    ]
+}

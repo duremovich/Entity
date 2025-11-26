@@ -1,0 +1,30 @@
+{
+    "version": 1,
+    "description": "Test rotation clipping fix and Stage tab default",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/rotation_none.png", "region": "fullWindow"},
+
+        {"type": "SetClipRotation", "trackIndex": 0, "clipIndex": 0, "rotationX": 30, "rotationY": 0, "rotationZ": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/rotation_x30.png", "region": "fullWindow"},
+
+        {"type": "SetClipRotation", "trackIndex": 0, "clipIndex": 0, "rotationX": 0, "rotationY": 30, "rotationZ": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/rotation_y30.png", "region": "fullWindow"},
+
+        {"type": "SetClipRotation", "trackIndex": 0, "clipIndex": 0, "rotationX": 45, "rotationY": 45, "rotationZ": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/rotation_xy45.png", "region": "fullWindow"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

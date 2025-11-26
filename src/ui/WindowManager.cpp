@@ -133,6 +133,15 @@ void WindowManager::renderMenuBar() {
 
             ImGui::Separator();
 
+            if (ImGui::MenuItem("Run Script...", nullptr)) {
+                std::string filePath = openScriptFileDialog();
+                if (!filePath.empty() && m_runScriptCallback) {
+                    m_runScriptCallback(filePath);
+                }
+            }
+
+            ImGui::Separator();
+
             if (ImGui::MenuItem("Exit", "Esc")) {
                 if (m_exitCallback) {
                     m_exitCallback();
@@ -192,6 +201,11 @@ void WindowManager::renderMenuBar() {
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Timeline View:");
                 ImGui::BulletText("Alt+Scroll   - Zoom in/out");
 
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Window Management:");
+                ImGui::BulletText("Shift+Drag   - Undock window from panel");
+                ImGui::BulletText("Drag tab     - Reorder tabs within panel");
+
                 ImGui::EndMenu();
             }
 
@@ -226,10 +240,11 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     ImGuiID dockCenter = dockspaceId;  // Remaining center area is for Stage
 
     // Dock windows to their designated nodes
+    // Note: Last window docked to a node becomes the active tab
     ImGui::DockBuilderDockWindow("Timeline", dockBottom);
     ImGui::DockBuilderDockWindow("Media Bin", dockLeft);
-    ImGui::DockBuilderDockWindow("Stage", dockCenter);
-    ImGui::DockBuilderDockWindow("Mapping", dockCenter);  // Tabbed with Stage
+    ImGui::DockBuilderDockWindow("Mapping", dockCenter);  // Dock Mapping first
+    ImGui::DockBuilderDockWindow("Stage", dockCenter);    // Stage docked last = active tab
     ImGui::DockBuilderDockWindow("Properties", dockRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
@@ -290,6 +305,37 @@ std::string WindowManager::openProjectFileDialog() {
 
     if (GetOpenFileNameA(&ofn) == TRUE) {
         std::cout << "Selected project file: " << ofn.lpstrFile << std::endl;
+        return std::string(ofn.lpstrFile);
+    }
+
+    return "";  // User cancelled
+#else
+    std::cerr << "File dialog not implemented for this platform" << std::endl;
+    return "";
+#endif
+}
+
+std::string WindowManager::openScriptFileDialog() {
+#ifdef _WIN32
+    // Windows native file dialog for script files
+    OPENFILENAMEA ofn;
+    char szFile[260] = {0};
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile);
+    ofn.lpstrFilter = "JSON Script Files\0*.json\0"
+                      "All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFileTitle = NULL;
+    ofn.nMaxFileTitle = 0;
+    ofn.lpstrInitialDir = NULL;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameA(&ofn) == TRUE) {
+        std::cout << "Selected script file: " << ofn.lpstrFile << std::endl;
         return std::string(ofn.lpstrFile);
     }
 

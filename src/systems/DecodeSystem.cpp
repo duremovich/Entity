@@ -176,6 +176,12 @@ void DecodeSystem::seekClip(entt::entity clipEntity, FrameNumber frame) {
     DecodeWorker* worker = workerIt->second.get();
     if (!worker) return;
 
+    // If worker is still initializing, just update the target for when it's ready
+    // The decode thread will pick up the seek after initialization completes
+    if (worker->initFailed.load()) {
+        return;  // Worker failed to initialize, skip
+    }
+
     // Signal seek to decode thread
     worker->seekTarget.store(frame);
     worker->seekPending.store(true);
@@ -210,6 +216,8 @@ const DecodeWorker* DecodeSystem::getWorker(entt::entity clipEntity) const {
 }
 
 void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, FrameNumber initialFrame) {
+    auto totalStart = std::chrono::high_resolution_clock::now();
+
     auto* clip = registry.try_get<Clip>(entity);
     auto* frameBuffer = registry.try_get<FrameBuffer>(entity);
 
@@ -218,47 +226,53 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
         return;
     }
 
-    // Create decoder for this clip's media type
-    auto decoder = createDecoder(clip->mediaType);
-    if (!decoder) {
-        std::cerr << "Failed to create decoder for media type: "
-                  << static_cast<int>(clip->mediaType) << std::endl;
-        return;
-    }
-
-    // Open the media file
-    Result result = decoder->open(clip->filepath);
-    if (result != Result::Success) {
-        std::cerr << "Failed to open media file: " << clip->filepath << std::endl;
-        return;
-    }
-
     // Create ring buffer if not already present
+    auto ringBufferStart = std::chrono::high_resolution_clock::now();
     if (!frameBuffer->ringBuffer) {
         frameBuffer->ringBuffer = std::make_shared<FrameRingBuffer>();
     }
+    auto ringBufferElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - ringBufferStart).count();
 
-    // Create worker - start at the initial frame position (usually current playhead)
-    // This ensures buffering starts at the right position for instant playback
+    // Create worker with DEFERRED initialization
+    // Decoder is opened in the worker thread to avoid blocking the main thread
+    // This prevents freezes when clips become active during playback
+    auto workerCreateStart = std::chrono::high_resolution_clock::now();
     auto worker = std::make_unique<DecodeWorker>();
-    worker->decoder = std::move(decoder);
     worker->ringBuffer = frameBuffer->ringBuffer;
     worker->running.store(true);
     worker->currentFrame.store(initialFrame);
     worker->targetFrame.store(initialFrame + DECODE_AHEAD_FRAMES);
 
+    // Store info for deferred decoder initialization in worker thread
+    worker->filepath = clip->filepath;
+    worker->mediaType = clip->mediaType;
+    worker->initialized.store(false);
+    worker->initFailed.store(false);
+
     // Set up initial seek to the correct position
     worker->seekTarget.store(initialFrame);
     worker->seekPending.store(true);
+    auto workerCreateElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - workerCreateStart).count();
 
-    // Start decode thread
+    // Start decode thread (decoder will be opened there, not here)
+    auto threadStart = std::chrono::high_resolution_clock::now();
     DecodeWorker* workerPtr = worker.get();
     worker->thread = std::thread(&DecodeSystem::decodeThreadFunc, workerPtr, entity);
+    auto threadElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - threadStart).count();
 
     m_workers[entity] = std::move(worker);
 
-    std::cout << "Created decode worker for clip: " << clip->filepath
-              << " starting at frame " << initialFrame << std::endl;
+    auto totalElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - totalStart).count();
+
+    std::cout << "[TIMING] createWorker total=" << totalElapsed << "us"
+              << " (ringBuffer=" << ringBufferElapsed << "us"
+              << ", workerCreate=" << workerCreateElapsed << "us"
+              << ", thread=" << threadElapsed << "us)"
+              << " for " << clip->filepath << std::endl;
 }
 
 void DecodeSystem::destroyWorker(entt::entity entity) {
@@ -282,13 +296,37 @@ void DecodeSystem::destroyWorker(entt::entity entity) {
 }
 
 void DecodeSystem::decodeThreadFunc(DecodeWorker* worker, entt::entity entity) {
-    if (!worker || !worker->decoder || !worker->ringBuffer) {
+    if (!worker || !worker->ringBuffer) {
         std::cerr << "Decode thread started with invalid worker state" << std::endl;
         return;
     }
 
-    std::cout << "Decode thread started for entity" << std::endl;
+    std::cout << "Decode thread started for entity (initializing decoder...)" << std::endl;
 
+    // DEFERRED INITIALIZATION: Open decoder in worker thread, not main thread
+    // This prevents blocking the main render loop when clips become active
+    auto decoder = createDecoder(worker->mediaType);
+    if (!decoder) {
+        std::cerr << "Decode thread: Failed to create decoder for media type: "
+                  << static_cast<int>(worker->mediaType) << std::endl;
+        worker->initFailed.store(true);
+        return;
+    }
+
+    Result openResult = decoder->open(worker->filepath);
+    if (openResult != Result::Success) {
+        std::cerr << "Decode thread: Failed to open media file: " << worker->filepath << std::endl;
+        worker->initFailed.store(true);
+        return;
+    }
+
+    // Store the decoder and mark as initialized
+    worker->decoder = std::move(decoder);
+    worker->initialized.store(true);
+
+    std::cout << "Decode thread: Decoder initialized for " << worker->filepath << std::endl;
+
+    // Allocate frame buffer based on decoder dimensions
     DecodedFrame frame;
     frame.allocate(worker->decoder->getWidth(), worker->decoder->getHeight());
 

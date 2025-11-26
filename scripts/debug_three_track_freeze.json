@@ -1,0 +1,36 @@
+{
+    "version": 1,
+    "description": "Reproduce freeze: 3 clips on different tracks, offset in time, play through, seek back, play again",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 1, "position": 2000000},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 2, "position": 4000000},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+        {"type": "SelectTab", "tabName": "Stage"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 600},
+        {"type": "Pause"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 600},
+        {"type": "Pause"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 600},
+        {"type": "Pause"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

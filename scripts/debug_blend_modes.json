@@ -1,0 +1,31 @@
+{
+    "version": 1,
+    "description": "Test all blend modes with screenshots - uses RED and BLUE test clips",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 1},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "LogClipState"},
+
+        {"type": "SetClipBlendMode", "trackIndex": 1, "clipIndex": 0, "blendMode": "Normal"},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/blend_normal.png"},
+
+        {"type": "SetClipBlendMode", "trackIndex": 1, "clipIndex": 0, "blendMode": "Add"},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/blend_add.png"},
+
+        {"type": "SetClipBlendMode", "trackIndex": 1, "clipIndex": 0, "blendMode": "Multiply"},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/blend_multiply.png"},
+
+        {"type": "SetClipBlendMode", "trackIndex": 1, "clipIndex": 0, "blendMode": "Screen"},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/blend_screen.png"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

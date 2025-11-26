@@ -9,13 +9,36 @@
 namespace entity {
 
 StageWindow::StageWindow(Engine* engine)
-    : m_engine(engine) {
-    // Constructor
+    : m_engine(engine)
+    , m_3dRenderer(std::make_unique<Stage3DRenderer>()) {
+    // Initialize camera to default position
+    m_3dRenderer->getCamera().reset();
+    m_3dRenderer->getCamera().updateFromOrbit();
 }
 
 void StageWindow::render() {
     // Get the available content region
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
+
+    // Reserve space for toolbar (if needed)
+    float toolbarHeight = 25.0f;
+    ImVec2 viewSize(contentSize.x, contentSize.y - toolbarHeight);
+
+    // Render the view based on current mode
+    if (m_viewMode == StageViewMode::View3D) {
+        render3DView();
+    } else {
+        render2DView();
+    }
+
+    // Render toolbar at bottom
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + viewSize.y);
+    renderToolbar();
+}
+
+void StageWindow::render2DView() {
+    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    contentSize.y -= 25.0f;  // Reserve toolbar space
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
@@ -116,12 +139,106 @@ void StageWindow::render() {
         );
 
         // Draw instruction text
-        const char* instructionText = "No Video Loaded\n\nFile > Open Video to load PNG sequence or video file";
+        const char* instructionText = "No Video Loaded\n\nFile > Import Video to load PNG sequence or video file";
         ImVec2 textSize = ImGui::CalcTextSize(instructionText);
         ImVec2 textPos(center.x - textSize.x * 0.5f, center.y + crosshairSize + 10.0f);
 
         drawList->AddText(textPos, IM_COL32(150, 150, 150, 255), instructionText);
     }
+}
+
+void StageWindow::render3DView() {
+    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    contentSize.y -= 25.0f;  // Reserve toolbar space
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 windowPos = ImGui::GetCursorScreenPos();
+
+    D3D12Renderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
+
+    // Get compose texture if available
+    ImTextureID textureID = nullptr;
+    if (renderer && renderer->isComposeTargetReady()) {
+        textureID = static_cast<ImTextureID>(renderer->getComposeTargetTextureID());
+    }
+
+    // Render the 3D stage
+    m_3dRenderer->render(drawList, windowPos, contentSize, textureID);
+
+    // Handle input
+    ImGuiIO& io = ImGui::GetIO();
+    bool isHovered = ImGui::IsWindowHovered();
+
+    if (isHovered) {
+        m_3dRenderer->handleInput(
+            io.MousePos,
+            windowPos, contentSize,
+            io.MouseDown[0],  // Left button
+            io.MouseDown[1],  // Right button
+            io.MouseDown[2],  // Middle button
+            io.KeyShift,
+            io.MouseWheel
+        );
+    }
+
+    // Advance cursor past the 3D view area
+    ImGui::Dummy(contentSize);
+}
+
+void StageWindow::renderToolbar() {
+    ImGui::Separator();
+
+    // View mode buttons
+    ImGui::BeginGroup();
+
+    bool is2D = (m_viewMode == StageViewMode::View2D);
+    bool is3D = (m_viewMode == StageViewMode::View3D);
+
+    if (is2D) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    if (ImGui::SmallButton("2D")) {
+        m_viewMode = StageViewMode::View2D;
+    }
+    if (is2D) ImGui::PopStyleColor();
+
+    ImGui::SameLine();
+
+    if (is3D) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    if (ImGui::SmallButton("3D")) {
+        m_viewMode = StageViewMode::View3D;
+    }
+    if (is3D) ImGui::PopStyleColor();
+
+    // Camera presets (only in 3D mode)
+    if (m_viewMode == StageViewMode::View3D && m_3dRenderer) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (ImGui::SmallButton("Reset")) {
+            m_3dRenderer->getCamera().reset();
+            m_3dRenderer->getCamera().updateFromOrbit();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Front")) {
+            m_3dRenderer->getCamera().setFrontView();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Top")) {
+            m_3dRenderer->getCamera().setTopView();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Side")) {
+            m_3dRenderer->getCamera().setSideView();
+        }
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("| LMB: Orbit  MMB: Pan  Scroll: Zoom");
+    }
+
+    ImGui::EndGroup();
 }
 
 } // namespace entity

@@ -1,0 +1,49 @@
+{
+    "version": 1,
+    "description": "Test: Play forward, seek backwards, play forward into new clip - mimics user freeze scenario",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 10000000},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+        {"type": "SelectTab", "tabName": "Stage"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_initial.png"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 120},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_after_play1.png"},
+
+        {"type": "SeekToFrame", "frame": 100},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_after_seek1.png"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_crossed_boundary1.png"},
+
+        {"type": "SeekToFrame", "frame": 200},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_before_boundary2.png"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_crossed_boundary2.png"},
+
+        {"type": "SeekToFrame", "frame": 100},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_back_crossed_boundary3.png"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

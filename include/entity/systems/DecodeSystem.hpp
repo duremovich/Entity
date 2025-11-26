@@ -36,6 +36,12 @@ struct DecodeWorker {
     std::atomic<FrameNumber> targetFrame{0};     // Target frame to decode ahead to
     std::atomic<FrameNumber> lastRequestedFrame{UINT32_MAX}; // Last frame requested by render (for discontinuity detection)
 
+    // Deferred initialization (decoder opened in worker thread, not main thread)
+    std::atomic<bool> initialized{false};        // True once decoder is opened
+    std::atomic<bool> initFailed{false};         // True if initialization failed
+    std::string filepath;                        // File path for deferred open
+    MediaType mediaType{MediaType::Unknown};     // Media type for decoder creation
+
     // Synchronization for pause/resume
     std::mutex mutex;
     std::condition_variable cv;

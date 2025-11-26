@@ -59,6 +59,13 @@ void Timeline::stop() {
 }
 
 void Timeline::seek(Timecode time) {
+    // Pause playback when seeking to prevent freezes
+    // (ring buffer gets cleared on seek, main thread would block waiting for frames)
+    if (m_playbackState == PlaybackState::Playing) {
+        m_playbackState = PlaybackState::Paused;
+        std::cout << "[Timeline] Auto-paused for seek" << std::endl;
+    }
+
     m_currentTime = time;
 
     // Clamp to valid range
@@ -450,6 +457,14 @@ bool Timeline::moveClipToTrack(entt::entity clipEntity, int newTrackIndex) {
 
     // Add to target track
     targetTrack->clips.push_back(clipEntity);
+
+    // Update zOrder to match new track
+    // Track 0 (top of timeline UI) should render on top = highest z-order
+    auto* layer = m_registry.try_get<MediaLayer>(clipEntity);
+    if (layer) {
+        layer->zOrder = 1000 - newTrackIndex;
+        std::cout << "[Timeline] Updated clip zOrder to " << layer->zOrder << " (track " << newTrackIndex << ")" << std::endl;
+    }
 
     std::cout << "[Timeline] Moved clip entity=" << static_cast<uint32_t>(clipEntity)
               << " from track " << currentTrack->trackIndex

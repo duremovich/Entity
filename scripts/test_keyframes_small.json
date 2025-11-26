@@ -1,0 +1,47 @@
+{
+    "version": 1,
+    "description": "Test keyframe animation with smaller position values",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 90},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": -100},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 60, "value": 100},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionY", "frame": 0, "value": -50},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionY", "frame": 60, "value": 50},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Rotation", "frame": 0, "value": -20},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Rotation", "frame": 60, "value": 20},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "ScaleX", "frame": 0, "value": 0.5},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "ScaleX", "frame": 60, "value": 1.5},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "ScaleY", "frame": 0, "value": 0.5},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "ScaleY", "frame": 60, "value": 1.5},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_small_frame0.png"},
+
+        {"type": "SeekToFrame", "frame": 15},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_small_frame15.png"},
+
+        {"type": "SeekToFrame", "frame": 30},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_small_frame30.png"},
+
+        {"type": "SeekToFrame", "frame": 45},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_small_frame45.png"},
+
+        {"type": "SeekToFrame", "frame": 60},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_small_frame60.png"},
+
+        {"type": "Exit"}
+    ]
+}

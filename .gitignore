@@ -97,6 +97,16 @@ test_media/
 *.prores
 *.hap
 
+# Screenshots output
+screenshots/
+debug/
+
+# ImGui settings
+imgui.ini
+
+# Script results
+script_result.json
+
 # Project files
 *.autosave
 *.backup

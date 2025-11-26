@@ -1,0 +1,35 @@
+{
+    "version": 1,
+    "description": "Test freeze: sequential clips on same track, play->seek back->play",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 13},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 26},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/freeze_test_start.png", "region": "fullWindow"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 600},
+        {"type": "Pause"},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/freeze_test_after_play1.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 350},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "Pause"},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/freeze_test_after_play2.png", "region": "fullWindow"},
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

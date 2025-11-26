@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "description": "Test keyframe UI with expanded property tracks",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 90},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": -0.5},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 30, "value": 0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 60, "value": 0.5},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 30, "value": 1},
+
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0, "expand": true},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_expanded_timeline.png", "region": "fullWindow"},
+
+        {"type": "Exit"}
+    ]
+}

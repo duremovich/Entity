@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <filesystem>
+#include <string>
 
 // Forward declarations
 struct GLFWwindow;
@@ -20,6 +21,8 @@ class Timeline;
 class WindowManager;
 class Decoder;
 class DecodeSystem;
+class AnimationSystem;
+class CommandDispatcher;
 struct DecodedFrame;
 // class Transport;
 
@@ -79,6 +82,11 @@ public:
      * Get the Timeline.
      */
     Timeline* getTimeline() { return m_timeline.get(); }
+
+    /**
+     * Get the CommandDispatcher.
+     */
+    CommandDispatcher* getCommandDispatcher() { return m_commandDispatcher.get(); }
 
     // TODO: Implement this when class is ready
     // Transport* getTransport() { return m_transport.get(); }
@@ -157,6 +165,36 @@ public:
      */
     const std::filesystem::path& getProjectPath() const { return m_projectPath; }
 
+    /**
+     * Import a video file onto the timeline.
+     * @param filepath Path to the video file
+     * @param trackIndex Target track index (0-based)
+     * @param position Position on timeline (in microseconds)
+     * @return true if import was successful
+     */
+    bool importVideo(const std::string& filepath, int trackIndex = 0, Timecode position = 0);
+
+    /**
+     * Capture a screenshot of the compose target.
+     * @param filepath Output path for PNG file
+     * @return true if capture was successful
+     */
+    bool captureScreenshot(const std::string& filepath);
+
+    /**
+     * Capture a screenshot of the entire window.
+     * @param filepath Output path for PNG file
+     * @return true if capture was successful
+     */
+    bool captureWindowScreenshot(const std::string& filepath);
+
+    /**
+     * Load and execute a script file.
+     * @param filepath Path to JSON script file
+     * @return true if script was loaded successfully
+     */
+    bool runScript(const std::string& filepath);
+
 private:
     /**
      * Update all systems for the current frame.
@@ -232,10 +270,12 @@ private:
     std::unique_ptr<D3D12Renderer> m_renderer;
     std::unique_ptr<Timeline> m_timeline;
     std::unique_ptr<WindowManager> m_windowManager;
+    std::unique_ptr<CommandDispatcher> m_commandDispatcher;
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;
     DecodeSystem* m_decodeSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
+    AnimationSystem* m_animationSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
 
     // TODO: implement when class is ready
     // std::unique_ptr<Transport> m_transport;

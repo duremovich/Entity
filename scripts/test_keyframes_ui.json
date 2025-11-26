@@ -1,0 +1,32 @@
+{
+    "version": 1,
+    "description": "Test keyframe UI visualization - show diamonds on clips in timeline",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 90},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": -0.5},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 30, "value": 0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 60, "value": 0.5},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 120, "value": 0},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 30, "value": 1},
+
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_ui_timeline.png", "region": "fullWindow"},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_ui_frame0.png"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_ui_playing.png"},
+
+        {"type": "Exit"}
+    ]
+}

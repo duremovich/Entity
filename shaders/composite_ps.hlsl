@@ -3,6 +3,9 @@
  *
  * Samples layer texture and applies opacity.
  * Uses straight (non-premultiplied) alpha from FFmpeg video decode.
+ *
+ * For non-Normal blend modes, we premultiply RGB by alpha in the shader
+ * because D3D12 blend state can't express (SrcAlpha * SrcColor * DestColor).
  */
 
 #include "common.hlsli"
@@ -15,11 +18,18 @@ float4 PSMain(PSInput input) : SV_TARGET {
     // Sample the texture (straight alpha)
     float4 color = layerTexture.Sample(samplerState, input.texCoord);
 
-    // Apply layer opacity to alpha channel only
-    // RGB stays unchanged - blend state will handle multiplication
+    // Apply layer opacity to alpha channel
     color.a *= opacity;
 
-    // Return straight alpha color
-    // Blend state (SRC_ALPHA, INV_SRC_ALPHA) handles compositing
+    // For non-Normal blend modes, premultiply RGB by alpha
+    // This is required because D3D12 blend state can't express SrcAlpha * SrcColor * DestColor
+    // Normal blend: Src * SrcAlpha + Dest * (1 - SrcAlpha) - works with straight alpha
+    // Multiply blend: Src * Dest * SrcAlpha + Dest * (1 - SrcAlpha) - needs premultiplied
+    // Add blend: Src * SrcAlpha + Dest - needs premultiplied
+    // Screen blend: similar to add
+    if (blendMode != BLEND_MODE_NORMAL) {
+        color.rgb *= color.a;
+    }
+
     return color;
 }

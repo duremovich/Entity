@@ -1,7 +1,9 @@
 #pragma once
 
 #include "EditorWindow.hpp"
+#include "../components/AnimatedProperties.hpp"
 #include <imgui.h>
+#include <functional>
 
 namespace entity {
 
@@ -48,6 +50,39 @@ private:
      * Render timeline properties (when no clip selected).
      */
     void renderTimelineProperties();
+
+    /**
+     * Render keyframe controls for a property.
+     * Shows stopwatch, prev/add/next keyframe buttons.
+     * @param property The animatable property to control
+     * @param propertyName Display name for the property
+     * @param currentValue Current value of the property
+     * @param onValueChanged Callback when value is changed via keyframe
+     */
+    void renderKeyframeControls(AnimatableProperty property, const char* propertyName,
+                                float currentValue, std::function<void(float)> onValueChanged = nullptr);
+
+    /**
+     * Get the current frame relative to the clip start.
+     * Returns -1 if playhead is outside the clip bounds.
+     */
+    int getCurrentClipFrame() const;
+
+    /**
+     * Navigate to the previous keyframe for a property.
+     */
+    void goToPreviousKeyframe(AnimatableProperty property);
+
+    /**
+     * Navigate to the next keyframe for a property.
+     */
+    void goToNextKeyframe(AnimatableProperty property);
+
+    /**
+     * Toggle keyframe at current frame for a property.
+     * If keyframe exists, removes it. Otherwise adds one with current value.
+     */
+    void toggleKeyframeAtCurrentFrame(AnimatableProperty property, float currentValue);
 
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline

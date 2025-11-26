@@ -1,0 +1,56 @@
+{
+    "version": 1,
+    "description": "Test keyframe animation: position X slides from left to right, opacity fades in",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": -400},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 60, "value": 0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 120, "value": 400},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0.0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 30, "value": 1.0},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Rotation", "frame": 0, "value": -15},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Rotation", "frame": 120, "value": 15},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_frame0.png"},
+
+        {"type": "SeekToFrame", "frame": 15},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_frame15.png"},
+
+        {"type": "SeekToFrame", "frame": 30},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_frame30.png"},
+
+        {"type": "SeekToFrame", "frame": 60},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_frame60.png"},
+
+        {"type": "SeekToFrame", "frame": 90},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_frame90.png"},
+
+        {"type": "SeekToFrame", "frame": 120},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_frame120.png"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 180},
+        {"type": "Pause"},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/keyframe_after_play.png"},
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

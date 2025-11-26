@@ -1,0 +1,38 @@
+{
+    "version": 1,
+    "description": "Test freeze: play, seek backwards, play again hitting new clip",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 400},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 800},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 180},
+        {"type": "Pause"},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "SeekToFrame", "frame": 350},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 180},
+        {"type": "Pause"},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "Pause"},
+
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

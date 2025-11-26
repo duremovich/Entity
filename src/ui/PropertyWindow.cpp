@@ -10,6 +10,7 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/AnimatedProperties.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -91,28 +92,41 @@ void PropertyWindow::renderTransformSection() {
         return;
     }
 
-    // Position (NDC: -1 to 1 range, center is 0,0)
-    ImGui::Text("Position");
+    // Position X with keyframe controls
+    renderKeyframeControls(AnimatableProperty::PositionX, "Position X", transform->position.x);
     ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Position in NDC (-1 to 1).\n0,0 = center, -1,-1 = bottom-left, 1,1 = top-right");
-    }
+    ImGui::Text("Position X");
     ImGui::SetNextItemWidth(-1);
-    float pos[3] = { transform->position.x, transform->position.y, transform->position.z };
-    if (ImGui::DragFloat3("##position", pos, 0.01f, -2.0f, 2.0f, "%.3f")) {
-        transform->setPosition(glm::vec3(pos[0], pos[1], pos[2]));
+    float posX = transform->position.x;
+    if (ImGui::DragFloat("##posX", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
+        transform->setPosition(glm::vec3(posX, transform->position.y, transform->position.z));
     }
 
-    // Rotation (already stored in degrees in Transform)
+    // Position Y with keyframe controls
+    renderKeyframeControls(AnimatableProperty::PositionY, "Position Y", transform->position.y);
+    ImGui::SameLine();
+    ImGui::Text("Position Y");
+    ImGui::SetNextItemWidth(-1);
+    float posY = transform->position.y;
+    if (ImGui::DragFloat("##posY", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
+        transform->setPosition(glm::vec3(transform->position.x, posY, transform->position.z));
+    }
+
+    ImGui::Spacing();
+
+    // Rotation Z with keyframe controls
+    renderKeyframeControls(AnimatableProperty::Rotation, "Rotation", transform->rotation.z);
+    ImGui::SameLine();
     ImGui::Text("Rotation");
     ImGui::SetNextItemWidth(-1);
-    float rot[3] = { transform->rotation.x, transform->rotation.y, transform->rotation.z };
-    if (ImGui::DragFloat3("##rotation", rot, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
-        transform->setRotation(glm::vec3(rot[0], rot[1], rot[2]));
+    float rotZ = transform->rotation.z;
+    if (ImGui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
+        transform->setRotation(glm::vec3(transform->rotation.x, transform->rotation.y, rotZ));
     }
 
-    // Scale (1.0 = fullscreen, 0.5 = half size)
+    ImGui::Spacing();
+
+    // Scale section
     ImGui::Text("Scale");
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
@@ -120,34 +134,40 @@ void PropertyWindow::renderTransformSection() {
         ImGui::SetTooltip("Scale factor. 1.0 = fullscreen, 0.5 = half size");
     }
 
-    // Uniform scale checkbox (before scale widget so user sees the option)
+    // Uniform scale checkbox
     static bool uniformScale = true;
     ImGui::Checkbox("Uniform Scale", &uniformScale);
 
+    // Scale X with keyframe controls
+    renderKeyframeControls(AnimatableProperty::ScaleX, "Scale X", transform->scale.x);
+    ImGui::SameLine();
+    ImGui::Text("Scale X");
     ImGui::SetNextItemWidth(-1);
-    float scale[3] = { transform->scale.x, transform->scale.y, transform->scale.z };
-    float prevScale[3] = { scale[0], scale[1], scale[2] };  // Store previous values
-
-    if (ImGui::DragFloat3("##scale", scale, 0.01f, 0.01f, 10.0f, "%.3f")) {
-        if (uniformScale) {
-            // Find which axis changed and apply ratio to all axes
-            float ratio = 1.0f;
-            for (int i = 0; i < 3; ++i) {
-                if (std::abs(scale[i] - prevScale[i]) > 0.0001f && prevScale[i] > 0.0001f) {
-                    ratio = scale[i] / prevScale[i];
-                    break;
-                }
-            }
-            // Apply ratio to all axes
-            scale[0] = prevScale[0] * ratio;
-            scale[1] = prevScale[1] * ratio;
-            scale[2] = prevScale[2] * ratio;
-            // Clamp to valid range
-            for (int i = 0; i < 3; ++i) {
-                scale[i] = std::max(0.01f, std::min(10.0f, scale[i]));
-            }
+    float scaleX = transform->scale.x;
+    float prevScaleX = scaleX;
+    if (ImGui::DragFloat("##scaleX", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
+        if (uniformScale && prevScaleX > 0.0001f) {
+            float ratio = scaleX / prevScaleX;
+            transform->setScale(glm::vec3(scaleX, transform->scale.y * ratio, transform->scale.z * ratio));
+        } else {
+            transform->setScale(glm::vec3(scaleX, transform->scale.y, transform->scale.z));
         }
-        transform->setScale(glm::vec3(scale[0], scale[1], scale[2]));
+    }
+
+    // Scale Y with keyframe controls
+    renderKeyframeControls(AnimatableProperty::ScaleY, "Scale Y", transform->scale.y);
+    ImGui::SameLine();
+    ImGui::Text("Scale Y");
+    ImGui::SetNextItemWidth(-1);
+    float scaleY = transform->scale.y;
+    float prevScaleY = scaleY;
+    if (ImGui::DragFloat("##scaleY", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
+        if (uniformScale && prevScaleY > 0.0001f) {
+            float ratio = scaleY / prevScaleY;
+            transform->setScale(glm::vec3(transform->scale.x * ratio, scaleY, transform->scale.z * ratio));
+        } else {
+            transform->setScale(glm::vec3(transform->scale.x, scaleY, transform->scale.z));
+        }
     }
 
     ImGui::Spacing();
@@ -172,7 +192,9 @@ void PropertyWindow::renderLayerSection() {
         return;
     }
 
-    // Opacity slider
+    // Opacity with keyframe controls
+    renderKeyframeControls(AnimatableProperty::Opacity, "Opacity", layer->opacity);
+    ImGui::SameLine();
     ImGui::Text("Opacity");
     ImGui::SetNextItemWidth(-1);
     float opacity = layer->opacity;
@@ -301,6 +323,228 @@ void PropertyWindow::renderTimelineProperties() {
     ImGui::Separator();
     ImGui::Spacing();
     ImGui::TextDisabled("Select a clip to edit its properties");
+}
+
+int PropertyWindow::getCurrentClipFrame() const {
+    if (!m_timeline) return -1;
+
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return -1;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto* clip = registry.try_get<Clip>(selectedClip);
+    if (!clip) return -1;
+
+    // Get current timeline frame
+    Timecode currentTime = m_timeline->getCurrentTime();
+    FrameNumber currentFrame = static_cast<FrameNumber>(
+        (currentTime / 1000000.0) * m_timeline->getFrameRate());
+
+    // Convert to clip-relative frame
+    FrameNumber clipFrame = currentFrame - clip->startFrame;
+
+    // Check if playhead is within clip bounds
+    if (clipFrame < 0 || clipFrame >= clip->duration) {
+        return -1;  // Playhead outside clip
+    }
+
+    return static_cast<int>(clipFrame);
+}
+
+void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
+    if (!m_timeline) return;
+
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
+    const auto* clip = registry.try_get<Clip>(selectedClip);
+    if (!animProps || !clip) return;
+
+    const KeyframeTrack* track = animProps->getTrack(property);
+    if (!track || track->keyframes.empty()) return;
+
+    // Get current clip frame
+    int currentClipFrame = getCurrentClipFrame();
+    if (currentClipFrame < 0) {
+        // If outside clip, go to last keyframe
+        FrameNumber lastKfFrame = track->keyframes.back().frame;
+        FrameNumber timelineFrame = clip->startFrame + lastKfFrame;
+        Timecode targetTime = static_cast<Timecode>(
+            (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
+        m_timeline->seek(targetTime);
+        return;
+    }
+
+    // Find previous keyframe
+    FrameNumber prevFrame = -1;
+    for (const auto& kf : track->keyframes) {
+        if (kf.frame < currentClipFrame) {
+            prevFrame = kf.frame;
+        } else {
+            break;  // Keyframes are sorted, stop when we pass current
+        }
+    }
+
+    if (prevFrame >= 0) {
+        FrameNumber timelineFrame = clip->startFrame + prevFrame;
+        Timecode targetTime = static_cast<Timecode>(
+            (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
+        m_timeline->seek(targetTime);
+    }
+}
+
+void PropertyWindow::goToNextKeyframe(AnimatableProperty property) {
+    if (!m_timeline) return;
+
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
+    const auto* clip = registry.try_get<Clip>(selectedClip);
+    if (!animProps || !clip) return;
+
+    const KeyframeTrack* track = animProps->getTrack(property);
+    if (!track || track->keyframes.empty()) return;
+
+    // Get current clip frame
+    int currentClipFrame = getCurrentClipFrame();
+    if (currentClipFrame < 0) {
+        // If outside clip, go to first keyframe
+        FrameNumber firstKfFrame = track->keyframes.front().frame;
+        FrameNumber timelineFrame = clip->startFrame + firstKfFrame;
+        Timecode targetTime = static_cast<Timecode>(
+            (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
+        m_timeline->seek(targetTime);
+        return;
+    }
+
+    // Find next keyframe
+    for (const auto& kf : track->keyframes) {
+        if (kf.frame > currentClipFrame) {
+            FrameNumber timelineFrame = clip->startFrame + kf.frame;
+            Timecode targetTime = static_cast<Timecode>(
+                (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
+            m_timeline->seek(targetTime);
+            return;
+        }
+    }
+}
+
+void PropertyWindow::toggleKeyframeAtCurrentFrame(AnimatableProperty property, float currentValue) {
+    if (!m_timeline) return;
+
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return;
+
+    int clipFrame = getCurrentClipFrame();
+    if (clipFrame < 0) return;  // Playhead not on clip
+
+    auto& registry = m_timeline->getRegistry();
+
+    // Get or create AnimatedProperties component
+    auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
+    if (!animProps) {
+        registry.emplace<AnimatedProperties>(selectedClip);
+        animProps = registry.try_get<AnimatedProperties>(selectedClip);
+    }
+
+    KeyframeTrack& track = animProps->getOrCreateTrack(property);
+
+    // Check if keyframe exists at this frame
+    const Keyframe* existingKf = track.getKeyframeAt(static_cast<FrameNumber>(clipFrame));
+    if (existingKf) {
+        // Remove existing keyframe
+        track.removeKeyframe(static_cast<FrameNumber>(clipFrame));
+    } else {
+        // Add new keyframe with current value
+        track.addKeyframe(static_cast<FrameNumber>(clipFrame), currentValue);
+    }
+}
+
+void PropertyWindow::renderKeyframeControls(AnimatableProperty property, const char* propertyName,
+                                            float currentValue, std::function<void(float)> onValueChanged) {
+    if (!m_timeline) return;
+
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
+    const KeyframeTrack* track = animProps ? animProps->getTrack(property) : nullptr;
+
+    bool hasKeyframes = track && track->hasKeyframes();
+    int clipFrame = getCurrentClipFrame();
+    bool hasKeyframeAtCurrentFrame = false;
+
+    if (track && clipFrame >= 0) {
+        hasKeyframeAtCurrentFrame = (track->getKeyframeAt(static_cast<FrameNumber>(clipFrame)) != nullptr);
+    }
+
+    // Push unique ID for this property's controls
+    ImGui::PushID(static_cast<int>(property));
+
+    // Stopwatch button (filled if has keyframes)
+    ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255) : IM_COL32(128, 128, 128, 255);
+    ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
+    if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
+        // Toggle animation - if no keyframes, add one at current frame
+        // If has keyframes, we could clear them (but let's just add at current frame for now)
+        if (clipFrame >= 0) {
+            toggleKeyframeAtCurrentFrame(property, currentValue);
+        }
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(hasKeyframes ? "Animation enabled - click to toggle keyframe at current frame"
+                                       : "Click to add keyframe at current frame");
+    }
+
+    ImGui::SameLine();
+
+    // Previous keyframe button
+    bool canGoPrev = hasKeyframes && clipFrame > 0;
+    if (!canGoPrev) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("<")) {
+        goToPreviousKeyframe(property);
+    }
+    if (!canGoPrev) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Go to previous keyframe");
+    }
+
+    ImGui::SameLine();
+
+    // Add/remove keyframe diamond button
+    ImU32 diamondColor = hasKeyframeAtCurrentFrame ? IM_COL32(255, 180, 50, 255) : IM_COL32(128, 128, 128, 255);
+    ImGui::PushStyleColor(ImGuiCol_Text, diamondColor);
+    if (ImGui::SmallButton(hasKeyframeAtCurrentFrame ? "<>" : "<>")) {
+        if (clipFrame >= 0) {
+            toggleKeyframeAtCurrentFrame(property, currentValue);
+        }
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(hasKeyframeAtCurrentFrame ? "Remove keyframe at current frame"
+                                                    : "Add keyframe at current frame");
+    }
+
+    ImGui::SameLine();
+
+    // Next keyframe button
+    bool canGoNext = hasKeyframes;
+    if (!canGoNext) ImGui::BeginDisabled();
+    if (ImGui::SmallButton(">")) {
+        goToNextKeyframe(property);
+    }
+    if (!canGoNext) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Go to next keyframe");
+    }
+
+    ImGui::PopID();
 }
 
 } // namespace entity

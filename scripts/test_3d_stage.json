@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "Test 3D stage visualization",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 90},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/3d_stage_default.png", "region": "fullWindow"},
+
+        {"type": "Exit"}
+    ]
+}

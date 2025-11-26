@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "description": "Test clip activation during playback - places 3 clips sequentially on same track",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 1000000},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 2000000},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "LogClipState"},
+        {"type": "CaptureScreenshot", "filepath": "debug/clip1_start.png"},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 45},
+        {"type": "CaptureScreenshot", "filepath": "debug/clip2_transition.png"},
+        {"type": "WaitFrames", "count": 45},
+        {"type": "CaptureScreenshot", "filepath": "debug/clip3_transition.png"},
+        {"type": "Pause"},
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

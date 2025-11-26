@@ -99,6 +99,7 @@ target_sources(EntityMediaCore
         # Render
         src/render/D3D12Renderer.cpp
         src/render/OutputManager.cpp
+        src/render/Stage3DRenderer.cpp
 
         # Timeline
         src/timeline/Timeline.cpp
@@ -117,11 +118,16 @@ target_sources(EntityMediaCore
         # Systems
         src/systems/DecodeSystem.cpp
         src/systems/CompositorSystem.cpp
+        src/systems/AnimationSystem.cpp
         # src/systems/RenderSystem.cpp
         # src/systems/TimelineSystem.cpp
 
         # Project
         src/project/ProjectSerializer.cpp
+
+        # Command System
+        src/command/CommandDispatcher.cpp
+        src/command/Commands.cpp
 )
 
 target_include_directories(EntityMediaCore

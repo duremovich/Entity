@@ -1,9 +1,12 @@
 #pragma once
 
 #include "entity/timeline/Timeline.hpp"
+#include "entity/components/AnimatedProperties.hpp"
 #include <imgui.h>
 #include <functional>
 #include <string>
+#include <unordered_set>
+#include <unordered_map>
 
 namespace entity {
 
@@ -84,15 +87,33 @@ private:
 
     /**
      * Render a single track lane.
-     * @param baseWindowPos Base window position to use for all tracks (prevents cursor drift)
+     * @param baseWindowPos Base window position to use for this track
+     * @param trackHeight Height of this track (may be taller if clips are expanded)
      */
-    void renderTrack(entt::entity trackEntity, int trackIndex, ImVec2 baseWindowPos);
+    void renderTrack(entt::entity trackEntity, int trackIndex, ImVec2 baseWindowPos, float trackHeight);
 
     /**
      * Render a clip within a track.
      * @param baseWindowPos Base window position to use for positioning
+     * @return Height of rendered content (clip + expanded properties)
      */
-    void renderClip(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos);
+    float renderClip(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos);
+
+    /**
+     * Render property tracks for an expanded clip.
+     * @return Height of rendered property tracks
+     */
+    float renderPropertyTracks(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos, float clipY);
+
+    /**
+     * Render a single property track row with stopwatch, keyframe nav, and keyframe diamonds.
+     * @param headerX X position of the header area (fixed on left)
+     * @param clipStartX X position of the clip start (scrollable)
+     */
+    void renderPropertyRow(entt::entity clipEntity, AnimatableProperty property,
+                          const char* propertyName, float rowY,
+                          float headerX, float clipStartX,
+                          float clipWidth, float clipStartFrame, float framerate);
 
     /**
      * Render the playhead indicator.
@@ -214,6 +235,17 @@ private:
 
     // Callbacks
     MediaDropCallback m_mediaDropCallback;
+
+    // Clip expansion state (for showing property tracks)
+    std::unordered_set<uint32_t> m_expandedClips;  // Set of expanded clip entity IDs
+    static constexpr float PROPERTY_ROW_HEIGHT = 20.0f;  // Height of each property track row
+    static constexpr float TRACK_HEADER_WIDTH = 150.0f;  // Width of track header area
+
+    // Keyframe editing state
+    entt::entity m_keyframeEditClip{entt::null};
+    AnimatableProperty m_keyframeEditProperty{AnimatableProperty::PositionX};
+    FrameNumber m_keyframeEditFrame{0};
+    bool m_showKeyframeContextMenu{false};
 };
 
 } // namespace entity

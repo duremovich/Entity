@@ -18,6 +18,13 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_dx12.h>
 
+// stb_image_write for PNG export
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
+#include <vector>
+#include <filesystem>
+
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -824,7 +831,7 @@ void D3D12Renderer::updateConstantBuffer(const DirectX::XMMATRIX& transform, con
     DirectX::XMStoreFloat4x4(&constants.transform, DirectX::XMMatrixTranspose(transform));
     constants.color = color;
     constants.opacity = opacity;
-    constants.padding1 = 0.0f;
+    constants.blendMode = 0;  // Normal blend mode for colored quads
     constants.padding2 = 0.0f;
     constants.padding3 = 0.0f;
 
@@ -841,7 +848,7 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
     DirectX::XMStoreFloat4x4(&constants.transform, DirectX::XMMatrixTranspose(transform));
     constants.color = color;
     constants.opacity = opacity;
-    constants.padding1 = 0.0f;
+    constants.blendMode = 0;  // Normal blend mode for colored quads
     constants.padding2 = 0.0f;
     constants.padding3 = 0.0f;
 
@@ -891,6 +898,9 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    // Require holding Shift to undock windows (prevents accidental undocking)
+    io.ConfigDockingWithShift = true;
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -1438,35 +1448,20 @@ Result D3D12Renderer::createTexturedPipelineState() {
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
-    // Define blend state for straight (non-premultiplied) alpha blending
-    // FFmpeg outputs straight alpha, so we use SRC_ALPHA blending
-    D3D12_BLEND_DESC blendDesc = {};
-    blendDesc.AlphaToCoverageEnable = FALSE;
-    blendDesc.IndependentBlendEnable = FALSE;
-    blendDesc.RenderTarget[0].BlendEnable = TRUE;
-    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;  // Straight alpha
-    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    // Define rasterizer state
+    // Define rasterizer state (shared by all blend modes)
     D3D12_RASTERIZER_DESC rasterizerDesc = {};
     rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
     rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
     rasterizerDesc.FrontCounterClockwise = FALSE;
     rasterizerDesc.DepthClipEnable = TRUE;
 
-    // Define pipeline state
+    // Base pipeline state description (shared by all blend modes)
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
     psoDesc.pRootSignature = m_texturedRootSignature.Get();
     psoDesc.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
     psoDesc.PS = { pixelShader->GetBufferPointer(), pixelShader->GetBufferSize() };
     psoDesc.RasterizerState = rasterizerDesc;
-    psoDesc.BlendState = blendDesc;
     psoDesc.DepthStencilState.DepthEnable = FALSE;
     psoDesc.DepthStencilState.StencilEnable = FALSE;
     psoDesc.SampleMask = UINT_MAX;
@@ -1475,19 +1470,113 @@ Result D3D12Renderer::createTexturedPipelineState() {
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
 
-    HRESULT hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineState));
+    HRESULT hr;
+
+    // ========================================
+    // Normal blend mode (standard alpha blending)
+    // Result = Src * SrcAlpha + Dst * (1 - SrcAlpha)
+    // ========================================
+    D3D12_BLEND_DESC blendDescNormal = {};
+    blendDescNormal.AlphaToCoverageEnable = FALSE;
+    blendDescNormal.IndependentBlendEnable = FALSE;
+    blendDescNormal.RenderTarget[0].BlendEnable = TRUE;
+    blendDescNormal.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDescNormal.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDescNormal.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDescNormal.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDescNormal.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDescNormal.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDescNormal.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.BlendState = blendDescNormal;
+    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineState));
     if (FAILED(hr)) {
-        std::cerr << "Failed to create textured pipeline state!" << std::endl;
+        std::cerr << "Failed to create Normal blend pipeline state!" << std::endl;
         return Result::Failure;
     }
 
-    std::cout << "Textured pipeline state created" << std::endl;
+    // ========================================
+    // Add blend mode (additive blending)
+    // Result = Src * SrcAlpha + Dst
+    // ========================================
+    D3D12_BLEND_DESC blendDescAdd = {};
+    blendDescAdd.AlphaToCoverageEnable = FALSE;
+    blendDescAdd.IndependentBlendEnable = FALSE;
+    blendDescAdd.RenderTarget[0].BlendEnable = TRUE;
+    blendDescAdd.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDescAdd.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+    blendDescAdd.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDescAdd.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDescAdd.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+    blendDescAdd.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDescAdd.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.BlendState = blendDescAdd;
+    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateAdd));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create Add blend pipeline state!" << std::endl;
+        return Result::Failure;
+    }
+
+    // ========================================
+    // Multiply blend mode
+    // Result = Src * Dst (darkens image), respecting alpha
+    // Formula: lerp(Dest, Src * Dest, SrcAlpha) = Src * Dest * SrcAlpha + Dest * (1 - SrcAlpha)
+    // The pixel shader outputs premultiplied RGB, so:
+    // SrcBlend = DEST_COLOR multiplies source by destination
+    // DestBlend = INV_SRC_ALPHA preserves background where source is transparent
+    // ========================================
+    D3D12_BLEND_DESC blendDescMultiply = {};
+    blendDescMultiply.AlphaToCoverageEnable = FALSE;
+    blendDescMultiply.IndependentBlendEnable = FALSE;
+    blendDescMultiply.RenderTarget[0].BlendEnable = TRUE;
+    blendDescMultiply.RenderTarget[0].SrcBlend = D3D12_BLEND_DEST_COLOR;
+    blendDescMultiply.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDescMultiply.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDescMultiply.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDescMultiply.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDescMultiply.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDescMultiply.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.BlendState = blendDescMultiply;
+    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateMultiply));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create Multiply blend pipeline state!" << std::endl;
+        return Result::Failure;
+    }
+
+    // ========================================
+    // Screen blend mode
+    // Result = 1 - (1 - Src) * (1 - Dst) = Src + Dst - Src * Dst (lightens image)
+    // Using: Src * One + Dst * (1 - Src)
+    // ========================================
+    D3D12_BLEND_DESC blendDescScreen = {};
+    blendDescScreen.AlphaToCoverageEnable = FALSE;
+    blendDescScreen.IndependentBlendEnable = FALSE;
+    blendDescScreen.RenderTarget[0].BlendEnable = TRUE;
+    blendDescScreen.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    blendDescScreen.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_COLOR;
+    blendDescScreen.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDescScreen.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDescScreen.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDescScreen.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDescScreen.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.BlendState = blendDescScreen;
+    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateScreen));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create Screen blend pipeline state!" << std::endl;
+        return Result::Failure;
+    }
+
+    std::cout << "Textured pipeline states created (Normal, Add, Multiply, Screen)" << std::endl;
     return Result::Success;
 }
 
 void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                      const DirectX::XMMATRIX& transform,
-                                     float opacity) {
+                                     float opacity,
+                                     BlendMode blendMode) {
     if (!m_initialized || textureSrv.ptr == 0) {
         return;
     }
@@ -1497,12 +1586,30 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     DirectX::XMStoreFloat4x4(&constants.transform, DirectX::XMMatrixTranspose(transform));
     constants.color = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
     constants.opacity = opacity;
-    constants.padding1 = 0.0f;
+    constants.blendMode = static_cast<uint32_t>(blendMode);  // Pass blend mode to shader
     constants.padding2 = 0.0f;
     constants.padding3 = 0.0f;
 
+    // Select pipeline state based on blend mode
+    ID3D12PipelineState* pipelineState = m_texturedPipelineState.Get();  // Default: Normal
+    switch (blendMode) {
+        case BlendMode::Add:
+            pipelineState = m_texturedPipelineStateAdd.Get();
+            break;
+        case BlendMode::Multiply:
+            pipelineState = m_texturedPipelineStateMultiply.Get();
+            break;
+        case BlendMode::Screen:
+            pipelineState = m_texturedPipelineStateScreen.Get();
+            break;
+        default:
+            // For unsupported blend modes, fall back to Normal
+            pipelineState = m_texturedPipelineState.Get();
+            break;
+    }
+
     // Set textured pipeline state
-    m_commandList->SetPipelineState(m_texturedPipelineState.Get());
+    m_commandList->SetPipelineState(pipelineState);
     m_commandList->SetGraphicsRootSignature(m_texturedRootSignature.Get());
 
     // Set descriptor heap
@@ -2027,6 +2134,234 @@ void* D3D12Renderer::getComposeTargetTextureID() const {
         return reinterpret_cast<void*>(m_composeTargetSrvHandle.ptr);
     }
     return nullptr;
+}
+
+// ============================================================================
+// Screenshot Capture Implementation
+// ============================================================================
+
+bool D3D12Renderer::ensureScreenshotStagingBuffer(uint32_t width, uint32_t height) {
+    // Check if existing buffer is sufficient
+    if (m_screenshotStagingBuffer &&
+        m_screenshotStagingWidth >= width &&
+        m_screenshotStagingHeight >= height) {
+        return true;
+    }
+
+    // Wait for GPU before modifying resources
+    waitForGpu();
+    m_screenshotStagingBuffer.Reset();
+
+    // Calculate row pitch (must be 256-byte aligned for D3D12)
+    uint64_t rowPitch = (static_cast<uint64_t>(width) * 4 + 255) & ~255ULL;
+    uint64_t bufferSize = rowPitch * height;
+
+    // Create readback buffer
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+    heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Alignment = 0;
+    bufferDesc.Width = bufferSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.SampleDesc.Quality = 0;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT hr = m_device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&m_screenshotStagingBuffer)
+    );
+
+    if (FAILED(hr)) {
+        std::cerr << "[Screenshot] Failed to create staging buffer! HRESULT: " << std::hex << hr << std::endl;
+        return false;
+    }
+
+    m_screenshotStagingWidth = width;
+    m_screenshotStagingHeight = height;
+    m_screenshotStagingRowPitch = rowPitch;
+
+    std::cout << "[Screenshot] Created staging buffer: " << width << "x" << height
+              << " (row pitch: " << rowPitch << ")" << std::endl;
+
+    return true;
+}
+
+bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
+                                          D3D12_RESOURCE_STATES sourceState,
+                                          uint32_t width, uint32_t height,
+                                          const std::string& filepath) {
+    if (!sourceTexture) {
+        std::cerr << "[Screenshot] Source texture is null!" << std::endl;
+        return false;
+    }
+
+    if (!ensureScreenshotStagingBuffer(width, height)) {
+        return false;
+    }
+
+    // Wait for any previous GPU work
+    waitForGpu();
+
+    // Reset command allocator and command list for this operation
+    HRESULT hr = m_commandAllocators[m_currentBackBufferIndex]->Reset();
+    if (FAILED(hr)) {
+        std::cerr << "[Screenshot] Failed to reset command allocator!" << std::endl;
+        return false;
+    }
+
+    hr = m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    if (FAILED(hr)) {
+        std::cerr << "[Screenshot] Failed to reset command list!" << std::endl;
+        return false;
+    }
+
+    // Transition source texture to COPY_SOURCE if needed
+    if (sourceState != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = sourceTexture;
+        barrier.Transition.StateBefore = sourceState;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_commandList->ResourceBarrier(1, &barrier);
+    }
+
+    // Set up copy locations
+    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+    srcLocation.pResource = sourceTexture;
+    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLocation.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+    dstLocation.pResource = m_screenshotStagingBuffer.Get();
+    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLocation.PlacedFootprint.Offset = 0;
+    dstLocation.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    dstLocation.PlacedFootprint.Footprint.Width = width;
+    dstLocation.PlacedFootprint.Footprint.Height = height;
+    dstLocation.PlacedFootprint.Footprint.Depth = 1;
+    dstLocation.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(m_screenshotStagingRowPitch);
+
+    // Copy texture to staging buffer
+    m_commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+
+    // Transition source texture back to original state
+    if (sourceState != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = sourceTexture;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barrier.Transition.StateAfter = sourceState;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_commandList->ResourceBarrier(1, &barrier);
+    }
+
+    // Close and execute command list
+    hr = m_commandList->Close();
+    if (FAILED(hr)) {
+        std::cerr << "[Screenshot] Failed to close command list!" << std::endl;
+        return false;
+    }
+
+    ID3D12CommandList* commandLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(1, commandLists);
+
+    // Wait for GPU to finish the copy
+    waitForGpu();
+
+    // Map staging buffer and read pixels
+    void* mappedData = nullptr;
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(m_screenshotStagingRowPitch * height) };
+    hr = m_screenshotStagingBuffer->Map(0, &readRange, &mappedData);
+    if (FAILED(hr)) {
+        std::cerr << "[Screenshot] Failed to map staging buffer! HRESULT: " << std::hex << hr << std::endl;
+        return false;
+    }
+
+    // Copy data to a contiguous buffer, removing row pitch padding
+    std::vector<uint8_t> pixels(width * height * 4);
+    uint8_t* src = static_cast<uint8_t*>(mappedData);
+    uint8_t* dst = pixels.data();
+    for (uint32_t y = 0; y < height; ++y) {
+        memcpy(dst, src, width * 4);
+        src += m_screenshotStagingRowPitch;
+        dst += width * 4;
+    }
+
+    // Unmap
+    D3D12_RANGE writeRange = { 0, 0 }; // We didn't write
+    m_screenshotStagingBuffer->Unmap(0, &writeRange);
+
+    // Create output directory if needed
+    std::filesystem::path path(filepath);
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+
+    // Write PNG file
+    int result = stbi_write_png(
+        filepath.c_str(),
+        static_cast<int>(width),
+        static_cast<int>(height),
+        4,  // RGBA
+        pixels.data(),
+        static_cast<int>(width * 4)
+    );
+
+    if (result == 0) {
+        std::cerr << "[Screenshot] Failed to write PNG: " << filepath << std::endl;
+        return false;
+    }
+
+    std::cout << "[Screenshot] Saved: " << filepath << " (" << width << "x" << height << ")" << std::endl;
+    return true;
+}
+
+bool D3D12Renderer::captureComposeTargetToPNG(const std::string& filepath) {
+    if (!m_composeTargetReady || !m_composeTarget) {
+        std::cerr << "[Screenshot] Compose target not ready!" << std::endl;
+        return false;
+    }
+
+    return readbackTextureToPNG(
+        m_composeTarget.Get(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        m_composeTargetWidth,
+        m_composeTargetHeight,
+        filepath
+    );
+}
+
+bool D3D12Renderer::captureBackBufferToPNG(const std::string& filepath) {
+    if (!m_initialized) {
+        std::cerr << "[Screenshot] Renderer not initialized!" << std::endl;
+        return false;
+    }
+
+    // Note: Back buffer should be in PRESENT state after endFrame()
+    // We capture from the current back buffer
+    return readbackTextureToPNG(
+        m_renderTargets[m_currentBackBufferIndex].Get(),
+        D3D12_RESOURCE_STATE_PRESENT,
+        m_width,
+        m_height,
+        filepath
+    );
 }
 
 } // namespace entity

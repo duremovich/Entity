@@ -1,0 +1,33 @@
+{
+    "version": 1,
+    "description": "Test freeze with properly sequential clips (position in microseconds)",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 12400000},
+        {"type": "ImportVideo", "filepath": "test_media/GREEN_TEST.mov", "trackIndex": 0, "position": 24800000},
+        {"type": "WaitFrames", "count": 90},
+        {"type": "LogClipState"},
+
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "CaptureScreenshot", "filepath": "debug/freeze_real_gui.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 900},
+        {"type": "Pause"},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "SeekToFrame", "frame": 350},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "Pause"},
+
+        {"type": "CaptureScreenshot", "filepath": "debug/freeze_real_end.png", "region": "fullWindow"},
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

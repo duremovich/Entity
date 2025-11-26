@@ -136,8 +136,8 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
         auto* clip = registry.try_get<Clip>(entity);
 
         if (videoTex && videoTex->isValid() && videoTex->srvHandle.ptr != 0) {
-            // Draw textured quad for video layers
-            m_renderer->drawTexturedQuad(videoTex->srvHandle, transformMatrix, layer.opacity);
+            // Draw textured quad for video layers with blend mode
+            m_renderer->drawTexturedQuad(videoTex->srvHandle, transformMatrix, layer.opacity, layer.blendMode);
         } else {
             // Fallback to colored quad for non-video layers
             uint32_t entityId = static_cast<uint32_t>(entity);

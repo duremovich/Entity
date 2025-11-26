@@ -15,22 +15,14 @@ struct PSInput {
     float2 texCoord : TEXCOORD0;
 };
 
-// Constant buffer for per-layer properties
+// Constant buffer for per-layer properties (must match C++ LayerConstants struct)
 cbuffer LayerConstants : register(b0) {
     float4x4 transform;     // Transformation matrix
     float4 color;           // Layer color (RGBA)
     float opacity;          // Layer opacity (0.0 - 1.0)
-    float padding1;
+    uint blendMode;         // Blend mode: 0=Normal, 1=Add, 2=Multiply, 3=Screen
     float padding2;
     float padding3;
-};
-
-// Constant buffer for blend mode
-cbuffer BlendModeConstants : register(b1) {
-    uint blendMode;         // Blend mode enumeration
-    uint padding4;
-    uint padding5;
-    uint padding6;
 };
 
 // Blend mode enumeration (must match C++ BlendMode enum)

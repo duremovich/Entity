@@ -11,10 +11,13 @@
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/BufferSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
+#include "entity/systems/AnimationSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/FrameRingBuffer.hpp"
 #include "entity/project/ProjectSerializer.hpp"
+#include "entity/command/CommandDispatcher.hpp"
+#include "entity/command/Commands.hpp"
 #include <imgui.h>
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -149,6 +152,16 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_decodeSystem = decodeSystem.get();  // Keep raw pointer for direct access
     registerSystem(std::move(decodeSystem));
 
+    // Register animation system (needs timeline for keyframe evaluation)
+    auto animSystem = std::make_unique<AnimationSystem>();
+    animSystem->setTimeline(m_timeline.get());
+    m_animationSystem = animSystem.get();  // Keep raw pointer for direct access
+    registerSystem(std::move(animSystem));
+
+    // Initialize command dispatcher
+    m_commandDispatcher = std::make_unique<CommandDispatcher>();
+    std::cout << "  Command dispatcher initialized" << std::endl;
+
     // Initialize window manager
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
@@ -169,6 +182,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Set up exit callback
     m_windowManager->setExitCallback([this]() {
         this->requestExit();
+    });
+
+    // Set up run script callback
+    m_windowManager->setRunScriptCallback([this](const std::string& filePath) {
+        this->runScript(filePath);
     });
 
     // Register windows with window manager
@@ -266,6 +284,13 @@ void Engine::run() {
         // Update timing
         updateTiming();
 
+        // Detect potential freeze (frame took > 100ms)
+        if (m_deltaTime > 0.1) {
+            std::cout << "[FREEZE WARNING] Frame " << m_frameCount << " took "
+                      << (m_deltaTime * 1000.0) << "ms (timeline frame: "
+                      << (m_timeline ? m_timeline->getCurrentFrame() : 0) << ")" << std::endl;
+        }
+
         // Update FPS counter
         m_fpsAccumulator += m_deltaTime;
         m_fpsFrameCount++;
@@ -283,6 +308,11 @@ void Engine::run() {
 
         // Process events
         processEvents();
+
+        // Process command queue
+        if (m_commandDispatcher) {
+            m_commandDispatcher->processQueue(*this);
+        }
 
         // Update systems
         update();
@@ -312,10 +342,13 @@ void Engine::processEvents() {
 }
 
 void Engine::update() {
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     // Update timeline
     if (m_timeline) {
         m_timeline->update(m_deltaTime);
     }
+    auto t1 = std::chrono::high_resolution_clock::now();
 
     // NOTE: updateClipVideos() moved to render() - must be called AFTER beginFrame()
     // because beginFrame() resets the command list
@@ -328,11 +361,26 @@ void Engine::update() {
             m_currentFrame->valid = (result == Result::Success);
         }
     }
+    auto t2 = std::chrono::high_resolution_clock::now();
 
     // Update all registered systems except CompositorSystem (index 0)
     // CompositorSystem is called in render() between beginFrame/endFrame
     for (size_t i = 1; i < m_systems.size(); ++i) {
         m_systems[i]->update(m_registry, static_cast<float>(m_deltaTime));
+    }
+    auto t3 = std::chrono::high_resolution_clock::now();
+
+    // Log timing if any stage took > 50ms
+    auto timelineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    auto legacyDecodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+    auto systemsMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
+
+    if (totalMs > 50) {
+        std::cout << "[UPDATE TIMING] Total=" << totalMs << "ms"
+                  << " (timeline=" << timelineMs
+                  << ", legacyDecode=" << legacyDecodeMs
+                  << ", systems=" << systemsMs << ")" << std::endl;
     }
 }
 
@@ -388,10 +436,14 @@ void Engine::render() {
     }
 
     if (m_renderer && m_renderer->isInitialized()) {
+        auto t0 = std::chrono::high_resolution_clock::now();
+
         m_renderer->beginFrame();
+        auto t1 = std::chrono::high_resolution_clock::now();
 
         // Upload video textures to GPU - MUST be after beginFrame() or commands get discarded!
         updateClipVideos();
+        auto t2 = std::chrono::high_resolution_clock::now();
 
         // Clear to a nice teal/cyan color (to warm your heart!)
         m_renderer->clear(0.0f, 0.5f, 0.6f, 1.0f);
@@ -401,6 +453,7 @@ void Engine::render() {
         if (!m_systems.empty()) {
             m_systems[0]->update(m_registry, static_cast<float>(m_deltaTime));
         }
+        auto t3 = std::chrono::high_resolution_clock::now();
 
         // Begin ImGui frame for UI rendering
         m_renderer->beginImGuiFrame();
@@ -412,8 +465,27 @@ void Engine::render() {
 
         // End ImGui frame and render UI
         m_renderer->endImGuiFrame();
+        auto t4 = std::chrono::high_resolution_clock::now();
 
         m_renderer->endFrame();
+        auto t5 = std::chrono::high_resolution_clock::now();
+
+        // Log timing if any stage took > 50ms
+        auto beginFrameMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        auto clipVideosMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+        auto compositorMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
+        auto imguiMs = std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count();
+        auto endFrameMs = std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count();
+        auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count();
+
+        if (totalMs > 50) {
+            std::cout << "[RENDER TIMING] Total=" << totalMs << "ms"
+                      << " (beginFrame=" << beginFrameMs
+                      << ", clipVideos=" << clipVideosMs
+                      << ", compositor=" << compositorMs
+                      << ", imgui=" << imguiMs
+                      << ", endFrame=" << endFrameMs << ")" << std::endl;
+        }
     }
 }
 
@@ -1080,22 +1152,62 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     // Re-create m_decoder as nullptr (no longer used for this clip)
     m_decoder = nullptr;
 
-    // Get or create track and add clip
-    uint32_t trackIndex = 0;
+    // Get or create track and add clip (with overlap detection)
     if (m_timeline->getTrackCount() == 0) {
         m_timeline->createTrack("Video Track 1");
     }
 
+    // Find a track where the new clip won't overlap with existing clips
     const auto& tracks = m_timeline->getTracks();
-    if (!tracks.empty()) {
-        auto& track = m_registry.get<TimelineTrack>(tracks[0]);
-        track.addClip(clipEntity);
-        trackIndex = track.trackIndex;
-        std::cout << "Added clip to track " << (trackIndex + 1) << std::endl;
+    int finalTrackIndex = -1;
+    FrameNumber newClipStart = clip.startFrame;
+    FrameNumber newClipEnd = clip.startFrame + clip.duration;
+
+    // Helper lambda to check if new clip overlaps with existing clips on a track
+    auto wouldOverlap = [&](int checkTrackIndex) -> bool {
+        if (checkTrackIndex < 0 || checkTrackIndex >= static_cast<int>(tracks.size())) {
+            return true;  // Invalid track
+        }
+        auto& checkTrack = m_registry.get<TimelineTrack>(tracks[checkTrackIndex]);
+        for (entt::entity existingClipEntity : checkTrack.clips) {
+            auto* existingClip = m_registry.try_get<Clip>(existingClipEntity);
+            if (!existingClip) continue;
+
+            FrameNumber existingStart = existingClip->startFrame;
+            FrameNumber existingEnd = existingClip->startFrame + existingClip->duration;
+
+            // Check for overlap
+            if (!(newClipEnd <= existingStart || newClipStart >= existingEnd)) {
+                return true;  // Overlaps
+            }
+        }
+        return false;  // No overlap
+    };
+
+    // Search from track 0 (top of timeline) downward for non-overlapping track
+    for (int i = 0; i < static_cast<int>(tracks.size()); i++) {
+        if (!wouldOverlap(i)) {
+            finalTrackIndex = i;
+            break;
+        }
     }
 
-    // Set z-order based on track index (higher tracks render on top)
-    layer.zOrder = trackIndex;
+    // If all existing tracks have overlap, create a new track
+    if (finalTrackIndex < 0) {
+        std::string newTrackName = "Video Track " + std::to_string(m_timeline->getTracks().size() + 1);
+        m_timeline->createTrack(newTrackName);
+        finalTrackIndex = static_cast<int>(m_timeline->getTracks().size()) - 1;
+        std::cout << "Created new track " << (finalTrackIndex + 1) << " to avoid overlap" << std::endl;
+    }
+
+    // Add clip to selected track
+    auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
+    finalTrack.addClip(clipEntity);
+    std::cout << "Added clip to track " << (finalTrackIndex + 1) << std::endl;
+
+    // Set z-order based on track index
+    // Track 0 (top of timeline UI) should render on top = highest z-order
+    layer.zOrder = 1000 - static_cast<uint32_t>(finalTrackIndex);
 
     // Set timeline frame rate to match clip (duration remains at default 10 minutes)
     m_timeline->setFrameRate(clip.framerate);
@@ -1181,12 +1293,66 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     transform.setScale(glm::vec3(1.0f, 1.0f, 1.0f));
     transform.setRotation(glm::vec3(0.0f, 0.0f, 0.0f));
 
+    // Find a track where the new clip won't overlap with existing clips
+    // Start from the requested track and search for a non-overlapping track
+    const auto& tracks = m_timeline->getTracks();
+    int finalTrackIndex = -1;
+    FrameNumber newClipStart = startFrame;
+    FrameNumber newClipEnd = startFrame + clip.duration;
+
+    // Helper lambda to check if new clip overlaps with existing clips on a track
+    auto wouldOverlap = [&](int checkTrackIndex) -> bool {
+        if (checkTrackIndex < 0 || checkTrackIndex >= static_cast<int>(tracks.size())) {
+            return true;  // Invalid track
+        }
+        auto& checkTrack = m_registry.get<TimelineTrack>(tracks[checkTrackIndex]);
+        for (entt::entity existingClipEntity : checkTrack.clips) {
+            auto* existingClip = m_registry.try_get<Clip>(existingClipEntity);
+            if (!existingClip) continue;
+
+            FrameNumber existingStart = existingClip->startFrame;
+            FrameNumber existingEnd = existingClip->startFrame + existingClip->duration;
+
+            // Check for overlap: NOT (newEnd <= existingStart OR newStart >= existingEnd)
+            if (!(newClipEnd <= existingStart || newClipStart >= existingEnd)) {
+                return true;  // Overlaps
+            }
+        }
+        return false;  // No overlap
+    };
+
+    // First, check the requested track
+    if (trackIndex >= 0 && trackIndex < static_cast<int>(tracks.size())) {
+        if (!wouldOverlap(trackIndex)) {
+            finalTrackIndex = trackIndex;
+        }
+    }
+
+    // If requested track has overlap, search other tracks (starting from highest index)
+    if (finalTrackIndex < 0) {
+        for (int i = static_cast<int>(tracks.size()) - 1; i >= 0; i--) {
+            if (!wouldOverlap(i)) {
+                finalTrackIndex = i;
+                break;
+            }
+        }
+    }
+
+    // If all existing tracks have overlap, create a new track
+    if (finalTrackIndex < 0) {
+        std::string newTrackName = "Video Track " + std::to_string(m_timeline->getTracks().size() + 1);
+        m_timeline->createTrack(newTrackName);
+        finalTrackIndex = static_cast<int>(m_timeline->getTracks().size()) - 1;
+        std::cout << "Created new track " << (finalTrackIndex + 1) << " to avoid overlap" << std::endl;
+    }
+
     // Add MediaLayer component for rendering
     auto& layer = m_registry.emplace<MediaLayer>(clipEntity);
     layer.opacity = 1.0f;
     layer.visible = true;
     layer.blendMode = BlendMode::Normal;
-    layer.zOrder = static_cast<uint32_t>(trackIndex);
+    // Track 0 (top of timeline UI) should render on top = highest z-order
+    layer.zOrder = 1000 - static_cast<uint32_t>(finalTrackIndex);
 
     // Add VideoTexture component and allocate texture slot
     auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
@@ -1206,15 +1372,10 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
     m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
 
-    // Get track and add clip
-    const auto& tracks = m_timeline->getTracks();
-    if (trackIndex >= 0 && trackIndex < static_cast<int>(tracks.size())) {
-        auto& track = m_registry.get<TimelineTrack>(tracks[trackIndex]);
-        track.addClip(clipEntity);
-        std::cout << "Added clip to track " << (trackIndex + 1) << " at frame " << startFrame << std::endl;
-    } else {
-        std::cerr << "ERROR: Invalid track index: " << trackIndex << std::endl;
-    }
+    // Add clip to the selected track
+    auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
+    finalTrack.addClip(clipEntity);
+    std::cout << "Added clip to track " << (finalTrackIndex + 1) << " at frame " << startFrame << std::endl;
 
     // Extend timeline duration if needed
     float clipEndSeconds = (startFrame + clip.duration) / clip.framerate;
@@ -1243,12 +1404,21 @@ void Engine::updateClipVideos() {
         return;
     }
 
+    auto funcStart = std::chrono::high_resolution_clock::now();
+    int clipCount = 0;
+    int activeCount = 0;
+    int processedCount = 0;
+    int ringBufferCount = 0;
+    int syncDecodeCount = 0;
+
     FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    PlaybackState playState = m_timeline->getPlaybackState();
 
     // Iterate over all entities with Clip and VideoTexture components
     auto view = m_registry.view<Clip, VideoTexture>();
 
     for (auto [entity, clip, videoTex] : view.each()) {
+        clipCount++;
         // Skip if no texture slot allocated
         if (!videoTex.isAllocated()) {
             continue;
@@ -1258,6 +1428,7 @@ void Engine::updateClipVideos() {
         if (!isClipActiveAtFrame(clip, currentFrame)) {
             continue;
         }
+        activeCount++;
 
         // Map timeline frame to media frame
         FrameNumber mediaFrame = mapToMediaFrame(clip, currentFrame);
@@ -1272,17 +1443,42 @@ void Engine::updateClipVideos() {
 
         // Try to get frame from FrameRingBuffer first (threaded decode path)
         auto* frameBuffer = m_registry.try_get<FrameBuffer>(entity);
+        if (!frameBuffer) {
+            // No FrameBuffer - this clip wasn't set up for threaded decode
+            // During playback, skip this clip entirely to avoid blocking
+            if (playState == PlaybackState::Playing) {
+                std::cout << "[SKIP] No FrameBuffer for entity " << static_cast<uint32_t>(entity)
+                          << " during playback - skipping" << std::endl;
+                continue;
+            }
+        } else if (!frameBuffer->ringBuffer) {
+            // FrameBuffer exists but no ring buffer
+            if (playState == PlaybackState::Playing) {
+                std::cout << "[SKIP] No ringBuffer for entity " << static_cast<uint32_t>(entity)
+                          << " during playback - skipping" << std::endl;
+                continue;
+            }
+        }
         if (frameBuffer && frameBuffer->ringBuffer) {
             DecodedFrame ringFrame;
             bool gotFrame = false;
 
             // During playback, consume frames to keep buffer flowing
             // During scrubbing/paused, just peek without consuming
-            if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+            // IMPORTANT: Use cached playState to avoid race conditions
+            auto ringStart = std::chrono::high_resolution_clock::now();
+            if (playState == PlaybackState::Playing) {
                 gotFrame = frameBuffer->ringBuffer->consumeUpTo(mediaFrame, ringFrame);
             } else {
                 gotFrame = frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame);
             }
+            auto ringMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - ringStart).count();
+            if (ringMs > 50) {
+                std::cout << "[SLOW RING] getFrame/consumeUpTo took " << ringMs << "ms for entity "
+                          << static_cast<uint32_t>(entity) << " frame " << mediaFrame << std::endl;
+            }
+            ringBufferCount++;
 
             if (gotFrame) {
                 // Got frame from ring buffer - upload to GPU
@@ -1312,13 +1508,22 @@ void Engine::updateClipVideos() {
 
             // Frame not in ring buffer during playback - SKIP to avoid blocking main thread
             // The decode thread will catch up, and we'll show the next available frame
-            if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+            // IMPORTANT: Use cached playState to avoid race conditions
+            if (playState == PlaybackState::Playing) {
                 continue;
             }
             // During paused/scrubbing - fall through to legacy decode (blocking is OK)
         }
 
         // Legacy path: synchronous decode on main thread (only used when paused/scrubbing)
+        // CRITICAL SAFETY CHECK: Never do sync decode during playback - it causes freezes!
+        // If we somehow got here during playback, skip this frame.
+        // Check CURRENT playState from timeline (not cached) to catch any state changes
+        if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
+            // Should not happen - but if it does, skip to avoid freeze
+            continue;
+        }
+
         auto decoderIt = m_clipDecoders.find(entity);
         auto frameIt = m_clipFrames.find(entity);
 
@@ -1333,8 +1538,21 @@ void Engine::updateClipVideos() {
             continue;
         }
 
+        syncDecodeCount++;
+        // Log that we're doing synchronous decode
+        auto decodeStart = std::chrono::high_resolution_clock::now();
+        std::cout << "[SYNC DECODE] Entity " << static_cast<uint32_t>(entity)
+                  << " frame " << mediaFrame << " playState=" << static_cast<int>(playState) << std::endl;
+
         // Decode the frame synchronously (blocking - only for scrub/pause)
         Result result = decoder->decodeFrame(mediaFrame, *frame);
+
+        auto decodeEnd = std::chrono::high_resolution_clock::now();
+        auto decodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(decodeEnd - decodeStart).count();
+
+        if (decodeMs > 50) {
+            std::cout << "[SYNC DECODE] Took " << decodeMs << "ms for entity " << static_cast<uint32_t>(entity) << std::endl;
+        }
 
         if (result == Result::Success) {
             frame->valid = true;
@@ -1358,6 +1576,19 @@ void Engine::updateClipVideos() {
         } else {
             frame->valid = false;
         }
+    }
+
+    // Log summary if update took significant time
+    auto funcMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now() - funcStart).count();
+    if (funcMs > 100) {
+        std::cout << "[CLIP UPDATE] Total=" << funcMs << "ms"
+                  << " clips=" << clipCount
+                  << " active=" << activeCount
+                  << " ringBuf=" << ringBufferCount
+                  << " syncDec=" << syncDecodeCount
+                  << " frame=" << currentFrame
+                  << " state=" << static_cast<int>(playState) << std::endl;
     }
 }
 
@@ -1532,6 +1763,53 @@ void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath)
     m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
 
     std::cout << "[Engine] New clip resources created successfully" << std::endl;
+}
+
+bool Engine::importVideo(const std::string& filepath, int trackIndex, Timecode position) {
+    // This is a public wrapper around the internal onMediaDroppedOnTimeline
+    // Check if file exists first
+    if (!std::filesystem::exists(filepath)) {
+        std::cerr << "[Engine] Import failed: file not found: " << filepath << std::endl;
+        return false;
+    }
+
+    // Validate track index
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[Engine] Import failed: invalid track index: " << trackIndex << std::endl;
+        return false;
+    }
+
+    // Call the internal import method
+    onMediaDroppedOnTimeline(filepath, trackIndex, position);
+    return true;
+}
+
+bool Engine::captureScreenshot(const std::string& filepath) {
+    if (!m_renderer) {
+        std::cerr << "[Engine] Screenshot failed: renderer not initialized" << std::endl;
+        return false;
+    }
+
+    return m_renderer->captureComposeTargetToPNG(filepath);
+}
+
+bool Engine::captureWindowScreenshot(const std::string& filepath) {
+    if (!m_renderer) {
+        std::cerr << "[Engine] Screenshot failed: renderer not initialized" << std::endl;
+        return false;
+    }
+
+    return m_renderer->captureBackBufferToPNG(filepath);
+}
+
+bool Engine::runScript(const std::string& filepath) {
+    if (!m_commandDispatcher) {
+        std::cerr << "[Engine] Script failed: command dispatcher not initialized" << std::endl;
+        return false;
+    }
+
+    return m_commandDispatcher->loadScript(filepath);
 }
 
 } // namespace entity

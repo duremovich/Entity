@@ -1,0 +1,168 @@
+#pragma once
+
+#include "Command.hpp"
+#include <queue>
+#include <mutex>
+#include <functional>
+#include <unordered_map>
+#include <vector>
+#include <nlohmann/json.hpp>
+
+namespace entity {
+
+/**
+ * CommandDispatcher - Central hub for command execution.
+ *
+ * Responsibilities:
+ * - Maintain thread-safe command queue
+ * - Execute commands on main thread
+ * - Provide factory registration for JSON deserialization
+ * - Handle WaitFrames by pausing command processing
+ * - Optional: Record executed commands for macro export
+ *
+ * Thread Safety:
+ * - enqueue() is thread-safe (can be called from any thread)
+ * - processQueue() must be called from main thread only
+ */
+class CommandDispatcher {
+public:
+    // Factory function type for creating commands from JSON
+    using CommandFactory = std::function<CommandPtr(const nlohmann::json&)>;
+
+    CommandDispatcher();
+    ~CommandDispatcher();
+
+    /**
+     * Enqueue a command for execution.
+     * Thread-safe - can be called from script threads, UI callbacks, etc.
+     */
+    void enqueue(CommandPtr command);
+
+    /**
+     * Enqueue a command by type name and JSON parameters.
+     * @param typeName Command type (e.g., "ImportVideo")
+     * @param params JSON object with command parameters
+     * @return true if command was created and enqueued
+     */
+    bool enqueue(const std::string& typeName, const nlohmann::json& params = {});
+
+    /**
+     * Process all queued commands (until WaitFrames or empty).
+     * MUST be called from main thread only.
+     * @param engine Reference to engine for command execution
+     * @return Number of commands executed
+     */
+    size_t processQueue(Engine& engine);
+
+    /**
+     * Register a command factory for JSON deserialization.
+     * Call once during initialization for each command type.
+     */
+    void registerFactory(const std::string& typeName, CommandFactory factory);
+
+    /**
+     * Register all built-in command factories.
+     * Called automatically during construction.
+     */
+    void registerBuiltinFactories();
+
+    /**
+     * Create a command from JSON.
+     * @return Command pointer, or nullptr if type unknown
+     */
+    CommandPtr createFromJson(const nlohmann::json& json);
+
+    /**
+     * Execute a script file (JSON array of commands).
+     * @param filepath Path to script file
+     * @return true if file was loaded and commands enqueued
+     */
+    bool loadScript(const std::string& filepath);
+
+    /**
+     * Enable/disable command recording for macro export.
+     */
+    void setRecording(bool enabled) { m_recording = enabled; }
+    bool isRecording() const { return m_recording; }
+
+    /**
+     * Get recorded commands as JSON array.
+     */
+    nlohmann::json getRecordedCommands() const;
+
+    /**
+     * Clear recorded commands.
+     */
+    void clearRecording();
+
+    /**
+     * Get number of pending commands in queue.
+     */
+    size_t getPendingCount() const;
+
+    /**
+     * Check if currently waiting (WaitFrames active).
+     */
+    bool isWaiting() const { return m_waitFramesRemaining > 0; }
+
+    /**
+     * Get remaining wait frames.
+     */
+    uint32_t getWaitFramesRemaining() const { return m_waitFramesRemaining; }
+
+    /**
+     * Set wait frames (called by WaitFramesCommand).
+     */
+    void setWaitFrames(uint32_t frames) { m_waitFramesRemaining = frames; }
+
+    /**
+     * Check if a script is currently running.
+     */
+    bool isScriptRunning() const { return m_scriptRunning; }
+
+    /**
+     * Get script execution results.
+     */
+    const nlohmann::json& getScriptResults() const { return m_scriptResults; }
+
+    /**
+     * Mark script as complete (called when queue empties after script load).
+     */
+    void finishScript();
+
+    /**
+     * Add a screenshot path to results.
+     */
+    void addScreenshotToResults(const std::string& path);
+
+    /**
+     * Add an error to results.
+     */
+    void addErrorToResults(const std::string& error);
+
+private:
+    std::queue<CommandPtr> m_commandQueue;
+    mutable std::mutex m_queueMutex;
+
+    std::unordered_map<std::string, CommandFactory> m_factories;
+
+    // WaitFrames support
+    uint32_t m_waitFramesRemaining{0};
+
+    // Recording support
+    bool m_recording{false};
+    std::vector<nlohmann::json> m_recordedCommands;
+
+    // Script execution tracking
+    bool m_scriptRunning{false};
+    size_t m_scriptCommandsTotal{0};
+    size_t m_scriptCommandsExecuted{0};
+    nlohmann::json m_scriptResults;
+
+    /**
+     * Write script results to fixed path.
+     */
+    void writeScriptResults();
+};
+
+} // namespace entity
