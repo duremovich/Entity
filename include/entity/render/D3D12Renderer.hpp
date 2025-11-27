@@ -319,6 +319,7 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE m_videoTextureGpuHandle{};  // GPU handle for ImGui
     uint32_t m_videoTextureWidth{0};
     uint32_t m_videoTextureHeight{0};
+    bool m_videoTextureFirstUpload{true};                   // Track first upload for barrier state
     uint32_t m_srvDescriptorSize{0};
 
     // Multi-texture support (for multi-layer compositing)

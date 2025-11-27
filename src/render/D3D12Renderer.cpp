@@ -963,6 +963,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
         m_videoUploadBuffer.Reset();
         m_videoTextureWidth = 0;
         m_videoTextureHeight = 0;
+        m_videoTextureFirstUpload = true;
     }
 
     // Create texture if it doesn't exist
@@ -1093,11 +1094,10 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
     // Only transition if texture was previously used
-    static bool firstUpload = true;
-    if (!firstUpload) {
+    if (!m_videoTextureFirstUpload) {
         m_commandList->ResourceBarrier(1, &barrier);
     }
-    firstUpload = false;
+    m_videoTextureFirstUpload = false;
 
     // Copy from upload buffer to texture
     D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
