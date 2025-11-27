@@ -354,9 +354,10 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
             size_t offset = i * 4;
             uint8_t a = rgba[offset + 3];
             if (a < 255) {
-                rgba[offset + 0] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 0]) * a) / 255);
-                rgba[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 1]) * a) / 255);
-                rgba[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 2]) * a) / 255);
+                // Premultiply with rounding to nearest
+                rgba[offset + 0] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 0]) * a + 127) / 255);
+                rgba[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 1]) * a + 127) / 255);
+                rgba[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 2]) * a + 127) / 255);
             }
         }
     }

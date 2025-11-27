@@ -244,10 +244,10 @@ void PNGSequenceDecoder::premultiplyAlpha(uint8_t* rgba, uint32_t width, uint32_
         uint8_t b = rgba[pixelOffset + 2];
         uint8_t a = rgba[pixelOffset + 3];
 
-        // Premultiply by alpha: RGB * (A / 255)
-        rgba[pixelOffset] = static_cast<uint8_t>((static_cast<uint32_t>(r) * a) / 255);
-        rgba[pixelOffset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(g) * a) / 255);
-        rgba[pixelOffset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(b) * a) / 255);
+        // Premultiply by alpha: RGB * (A / 255) with rounding to nearest
+        rgba[pixelOffset] = static_cast<uint8_t>((static_cast<uint32_t>(r) * a + 127) / 255);
+        rgba[pixelOffset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(g) * a + 127) / 255);
+        rgba[pixelOffset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(b) * a + 127) / 255);
         // Alpha channel unchanged
     }
 }
