@@ -30,6 +30,19 @@ void TimelineWidget::render() {
         return;
     }
 
+    // Clean up stale entity references in expansion state
+    {
+        auto& reg = m_timeline->getRegistry();
+        for (auto it = m_expandedClips.begin(); it != m_expandedClips.end(); ) {
+            entt::entity entity = static_cast<entt::entity>(*it);
+            if (!reg.valid(entity)) {
+                it = m_expandedClips.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     // Note: Window Begin/End is now handled by TimelineWindow wrapper
     // This render() method only renders the timeline content
 
