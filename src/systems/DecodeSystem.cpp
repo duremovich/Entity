@@ -383,7 +383,7 @@ void DecodeSystem::decodeThreadFunc(DecodeWorker* worker, entt::entity entity) {
         // Decode the next frame
         Result result = worker->decoder->decodeFrame(nextFrame, frame);
 
-        if (result == Result::Success && frame.valid) {
+        if (result == Result::Success && frame.valid.load(std::memory_order_acquire)) {
             frame.frameNumber = nextFrame;
 
             // Push to ring buffer (move semantics)
@@ -393,7 +393,7 @@ void DecodeSystem::decodeThreadFunc(DecodeWorker* worker, entt::entity entity) {
             frameCopy.width = frame.width;
             frameCopy.height = frame.height;
             frameCopy.pts = frame.pts;
-            frameCopy.valid = frame.valid;
+            frameCopy.valid.store(frame.valid.load(std::memory_order_acquire), std::memory_order_release);
 
             if (worker->ringBuffer->push(std::move(frameCopy))) {
                 worker->currentFrame.store(nextFrame);
