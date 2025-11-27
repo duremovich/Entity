@@ -117,7 +117,7 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
     // Render each visible layer to the compose target
     int drawIndex = 0;
     for (auto entity : sortedEntities) {
-        const auto& transform = view.get<Transform>(entity);
+        auto& transform = view.get<Transform>(entity);
         const auto& layer = view.get<MediaLayer>(entity);
 
         // Get transform matrix and convert from glm to DirectX

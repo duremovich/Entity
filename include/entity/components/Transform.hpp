@@ -17,15 +17,19 @@ struct Transform {
     glm::vec3 rotation{0.0f, 0.0f, 0.0f};  // Euler angles in degrees
     glm::vec3 scale{1.0f, 1.0f, 1.0f};
 
-    // Cached transformation matrix (mutable for lazy evaluation in const methods)
-    mutable glm::mat4 matrix{1.0f};
-    mutable bool dirty{true};  // True if matrix needs to be recalculated
+    // Cached transformation matrix
+    glm::mat4 matrix{1.0f};
+    bool dirty{true};  // True if matrix needs to be recalculated
 
     /**
      * Update the transformation matrix from position, rotation, and scale.
      * Only recalculates if dirty flag is set.
+     *
+     * NOTE: In a pure ECS architecture, this logic should live in a TransformSystem.
+     * However, for simplicity and performance, we keep the matrix computation here
+     * to avoid iterating all transforms every frame.
      */
-    void updateMatrix() const {
+    void updateMatrix() {
         if (!dirty) return;
 
         // Build transformation matrix: Translation * Rotation * Scale
@@ -45,7 +49,7 @@ struct Transform {
     /**
      * Get the transformation matrix, updating it if necessary.
      */
-    const glm::mat4& getMatrix() const {
+    const glm::mat4& getMatrix() {
         updateMatrix();
         return matrix;
     }
