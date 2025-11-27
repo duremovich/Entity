@@ -308,7 +308,7 @@ private:
     ComPtr<ID3D12Resource> m_constantBuffer;
     ComPtr<ID3D12DescriptorHeap> m_cbvHeap;
     D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
-    void* m_constantBufferData;  // Mapped pointer to constant buffer
+    void* m_constantBufferData;  // DEPRECATED: Mapped pointer (UNUSED - drawColoredQuad uses root constants)
 
     // ImGui objects
     ComPtr<ID3D12DescriptorHeap> m_imguiSrvHeap;  // Descriptor heap for ImGui fonts/textures
@@ -347,7 +347,7 @@ private:
     ComPtr<ID3D12Resource> m_mappingSurfaceVertexBuffer;
     ComPtr<ID3D12Resource> m_mappingSurfaceConstantBuffer;
     D3D12_VERTEX_BUFFER_VIEW m_mappingSurfaceVertexBufferView;
-    void* m_mappingSurfaceConstantBufferData{nullptr};
+    void* m_mappingSurfaceConstantBufferData{nullptr};  // WARNING (CRIT-04): Race condition - see impl for details
 
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {

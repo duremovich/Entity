@@ -839,6 +839,9 @@ Result D3D12Renderer::createConstantBuffer() {
     }
 
     // Map constant buffer (keep it mapped for updates)
+    // NOTE: This mapped buffer is currently UNUSED - drawColoredQuad uses root constants instead.
+    // If this buffer is ever used, it creates a CPU/GPU race condition (see CRIT-04 in code review).
+    // Proper fix would be a ring buffer of constant buffers (one per frame in flight).
     D3D12_RANGE readRange = { 0, 0 };
     hr = m_constantBuffer->Map(0, &readRange, &m_constantBufferData);
     if (FAILED(hr)) {
@@ -850,6 +853,11 @@ Result D3D12Renderer::createConstantBuffer() {
 }
 
 void D3D12Renderer::updateConstantBuffer(const DirectX::XMMATRIX& transform, const DirectX::XMFLOAT4& color, float opacity) {
+    // WARNING: This function is DEPRECATED and should not be used!
+    // It writes to a persistently mapped upload heap buffer without GPU synchronization,
+    // creating a race condition where the GPU may read stale data from previous frames.
+    // drawColoredQuad correctly uses root constants instead (SetGraphicsRoot32BitConstants).
+    // TODO: Remove this function and m_constantBuffer entirely if no longer needed.
     LayerConstants constants;
     DirectX::XMStoreFloat4x4(&constants.transform, DirectX::XMMatrixTranspose(transform));
     constants.color = color;
@@ -1911,6 +1919,16 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
     }
 
     // Map constant buffer (keep it mapped for updates)
+    // KNOWN ISSUE (CRIT-04): This creates a CPU/GPU race condition!
+    // The buffer is persistently mapped and written every frame in drawMappingSurface() without
+    // GPU synchronization. If GPU is still reading from previous frame, it may see stale data.
+    //
+    // Current Mitigation: Single-buffered rendering with Present() provides implicit synchronization
+    // in most cases, but not guaranteed by D3D12 spec. Vsync helps reduce probability of tearing.
+    //
+    // Proper Fix (TODO): Implement ring buffer of constant buffers (one per frame in flight).
+    // Allocate NUM_BACK_BUFFERS copies, index by m_frameIndex, and use fence to track when
+    // each buffer is safe to reuse. This is the correct D3D12 pattern for frequently updated resources.
     D3D12_RANGE readRange = { 0, 0 };
     hr = m_mappingSurfaceConstantBuffer->Map(0, &readRange, &m_mappingSurfaceConstantBufferData);
     if (FAILED(hr)) {
@@ -1934,6 +1952,10 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     }
 
     // Update constant buffer
+    // WARNING (CRIT-04): CPU/GPU race condition!
+    // This writes to a persistently mapped upload heap buffer without GPU fence synchronization.
+    // If the GPU hasn't finished reading this buffer from the previous frame, it may see stale data.
+    // Works in practice due to implicit Present() synchronization, but violates D3D12 best practices.
     MappingSurfaceConstants constants;
     for (int i = 0; i < 4; ++i) {
         constants.corners[i] = DirectX::XMFLOAT4(corners[i].x, corners[i].y, 0.0f, 0.0f);
