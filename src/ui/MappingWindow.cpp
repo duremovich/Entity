@@ -62,8 +62,21 @@ void MappingWindow::renderToolbar() {
 
     // Add surface button
     if (ImGui::Button("Add Surface")) {
-        static int surfaceCount = 1;
-        std::string name = "Surface " + std::to_string(surfaceCount++);
+        // Find highest existing surface number
+        int maxSurfaceNum = 0;
+        auto& registry = m_engine->getRegistry();
+        auto surfaceView = registry.view<MappingSurface>();
+        for (auto [entity, surface] : surfaceView.each()) {
+            if (surface.name.find("Surface ") == 0) {
+                try {
+                    int num = std::stoi(surface.name.substr(8));
+                    maxSurfaceNum = std::max(maxSurfaceNum, num);
+                } catch (...) {
+                    // Ignore surfaces with non-numeric suffixes
+                }
+            }
+        }
+        std::string name = "Surface " + std::to_string(maxSurfaceNum + 1);
         m_selectedSurface = createSurface(name);
     }
 
@@ -415,20 +428,46 @@ void MappingWindow::renderOutputsPanel() {
 
     // Add output buttons
     if (ImGui::Button("+ Physical")) {
+        // Find highest existing output number
+        int maxOutputNum = 0;
+        auto outputView = registry.view<OutputDisplay>();
+        for (auto [entity, existingOutput] : outputView.each()) {
+            if (existingOutput.name.find("Output ") == 0) {
+                try {
+                    int num = std::stoi(existingOutput.name.substr(7));
+                    maxOutputNum = std::max(maxOutputNum, num);
+                } catch (...) {
+                    // Ignore outputs with non-numeric suffixes
+                }
+            }
+        }
+
         entt::entity newOutput = registry.create();
         auto& output = registry.emplace<OutputDisplay>(newOutput);
-        static int outputCount = 1;
-        output.name = "Output " + std::to_string(outputCount++);
+        output.name = "Output " + std::to_string(maxOutputNum + 1);
         output.type = OutputType::Physical;
         m_selectedOutput = newOutput;
         std::cout << "[MappingWindow] Created physical output: " << output.name << std::endl;
     }
     ImGui::SameLine();
     if (ImGui::Button("+ Preview")) {
+        // Find highest existing preview number
+        int maxPreviewNum = 0;
+        auto outputView = registry.view<OutputDisplay>();
+        for (auto [entity, existingOutput] : outputView.each()) {
+            if (existingOutput.name.find("Preview ") == 0) {
+                try {
+                    int num = std::stoi(existingOutput.name.substr(8));
+                    maxPreviewNum = std::max(maxPreviewNum, num);
+                } catch (...) {
+                    // Ignore previews with non-numeric suffixes
+                }
+            }
+        }
+
         entt::entity newOutput = registry.create();
         auto& output = registry.emplace<OutputDisplay>(newOutput);
-        static int previewCount = 1;
-        output.name = "Preview " + std::to_string(previewCount++);
+        output.name = "Preview " + std::to_string(maxPreviewNum + 1);
         output.type = OutputType::Preview;
         output.width = 1280;
         output.height = 720;
