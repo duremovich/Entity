@@ -212,6 +212,13 @@ void D3D12Renderer::shutdown() {
         m_textureSlots[i].allocated = false;
     }
 
+    // Release legacy video upload buffer
+    m_videoUploadBuffer.Reset();
+
+    // Release compose target resources
+    m_composeTarget.Reset();
+    m_composeTargetRtvHeap.Reset();
+
     // Release textured pipeline objects
     m_texturedPipelineState.Reset();
     m_texturedRootSignature.Reset();
@@ -287,6 +294,19 @@ void D3D12Renderer::beginFrame() {
 
     // Reset command list
     m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+
+    // Set viewport and scissor rect to match back buffer size
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissorRect = {};
+    scissorRect.right = static_cast<LONG>(m_width);
+    scissorRect.bottom = static_cast<LONG>(m_height);
+
+    m_commandList->RSSetViewports(1, &viewport);
+    m_commandList->RSSetScissorRects(1, &scissorRect);
 }
 
 void D3D12Renderer::clear(float r, float g, float b, float a) {
@@ -1169,7 +1189,12 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                            const uint8_t* rgbaData,
                                            uint32_t width, uint32_t height,
                                            D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle) {
-    if (!m_initialized || slot >= MAX_VIDEO_TEXTURE_SLOTS || !m_textureSlots[slot].allocated) {
+    if (slot >= MAX_VIDEO_TEXTURE_SLOTS) {
+        std::cerr << "Texture slot " << slot << " out of bounds (max " << MAX_VIDEO_TEXTURE_SLOTS << ")" << std::endl;
+        return false;
+    }
+
+    if (!m_initialized || !m_textureSlots[slot].allocated) {
         return false;
     }
 
