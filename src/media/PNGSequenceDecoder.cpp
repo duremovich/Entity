@@ -224,7 +224,7 @@ Result PNGSequenceDecoder::loadPNG(const std::string& filepath, DecodedFrame& ou
     stbi_image_free(imageData);
 
     // Mark frame as valid
-    outFrame.valid = true;
+    outFrame.valid.store(true, std::memory_order_release);
 
     return Result::Success;
 }

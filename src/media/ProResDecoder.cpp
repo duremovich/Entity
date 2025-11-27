@@ -364,7 +364,7 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
     // Fill frame metadata
     outFrame.frameNumber = m_currentFrame;
     outFrame.pts = srcFrame->pts;
-    outFrame.valid = true;
+    outFrame.valid.store(true, std::memory_order_release);
 
     return Result::Success;
 #else

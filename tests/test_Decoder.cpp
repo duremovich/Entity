@@ -208,7 +208,7 @@ TEST_F(DecoderInterfaceTest, DecodeFrame_Success) {
 
     EXPECT_EQ(result, Result::Success);
     EXPECT_EQ(frame.frameNumber, 50);
-    EXPECT_TRUE(frame.valid);
+    EXPECT_TRUE(frame.valid.load(std::memory_order_acquire));
     EXPECT_EQ(frame.width, decoder->getWidth());
     EXPECT_EQ(frame.height, decoder->getHeight());
 }
