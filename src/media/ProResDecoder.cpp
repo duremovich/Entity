@@ -233,6 +233,16 @@ Result ProResDecoder::seek(FrameNumber frameNumber) {
         return Result::Failure;
     }
 
+    // Validate frame number
+    if (frameNumber < 0) {
+        std::cerr << "ProResDecoder: Seek frame number cannot be negative: " << frameNumber << std::endl;
+        return Result::InvalidParameter;
+    }
+    if (m_duration > 0 && frameNumber >= m_duration) {
+        std::cerr << "ProResDecoder: Seek frame " << frameNumber << " exceeds duration " << m_duration << std::endl;
+        return Result::InvalidParameter;
+    }
+
 #ifdef HAVE_FFMPEG
     AVStream* stream = m_formatContext->streams[m_videoStreamIndex];
 
@@ -300,6 +310,23 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
             std::cerr << "ProResDecoder: Failed to create SwsContext" << std::endl;
             return Result::DecoderError;
         }
+    }
+
+    // Validate frame dimensions match decoder state to prevent buffer overflow
+    if (srcFrame->width != static_cast<int>(m_width) ||
+        srcFrame->height != static_cast<int>(m_height)) {
+        std::cerr << "ProResDecoder: Frame dimensions mismatch: expected "
+                  << m_width << "x" << m_height
+                  << ", got " << srcFrame->width << "x" << srcFrame->height << std::endl;
+        return Result::DecoderError;
+    }
+
+    // Validate output buffer size to prevent overflow
+    size_t expectedSize = static_cast<size_t>(m_width) * m_height * 4;
+    if (outFrame.data.size() < expectedSize) {
+        std::cerr << "ProResDecoder: Output buffer too small: " << outFrame.data.size()
+                  << " bytes, need " << expectedSize << std::endl;
+        return Result::DecoderError;
     }
 
     // Setup output buffer for swscale
