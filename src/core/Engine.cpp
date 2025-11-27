@@ -393,11 +393,11 @@ const DecodedFrame* Engine::getCurrentVideoFrame() const {
         auto view = m_registry.view<Clip, VideoTexture>();
         for (auto [entity, clip, videoTex] : view.each()) {
             if (isClipActiveAtFrame(clip, currentFrame)) {
-                auto frameIt = m_clipFrames.find(entity);
-                if (frameIt != m_clipFrames.end() && frameIt->second && frameIt->second->valid) {
+                auto stateIt = m_clipState.find(entity);
+                if (stateIt != m_clipState.end() && stateIt->second.frame && stateIt->second.frame->valid) {
                     // Verify frame number is close to expected (avoid stale frame flash)
                     FrameNumber expectedMediaFrame = mapToMediaFrame(clip, currentFrame);
-                    FrameNumber cachedFrameNum = frameIt->second->frameNumber;
+                    FrameNumber cachedFrameNum = stateIt->second.frame->frameNumber;
 
                     // Allow some tolerance for decode-ahead, but reject obviously stale frames
                     int64_t frameDelta = static_cast<int64_t>(cachedFrameNum) - static_cast<int64_t>(expectedMediaFrame);
@@ -406,7 +406,7 @@ const DecodedFrame* Engine::getCurrentVideoFrame() const {
                         continue;
                     }
 
-                    return frameIt->second.get();
+                    return stateIt->second.frame.get();
                 }
             }
         }
@@ -1144,10 +1144,11 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     std::cout << "Created FrameBuffer with ring buffer for threaded decoding" << std::endl;
 
     // Store decoder and create frame buffer for this clip (legacy path)
-    m_clipDecoders[clipEntity] = std::move(m_decoder);  // Transfer ownership
-    m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
-    m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
-    m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
+    auto& state = m_clipState[clipEntity];
+    state.decoder = std::move(m_decoder);  // Transfer ownership
+    state.frame = std::make_unique<DecodedFrame>();
+    state.frame->allocate(clip.width, clip.height);
+    state.lastDecodedFrame = UINT32_MAX;  // Force decode on first frame
 
     // Re-create m_decoder as nullptr (no longer used for this clip)
     m_decoder = nullptr;
@@ -1372,10 +1373,11 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     frameBuffer.isBuffering.store(true);
 
     // Store decoder and create frame buffer for this clip (legacy path)
-    m_clipDecoders[clipEntity] = std::move(decoder);
-    m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
-    m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
-    m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
+    auto& state = m_clipState[clipEntity];
+    state.decoder = std::move(decoder);
+    state.frame = std::make_unique<DecodedFrame>();
+    state.frame->allocate(clip.width, clip.height);
+    state.lastDecodedFrame = UINT32_MAX;  // Force decode on first frame
 
     // Add clip to the selected track
     auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
@@ -1439,8 +1441,8 @@ void Engine::updateClipVideos() {
         FrameNumber mediaFrame = mapToMediaFrame(clip, currentFrame);
 
         // Only process if frame number changed
-        auto lastFrameIt = m_lastDecodedFrame.find(entity);
-        FrameNumber lastFrame = (lastFrameIt != m_lastDecodedFrame.end()) ? lastFrameIt->second : UINT32_MAX;
+        auto stateIt = m_clipState.find(entity);
+        FrameNumber lastFrame = (stateIt != m_clipState.end()) ? stateIt->second.lastDecodedFrame : UINT32_MAX;
 
         if (mediaFrame == lastFrame) {
             continue;  // Frame hasn't changed, skip
@@ -1500,12 +1502,13 @@ void Engine::updateClipVideos() {
                     videoTex.srvHandle = srvHandle;
                     videoTex.width = ringFrame.width;
                     videoTex.height = ringFrame.height;
-                    m_lastDecodedFrame[entity] = mediaFrame;
+                    if (stateIt != m_clipState.end()) {
+                        stateIt->second.lastDecodedFrame = mediaFrame;
 
-                    // Also update m_clipFrames so getCurrentVideoFrame() returns this frame
-                    auto frameIt = m_clipFrames.find(entity);
-                    if (frameIt != m_clipFrames.end() && frameIt->second) {
-                        *frameIt->second = ringFrame;
+                        // Also update frame so getCurrentVideoFrame() returns this frame
+                        if (stateIt->second.frame) {
+                            *stateIt->second.frame = ringFrame;
+                        }
                     }
                 }
                 continue;  // Frame processed from ring buffer, skip legacy path
@@ -1529,15 +1532,12 @@ void Engine::updateClipVideos() {
             continue;
         }
 
-        auto decoderIt = m_clipDecoders.find(entity);
-        auto frameIt = m_clipFrames.find(entity);
-
-        if (decoderIt == m_clipDecoders.end() || frameIt == m_clipFrames.end()) {
+        if (stateIt == m_clipState.end()) {
             continue;
         }
 
-        Decoder* decoder = decoderIt->second.get();
-        DecodedFrame* frame = frameIt->second.get();
+        Decoder* decoder = stateIt->second.decoder.get();
+        DecodedFrame* frame = stateIt->second.frame.get();
 
         if (!decoder || !decoder->isOpen() || !frame) {
             continue;
@@ -1561,7 +1561,7 @@ void Engine::updateClipVideos() {
 
         if (result == Result::Success) {
             frame->valid = true;
-            m_lastDecodedFrame[entity] = mediaFrame;
+            stateIt->second.lastDecodedFrame = mediaFrame;
 
             // Upload frame to GPU texture slot
             D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
@@ -1637,12 +1637,10 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     }
 
     // Clear existing clip resources before loading
-    for (auto& [entity, decoder] : m_clipDecoders) {
-        decoder.reset();
+    for (auto& [entity, state] : m_clipState) {
+        state.decoder.reset();
     }
-    m_clipDecoders.clear();
-    m_clipFrames.clear();
-    m_lastDecodedFrame.clear();
+    m_clipState.clear();
     m_loadedMediaFiles.clear();
 
     // Define media load callback to recreate decoders for loaded clips
@@ -1688,12 +1686,13 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         }
 
         // Store decoder and create frame buffer
-        m_clipDecoders[clipEntity] = std::move(decoder);
-        m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
+        auto& state = m_clipState[clipEntity];
+        state.decoder = std::move(decoder);
+        state.frame = std::make_unique<DecodedFrame>();
 
         auto& clip = m_registry.get<Clip>(clipEntity);
-        m_clipFrames[clipEntity]->allocate(clip.width, clip.height);
-        m_lastDecodedFrame[clipEntity] = UINT32_MAX;
+        state.frame->allocate(clip.width, clip.height);
+        state.lastDecodedFrame = UINT32_MAX;
 
         // Add to loaded media files
         if (std::find(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(), mediaPath) == m_loadedMediaFiles.end()) {
@@ -1762,10 +1761,11 @@ void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath)
     }
 
     // Store decoder and create frame buffer
-    m_clipDecoders[clipEntity] = std::move(decoder);
-    m_clipFrames[clipEntity] = std::make_unique<DecodedFrame>();
-    m_clipFrames[clipEntity]->allocate(clip->width, clip->height);
-    m_lastDecodedFrame[clipEntity] = UINT32_MAX;  // Force decode on first frame
+    auto& state = m_clipState[clipEntity];
+    state.decoder = std::move(decoder);
+    state.frame = std::make_unique<DecodedFrame>();
+    state.frame->allocate(clip->width, clip->height);
+    state.lastDecodedFrame = UINT32_MAX;  // Force decode on first frame
 
     std::cout << "[Engine] New clip resources created successfully" << std::endl;
 }

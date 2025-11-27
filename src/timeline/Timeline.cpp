@@ -25,7 +25,7 @@ Timeline::Timeline(entt::registry& registry)
 }
 
 void Timeline::update(double deltaTime) {
-    if (m_playbackState == PlaybackState::Playing) {
+    if (m_playbackState.load() == PlaybackState::Playing) {
         // Advance current time based on deltaTime
         Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000000.0); // Convert seconds to microseconds
         m_currentTime += deltaTimecode;
@@ -33,28 +33,28 @@ void Timeline::update(double deltaTime) {
         // Clamp to duration
         if (m_currentTime > m_duration) {
             m_currentTime = m_duration;
-            m_playbackState = PlaybackState::Stopped; // Stop at end
+            m_playbackState.store(PlaybackState::Stopped); // Stop at end
             std::cout << "[Timeline] Reached end, stopping playback" << std::endl;
         }
     }
 }
 
 void Timeline::play() {
-    if (m_playbackState != PlaybackState::Playing) {
-        m_playbackState = PlaybackState::Playing;
+    if (m_playbackState.load() != PlaybackState::Playing) {
+        m_playbackState.store(PlaybackState::Playing);
         std::cout << "[Timeline] Playing from " << m_currentTime << std::endl;
     }
 }
 
 void Timeline::pause() {
-    if (m_playbackState == PlaybackState::Playing) {
-        m_playbackState = PlaybackState::Paused;
+    if (m_playbackState.load() == PlaybackState::Playing) {
+        m_playbackState.store(PlaybackState::Paused);
         std::cout << "[Timeline] Paused at " << m_currentTime << std::endl;
     }
 }
 
 void Timeline::stop() {
-    m_playbackState = PlaybackState::Stopped;
+    m_playbackState.store(PlaybackState::Stopped);
     m_currentTime = 0;
     std::cout << "[Timeline] Stopped, reset to 0" << std::endl;
 }
@@ -62,8 +62,8 @@ void Timeline::stop() {
 void Timeline::seek(Timecode time) {
     // Pause playback when seeking to prevent freezes
     // (ring buffer gets cleared on seek, main thread would block waiting for frames)
-    if (m_playbackState == PlaybackState::Playing) {
-        m_playbackState = PlaybackState::Paused;
+    if (m_playbackState.load() == PlaybackState::Playing) {
+        m_playbackState.store(PlaybackState::Paused);
         std::cout << "[Timeline] Auto-paused for seek" << std::endl;
     }
 
@@ -161,7 +161,7 @@ void Timeline::clear() {
 
     // Reset timeline state
     m_currentTime = 0;
-    m_playbackState = PlaybackState::Stopped;
+    m_playbackState.store(PlaybackState::Stopped);
 
     std::cout << "[Timeline] Cleared" << std::endl;
 }

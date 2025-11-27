@@ -295,6 +295,9 @@ void D3D12Renderer::beginFrame() {
     // Reset command list
     m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
 
+    // Reset descriptor heap cache (command list state is reset)
+    m_currentDescriptorHeap = nullptr;
+
     // Set viewport and scissor rect to match back buffer size
     D3D12_VIEWPORT viewport = {};
     viewport.Width = static_cast<float>(m_width);
@@ -956,9 +959,12 @@ void D3D12Renderer::beginImGuiFrame() {
 void D3D12Renderer::endImGuiFrame() {
     ImGui::Render();
 
-    // Set ImGui descriptor heap
-    ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-    m_commandList->SetDescriptorHeaps(1, heaps);
+    // Set ImGui descriptor heap (only if not already set)
+    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        m_commandList->SetDescriptorHeaps(1, heaps);
+        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
 
     // Render ImGui draw data
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
@@ -1637,9 +1643,12 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     m_commandList->SetPipelineState(pipelineState);
     m_commandList->SetGraphicsRootSignature(m_texturedRootSignature.Get());
 
-    // Set descriptor heap
-    ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-    m_commandList->SetDescriptorHeaps(1, heaps);
+    // Set descriptor heap (only if not already set)
+    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        m_commandList->SetDescriptorHeaps(1, heaps);
+        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
 
     // Set root parameters - use root constants (copied into command buffer)
     m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
@@ -1945,9 +1954,12 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     m_commandList->SetPipelineState(m_mappingSurfacePipelineState.Get());
     m_commandList->SetGraphicsRootSignature(m_mappingSurfaceRootSignature.Get());
 
-    // Set descriptor heap
-    ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-    m_commandList->SetDescriptorHeaps(1, heaps);
+    // Set descriptor heap (only if not already set)
+    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        m_commandList->SetDescriptorHeaps(1, heaps);
+        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
 
     // Set root parameters
     m_commandList->SetGraphicsRootConstantBufferView(0, m_mappingSurfaceConstantBuffer->GetGPUVirtualAddress());
@@ -1979,6 +1991,11 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
 bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     if (!m_initialized || !m_device) {
         std::cerr << "Cannot create compose target: renderer not initialized" << std::endl;
+        return false;
+    }
+
+    if (width == 0 || height == 0) {
+        std::cerr << "Invalid compose target dimensions: " << width << "x" << height << std::endl;
         return false;
     }
 

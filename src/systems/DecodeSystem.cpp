@@ -101,17 +101,21 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             FrameNumber lastRequested = worker->lastRequestedFrame.load();
             bool needsSeek = false;
 
-            if (!worker->seekPending.load() && lastRequested != UINT32_MAX) {
+            if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
                 // Calculate the jump distance
                 int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
 
+                // Hysteresis buffer to prevent seek thrashing when timeline position is slightly ahead
+                // of buffered frames but decode-ahead would naturally catch up during normal playback
+                constexpr int SEEK_HYSTERESIS = 8;
+
                 // Only seek on actual discontinuities:
                 // - Jumped backwards (any amount, user scrubbed back)
-                // - Jumped forward more than a reasonable decode-ahead window
+                // - Jumped forward more than decode-ahead buffer + hysteresis
                 if (frameDelta < 0) {
                     // Jumped backwards - need to seek
                     needsSeek = true;
-                } else if (frameDelta > DECODE_AHEAD_FRAMES + 8) {
+                } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
                     // Jumped way forward (beyond what decode-ahead can cover)
                     needsSeek = true;
                 }

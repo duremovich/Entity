@@ -388,6 +388,9 @@ private:
     uint32_t m_height;
     bool m_initialized;
 
+    // Descriptor heap caching (to avoid redundant SetDescriptorHeaps calls)
+    ID3D12DescriptorHeap* m_currentDescriptorHeap{nullptr};
+
     // Screenshot capture staging buffer
     ComPtr<ID3D12Resource> m_screenshotStagingBuffer;
     uint32_t m_screenshotStagingWidth{0};

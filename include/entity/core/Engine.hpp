@@ -312,10 +312,13 @@ private:
     std::unique_ptr<Decoder> m_decoder;
     std::unique_ptr<DecodedFrame> m_currentFrame;
 
-    // Multi-clip video playback (per-entity decoders and frames)
-    std::unordered_map<entt::entity, std::unique_ptr<Decoder>> m_clipDecoders;
-    std::unordered_map<entt::entity, std::unique_ptr<DecodedFrame>> m_clipFrames;
-    std::unordered_map<entt::entity, FrameNumber> m_lastDecodedFrame;  // Track last decoded frame per clip
+    // Multi-clip video playback state
+    struct ClipDecodeState {
+        std::unique_ptr<Decoder> decoder;
+        std::unique_ptr<DecodedFrame> frame;
+        FrameNumber lastDecodedFrame{UINT32_MAX};
+    };
+    std::unordered_map<entt::entity, ClipDecodeState> m_clipState;
 
     // Media library
     std::vector<std::string> m_loadedMediaFiles;

@@ -6,6 +6,8 @@
 #include <string>
 #include <functional>
 #include <unordered_set>
+#include <cmath>
+#include <atomic>
 
 namespace entity {
 
@@ -59,7 +61,7 @@ public:
     // Time getters
     Timecode getCurrentTime() const { return m_currentTime; }
     Timecode getDuration() const { return m_duration; }
-    PlaybackState getPlaybackState() const { return m_playbackState; }
+    PlaybackState getPlaybackState() const { return m_playbackState.load(); }
     double getFrameRate() const { return m_frameRate; }
 
     /**
@@ -70,7 +72,7 @@ public:
     FrameNumber getCurrentFrame() const {
         // Convert microseconds to seconds, multiply by frame rate
         double seconds = m_currentTime / 1000000.0;
-        return static_cast<FrameNumber>(seconds * m_frameRate);
+        return static_cast<FrameNumber>(std::round(seconds * m_frameRate));
     }
 
     // Time setters
@@ -158,7 +160,7 @@ private:
     // Timeline state
     Timecode m_currentTime{0};
     Timecode m_duration{600000000};  // Default: 10 minutes = 600 seconds = 600,000,000 microseconds
-    PlaybackState m_playbackState{PlaybackState::Stopped};
+    std::atomic<PlaybackState> m_playbackState{PlaybackState::Stopped};
     double m_frameRate{30.0};
 
     // Track entities (stored in ECS)

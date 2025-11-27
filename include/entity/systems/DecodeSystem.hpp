@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <memory>
+#include <limits>
 
 namespace entity {
 
@@ -34,7 +35,9 @@ struct DecodeWorker {
     std::atomic<FrameNumber> seekTarget{0};      // Frame to seek to
     std::atomic<FrameNumber> currentFrame{0};    // Last decoded frame
     std::atomic<FrameNumber> targetFrame{0};     // Target frame to decode ahead to
-    std::atomic<FrameNumber> lastRequestedFrame{UINT32_MAX}; // Last frame requested by render (for discontinuity detection)
+    // Sentinel value for "no frame requested yet" (used for discontinuity detection)
+    static constexpr FrameNumber INVALID_FRAME = std::numeric_limits<FrameNumber>::min();
+    std::atomic<FrameNumber> lastRequestedFrame{INVALID_FRAME}; // Last frame requested by render (for discontinuity detection)
 
     // Deferred initialization (decoder opened in worker thread, not main thread)
     std::atomic<bool> initialized{false};        // True once decoder is opened
