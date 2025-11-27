@@ -175,9 +175,17 @@ Result PNGSequenceDecoder::loadPNG(const std::string& filepath, DecodedFrame& ou
         return Result::FileNotFound;
     }
 
-    // Get file size
+    // Get file size and validate
     std::streamsize fileSize = file.tellg();
     file.seekg(0, std::ios::beg);
+
+    // Validate file size to prevent DoS attacks
+    const size_t MAX_PNG_SIZE = 512 * 1024 * 1024;  // 512 MB max
+    if (fileSize <= 0 || static_cast<size_t>(fileSize) > MAX_PNG_SIZE) {
+        std::cerr << "PNGSequenceDecoder: File size invalid or too large: " << fileSize << " bytes (max: " << MAX_PNG_SIZE << ")" << std::endl;
+        std::cerr << "  File: " << filepath << std::endl;
+        return Result::OutOfMemory;
+    }
 
     // Read file data
     std::vector<uint8_t> fileData(static_cast<size_t>(fileSize));
