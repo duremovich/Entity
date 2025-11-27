@@ -4,6 +4,8 @@
 #include "entity/components/Clip.hpp"
 #include <imgui.h>
 #include <iostream>
+#include <unordered_map>
+#include <tuple>
 
 namespace entity {
 
@@ -24,6 +26,25 @@ void MediaBinWindow::render() {
         ImGui::Spacing();
         ImGui::TextWrapped("Use File > Open Video to import media files.");
     } else {
+        // Build metadata cache once per frame to avoid O(n²) lookup
+        // Cache structure: filepath -> (width, height, framerate, duration, hasAlpha)
+        std::unordered_map<std::string, std::tuple<uint32_t, uint32_t, double, FrameNumber, bool>> metadataCache;
+
+        auto& registry = m_engine->getRegistry();
+        auto clipView = registry.view<Clip>();
+        for (auto [entity, clip] : clipView.each()) {
+            // Only cache the first occurrence of each filepath (clips may share media files)
+            if (metadataCache.find(clip.filepath) == metadataCache.end()) {
+                metadataCache[clip.filepath] = std::make_tuple(
+                    clip.width,
+                    clip.height,
+                    clip.framerate,
+                    clip.duration,
+                    clip.hasAlpha
+                );
+            }
+        }
+
         // Display media list in a table
         if (ImGui::BeginTable("MediaBinTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
             // Setup columns
@@ -64,25 +85,17 @@ void MediaBinWindow::render() {
                     ImGui::EndDragDropSource();
                 }
 
-                // Find metadata from Clip components (search all clips for matching filepath)
+                // Look up metadata from cache (O(1) instead of O(n))
                 bool hasMetadata = false;
                 uint32_t width = 0, height = 0;
                 FrameNumber duration = 0;
                 double framerate = 0.0;
                 bool hasAlpha = false;
 
-                auto& registry = m_engine->getRegistry();
-                auto clipView = registry.view<Clip>();
-                for (auto [entity, clip] : clipView.each()) {
-                    if (clip.filepath == filepath) {
-                        hasMetadata = true;
-                        width = clip.width;
-                        height = clip.height;
-                        duration = clip.duration;
-                        framerate = clip.framerate;
-                        hasAlpha = clip.hasAlpha;
-                        break;
-                    }
+                auto it = metadataCache.find(filepath);
+                if (it != metadataCache.end()) {
+                    hasMetadata = true;
+                    std::tie(width, height, framerate, duration, hasAlpha) = it->second;
                 }
 
                 // Resolution column
