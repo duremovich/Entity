@@ -23,7 +23,7 @@ public:
     const char* getName() const override { return "Media Bin"; }
 
 private:
-    Engine* m_engine;
+    Engine* m_engine{nullptr};
 };
 
 } // namespace entity
