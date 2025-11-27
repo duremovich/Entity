@@ -11,6 +11,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
+#include "entity/components/AnimatedProperties.hpp"
 #include "entity/media/FrameRingBuffer.hpp"
 #include <iostream>
 #include <algorithm>
@@ -288,6 +289,43 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
         newFrameBuffer.bufferedFrames.store(0);
     }
 
+    // Copy and adjust AnimatedProperties for split
+    auto* srcAnimProps = m_registry.try_get<AnimatedProperties>(clipEntity);
+    if (srcAnimProps) {
+        // Calculate split offset relative to clip start
+        FrameNumber splitOffset = splitFrame - clip->startFrame;
+
+        // Copy AnimatedProperties to right clip
+        auto& newAnimProps = m_registry.emplace<AnimatedProperties>(newClipEntity);
+        newAnimProps = *srcAnimProps;
+
+        // Adjust keyframe times for right portion (remove keyframes before split, adjust remaining)
+        for (auto& kfTrack : newAnimProps.tracks) {
+            // Remove keyframes before split point
+            kfTrack.keyframes.erase(
+                std::remove_if(kfTrack.keyframes.begin(), kfTrack.keyframes.end(),
+                    [splitOffset](const Keyframe& kf) { return kf.frame < splitOffset; }),
+                kfTrack.keyframes.end());
+
+            // Adjust remaining keyframe times (shift to 0-based for new clip)
+            for (auto& kf : kfTrack.keyframes) {
+                kf.frame -= splitOffset;
+            }
+        }
+
+        // Truncate keyframes on original (left) clip to before split point
+        for (auto& kfTrack : srcAnimProps->tracks) {
+            kfTrack.keyframes.erase(
+                std::remove_if(kfTrack.keyframes.begin(), kfTrack.keyframes.end(),
+                    [splitOffset](const Keyframe& kf) { return kf.frame >= splitOffset; }),
+                kfTrack.keyframes.end());
+        }
+
+        std::cout << "[Timeline] Split AnimatedProperties: left has "
+                  << srcAnimProps->getTotalKeyframeCount() << " keyframes, right has "
+                  << newAnimProps.getTotalKeyframeCount() << " keyframes" << std::endl;
+    }
+
     // Modify original clip to be the left half
     clip->duration = leftDuration;
 
@@ -393,6 +431,16 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
         newFrameBuffer.targetFrame.store(0);
         newFrameBuffer.isBuffering.store(true);
         newFrameBuffer.bufferedFrames.store(0);
+    }
+
+    // Copy AnimatedProperties if exists (duplicate gets identical keyframes)
+    auto* srcAnimProps = m_registry.try_get<AnimatedProperties>(clipEntity);
+    if (srcAnimProps) {
+        auto& newAnimProps = m_registry.emplace<AnimatedProperties>(newClipEntity);
+        newAnimProps = *srcAnimProps;
+
+        std::cout << "[Timeline] Duplicated AnimatedProperties with "
+                  << newAnimProps.getTotalKeyframeCount() << " keyframes" << std::endl;
     }
 
     // Add new clip to the same track
