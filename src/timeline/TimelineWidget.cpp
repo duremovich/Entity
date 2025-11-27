@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <cmath>
 #include <set>
+#include <limits>
 
 namespace entity {
 
@@ -747,13 +748,13 @@ void TimelineWidget::renderPropertyRow(entt::entity clipEntity, AnimatableProper
         if (mousePos.x >= rightArrowX - navSize - 2 && mousePos.x <= rightArrowX + navSize + 2 &&
             mousePos.y >= navY - navSize - 2 && mousePos.y <= navY + navSize + 2) {
             // Find next keyframe
-            FrameNumber nextFrame = INT32_MAX;
+            FrameNumber nextFrame = std::numeric_limits<FrameNumber>::max();
             for (const auto& kf : track->keyframes) {
                 if (kf.frame > localFrame && kf.frame < nextFrame) {
                     nextFrame = kf.frame;
                 }
             }
-            if (nextFrame != INT32_MAX) {
+            if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
                 // Seek to next keyframe
                 FrameNumber globalFrame = nextFrame + static_cast<FrameNumber>(clipStartFrame);
                 m_timeline->seek(static_cast<Timecode>(globalFrame / framerate * 1000000.0f));
