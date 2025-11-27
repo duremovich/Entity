@@ -1212,9 +1212,14 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     // Set timeline frame rate to match clip (duration remains at default 10 minutes)
     m_timeline->setFrameRate(clip.framerate);
 
-    // Legacy: Also create m_currentFrame for backwards compatibility with StageWindow
-    m_currentFrame = std::make_unique<DecodedFrame>();
-    m_currentFrame->allocate(clip.width, clip.height);
+    // Legacy: Reuse m_currentFrame for backwards compatibility with StageWindow
+    // Only reallocate if dimensions changed, otherwise reuse existing buffer
+    if (!m_currentFrame ||
+        m_currentFrame->width != clip.width ||
+        m_currentFrame->height != clip.height) {
+        m_currentFrame = std::make_unique<DecodedFrame>();
+        m_currentFrame->allocate(clip.width, clip.height);
+    }
 
     std::cout << "Clip created with VideoTexture, Transform, MediaLayer components" << std::endl;
     std::cout << "Clip duration: " << clip.duration << " frames at " << clip.framerate << " fps" << std::endl;
