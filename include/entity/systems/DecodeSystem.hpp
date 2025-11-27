@@ -144,19 +144,15 @@ private:
 
     /**
      * Decode thread main loop.
+     * Takes shared_ptr to ensure worker lifetime extends beyond thread execution.
      */
-    static void decodeThreadFunc(DecodeWorker* worker, entt::entity entity);
-
-    /**
-     * Calculate how many frames to decode ahead.
-     */
-    FrameNumber calculateDecodeAhead(FrameNumber currentFrame, FrameNumber bufferCount) const;
+    static void decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::entity entity);
 
 private:
     Timeline* m_timeline{nullptr};
 
-    // Map of clip entity to decode worker
-    std::unordered_map<entt::entity, std::unique_ptr<DecodeWorker>> m_workers;
+    // Map of clip entity to decode worker (shared_ptr ensures thread-safe lifetime)
+    std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> m_workers;
 
     // Global pause state
     std::atomic<bool> m_globalPaused{false};

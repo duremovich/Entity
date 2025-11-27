@@ -238,7 +238,7 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     // Decoder is opened in the worker thread to avoid blocking the main thread
     // This prevents freezes when clips become active during playback
     auto workerCreateStart = std::chrono::high_resolution_clock::now();
-    auto worker = std::make_unique<DecodeWorker>();
+    auto worker = std::make_shared<DecodeWorker>();
     worker->ringBuffer = frameBuffer->ringBuffer;
     worker->running.store(true);
     worker->currentFrame.store(initialFrame);
@@ -257,13 +257,13 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
         std::chrono::high_resolution_clock::now() - workerCreateStart).count();
 
     // Start decode thread (decoder will be opened there, not here)
+    // Pass shared_ptr to ensure worker lifetime extends beyond thread execution
     auto threadStart = std::chrono::high_resolution_clock::now();
-    DecodeWorker* workerPtr = worker.get();
-    worker->thread = std::thread(&DecodeSystem::decodeThreadFunc, workerPtr, entity);
+    worker->thread = std::thread(&DecodeSystem::decodeThreadFunc, worker, entity);
     auto threadElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - threadStart).count();
 
-    m_workers[entity] = std::move(worker);
+    m_workers[entity] = worker;
 
     auto totalElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - totalStart).count();
@@ -295,7 +295,7 @@ void DecodeSystem::destroyWorker(entt::entity entity) {
     std::cout << "Destroyed decode worker for entity" << std::endl;
 }
 
-void DecodeSystem::decodeThreadFunc(DecodeWorker* worker, entt::entity entity) {
+void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::entity entity) {
     if (!worker || !worker->ringBuffer) {
         std::cerr << "Decode thread started with invalid worker state" << std::endl;
         return;
@@ -410,11 +410,6 @@ void DecodeSystem::decodeThreadFunc(DecodeWorker* worker, entt::entity entity) {
     }
 
     std::cout << "Decode thread exiting" << std::endl;
-}
-
-FrameNumber DecodeSystem::calculateDecodeAhead(FrameNumber currentFrame, FrameNumber bufferCount) const {
-    // Simple strategy: always try to keep DECODE_AHEAD_FRAMES in buffer
-    return currentFrame + DECODE_AHEAD_FRAMES;
 }
 
 } // namespace entity
