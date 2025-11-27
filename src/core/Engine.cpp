@@ -1204,6 +1204,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     // Add clip to selected track
     auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
     finalTrack.addClip(clipEntity);
+    finalTrack.sortClips(m_registry); // Maintain sorted order by start frame
     std::cout << "Added clip to track " << (finalTrackIndex + 1) << std::endl;
 
     // Set z-order based on track index
@@ -1382,6 +1383,7 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     // Add clip to the selected track
     auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
     finalTrack.addClip(clipEntity);
+    finalTrack.sortClips(m_registry); // Maintain sorted order by start frame
     std::cout << "Added clip to track " << (finalTrackIndex + 1) << " at frame " << startFrame << std::endl;
 
     // Extend timeline duration if needed

@@ -2,7 +2,9 @@
 
 #include <vector>
 #include <cstdint>
+#include <algorithm>
 #include <entt/entt.hpp>
+#include "Clip.hpp"
 
 namespace entity {
 
@@ -18,11 +20,23 @@ struct TimelineTrack {
 
     /**
      * Add a clip entity to this track.
-     * Clips are kept sorted by start time.
+     * Note: Call sortClips() after adding clips to maintain sorted order.
      */
     void addClip(entt::entity clipEntity) {
         clips.push_back(clipEntity);
-        // Note: Sorting should be done by the TimelineSystem
+    }
+
+    /**
+     * Sort clips by their start frame.
+     * Should be called after adding clips to ensure proper ordering.
+     */
+    void sortClips(entt::registry& registry) {
+        std::sort(clips.begin(), clips.end(), [&registry](entt::entity a, entt::entity b) {
+            auto* clipA = registry.try_get<Clip>(a);
+            auto* clipB = registry.try_get<Clip>(b);
+            if (!clipA || !clipB) return false;
+            return clipA->startFrame < clipB->startFrame;
+        });
     }
 
     /**
