@@ -117,17 +117,41 @@ Result ProResDecoder::open(const std::string& filepath) {
         m_frameRate = 30.0; // Default fallback
     }
 
-    // Calculate duration in frames
+    // Calculate duration in frames using integer arithmetic for precision
     if (stream->nb_frames > 0) {
+        // Use nb_frames if available (most reliable)
         m_duration = static_cast<FrameNumber>(stream->nb_frames);
     } else if (stream->duration > 0) {
-        // Convert stream duration to frames
-        double durationSec = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
-        m_duration = static_cast<FrameNumber>(durationSec * m_frameRate);
+        // Convert stream duration to frames using av_rescale_q for exact integer arithmetic
+        AVRational frameRate;
+        if (stream->r_frame_rate.den > 0) {
+            frameRate = stream->r_frame_rate;
+        } else if (stream->avg_frame_rate.den > 0) {
+            frameRate = stream->avg_frame_rate;
+        } else {
+            frameRate.num = 30;
+            frameRate.den = 1;
+        }
+
+        // Rescale duration from stream timebase to frame count
+        int64_t totalFrames = av_rescale_q(stream->duration, stream->time_base, av_inv_q(frameRate));
+        m_duration = static_cast<FrameNumber>(totalFrames);
     } else if (m_formatContext->duration > 0) {
-        // Use container duration
-        double durationSec = static_cast<double>(m_formatContext->duration) / AV_TIME_BASE;
-        m_duration = static_cast<FrameNumber>(durationSec * m_frameRate);
+        // Convert container duration to frames using integer arithmetic
+        AVRational frameRate;
+        if (stream->r_frame_rate.den > 0) {
+            frameRate = stream->r_frame_rate;
+        } else if (stream->avg_frame_rate.den > 0) {
+            frameRate = stream->avg_frame_rate;
+        } else {
+            frameRate.num = 30;
+            frameRate.den = 1;
+        }
+
+        // Container duration is in AV_TIME_BASE units
+        AVRational containerTimebase = {1, AV_TIME_BASE};
+        int64_t totalFrames = av_rescale_q(m_formatContext->duration, containerTimebase, av_inv_q(frameRate));
+        m_duration = static_cast<FrameNumber>(totalFrames);
     } else {
         m_duration = 0;
     }
