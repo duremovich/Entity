@@ -19,7 +19,56 @@ struct DecodedFrame {
     uint32_t width{0};
     uint32_t height{0};
     Timestamp pts{0};              // Presentation timestamp (microseconds)
-    bool valid{false};             // True if frame contains valid data
+    std::atomic<bool> valid{false}; // True if frame contains valid data (atomic for thread safety)
+
+    // Default constructor
+    DecodedFrame() = default;
+
+    // Copy constructor - atomics must be copied explicitly
+    DecodedFrame(const DecodedFrame& other)
+        : data(other.data)
+        , frameNumber(other.frameNumber)
+        , width(other.width)
+        , height(other.height)
+        , pts(other.pts)
+        , valid(other.valid.load(std::memory_order_acquire))
+    {}
+
+    // Copy assignment operator - atomics must be copied explicitly
+    DecodedFrame& operator=(const DecodedFrame& other) {
+        if (this != &other) {
+            data = other.data;
+            frameNumber = other.frameNumber;
+            width = other.width;
+            height = other.height;
+            pts = other.pts;
+            valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
+        }
+        return *this;
+    }
+
+    // Move constructor
+    DecodedFrame(DecodedFrame&& other) noexcept
+        : data(std::move(other.data))
+        , frameNumber(other.frameNumber)
+        , width(other.width)
+        , height(other.height)
+        , pts(other.pts)
+        , valid(other.valid.load(std::memory_order_acquire))
+    {}
+
+    // Move assignment operator
+    DecodedFrame& operator=(DecodedFrame&& other) noexcept {
+        if (this != &other) {
+            data = std::move(other.data);
+            frameNumber = other.frameNumber;
+            width = other.width;
+            height = other.height;
+            pts = other.pts;
+            valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
+        }
+        return *this;
+    }
 
     /**
      * Allocate memory for pixel data.
@@ -39,7 +88,7 @@ struct DecodedFrame {
         width = 0;
         height = 0;
         pts = 0;
-        valid = false;
+        valid.store(false, std::memory_order_release);
     }
 };
 

@@ -20,7 +20,7 @@ protected:
         frame.allocate(width, height);
         frame.frameNumber = frameNum;
         frame.pts = frameNum * 33333; // ~30fps
-        frame.valid = true;
+        frame.valid.store(true, std::memory_order_release);
 
         // Fill with test pattern (frame number repeated)
         uint8_t pattern = static_cast<uint8_t>(frameNum % 256);
@@ -261,7 +261,7 @@ TEST(DecodedFrameTest, Allocation) {
     EXPECT_EQ(frame.width, 0);
     EXPECT_EQ(frame.height, 0);
     EXPECT_TRUE(frame.data.empty());
-    EXPECT_FALSE(frame.valid);
+    EXPECT_FALSE(frame.valid.load(std::memory_order_acquire));
 
     frame.allocate(1920, 1080);
     EXPECT_EQ(frame.width, 1920);
@@ -275,7 +275,7 @@ TEST(DecodedFrameTest, Clear) {
     frame.allocate(1920, 1080);
     frame.frameNumber = 42;
     frame.pts = 123456;
-    frame.valid = true;
+    frame.valid.store(true, std::memory_order_release);
 
     frame.clear();
     EXPECT_TRUE(frame.data.empty());
@@ -283,7 +283,7 @@ TEST(DecodedFrameTest, Clear) {
     EXPECT_EQ(frame.width, 0);
     EXPECT_EQ(frame.height, 0);
     EXPECT_EQ(frame.pts, 0);
-    EXPECT_FALSE(frame.valid);
+    EXPECT_FALSE(frame.valid.load(std::memory_order_acquire));
 }
 
 // Test: Large capacity buffer
@@ -296,7 +296,7 @@ TEST(FrameRingBufferStandaloneTest, LargeCapacity) {
         DecodedFrame frame;
         frame.allocate(100, 100);
         frame.frameNumber = i;
-        frame.valid = true;
+        frame.valid.store(true, std::memory_order_release);
         EXPECT_TRUE(largeBuffer.push(std::move(frame)));
     }
 

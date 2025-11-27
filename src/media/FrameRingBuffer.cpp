@@ -81,7 +81,7 @@ bool FrameRingBuffer::getFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
         uint32_t idx = (readIdx + i) % m_capacity;
         const DecodedFrame& frame = m_frames[idx];
 
-        if (frame.valid && frame.frameNumber == frameNumber) {
+        if (frame.valid.load(std::memory_order_acquire) && frame.frameNumber == frameNumber) {
             outFrame = frame; // Copy the frame
             return true;
         }
@@ -109,7 +109,8 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
         uint32_t idx = (readIdx + i) % m_capacity;
         const DecodedFrame& frame = m_frames[idx];
 
-        if (frame.valid && frame.frameNumber == frameNumber) {
+        // Use atomic load with acquire semantics to ensure we see writes from decode thread
+        if (frame.valid.load(std::memory_order_acquire) && frame.frameNumber == frameNumber) {
             foundOffset = static_cast<int32_t>(i);
             break;
         }
@@ -124,10 +125,10 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
         bestOffset = 0;
     }
 
-    // Copy the frame
+    // Copy the frame - check validity with atomic load to prevent TOCTOU race
     uint32_t frameIdx = (readIdx + static_cast<uint32_t>(bestOffset)) % m_capacity;
     const DecodedFrame& selectedFrame = m_frames[frameIdx];
-    if (!selectedFrame.valid) {
+    if (!selectedFrame.valid.load(std::memory_order_acquire)) {
         return false; // No valid frame
     }
     outFrame = selectedFrame;
