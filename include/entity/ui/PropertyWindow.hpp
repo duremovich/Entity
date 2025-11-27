@@ -4,6 +4,8 @@
 #include "../components/AnimatedProperties.hpp"
 #include <imgui.h>
 #include <functional>
+#include <unordered_map>
+#include <entt/entt.hpp>
 
 namespace entity {
 
@@ -86,6 +88,9 @@ private:
 
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
+
+    // Per-entity UI state (prevents static variable leak between clips)
+    std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
 };
 
 } // namespace entity

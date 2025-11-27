@@ -134,8 +134,9 @@ void PropertyWindow::renderTransformSection() {
         ImGui::SetTooltip("Scale factor. 1.0 = fullscreen, 0.5 = half size");
     }
 
-    // Uniform scale checkbox
-    static bool uniformScale = true;
+    // Uniform scale checkbox - use per-entity state map to prevent static variable leak
+    auto [it, inserted] = m_uniformScaleState.try_emplace(selectedClip, true);
+    bool& uniformScale = it->second;
     ImGui::Checkbox("Uniform Scale", &uniformScale);
 
     // Scale X with keyframe controls
