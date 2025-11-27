@@ -71,30 +71,35 @@ struct KeyframeTrack {
 
     /**
      * Add a keyframe, maintaining sorted order
+     * Uses binary search for O(log n) insertion instead of O(n log n) sort
      */
     void addKeyframe(FrameNumber frame, float value,
                      InterpolationType interp = InterpolationType::Linear) {
-        // Check if keyframe exists at this frame
-        for (auto& kf : keyframes) {
-            if (kf.frame == frame) {
-                kf.value = value;
-                kf.interpolation = interp;
-                return;
-            }
+        // Find insertion point using binary search
+        auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
+            [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+
+        // Check if keyframe already exists at this frame
+        if (it != keyframes.end() && it->frame == frame) {
+            // Update existing keyframe
+            it->value = value;
+            it->interpolation = interp;
+            return;
         }
 
-        // Add new keyframe
-        keyframes.push_back({frame, value, interp});
-        std::sort(keyframes.begin(), keyframes.end());
+        // Insert at correct position (maintains sorted order)
+        keyframes.insert(it, Keyframe{frame, value, interp});
     }
 
     /**
      * Remove keyframe at frame
+     * Uses binary search for O(log n) lookup
      */
     bool removeKeyframe(FrameNumber frame) {
-        auto it = std::find_if(keyframes.begin(), keyframes.end(),
-            [frame](const Keyframe& kf) { return kf.frame == frame; });
-        if (it != keyframes.end()) {
+        auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
+            [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+
+        if (it != keyframes.end() && it->frame == frame) {
             keyframes.erase(it);
             return true;
         }
@@ -103,26 +108,35 @@ struct KeyframeTrack {
 
     /**
      * Get keyframe at exact frame (or nullptr) - const version
+     * Uses binary search for O(log n) lookup
      */
     const Keyframe* getKeyframeAt(FrameNumber frame) const {
-        for (const auto& kf : keyframes) {
-            if (kf.frame == frame) return &kf;
+        auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
+            [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+
+        if (it != keyframes.end() && it->frame == frame) {
+            return &(*it);
         }
         return nullptr;
     }
 
     /**
      * Get keyframe at exact frame (or nullptr) - mutable version
+     * Uses binary search for O(log n) lookup
      */
     Keyframe* getKeyframeAt(FrameNumber frame) {
-        for (auto& kf : keyframes) {
-            if (kf.frame == frame) return &kf;
+        auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
+            [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+
+        if (it != keyframes.end() && it->frame == frame) {
+            return &(*it);
         }
         return nullptr;
     }
 
     /**
      * Evaluate track at given frame with interpolation
+     * Uses binary search for O(log n) keyframe lookup
      */
     float evaluate(FrameNumber frame) const {
         if (keyframes.empty()) {
@@ -139,18 +153,25 @@ struct KeyframeTrack {
             return keyframes.back().value;
         }
 
-        // Find surrounding keyframes
-        for (size_t i = 0; i < keyframes.size() - 1; ++i) {
-            const Keyframe& kf1 = keyframes[i];
-            const Keyframe& kf2 = keyframes[i + 1];
+        // Find first keyframe >= frame using binary search
+        auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
+            [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
 
-            if (frame >= kf1.frame && frame < kf2.frame) {
-                // Calculate interpolation factor (0-1)
-                float t = static_cast<float>(frame - kf1.frame) /
-                          static_cast<float>(kf2.frame - kf1.frame);
+        // If exact match, return value
+        if (it != keyframes.end() && it->frame == frame) {
+            return it->value;
+        }
 
-                return interpolate(kf1, kf2, t);
-            }
+        // it points to first keyframe after frame, so interpolate between (it-1) and it
+        if (it != keyframes.begin() && it != keyframes.end()) {
+            const Keyframe& kf1 = *(it - 1);
+            const Keyframe& kf2 = *it;
+
+            // Calculate interpolation factor (0-1)
+            float t = static_cast<float>(frame - kf1.frame) /
+                      static_cast<float>(kf2.frame - kf1.frame);
+
+            return interpolate(kf1, kf2, t);
         }
 
         return keyframes.back().value;
