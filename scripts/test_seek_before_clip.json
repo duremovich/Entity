@@ -1,0 +1,32 @@
+{
+    "version": 1,
+    "description": "Verify no stale frame flash when seeking before clip and playing - clip at frame 0",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/test_video.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "SelectTab", "tabName": "Stage"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 120},
+        {"type": "Pause"},
+        {"type": "LogClipState"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test/01_after_play.png", "region": "composeTarget"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test/02_at_start.png", "region": "composeTarget"},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test/03_first_few_frames.png", "region": "composeTarget"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test/04_later.png", "region": "composeTarget"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test/05_much_later.png", "region": "composeTarget"},
+
+        {"type": "Pause"},
+        {"type": "LogClipState"},
+        {"type": "Exit"}
+    ]
+}

@@ -1532,6 +1532,14 @@ void Engine::updateClipVideos() {
             }
         }
         if (frameBuffer && frameBuffer->ringBuffer) {
+            // Check if seek is pending - buffer contains stale frames until decode thread processes seek
+            const DecodeWorker* worker = m_decodeSystem->getWorker(entity);
+            if (worker && worker->seekPending.load()) {
+                // Skip frame retrieval - buffer has stale data
+                // Keep showing previous frame until fresh frames arrive
+                continue;
+            }
+
             DecodedFrame ringFrame;
             bool gotFrame = false;
 
@@ -1551,6 +1559,7 @@ void Engine::updateClipVideos() {
                 // This preserves frames in buffer for ping-pong bidirectional access
                 gotFrame = frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame);
             }
+
             auto ringMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now() - ringStart).count();
             if (ringMs > 50) {

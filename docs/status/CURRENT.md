@@ -17,6 +17,8 @@ Independent per-screen rendering for projection mapping is now functional.
 
 3. **Multi-video playback freeze** (2025-11-28) - Fixed critical freeze (5+ seconds) when playing multiple videos on timeline. Root cause: Race condition between `clear()` and `consumeUpTo()` in FrameRingBuffer caused count to wrap to UINT32_MAX, resulting in 4 billion loop iterations. Fix: Added count validation checks to detect and handle corrupted count values.
 
+4. **Stale frame flash on seek-before-clip** (2025-11-28) - Fixed visual glitch where seeking before a clip's start and playing showed wrong frame briefly. Root cause: Race condition between seek signaling and frame retrieval; also late seek triggered when clip became active. Fix: Added `seekPending` check in Engine.cpp to skip stale buffer access, and proactive seek in DecodeSystem.cpp when timeline is before clip start.
+
 ### Component Status
 
 | Component | Status | Details |
@@ -72,6 +74,8 @@ Independent per-screen rendering for projection mapping is now functional.
 - [CompositorSystem.cpp](../../src/systems/CompositorSystem.cpp) - Multi-screen loop
 - [CompositorSystem.hpp](../../include/entity/systems/CompositorSystem.hpp) - Added helper
 - [StageWindow.cpp](../../src/ui/StageWindow.cpp) - Per-screen textures
+- [Engine.cpp](../../src/core/Engine.cpp) - Stale frame prevention (seekPending check)
+- [DecodeSystem.cpp](../../src/systems/DecodeSystem.cpp) - Proactive seek before clip entry
 
 ---
 

@@ -215,6 +215,19 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 frameBuffer.targetFrame.store(mediaFrame);
                 frameBuffer.currentPTS.store(static_cast<Timestamp>(mediaFrame));
             }
+        } else if (currentTimelineFrame < clip.startFrame) {
+            // Timeline is BEFORE clip start - proactively prepare for clip entry
+            // This prevents stale frame flash when re-entering the clip
+            FrameNumber lastRequested = worker->lastRequestedFrame.load();
+
+            // If we were previously showing a later frame, seek to start
+            if (lastRequested != DecodeWorker::INVALID_FRAME &&
+                lastRequested != clip.mediaStartFrame &&
+                !worker->seekPending.load()) {
+                // Reset to clip start so we're ready when timeline enters clip
+                seekClip(entity, clip.mediaStartFrame);
+                worker->lastRequestedFrame.store(DecodeWorker::INVALID_FRAME);
+            }
         }
     }
 
