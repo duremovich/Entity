@@ -166,6 +166,9 @@ private:
     // Global pause state
     std::atomic<bool> m_globalPaused{false};
 
+    // Scrubbing state tracking (to detect when scrubbing ends)
+    bool m_wasScrubbing{false};
+
     // Decode-ahead configuration
     // Reduced from 16 to 8 for faster buffer refill on seek (always-warm buffering)
     static constexpr uint32_t DECODE_AHEAD_FRAMES = 8;   // Frames to buffer ahead

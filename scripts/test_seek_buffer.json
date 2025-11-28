@@ -1,0 +1,37 @@
+{
+    "version": 1,
+    "description": "Test that seeking mid-video triggers immediate rebuffering - verifies fix for post-seek freeze",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 120},
+        {"type": "LogClipState"},
+
+        {"type": "SeekToFrame", "frame": 100},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_100_before_play.png"},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_100_after_play.png"},
+
+        {"type": "SeekToFrame", "frame": 50},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_50_before_play.png"},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_50_after_play.png"},
+
+        {"type": "SeekToFrame", "frame": 150},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 75},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_75_before_play.png"},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_75_after_play.png"},
+
+        {"type": "Exit"}
+    ]
+}

@@ -64,6 +64,10 @@ public:
     PlaybackState getPlaybackState() const { return m_playbackState.load(); }
     double getFrameRate() const { return m_frameRate; }
 
+    // Scrubbing mode - when true, DecodeSystem won't trigger seeks (prevents buffer thrashing)
+    void setScrubbing(bool scrubbing) { m_isScrubbing.store(scrubbing); }
+    bool isScrubbing() const { return m_isScrubbing.load(); }
+
     /**
      * Get current frame number based on timeline position.
      * Converts current time (in microseconds) to frame number using frame rate.
@@ -177,6 +181,7 @@ private:
     Timecode m_currentTime{0};
     Timecode m_duration{600000000};  // Default: 10 minutes = 600 seconds = 600,000,000 microseconds
     std::atomic<PlaybackState> m_playbackState{PlaybackState::Stopped};
+    std::atomic<bool> m_isScrubbing{false};  // True during drag-scrubbing (prevents decoder seeks)
     double m_frameRate{30.0};
 
     // Track entities (stored in ECS)

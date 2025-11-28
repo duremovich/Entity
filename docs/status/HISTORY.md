@@ -28,6 +28,28 @@ Fixed critical descriptor heap slot collision that caused video to disappear whe
 
 ---
 
+### Scrubbing/Seek Freeze Fix (2025-11-28)
+
+Fixed playback freeze when dragging playhead or clips backwards then pressing play.
+
+**Root Cause**: Multiple interacting issues:
+1. Race condition: decode thread used stale `targetFrame` after seek was signaled
+2. Buffer thrashing: rapid seeks during drag operations cleared buffer repeatedly
+3. Duplicate seeks: single timeline click triggered multiple seek calls
+
+**Fix**:
+1. Update `targetFrame` atomically before signaling seek in `seekClip()`
+2. Added seek debouncing in TimelineWidget (only seek when time actually changes)
+3. Added scrubbing mode that prevents decoder seeks during drag operations:
+   - Timeline sets `m_isScrubbing = true` when drag starts
+   - DecodeSystem skips seek detection while scrubbing
+   - On drag release, scrubbing ends and one final seek is triggered
+   - Applied to ruler drag, clip drag, and clip trim operations
+
+**Files**: DecodeSystem.cpp/hpp, Timeline.hpp, TimelineWidget.cpp/hpp
+
+---
+
 ### Window Management Improvements (2025-11-27)
 
 Implemented per-window undocking via right-click context menu and fixed ping-pong playback mode.

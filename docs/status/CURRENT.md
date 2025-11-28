@@ -19,6 +19,11 @@ Independent per-screen rendering for projection mapping is now functional.
 
 4. **Stale frame flash on seek-before-clip** (2025-11-28) - Fixed visual glitch where seeking before a clip's start and playing showed wrong frame briefly. Root cause: Race condition between seek signaling and frame retrieval; also late seek triggered when clip became active. Fix: Added `seekPending` check in Engine.cpp to skip stale buffer access, and proactive seek in DecodeSystem.cpp when timeline is before clip start.
 
+5. **Playback freeze after backward scrubbing** (2025-11-28) - Fixed freeze when dragging playhead or clips backwards then pressing play. Root cause: Race condition where decode thread used stale `targetFrame` after seek, plus buffer thrashing from rapid seeks during drag. Fix: Three-part solution:
+   - Update `targetFrame` before signaling seek in `seekClip()`
+   - Debounce seeks in TimelineWidget (only seek when time actually changes)
+   - Added scrubbing mode that prevents decoder seeks during drag operations (ruler, clip, trim), with one final seek on release
+
 ### Component Status
 
 | Component | Status | Details |
@@ -75,7 +80,11 @@ Independent per-screen rendering for projection mapping is now functional.
 - [CompositorSystem.hpp](../../include/entity/systems/CompositorSystem.hpp) - Added helper
 - [StageWindow.cpp](../../src/ui/StageWindow.cpp) - Per-screen textures
 - [Engine.cpp](../../src/core/Engine.cpp) - Stale frame prevention (seekPending check)
-- [DecodeSystem.cpp](../../src/systems/DecodeSystem.cpp) - Proactive seek before clip entry
+- [DecodeSystem.cpp](../../src/systems/DecodeSystem.cpp) - Proactive seek, scrubbing detection, targetFrame fix
+- [DecodeSystem.hpp](../../include/entity/systems/DecodeSystem.hpp) - Added m_wasScrubbing flag
+- [Timeline.hpp](../../include/entity/timeline/Timeline.hpp) - Added scrubbing mode (m_isScrubbing)
+- [TimelineWidget.hpp](../../include/entity/timeline/TimelineWidget.hpp) - Added seek debouncing
+- [TimelineWidget.cpp](../../src/timeline/TimelineWidget.cpp) - Scrubbing mode for ruler/clip/trim drag
 
 ---
 

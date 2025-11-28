@@ -217,6 +217,7 @@ private:
     entt::entity m_selectedClip{entt::null};
     bool m_isDraggingClip{false};
     bool m_isDraggingRuler{false};
+    Timecode m_lastSeekTime{-1};  // Debounce: last time we sought to
     int m_selectedClipTrackIndex{-1};
     Timecode m_clipDragStartTime{0};
     float m_dragOffsetX{0.0f};

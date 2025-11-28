@@ -37,6 +37,11 @@ void DecodeSystem::initialize(entt::registry& registry) {
 void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     if (!m_timeline) return;
 
+    // Detect scrubbing end - when scrubbing stops, force seeks for all active clips
+    bool currentlyScrubbing = m_timeline->isScrubbing();
+    bool scrubbingJustEnded = m_wasScrubbing && !currentlyScrubbing;
+    m_wasScrubbing = currentlyScrubbing;
+
     // ALWAYS-WARM BUFFERING: Never pause decode workers based on timeline state!
     // This ensures buffers are always ready at the playhead position for zero-latency playback.
     // Decode workers only pause when the ring buffer is full, not when timeline is paused.
@@ -160,10 +165,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             }
 
             // Check if we need to seek
+            // Skip seek detection during scrubbing to prevent buffer thrashing
             FrameNumber lastRequested = worker->lastRequestedFrame.load();
             bool needsSeek = false;
 
-            if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
+            if (!m_timeline->isScrubbing() && !worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
                 int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
 
                 if (clip.playbackMode == PlaybackMode::PingPong) {
@@ -203,6 +209,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
             // Update last requested frame
             worker->lastRequestedFrame.store(mediaFrame);
+
+            // Force seek when scrubbing just ended to ensure buffer is at correct position
+            if (scrubbingJustEnded) {
+                needsSeek = true;
+            }
 
             if (needsSeek) {
                 std::cout << "Seek: jump from " << lastRequested << " to " << mediaFrame << std::endl;
@@ -277,6 +288,11 @@ void DecodeSystem::seekClip(entt::entity clipEntity, FrameNumber frame) {
     if (worker->initFailed.load()) {
         return;  // Worker failed to initialize, skip
     }
+
+    // Update targetFrame BEFORE signaling seek
+    // This ensures decode thread has valid target immediately after processing seek
+    // Fixes race condition where decode thread would stall due to stale targetFrame
+    worker->targetFrame.store(frame + DECODE_AHEAD_FRAMES);
 
     // Signal seek to decode thread
     worker->seekTarget.store(frame);
@@ -458,17 +474,34 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::
         if (worker->seekPending.load()) {
             FrameNumber seekFrame = worker->seekTarget.load();
 
-            // Clear the ring buffer
-            worker->ringBuffer->clear();
+            // Check if the sought frame is already in the buffer
+            DecodedFrame testFrame;
+            bool frameInBuffer = worker->ringBuffer->getFrame(seekFrame, testFrame);
 
-            // Seek the decoder
-            Result result = worker->decoder->seek(seekFrame);
-            if (result == Result::Success) {
-                nextFrame = seekFrame;
+            if (frameInBuffer) {
+                // Frame already buffered - no need to clear, just update decode position
+                // This prevents buffer thrashing during rapid scrubbing
+                nextFrame = seekFrame + 1;  // Continue decoding from after the sought frame
                 worker->currentFrame.store(seekFrame);
-                std::cout << "Decode thread seeked to frame " << seekFrame << std::endl;
             } else {
-                std::cerr << "Decode seek failed" << std::endl;
+                // Frame not in buffer - need to clear and seek
+                worker->ringBuffer->clear();
+
+                // Seek the decoder
+                Result result = worker->decoder->seek(seekFrame);
+                if (result == Result::Success) {
+                    nextFrame = seekFrame;
+                    worker->currentFrame.store(seekFrame);
+                } else {
+                    std::cerr << "Decode seek failed for frame " << seekFrame << std::endl;
+                }
+            }
+
+            // Safety: Ensure targetFrame is valid for immediate decoding
+            // This handles edge cases where main thread hasn't updated targetFrame yet
+            FrameNumber currentTarget = worker->targetFrame.load();
+            if (nextFrame > currentTarget) {
+                worker->targetFrame.store(nextFrame + DECODE_AHEAD_FRAMES);
             }
 
             worker->seekPending.store(false);

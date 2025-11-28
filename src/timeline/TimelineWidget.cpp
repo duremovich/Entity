@@ -1160,9 +1160,13 @@ void TimelineWidget::handleRulerInteraction() {
     // Handle ruler click and drag for seeking/scrubbing
     if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         m_isDraggingRuler = true;
+        m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
         float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
         Timecode newTime = pixelToTime(relativeX);
-        m_timeline->seek(newTime);
+        if (newTime != m_lastSeekTime) {
+            m_lastSeekTime = newTime;
+            m_timeline->seek(newTime);
+        }
     }
 
     if (m_isDraggingRuler) {
@@ -1170,10 +1174,16 @@ void TimelineWidget::handleRulerInteraction() {
             // Continue dragging - update time as mouse moves
             float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
             Timecode newTime = pixelToTime(relativeX);
-            m_timeline->seek(newTime);
+            // Only seek if time actually changed (debounce)
+            if (newTime != m_lastSeekTime) {
+                m_lastSeekTime = newTime;
+                m_timeline->seek(newTime);
+            }
         } else {
             // Mouse released - stop dragging
             m_isDraggingRuler = false;
+            m_timeline->setScrubbing(false);  // Exit scrubbing mode - triggers final seek
+            m_lastSeekTime = -1;  // Reset debounce on release
         }
     }
 }
@@ -1297,6 +1307,7 @@ void TimelineWidget::handleTracksInteraction() {
             m_isTrimmingClip = false;
             m_trimEdge = ClipEdge::None;
             m_trimClip = entt::null;
+            m_timeline->setScrubbing(false);  // Exit scrubbing mode - triggers final seek
         }
         return;  // Don't process other interactions while trimming
     }
@@ -1436,6 +1447,7 @@ void TimelineWidget::handleTracksInteraction() {
             m_isDraggingClip = false;
             m_selectedClipTrackIndex = -1;
             m_isSnapping = false;  // Clear snap indicator
+            m_timeline->setScrubbing(false);  // Exit scrubbing mode - triggers final seek
         }
     } else if (!m_isDraggingRuler && isWindowHovered) {
         // Check for clip edge hover (for trimming cursor)
@@ -1455,6 +1467,7 @@ void TimelineWidget::handleTracksInteraction() {
                 m_selectedClip = edgeClip;
                 m_timeline->setSelectedClip(edgeClip);
                 m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
+                m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
 
                 // Store original clip state for trim calculations
                 auto* clip = registry.try_get<Clip>(edgeClip);
@@ -1477,6 +1490,7 @@ void TimelineWidget::handleTracksInteraction() {
                 m_selectedClip = clipUnderMouse;
                 m_isDraggingClip = true;
                 m_selectedClipTrackIndex = trackIndex;
+                m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
 
                 // Sync selection to Timeline for PropertyWindow
                 m_timeline->setSelectedClip(clipUnderMouse);
