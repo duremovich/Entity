@@ -1,0 +1,43 @@
+{
+    "version": 1,
+    "description": "Test seek + playback freeze issue - rapid seek and play cycles",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 60},
+
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test_1_after_play.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 100},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test_2_after_seek100.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 200},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test_3_after_seek200.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 50},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test_4_after_seek50.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 300},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "Pause"},
+        {"type": "CaptureScreenshot", "filepath": "debug/seek_test_5_rapid_seek300.png", "region": "fullWindow"},
+
+        {"type": "Exit"}
+    ]
+}

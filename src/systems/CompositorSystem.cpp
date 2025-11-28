@@ -17,6 +17,7 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/MappingSurface.hpp"
+#include "entity/components/Screen.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -50,15 +51,27 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
         currentFrame = m_timeline->getCurrentFrame();
     }
 
-    // Query all entities with Transform and MediaLayer components
-    auto view = registry.view<Transform, MediaLayer>();
-
-    // Collect and sort entities by z-order
-    std::vector<entt::entity> sortedEntities;
-    sortedEntities.reserve(view.size_hint());
-
     static int collectDebugFrame = 0;
     bool logCollection = m_debugLogging && (collectDebugFrame++ % 60 == 0);
+
+    // Find the first visible screen to composite for
+    // TODO: Support multiple screens with multiple render targets
+    entt::entity targetScreenEntity = entt::null;
+    auto screenView = registry.view<Screen>();
+    for (auto [screenEntity, screen] : screenView.each()) {
+        if (screen.visible) {
+            targetScreenEntity = screenEntity;
+            if (logCollection) {
+                std::cout << "[Compositor] Compositing for screen: " << screen.name << std::endl;
+            }
+            break;
+        }
+    }
+
+    // Collect clips for the target screen
+    auto view = registry.view<Transform, MediaLayer>();
+    std::vector<entt::entity> sortedEntities;
+    sortedEntities.reserve(view.size_hint());
 
     for (auto entity : view) {
         auto& layer = view.get<MediaLayer>(entity);
@@ -72,6 +85,15 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
                     << ": SKIPPED (clip not active at frame " << currentFrame
                     << ", start=" << clip->startFrame << " dur=" << clip->duration << ")" << std::endl;
                 continue;  // Clip is not active at current frame, skip
+            }
+
+            // Filter by target screen:
+            // - Include if clip has no target (entt::null means "all screens")
+            // - Include if clip targets the active screen
+            if (clip->targetScreen != entt::null && clip->targetScreen != targetScreenEntity) {
+                if (logCollection) std::cout << "  [Compositor] Entity " << static_cast<uint32_t>(entity)
+                    << ": SKIPPED (targets different screen)" << std::endl;
+                continue;  // Clip targets a different screen
             }
         }
 

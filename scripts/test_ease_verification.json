@@ -1,0 +1,39 @@
+{
+    "version": 1,
+    "description": "Verify ease interpolation by checking values at intermediate frames",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": 0.0, "interpolation": "Linear"},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 60, "value": 1.0, "interpolation": "Linear"},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionY", "frame": 0, "value": 0.0, "interpolation": "EaseInOut"},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionY", "frame": 60, "value": 1.0, "interpolation": "Linear"},
+
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0, "expand": true},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_frame0.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 15},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_frame15.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 30},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_frame30.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 45},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_frame45.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 60},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_frame60.png", "region": "fullWindow"},
+
+        {"type": "Exit"}
+    ]
+}

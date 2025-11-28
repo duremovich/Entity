@@ -14,6 +14,7 @@
 #include <DirectXMath.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Forward declarations
 struct GLFWwindow;
@@ -185,18 +186,19 @@ public:
     // ========================================================================
 
     /**
-     * Create the offscreen compose target at specified resolution.
+     * Create a new offscreen compose target at specified resolution.
      * @param width Target width in pixels
      * @param height Target height in pixels
-     * @return true on success
+     * @return Slot ID for the created target (0-based index)
      */
-    bool createComposeTarget(uint32_t width, uint32_t height);
+    uint32_t createComposeTarget(uint32_t width, uint32_t height);
 
     /**
-     * Begin rendering to the compose target (clears it first).
+     * Begin rendering to a specific compose target (clears it first).
      * Call before drawing clips, end with endComposeTarget().
+     * @param slot Compose target slot (from createComposeTarget), defaults to 0
      */
-    void beginComposeTarget();
+    void beginComposeTarget(uint32_t slot = 0);
 
     /**
      * End rendering to compose target and transition for sampling.
@@ -204,37 +206,42 @@ public:
     void endComposeTarget();
 
     /**
-     * Get the compose target as ImGui texture ID for display.
+     * Get a compose target as ImGui texture ID for display.
+     * @param slot Compose target slot, defaults to 0
      * @return ImTextureID for ImGui::Image, or nullptr if not ready
      */
-    void* getComposeTargetTextureID() const;
+    void* getComposeTargetTextureID(uint32_t slot = 0) const;
 
     /**
      * Get compose target GPU handle for use with drawTexturedQuad.
+     * @param slot Compose target slot, defaults to 0
      */
-    D3D12_GPU_DESCRIPTOR_HANDLE getComposeTargetSrvHandle() const { return m_composeTargetSrvHandle; }
+    D3D12_GPU_DESCRIPTOR_HANDLE getComposeTargetSrvHandle(uint32_t slot = 0) const;
 
     /**
      * Get compose target dimensions.
+     * @param slot Compose target slot, defaults to 0
      */
-    uint32_t getComposeTargetWidth() const { return m_composeTargetWidth; }
-    uint32_t getComposeTargetHeight() const { return m_composeTargetHeight; }
+    uint32_t getComposeTargetWidth(uint32_t slot = 0) const;
+    uint32_t getComposeTargetHeight(uint32_t slot = 0) const;
 
     /**
      * Check if compose target is ready.
+     * @param slot Compose target slot, defaults to 0
      */
-    bool isComposeTargetReady() const { return m_composeTargetReady; }
+    bool isComposeTargetReady(uint32_t slot = 0) const;
 
     // ========================================================================
     // Screenshot Capture
     // ========================================================================
 
     /**
-     * Capture the compose target (video output) to a PNG file.
+     * Capture a compose target (video output) to a PNG file.
      * @param filepath Destination path for PNG file
+     * @param slot Compose target slot, defaults to 0
      * @return true on success
      */
-    bool captureComposeTargetToPNG(const std::string& filepath);
+    bool captureComposeTargetToPNG(const std::string& filepath, uint32_t slot = 0);
 
     /**
      * Capture the current back buffer (full window) to a PNG file.
@@ -373,13 +380,17 @@ private:
         float padding3;
     };
 
-    // Offscreen compose target (for multi-clip compositing)
-    ComPtr<ID3D12Resource> m_composeTarget;           // Render target texture
-    ComPtr<ID3D12DescriptorHeap> m_composeTargetRtvHeap;  // RTV for rendering to it
-    D3D12_GPU_DESCRIPTOR_HANDLE m_composeTargetSrvHandle{};  // SRV for sampling
-    uint32_t m_composeTargetWidth{0};
-    uint32_t m_composeTargetHeight{0};
-    bool m_composeTargetReady{false};
+    // Offscreen compose targets (for multi-clip compositing, one per screen)
+    struct ComposeTarget {
+        ComPtr<ID3D12Resource> resource;               // Render target texture
+        ComPtr<ID3D12DescriptorHeap> rtvHeap;         // RTV for rendering to it
+        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};      // SRV for sampling
+        uint32_t width{0};
+        uint32_t height{0};
+        bool ready{false};
+    };
+    std::vector<ComposeTarget> m_composeTargets;
+    uint32_t m_currentComposeTargetSlot{0};  // Currently active slot during rendering
 
     // State
     uint32_t m_currentBackBufferIndex;

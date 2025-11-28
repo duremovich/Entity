@@ -1,0 +1,31 @@
+{
+    "version": 1,
+    "description": "Test incoming ease - ease on END keyframe should affect the curve",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": 0.0, "interpolation": "Linear"},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 60, "value": 1.0, "interpolation": "EaseInOut"},
+
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionY", "frame": 0, "value": 0.0, "interpolation": "Linear"},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionY", "frame": 60, "value": 1.0, "interpolation": "Linear"},
+
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0, "expand": true},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "SeekToFrame", "frame": 15},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_incoming_frame15.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 30},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_incoming_frame30.png", "region": "fullWindow"},
+
+        {"type": "SeekToFrame", "frame": 45},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureScreenshot", "filepath": "debug/ease_incoming_frame45.png", "region": "fullWindow"},
+
+        {"type": "Exit"}
+    ]
+}

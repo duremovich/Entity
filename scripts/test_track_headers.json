@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "description": "Test track header panel with twirl-down menus",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/RED_TEST.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "ImportVideo", "filepath": "test_media/BLUE_TEST.mov", "trackIndex": 0, "position": 90},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/track_headers_collapsed.png", "region": "fullWindow"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "CaptureScreenshot", "filepath": "debug/track_headers_test.png", "region": "fullWindow"},
+        {"type": "Exit"}
+    ]
+}

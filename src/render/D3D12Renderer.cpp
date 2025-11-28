@@ -216,8 +216,11 @@ void D3D12Renderer::shutdown() {
     m_videoUploadBuffer.Reset();
 
     // Release compose target resources
-    m_composeTarget.Reset();
-    m_composeTargetRtvHeap.Reset();
+    for (auto& target : m_composeTargets) {
+        target.resource.Reset();
+        target.rtvHeap.Reset();
+    }
+    m_composeTargets.clear();
 
     // Release textured pipeline objects
     m_texturedPipelineState.Reset();
@@ -933,8 +936,135 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     // Use default docking behavior (ConfigDockingWithShift = false)
     // This allows docking preview to appear when dragging windows
 
-    // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
+    // Setup Dear ImGui style - Custom modern theme
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+
+        // Rounding for a softer, modern look
+        style.WindowRounding = 8.0f;
+        style.ChildRounding = 6.0f;
+        style.FrameRounding = 4.0f;
+        style.PopupRounding = 6.0f;
+        style.ScrollbarRounding = 6.0f;
+        style.GrabRounding = 4.0f;
+        style.TabRounding = 6.0f;
+
+        // Spacing and padding
+        style.WindowPadding = ImVec2(10.0f, 10.0f);
+        style.FramePadding = ImVec2(8.0f, 4.0f);
+        style.ItemSpacing = ImVec2(8.0f, 6.0f);
+        style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+        style.IndentSpacing = 20.0f;
+        style.ScrollbarSize = 14.0f;
+        style.GrabMinSize = 12.0f;
+
+        // Borders
+        style.WindowBorderSize = 1.0f;
+        style.ChildBorderSize = 1.0f;
+        style.PopupBorderSize = 1.0f;
+        style.FrameBorderSize = 0.0f;
+        style.TabBorderSize = 0.0f;
+
+        // Colors - Soft modern palette with teal/cyan accents
+        ImVec4* colors = style.Colors;
+
+        // Backgrounds - soft dark grays with slight warmth
+        colors[ImGuiCol_WindowBg]             = ImVec4(0.12f, 0.12f, 0.14f, 1.00f);
+        colors[ImGuiCol_ChildBg]              = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+        colors[ImGuiCol_PopupBg]              = ImVec4(0.14f, 0.14f, 0.16f, 0.98f);
+
+        // Text
+        colors[ImGuiCol_Text]                 = ImVec4(0.92f, 0.92f, 0.94f, 1.00f);
+        colors[ImGuiCol_TextDisabled]         = ImVec4(0.50f, 0.50f, 0.54f, 1.00f);
+
+        // Borders - subtle
+        colors[ImGuiCol_Border]               = ImVec4(0.28f, 0.28f, 0.32f, 0.60f);
+        colors[ImGuiCol_BorderShadow]         = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+
+        // Frame backgrounds (input fields, etc.)
+        colors[ImGuiCol_FrameBg]              = ImVec4(0.18f, 0.18f, 0.22f, 1.00f);
+        colors[ImGuiCol_FrameBgHovered]       = ImVec4(0.24f, 0.24f, 0.28f, 1.00f);
+        colors[ImGuiCol_FrameBgActive]        = ImVec4(0.28f, 0.28f, 0.34f, 1.00f);
+
+        // Title bar - slightly lighter
+        colors[ImGuiCol_TitleBg]              = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]        = ImVec4(0.14f, 0.14f, 0.16f, 1.00f);
+        colors[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.10f, 0.10f, 0.12f, 0.75f);
+
+        // Menu bar
+        colors[ImGuiCol_MenuBarBg]            = ImVec4(0.14f, 0.14f, 0.16f, 1.00f);
+
+        // Scrollbar
+        colors[ImGuiCol_ScrollbarBg]          = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrab]        = ImVec4(0.32f, 0.32f, 0.36f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.40f, 0.40f, 0.44f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabActive]  = ImVec4(0.48f, 0.48f, 0.52f, 1.00f);
+
+        // Checkmark/radio - teal accent
+        colors[ImGuiCol_CheckMark]            = ImVec4(0.40f, 0.80f, 0.75f, 1.00f);
+
+        // Slider grab - teal accent
+        colors[ImGuiCol_SliderGrab]           = ImVec4(0.40f, 0.75f, 0.70f, 1.00f);
+        colors[ImGuiCol_SliderGrabActive]     = ImVec4(0.50f, 0.85f, 0.80f, 1.00f);
+
+        // Buttons - soft teal
+        colors[ImGuiCol_Button]               = ImVec4(0.25f, 0.52f, 0.50f, 1.00f);
+        colors[ImGuiCol_ButtonHovered]        = ImVec4(0.30f, 0.62f, 0.58f, 1.00f);
+        colors[ImGuiCol_ButtonActive]         = ImVec4(0.35f, 0.72f, 0.68f, 1.00f);
+
+        // Headers (collapsing headers, tree nodes, selectables)
+        colors[ImGuiCol_Header]               = ImVec4(0.25f, 0.52f, 0.50f, 0.50f);
+        colors[ImGuiCol_HeaderHovered]        = ImVec4(0.30f, 0.62f, 0.58f, 0.70f);
+        colors[ImGuiCol_HeaderActive]         = ImVec4(0.35f, 0.72f, 0.68f, 0.85f);
+
+        // Separator
+        colors[ImGuiCol_Separator]            = ImVec4(0.28f, 0.28f, 0.32f, 0.50f);
+        colors[ImGuiCol_SeparatorHovered]     = ImVec4(0.40f, 0.75f, 0.70f, 0.70f);
+        colors[ImGuiCol_SeparatorActive]      = ImVec4(0.40f, 0.75f, 0.70f, 1.00f);
+
+        // Resize grip
+        colors[ImGuiCol_ResizeGrip]           = ImVec4(0.40f, 0.75f, 0.70f, 0.25f);
+        colors[ImGuiCol_ResizeGripHovered]    = ImVec4(0.40f, 0.75f, 0.70f, 0.65f);
+        colors[ImGuiCol_ResizeGripActive]     = ImVec4(0.40f, 0.75f, 0.70f, 0.90f);
+
+        // Tabs - soft and inviting
+        colors[ImGuiCol_Tab]                  = ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
+        colors[ImGuiCol_TabHovered]           = ImVec4(0.30f, 0.62f, 0.58f, 0.80f);
+        colors[ImGuiCol_TabActive]            = ImVec4(0.22f, 0.48f, 0.45f, 1.00f);
+        colors[ImGuiCol_TabUnfocused]         = ImVec4(0.14f, 0.14f, 0.16f, 1.00f);
+        colors[ImGuiCol_TabUnfocusedActive]   = ImVec4(0.18f, 0.38f, 0.36f, 1.00f);
+
+        // Docking
+        colors[ImGuiCol_DockingPreview]       = ImVec4(0.40f, 0.75f, 0.70f, 0.70f);
+        colors[ImGuiCol_DockingEmptyBg]       = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+
+        // Plot lines
+        colors[ImGuiCol_PlotLines]            = ImVec4(0.60f, 0.85f, 0.80f, 1.00f);
+        colors[ImGuiCol_PlotLinesHovered]     = ImVec4(0.70f, 0.95f, 0.90f, 1.00f);
+        colors[ImGuiCol_PlotHistogram]        = ImVec4(0.40f, 0.75f, 0.70f, 1.00f);
+        colors[ImGuiCol_PlotHistogramHovered] = ImVec4(0.50f, 0.85f, 0.80f, 1.00f);
+
+        // Table
+        colors[ImGuiCol_TableHeaderBg]        = ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
+        colors[ImGuiCol_TableBorderStrong]    = ImVec4(0.28f, 0.28f, 0.32f, 1.00f);
+        colors[ImGuiCol_TableBorderLight]     = ImVec4(0.22f, 0.22f, 0.26f, 1.00f);
+        colors[ImGuiCol_TableRowBg]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        colors[ImGuiCol_TableRowBgAlt]        = ImVec4(1.00f, 1.00f, 1.00f, 0.03f);
+
+        // Text selection
+        colors[ImGuiCol_TextSelectedBg]       = ImVec4(0.40f, 0.75f, 0.70f, 0.35f);
+
+        // Drag and drop
+        colors[ImGuiCol_DragDropTarget]       = ImVec4(0.50f, 0.90f, 0.85f, 0.90f);
+
+        // Nav highlight
+        colors[ImGuiCol_NavHighlight]         = ImVec4(0.40f, 0.75f, 0.70f, 1.00f);
+        colors[ImGuiCol_NavWindowingHighlight]= ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
+        colors[ImGuiCol_NavWindowingDimBg]    = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
+
+        // Modal dimming
+        colors[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.00f, 0.00f, 0.00f, 0.55f);
+    }
 
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOther(window, true);
@@ -2010,26 +2140,26 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
 // Compose Target (Offscreen Render Target for Multi-Clip Compositing)
 // ========================================================================
 
-bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
+uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     if (!m_initialized || !m_device) {
         std::cerr << "Cannot create compose target: renderer not initialized" << std::endl;
-        return false;
+        return UINT32_MAX;
     }
 
     if (width == 0 || height == 0) {
         std::cerr << "Invalid compose target dimensions: " << width << "x" << height << std::endl;
-        return false;
+        return UINT32_MAX;
     }
 
     // Wait for GPU before modifying resources
     waitForGpu();
 
-    // Release existing resources if any
-    m_composeTarget.Reset();
-    m_composeTargetRtvHeap.Reset();
-    m_composeTargetReady = false;
+    // Create new compose target
+    uint32_t slot = static_cast<uint32_t>(m_composeTargets.size());
+    m_composeTargets.emplace_back();
+    ComposeTarget& target = m_composeTargets.back();
 
-    std::cout << "Creating compose target: " << width << "x" << height << std::endl;
+    std::cout << "Creating compose target " << slot << ": " << width << "x" << height << std::endl;
 
     // Create RTV descriptor heap for compose target
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
@@ -2037,10 +2167,11 @@ bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    HRESULT hr = m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_composeTargetRtvHeap));
+    HRESULT hr = m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&target.rtvHeap));
     if (FAILED(hr)) {
         std::cerr << "Failed to create compose target RTV heap!" << std::endl;
-        return false;
+        m_composeTargets.pop_back();
+        return UINT32_MAX;
     }
 
     // Create the render target texture
@@ -2072,12 +2203,13 @@ bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
         &textureDesc,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,  // Start in shader resource state
         &clearValue,
-        IID_PPV_ARGS(&m_composeTarget)
+        IID_PPV_ARGS(&target.resource)
     );
 
     if (FAILED(hr)) {
         std::cerr << "Failed to create compose target texture!" << std::endl;
-        return false;
+        m_composeTargets.pop_back();
+        return UINT32_MAX;
     }
 
     // Create RTV for the compose target
@@ -2086,11 +2218,11 @@ bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     rtvDesc.Texture2D.MipSlice = 0;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_composeTargetRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_device->CreateRenderTargetView(m_composeTarget.Get(), &rtvDesc, rtvHandle);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_device->CreateRenderTargetView(target.resource.Get(), &rtvDesc, rtvHandle);
 
     // Create SRV for the compose target in the ImGui heap
-    // Heap layout: 0=fonts, 1=legacy, 2=compose, 3-18=multi-tex
+    // Heap layout: 0=fonts, 1=legacy, 2+=compose targets (one per screen)
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -2098,46 +2230,49 @@ bool D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     srvDesc.Texture2D.MipLevels = 1;
     srvDesc.Texture2D.MostDetailedMip = 0;
 
-    // Compose target uses slot 2 (reserved for it, video texture slots start at 3)
-    uint32_t composeTargetSlot = 2;
+    // Compose targets start at slot 2 (0=fonts, 1=legacy)
+    uint32_t heapSlot = 2 + slot;
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
-    cpuHandle.ptr += m_srvDescriptorSize * composeTargetSlot;
+    cpuHandle.ptr += m_srvDescriptorSize * heapSlot;
 
-    m_device->CreateShaderResourceView(m_composeTarget.Get(), &srvDesc, cpuHandle);
+    m_device->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
 
     // Store GPU handle
-    m_composeTargetSrvHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
-    m_composeTargetSrvHandle.ptr += m_srvDescriptorSize * composeTargetSlot;
+    target.srvHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    target.srvHandle.ptr += m_srvDescriptorSize * heapSlot;
 
-    m_composeTargetWidth = width;
-    m_composeTargetHeight = height;
-    m_composeTargetReady = true;
+    target.width = width;
+    target.height = height;
+    target.ready = true;
 
-    std::cout << "Compose target created successfully: " << width << "x" << height << std::endl;
-    std::cout << "  Compose target slot: " << composeTargetSlot << std::endl;
+    std::cout << "Compose target " << slot << " created successfully: " << width << "x" << height << std::endl;
+    std::cout << "  Heap slot: " << heapSlot << std::endl;
     std::cout << "  SRV descriptor size: " << m_srvDescriptorSize << std::endl;
-    std::cout << "  GPU handle ptr: " << m_composeTargetSrvHandle.ptr << std::endl;
+    std::cout << "  GPU handle ptr: " << target.srvHandle.ptr << std::endl;
     std::cout << "  Heap start ptr: " << m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart().ptr << std::endl;
 
-    return true;
+    return slot;
 }
 
-void D3D12Renderer::beginComposeTarget() {
-    if (!m_composeTargetReady || !m_composeTarget) {
+void D3D12Renderer::beginComposeTarget(uint32_t slot) {
+    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
         return;
     }
+
+    ComposeTarget& target = m_composeTargets[slot];
+    m_currentComposeTargetSlot = slot;
 
     // Transition compose target from shader resource to render target
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = m_composeTarget.Get();
+    barrier.Transition.pResource = target.resource.Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     m_commandList->ResourceBarrier(1, &barrier);
 
     // Get RTV handle
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_composeTargetRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
 
     // Set compose target as render target
     m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
@@ -2148,27 +2283,29 @@ void D3D12Renderer::beginComposeTarget() {
 
     // Set viewport and scissor for compose target
     D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_composeTargetWidth);
-    viewport.Height = static_cast<float>(m_composeTargetHeight);
+    viewport.Width = static_cast<float>(target.width);
+    viewport.Height = static_cast<float>(target.height);
     viewport.MaxDepth = 1.0f;
 
     D3D12_RECT scissorRect = {};
-    scissorRect.right = m_composeTargetWidth;
-    scissorRect.bottom = m_composeTargetHeight;
+    scissorRect.right = target.width;
+    scissorRect.bottom = target.height;
 
     m_commandList->RSSetViewports(1, &viewport);
     m_commandList->RSSetScissorRects(1, &scissorRect);
 }
 
 void D3D12Renderer::endComposeTarget() {
-    if (!m_composeTargetReady || !m_composeTarget) {
+    if (m_currentComposeTargetSlot >= m_composeTargets.size() || !m_composeTargets[m_currentComposeTargetSlot].ready) {
         return;
     }
+
+    ComposeTarget& target = m_composeTargets[m_currentComposeTargetSlot];
 
     // Transition compose target from render target to shader resource
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = m_composeTarget.Get();
+    barrier.Transition.pResource = target.resource.Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -2193,11 +2330,37 @@ void D3D12Renderer::endComposeTarget() {
     m_commandList->RSSetScissorRects(1, &scissorRect);
 }
 
-void* D3D12Renderer::getComposeTargetTextureID() const {
-    if (m_composeTargetReady && m_composeTargetSrvHandle.ptr != 0) {
-        return reinterpret_cast<void*>(m_composeTargetSrvHandle.ptr);
+void* D3D12Renderer::getComposeTargetTextureID(uint32_t slot) const {
+    if (slot < m_composeTargets.size() && m_composeTargets[slot].ready && m_composeTargets[slot].srvHandle.ptr != 0) {
+        return reinterpret_cast<void*>(m_composeTargets[slot].srvHandle.ptr);
     }
     return nullptr;
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::getComposeTargetSrvHandle(uint32_t slot) const {
+    if (slot < m_composeTargets.size() && m_composeTargets[slot].ready) {
+        return m_composeTargets[slot].srvHandle;
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE nullHandle = {};
+    return nullHandle;
+}
+
+uint32_t D3D12Renderer::getComposeTargetWidth(uint32_t slot) const {
+    if (slot < m_composeTargets.size()) {
+        return m_composeTargets[slot].width;
+    }
+    return 0;
+}
+
+uint32_t D3D12Renderer::getComposeTargetHeight(uint32_t slot) const {
+    if (slot < m_composeTargets.size()) {
+        return m_composeTargets[slot].height;
+    }
+    return 0;
+}
+
+bool D3D12Renderer::isComposeTargetReady(uint32_t slot) const {
+    return (slot < m_composeTargets.size() && m_composeTargets[slot].ready);
 }
 
 // ============================================================================
@@ -2396,17 +2559,18 @@ bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
     return true;
 }
 
-bool D3D12Renderer::captureComposeTargetToPNG(const std::string& filepath) {
-    if (!m_composeTargetReady || !m_composeTarget) {
-        std::cerr << "[Screenshot] Compose target not ready!" << std::endl;
+bool D3D12Renderer::captureComposeTargetToPNG(const std::string& filepath, uint32_t slot) {
+    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
+        std::cerr << "[Screenshot] Compose target " << slot << " not ready!" << std::endl;
         return false;
     }
 
+    const ComposeTarget& target = m_composeTargets[slot];
     return readbackTextureToPNG(
-        m_composeTarget.Get(),
+        target.resource.Get(),
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        m_composeTargetWidth,
-        m_composeTargetHeight,
+        target.width,
+        target.height,
         filepath
     );
 }
