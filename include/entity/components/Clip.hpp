@@ -17,6 +17,15 @@ struct AVStream;
 namespace entity {
 
 /**
+ * Playback mode for clips that extend beyond their source media duration.
+ */
+enum class PlaybackMode {
+    Freeze,     // Hold on last frame
+    Loop,       // Restart from beginning
+    PingPong    // Play forward then backward (palindrome)
+};
+
+/**
  * Clip component for media source references.
  *
  * Stores information about a media clip including its file path,
@@ -37,9 +46,11 @@ struct Clip {
 
     // Timing information
     FrameNumber startFrame{0};          // Start frame on timeline
-    FrameNumber duration{0};            // Duration in frames
+    FrameNumber duration{0};            // Duration in frames (on timeline)
     FrameNumber mediaStartFrame{0};     // Offset into source media
+    FrameNumber totalMediaFrames{0};    // Total frames in source media
     double framerate{30.0};             // Frames per second
+    PlaybackMode playbackMode{PlaybackMode::Freeze};  // Behavior when clip extends beyond source
 
     // Media properties
     uint32_t width{0};
@@ -71,7 +82,9 @@ struct Clip {
         , startFrame(other.startFrame)
         , duration(other.duration)
         , mediaStartFrame(other.mediaStartFrame)
+        , totalMediaFrames(other.totalMediaFrames)
         , framerate(other.framerate)
+        , playbackMode(other.playbackMode)
         , width(other.width)
         , height(other.height)
         , hasAlpha(other.hasAlpha)
@@ -105,7 +118,9 @@ struct Clip {
             startFrame = other.startFrame;
             duration = other.duration;
             mediaStartFrame = other.mediaStartFrame;
+            totalMediaFrames = other.totalMediaFrames;
             framerate = other.framerate;
+            playbackMode = other.playbackMode;
             width = other.width;
             height = other.height;
             hasAlpha = other.hasAlpha;

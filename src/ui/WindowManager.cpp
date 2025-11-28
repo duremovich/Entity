@@ -70,12 +70,127 @@ void WindowManager::render() {
     // Render all registered windows
     for (auto& window : m_windows) {
         if (window->isVisible()) {
+            const char* windowName = window->getName();
+            std::string windowNameStr(windowName);
+
+            // Process pending undock requests
+            if (m_pendingUndock.count(windowNameStr) > 0) {
+                ImGui::SetNextWindowDockID(0, ImGuiCond_Always);  // 0 = floating
+
+                // Shrink and offset slightly to visually indicate undocking
+                ImGuiWindow* existingWin = ImGui::FindWindowByName(windowName);
+                if (existingWin) {
+                    constexpr float shrinkAmount = 10.0f;  // Pixels to shrink on each side
+                    ImVec2 newSize(
+                        existingWin->Size.x - shrinkAmount * 2,
+                        existingWin->Size.y - shrinkAmount * 2
+                    );
+                    ImVec2 newPos(
+                        existingWin->Pos.x + shrinkAmount,
+                        existingWin->Pos.y + shrinkAmount
+                    );
+                    ImGui::SetNextWindowSize(newSize, ImGuiCond_Always);
+                    ImGui::SetNextWindowPos(newPos, ImGuiCond_Always);
+                }
+
+                m_floatingWindows.insert(windowNameStr);
+                m_pendingUndock.erase(windowNameStr);
+                std::cout << "Undocking window: " << windowName << std::endl;
+            }
+
+            // Process pending dock requests
+            if (m_pendingDock.count(windowNameStr) > 0) {
+                ImGui::SetNextWindowDockID(dockspaceID, ImGuiCond_Always);
+                m_floatingWindows.erase(windowNameStr);
+                m_pendingDock.erase(windowNameStr);
+                std::cout << "Docking window: " << windowName << std::endl;
+            }
+
             // Apply pre-begin styles (e.g., window padding)
             window->applyPreBeginStyles();
 
             // Begin window with custom flags
             ImGuiWindowFlags flags = window->getWindowFlags();
-            if (ImGui::Begin(window->getName(), nullptr, flags)) {
+
+            // When layout is locked AND window is docked, prevent movement
+            // Floating windows should always be movable
+            bool isFloating = m_floatingWindows.count(windowNameStr) > 0;
+            if (m_layoutLocked && !isFloating) {
+                flags |= ImGuiWindowFlags_NoMove;
+            }
+
+            if (ImGui::Begin(windowName, nullptr, flags)) {
+                // Right-click context menu for undock/dock
+                // Use internal API to detect right-click on title bar or tab
+                ImGuiWindow* imguiWin = ImGui::GetCurrentWindow();
+
+                // Check actual dock state from ImGui (not our tracking variable)
+                // This ensures menu always reflects reality even after manual drag operations
+                bool actuallyFloating = (imguiWin && imguiWin->DockId == 0);
+
+                // Sync our tracking with reality
+                if (actuallyFloating && !isFloating) {
+                    m_floatingWindows.insert(windowNameStr);
+                } else if (!actuallyFloating && isFloating) {
+                    m_floatingWindows.erase(windowNameStr);
+                }
+
+                if (imguiWin && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    ImVec2 mousePos = ImGui::GetMousePos();
+                    bool showMenu = false;
+
+                    // For floating windows: check title bar rect
+                    if (actuallyFloating) {
+                        ImRect titleBarRect = imguiWin->TitleBarRect();
+                        showMenu = titleBarRect.Contains(mousePos);
+                    } else {
+                        // For docked windows: check if we clicked on this window's tab
+                        ImGuiDockNode* dockNode = imguiWin->DockNode;
+                        if (dockNode && dockNode->TabBar) {
+                            ImGuiTabBar* tabBar = dockNode->TabBar;
+                            // Check if mouse is in tab bar area and this is the active/hovered tab
+                            ImRect tabBarRect = ImRect(dockNode->Pos, ImVec2(dockNode->Pos.x + dockNode->Size.x,
+                                                                              dockNode->Pos.y + tabBar->BarRect.GetHeight()));
+                            if (tabBarRect.Contains(mousePos)) {
+                                // Check if this specific window's tab is being hovered
+                                for (int i = 0; i < tabBar->Tabs.Size; i++) {
+                                    ImGuiTabItem& tab = tabBar->Tabs[i];
+                                    if (tab.Window == imguiWin) {
+                                        // Calculate tab rect
+                                        ImRect tabRect(tab.Offset + tabBar->BarRect.Min.x, tabBar->BarRect.Min.y,
+                                                       tab.Offset + tab.Width + tabBar->BarRect.Min.x, tabBar->BarRect.Max.y);
+                                        if (tabRect.Contains(mousePos)) {
+                                            showMenu = true;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showMenu) {
+                        ImGui::OpenPopup("WindowContextMenu");
+                    }
+                }
+
+                if (ImGui::BeginPopup("WindowContextMenu")) {
+                    ImGui::TextDisabled("%s", windowName);
+                    ImGui::Separator();
+
+                    // Use actual dock state for menu options
+                    if (actuallyFloating) {
+                        if (ImGui::MenuItem("Dock Window")) {
+                            dockWindow(windowName);
+                        }
+                    } else {
+                        if (ImGui::MenuItem("Undock Window")) {
+                            undockWindow(windowName);
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
+
                 window->render();
             }
             ImGui::End();
@@ -103,6 +218,28 @@ void WindowManager::setWindowVisible(const char* name, bool visible) {
 void WindowManager::resetLayout() {
     std::cout << "Layout reset requested" << std::endl;
     m_layoutResetRequested = true;
+    // Clear floating state on layout reset - all windows return to docked state
+    m_floatingWindows.clear();
+    m_pendingUndock.clear();
+    m_pendingDock.clear();
+}
+
+void WindowManager::undockWindow(const char* name) {
+    std::string windowName(name);
+    m_pendingUndock.insert(windowName);
+    m_pendingDock.erase(windowName);  // Cancel any pending dock
+    std::cout << "Undock requested for: " << name << std::endl;
+}
+
+void WindowManager::dockWindow(const char* name) {
+    std::string windowName(name);
+    m_pendingDock.insert(windowName);
+    m_pendingUndock.erase(windowName);  // Cancel any pending undock
+    std::cout << "Dock requested for: " << name << std::endl;
+}
+
+bool WindowManager::isWindowFloating(const char* name) const {
+    return m_floatingWindows.count(std::string(name)) > 0;
 }
 
 void WindowManager::renderMenuBar() {
@@ -163,6 +300,44 @@ void WindowManager::renderMenuBar() {
 
             ImGui::Separator();
 
+            // Dock/Undock submenu
+            if (ImGui::BeginMenu("Dock/Undock")) {
+                for (auto& window : m_windows) {
+                    if (!window->isVisible()) continue;
+
+                    const char* name = window->getName();
+                    // Check actual dock state from ImGui
+                    ImGuiWindow* imguiWin = ImGui::FindWindowByName(name);
+                    bool actuallyFloating = imguiWin && (imguiWin->DockId == 0);
+
+                    if (actuallyFloating) {
+                        std::string label = std::string("Dock ") + name;
+                        if (ImGui::MenuItem(label.c_str())) {
+                            dockWindow(name);
+                        }
+                    } else {
+                        std::string label = std::string("Undock ") + name;
+                        if (ImGui::MenuItem(label.c_str())) {
+                            undockWindow(name);
+                        }
+                    }
+                }
+                ImGui::EndMenu();
+            }
+
+            ImGui::Separator();
+
+            // Layout lock toggle
+            if (ImGui::MenuItem(m_layoutLocked ? "Unlock Layout" : "Lock Layout", "Ctrl+L")) {
+                m_layoutLocked = !m_layoutLocked;
+                std::cout << "Layout " << (m_layoutLocked ? "locked" : "unlocked") << std::endl;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(m_layoutLocked ?
+                    "Unlock layout to rearrange docked windows" :
+                    "Lock layout to prevent accidental undocking");
+            }
+
             // Layout reset
             if (ImGui::MenuItem("Reset Layout")) {
                 resetLayout();
@@ -203,8 +378,11 @@ void WindowManager::renderMenuBar() {
 
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Window Management:");
-                ImGui::BulletText("Shift+Drag   - Undock window from panel");
-                ImGui::BulletText("Drag tab     - Reorder tabs within panel");
+                ImGui::BulletText("Right-click title bar - Undock/Dock window");
+                ImGui::BulletText("Ctrl+L       - Toggle layout lock");
+                ImGui::BulletText("Windows > Dock/Undock - Undock specific windows");
+                ImGui::BulletText("(Layout locked by default - prevents drag-undocking)");
+                ImGui::BulletText("When unlocked: drag tab bar to rearrange");
 
                 ImGui::EndMenu();
             }

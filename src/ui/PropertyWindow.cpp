@@ -71,6 +71,11 @@ void PropertyWindow::render() {
         renderLayerSection();
     }
 
+    // Playback section
+    if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
+        renderPlaybackSection();
+    }
+
     // Clip Info section
     if (ImGui::CollapsingHeader("Clip Info")) {
         renderClipInfo();
@@ -100,6 +105,7 @@ void PropertyWindow::renderTransformSection() {
     float posX = transform->position.x;
     if (ImGui::DragFloat("##posX", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
         transform->setPosition(glm::vec3(posX, transform->position.y, transform->position.z));
+        updateKeyframeOnValueChange(AnimatableProperty::PositionX, posX);
     }
 
     // Position Y with keyframe controls
@@ -110,6 +116,7 @@ void PropertyWindow::renderTransformSection() {
     float posY = transform->position.y;
     if (ImGui::DragFloat("##posY", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
         transform->setPosition(glm::vec3(transform->position.x, posY, transform->position.z));
+        updateKeyframeOnValueChange(AnimatableProperty::PositionY, posY);
     }
 
     ImGui::Spacing();
@@ -122,6 +129,7 @@ void PropertyWindow::renderTransformSection() {
     float rotZ = transform->rotation.z;
     if (ImGui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
         transform->setRotation(glm::vec3(transform->rotation.x, transform->rotation.y, rotZ));
+        updateKeyframeOnValueChange(AnimatableProperty::Rotation, rotZ);
     }
 
     ImGui::Spacing();
@@ -149,9 +157,13 @@ void PropertyWindow::renderTransformSection() {
     if (ImGui::DragFloat("##scaleX", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
         if (uniformScale && prevScaleX > 0.0001f) {
             float ratio = scaleX / prevScaleX;
-            transform->setScale(glm::vec3(scaleX, transform->scale.y * ratio, transform->scale.z * ratio));
+            float newScaleY = transform->scale.y * ratio;
+            transform->setScale(glm::vec3(scaleX, newScaleY, transform->scale.z * ratio));
+            updateKeyframeOnValueChange(AnimatableProperty::ScaleX, scaleX);
+            updateKeyframeOnValueChange(AnimatableProperty::ScaleY, newScaleY);
         } else {
             transform->setScale(glm::vec3(scaleX, transform->scale.y, transform->scale.z));
+            updateKeyframeOnValueChange(AnimatableProperty::ScaleX, scaleX);
         }
     }
 
@@ -165,9 +177,13 @@ void PropertyWindow::renderTransformSection() {
     if (ImGui::DragFloat("##scaleY", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
         if (uniformScale && prevScaleY > 0.0001f) {
             float ratio = scaleY / prevScaleY;
-            transform->setScale(glm::vec3(transform->scale.x * ratio, scaleY, transform->scale.z * ratio));
+            float newScaleX = transform->scale.x * ratio;
+            transform->setScale(glm::vec3(newScaleX, scaleY, transform->scale.z * ratio));
+            updateKeyframeOnValueChange(AnimatableProperty::ScaleX, newScaleX);
+            updateKeyframeOnValueChange(AnimatableProperty::ScaleY, scaleY);
         } else {
             transform->setScale(glm::vec3(transform->scale.x, scaleY, transform->scale.z));
+            updateKeyframeOnValueChange(AnimatableProperty::ScaleY, scaleY);
         }
     }
 
@@ -201,6 +217,7 @@ void PropertyWindow::renderLayerSection() {
     float opacity = layer->opacity;
     if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
         layer->opacity = opacity;
+        updateKeyframeOnValueChange(AnimatableProperty::Opacity, opacity);
     }
 
     // Visibility toggle
@@ -218,6 +235,49 @@ void PropertyWindow::renderLayerSection() {
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##blendmode", &currentBlendMode, blendModes, IM_ARRAYSIZE(blendModes))) {
         layer->blendMode = static_cast<BlendMode>(currentBlendMode);
+    }
+}
+
+void PropertyWindow::renderPlaybackSection() {
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    auto* clip = registry.try_get<Clip>(selectedClip);
+
+    if (!clip) {
+        ImGui::TextDisabled("No clip component");
+        return;
+    }
+
+    // Playback mode dropdown
+    ImGui::Text("Extend Mode");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Determines what happens when clip is extended\nbeyond its source media duration.\n\n"
+                          "Freeze: Hold on last frame\n"
+                          "Loop: Restart from beginning\n"
+                          "Ping-Pong: Play forward then backward");
+    }
+
+    static const char* playbackModes[] = { "Freeze", "Loop", "Ping-Pong" };
+    int currentMode = static_cast<int>(clip->playbackMode);
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##playbackMode", &currentMode, playbackModes, IM_ARRAYSIZE(playbackModes))) {
+        clip->playbackMode = static_cast<PlaybackMode>(currentMode);
+    }
+
+    // Show source vs timeline duration info
+    ImGui::Spacing();
+    ImGui::Text("Source Frames: %d", clip->totalMediaFrames);
+    ImGui::Text("Timeline Frames: %d", clip->duration);
+
+    // Show if clip is extended
+    if (clip->duration > clip->totalMediaFrames && clip->totalMediaFrames > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Clip extended beyond source");
+        FrameNumber extraFrames = clip->duration - clip->totalMediaFrames;
+        ImGui::Text("Extra frames: %d", extraFrames);
     }
 }
 
@@ -463,6 +523,29 @@ void PropertyWindow::toggleKeyframeAtCurrentFrame(AnimatableProperty property, f
         // Add new keyframe with current value
         track.addKeyframe(static_cast<FrameNumber>(clipFrame), currentValue);
     }
+}
+
+void PropertyWindow::updateKeyframeOnValueChange(AnimatableProperty property, float newValue) {
+    if (!m_timeline) return;
+
+    entt::entity selectedClip = m_timeline->getSelectedClip();
+    if (selectedClip == entt::null) return;
+
+    int clipFrame = getCurrentClipFrame();
+    if (clipFrame < 0) return;  // Playhead not on clip
+
+    auto& registry = m_timeline->getRegistry();
+
+    // Check if property has animation (keyframes)
+    auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
+    if (!animProps) return;
+
+    const KeyframeTrack* track = animProps->getTrack(property);
+    if (!track || !track->hasKeyframes()) return;
+
+    // Property has keyframes - auto-update/add keyframe at current frame
+    KeyframeTrack& mutableTrack = animProps->getOrCreateTrack(property);
+    mutableTrack.addKeyframe(static_cast<FrameNumber>(clipFrame), newValue);
 }
 
 void PropertyWindow::renderKeyframeControls(AnimatableProperty property, const char* propertyName,

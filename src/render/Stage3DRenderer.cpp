@@ -104,46 +104,86 @@ void Stage3DRenderer::drawFloorGrid(ImDrawList* drawList, ImVec2 screenPos, ImVe
 
 void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
                                       ImTextureID textureID) {
-    // Screen quad corners in world space
+    // Screen quad in world space
     // Screen is centered at origin, elevated above floor
     float hw = screenWidth * 0.5f;
     float hh = screenHeight * 0.5f;
     float y = screenElevation;
 
-    glm::vec3 corners[4] = {
-        glm::vec3(-hw, y + hh, 0),  // Top-left
-        glm::vec3( hw, y + hh, 0),  // Top-right
-        glm::vec3( hw, y - hh, 0),  // Bottom-right
-        glm::vec3(-hw, y - hh, 0)   // Bottom-left
-    };
-
-    // Project corners to screen space
-    ImVec2 screenCorners[4];
-    for (int i = 0; i < 4; ++i) {
-        screenCorners[i] = projectPoint(corners[i], screenPos, screenSize);
-        if (screenCorners[i].x < 0 && screenCorners[i].y < 0) {
-            // Point behind camera, skip drawing
-            return;
-        }
-    }
+    // Subdivide the quad for perspective-correct texture mapping
+    // ImGui's AddImageQuad does linear interpolation in 2D which causes warping
+    const int subdivisionsX = 16;
+    const int subdivisionsY = 16;
 
     if (textureID) {
-        // Draw textured quad
-        ImVec2 uvs[4] = {
-            ImVec2(0, 0),  // Top-left
-            ImVec2(1, 0),  // Top-right
-            ImVec2(1, 1),  // Bottom-right
-            ImVec2(0, 1)   // Bottom-left
+        // Draw subdivided textured quad
+        for (int sy = 0; sy < subdivisionsY; ++sy) {
+            for (int sx = 0; sx < subdivisionsX; ++sx) {
+                // Calculate normalized coordinates for this sub-quad
+                float u0 = static_cast<float>(sx) / subdivisionsX;
+                float u1 = static_cast<float>(sx + 1) / subdivisionsX;
+                float v0 = static_cast<float>(sy) / subdivisionsY;
+                float v1 = static_cast<float>(sy + 1) / subdivisionsY;
+
+                // Calculate world positions for this sub-quad
+                float x0 = -hw + u0 * 2.0f * hw;
+                float x1 = -hw + u1 * 2.0f * hw;
+                float y0 = y + hh - v0 * 2.0f * hh;  // Top
+                float y1 = y + hh - v1 * 2.0f * hh;  // Bottom
+
+                glm::vec3 subCorners[4] = {
+                    glm::vec3(x0, y0, 0),  // Top-left
+                    glm::vec3(x1, y0, 0),  // Top-right
+                    glm::vec3(x1, y1, 0),  // Bottom-right
+                    glm::vec3(x0, y1, 0)   // Bottom-left
+                };
+
+                // Project corners to screen space
+                ImVec2 screenSubCorners[4];
+                bool allValid = true;
+                for (int i = 0; i < 4; ++i) {
+                    screenSubCorners[i] = projectPoint(subCorners[i], screenPos, screenSize);
+                    if (screenSubCorners[i].x < 0 && screenSubCorners[i].y < 0) {
+                        allValid = false;
+                        break;
+                    }
+                }
+
+                if (!allValid) continue;
+
+                // UV coordinates for this sub-quad
+                ImVec2 uvs[4] = {
+                    ImVec2(u0, v0),  // Top-left
+                    ImVec2(u1, v0),  // Top-right
+                    ImVec2(u1, v1),  // Bottom-right
+                    ImVec2(u0, v1)   // Bottom-left
+                };
+
+                drawList->AddImageQuad(
+                    textureID,
+                    screenSubCorners[0], screenSubCorners[1], screenSubCorners[2], screenSubCorners[3],
+                    uvs[0], uvs[1], uvs[2], uvs[3],
+                    IM_COL32_WHITE
+                );
+            }
+        }
+    } else {
+        // Draw placeholder quad (no subdivision needed for solid color)
+        glm::vec3 corners[4] = {
+            glm::vec3(-hw, y + hh, 0),  // Top-left
+            glm::vec3( hw, y + hh, 0),  // Top-right
+            glm::vec3( hw, y - hh, 0),  // Bottom-right
+            glm::vec3(-hw, y - hh, 0)   // Bottom-left
         };
 
-        drawList->AddImageQuad(
-            textureID,
-            screenCorners[0], screenCorners[1], screenCorners[2], screenCorners[3],
-            uvs[0], uvs[1], uvs[2], uvs[3],
-            IM_COL32_WHITE
-        );
-    } else {
-        // Draw placeholder quad
+        ImVec2 screenCorners[4];
+        for (int i = 0; i < 4; ++i) {
+            screenCorners[i] = projectPoint(corners[i], screenPos, screenSize);
+            if (screenCorners[i].x < 0 && screenCorners[i].y < 0) {
+                return;
+            }
+        }
+
         drawList->AddQuadFilled(
             screenCorners[0], screenCorners[1], screenCorners[2], screenCorners[3],
             IM_COL32(40, 40, 45, 255)
@@ -159,12 +199,23 @@ void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImV
                           IM_COL32(150, 150, 150, 255), text);
     }
 
-    // Draw screen frame/border
+    // Draw screen frame/border (use corner points for frame)
+    glm::vec3 frameCorners[4] = {
+        glm::vec3(-hw, y + hh, 0),
+        glm::vec3( hw, y + hh, 0),
+        glm::vec3( hw, y - hh, 0),
+        glm::vec3(-hw, y - hh, 0)
+    };
+    ImVec2 screenFrameCorners[4];
+    for (int i = 0; i < 4; ++i) {
+        screenFrameCorners[i] = projectPoint(frameCorners[i], screenPos, screenSize);
+    }
+
     ImU32 frameColor = IM_COL32(100, 100, 100, 255);
-    drawList->AddLine(screenCorners[0], screenCorners[1], frameColor, 2.0f);
-    drawList->AddLine(screenCorners[1], screenCorners[2], frameColor, 2.0f);
-    drawList->AddLine(screenCorners[2], screenCorners[3], frameColor, 2.0f);
-    drawList->AddLine(screenCorners[3], screenCorners[0], frameColor, 2.0f);
+    drawList->AddLine(screenFrameCorners[0], screenFrameCorners[1], frameColor, 2.0f);
+    drawList->AddLine(screenFrameCorners[1], screenFrameCorners[2], frameColor, 2.0f);
+    drawList->AddLine(screenFrameCorners[2], screenFrameCorners[3], frameColor, 2.0f);
+    drawList->AddLine(screenFrameCorners[3], screenFrameCorners[0], frameColor, 2.0f);
 }
 
 void Stage3DRenderer::drawAxes(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize) {

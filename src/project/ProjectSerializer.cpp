@@ -126,6 +126,8 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 clipJson["startFrame"] = clip->startFrame;
                 clipJson["duration"] = clip->duration;
                 clipJson["mediaStartFrame"] = clip->mediaStartFrame;
+                clipJson["totalMediaFrames"] = clip->totalMediaFrames;
+                clipJson["playbackMode"] = static_cast<int>(clip->playbackMode);
                 clipJson["framerate"] = clip->framerate;
                 clipJson["width"] = clip->width;
                 clipJson["height"] = clip->height;
@@ -298,6 +300,8 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         clip.startFrame = clipJson.value("startFrame", 0);
                         clip.duration = clipJson.value("duration", 0);
                         clip.mediaStartFrame = clipJson.value("mediaStartFrame", 0);
+                        clip.totalMediaFrames = clipJson.value("totalMediaFrames", clip.duration);  // Default to duration for old projects
+                        clip.playbackMode = static_cast<PlaybackMode>(clipJson.value("playbackMode", 0));  // Default to Freeze
                         clip.framerate = clipJson.value("framerate", 30.0);
                         clip.width = clipJson.value("width", 0);
                         clip.height = clipJson.value("height", 0);

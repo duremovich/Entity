@@ -86,43 +86,122 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         DecodeWorker* worker = workerIt->second.get();
         if (!worker) continue;
 
+        // Update playback mode in case user changed it
+        worker->playbackMode = clip.playbackMode;
+        worker->totalMediaFrames = clip.totalMediaFrames > 0 ? clip.totalMediaFrames : clip.duration;
+
         // Calculate which media frame this clip needs based on timeline position
         if (currentTimelineFrame >= clip.startFrame &&
             currentTimelineFrame < clip.startFrame + clip.duration) {
-            // Clip is active - calculate target media frame
-            FrameNumber mediaFrame = clip.mediaStartFrame + (currentTimelineFrame - clip.startFrame);
+            // Clip is active - calculate target media frame using playback mode
+            FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
+            FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames : clip.duration;
+            FrameNumber mediaFrame = clip.mediaStartFrame;  // Default value
+
+            if (localFrame < sourceLength) {
+                // Within source media range
+                mediaFrame = clip.mediaStartFrame + localFrame;
+            } else {
+                // Beyond source media - apply playback mode
+                switch (clip.playbackMode) {
+                    case PlaybackMode::Freeze:
+                        mediaFrame = clip.mediaStartFrame + sourceLength - 1;
+                        break;
+                    case PlaybackMode::Loop:
+                        mediaFrame = clip.mediaStartFrame + (localFrame % sourceLength);
+                        break;
+                    case PlaybackMode::PingPong: {
+                        FrameNumber cycle = localFrame / sourceLength;
+                        FrameNumber pos = localFrame % sourceLength;
+                        if (cycle % 2 == 0) {
+                            mediaFrame = clip.mediaStartFrame + pos;
+                        } else {
+                            mediaFrame = clip.mediaStartFrame + (sourceLength - 1 - pos);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Detect ping-pong reverse phase
+            bool isReverse = false;
+            if (clip.playbackMode == PlaybackMode::PingPong && sourceLength > 0) {
+                FrameNumber cycle = localFrame / sourceLength;
+                isReverse = (cycle % 2 == 1);
+            }
+
+            // Track reverse state
+            worker->pingPongReverse.store(isReverse);
+
+            // Get actual ring buffer capacity (may be larger for ping-pong clips)
+            uint32_t ringBufferCapacity = frameBuffer.ringBuffer ?
+                frameBuffer.ringBuffer->getCapacity() : FrameRingBuffer::DEFAULT_CAPACITY;
 
             // Update target frame for decode-ahead
-            worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
+            if (clip.playbackMode == PlaybackMode::PingPong && sourceLength > 0) {
+                if (sourceLength <= ringBufferCapacity) {
+                    // Small source: buffer can hold all frames
+                    // Target is end of media so all frames get decoded once
+                    worker->targetFrame.store(clip.mediaStartFrame + sourceLength - 1);
+                } else {
+                    // Large source: need chunk-based buffering
+                    // During forward: decode ahead of current position
+                    // During reverse: need to seek backward when entering reverse
+                    if (isReverse) {
+                        // In reverse: target is current frame (we need frames leading up to here)
+                        worker->targetFrame.store(mediaFrame);
+                    } else {
+                        // In forward: decode ahead
+                        worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
+                    }
+                }
+            } else {
+                worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
+            }
 
-            // Check if we need to seek based on DISCONTINUITY detection
-            // Only seek when the user actually jumped to a different position (scrub/click)
-            // NOT during normal sequential playback (frame N to frame N+1)
+            // Check if we need to seek
             FrameNumber lastRequested = worker->lastRequestedFrame.load();
             bool needsSeek = false;
 
             if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
-                // Calculate the jump distance
                 int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
 
-                // Hysteresis buffer to prevent seek thrashing when timeline position is slightly ahead
-                // of buffered frames but decode-ahead would naturally catch up during normal playback
-                constexpr int SEEK_HYSTERESIS = 8;
+                if (clip.playbackMode == PlaybackMode::PingPong) {
+                    // Ping-pong seek logic depends on source size vs buffer capacity
+                    if (sourceLength <= ringBufferCapacity) {
+                        // Small source: all frames fit in buffer, only seek on large user jumps
+                        if (std::abs(frameDelta) > static_cast<int64_t>(sourceLength)) {
+                            needsSeek = true;
+                        }
+                    } else {
+                        // Large source: need to seek when direction changes
+                        // or when frame is outside estimated buffer range
+                        FrameNumber currentDecoded = worker->currentFrame.load();
 
-                // Only seek on actual discontinuities:
-                // - Jumped backwards (any amount, user scrubbed back)
-                // - Jumped forward more than decode-ahead buffer + hysteresis
-                if (frameDelta < 0) {
-                    // Jumped backwards - need to seek
-                    needsSeek = true;
-                } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
-                    // Jumped way forward (beyond what decode-ahead can cover)
-                    needsSeek = true;
+                        // Estimate what's in buffer: last ringBufferCapacity frames decoded
+                        FrameNumber bufferStart = (currentDecoded > ringBufferCapacity) ?
+                                                   currentDecoded - ringBufferCapacity : 0;
+                        FrameNumber bufferEnd = currentDecoded;
+
+                        // Seek if requested frame is outside buffer range
+                        if (mediaFrame < bufferStart || mediaFrame > bufferEnd + DECODE_AHEAD_FRAMES) {
+                            needsSeek = true;
+                            std::cout << "Ping-pong seek: frame " << mediaFrame
+                                      << " outside buffer range [" << bufferStart << "-" << bufferEnd << "]" << std::endl;
+                        }
+                    }
+                } else {
+                    // Normal seek logic for non-ping-pong modes
+                    constexpr int SEEK_HYSTERESIS = 8;
+                    if (frameDelta < -SEEK_HYSTERESIS) {
+                        needsSeek = true;
+                    } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
+                        needsSeek = true;
+                    }
                 }
-                // frameDelta of 0, 1, or small positive = normal playback, let decode catch up
             }
 
-            // Update last requested frame BEFORE seeking (so next frame sees correct delta)
+            // Update last requested frame
             worker->lastRequestedFrame.store(mediaFrame);
 
             if (needsSeek) {
@@ -231,9 +310,21 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     }
 
     // Create ring buffer if not already present
+    // For ping-pong mode, use a larger buffer to hold all source frames
     auto ringBufferStart = std::chrono::high_resolution_clock::now();
     if (!frameBuffer->ringBuffer) {
-        frameBuffer->ringBuffer = std::make_shared<FrameRingBuffer>();
+        uint32_t bufferCapacity = FrameRingBuffer::DEFAULT_CAPACITY;  // 32 frames default
+
+        if (clip->playbackMode == PlaybackMode::PingPong && clip->totalMediaFrames > 0) {
+            // For ping-pong, buffer should hold ALL source frames for smooth bidirectional playback
+            // Cap at 256 frames (~8 seconds @ 30fps) to avoid excessive memory use
+            constexpr uint32_t MAX_PINGPONG_BUFFER = 256;
+            bufferCapacity = std::min(static_cast<uint32_t>(clip->totalMediaFrames) + 8, MAX_PINGPONG_BUFFER);
+            std::cout << "Ping-pong clip: using buffer capacity " << bufferCapacity
+                      << " for " << clip->totalMediaFrames << " source frames" << std::endl;
+        }
+
+        frameBuffer->ringBuffer = std::make_shared<FrameRingBuffer>(bufferCapacity);
     }
     auto ringBufferElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - ringBufferStart).count();
@@ -253,6 +344,10 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     worker->mediaType = clip->mediaType;
     worker->initialized.store(false);
     worker->initFailed.store(false);
+
+    // Copy playback mode info for loop/ping-pong support
+    worker->playbackMode = clip->playbackMode;
+    worker->totalMediaFrames = clip->totalMediaFrames > 0 ? clip->totalMediaFrames : clip->duration;
 
     // Set up initial seek to the correct position
     worker->seekTarget.store(initialFrame);
@@ -378,8 +473,10 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::
         }
 
         // Don't decode past media duration
+        // For loop/ping-pong modes, the DecodeSystem::update() will trigger seeks
+        // when the target frame wraps around
         if (nextFrame >= worker->decoder->getDuration()) {
-            // Reached end of media - wait for seek or stop
+            // Reached end of media - wait for seek from update() or user action
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }

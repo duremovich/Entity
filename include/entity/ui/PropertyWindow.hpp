@@ -44,6 +44,11 @@ private:
     void renderLayerSection();
 
     /**
+     * Render playback mode settings.
+     */
+    void renderPlaybackSection();
+
+    /**
      * Render clip info (read-only).
      */
     void renderClipInfo();
@@ -85,6 +90,16 @@ private:
      * If keyframe exists, removes it. Otherwise adds one with current value.
      */
     void toggleKeyframeAtCurrentFrame(AnimatableProperty property, float currentValue);
+
+    /**
+     * Update keyframe value when property is changed via UI.
+     * If property has animation (keyframes), auto-adds/updates keyframe at current frame.
+     * This enables After Effects-style workflow where changing an animated property
+     * automatically creates/updates keyframes.
+     * @param property The animatable property being changed
+     * @param newValue The new value to set
+     */
+    void updateKeyframeOnValueChange(AnimatableProperty property, float newValue);
 
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline

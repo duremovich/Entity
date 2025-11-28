@@ -6,6 +6,7 @@
 #include <vector>
 #include <functional>
 #include <string>
+#include <unordered_set>
 
 namespace entity {
 
@@ -54,6 +55,31 @@ public:
      * Reset layout to default configuration.
      */
     void resetLayout();
+
+    /**
+     * Lock/unlock the window layout.
+     * When locked, docked windows cannot be moved or undocked via dragging.
+     * Use undockWindow() to programmatically undock specific windows.
+     */
+    void setLayoutLocked(bool locked) { m_layoutLocked = locked; }
+    bool isLayoutLocked() const { return m_layoutLocked; }
+
+    /**
+     * Request to undock a specific window (make it floating).
+     * The window will be undocked on the next frame.
+     */
+    void undockWindow(const char* name);
+
+    /**
+     * Request to re-dock a specific window back to the main dockspace.
+     * The window will be docked on the next frame.
+     */
+    void dockWindow(const char* name);
+
+    /**
+     * Check if a window is currently floating (undocked).
+     */
+    bool isWindowFloating(const char* name) const;
 
     /**
      * Set callback for when a video file is selected.
@@ -123,6 +149,13 @@ private:
     ImGuiID m_dockspaceId{0};
     bool m_firstFrame{true};
     bool m_layoutResetRequested{false};
+    bool m_layoutLocked{true};  // Default: layout locked to prevent accidental undocking
+
+    // Per-window floating state (windows explicitly undocked by user)
+    std::unordered_set<std::string> m_floatingWindows;      // Currently floating windows
+    std::unordered_set<std::string> m_pendingUndock;        // Windows to undock next frame
+    std::unordered_set<std::string> m_pendingDock;          // Windows to dock next frame
+
     VideoFileCallback m_videoFileCallback;
     SaveProjectCallback m_saveProjectCallback;
     OpenProjectCallback m_openProjectCallback;

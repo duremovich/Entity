@@ -700,6 +700,15 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
             }
             break;
 
+        case GLFW_KEY_L:
+            // Ctrl+L = Toggle layout lock
+            if (ctrlPressed && m_windowManager) {
+                bool newState = !m_windowManager->isLayoutLocked();
+                m_windowManager->setLayoutLocked(newState);
+                std::cout << "[Engine] Layout " << (newState ? "locked" : "unlocked") << std::endl;
+            }
+            break;
+
         default:
             break;
     }
@@ -1110,6 +1119,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     clip.height = m_decoder->getHeight();
     clip.framerate = m_decoder->getFrameRate();
     clip.duration = m_decoder->getDuration();
+    clip.totalMediaFrames = m_decoder->getDuration();  // Store original source length
     clip.hasAlpha = m_decoder->hasAlpha();
     clip.startFrame = 0;  // Place at timeline start
     clip.mediaStartFrame = 0;
@@ -1289,6 +1299,7 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     clip.height = decoder->getHeight();
     clip.framerate = frameRate;
     clip.duration = decoder->getDuration();
+    clip.totalMediaFrames = decoder->getDuration();  // Store original source length
     clip.hasAlpha = decoder->hasAlpha();
     clip.startFrame = startFrame;
     clip.mediaStartFrame = 0;
@@ -1404,8 +1415,42 @@ bool Engine::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
 }
 
 FrameNumber Engine::mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame) const {
-    // Map timeline frame to the clip's internal media frame
-    return clip.mediaStartFrame + (timelineFrame - clip.startFrame);
+    // Calculate frame position relative to clip start
+    FrameNumber localFrame = timelineFrame - clip.startFrame;
+
+    // Get source media length (fallback to duration if not set)
+    FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames : clip.duration;
+
+    // If within source media range, simple mapping
+    if (localFrame < sourceLength) {
+        return clip.mediaStartFrame + localFrame;
+    }
+
+    // Clip extends beyond source media - apply playback mode
+    switch (clip.playbackMode) {
+        case PlaybackMode::Freeze:
+            // Hold on last frame
+            return clip.mediaStartFrame + sourceLength - 1;
+
+        case PlaybackMode::Loop:
+            // Restart from beginning
+            return clip.mediaStartFrame + (localFrame % sourceLength);
+
+        case PlaybackMode::PingPong: {
+            // Play forward then backward (palindrome)
+            FrameNumber cycle = localFrame / sourceLength;
+            FrameNumber pos = localFrame % sourceLength;
+            // Even cycles play forward, odd cycles play backward
+            if (cycle % 2 == 0) {
+                return clip.mediaStartFrame + pos;
+            } else {
+                return clip.mediaStartFrame + (sourceLength - 1 - pos);
+            }
+        }
+    }
+
+    // Fallback (should never reach)
+    return clip.mediaStartFrame + sourceLength - 1;
 }
 
 void Engine::updateClipVideos() {
@@ -1474,11 +1519,18 @@ void Engine::updateClipVideos() {
 
             // During playback, consume frames to keep buffer flowing
             // During scrubbing/paused, just peek without consuming
-            // IMPORTANT: Use cached playState to avoid race conditions
+            // EXCEPTION: For ping-pong mode, NEVER consume frames - we need them for both directions
             auto ringStart = std::chrono::high_resolution_clock::now();
-            if (playState == PlaybackState::Playing) {
+
+            // For ping-pong, don't consume frames at all - we need them in both directions
+            bool isPingPong = (clip.playbackMode == PlaybackMode::PingPong);
+
+            if (playState == PlaybackState::Playing && !isPingPong) {
+                // Normal forward playback (non-ping-pong) - consume frames to keep buffer flowing
                 gotFrame = frameBuffer->ringBuffer->consumeUpTo(mediaFrame, ringFrame);
             } else {
+                // Scrubbing, paused, OR ping-pong mode - don't consume, just get
+                // This preserves frames in buffer for ping-pong bidirectional access
                 gotFrame = frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame);
             }
             auto ringMs = std::chrono::duration_cast<std::chrono::milliseconds>(

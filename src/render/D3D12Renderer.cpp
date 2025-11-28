@@ -930,8 +930,8 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-    // Require holding Shift to undock windows (prevents accidental undocking)
-    io.ConfigDockingWithShift = true;
+    // Use default docking behavior (ConfigDockingWithShift = false)
+    // This allows docking preview to appear when dragging windows
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();

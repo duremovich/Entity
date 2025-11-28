@@ -4,6 +4,7 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/media/FrameRingBuffer.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/components/Clip.hpp"
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -44,6 +45,11 @@ struct DecodeWorker {
     std::atomic<bool> initFailed{false};         // True if initialization failed
     std::string filepath;                        // File path for deferred open
     MediaType mediaType{MediaType::Unknown};     // Media type for decoder creation
+
+    // Playback mode for loop/ping-pong support
+    PlaybackMode playbackMode{PlaybackMode::Freeze};
+    FrameNumber totalMediaFrames{0};             // Total frames in source media
+    std::atomic<bool> pingPongReverse{false};    // True when ping-pong is playing backward
 
     // Synchronization for pause/resume
     std::mutex mutex;
