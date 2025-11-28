@@ -27,7 +27,8 @@ void MediaBinWindow::render() {
         ImGui::TextWrapped("Use File > Open Video to import media files.");
     } else {
         // Build metadata cache once per frame to avoid O(n²) lookup
-        // Cache structure: filepath -> (width, height, framerate, duration, hasAlpha)
+        // Cache structure: filepath -> (width, height, framerate, totalMediaFrames, hasAlpha)
+        // Use totalMediaFrames (source frames) for displaying actual media duration
         std::unordered_map<std::string, std::tuple<uint32_t, uint32_t, double, FrameNumber, bool>> metadataCache;
 
         auto& registry = m_engine->getRegistry();
@@ -39,7 +40,7 @@ void MediaBinWindow::render() {
                     clip.width,
                     clip.height,
                     clip.framerate,
-                    clip.duration,
+                    clip.totalMediaFrames,  // Source frames, not timeline frames
                     clip.hasAlpha
                 );
             }

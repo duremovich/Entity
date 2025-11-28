@@ -75,7 +75,12 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             if (currentTimelineFrame >= clip.startFrame &&
                 currentTimelineFrame < clip.startFrame + clip.duration) {
                 // Timeline is within clip - start at current position
-                initialMediaFrame = clip.mediaStartFrame + (currentTimelineFrame - clip.startFrame);
+                // Convert timeline frames to source frames using frame rate ratio
+                double timelineFrameRate = m_timeline->getFrameRate();
+                double frameRateRatio = clip.framerate / timelineFrameRate;
+                FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
+                FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
+                initialMediaFrame = clip.mediaStartFrame + sourceLocalFrame;
             } else if (currentTimelineFrame < clip.startFrame) {
                 // Timeline is before clip - start at clip's media start
                 initialMediaFrame = clip.mediaStartFrame;
@@ -93,19 +98,36 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
         // Update playback mode in case user changed it
         worker->playbackMode = clip.playbackMode;
-        worker->totalMediaFrames = clip.totalMediaFrames > 0 ? clip.totalMediaFrames : clip.duration;
+        // totalMediaFrames should be in source frames (not timeline frames)
+        // clip.totalMediaFrames is set from decoder and is correct
+        // clip.duration is in timeline frames, so convert if using as fallback
+        if (clip.totalMediaFrames > 0) {
+            worker->totalMediaFrames = clip.totalMediaFrames;
+        } else {
+            double frameRateRatio = clip.framerate / m_timeline->getFrameRate();
+            worker->totalMediaFrames = static_cast<FrameNumber>(clip.duration * frameRateRatio);
+        }
 
         // Calculate which media frame this clip needs based on timeline position
         if (currentTimelineFrame >= clip.startFrame &&
             currentTimelineFrame < clip.startFrame + clip.duration) {
             // Clip is active - calculate target media frame using playback mode
             FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
-            FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames : clip.duration;
+
+            // Convert timeline frames to source media frames using frame rate ratio
+            // E.g., for 24fps video on 30fps timeline: sourceFrame = localFrame * (24/30) = localFrame * 0.8
+            double timelineFrameRate = m_timeline->getFrameRate();
+            double frameRateRatio = clip.framerate / timelineFrameRate;
+            FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
+
+            // Source length is always in source frames (from decoder)
+            FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames :
+                static_cast<FrameNumber>(clip.duration * frameRateRatio);
             FrameNumber mediaFrame = clip.mediaStartFrame;  // Default value
 
-            if (localFrame < sourceLength) {
+            if (sourceLocalFrame < sourceLength) {
                 // Within source media range
-                mediaFrame = clip.mediaStartFrame + localFrame;
+                mediaFrame = clip.mediaStartFrame + sourceLocalFrame;
             } else {
                 // Beyond source media - apply playback mode
                 switch (clip.playbackMode) {
@@ -113,11 +135,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                         mediaFrame = clip.mediaStartFrame + sourceLength - 1;
                         break;
                     case PlaybackMode::Loop:
-                        mediaFrame = clip.mediaStartFrame + (localFrame % sourceLength);
+                        mediaFrame = clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
                         break;
                     case PlaybackMode::PingPong: {
-                        FrameNumber cycle = localFrame / sourceLength;
-                        FrameNumber pos = localFrame % sourceLength;
+                        FrameNumber cycle = sourceLocalFrame / sourceLength;
+                        FrameNumber pos = sourceLocalFrame % sourceLength;
                         if (cycle % 2 == 0) {
                             mediaFrame = clip.mediaStartFrame + pos;
                         } else {
@@ -131,7 +153,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // Detect ping-pong reverse phase
             bool isReverse = false;
             if (clip.playbackMode == PlaybackMode::PingPong && sourceLength > 0) {
-                FrameNumber cycle = localFrame / sourceLength;
+                FrameNumber cycle = sourceLocalFrame / sourceLength;
                 isReverse = (cycle % 2 == 1);
             }
 

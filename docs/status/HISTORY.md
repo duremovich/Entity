@@ -6,6 +6,38 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase 5: Projection Mapping (In Progress)
 
+### Mixed Frame Rate Support (2025-11-28)
+
+Fixed critical bug where videos played at timeline frame rate instead of their native frame rate. A 24fps video on a 30fps timeline was playing 25% faster and ending early.
+
+**Root Cause**: 1:1 frame mapping between timeline frames and source frames. The system treated frame numbers as interchangeable regardless of frame rate.
+
+**Fix**: Added frame rate ratio conversion throughout the codebase:
+
+1. **Duration calculation**: `clip.duration` now stored in timeline frames:
+   ```
+   duration = totalMediaFrames × (timelineFPS / sourceFPS)
+   ```
+
+2. **Frame mapping**: `Engine::mapToMediaFrame()` converts timeline frames to source frames:
+   ```
+   sourceFrame = timelineLocalFrame × (sourceFPS / timelineFPS)
+   ```
+
+3. **Timeline display**: All frame↔time conversions in `TimelineWidget.cpp` now use timeline frame rate instead of clip frame rate.
+
+4. **Clip operations**: `Timeline::splitClip()` and `duplicateClip()` properly handle mixed frame rates.
+
+5. **Project loading**: `ProjectSerializer` recalculates duration from `totalMediaFrames` to handle old project files.
+
+**New Features**:
+- Added `frameBlending` field to Clip component (renderer support pending)
+- Timeline frame rate is no longer changed when loading clips
+
+**Files**: Clip.hpp, Engine.cpp, DecodeSystem.cpp, TimelineWidget.cpp, Timeline.cpp, ProjectSerializer.cpp, MediaBinWindow.cpp
+
+---
+
 ### Multi-Screen Targeting Fix (2025-11-28)
 
 Fixed critical descriptor heap slot collision that caused video to disappear when a second screen was created.

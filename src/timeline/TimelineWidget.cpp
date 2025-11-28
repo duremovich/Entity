@@ -469,8 +469,10 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     float trackY = baseWindowPos.y;
 
     // Convert frame timing to microseconds (Timecode units)
-    float startSeconds = static_cast<float>(clip->startFrame) / clip->framerate;
-    float durationSeconds = static_cast<float>(clip->duration) / clip->framerate;
+    // Use timeline frame rate (not clip source rate) since startFrame and duration are in timeline frames
+    double timelineFrameRate = m_timeline->getFrameRate();
+    float startSeconds = static_cast<float>(clip->startFrame) / static_cast<float>(timelineFrameRate);
+    float durationSeconds = static_cast<float>(clip->duration) / static_cast<float>(timelineFrameRate);
     Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
     Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
@@ -666,8 +668,10 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
     auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
 
     // Calculate clip timing for positioning keyframes
-    float startSeconds = static_cast<float>(clip->startFrame) / clip->framerate;
-    float durationSeconds = static_cast<float>(clip->duration) / clip->framerate;
+    // Use timeline frame rate since startFrame and duration are in timeline frames
+    double timelineFrameRate = m_timeline->getFrameRate();
+    float startSeconds = static_cast<float>(clip->startFrame) / static_cast<float>(timelineFrameRate);
+    float durationSeconds = static_cast<float>(clip->duration) / static_cast<float>(timelineFrameRate);
     Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
     float clipX = baseWindowPos.x + timeToPixel(startTime);
     float clipWidth = timeToPixel(static_cast<Timecode>(durationSeconds * 1000000.0f));
@@ -951,7 +955,8 @@ void TimelineWidget::handleInteraction() {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
                     float newStartSeconds = newStartTime / 1000000.0f;
-                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * clip->framerate);
+                    double timelineFrameRate = m_timeline->getFrameRate();
+                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
                 }
             }
         } else {
@@ -974,7 +979,8 @@ void TimelineWidget::handleInteraction() {
                 if (registry.valid(clipUnderMouse)) {
                     auto* clip = registry.try_get<Clip>(clipUnderMouse);
                     if (clip) {
-                        float startSeconds = clip->startFrame / clip->framerate;
+                        double timelineFrameRate = m_timeline->getFrameRate();
+                        float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
                         Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                         float clipX = windowPos.x + timeToPixel(clipStartTime);
                         m_dragOffsetX = mousePos.x - clipX;
@@ -1027,9 +1033,10 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
                 const auto* clip = registry.try_get<Clip>(clipEntity);
                 if (!clip) continue;
 
-                // Calculate clip bounds
-                float startSeconds = clip->startFrame / clip->framerate;
-                float durationSeconds = clip->duration / clip->framerate;
+                // Calculate clip bounds (use timeline frame rate, not clip source rate)
+                double timelineFrameRate = m_timeline->getFrameRate();
+                float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
+                float durationSeconds = clip->duration / static_cast<float>(timelineFrameRate);
                 Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                 Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
@@ -1091,9 +1098,10 @@ ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPo
             const auto* clip = registry.try_get<Clip>(clipEntity);
             if (!clip) continue;
 
-            // Calculate clip bounds
-            float startSeconds = clip->startFrame / static_cast<float>(clip->framerate);
-            float durationSeconds = clip->duration / static_cast<float>(clip->framerate);
+            // Calculate clip bounds (use timeline frame rate, not clip source rate)
+            double timelineFrameRate = m_timeline->getFrameRate();
+            float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
+            float durationSeconds = clip->duration / static_cast<float>(timelineFrameRate);
             Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
             Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
@@ -1211,7 +1219,8 @@ void TimelineWidget::handleTracksInteraction() {
             if (registry.valid(m_trimClip)) {
                 auto* clip = registry.try_get<Clip>(m_trimClip);
                 if (clip) {
-                    FrameNumber mouseFrame = static_cast<FrameNumber>(mouseTime / 1000000.0f * clip->framerate);
+                    double timelineFrameRate = m_timeline->getFrameRate();
+                    FrameNumber mouseFrame = static_cast<FrameNumber>(mouseTime / 1000000.0f * timelineFrameRate);
 
                     // Find the track this clip is on for collision detection
                     int trimTrackIndex = -1;
@@ -1328,7 +1337,9 @@ void TimelineWidget::handleTracksInteraction() {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
                     Timecode playheadTime = m_timeline->getCurrentTime();
-                    float durationSeconds = clip->duration / static_cast<float>(clip->framerate);
+                    // Use timeline frame rate since duration is in timeline frames
+                    double timelineFrameRate = m_timeline->getFrameRate();
+                    float durationSeconds = clip->duration / static_cast<float>(timelineFrameRate);
                     Timecode clipDuration = static_cast<Timecode>(durationSeconds * 1000000.0f);
                     Timecode desiredEndTime = desiredStartTime + clipDuration;
 
@@ -1431,7 +1442,8 @@ void TimelineWidget::handleTracksInteraction() {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
                     float newStartSeconds = newStartTime / 1000000.0f;
-                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * clip->framerate);
+                    double timelineFrameRate = m_timeline->getFrameRate();
+                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
                 }
             }
         } else {
@@ -1500,7 +1512,8 @@ void TimelineWidget::handleTracksInteraction() {
                 if (registry.valid(clipUnderMouse)) {
                     auto* clip = registry.try_get<Clip>(clipUnderMouse);
                     if (clip) {
-                        float startSeconds = clip->startFrame / clip->framerate;
+                        double timelineFrameRate = m_timeline->getFrameRate();
+                        float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
                         Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                         float clipX = windowPos.x + timeToPixel(clipStartTime) - m_syncScrollX;
                         m_dragOffsetX = mousePos.x - clipX;
@@ -2057,7 +2070,8 @@ float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
                     }
                     if (prevFrame >= 0) {
                         FrameNumber globalFrame = prevFrame + clip->startFrame;
-                        m_timeline->seek(static_cast<Timecode>(globalFrame / clip->framerate * 1000000.0f));
+                        double timelineFrameRate = m_timeline->getFrameRate();
+                        m_timeline->seek(static_cast<Timecode>(globalFrame / timelineFrameRate * 1000000.0f));
                     }
                 }
 
@@ -2090,7 +2104,8 @@ float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
                     }
                     if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
                         FrameNumber globalFrame = nextFrame + clip->startFrame;
-                        m_timeline->seek(static_cast<Timecode>(globalFrame / clip->framerate * 1000000.0f));
+                        double timelineFrameRate = m_timeline->getFrameRate();
+                        m_timeline->seek(static_cast<Timecode>(globalFrame / timelineFrameRate * 1000000.0f));
                     }
                 }
             }

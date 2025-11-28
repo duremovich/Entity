@@ -57,6 +57,7 @@ struct Clip {
     uint32_t width{0};
     uint32_t height{0};
     bool hasAlpha{false};
+    bool frameBlending{false};        // Enable frame blending for smoother playback at mismatched rates
 
     // Screen mapping
     entt::entity targetScreen{entt::null};  // Target screen for this clip (null = default/all screens)
@@ -92,6 +93,7 @@ struct Clip {
         , width(other.width)
         , height(other.height)
         , hasAlpha(other.hasAlpha)
+        , frameBlending(other.frameBlending)
         , targetScreen(other.targetScreen)
         , loaded(other.loaded)
         , decoding(other.decoding)
@@ -129,6 +131,7 @@ struct Clip {
             width = other.width;
             height = other.height;
             hasAlpha = other.hasAlpha;
+            frameBlending = other.frameBlending;
             targetScreen = other.targetScreen;
             loaded = other.loaded;
             decoding = other.decoding;

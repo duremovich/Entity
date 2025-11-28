@@ -32,6 +32,7 @@
 #include "entity/components/Model.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <GLFW/glfw3.h>
+#include <cmath>
 
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -1136,8 +1137,12 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     clip.width = m_decoder->getWidth();
     clip.height = m_decoder->getHeight();
     clip.framerate = m_decoder->getFrameRate();
-    clip.duration = m_decoder->getDuration();
-    clip.totalMediaFrames = m_decoder->getDuration();  // Store original source length
+    clip.totalMediaFrames = m_decoder->getDuration();  // Store original source length (in source frames)
+    // Convert source frames to timeline frames for duration
+    // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames
+    double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
+    clip.duration = static_cast<FrameNumber>(std::ceil(
+        clip.totalMediaFrames * (timelineFrameRate / clip.framerate)));
     clip.hasAlpha = m_decoder->hasAlpha();
     clip.startFrame = 0;  // Place at timeline start
     clip.mediaStartFrame = 0;
@@ -1239,8 +1244,9 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     // Track 0 (top of timeline UI) should render on top = highest z-order
     layer.zOrder = 1000 - static_cast<uint32_t>(finalTrackIndex);
 
-    // Set timeline frame rate to match clip (duration remains at default 10 minutes)
-    m_timeline->setFrameRate(clip.framerate);
+    // Note: Timeline frame rate is NOT changed to match clip frame rate.
+    // This allows mixed frame rate content on a fixed timeline (e.g., 24fps video on 30fps timeline).
+    // Frame rate conversion is handled by mapToMediaFrame() and DecodeSystem.
 
     // Legacy: Reuse m_currentFrame for backwards compatibility with StageWindow
     // Only reallocate if dimensions changed, otherwise reuse existing buffer
@@ -1304,10 +1310,11 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     // Create clip entity with all required components
     entt::entity clipEntity = m_registry.create();
 
-    // Calculate start frame from drop position
-    float frameRate = decoder->getFrameRate();
+    // Calculate start frame from drop position using TIMELINE frame rate
+    double sourceFrameRate = decoder->getFrameRate();
+    double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
     float positionSeconds = position / 1000000.0f;
-    FrameNumber startFrame = static_cast<FrameNumber>(positionSeconds * frameRate);
+    FrameNumber startFrame = static_cast<FrameNumber>(positionSeconds * timelineFrameRate);
 
     // Add Clip component with metadata
     auto& clip = m_registry.emplace<Clip>(clipEntity);
@@ -1315,9 +1322,12 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     clip.mediaType = mediaType;
     clip.width = decoder->getWidth();
     clip.height = decoder->getHeight();
-    clip.framerate = frameRate;
-    clip.duration = decoder->getDuration();
-    clip.totalMediaFrames = decoder->getDuration();  // Store original source length
+    clip.framerate = sourceFrameRate;
+    clip.totalMediaFrames = decoder->getDuration();  // Store original source length (in source frames)
+    // Convert source frames to timeline frames for duration
+    // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames
+    clip.duration = static_cast<FrameNumber>(std::ceil(
+        clip.totalMediaFrames * (timelineFrameRate / sourceFrameRate)));
     clip.hasAlpha = decoder->hasAlpha();
     clip.startFrame = startFrame;
     clip.mediaStartFrame = 0;
@@ -1433,15 +1443,22 @@ bool Engine::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
 }
 
 FrameNumber Engine::mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame) const {
-    // Calculate frame position relative to clip start
+    // Calculate frame position relative to clip start (in timeline frames)
     FrameNumber localFrame = timelineFrame - clip.startFrame;
 
-    // Get source media length (fallback to duration if not set)
-    FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames : clip.duration;
+    // Convert timeline frames to source media frames using frame rate ratio
+    // E.g., for 24fps video on 30fps timeline: sourceFrame = localFrame * (24/30) = localFrame * 0.8
+    double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
+    double frameRateRatio = clip.framerate / timelineFrameRate;
+    FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
 
-    // If within source media range, simple mapping
-    if (localFrame < sourceLength) {
-        return clip.mediaStartFrame + localFrame;
+    // Get source media length
+    FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames :
+        static_cast<FrameNumber>(clip.duration * frameRateRatio);
+
+    // If within source media range, direct mapping
+    if (sourceLocalFrame < sourceLength) {
+        return clip.mediaStartFrame + sourceLocalFrame;
     }
 
     // Clip extends beyond source media - apply playback mode
@@ -1452,12 +1469,12 @@ FrameNumber Engine::mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame)
 
         case PlaybackMode::Loop:
             // Restart from beginning
-            return clip.mediaStartFrame + (localFrame % sourceLength);
+            return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
 
         case PlaybackMode::PingPong: {
             // Play forward then backward (palindrome)
-            FrameNumber cycle = localFrame / sourceLength;
-            FrameNumber pos = localFrame % sourceLength;
+            FrameNumber cycle = sourceLocalFrame / sourceLength;
+            FrameNumber pos = sourceLocalFrame % sourceLength;
             // Even cycles play forward, odd cycles play backward
             if (cycle % 2 == 0) {
                 return clip.mediaStartFrame + pos;

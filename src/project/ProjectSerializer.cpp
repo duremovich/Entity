@@ -132,6 +132,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 clipJson["width"] = clip->width;
                 clipJson["height"] = clip->height;
                 clipJson["hasAlpha"] = clip->hasAlpha;
+                clipJson["frameBlending"] = clip->frameBlending;
 
                 // Transform component (if exists)
                 const auto* transform = registry.try_get<Transform>(clipEntity);
@@ -298,16 +299,30 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         clip.filepath = clipJson.value("filepath", "");
                         clip.mediaType = jsonToMediaType(clipJson.value("mediaType", "unknown"));
                         clip.startFrame = clipJson.value("startFrame", 0);
-                        clip.duration = clipJson.value("duration", 0);
                         clip.mediaStartFrame = clipJson.value("mediaStartFrame", 0);
-                        clip.totalMediaFrames = clipJson.value("totalMediaFrames", clip.duration);  // Default to duration for old projects
                         clip.playbackMode = static_cast<PlaybackMode>(clipJson.value("playbackMode", 0));  // Default to Freeze
                         clip.framerate = clipJson.value("framerate", 30.0);
                         clip.width = clipJson.value("width", 0);
                         clip.height = clipJson.value("height", 0);
                         clip.hasAlpha = clipJson.value("hasAlpha", false);
+                        clip.frameBlending = clipJson.value("frameBlending", false);
                         clip.loaded = false;
                         clip.decoding = false;
+
+                        // Load totalMediaFrames and duration
+                        // totalMediaFrames is always in source frames
+                        FrameNumber jsonDuration = clipJson.value("duration", 0);
+                        clip.totalMediaFrames = clipJson.value("totalMediaFrames", jsonDuration);
+
+                        // Recalculate duration in timeline frames from totalMediaFrames
+                        // This ensures correct timing even for old project files where duration was in source frames
+                        if (clip.totalMediaFrames > 0 && clip.framerate > 0) {
+                            double timelineFrameRate = timeline.getFrameRate();
+                            clip.duration = static_cast<FrameNumber>(std::ceil(
+                                clip.totalMediaFrames * (timelineFrameRate / clip.framerate)));
+                        } else {
+                            clip.duration = jsonDuration;  // Fallback for malformed clips
+                        }
 
                         // Load Transform if present
                         if (clipJson.contains("transform")) {

@@ -15,6 +15,7 @@
 #include "entity/media/FrameRingBuffer.hpp"
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 
 namespace entity {
 
@@ -222,7 +223,12 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
     FrameNumber leftDuration = splitFrame - clip->startFrame;
     FrameNumber rightStart = splitFrame;
     FrameNumber rightDuration = clipEnd - splitFrame;
-    FrameNumber rightMediaStart = clip->mediaStartFrame + leftDuration;
+
+    // Convert leftDuration from timeline frames to source frames for mediaStartFrame calculation
+    // mediaStartFrame is in source frames, so we need to convert timeline frames properly
+    double frameRateRatio = clip->framerate / m_frameRate;
+    FrameNumber leftDurationInSourceFrames = static_cast<FrameNumber>(std::floor(leftDuration * frameRateRatio));
+    FrameNumber rightMediaStart = clip->mediaStartFrame + leftDurationInSourceFrames;
 
     std::cout << "[Timeline] Splitting clip at frame " << splitFrame
               << ": left=[" << clip->startFrame << ", dur=" << leftDuration << "]"
@@ -239,10 +245,14 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
     newClip.startFrame = rightStart;
     newClip.duration = rightDuration;
     newClip.mediaStartFrame = rightMediaStart;
+    newClip.totalMediaFrames = clip->totalMediaFrames;  // Same source media
     newClip.framerate = clip->framerate;
+    newClip.playbackMode = clip->playbackMode;
     newClip.width = clip->width;
     newClip.height = clip->height;
     newClip.hasAlpha = clip->hasAlpha;
+    newClip.frameBlending = clip->frameBlending;
+    newClip.targetScreen = clip->targetScreen;
     // Note: FFmpeg contexts (formatContext, codecContext, etc.) are NOT copied
     // They will be initialized when the decoder is created for this clip
     newClip.loaded = false;
@@ -387,10 +397,14 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
     newClip.startFrame = newStartFrame;
     newClip.duration = clip->duration;
     newClip.mediaStartFrame = clip->mediaStartFrame;  // Same media start
+    newClip.totalMediaFrames = clip->totalMediaFrames;
     newClip.framerate = clip->framerate;
+    newClip.playbackMode = clip->playbackMode;
     newClip.width = clip->width;
     newClip.height = clip->height;
     newClip.hasAlpha = clip->hasAlpha;
+    newClip.frameBlending = clip->frameBlending;
+    newClip.targetScreen = clip->targetScreen;
     newClip.loaded = false;
     newClip.decoding = false;
 

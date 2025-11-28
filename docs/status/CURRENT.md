@@ -5,24 +5,33 @@
 
 ---
 
-## Completed: Multi-Render-Target Architecture
+## Completed: Mixed Frame Rate Support
 
-Independent per-screen rendering for projection mapping is now functional.
+Videos now play at their native frame rate regardless of timeline frame rate. A 24fps video on a 30fps timeline plays at correct speed with proper duration display.
 
 ### What Was Fixed
 
-1. **Target screen assignment** - Each screen gets its own compose target and clips are filtered by their `targetScreen` assignment.
+1. **Frame rate conversion** (2025-11-28) - Fixed critical bug where videos played at timeline frame rate instead of source frame rate. A 24fps video on 30fps timeline was playing 25% faster and ending early.
 
-2. **Descriptor heap slot collision** (2025-11-28) - Fixed critical bug where adding a second screen caused video to disappear on ALL screens. Root cause: compose targets and video textures were allocated overlapping descriptor heap slots. Fix: Added `MAX_COMPOSE_TARGETS = 8` constant and proper slot separation.
+   **Root cause**: 1:1 frame mapping between timeline and source frames, ignoring source video's native frame rate.
 
-3. **Multi-video playback freeze** (2025-11-28) - Fixed critical freeze (5+ seconds) when playing multiple videos on timeline. Root cause: Race condition between `clear()` and `consumeUpTo()` in FrameRingBuffer caused count to wrap to UINT32_MAX, resulting in 4 billion loop iterations. Fix: Added count validation checks to detect and handle corrupted count values.
+   **Fix**: Added frame rate ratio conversion throughout the codebase:
+   - `Engine::mapToMediaFrame()` - Converts timeline frames to source frames
+   - `DecodeSystem::update()` - Uses frame rate ratio for target frame calculation
+   - `clip.duration` - Now stored in timeline frames (source frames × timelineFPS/sourceFPS)
+   - `TimelineWidget` - All frame↔time conversions use timeline frame rate
 
-4. **Stale frame flash on seek-before-clip** (2025-11-28) - Fixed visual glitch where seeking before a clip's start and playing showed wrong frame briefly. Root cause: Race condition between seek signaling and frame retrieval; also late seek triggered when clip became active. Fix: Added `seekPending` check in Engine.cpp to skip stale buffer access, and proactive seek in DecodeSystem.cpp when timeline is before clip start.
+2. **Added `frameBlending` field to Clip component** - Per-clip option for smoother playback at mismatched frame rates (not yet implemented in renderer).
 
-5. **Playback freeze after backward scrubbing** (2025-11-28) - Fixed freeze when dragging playhead or clips backwards then pressing play. Root cause: Race condition where decode thread used stale `targetFrame` after seek, plus buffer thrashing from rapid seeks during drag. Fix: Three-part solution:
-   - Update `targetFrame` before signaling seek in `seekClip()`
-   - Debounce seeks in TimelineWidget (only seek when time actually changes)
-   - Added scrubbing mode that prevents decoder seeks during drag operations (ruler, clip, trim), with one final seek on release
+### Previous Fixes (2025-11-28)
+
+3. **Descriptor heap slot collision** - Fixed video disappearing when adding second screen.
+
+4. **Multi-video playback freeze** - Fixed 5+ second freeze from FrameRingBuffer race condition.
+
+5. **Stale frame flash on seek-before-clip** - Fixed wrong frame showing briefly after seek.
+
+6. **Playback freeze after backward scrubbing** - Fixed freeze when dragging playhead backwards.
 
 ### Component Status
 
@@ -75,21 +84,27 @@ Independent per-screen rendering for projection mapping is now functional.
 
 ## Active Files
 
-**Modified**:
-- [CompositorSystem.cpp](../../src/systems/CompositorSystem.cpp) - Multi-screen loop
-- [CompositorSystem.hpp](../../include/entity/systems/CompositorSystem.hpp) - Added helper
-- [StageWindow.cpp](../../src/ui/StageWindow.cpp) - Per-screen textures
-- [Engine.cpp](../../src/core/Engine.cpp) - Stale frame prevention (seekPending check)
-- [DecodeSystem.cpp](../../src/systems/DecodeSystem.cpp) - Proactive seek, scrubbing detection, targetFrame fix
-- [DecodeSystem.hpp](../../include/entity/systems/DecodeSystem.hpp) - Added m_wasScrubbing flag
-- [Timeline.hpp](../../include/entity/timeline/Timeline.hpp) - Added scrubbing mode (m_isScrubbing)
-- [TimelineWidget.hpp](../../include/entity/timeline/TimelineWidget.hpp) - Added seek debouncing
-- [TimelineWidget.cpp](../../src/timeline/TimelineWidget.cpp) - Scrubbing mode for ruler/clip/trim drag
+**Modified for Frame Rate Support**:
+- [Clip.hpp](../../include/entity/components/Clip.hpp) - Added `frameBlending` field
+- [Engine.cpp](../../src/core/Engine.cpp) - Frame rate conversion in `mapToMediaFrame()`, duration calculation
+- [DecodeSystem.cpp](../../src/systems/DecodeSystem.cpp) - Frame rate ratio for target frame calculation
+- [TimelineWidget.cpp](../../src/timeline/TimelineWidget.cpp) - All frame↔time conversions use timeline rate
+- [Timeline.cpp](../../src/timeline/Timeline.cpp) - Fixed split/duplicate for mixed frame rates
+- [ProjectSerializer.cpp](../../src/project/ProjectSerializer.cpp) - Recalculates duration on project load
+- [MediaBinWindow.cpp](../../src/ui/MediaBinWindow.cpp) - Shows source duration correctly
 
 ---
 
 ## Architecture Notes
 
+### Frame Rate Handling
+- **Timeline frame rate**: Fixed rate for the project (e.g., 30fps) - set once, not changed by clips
+- **Clip frame rate**: Source video's native rate (e.g., 24fps) - stored in `clip.framerate`
+- **Duration**: Stored in timeline frames (`clip.duration = totalMediaFrames × timelineFPS/sourceFPS`)
+- **Frame mapping**: `Engine::mapToMediaFrame()` converts timeline frames to source frames
+- **Formula**: `sourceFrame = timelineLocalFrame × (sourceFPS / timelineFPS)`
+
+### Multi-Screen Rendering
 - Each Screen entity gets unique `renderTargetSlot` (0-based index, lazy allocated)
 - CompositorSystem iterates all visible screens and composites each independently
 - Clips filtered by `targetScreen` during composition (null = all screens)
