@@ -908,13 +908,15 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
 
 Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     // Create descriptor heap for ImGui SRV (fonts/textures + video textures)
+    // Descriptor heap layout:
     // Slot 0: ImGui font texture
     // Slot 1: Legacy single video texture (for backwards compatibility)
-    // Slot 2: Compose target (offscreen render target for compositing)
-    // Slots 3 to 3+N-1: Multi-texture slots for compositing layers
+    // Slots 2 to 2+MAX_COMPOSE_TARGETS-1: Compose targets (one per screen)
+    // Slots 2+MAX_COMPOSE_TARGETS to end: Video texture slots for compositing layers
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 3 + MAX_VIDEO_TEXTURE_SLOTS;  // Font + legacy + compose + N layer slots
+    // Heap layout: [0]=font, [1]=legacy, [2..2+MAX_COMPOSE_TARGETS-1]=compose targets, [2+MAX_COMPOSE_TARGETS..]=video textures
+    heapDesc.NumDescriptors = 2 + MAX_COMPOSE_TARGETS + MAX_VIDEO_TEXTURE_SLOTS;
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
     HRESULT hr = m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
@@ -1432,7 +1434,8 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         srvDesc.Texture2D.MipLevels = 1;
         srvDesc.Texture2D.MostDetailedMip = 0;
 
-        uint32_t descriptorIndex = 3 + slot;  // Offset past font, legacy, and compose target
+        // Video textures start after compose targets: [2 + MAX_COMPOSE_TARGETS + slot]
+        uint32_t descriptorIndex = 2 + MAX_COMPOSE_TARGETS + slot;
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
         cpuHandle.ptr += descriptorIndex * m_srvDescriptorSize;
 

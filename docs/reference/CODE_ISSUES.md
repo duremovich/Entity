@@ -95,7 +95,7 @@ Condensed from code review (2025-11-27). Full details in `docs/archive/CODE_REVI
 | LOW-11 | WindowManager.cpp:237-239 | Hardcoded layout magic numbers |
 | LOW-12 | Multiple | Inconsistent null check patterns |
 | LOW-13 | MappingWindow.cpp:443-472 | PushID/PopID not scoped in loop |
-| LOW-14 | D3D12Renderer.cpp:876-883 | Descriptor heap slot layout hardcoded |
+| ~~LOW-14~~ | ~~D3D12Renderer.cpp~~ | ~~Descriptor heap slot layout hardcoded~~ - **FIXED**: Added MAX_COMPOSE_TARGETS constant |
 | LOW-15 | Stage3DRenderer.cpp:17 | Temporary Camera copy on every projection |
 
 ---

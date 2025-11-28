@@ -28,6 +28,9 @@ public:
     // Maximum number of video texture slots (layers)
     static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS = 16;
 
+    // Maximum number of compose targets (screens)
+    static constexpr uint32_t MAX_COMPOSE_TARGETS = 8;
+
     D3D12Renderer();
     ~D3D12Renderer();
 

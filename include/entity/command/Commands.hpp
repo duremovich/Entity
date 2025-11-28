@@ -445,7 +445,7 @@ private:
  *     "property": "PositionX",  // PositionX, PositionY, Rotation, ScaleX, ScaleY, Opacity
  *     "frame": 30,              // Frame relative to clip start
  *     "value": 100.0,
- *     "interpolation": "Linear" // Linear, Step, EaseInOut (optional, default: Linear)
+ *     "interpolation": "Linear" // Linear, Step, EaseIn, EaseOut, EaseInOut (optional, default: Linear)
  * }
  */
 class AddKeyframeCommand : public Command {
@@ -496,6 +496,68 @@ public:
 private:
     int m_trackIndex;
     int m_clipIndex;
+};
+
+// ============================================================================
+// Screen Commands
+// ============================================================================
+
+/**
+ * Add a new screen to the project.
+ *
+ * JSON format:
+ * {
+ *     "type": "AddScreen",
+ *     "name": "New Screen",
+ *     "width": 1920,
+ *     "height": 1080
+ * }
+ */
+class AddScreenCommand : public Command {
+public:
+    AddScreenCommand(const std::string& name, uint32_t width = 1920, uint32_t height = 1080)
+        : m_name(name), m_width(width), m_height(height) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AddScreen"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_name;
+    uint32_t m_width;
+    uint32_t m_height;
+};
+
+/**
+ * Set a clip's target screen.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetClipTargetScreen",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "screenName": "Main Screen"  // Use "All Screens" for null target
+ * }
+ */
+class SetClipTargetScreenCommand : public Command {
+public:
+    SetClipTargetScreenCommand(int trackIndex, int clipIndex, const std::string& screenName)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_screenName(screenName) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipTargetScreen"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    std::string m_screenName;
 };
 
 } // namespace entity

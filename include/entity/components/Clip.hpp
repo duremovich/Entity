@@ -2,6 +2,7 @@
 
 #include "../core/Types.hpp"
 #include <string>
+#include <entt/entt.hpp>
 
 // Forward declare FFmpeg cleanup functions
 extern "C" {
@@ -57,6 +58,9 @@ struct Clip {
     uint32_t height{0};
     bool hasAlpha{false};
 
+    // Screen mapping
+    entt::entity targetScreen{entt::null};  // Target screen for this clip (null = default/all screens)
+
     // State
     bool loaded{false};                 // True if media is loaded
     bool decoding{false};               // True if decode thread is running
@@ -88,6 +92,7 @@ struct Clip {
         , width(other.width)
         , height(other.height)
         , hasAlpha(other.hasAlpha)
+        , targetScreen(other.targetScreen)
         , loaded(other.loaded)
         , decoding(other.decoding)
     {
@@ -124,6 +129,7 @@ struct Clip {
             width = other.width;
             height = other.height;
             hasAlpha = other.hasAlpha;
+            targetScreen = other.targetScreen;
             loaded = other.loaded;
             decoding = other.decoding;
 

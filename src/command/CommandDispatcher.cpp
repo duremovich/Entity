@@ -155,6 +155,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
 
+    // Screen commands
+    registerFactory("AddScreen", AddScreenCommand::fromJson);
+    registerFactory("SetClipTargetScreen", SetClipTargetScreenCommand::fromJson);
+
     // UI commands
     registerFactory("SelectTab", SelectTabCommand::fromJson);
     registerFactory("SelectClip", SelectClipCommand::fromJson);

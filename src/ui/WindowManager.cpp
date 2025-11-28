@@ -420,14 +420,21 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     // Dock windows to their designated nodes
     // Note: Last window docked to a node becomes the active tab
     ImGui::DockBuilderDockWindow("Timeline", dockBottom);
-    ImGui::DockBuilderDockWindow("Media Bin", dockLeft);
-    ImGui::DockBuilderDockWindow("Mapping", dockCenter);  // Dock Mapping first
-    ImGui::DockBuilderDockWindow("Stage", dockCenter);    // Stage docked last = active tab
+
+    // Left panel: Media Bin, Model Bin, Screens as tabs (Media Bin = active)
+    ImGui::DockBuilderDockWindow("Screens", dockLeft);
+    ImGui::DockBuilderDockWindow("Model Bin", dockLeft);
+    ImGui::DockBuilderDockWindow("Media Bin", dockLeft);  // Docked last = active tab
+
+    // Center: Stage and Mapping as tabs (Stage = active)
+    ImGui::DockBuilderDockWindow("Mapping", dockCenter);
+    ImGui::DockBuilderDockWindow("Stage", dockCenter);
+
     ImGui::DockBuilderDockWindow("Properties", dockRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
 
-    std::cout << "Default layout created: Timeline (bottom), Media Bin (left), Stage/Mapping (center tabs), Properties (right)" << std::endl;
+    std::cout << "Default layout created: Timeline (bottom), Media Bin/Model Bin/Screens (left tabs), Stage/Mapping (center tabs), Properties (right)" << std::endl;
 }
 
 std::string WindowManager::openVideoFileDialog() {
@@ -514,6 +521,37 @@ std::string WindowManager::openScriptFileDialog() {
 
     if (GetOpenFileNameA(&ofn) == TRUE) {
         std::cout << "Selected script file: " << ofn.lpstrFile << std::endl;
+        return std::string(ofn.lpstrFile);
+    }
+
+    return "";  // User cancelled
+#else
+    std::cerr << "File dialog not implemented for this platform" << std::endl;
+    return "";
+#endif
+}
+
+std::string WindowManager::openOBJFileDialog() {
+#ifdef _WIN32
+    // Windows native file dialog for OBJ model files
+    OPENFILENAMEA ofn;
+    char szFile[260] = {0};
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile);
+    ofn.lpstrFilter = "OBJ Model Files\0*.obj\0"
+                      "All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFileTitle = NULL;
+    ofn.nMaxFileTitle = 0;
+    ofn.lpstrInitialDir = NULL;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameA(&ofn) == TRUE) {
+        std::cout << "Selected OBJ file: " << ofn.lpstrFile << std::endl;
         return std::string(ofn.lpstrFile);
     }
 

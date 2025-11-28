@@ -5,67 +5,78 @@
 
 ---
 
-## In Progress: Multi-Render-Target Architecture
+## Completed: Multi-Render-Target Architecture
 
-Implementing independent per-screen rendering for projection mapping (core feature).
+Independent per-screen rendering for projection mapping is now functional.
 
-### Problem
-Target screen assignment wasn't working - clips assigned to specific screens showed on all screens or no screens. Root cause was single shared compose target for all screens.
+### What Was Fixed
 
-### Solution
-Multiple render targets with slot-based architecture - one compose target per screen.
+1. **Target screen assignment** - Each screen gets its own compose target and clips are filtered by their `targetScreen` assignment.
+
+2. **Descriptor heap slot collision** (2025-11-28) - Fixed critical bug where adding a second screen caused video to disappear on ALL screens. Root cause: compose targets and video textures were allocated overlapping descriptor heap slots. Fix: Added `MAX_COMPOSE_TARGETS = 8` constant and proper slot separation.
 
 ### Component Status
 
 | Component | Status | Details |
 |-----------|--------|---------|
 | D3D12Renderer | COMPLETE | Vector-based targets, slot-based API |
-| CompositorSystem | PARTIAL | Needs full per-screen iteration loop |
-| StageWindow | TODO | Needs per-screen texture support |
+| CompositorSystem | COMPLETE | Full per-screen iteration loop with lazy RT allocation |
+| StageWindow | COMPLETE | Per-screen texture display in 3D view |
 
-### D3D12Renderer Changes (Complete)
-- Changed from single compose target to `vector<ComposeTarget>`
-- Slot-based API: all methods accept `uint32_t slot` parameter
-- `createComposeTarget()` returns slot ID instead of boolean
-- ImGui descriptor heap layout: slot 0=fonts, 1=legacy, 2+=compose targets
-- All getter methods support per-slot access
+### How It Works
 
-### CompositorSystem (Needs Work)
-- Currently has simplified single-screen filtering
-- NEEDS: Full per-screen iteration loop to composite each screen independently
-- NEEDS: Initialize `renderTargetSlot` on Screen components
+1. **Lazy Render Target Allocation**: `CompositorSystem::ensureScreenRenderTarget()` creates compose targets on first use
+2. **Per-Screen Iteration**: CompositorSystem iterates ALL visible screens, not just the first
+3. **Clip Filtering**:
+   - `targetScreen == entt::null` renders to ALL screens
+   - `targetScreen == specificEntity` renders only to that screen
+4. **Per-Screen Display**: StageWindow 3D view passes each screen's unique texture to `drawScreen()`
 
-### StageWindow (TODO)
-- NEEDS: Update to use per-screen textures from their respective slots
-- Currently shows single legacy texture
+### Key Changes Made
+
+**CompositorSystem.cpp/hpp**:
+- Added `ensureScreenRenderTarget()` helper for lazy allocation
+- Refactored `update()` to iterate all visible screens
+- Each screen gets its own compose target at its resolution
+- Clips filtered per-screen inside the iteration loop
+
+**StageWindow.cpp**:
+- Added `textureID` field to `ScreenDrawData` struct
+- Each screen now gets its own compose target texture
+- Removed shared slot-0 texture lookup
+
+**D3D12Renderer.hpp/cpp**:
+- Added `MAX_COMPOSE_TARGETS = 8` constant
+- Fixed descriptor heap layout to prevent slot collisions
+- Video textures now start at slot `2 + MAX_COMPOSE_TARGETS`
+
+**Commands.hpp/cpp**:
+- Added `AddScreenCommand` for scripted screen creation
+- Added `SetClipTargetScreenCommand` for scripted target assignment
 
 ---
 
 ## Next Steps
 
-1. Implement full per-screen iteration in `CompositorSystem::update()`
-2. Initialize `Screen::renderTargetSlot` when screens are created
-3. Update `StageWindow::drawScreen()` to use per-screen compose target textures
-4. Test multi-screen independent content rendering
+1. Test with multiple screens and clips with different target assignments
+2. Verify dimension changes trigger render target recreation
+3. Consider adding screen deletion cleanup (currently leaves gaps)
 
 ---
 
 ## Active Files
 
-**Primary**:
-- [CompositorSystem.cpp](../../src/systems/CompositorSystem.cpp)
-- [D3D12Renderer.cpp](../../src/render/D3D12Renderer.cpp)
-- [StageWindow.cpp](../../src/ui/StageWindow.cpp)
-
-**Supporting**:
-- [Screen.hpp](../../include/entity/components/Screen.hpp)
-- [D3D12Renderer.hpp](../../include/entity/render/D3D12Renderer.hpp)
+**Modified**:
+- [CompositorSystem.cpp](../../src/systems/CompositorSystem.cpp) - Multi-screen loop
+- [CompositorSystem.hpp](../../include/entity/systems/CompositorSystem.hpp) - Added helper
+- [StageWindow.cpp](../../src/ui/StageWindow.cpp) - Per-screen textures
 
 ---
 
 ## Architecture Notes
 
-- Each Screen entity gets unique `renderTargetSlot` (0-based index)
-- CompositorSystem should iterate all visible screens and composite each
+- Each Screen entity gets unique `renderTargetSlot` (0-based index, lazy allocated)
+- CompositorSystem iterates all visible screens and composites each independently
 - Clips filtered by `targetScreen` during composition (null = all screens)
 - StageWindow 3D view displays each screen with its unique texture
+- Slots are never reused (gaps left on screen deletion) - acceptable for typical 2-8 screens

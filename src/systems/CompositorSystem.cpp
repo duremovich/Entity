@@ -40,156 +40,100 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
         return;
     }
 
-    // Ensure compose target exists (create at 1920x1080 if not)
-    if (!m_renderer->isComposeTargetReady()) {
-        m_renderer->createComposeTarget(1920, 1080);
-    }
-
     // Get current timeline frame for visibility checks
     FrameNumber currentFrame = 0;
     if (m_timeline) {
         currentFrame = m_timeline->getCurrentFrame();
     }
 
-    static int collectDebugFrame = 0;
-    bool logCollection = m_debugLogging && (collectDebugFrame++ % 60 == 0);
+    // Get the view for Transform+MediaLayer entities (used for all screens)
+    auto view = registry.view<Transform, MediaLayer>();
 
-    // Find the first visible screen to composite for
-    // TODO: Support multiple screens with multiple render targets
-    entt::entity targetScreenEntity = entt::null;
+    // Iterate ALL visible screens (each gets its own compose target)
     auto screenView = registry.view<Screen>();
     for (auto [screenEntity, screen] : screenView.each()) {
-        if (screen.visible) {
-            targetScreenEntity = screenEntity;
-            if (logCollection) {
-                std::cout << "[Compositor] Compositing for screen: " << screen.name << std::endl;
-            }
-            break;
-        }
-    }
+        if (!screen.visible) continue;
 
-    // Collect clips for the target screen
-    auto view = registry.view<Transform, MediaLayer>();
-    std::vector<entt::entity> sortedEntities;
-    sortedEntities.reserve(view.size_hint());
-
-    for (auto entity : view) {
-        auto& layer = view.get<MediaLayer>(entity);
-        if (!layer.visible) continue;
-
-        // Check if this entity has a Clip component - if so, verify it's active
-        auto* clip = registry.try_get<Clip>(entity);
-        if (clip) {
-            if (!isClipActiveAtFrame(*clip, currentFrame)) {
-                if (logCollection) std::cout << "  [Compositor] Entity " << static_cast<uint32_t>(entity)
-                    << ": SKIPPED (clip not active at frame " << currentFrame
-                    << ", start=" << clip->startFrame << " dur=" << clip->duration << ")" << std::endl;
-                continue;  // Clip is not active at current frame, skip
-            }
-
-            // Filter by target screen:
-            // - Include if clip has no target (entt::null means "all screens")
-            // - Include if clip targets the active screen
-            if (clip->targetScreen != entt::null && clip->targetScreen != targetScreenEntity) {
-                if (logCollection) std::cout << "  [Compositor] Entity " << static_cast<uint32_t>(entity)
-                    << ": SKIPPED (targets different screen)" << std::endl;
-                continue;  // Clip targets a different screen
-            }
+        // Ensure this screen has a valid render target
+        if (!ensureScreenRenderTarget(registry, screenEntity)) {
+            continue;
         }
 
-        sortedEntities.push_back(entity);
+        // Collect clips for THIS screen
+        std::vector<entt::entity> sortedEntities;
+        sortedEntities.reserve(view.size_hint());
 
-        // Log when a clip entity is queued for rendering
-        if (logCollection && clip) {
-            auto* videoTex = registry.try_get<VideoTexture>(entity);
-            std::cout << "  [Compositor] Entity " << static_cast<uint32_t>(entity)
-                << ": QUEUED (clip active, videoTex=" << (videoTex ? "yes" : "no");
-            if (videoTex) {
-                std::cout << " valid=" << videoTex->isValid()
-                    << " srv=" << videoTex->srvHandle.ptr
-                    << " " << videoTex->width << "x" << videoTex->height;
+        for (auto entity : view) {
+            auto& layer = view.get<MediaLayer>(entity);
+            if (!layer.visible) continue;
+
+            // Check if this entity has a Clip component - if so, verify it's active
+            auto* clip = registry.try_get<Clip>(entity);
+            if (clip) {
+                if (!isClipActiveAtFrame(*clip, currentFrame)) {
+                    continue;  // Clip is not active at current frame, skip
+                }
+
+                // Filter by target screen:
+                // - Include if clip targets ALL screens (entt::null)
+                // - Include if clip targets THIS specific screen
+                if (clip->targetScreen != entt::null && clip->targetScreen != screenEntity) {
+                    continue;  // Clip targets a different screen
+                }
             }
-            std::cout << ")" << std::endl;
+
+            sortedEntities.push_back(entity);
         }
-    }
 
-    // Sort by z-order (lower values render first, higher values on top)
-    std::sort(sortedEntities.begin(), sortedEntities.end(),
-        [&view](entt::entity a, entt::entity b) {
-            const auto& layerA = view.get<MediaLayer>(a);
-            const auto& layerB = view.get<MediaLayer>(b);
-            return layerA.zOrder < layerB.zOrder;
-        });
+        // Sort by z-order (lower values render first, higher values on top)
+        std::sort(sortedEntities.begin(), sortedEntities.end(),
+            [&view](entt::entity a, entt::entity b) {
+                const auto& layerA = view.get<MediaLayer>(a);
+                const auto& layerB = view.get<MediaLayer>(b);
+                return layerA.zOrder < layerB.zOrder;
+            });
 
-    if (m_debugLogging) {
-        static int frameCount = 0;
-        if (frameCount++ % 60 == 0) {
-            std::cout << "[CompositorSystem] Rendering " << sortedEntities.size()
-                      << " layers at frame " << currentFrame << std::endl;
-        }
-    }
+        // Begin rendering to THIS screen's compose target
+        m_renderer->beginComposeTarget(screen.renderTargetSlot);
 
-    // DEBUG: Log entity count (only when debug logging enabled)
-    static int debugFrame = 0;
-    bool logThisFrame = m_debugLogging && (debugFrame++ % 60 == 0);  // Every second at 60fps
+        // Render each visible layer to the compose target
+        for (auto entity : sortedEntities) {
+            auto& transform = view.get<Transform>(entity);
+            const auto& layer = view.get<MediaLayer>(entity);
 
-    // Begin rendering to compose target (offscreen texture)
-    m_renderer->beginComposeTarget();
+            // Get transform matrix and convert from glm to DirectX
+            const glm::mat4& glmMatrix = transform.getMatrix();
 
-    // Render each visible layer to the compose target
-    int drawIndex = 0;
-    for (auto entity : sortedEntities) {
-        auto& transform = view.get<Transform>(entity);
-        const auto& layer = view.get<MediaLayer>(entity);
-
-        // Get transform matrix and convert from glm to DirectX
-        const glm::mat4& glmMatrix = transform.getMatrix();
-
-        // Convert glm::mat4 to DirectX::XMMATRIX (both are column-major)
-        DirectX::XMMATRIX transformMatrix = DirectX::XMMatrixSet(
-            glmMatrix[0][0], glmMatrix[0][1], glmMatrix[0][2], glmMatrix[0][3],
-            glmMatrix[1][0], glmMatrix[1][1], glmMatrix[1][2], glmMatrix[1][3],
-            glmMatrix[2][0], glmMatrix[2][1], glmMatrix[2][2], glmMatrix[2][3],
-            glmMatrix[3][0], glmMatrix[3][1], glmMatrix[3][2], glmMatrix[3][3]
-        );
-
-        // Check if entity has a valid video texture
-        auto* videoTex = registry.try_get<VideoTexture>(entity);
-        auto* clip = registry.try_get<Clip>(entity);
-
-        if (videoTex && videoTex->isValid() && videoTex->srvHandle.ptr != 0) {
-            // Draw textured quad for video layers with blend mode
-            m_renderer->drawTexturedQuad(videoTex->srvHandle, transformMatrix, layer.opacity, layer.blendMode);
-        } else {
-            // Fallback to colored quad for non-video layers
-            uint32_t entityId = static_cast<uint32_t>(entity);
-            DirectX::XMFLOAT4 color(
-                ((entityId * 137) % 256) / 255.0f,
-                ((entityId * 211) % 256) / 255.0f,
-                ((entityId * 97) % 256) / 255.0f,
-                1.0f
+            // Convert glm::mat4 to DirectX::XMMATRIX (both are column-major)
+            DirectX::XMMATRIX transformMatrix = DirectX::XMMatrixSet(
+                glmMatrix[0][0], glmMatrix[0][1], glmMatrix[0][2], glmMatrix[0][3],
+                glmMatrix[1][0], glmMatrix[1][1], glmMatrix[1][2], glmMatrix[1][3],
+                glmMatrix[2][0], glmMatrix[2][1], glmMatrix[2][2], glmMatrix[2][3],
+                glmMatrix[3][0], glmMatrix[3][1], glmMatrix[3][2], glmMatrix[3][3]
             );
-            if (logThisFrame) {
-                std::cout << "  [" << drawIndex << "] Entity " << entityId
-                          << ": COLORED";
-                if (clip) {
-                    std::cout << " (HAS CLIP: " << clip->filepath << ")";
-                }
-                if (videoTex) {
-                    std::cout << " (VideoTex: slot=" << videoTex->descriptorSlot
-                              << " valid=" << videoTex->isValid()
-                              << " srv=" << videoTex->srvHandle.ptr
-                              << " " << videoTex->width << "x" << videoTex->height << ")";
-                }
-                std::cout << std::endl;
-            }
-            m_renderer->drawColoredQuad(transformMatrix, color, layer.opacity);
-        }
-        drawIndex++;
-    }
 
-    // End rendering to compose target (transitions back to main render target)
-    m_renderer->endComposeTarget();
+            // Check if entity has a valid video texture
+            auto* videoTex = registry.try_get<VideoTexture>(entity);
+
+            if (videoTex && videoTex->isValid() && videoTex->srvHandle.ptr != 0) {
+                // Draw textured quad for video layers with blend mode
+                m_renderer->drawTexturedQuad(videoTex->srvHandle, transformMatrix, layer.opacity, layer.blendMode);
+            } else {
+                // Fallback to colored quad for non-video layers
+                uint32_t entityId = static_cast<uint32_t>(entity);
+                DirectX::XMFLOAT4 color(
+                    ((entityId * 137) % 256) / 255.0f,
+                    ((entityId * 211) % 256) / 255.0f,
+                    ((entityId * 97) % 256) / 255.0f,
+                    1.0f
+                );
+                m_renderer->drawColoredQuad(transformMatrix, color, layer.opacity);
+            }
+        }
+
+        // End rendering to this screen's compose target
+        m_renderer->endComposeTarget();
+    }
 }
 
 void CompositorSystem::shutdown(entt::registry& registry) {
@@ -198,6 +142,43 @@ void CompositorSystem::shutdown(entt::registry& registry) {
 
 bool CompositorSystem::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
     return frame >= clip.startFrame && frame < (clip.startFrame + clip.duration);
+}
+
+bool CompositorSystem::ensureScreenRenderTarget(entt::registry& registry, entt::entity screenEntity) {
+    auto* screen = registry.try_get<Screen>(screenEntity);
+    if (!screen) return false;
+
+    // Check if render target needs creation or recreation
+    bool needsCreate = !screen->renderTargetValid ||
+                       screen->renderTargetSlot == UINT32_MAX;
+
+    // Check if dimensions changed (stored in ComposeTarget vs Screen component)
+    if (screen->renderTargetValid && screen->renderTargetSlot != UINT32_MAX) {
+        uint32_t currentWidth = m_renderer->getComposeTargetWidth(screen->renderTargetSlot);
+        uint32_t currentHeight = m_renderer->getComposeTargetHeight(screen->renderTargetSlot);
+        if (currentWidth != screen->width || currentHeight != screen->height) {
+            // Dimensions changed, need new target
+            // Note: Old target slot becomes a "gap" - acceptable for typical screen counts
+            needsCreate = true;
+            screen->renderTargetValid = false;
+        }
+    }
+
+    if (needsCreate) {
+        uint32_t slot = m_renderer->createComposeTarget(screen->width, screen->height);
+        if (slot == UINT32_MAX) {
+            std::cerr << "[Compositor] Failed to create render target for screen: "
+                      << screen->name << std::endl;
+            return false;
+        }
+        screen->renderTargetSlot = slot;
+        screen->renderTargetValid = true;
+        std::cout << "[Compositor] Created render target slot " << slot
+                  << " for screen: " << screen->name
+                  << " (" << screen->width << "x" << screen->height << ")" << std::endl;
+    }
+
+    return true;
 }
 
 void CompositorSystem::renderMappingSurfaces(entt::registry& registry, D3D12_GPU_DESCRIPTOR_HANDLE textureSrv) {

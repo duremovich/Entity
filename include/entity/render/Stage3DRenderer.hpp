@@ -24,7 +24,7 @@ public:
     ~Stage3DRenderer() = default;
 
     /**
-     * Render the 3D stage to the given ImGui draw list.
+     * Render the 3D stage to the given ImGui draw list (single screen version).
      * @param drawList The ImGui draw list to render to
      * @param screenPos Top-left corner of the render area
      * @param screenSize Size of the render area
@@ -32,6 +32,30 @@ public:
      */
     void render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
                 ImTextureID composeTextureID = nullptr);
+
+    /**
+     * Begin rendering the 3D stage (draws background, grid, axes).
+     * Call this once, then call drawScreen() for each screen.
+     */
+    void beginRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize);
+
+    /**
+     * End rendering the 3D stage (pops clip rect, draws overlays).
+     */
+    void endRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize);
+
+    /**
+     * Draw a single screen quad with the given transform.
+     * Call between beginRender() and endRender().
+     * @param position World position (x, y, z)
+     * @param rotation Rotation in degrees (pitch, yaw, roll)
+     * @param scale Scale factors (x, y, z)
+     * @param textureID Texture to display on the screen
+     * @param isSelected Whether this screen is selected (draws highlight)
+     */
+    void drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
+                    const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
+                    ImTextureID textureID, bool isSelected = false);
 
     /**
      * Handle mouse input for camera control.
@@ -63,10 +87,15 @@ public:
     ImU32 gridAxisXColor{IM_COL32(180, 60, 60, 255)};   // Red for X
     ImU32 gridAxisZColor{IM_COL32(60, 60, 180, 255)};   // Blue for Z
 
-    // Screen settings
+    // Screen settings (base size, transform is applied on top)
     float screenWidth{16.0f / 9.0f};   // Screen width in world units (16:9 aspect at height 1)
     float screenHeight{1.0f};           // Screen height in world units
-    float screenElevation{0.5f};        // Height of screen center above floor
+    float screenElevation{0.5f};        // Height of screen center above floor (default)
+
+    // Screen transform (set from Screen component)
+    glm::vec3 screenPosition{0.0f, 0.0f, 0.0f};   // Position offset (x, y, z)
+    glm::vec3 screenRotation{0.0f, 0.0f, 0.0f};   // Rotation in degrees (pitch, yaw, roll)
+    glm::vec3 screenScale{1.0f, 1.0f, 1.0f};      // Scale factors
 
 private:
     /**

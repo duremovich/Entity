@@ -41,6 +41,14 @@ void TimelineWidget::render() {
                 ++it;
             }
         }
+        for (auto it = m_expandedTracks.begin(); it != m_expandedTracks.end(); ) {
+            entt::entity entity = static_cast<entt::entity>(*it);
+            if (!reg.valid(entity)) {
+                it = m_expandedTracks.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     // Note: Window Begin/End is now handled by TimelineWindow wrapper
@@ -50,16 +58,55 @@ void TimelineWidget::render() {
 
     // Calculate timeline dimensions
     int trackCount = static_cast<int>(m_timeline->getTrackCount());
-    float tracksHeight = trackCount * (TRACK_HEIGHT + TRACK_PADDING);
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
+
+    // Calculate total tracks content height (accounting for expanded tracks/clips)
+    float tracksContentHeight = 0.0f;
+    const auto& tracks = m_timeline->getTracks();
+    auto& registry = m_timeline->getRegistry();
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        uint32_t trackId = static_cast<uint32_t>(tracks[i]);
+        bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
+        tracksContentHeight += TRACK_HEIGHT + TRACK_PADDING;
+
+        if (trackExpanded) {
+            const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
+            if (track) {
+                for (entt::entity clipEntity : track->clips) {
+                    tracksContentHeight += HEADER_ROW_HEIGHT;  // Clip row
+
+                    uint32_t clipId = static_cast<uint32_t>(clipEntity);
+                    bool clipExpanded = m_expandedClips.count(clipId) > 0 || m_timeline->isClipExpanded(clipEntity);
+                    if (clipExpanded) {
+                        tracksContentHeight += 6 * PROPERTY_ROW_HEIGHT;  // 6 property rows
+                    }
+                }
+            }
+        }
+    }
 
     // Reserve space for controls at bottom (approximately 40 pixels)
     float controlsHeight = 40.0f;
     float availableHeight = contentRegion.y - controlsHeight;
+    float tracksWindowHeight = availableHeight - RULER_HEIGHT;
+    float timelineContentWidth = contentRegion.x - TRACK_HEADER_WIDTH - 4.0f;  // 4px spacing
 
-    // === STICKY RULER (Fixed at top) ===
-    ImGui::BeginChild("TimelineRuler", ImVec2(0, RULER_HEIGHT), false,
+    // === TOP ROW: Header corner + Ruler ===
+    // Header corner (empty space above track headers, aligned with ruler)
+    ImGui::BeginChild("HeaderCorner", ImVec2(TRACK_HEADER_WIDTH, RULER_HEIGHT), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImDrawList* cornerDrawList = ImGui::GetWindowDrawList();
+    ImVec2 cornerMin = ImGui::GetWindowPos();
+    ImVec2 cornerMax(cornerMin.x + TRACK_HEADER_WIDTH, cornerMin.y + RULER_HEIGHT);
+    cornerDrawList->AddRectFilled(cornerMin, cornerMax, IM_COL32(35, 35, 40, 255));
+    cornerDrawList->AddText(ImVec2(cornerMin.x + 8, cornerMin.y + 8), IM_COL32(150, 150, 150, 255), "Tracks");
+    ImGui::EndChild();
+
+    ImGui::SameLine(0, 2.0f);
+
+    // === STICKY RULER (Fixed at top, right side) ===
+    ImGui::BeginChild("TimelineRuler", ImVec2(timelineContentWidth, RULER_HEIGHT), false,
                       ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // Set scroll to synced position
@@ -77,19 +124,38 @@ void TimelineWidget::render() {
 
     ImGui::EndChild();
 
-    // === SCROLLABLE TRACKS (Vertically scrollable) ===
-    float tracksWindowHeight = availableHeight - RULER_HEIGHT;
-    ImGui::BeginChild("TimelineTracks", ImVec2(0, tracksWindowHeight), false,
+    // === BOTTOM ROW: Track headers + Tracks content ===
+    // Track header panel (left side, syncs vertical scroll only)
+    ImGui::BeginChild("TrackHeaders", ImVec2(TRACK_HEADER_WIDTH, tracksWindowHeight), false,
+                      ImGuiWindowFlags_NoScrollbar);
+
+    // Create inner scrollable region for header content
+    ImGui::BeginChild("TrackHeadersInner", ImVec2(TRACK_HEADER_WIDTH - 2, tracksContentHeight + 100), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Apply synced vertical scroll
+    ImGui::SetScrollY(m_syncScrollY);
+
+    renderTrackHeaderPanel(tracksContentHeight, m_syncScrollY);
+
+    ImGui::EndChild();
+    ImGui::EndChild();
+
+    ImGui::SameLine(0, 2.0f);
+
+    // === SCROLLABLE TRACKS (right side, scrolls both ways) ===
+    ImGui::BeginChild("TimelineTracks", ImVec2(timelineContentWidth, tracksWindowHeight), false,
                       ImGuiWindowFlags_HorizontalScrollbar);
 
     // Set scroll to synced position
     ImGui::SetScrollX(m_syncScrollX);
+    ImGui::SetScrollY(m_syncScrollY);
 
     // Save tracks position for playhead rendering
     m_tracksScreenPos = ImGui::GetCursorScreenPos();
 
     ImGui::SetCursorPos(ImVec2(0, 0));
-    ImGui::InvisibleButton("##tracksArea", ImVec2(timelineWidth, tracksHeight));
+    ImGui::InvisibleButton("##tracksArea", ImVec2(timelineWidth, tracksContentHeight + 100));
     ImGui::SetCursorPos(ImVec2(0, 0));
 
     renderTracks();
@@ -97,7 +163,8 @@ void TimelineWidget::render() {
 
     // Save scroll position for next frame (from whichever window was scrolled)
     m_syncScrollX = ImGui::GetScrollX();
-    m_tracksHeight = tracksHeight;
+    m_syncScrollY = ImGui::GetScrollY();
+    m_tracksHeight = tracksContentHeight;
 
     ImGui::EndChild();
 
@@ -121,12 +188,16 @@ void TimelineWidget::render() {
     }
     ImGui::SameLine();
 
-    // Display current time
-    Timecode currentTime = m_timeline->getCurrentTime();
-    float currentSeconds = currentTime / 1000000.0f;
-    int minutes = static_cast<int>(currentSeconds / 60.0f);
-    float seconds = currentSeconds - (minutes * 60.0f);
-    ImGui::Text("Time: %02d:%06.3f", minutes, seconds);
+    // Display current time in SMPTE timecode format (MM:SS:FF)
+    FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    double frameRate = m_timeline->getFrameRate();
+    int totalSeconds = static_cast<int>(currentFrame / frameRate);
+    int minutes = totalSeconds / 60;
+    int seconds = totalSeconds % 60;
+    int frames = static_cast<int>(currentFrame % static_cast<FrameNumber>(frameRate));
+    ImGui::Text("Time: %02d:%02d:%02d", minutes, seconds, frames);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(Frame %d)", static_cast<int>(currentFrame));
 
     ImGui::SameLine();
 
@@ -195,44 +266,65 @@ void TimelineWidget::renderTimeRuler() {
     // Draw ruler background
     drawList->AddRectFilled(rulerMin, rulerMax, IM_COL32(40, 40, 40, 255));
 
-    // Draw time markers
+    // Get timeline framerate
+    double frameRate = m_timeline->getFrameRate();
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
+    FrameNumber totalFrames = static_cast<FrameNumber>(durationSeconds * frameRate);
 
-    // Determine marker interval based on zoom
-    float markerIntervalSeconds = 1.0f;
-    if (m_pixelsPerSecond < 50.0f) {
-        markerIntervalSeconds = 5.0f;
-    } else if (m_pixelsPerSecond > 200.0f) {
-        markerIntervalSeconds = 0.5f;
+    // Determine marker interval in frames based on zoom
+    // pixelsPerSecond = pixelsPerFrame * frameRate
+    float pixelsPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
+
+    FrameNumber frameInterval = 30;  // Default: every second at 30fps
+    if (pixelsPerFrame < 2.0f) {
+        frameInterval = 150;  // Every 5 seconds
+    } else if (pixelsPerFrame < 5.0f) {
+        frameInterval = 30;   // Every second
+    } else if (pixelsPerFrame < 15.0f) {
+        frameInterval = 10;   // Every 10 frames
+    } else {
+        frameInterval = 1;    // Every frame
     }
 
-    // Draw markers
-    for (float t = 0.0f; t <= durationSeconds; t += markerIntervalSeconds) {
-        float x = windowPos.x + timeToPixel(static_cast<Timecode>(t * 1000000.0f));
+    // Draw frame markers
+    for (FrameNumber frame = 0; frame <= totalFrames; frame += frameInterval) {
+        float timeSeconds = static_cast<float>(frame) / static_cast<float>(frameRate);
+        float x = windowPos.x + timeToPixel(static_cast<Timecode>(timeSeconds * 1000000.0f));
 
         if (x < windowPos.x || x > rulerMax.x) continue;
 
         // Draw tick mark
+        bool isMajorTick = (frame % static_cast<FrameNumber>(frameRate) == 0);  // Major tick every second
+        float tickHeight = isMajorTick ? 12.0f : 6.0f;
         drawList->AddLine(
-            ImVec2(x, rulerMax.y - 10.0f),
+            ImVec2(x, rulerMax.y - tickHeight),
             ImVec2(x, rulerMax.y),
             IM_COL32(200, 200, 200, 255),
             1.0f
         );
 
-        // Draw time label
-        int minutes = static_cast<int>(t / 60.0f);
-        float seconds = t - (minutes * 60.0f);
+        // Draw time label (SMPTE timecode: HH:MM:SS:FF)
+        if (isMajorTick || frameInterval <= 10) {
+            int totalSeconds = static_cast<int>(frame / frameRate);
+            int hours = totalSeconds / 3600;
+            int minutes = (totalSeconds % 3600) / 60;
+            int seconds = totalSeconds % 60;
+            int frames = static_cast<int>(frame % static_cast<FrameNumber>(frameRate));
 
-        std::ostringstream oss;
-        oss << std::setfill('0') << std::setw(2) << minutes << ":"
-            << std::fixed << std::setprecision(1) << std::setw(4) << seconds;
+            std::ostringstream oss;
+            if (hours > 0) {
+                oss << std::setfill('0') << std::setw(2) << hours << ":";
+            }
+            oss << std::setfill('0') << std::setw(2) << minutes << ":"
+                << std::setfill('0') << std::setw(2) << seconds << ":"
+                << std::setfill('0') << std::setw(2) << frames;
 
-        drawList->AddText(
-            ImVec2(x + 3.0f, rulerMin.y + 5.0f),
-            IM_COL32(200, 200, 200, 255),
-            oss.str().c_str()
-        );
+            drawList->AddText(
+                ImVec2(x + 3.0f, rulerMin.y + 5.0f),
+                IM_COL32(200, 200, 200, 255),
+                oss.str().c_str()
+            );
+        }
     }
 }
 
@@ -243,7 +335,7 @@ void TimelineWidget::renderTracks() {
     // This prevents cursor drift from InvisibleButtons affecting subsequent tracks
     ImVec2 baseWindowPos = ImGui::GetCursorScreenPos();
 
-    // Calculate cumulative Y offset for tracks to account for expanded clips
+    // Calculate cumulative Y offset for tracks to account for expanded tracks/clips
     float cumulativeY = 0.0f;
     const auto& tracks = m_timeline->getTracks();
     auto& registry = m_timeline->getRegistry();
@@ -253,25 +345,40 @@ void TimelineWidget::renderTracks() {
         float trackY = baseWindowPos.y + cumulativeY;
         ImVec2 trackBasePos(baseWindowPos.x, trackY);
 
-        // Calculate track height (including expanded clips)
+        // Calculate track height (including expanded clips from header hierarchy)
         float trackHeight = TRACK_HEIGHT;
+        uint32_t trackId = static_cast<uint32_t>(tracks[i]);
+        bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
+
         const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
-        if (track) {
-            for (entt::entity clipEntity : track->clips) {
-                bool isExpanded = m_expandedClips.count(static_cast<uint32_t>(clipEntity)) > 0 ||
-                                  m_timeline->isClipExpanded(clipEntity);
-                bool isSelected = (clipEntity == m_selectedClip) ||
-                                  (clipEntity == m_timeline->getSelectedClip());
-                if (isExpanded && isSelected) {
-                    // Add height for 6 property rows
-                    trackHeight = TRACK_HEIGHT + 6 * PROPERTY_ROW_HEIGHT;
-                    break;  // Only one clip can be expanded per track (for simplicity)
-                }
-            }
-        }
 
         renderTrack(tracks[i], static_cast<int>(i), trackBasePos, trackHeight);
-        cumulativeY += trackHeight + TRACK_PADDING;
+
+        // Render expanded clip content (property tracks with keyframe diamonds)
+        // This must match the Y positions used in the header panel
+        if (trackExpanded && track) {
+            // Clip rows start right after track (no padding between track and first clip)
+            float clipContentY = cumulativeY + trackHeight;
+
+            for (entt::entity clipEntity : track->clips) {
+                // Space for clip header row (no visual on timeline, just spacing)
+                clipContentY += HEADER_ROW_HEIGHT;
+
+                uint32_t clipId = static_cast<uint32_t>(clipEntity);
+                bool clipExpanded = m_expandedClips.count(clipId) > 0 || m_timeline->isClipExpanded(clipEntity);
+                if (clipExpanded) {
+                    // Render property tracks (keyframe diamonds) at this Y position
+                    float propY = baseWindowPos.y + clipContentY;
+                    renderPropertyTracks(clipEntity, static_cast<int>(i), baseWindowPos, propY);
+                    clipContentY += 6 * PROPERTY_ROW_HEIGHT;
+                }
+            }
+
+            // Update cumulative Y to account for all expanded content + padding
+            cumulativeY = clipContentY + TRACK_PADDING;
+        } else {
+            cumulativeY += trackHeight + TRACK_PADDING;
+        }
     }
 }
 
@@ -345,6 +452,7 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
 }
 
 float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos) {
+    (void)trackIndex;  // trackIndex no longer used for Y calculation
     if (!m_timeline) return TRACK_HEIGHT;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -357,8 +465,8 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     uint32_t entityId = static_cast<uint32_t>(clipEntity);
     bool isExpanded = m_expandedClips.count(entityId) > 0 || m_timeline->isClipExpanded(clipEntity);
 
-    // Calculate clip position and size using base window position (prevents cursor drift)
-    float trackY = baseWindowPos.y + trackIndex * (TRACK_HEIGHT + TRACK_PADDING);
+    // Use baseWindowPos.y directly - it already includes cumulative offset from renderTracks
+    float trackY = baseWindowPos.y;
 
     // Convert frame timing to microseconds (Timecode units)
     float startSeconds = static_cast<float>(clip->startFrame) / clip->framerate;
@@ -540,17 +648,12 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
         drawList->AddRect(rightHandleMin, rightHandleMax, IM_COL32(255, 255, 255, 200), 2.0f);
     }
 
-    // Render property tracks if clip is expanded
-    float totalHeight = TRACK_HEIGHT;
-    if (isExpanded && isSelected) {
-        float propertyHeight = renderPropertyTracks(clipEntity, trackIndex, baseWindowPos, trackY + TRACK_HEIGHT);
-        totalHeight += propertyHeight;
-    }
-
-    return totalHeight;
+    // Property tracks are now rendered from renderTracks() to align with header panel
+    return TRACK_HEIGHT;
 }
 
 float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos, float startY) {
+    (void)trackIndex;  // Unused parameter
     if (!m_timeline) return 0.0f;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -559,7 +662,7 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) return 0.0f;
 
-    // Get or create AnimatedProperties
+    // Get AnimatedProperties for keyframe data
     auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
 
     // Calculate clip timing for positioning keyframes
@@ -569,282 +672,157 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
     float clipX = baseWindowPos.x + timeToPixel(startTime);
     float clipWidth = timeToPixel(static_cast<Timecode>(durationSeconds * 1000000.0f));
 
-    // Fixed header area on the left (doesn't scroll)
-    // We need to get the window's screen position for the fixed header
-    ImVec2 windowPos = ImGui::GetWindowPos();
-    float headerX = windowPos.x + 5.0f;  // Small padding from window edge
-
-    // Define the properties to show
-    struct PropertyInfo {
-        AnimatableProperty prop;
-        const char* name;
+    // Define the properties
+    AnimatableProperty properties[] = {
+        AnimatableProperty::PositionX,
+        AnimatableProperty::PositionY,
+        AnimatableProperty::ScaleX,
+        AnimatableProperty::ScaleY,
+        AnimatableProperty::Rotation,
+        AnimatableProperty::Opacity
     };
 
-    PropertyInfo properties[] = {
-        {AnimatableProperty::PositionX, "Position X"},
-        {AnimatableProperty::PositionY, "Position Y"},
-        {AnimatableProperty::ScaleX, "Scale X"},
-        {AnimatableProperty::ScaleY, "Scale Y"},
-        {AnimatableProperty::Rotation, "Rotation"},
-        {AnimatableProperty::Opacity, "Opacity"}
-    };
-
-    float currentY = startY;
-    int numProperties = sizeof(properties) / sizeof(properties[0]);
+    int numProperties = 6;
 
     for (int i = 0; i < numProperties; i++) {
-        float rowY = currentY + i * PROPERTY_ROW_HEIGHT;
-
-        // Draw fixed header background (left side)
-        ImVec2 headerMin(headerX, rowY);
-        ImVec2 headerMax(headerX + TRACK_HEADER_WIDTH - 5.0f, rowY + PROPERTY_ROW_HEIGHT);
-        drawList->AddRectFilled(headerMin, headerMax, IM_COL32(40, 45, 55, 255));
+        float rowY = startY + i * PROPERTY_ROW_HEIGHT;
 
         // Draw property row background (scrollable track area)
         ImVec2 rowMin(baseWindowPos.x, rowY);
         ImVec2 rowMax(baseWindowPos.x + 4000.0f, rowY + PROPERTY_ROW_HEIGHT);
         drawList->AddRectFilled(rowMin, rowMax, IM_COL32(35, 40, 50, 255));
 
-        // Draw property track area background under clip (darker)
+        // Draw property track area background under clip (slightly lighter)
         ImVec2 trackMin(clipX, rowY);
         ImVec2 trackMax(clipX + clipWidth, rowY + PROPERTY_ROW_HEIGHT);
         drawList->AddRectFilled(trackMin, trackMax, IM_COL32(50, 55, 65, 255));
 
-        // Render the property row (header controls + keyframe diamonds)
-        renderPropertyRow(clipEntity, properties[i].prop, properties[i].name, rowY,
-                         headerX, clipX, clipWidth,
-                         static_cast<float>(clip->startFrame), clip->framerate);
+        // Draw keyframe shapes on the timeline
+        const KeyframeTrack* track = animProps ? animProps->getTrack(properties[i]) : nullptr;
+        if (track && track->hasKeyframes()) {
+            float size = 5.0f;
+            float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
+            ImU32 kfColor = IM_COL32(255, 200, 50, 255);  // Gold color for all keyframes
+            ImU32 outlineColor = IM_COL32(255, 255, 255, 200);
+
+            for (const auto& kf : track->keyframes) {
+                // Convert keyframe frame to pixel position
+                float kfSeconds = static_cast<float>(kf.frame) / static_cast<float>(clip->framerate);
+                float kfX = clipX + (kfSeconds * m_pixelsPerSecond);
+
+                // Only draw if within clip bounds
+                if (kfX >= clipX && kfX <= clipX + clipWidth) {
+                    switch (kf.interpolation) {
+                        case InterpolationType::Step: {
+                            // Square shape for Hold
+                            ImVec2 sqMin(kfX - size, keyframeY - size);
+                            ImVec2 sqMax(kfX + size, keyframeY + size);
+                            drawList->AddRectFilled(sqMin, sqMax, kfColor);
+                            drawList->AddRect(sqMin, sqMax, outlineColor, 0.0f, 0, 1.0f);
+                            break;
+                        }
+
+                        case InterpolationType::EaseIn: {
+                            // Left hourglass (curved), right diamond (pointed)
+                            // Draw left side: hourglass curves
+                            drawList->AddBezierQuadratic(
+                                ImVec2(kfX - size, keyframeY - size),
+                                ImVec2(kfX, keyframeY),
+                                ImVec2(kfX - size, keyframeY + size),
+                                kfColor, 3.0f);
+                            // Draw right side: diamond point
+                            ImVec2 rightDiamond[3] = {
+                                ImVec2(kfX, keyframeY - size),
+                                ImVec2(kfX + size, keyframeY),
+                                ImVec2(kfX, keyframeY + size)
+                            };
+                            drawList->AddTriangleFilled(rightDiamond[0], rightDiamond[1], rightDiamond[2], kfColor);
+                            // Outline
+                            drawList->AddLine(ImVec2(kfX, keyframeY - size), ImVec2(kfX + size, keyframeY), outlineColor, 1.0f);
+                            drawList->AddLine(ImVec2(kfX + size, keyframeY), ImVec2(kfX, keyframeY + size), outlineColor, 1.0f);
+                            break;
+                        }
+
+                        case InterpolationType::EaseOut: {
+                            // Left diamond (pointed), right hourglass (curved)
+                            // Draw left side: diamond point
+                            ImVec2 leftDiamond[3] = {
+                                ImVec2(kfX, keyframeY - size),
+                                ImVec2(kfX - size, keyframeY),
+                                ImVec2(kfX, keyframeY + size)
+                            };
+                            drawList->AddTriangleFilled(leftDiamond[0], leftDiamond[1], leftDiamond[2], kfColor);
+                            // Draw right side: hourglass curves
+                            drawList->AddBezierQuadratic(
+                                ImVec2(kfX + size, keyframeY - size),
+                                ImVec2(kfX, keyframeY),
+                                ImVec2(kfX + size, keyframeY + size),
+                                kfColor, 3.0f);
+                            // Outline
+                            drawList->AddLine(ImVec2(kfX, keyframeY - size), ImVec2(kfX - size, keyframeY), outlineColor, 1.0f);
+                            drawList->AddLine(ImVec2(kfX - size, keyframeY), ImVec2(kfX, keyframeY + size), outlineColor, 1.0f);
+                            break;
+                        }
+
+                        case InterpolationType::EaseInOut: {
+                            // Full hourglass shape (pinched in middle)
+                            // Top triangle
+                            drawList->AddTriangleFilled(
+                                ImVec2(kfX - size, keyframeY - size),
+                                ImVec2(kfX + size, keyframeY - size),
+                                ImVec2(kfX, keyframeY),
+                                kfColor);
+                            // Bottom triangle
+                            drawList->AddTriangleFilled(
+                                ImVec2(kfX - size, keyframeY + size),
+                                ImVec2(kfX + size, keyframeY + size),
+                                ImVec2(kfX, keyframeY),
+                                kfColor);
+                            // Outline
+                            ImVec2 hourglass[6] = {
+                                ImVec2(kfX - size, keyframeY - size),
+                                ImVec2(kfX + size, keyframeY - size),
+                                ImVec2(kfX, keyframeY),
+                                ImVec2(kfX + size, keyframeY + size),
+                                ImVec2(kfX - size, keyframeY + size),
+                                ImVec2(kfX, keyframeY)
+                            };
+                            drawList->AddPolyline(hourglass, 6, outlineColor, ImDrawFlags_Closed, 1.0f);
+                            break;
+                        }
+
+                        case InterpolationType::Linear:
+                        default: {
+                            // Diamond shape for Linear
+                            ImVec2 diamond[4] = {
+                                ImVec2(kfX, keyframeY - size),
+                                ImVec2(kfX + size, keyframeY),
+                                ImVec2(kfX, keyframeY + size),
+                                ImVec2(kfX - size, keyframeY)
+                            };
+                            drawList->AddConvexPolyFilled(diamond, 4, kfColor);
+                            drawList->AddPolyline(diamond, 4, outlineColor, ImDrawFlags_Closed, 1.0f);
+                            break;
+                        }
+                    }
+
+                    // Handle right-click for context menu
+                    if (ImGui::IsMouseClicked(1)) {
+                        ImVec2 mousePos = ImGui::GetMousePos();
+                        if (mousePos.x >= kfX - size - 3 && mousePos.x <= kfX + size + 3 &&
+                            mousePos.y >= keyframeY - size - 3 && mousePos.y <= keyframeY + size + 3) {
+                            m_keyframeEditClip = clipEntity;
+                            m_keyframeEditProperty = properties[i];
+                            m_keyframeEditFrame = kf.frame;
+                            m_showKeyframeContextMenu = true;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     return numProperties * PROPERTY_ROW_HEIGHT;
-}
-
-void TimelineWidget::renderPropertyRow(entt::entity clipEntity, AnimatableProperty property,
-                                       const char* propertyName, float rowY,
-                                       float headerX, float clipStartX,
-                                       float clipWidth, float clipStartFrame, float framerate) {
-    if (!m_timeline) return;
-
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    auto& registry = m_timeline->getRegistry();
-
-    // Get AnimatedProperties (may not exist)
-    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
-    const KeyframeTrack* track = animProps ? animProps->getTrack(property) : nullptr;
-    bool hasKeyframes = track && track->hasKeyframes();
-
-    // === HEADER AREA (fixed position on left) ===
-    float centerY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
-
-    // === STOPWATCH ICON (in header) ===
-    float stopwatchX = headerX + 8.0f;
-    float stopwatchY = centerY;
-    float stopwatchSize = 5.0f;
-
-    // Draw stopwatch (circle with line)
-    ImU32 stopwatchColor = hasKeyframes ? IM_COL32(100, 180, 255, 255) : IM_COL32(100, 100, 100, 255);
-    drawList->AddCircle(ImVec2(stopwatchX, stopwatchY), stopwatchSize, stopwatchColor, 12, 1.5f);
-    drawList->AddLine(ImVec2(stopwatchX, stopwatchY - stopwatchSize + 2),
-                      ImVec2(stopwatchX, stopwatchY - 2), stopwatchColor, 1.5f);
-
-    // === PROPERTY NAME (in header, after stopwatch) ===
-    float nameX = stopwatchX + 12.0f;
-    drawList->AddText(ImVec2(nameX, rowY + 3.0f), IM_COL32(180, 180, 180, 255), propertyName);
-
-    // Handle click on stopwatch (toggle keyframing)
-    if (ImGui::IsMouseClicked(0)) {
-        ImVec2 mousePos = ImGui::GetMousePos();
-        float dist = sqrtf(powf(mousePos.x - stopwatchX, 2) + powf(mousePos.y - stopwatchY, 2));
-        if (dist < stopwatchSize + 4) {
-            // Toggle keyframing - if no keyframes, add one at current frame
-            if (!hasKeyframes) {
-                // Add keyframe at current playhead position
-                FrameNumber currentFrame = m_timeline->getCurrentFrame();
-                FrameNumber localFrame = currentFrame - static_cast<FrameNumber>(clipStartFrame);
-                if (localFrame >= 0) {
-                    // Get default value based on property
-                    float defaultValue = 0.0f;
-                    switch (property) {
-                        case AnimatableProperty::ScaleX:
-                        case AnimatableProperty::ScaleY:
-                        case AnimatableProperty::Opacity:
-                            defaultValue = 1.0f;
-                            break;
-                        default:
-                            defaultValue = 0.0f;
-                    }
-
-                    auto& props = registry.get_or_emplace<AnimatedProperties>(clipEntity);
-                    props.addKeyframe(property, localFrame, defaultValue, InterpolationType::Linear);
-                }
-            } else {
-                // Remove all keyframes for this property
-                if (animProps) {
-                    auto* mutableTrack = animProps->getTrack(property);
-                    if (mutableTrack) {
-                        mutableTrack->keyframes.clear();
-                    }
-                }
-            }
-        }
-    }
-
-    // === KEYFRAME NAVIGATOR (in header, right side) ===
-    // Position the navigator on the right side of the header
-    float navX = headerX + TRACK_HEADER_WIDTH - 30.0f;
-    float navY = centerY;
-    float navSize = 4.0f;
-
-    // Get current timeline frame relative to clip
-    FrameNumber currentFrame = m_timeline->getCurrentFrame();
-    FrameNumber localFrame = currentFrame - static_cast<FrameNumber>(clipStartFrame);
-
-    // Check if we're at a keyframe
-    bool atKeyframe = track && track->getKeyframeAt(localFrame) != nullptr;
-
-    // Draw left arrow (prev keyframe) - always visible
-    ImVec2 leftArrow[3] = {
-        ImVec2(navX - navSize*3, navY),
-        ImVec2(navX - navSize*2, navY - navSize),
-        ImVec2(navX - navSize*2, navY + navSize)
-    };
-    ImU32 arrowColor = hasKeyframes ? IM_COL32(180, 180, 180, 255) : IM_COL32(80, 80, 80, 255);
-    drawList->AddTriangleFilled(leftArrow[0], leftArrow[1], leftArrow[2], arrowColor);
-
-    // Draw diamond (current keyframe indicator)
-    ImVec2 diamond[4] = {
-        ImVec2(navX, navY - navSize),
-        ImVec2(navX + navSize, navY),
-        ImVec2(navX, navY + navSize),
-        ImVec2(navX - navSize, navY)
-    };
-    if (atKeyframe) {
-        drawList->AddConvexPolyFilled(diamond, 4, IM_COL32(255, 200, 50, 255));
-    } else if (hasKeyframes) {
-        drawList->AddPolyline(diamond, 4, IM_COL32(180, 180, 180, 255), ImDrawFlags_Closed, 1.0f);
-    } else {
-        drawList->AddPolyline(diamond, 4, IM_COL32(80, 80, 80, 255), ImDrawFlags_Closed, 1.0f);
-    }
-
-    // Draw right arrow (next keyframe) - always visible
-    ImVec2 rightArrow[3] = {
-        ImVec2(navX + navSize*3, navY),
-        ImVec2(navX + navSize*2, navY - navSize),
-        ImVec2(navX + navSize*2, navY + navSize)
-    };
-    drawList->AddTriangleFilled(rightArrow[0], rightArrow[1], rightArrow[2], arrowColor);
-
-    // Handle click on navigator elements
-    if (ImGui::IsMouseClicked(0) && hasKeyframes) {
-        ImVec2 mousePos = ImGui::GetMousePos();
-
-        // Check left arrow click (prev keyframe)
-        float leftArrowX = navX - navSize * 2.5f;
-        if (mousePos.x >= leftArrowX - navSize - 2 && mousePos.x <= leftArrowX + navSize + 2 &&
-            mousePos.y >= navY - navSize - 2 && mousePos.y <= navY + navSize + 2) {
-            // Find previous keyframe
-            FrameNumber prevFrame = -1;
-            for (const auto& kf : track->keyframes) {
-                if (kf.frame < localFrame && kf.frame > prevFrame) {
-                    prevFrame = kf.frame;
-                }
-            }
-            if (prevFrame >= 0) {
-                // Seek to previous keyframe
-                FrameNumber globalFrame = prevFrame + static_cast<FrameNumber>(clipStartFrame);
-                m_timeline->seek(static_cast<Timecode>(globalFrame / framerate * 1000000.0f));
-            }
-        }
-
-        // Check right arrow click (next keyframe)
-        float rightArrowX = navX + navSize * 2.5f;
-        if (mousePos.x >= rightArrowX - navSize - 2 && mousePos.x <= rightArrowX + navSize + 2 &&
-            mousePos.y >= navY - navSize - 2 && mousePos.y <= navY + navSize + 2) {
-            // Find next keyframe
-            FrameNumber nextFrame = std::numeric_limits<FrameNumber>::max();
-            for (const auto& kf : track->keyframes) {
-                if (kf.frame > localFrame && kf.frame < nextFrame) {
-                    nextFrame = kf.frame;
-                }
-            }
-            if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
-                // Seek to next keyframe
-                FrameNumber globalFrame = nextFrame + static_cast<FrameNumber>(clipStartFrame);
-                m_timeline->seek(static_cast<Timecode>(globalFrame / framerate * 1000000.0f));
-            }
-        }
-
-        // Check diamond click (add/remove keyframe at current position)
-        if (mousePos.x >= navX - navSize - 2 && mousePos.x <= navX + navSize + 2 &&
-            mousePos.y >= navY - navSize - 2 && mousePos.y <= navY + navSize + 2) {
-            if (atKeyframe) {
-                // Remove keyframe at current position
-                auto* mutableTrack = animProps->getTrack(property);
-                if (mutableTrack) {
-                    mutableTrack->removeKeyframe(localFrame);
-                }
-            } else {
-                // Add keyframe at current position
-                float currentValue = animProps ? animProps->evaluate(property, localFrame) : 0.0f;
-                auto& props = registry.get_or_emplace<AnimatedProperties>(clipEntity);
-                props.addKeyframe(property, localFrame, currentValue, InterpolationType::Linear);
-            }
-        }
-    }
-
-    // === KEYFRAME DIAMONDS ON TRACK ===
-    if (track && track->hasKeyframes()) {
-        float diamondSize = 4.0f;
-        float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
-
-        for (const auto& kf : track->keyframes) {
-            // Convert keyframe frame to pixel position
-            float kfSeconds = static_cast<float>(kf.frame) / framerate;
-            float kfX = clipStartX + (kfSeconds * m_pixelsPerSecond);
-
-            // Only draw if within clip bounds
-            if (kfX >= clipStartX && kfX <= clipStartX + clipWidth) {
-                ImVec2 points[4] = {
-                    ImVec2(kfX, keyframeY - diamondSize),
-                    ImVec2(kfX + diamondSize, keyframeY),
-                    ImVec2(kfX, keyframeY + diamondSize),
-                    ImVec2(kfX - diamondSize, keyframeY)
-                };
-
-                // Different shapes for different interpolation types
-                ImU32 kfColor;
-                switch (kf.interpolation) {
-                    case InterpolationType::Step:
-                        kfColor = IM_COL32(100, 200, 255, 255);  // Blue for step
-                        drawList->AddConvexPolyFilled(points, 4, kfColor);
-                        break;
-                    case InterpolationType::EaseInOut:
-                        // Hourglass shape for ease
-                        kfColor = IM_COL32(255, 200, 50, 255);
-                        drawList->AddCircleFilled(ImVec2(kfX, keyframeY), diamondSize, kfColor);
-                        break;
-                    case InterpolationType::Linear:
-                    default:
-                        kfColor = IM_COL32(255, 200, 50, 255);  // Gold for linear
-                        drawList->AddConvexPolyFilled(points, 4, kfColor);
-                        break;
-                }
-                drawList->AddPolyline(points, 4, IM_COL32(255, 255, 255, 200), ImDrawFlags_Closed, 1.0f);
-
-                // Handle right-click for context menu (easing options)
-                if (ImGui::IsMouseClicked(1)) {
-                    ImVec2 mousePos = ImGui::GetMousePos();
-                    if (mousePos.x >= kfX - diamondSize - 3 && mousePos.x <= kfX + diamondSize + 3 &&
-                        mousePos.y >= keyframeY - diamondSize - 3 && mousePos.y <= keyframeY + diamondSize + 3) {
-                        m_keyframeEditClip = clipEntity;
-                        m_keyframeEditProperty = property;
-                        m_keyframeEditFrame = kf.frame;
-                        m_showKeyframeContextMenu = true;
-                    }
-                }
-            }
-        }
-    }
 }
 
 void TimelineWidget::renderPlayhead() {
@@ -1476,6 +1454,7 @@ void TimelineWidget::handleTracksInteraction() {
                 m_trimClip = edgeClip;
                 m_selectedClip = edgeClip;
                 m_timeline->setSelectedClip(edgeClip);
+                m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
 
                 // Store original clip state for trim calculations
                 auto* clip = registry.try_get<Clip>(edgeClip);
@@ -1501,6 +1480,7 @@ void TimelineWidget::handleTracksInteraction() {
 
                 // Sync selection to Timeline for PropertyWindow
                 m_timeline->setSelectedClip(clipUnderMouse);
+                m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
 
                 // Calculate drag offset (where in the clip the user clicked)
                 if (registry.valid(clipUnderMouse)) {
@@ -1708,15 +1688,23 @@ void TimelineWidget::handleContextMenus() {
 
                         bool isLinear = (kf->interpolation == InterpolationType::Linear);
                         bool isStep = (kf->interpolation == InterpolationType::Step);
+                        bool isEaseIn = (kf->interpolation == InterpolationType::EaseIn);
+                        bool isEaseOut = (kf->interpolation == InterpolationType::EaseOut);
                         bool isEaseInOut = (kf->interpolation == InterpolationType::EaseInOut);
 
-                        if (ImGui::MenuItem("Linear", nullptr, isLinear)) {
+                        if (ImGui::MenuItem("Linear (Diamond)", nullptr, isLinear)) {
                             kf->interpolation = InterpolationType::Linear;
                         }
-                        if (ImGui::MenuItem("Hold (Step)", nullptr, isStep)) {
+                        if (ImGui::MenuItem("Hold (Square)", nullptr, isStep)) {
                             kf->interpolation = InterpolationType::Step;
                         }
-                        if (ImGui::MenuItem("Ease In/Out", nullptr, isEaseInOut)) {
+                        if (ImGui::MenuItem("Ease In", nullptr, isEaseIn)) {
+                            kf->interpolation = InterpolationType::EaseIn;
+                        }
+                        if (ImGui::MenuItem("Ease Out", nullptr, isEaseOut)) {
+                            kf->interpolation = InterpolationType::EaseOut;
+                        }
+                        if (ImGui::MenuItem("Ease In/Out (Hourglass)", nullptr, isEaseInOut)) {
                             kf->interpolation = InterpolationType::EaseInOut;
                         }
 
@@ -1733,9 +1721,372 @@ void TimelineWidget::handleContextMenus() {
     }
 }
 
-void TimelineWidget::renderTrackHeaders() {
-    // This function is reserved for future use when we implement
-    // a separate track header area on the left side of the timeline
+void TimelineWidget::renderTrackHeaderPanel(float panelHeight, float verticalScroll) {
+    if (!m_timeline) return;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 windowPos = ImGui::GetCursorScreenPos();
+
+    // Draw panel background
+    ImVec2 panelMin = windowPos;
+    ImVec2 panelMax(windowPos.x + TRACK_HEADER_WIDTH - 4, windowPos.y + panelHeight + 100);
+    drawList->AddRectFilled(panelMin, panelMax, IM_COL32(40, 42, 48, 255));
+
+    const auto& tracks = m_timeline->getTracks();
+    auto& registry = m_timeline->getRegistry();
+
+    float currentY = windowPos.y;
+
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        float trackHeight = renderTrackHeaderRow(tracks[i], static_cast<int>(i), currentY);
+        currentY += trackHeight;
+    }
+}
+
+float TimelineWidget::renderTrackHeaderRow(entt::entity trackEntity, int trackIndex, float rowY) {
+    if (!m_timeline) return TRACK_HEIGHT + TRACK_PADDING;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 windowPos = ImGui::GetWindowPos();
+    auto& registry = m_timeline->getRegistry();
+
+    const auto* track = registry.try_get<TimelineTrack>(trackEntity);
+    if (!track) return TRACK_HEIGHT + TRACK_PADDING;
+
+    uint32_t trackId = static_cast<uint32_t>(trackEntity);
+    bool isExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(trackEntity);
+
+    // Track header background (matches track height)
+    float headerX = windowPos.x + 2;
+    ImVec2 headerMin(headerX, rowY);
+    ImVec2 headerMax(headerX + TRACK_HEADER_WIDTH - 8, rowY + TRACK_HEIGHT);
+
+    // Alternating background colors
+    ImU32 bgColor = (trackIndex % 2 == 0)
+        ? IM_COL32(50, 52, 58, 255)
+        : IM_COL32(45, 47, 53, 255);
+    drawList->AddRectFilled(headerMin, headerMax, bgColor);
+
+    // Twirl-down triangle
+    float triX = headerX + 12.0f;
+    float triY = rowY + TRACK_HEIGHT / 2.0f;
+    float triSize = 5.0f;
+
+    ImVec2 triPoints[3];
+    if (isExpanded) {
+        // Down-pointing triangle (expanded)
+        triPoints[0] = ImVec2(triX - triSize, triY - triSize / 2);
+        triPoints[1] = ImVec2(triX + triSize, triY - triSize / 2);
+        triPoints[2] = ImVec2(triX, triY + triSize / 2);
+    } else {
+        // Right-pointing triangle (collapsed)
+        triPoints[0] = ImVec2(triX - triSize / 2, triY - triSize);
+        triPoints[1] = ImVec2(triX + triSize / 2, triY);
+        triPoints[2] = ImVec2(triX - triSize / 2, triY + triSize);
+    }
+
+    // Only show triangle if track has clips
+    bool hasClips = !track->clips.empty();
+    if (hasClips) {
+        drawList->AddTriangleFilled(triPoints[0], triPoints[1], triPoints[2], IM_COL32(180, 180, 180, 255));
+    }
+
+    // Track name
+    std::ostringstream trackName;
+    trackName << "Track " << (trackIndex + 1);
+    drawList->AddText(ImVec2(headerX + 26, rowY + TRACK_HEIGHT / 2 - 7),
+                      IM_COL32(220, 220, 220, 255), trackName.str().c_str());
+
+    // Clip count badge
+    if (hasClips) {
+        std::ostringstream clipCount;
+        clipCount << "(" << track->clips.size() << ")";
+        drawList->AddText(ImVec2(headerX + TRACK_HEADER_WIDTH - 50, rowY + TRACK_HEIGHT / 2 - 7),
+                          IM_COL32(120, 120, 120, 255), clipCount.str().c_str());
+    }
+
+    // Handle click on twirl-down triangle
+    if (hasClips && ImGui::IsMouseClicked(0)) {
+        ImVec2 mousePos = ImGui::GetMousePos();
+        ImVec2 triHitMin(triX - triSize - 6, triY - triSize - 6);
+        ImVec2 triHitMax(triX + triSize + 6, triY + triSize + 6);
+
+        if (mousePos.x >= triHitMin.x && mousePos.x <= triHitMax.x &&
+            mousePos.y >= triHitMin.y && mousePos.y <= triHitMax.y) {
+            if (isExpanded) {
+                m_expandedTracks.erase(trackId);
+            } else {
+                m_expandedTracks.insert(trackId);
+            }
+        }
+    }
+
+    float totalHeight = TRACK_HEIGHT + TRACK_PADDING;
+
+    // Render expanded clip rows
+    if (isExpanded) {
+        float clipY = rowY + TRACK_HEIGHT;
+        for (entt::entity clipEntity : track->clips) {
+            float clipHeight = renderClipHeaderRow(clipEntity, clipY);
+            clipY += clipHeight;
+            totalHeight += clipHeight;
+        }
+    }
+
+    return totalHeight;
+}
+
+float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
+    if (!m_timeline) return HEADER_ROW_HEIGHT;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 windowPos = ImGui::GetWindowPos();
+    auto& registry = m_timeline->getRegistry();
+
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) return HEADER_ROW_HEIGHT;
+
+    uint32_t clipId = static_cast<uint32_t>(clipEntity);
+    bool isExpanded = m_expandedClips.count(clipId) > 0 || m_timeline->isClipExpanded(clipEntity);
+    bool isSelected = (clipEntity == m_selectedClip) || (clipEntity == m_timeline->getSelectedClip());
+
+    // Clip row background (indented)
+    float headerX = windowPos.x + 2 + INDENT_WIDTH;
+    ImVec2 headerMin(headerX, rowY);
+    ImVec2 headerMax(headerX + TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH, rowY + HEADER_ROW_HEIGHT);
+
+    ImU32 bgColor = isSelected
+        ? IM_COL32(60, 80, 120, 255)
+        : IM_COL32(48, 50, 56, 255);
+    drawList->AddRectFilled(headerMin, headerMax, bgColor);
+
+    // Twirl-down triangle
+    float triX = headerX + 10.0f;
+    float triY = rowY + HEADER_ROW_HEIGHT / 2.0f;
+    float triSize = 4.0f;
+
+    ImVec2 triPoints[3];
+    if (isExpanded) {
+        // Down-pointing triangle (expanded)
+        triPoints[0] = ImVec2(triX - triSize, triY - triSize / 2);
+        triPoints[1] = ImVec2(triX + triSize, triY - triSize / 2);
+        triPoints[2] = ImVec2(triX, triY + triSize / 2);
+    } else {
+        // Right-pointing triangle (collapsed)
+        triPoints[0] = ImVec2(triX - triSize / 2, triY - triSize);
+        triPoints[1] = ImVec2(triX + triSize / 2, triY);
+        triPoints[2] = ImVec2(triX - triSize / 2, triY + triSize);
+    }
+    drawList->AddTriangleFilled(triPoints[0], triPoints[1], triPoints[2], IM_COL32(150, 150, 150, 255));
+
+    // Clip name (filename without path)
+    size_t lastSlash = clip->filepath.find_last_of("/\\");
+    std::string filename = (lastSlash != std::string::npos)
+        ? clip->filepath.substr(lastSlash + 1)
+        : clip->filepath;
+
+    // Truncate if too long
+    if (filename.length() > 16) {
+        filename = filename.substr(0, 13) + "...";
+    }
+
+    drawList->AddText(ImVec2(headerX + 22, rowY + 4),
+                      IM_COL32(200, 200, 200, 255), filename.c_str());
+
+    // Handle click on twirl-down triangle
+    if (ImGui::IsMouseClicked(0)) {
+        ImVec2 mousePos = ImGui::GetMousePos();
+        ImVec2 triHitMin(triX - triSize - 6, triY - triSize - 6);
+        ImVec2 triHitMax(triX + triSize + 6, triY + triSize + 6);
+
+        if (mousePos.x >= triHitMin.x && mousePos.x <= triHitMax.x &&
+            mousePos.y >= triHitMin.y && mousePos.y <= triHitMax.y) {
+            if (isExpanded) {
+                m_expandedClips.erase(clipId);
+            } else {
+                m_expandedClips.insert(clipId);
+            }
+        }
+    }
+
+    // Handle click on clip row to select
+    if (ImGui::IsMouseClicked(0)) {
+        ImVec2 mousePos = ImGui::GetMousePos();
+        if (mousePos.x >= headerMin.x && mousePos.x <= headerMax.x &&
+            mousePos.y >= headerMin.y && mousePos.y <= headerMax.y) {
+            m_selectedClip = clipEntity;
+            m_timeline->setSelectedClip(clipEntity);
+            m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
+        }
+    }
+
+    float totalHeight = HEADER_ROW_HEIGHT;
+
+    // Render expanded property rows
+    if (isExpanded) {
+        float propY = rowY + HEADER_ROW_HEIGHT;
+        float propX = headerX + INDENT_WIDTH;
+        float propWidth = TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH * 2;
+
+        // Get animation data
+        auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+
+        // Get current frame relative to clip
+        FrameNumber currentFrame = m_timeline->getCurrentFrame();
+        FrameNumber localFrame = currentFrame - clip->startFrame;
+
+        // Define properties
+        struct PropertyDef {
+            AnimatableProperty prop;
+            const char* name;
+            float defaultValue;
+        };
+
+        PropertyDef properties[] = {
+            {AnimatableProperty::PositionX, "Pos X", 0.0f},
+            {AnimatableProperty::PositionY, "Pos Y", 0.0f},
+            {AnimatableProperty::ScaleX, "Scale X", 1.0f},
+            {AnimatableProperty::ScaleY, "Scale Y", 1.0f},
+            {AnimatableProperty::Rotation, "Rotation", 0.0f},
+            {AnimatableProperty::Opacity, "Opacity", 1.0f}
+        };
+
+        for (int i = 0; i < 6; ++i) {
+            // Property row background
+            ImVec2 propMin(propX, propY);
+            ImVec2 propMax(propX + propWidth, propY + PROPERTY_ROW_HEIGHT);
+            drawList->AddRectFilled(propMin, propMax, IM_COL32(42, 44, 50, 255));
+
+            // Get keyframe track info
+            const KeyframeTrack* track = animProps ? animProps->getTrack(properties[i].prop) : nullptr;
+            bool hasKeyframes = track && track->hasKeyframes();
+            bool atKeyframe = track && track->getKeyframeAt(localFrame) != nullptr;
+
+            // Get current value
+            float currentValue = properties[i].defaultValue;
+            if (animProps) {
+                currentValue = animProps->evaluate(properties[i].prop, localFrame);
+            }
+
+            float centerY = propY + PROPERTY_ROW_HEIGHT / 2.0f;
+
+            // === PROPERTY NAME ===
+            drawList->AddText(ImVec2(propX + 4, propY + 2),
+                              IM_COL32(140, 140, 140, 255), properties[i].name);
+
+            // === KEYFRAME CONTROLS (right side of row) ===
+            float controlsX = propX + propWidth - 70;  // Position for controls
+            float arrowSize = 3.0f;
+            float diamondSize = 4.0f;
+
+            // Left arrow (prev keyframe)
+            float leftArrowX = controlsX;
+            ImVec2 leftArrow[3] = {
+                ImVec2(leftArrowX - arrowSize, centerY),
+                ImVec2(leftArrowX + arrowSize, centerY - arrowSize),
+                ImVec2(leftArrowX + arrowSize, centerY + arrowSize)
+            };
+            ImU32 arrowColor = hasKeyframes ? IM_COL32(180, 180, 180, 255) : IM_COL32(80, 80, 80, 255);
+            drawList->AddTriangleFilled(leftArrow[0], leftArrow[1], leftArrow[2], arrowColor);
+
+            // Diamond (keyframe indicator)
+            float diamondX = controlsX + 14;
+            ImVec2 diamond[4] = {
+                ImVec2(diamondX, centerY - diamondSize),
+                ImVec2(diamondX + diamondSize, centerY),
+                ImVec2(diamondX, centerY + diamondSize),
+                ImVec2(diamondX - diamondSize, centerY)
+            };
+            if (atKeyframe) {
+                drawList->AddConvexPolyFilled(diamond, 4, IM_COL32(255, 200, 50, 255));
+            } else if (hasKeyframes) {
+                drawList->AddPolyline(diamond, 4, IM_COL32(180, 180, 180, 255), ImDrawFlags_Closed, 1.0f);
+            } else {
+                drawList->AddPolyline(diamond, 4, IM_COL32(80, 80, 80, 255), ImDrawFlags_Closed, 1.0f);
+            }
+
+            // Right arrow (next keyframe)
+            float rightArrowX = controlsX + 28;
+            ImVec2 rightArrow[3] = {
+                ImVec2(rightArrowX + arrowSize, centerY),
+                ImVec2(rightArrowX - arrowSize, centerY - arrowSize),
+                ImVec2(rightArrowX - arrowSize, centerY + arrowSize)
+            };
+            drawList->AddTriangleFilled(rightArrow[0], rightArrow[1], rightArrow[2], arrowColor);
+
+            // === CURRENT VALUE ===
+            char valueStr[32];
+            if (properties[i].prop == AnimatableProperty::Opacity) {
+                snprintf(valueStr, sizeof(valueStr), "%.0f%%", currentValue * 100.0f);
+            } else if (properties[i].prop == AnimatableProperty::Rotation) {
+                snprintf(valueStr, sizeof(valueStr), "%.1f", currentValue);
+            } else {
+                snprintf(valueStr, sizeof(valueStr), "%.2f", currentValue);
+            }
+            drawList->AddText(ImVec2(controlsX + 38, propY + 2),
+                              IM_COL32(200, 200, 200, 255), valueStr);
+
+            // === HANDLE CLICKS ===
+            if (ImGui::IsMouseClicked(0)) {
+                ImVec2 mousePos = ImGui::GetMousePos();
+
+                // Left arrow click (prev keyframe)
+                if (hasKeyframes &&
+                    mousePos.x >= leftArrowX - arrowSize - 4 && mousePos.x <= leftArrowX + arrowSize + 4 &&
+                    mousePos.y >= centerY - arrowSize - 4 && mousePos.y <= centerY + arrowSize + 4) {
+                    // Find previous keyframe
+                    FrameNumber prevFrame = -1;
+                    for (const auto& kf : track->keyframes) {
+                        if (kf.frame < localFrame && kf.frame > prevFrame) {
+                            prevFrame = kf.frame;
+                        }
+                    }
+                    if (prevFrame >= 0) {
+                        FrameNumber globalFrame = prevFrame + clip->startFrame;
+                        m_timeline->seek(static_cast<Timecode>(globalFrame / clip->framerate * 1000000.0f));
+                    }
+                }
+
+                // Diamond click (add/remove keyframe)
+                if (mousePos.x >= diamondX - diamondSize - 4 && mousePos.x <= diamondX + diamondSize + 4 &&
+                    mousePos.y >= centerY - diamondSize - 4 && mousePos.y <= centerY + diamondSize + 4) {
+                    if (atKeyframe && animProps) {
+                        // Remove keyframe
+                        auto* mutableTrack = animProps->getTrack(properties[i].prop);
+                        if (mutableTrack) {
+                            mutableTrack->removeKeyframe(localFrame);
+                        }
+                    } else {
+                        // Add keyframe at current position
+                        auto& props = registry.get_or_emplace<AnimatedProperties>(clipEntity);
+                        props.addKeyframe(properties[i].prop, localFrame, currentValue, InterpolationType::Linear);
+                    }
+                }
+
+                // Right arrow click (next keyframe)
+                if (hasKeyframes &&
+                    mousePos.x >= rightArrowX - arrowSize - 4 && mousePos.x <= rightArrowX + arrowSize + 4 &&
+                    mousePos.y >= centerY - arrowSize - 4 && mousePos.y <= centerY + arrowSize + 4) {
+                    // Find next keyframe
+                    FrameNumber nextFrame = std::numeric_limits<FrameNumber>::max();
+                    for (const auto& kf : track->keyframes) {
+                        if (kf.frame > localFrame && kf.frame < nextFrame) {
+                            nextFrame = kf.frame;
+                        }
+                    }
+                    if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
+                        FrameNumber globalFrame = nextFrame + clip->startFrame;
+                        m_timeline->seek(static_cast<Timecode>(globalFrame / clip->framerate * 1000000.0f));
+                    }
+                }
+            }
+
+            propY += PROPERTY_ROW_HEIGHT;
+            totalHeight += PROPERTY_ROW_HEIGHT;
+        }
+    }
+
+    return totalHeight;
 }
 
 } // namespace entity

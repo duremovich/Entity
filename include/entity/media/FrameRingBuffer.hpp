@@ -159,6 +159,17 @@ public:
     bool consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFrame);
 
     /**
+     * Get the nearest available frame to the target frame number.
+     * If exact frame isn't found, returns any frame in the buffer.
+     * This prevents visual freezing when decode thread is catching up.
+     *
+     * @param targetFrame Frame number we're looking for
+     * @param outFrame Frame to receive data if any frame is found
+     * @return true if any frame is available, false if buffer is empty
+     */
+    bool getNearestFrame(FrameNumber targetFrame, DecodedFrame& outFrame) const;
+
+    /**
      * Clear all frames from the buffer.
      */
     void clear();

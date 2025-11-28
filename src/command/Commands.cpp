@@ -7,6 +7,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Screen.hpp"
 #include <imgui.h>
 #include <iostream>
 #include <filesystem>
@@ -186,10 +187,26 @@ bool SelectClipCommand::execute(Engine& engine) {
     if (!timeline) return false;
 
     entt::entity clipEntity = entt::null;
+    entt::entity trackEntity = entt::null;
 
     // If we have an entity ID, use it directly
     if (m_entityId.has_value()) {
         clipEntity = static_cast<entt::entity>(*m_entityId);
+        // Find which track contains this clip
+        auto& registry = engine.getRegistry();
+        const auto& tracks = timeline->getTracks();
+        for (entt::entity te : tracks) {
+            auto* track = registry.try_get<TimelineTrack>(te);
+            if (track) {
+                for (entt::entity ce : track->clips) {
+                    if (ce == clipEntity) {
+                        trackEntity = te;
+                        break;
+                    }
+                }
+            }
+            if (trackEntity != entt::null) break;
+        }
     }
     // Otherwise, find by track and clip index
     else if (m_trackIndex.has_value() && m_clipIndex.has_value()) {
@@ -199,8 +216,9 @@ bool SelectClipCommand::execute(Engine& engine) {
             return false;
         }
 
+        trackEntity = tracks[*m_trackIndex];
         auto& registry = engine.getRegistry();
-        auto* track = registry.try_get<TimelineTrack>(tracks[*m_trackIndex]);
+        auto* track = registry.try_get<TimelineTrack>(trackEntity);
         if (!track) {
             std::cerr << "[SelectClip] Track has no TimelineTrack component" << std::endl;
             return false;
@@ -221,6 +239,10 @@ bool SelectClipCommand::execute(Engine& engine) {
 
     // Optionally expand the clip to show property tracks
     if (m_expand) {
+        // Also expand the track so the clip is visible
+        if (trackEntity != entt::null) {
+            timeline->setTrackExpanded(trackEntity, true);
+        }
         timeline->setClipExpanded(clipEntity, true);
     }
 
@@ -872,6 +894,8 @@ bool AddKeyframeCommand::execute(Engine& engine) {
     // Parse interpolation type
     InterpolationType interp = InterpolationType::Linear;
     if (m_interpolation == "Step") interp = InterpolationType::Step;
+    else if (m_interpolation == "EaseIn") interp = InterpolationType::EaseIn;
+    else if (m_interpolation == "EaseOut") interp = InterpolationType::EaseOut;
     else if (m_interpolation == "EaseInOut") interp = InterpolationType::EaseInOut;
 
     // Add the keyframe
@@ -967,6 +991,134 @@ CommandPtr ClearKeyframesCommand::fromJson(const nlohmann::json& j) {
     int trackIndex = j.value("trackIndex", 0);
     int clipIndex = j.value("clipIndex", 0);
     return std::make_unique<ClearKeyframesCommand>(trackIndex, clipIndex);
+}
+
+// ============================================================================
+// AddScreenCommand
+// ============================================================================
+
+bool AddScreenCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+
+    // Create screen entity
+    entt::entity entity = registry.create();
+    auto& screen = registry.emplace<Screen>(entity);
+
+    screen.name = m_name;
+    screen.width = m_width;
+    screen.height = m_height;
+    screen.visible = true;
+    screen.renderTargetSlot = UINT32_MAX;
+    screen.renderTargetValid = false;
+
+    std::cout << "[AddScreen] Created screen: " << m_name
+              << " (entity=" << static_cast<uint32_t>(entity)
+              << ", " << m_width << "x" << m_height << ")" << std::endl;
+
+    return true;
+}
+
+nlohmann::json AddScreenCommand::toJson() const {
+    return {
+        {"type", "AddScreen"},
+        {"name", m_name},
+        {"width", m_width},
+        {"height", m_height}
+    };
+}
+
+std::string AddScreenCommand::getDescription() const {
+    return "Add screen: " + m_name + " (" + std::to_string(m_width) + "x" + std::to_string(m_height) + ")";
+}
+
+CommandPtr AddScreenCommand::fromJson(const nlohmann::json& j) {
+    std::string name = j.value("name", "New Screen");
+    uint32_t width = j.value("width", 1920);
+    uint32_t height = j.value("height", 1080);
+    return std::make_unique<AddScreenCommand>(name, width, height);
+}
+
+// ============================================================================
+// SetClipTargetScreenCommand
+// ============================================================================
+
+bool SetClipTargetScreenCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[SetClipTargetScreen] No timeline!" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[SetClipTargetScreen] Invalid track index: " << m_trackIndex << std::endl;
+        return false;
+    }
+
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+        std::cerr << "[SetClipTargetScreen] Invalid clip index: " << m_clipIndex << std::endl;
+        return false;
+    }
+
+    entt::entity clipEntity = track->clips[m_clipIndex];
+    auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[SetClipTargetScreen] Clip component not found!" << std::endl;
+        return false;
+    }
+
+    // Find screen by name
+    if (m_screenName == "All Screens" || m_screenName.empty()) {
+        clip->targetScreen = entt::null;
+        std::cout << "[SetClipTargetScreen] Track " << m_trackIndex << ", Clip " << m_clipIndex
+                  << " -> All Screens" << std::endl;
+    } else {
+        // Search for screen by name
+        auto screenView = registry.view<Screen>();
+        entt::entity foundScreen = entt::null;
+
+        for (auto [screenEntity, screen] : screenView.each()) {
+            if (screen.name == m_screenName) {
+                foundScreen = screenEntity;
+                break;
+            }
+        }
+
+        if (foundScreen == entt::null) {
+            std::cerr << "[SetClipTargetScreen] Screen not found: " << m_screenName << std::endl;
+            return false;
+        }
+
+        clip->targetScreen = foundScreen;
+        std::cout << "[SetClipTargetScreen] Track " << m_trackIndex << ", Clip " << m_clipIndex
+                  << " -> " << m_screenName << " (entity=" << static_cast<uint32_t>(foundScreen) << ")" << std::endl;
+    }
+
+    return true;
+}
+
+nlohmann::json SetClipTargetScreenCommand::toJson() const {
+    return {
+        {"type", "SetClipTargetScreen"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"screenName", m_screenName}
+    };
+}
+
+std::string SetClipTargetScreenCommand::getDescription() const {
+    return "Set target screen for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex) + " to " + m_screenName;
+}
+
+CommandPtr SetClipTargetScreenCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string screenName = j.value("screenName", "All Screens");
+    return std::make_unique<SetClipTargetScreenCommand>(trackIndex, clipIndex, screenName);
 }
 
 } // namespace entity

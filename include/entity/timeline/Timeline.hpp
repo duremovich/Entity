@@ -136,7 +136,23 @@ public:
     void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
     entt::entity getSelectedClip() const { return m_selectedClip; }
 
+    void setSelectedScreen(entt::entity screen) { m_selectedScreen = screen; }
+    entt::entity getSelectedScreen() const { return m_selectedScreen; }
+
+    // Clear all selection (deselect clip and screen)
+    void clearSelection() { m_selectedClip = entt::null; m_selectedScreen = entt::null; }
+
     // Expansion state (for twirl-down property tracks)
+    void setTrackExpanded(entt::entity track, bool expanded) {
+        if (expanded) {
+            m_expandedTracks.insert(static_cast<uint32_t>(track));
+        } else {
+            m_expandedTracks.erase(static_cast<uint32_t>(track));
+        }
+    }
+    bool isTrackExpanded(entt::entity track) const {
+        return m_expandedTracks.count(static_cast<uint32_t>(track)) > 0;
+    }
     void setClipExpanded(entt::entity clip, bool expanded) {
         if (expanded) {
             m_expandedClips.insert(static_cast<uint32_t>(clip));
@@ -168,6 +184,8 @@ private:
 
     // Selection state
     entt::entity m_selectedClip{entt::null};
+    entt::entity m_selectedScreen{entt::null};
+    std::unordered_set<uint32_t> m_expandedTracks;
     std::unordered_set<uint32_t> m_expandedClips;
 
     // Callback for clip creation

@@ -10,11 +10,19 @@ namespace entity {
 
 /**
  * Interpolation type for keyframes
+ * Visual shapes in timeline:
+ * - Linear: Diamond
+ * - Step (Hold): Square
+ * - EaseIn: Left hourglass, right diamond
+ * - EaseOut: Left diamond, right hourglass
+ * - EaseInOut: Full hourglass
  */
 enum class InterpolationType {
-    Linear,     // Linear interpolation between keyframes
-    Step,       // Instant change at keyframe (hold previous value)
-    EaseInOut   // Smooth ease in/out (cubic bezier)
+    Linear,     // Linear interpolation between keyframes (diamond shape)
+    Step,       // Instant change at keyframe - hold previous value (square shape)
+    EaseIn,     // Ease in only - starts slow, ends linear (half hourglass left)
+    EaseOut,    // Ease out only - starts linear, ends slow (half hourglass right)
+    EaseInOut   // Smooth ease in/out - cubic bezier (full hourglass shape)
 };
 
 /**
@@ -205,16 +213,36 @@ private:
 
     /**
      * Interpolate between two keyframes
+     * Note: Uses kf2's interpolation type (incoming behavior) - setting ease
+     * on a keyframe affects how motion arrives at that keyframe.
      */
     static float interpolate(const Keyframe& kf1, const Keyframe& kf2, float t) {
-        switch (kf1.interpolation) {
+        // Step is special - check kf1 for hold behavior (hold until next keyframe)
+        if (kf1.interpolation == InterpolationType::Step) {
+            return kf1.value;
+        }
+
+        // Use kf2's interpolation type (incoming behavior)
+        switch (kf2.interpolation) {
             case InterpolationType::Step:
-                // Hold first value until next keyframe
-                return kf1.value;
+                // If destination is step, use linear to arrive then hold
+                return kf1.value + (kf2.value - kf1.value) * t;
+
+            case InterpolationType::EaseIn: {
+                // Ease in - starts slow, ends at full speed
+                float easedT = t * t;
+                return kf1.value + (kf2.value - kf1.value) * easedT;
+            }
+
+            case InterpolationType::EaseOut: {
+                // Ease out - starts at full speed, ends slow
+                float easedT = 1.0f - (1.0f - t) * (1.0f - t);
+                return kf1.value + (kf2.value - kf1.value) * easedT;
+            }
 
             case InterpolationType::EaseInOut: {
-                // Cubic bezier easing
-                t = cubicBezier(t, kf1.easeIn, kf1.easeOut);
+                // Cubic bezier easing (smooth ease in/out)
+                t = cubicBezier(t, kf2.easeIn, kf2.easeOut);
                 return kf1.value + (kf2.value - kf1.value) * t;
             }
 

@@ -4,7 +4,10 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
+#include "entity/components/Screen.hpp"
 #include "entity/media/FrameRingBuffer.hpp"  // For DecodedFrame definition
+#include <algorithm>  // For std::sort
+#include <vector>
 
 namespace entity {
 
@@ -155,21 +158,82 @@ void StageWindow::render3DView() {
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
 
     D3D12Renderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
+    Timeline* timeline = m_engine ? m_engine->getTimeline() : nullptr;
 
-    // Get compose texture if available
-    ImTextureID textureID = nullptr;
-    if (renderer && renderer->isComposeTargetReady()) {
-        textureID = static_cast<ImTextureID>(renderer->getComposeTargetTextureID());
+    // Get selected screen for highlighting
+    entt::entity selectedScreen = timeline ? timeline->getSelectedScreen() : entt::null;
+
+    // Begin 3D rendering (draws background, grid, axes)
+    m_3dRenderer->beginRender(drawList, windowPos, contentSize);
+
+    // Collect visible screens and sort by distance from camera (painter's algorithm)
+    // Draw farthest screens first so nearer screens are drawn on top
+    if (m_engine) {
+        auto& registry = m_engine->getRegistry();
+        auto screenView = registry.view<Screen>();
+
+        // Get camera position for depth sorting
+        glm::vec3 cameraPos = m_3dRenderer->getCamera().position;
+
+        // Collect screen data for sorting
+        struct ScreenDrawData {
+            entt::entity entity;
+            glm::vec3 position;
+            glm::vec3 rotation;
+            glm::vec3 scale;
+            bool isSelected;
+            float distanceFromCamera;
+            ImTextureID textureID;  // Per-screen compose target texture
+        };
+        std::vector<ScreenDrawData> screensToDraw;
+
+        for (auto [entity, screen] : screenView.each()) {
+            if (screen.visible) {
+                glm::vec3 position(screen.position[0], screen.position[1], screen.position[2]);
+                glm::vec3 rotation(screen.rotation[0], screen.rotation[1], screen.rotation[2]);
+                glm::vec3 scale(screen.scale[0], screen.scale[1], screen.scale[2]);
+                bool isSelected = (entity == selectedScreen);
+
+                // Calculate distance from camera to screen center
+                // Add default elevation offset (screens are centered at y=0.5 by default)
+                glm::vec3 screenCenter = position + glm::vec3(0.0f, m_3dRenderer->screenElevation, 0.0f);
+                float dist = glm::length(screenCenter - cameraPos);
+
+                // Get THIS screen's compose target texture
+                ImTextureID screenTextureID = nullptr;
+                if (renderer && screen.renderTargetValid &&
+                    screen.renderTargetSlot != UINT32_MAX) {
+                    screenTextureID = static_cast<ImTextureID>(
+                        renderer->getComposeTargetTextureID(screen.renderTargetSlot));
+                }
+
+                screensToDraw.push_back({entity, position, rotation, scale, isSelected, dist, screenTextureID});
+            }
+        }
+
+        // Sort by distance (farthest first for painter's algorithm)
+        std::sort(screensToDraw.begin(), screensToDraw.end(),
+                  [](const ScreenDrawData& a, const ScreenDrawData& b) {
+                      return a.distanceFromCamera > b.distanceFromCamera;
+                  });
+
+        // Draw screens in sorted order (farthest to nearest)
+        for (const auto& screenData : screensToDraw) {
+            m_3dRenderer->drawScreen(drawList, windowPos, contentSize,
+                                     screenData.position, screenData.rotation, screenData.scale,
+                                     screenData.textureID, screenData.isSelected);
+        }
     }
 
-    // Render the 3D stage
-    m_3dRenderer->render(drawList, windowPos, contentSize, textureID);
+    // End 3D rendering (draws overlays)
+    m_3dRenderer->endRender(drawList, windowPos, contentSize);
 
     // Handle input
     ImGuiIO& io = ImGui::GetIO();
     bool isHovered = ImGui::IsWindowHovered();
 
     if (isHovered) {
+        // Handle camera controls
         m_3dRenderer->handleInput(
             io.MousePos,
             windowPos, contentSize,
@@ -179,6 +243,9 @@ void StageWindow::render3DView() {
             io.KeyShift,
             io.MouseWheel
         );
+
+        // TODO: Implement proper click-to-select for screens using ray-screen intersection
+        // For now, users can select screens from the Screens window
     }
 
     // Advance cursor past the 3D view area

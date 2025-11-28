@@ -262,6 +262,11 @@ private:
      */
     void onClipCreated(entt::entity clipEntity, const std::string& filepath);
 
+    /**
+     * Create the default screen and model on startup.
+     */
+    void createDefaultScreen();
+
 private:
     // ECS registry
     entt::registry m_registry;

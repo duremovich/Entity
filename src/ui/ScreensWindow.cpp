@@ -117,7 +117,7 @@ entt::entity ScreensWindow::createScreen(const char* name) {
         screen.modelEntity = *modelView.begin();
     }
 
-    std::cout << "[Screens] Created screen: " << name << std::endl;
+    std::cout << "[Screens] Created screen: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
     return entity;
 }
 

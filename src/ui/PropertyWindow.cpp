@@ -11,11 +11,15 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Screen.hpp"
+#include "entity/components/Model.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
 #include <algorithm>
+#include <iostream>
+#include <vector>
 
 namespace entity {
 
@@ -30,6 +34,16 @@ void PropertyWindow::render() {
         return;
     }
 
+    auto& registry = m_timeline->getRegistry();
+
+    // Check for selected screen first
+    entt::entity selectedScreen = m_timeline->getSelectedScreen();
+    if (selectedScreen != entt::null && registry.valid(selectedScreen)) {
+        renderScreenProperties();
+        return;
+    }
+
+    // Check for selected clip
     entt::entity selectedClip = m_timeline->getSelectedClip();
 
     if (selectedClip == entt::null) {
@@ -37,8 +51,6 @@ void PropertyWindow::render() {
         renderTimelineProperties();
         return;
     }
-
-    auto& registry = m_timeline->getRegistry();
 
     if (!registry.valid(selectedClip)) {
         ImGui::TextDisabled("Invalid selection");
@@ -266,6 +278,44 @@ void PropertyWindow::renderPlaybackSection() {
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##playbackMode", &currentMode, playbackModes, IM_ARRAYSIZE(playbackModes))) {
         clip->playbackMode = static_cast<PlaybackMode>(currentMode);
+    }
+
+    // Screen mapping (which screen this clip renders to)
+    ImGui::Spacing();
+    ImGui::Text("Target Screen");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Select which screen this clip renders to.\n"
+                          "Default renders to all screens.");
+    }
+
+    // Build list of available screens
+    auto screenView = registry.view<Screen>();
+    std::vector<entt::entity> screens;
+    std::vector<const char*> screenNames;
+    screenNames.push_back("Default (All)");
+    screens.push_back(entt::null);
+
+    for (auto screenEntity : screenView) {
+        const Screen& screen = screenView.get<Screen>(screenEntity);
+        screens.push_back(screenEntity);
+        screenNames.push_back(screen.name.c_str());
+    }
+
+    // Find current selection index
+    int currentScreenIdx = 0;
+    for (size_t i = 0; i < screens.size(); ++i) {
+        if (screens[i] == clip->targetScreen) {
+            currentScreenIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##targetScreen", &currentScreenIdx, screenNames.data(), static_cast<int>(screenNames.size()))) {
+        clip->targetScreen = screens[currentScreenIdx];
+        std::cout << "[PropertyWindow] Target screen changed to: "
+                  << (clip->targetScreen == entt::null ? "ALL" : std::to_string(static_cast<uint32_t>(clip->targetScreen)))
+                  << " (" << screenNames[currentScreenIdx] << ")" << std::endl;
     }
 
     // Show source vs timeline duration info
@@ -626,6 +676,117 @@ void PropertyWindow::renderKeyframeControls(AnimatableProperty property, const c
     if (!canGoNext) ImGui::EndDisabled();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Go to next keyframe");
+    }
+
+    ImGui::PopID();
+}
+
+void PropertyWindow::renderScreenProperties() {
+    if (!m_timeline) return;
+
+    entt::entity selectedScreen = m_timeline->getSelectedScreen();
+    if (selectedScreen == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    Screen* screen = registry.try_get<Screen>(selectedScreen);
+
+    if (!screen) {
+        ImGui::TextDisabled("Invalid screen");
+        return;
+    }
+
+    // Push unique ID for this screen
+    ImGui::PushID(static_cast<int>(selectedScreen));
+
+    ImGui::Text("Screen: %s", screen->name.c_str());
+    ImGui::Separator();
+
+    // Name
+    if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char nameBuf[256];
+        strncpy(nameBuf, screen->name.c_str(), sizeof(nameBuf) - 1);
+        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
+            screen->name = nameBuf;
+        }
+    }
+
+    // Geometry
+    if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (screen->modelEntity != entt::null && registry.valid(screen->modelEntity)) {
+            Model* model = registry.try_get<Model>(screen->modelEntity);
+            if (model) {
+                ImGui::Text("Model: %s", model->name.c_str());
+                ImGui::Text("Vertices: %zu", model->mesh.vertices.size());
+                ImGui::Text("Triangles: %zu", model->mesh.indices.size() / 3);
+                if (ImGui::SmallButton("Clear Model")) {
+                    screen->modelEntity = entt::null;
+                }
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Invalid model reference");
+                screen->modelEntity = entt::null;
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No model assigned");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Drag a model from Model Bin");
+
+            // Accept model drops
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MODEL_ENTITY")) {
+                    uint32_t modelEntityId = *static_cast<const uint32_t*>(payload->Data);
+                    screen->modelEntity = static_cast<entt::entity>(modelEntityId);
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
+    }
+
+    // Resolution
+    if (ImGui::CollapsingHeader("Resolution", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int resolution[2] = {static_cast<int>(screen->width), static_cast<int>(screen->height)};
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputInt2("Size", resolution)) {
+            screen->width = static_cast<uint32_t>(std::max(1, resolution[0]));
+            screen->height = static_cast<uint32_t>(std::max(1, resolution[1]));
+        }
+
+        // Resolution presets
+        if (ImGui::Button("1920x1080")) { screen->width = 1920; screen->height = 1080; }
+        ImGui::SameLine();
+        if (ImGui::Button("3840x2160")) { screen->width = 3840; screen->height = 2160; }
+        ImGui::SameLine();
+        if (ImGui::Button("1080x1920")) { screen->width = 1080; screen->height = 1920; }
+    }
+
+    // Transform
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Position");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##pos", screen->position.data(), 0.1f);
+
+        ImGui::Text("Rotation");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##rot", screen->rotation.data(), 1.0f, -180.0f, 180.0f);
+
+        ImGui::Text("Scale");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##scale", screen->scale.data(), 0.01f, 0.01f, 100.0f);
+
+        if (ImGui::Button("Reset Transform")) {
+            screen->position = {0.0f, 0.0f, 0.0f};
+            screen->rotation = {0.0f, 0.0f, 0.0f};
+            screen->scale = {1.0f, 1.0f, 1.0f};
+        }
+    }
+
+    // Display
+    if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Visible", &screen->visible);
+        ImGui::SetNextItemWidth(-1);
+        ImGui::SliderFloat("Opacity", &screen->opacity, 0.0f, 1.0f);
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragInt("Z-Order", &screen->zOrder);
     }
 
     ImGui::PopID();

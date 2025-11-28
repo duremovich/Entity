@@ -58,6 +58,15 @@ private:
      */
     bool isClipActiveAtFrame(const struct Clip& clip, FrameNumber frame) const;
 
+    /**
+     * Ensure a screen has a valid render target, creating one if needed.
+     * Handles lazy allocation and dimension change detection.
+     * @param registry The ECS registry
+     * @param screenEntity The screen entity to check/initialize
+     * @return true if screen has valid render target after call
+     */
+    bool ensureScreenRenderTarget(entt::registry& registry, entt::entity screenEntity);
+
     D3D12Renderer* m_renderer{nullptr};
     Timeline* m_timeline{nullptr};
     bool m_debugLogging{false};

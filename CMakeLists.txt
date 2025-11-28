@@ -95,6 +95,7 @@ target_sources(EntityMediaCore
         src/media/PNGSequenceDecoder.cpp
         src/media/ProResDecoder.cpp
         src/media/HAPDecoder.cpp
+        src/media/ObjLoader.cpp
 
         # Render
         src/render/D3D12Renderer.cpp
@@ -114,6 +115,8 @@ target_sources(EntityMediaCore
         src/ui/MediaBinWindow.cpp
         src/ui/PropertyWindow.cpp
         src/ui/MappingWindow.cpp
+        src/ui/ModelBinWindow.cpp
+        src/ui/ScreensWindow.cpp
 
         # Systems
         src/systems/DecodeSystem.cpp

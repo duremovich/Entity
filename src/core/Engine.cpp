@@ -7,6 +7,8 @@
 #include "entity/ui/MediaBinWindow.hpp"
 #include "entity/ui/PropertyWindow.hpp"
 #include "entity/ui/MappingWindow.hpp"
+#include "entity/ui/ModelBinWindow.hpp"
+#include "entity/ui/ScreensWindow.hpp"
 #include "entity/systems/TestSystem.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/BufferSystem.hpp"
@@ -26,6 +28,9 @@
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/OutputMapping.hpp"
+#include "entity/components/Screen.hpp"
+#include "entity/components/Model.hpp"
+#include "entity/media/ObjLoader.hpp"
 #include <GLFW/glfw3.h>
 
 #ifdef _WIN32
@@ -205,12 +210,17 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
     m_windowManager->registerWindow(std::make_unique<PropertyWindow>(m_timeline.get()));
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
+    m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));
+    m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
 
     // Create 5 empty tracks as default
     for (int i = 1; i <= 5; ++i) {
         m_timeline->createTrack("Video Track " + std::to_string(i));
     }
     std::cout << "Created 5 initial empty tracks" << std::endl;
+
+    // Create default screen model and screen
+    createDefaultScreen();
 
     // TODO: Initialize transport
     // m_transport = std::make_unique<Transport>();
@@ -535,6 +545,14 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
 
     // Only handle key press events (not release or repeat)
     if (action != GLFW_PRESS) return;
+
+    // Don't handle shortcuts if user is actively typing in a text field
+    // WantTextInput is more specific than WantCaptureKeyboard - it's only true
+    // when a text input widget is active and accepting input
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantTextInput) {
+        return;
+    }
 
     // Check for Ctrl modifier
     bool ctrlPressed = (mods & GLFW_MOD_CONTROL) != 0;
@@ -1568,10 +1586,29 @@ void Engine::updateClipVideos() {
                 continue;  // Frame processed from ring buffer, skip legacy path
             }
 
-            // Frame not in ring buffer during playback - SKIP to avoid blocking main thread
-            // The decode thread will catch up, and we'll show the next available frame
-            // IMPORTANT: Use cached playState to avoid race conditions
+            // Frame not in ring buffer - try to get nearest available frame
+            // This prevents visual "freeze" when decode thread is catching up
             if (playState == PlaybackState::Playing) {
+                // During playback, try to get any frame that's in the buffer
+                // This is better than showing nothing (freeze)
+                DecodedFrame nearestFrame;
+                if (frameBuffer->ringBuffer->getNearestFrame(mediaFrame, nearestFrame)) {
+                    // Got a frame (might not be exact target, but close enough)
+                    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
+                    bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
+                        videoTex.descriptorSlot,
+                        nearestFrame.data.data(),
+                        nearestFrame.width,
+                        nearestFrame.height,
+                        &srvHandle
+                    );
+                    if (uploadSuccess) {
+                        videoTex.srvHandle = srvHandle;
+                        videoTex.width = nearestFrame.width;
+                        videoTex.height = nearestFrame.height;
+                    }
+                }
+                // Either way, don't fall through to sync decode during playback
                 continue;
             }
             // During paused/scrubbing - fall through to legacy decode (blocking is OK)
@@ -1822,6 +1859,35 @@ void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath)
     state.lastDecodedFrame = UINT32_MAX;  // Force decode on first frame
 
     std::cout << "[Engine] New clip resources created successfully" << std::endl;
+}
+
+void Engine::createDefaultScreen() {
+    // Create a default 16:9 plane model
+    entt::entity modelEntity = m_registry.create();
+    Model& model = m_registry.emplace<Model>(modelEntity);
+    model.name = "Default 16:9 Plane";
+    model.filepath = "";  // Built-in, no file
+    model.mesh = createDefaultScreenMesh();
+    std::cout << "[Engine] Created default model: " << model.name
+              << " (" << model.mesh.vertices.size() << " vertices, "
+              << model.mesh.indices.size() << " indices)" << std::endl;
+
+    // Create the default screen using that model
+    entt::entity screenEntity = m_registry.create();
+    Screen& screen = m_registry.emplace<Screen>(screenEntity);
+    screen.name = "Main Screen";
+    screen.modelEntity = modelEntity;
+    screen.width = 1920;
+    screen.height = 1080;
+    screen.position = {0.0f, 0.0f, 0.0f};
+    screen.rotation = {0.0f, 0.0f, 0.0f};
+    screen.scale = {1.0f, 1.0f, 1.0f};
+    screen.visible = true;
+    screen.opacity = 1.0f;
+    screen.zOrder = 0;
+    std::cout << "[Engine] Created default screen: " << screen.name
+              << " (entity=" << static_cast<uint32_t>(screenEntity) << ", "
+              << screen.width << "x" << screen.height << ")" << std::endl;
 }
 
 bool Engine::importVideo(const std::string& filepath, int trackIndex, Timecode position) {

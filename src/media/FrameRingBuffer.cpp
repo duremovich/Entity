@@ -1,5 +1,7 @@
 #include "entity/media/FrameRingBuffer.hpp"
 #include <algorithm>
+#include <cstdlib>
+#include <climits>
 
 namespace entity {
 
@@ -146,6 +148,53 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
     }
 
     return true;
+}
+
+bool FrameRingBuffer::getNearestFrame(FrameNumber targetFrame, DecodedFrame& outFrame) const {
+    // Get current count and read index
+    uint32_t count = m_count.load(std::memory_order_acquire);
+    if (count == 0) {
+        return false; // Buffer empty
+    }
+
+    uint32_t readIdx = m_readIndex.load(std::memory_order_acquire);
+
+    // First, try to find the exact frame
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t idx = (readIdx + i) % m_capacity;
+        const DecodedFrame& frame = m_frames[idx];
+
+        if (frame.valid.load(std::memory_order_acquire) && frame.frameNumber == targetFrame) {
+            outFrame = frame;
+            return true;
+        }
+    }
+
+    // Exact frame not found - return the closest valid frame
+    // Prefer frames close to target, but any frame is better than freezing
+    int32_t bestDistance = INT32_MAX;
+    int32_t bestOffset = -1;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t idx = (readIdx + i) % m_capacity;
+        const DecodedFrame& frame = m_frames[idx];
+
+        if (frame.valid.load(std::memory_order_acquire)) {
+            int32_t distance = std::abs(static_cast<int32_t>(frame.frameNumber) - static_cast<int32_t>(targetFrame));
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestOffset = static_cast<int32_t>(i);
+            }
+        }
+    }
+
+    if (bestOffset >= 0) {
+        uint32_t idx = (readIdx + static_cast<uint32_t>(bestOffset)) % m_capacity;
+        outFrame = m_frames[idx];
+        return true;
+    }
+
+    return false; // No valid frame found
 }
 
 void FrameRingBuffer::clear() {

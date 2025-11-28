@@ -114,18 +114,6 @@ public:
     using RunScriptCallback = std::function<void(const std::string&)>;
     void setRunScriptCallback(RunScriptCallback callback) { m_runScriptCallback = callback; }
 
-private:
-    /**
-     * Render the menu bar with window visibility toggles.
-     */
-    void renderMenuBar();
-
-    /**
-     * Create the default docked window layout.
-     * Called on first frame or after layout reset.
-     */
-    void createDefaultLayout(ImGuiID dockspaceId);
-
     /**
      * Open Windows native file dialog for video selection.
      * Returns the selected file path, or empty string if cancelled.
@@ -143,6 +131,24 @@ private:
      * Returns the selected file path, or empty string if cancelled.
      */
     std::string openScriptFileDialog();
+
+    /**
+     * Open Windows native file dialog for OBJ model selection.
+     * Returns the selected file path, or empty string if cancelled.
+     */
+    std::string openOBJFileDialog();
+
+private:
+    /**
+     * Render the menu bar with window visibility toggles.
+     */
+    void renderMenuBar();
+
+    /**
+     * Create the default docked window layout.
+     * Called on first frame or after layout reset.
+     */
+    void createDefaultLayout(ImGuiID dockspaceId);
 
 private:
     std::vector<std::unique_ptr<EditorWindow>> m_windows;

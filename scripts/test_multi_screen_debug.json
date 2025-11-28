@@ -1,0 +1,35 @@
+{
+    "version": 1,
+    "description": "Debug multi-screen targeting with screenshots at each step",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/test_video.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 120},
+
+        {"type": "SeekToFrame", "frame": 30},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SelectTab", "tabName": "Stage"},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "CaptureScreenshot", "filepath": "debug/01_initial_one_screen.png", "region": "fullWindow"},
+
+        {"type": "AddScreen", "name": "New Screen", "width": 1920, "height": 1080},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "CaptureScreenshot", "filepath": "debug/02_after_add_second_screen.png", "region": "fullWindow"},
+
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0, "expand": false},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "Main Screen"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/03_target_main_screen.png", "region": "fullWindow"},
+
+        {"type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "New Screen"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/04_target_new_screen.png", "region": "fullWindow"},
+
+        {"type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "All Screens"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "debug/05_target_all_screens.png", "region": "fullWindow"},
+
+        {"type": "Exit"}
+    ]
+}

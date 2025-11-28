@@ -59,6 +59,11 @@ private:
     void renderTimelineProperties();
 
     /**
+     * Render screen properties (when a screen is selected).
+     */
+    void renderScreenProperties();
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control

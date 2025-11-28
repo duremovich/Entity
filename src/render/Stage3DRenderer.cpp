@@ -106,9 +106,27 @@ void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImV
                                       ImTextureID textureID) {
     // Screen quad in world space
     // Screen is centered at origin, elevated above floor
-    float hw = screenWidth * 0.5f;
-    float hh = screenHeight * 0.5f;
-    float y = screenElevation;
+    float hw = screenWidth * 0.5f * screenScale.x;
+    float hh = screenHeight * 0.5f * screenScale.y;
+    float baseY = screenElevation;
+
+    // Build transformation matrix from screen transform
+    // Order: Scale -> Rotate -> Translate
+    glm::mat4 transform = glm::mat4(1.0f);
+
+    // Translation (position offset + base elevation)
+    transform = glm::translate(transform, glm::vec3(screenPosition.x, screenPosition.y + baseY, screenPosition.z));
+
+    // Rotation (degrees to radians) - apply in Y, X, Z order (yaw, pitch, roll)
+    transform = glm::rotate(transform, glm::radians(screenRotation.y), glm::vec3(0.0f, 1.0f, 0.0f));  // Yaw
+    transform = glm::rotate(transform, glm::radians(screenRotation.x), glm::vec3(1.0f, 0.0f, 0.0f));  // Pitch
+    transform = glm::rotate(transform, glm::radians(screenRotation.z), glm::vec3(0.0f, 0.0f, 1.0f));  // Roll
+
+    // Helper lambda to transform a point
+    auto transformPoint = [&transform](const glm::vec3& p) -> glm::vec3 {
+        glm::vec4 result = transform * glm::vec4(p, 1.0f);
+        return glm::vec3(result);
+    };
 
     // Subdivide the quad for perspective-correct texture mapping
     // ImGui's AddImageQuad does linear interpolation in 2D which causes warping
@@ -125,17 +143,18 @@ void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImV
                 float v0 = static_cast<float>(sy) / subdivisionsY;
                 float v1 = static_cast<float>(sy + 1) / subdivisionsY;
 
-                // Calculate world positions for this sub-quad
+                // Calculate local positions for this sub-quad (centered at origin)
                 float x0 = -hw + u0 * 2.0f * hw;
                 float x1 = -hw + u1 * 2.0f * hw;
-                float y0 = y + hh - v0 * 2.0f * hh;  // Top
-                float y1 = y + hh - v1 * 2.0f * hh;  // Bottom
+                float y0 = hh - v0 * 2.0f * hh;  // Top
+                float y1 = hh - v1 * 2.0f * hh;  // Bottom
 
+                // Transform corners to world space
                 glm::vec3 subCorners[4] = {
-                    glm::vec3(x0, y0, 0),  // Top-left
-                    glm::vec3(x1, y0, 0),  // Top-right
-                    glm::vec3(x1, y1, 0),  // Bottom-right
-                    glm::vec3(x0, y1, 0)   // Bottom-left
+                    transformPoint(glm::vec3(x0, y0, 0)),  // Top-left
+                    transformPoint(glm::vec3(x1, y0, 0)),  // Top-right
+                    transformPoint(glm::vec3(x1, y1, 0)),  // Bottom-right
+                    transformPoint(glm::vec3(x0, y1, 0))   // Bottom-left
                 };
 
                 // Project corners to screen space
@@ -170,10 +189,10 @@ void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImV
     } else {
         // Draw placeholder quad (no subdivision needed for solid color)
         glm::vec3 corners[4] = {
-            glm::vec3(-hw, y + hh, 0),  // Top-left
-            glm::vec3( hw, y + hh, 0),  // Top-right
-            glm::vec3( hw, y - hh, 0),  // Bottom-right
-            glm::vec3(-hw, y - hh, 0)   // Bottom-left
+            transformPoint(glm::vec3(-hw, hh, 0)),  // Top-left
+            transformPoint(glm::vec3( hw, hh, 0)),  // Top-right
+            transformPoint(glm::vec3( hw, -hh, 0)), // Bottom-right
+            transformPoint(glm::vec3(-hw, -hh, 0))  // Bottom-left
         };
 
         ImVec2 screenCorners[4];
@@ -201,10 +220,10 @@ void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImV
 
     // Draw screen frame/border (use corner points for frame)
     glm::vec3 frameCorners[4] = {
-        glm::vec3(-hw, y + hh, 0),
-        glm::vec3( hw, y + hh, 0),
-        glm::vec3( hw, y - hh, 0),
-        glm::vec3(-hw, y - hh, 0)
+        transformPoint(glm::vec3(-hw, hh, 0)),
+        transformPoint(glm::vec3( hw, hh, 0)),
+        transformPoint(glm::vec3( hw, -hh, 0)),
+        transformPoint(glm::vec3(-hw, -hh, 0))
     };
     ImVec2 screenFrameCorners[4];
     for (int i = 0; i < 4; ++i) {
@@ -234,8 +253,7 @@ void Stage3DRenderer::drawAxes(ImDrawList* drawList, ImVec2 screenPos, ImVec2 sc
                screenPos, screenSize, IM_COL32(80, 80, 255, 255), 3.0f);
 }
 
-void Stage3DRenderer::render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
-                              ImTextureID composeTextureID) {
+void Stage3DRenderer::beginRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize) {
     // Update camera aspect ratio
     m_camera.aspectRatio = screenSize.x / screenSize.y;
 
@@ -254,10 +272,9 @@ void Stage3DRenderer::render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 scre
 
     // Draw coordinate axes
     drawAxes(drawList, screenPos, screenSize);
+}
 
-    // Draw the screen quad with composited texture
-    drawScreenQuad(drawList, screenPos, screenSize, composeTextureID);
-
+void Stage3DRenderer::endRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize) {
     // Pop clip rect
     drawList->PopClipRect();
 
@@ -267,6 +284,127 @@ void Stage3DRenderer::render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 scre
              m_camera.orbitYaw, m_camera.orbitPitch, m_camera.orbitDistance);
     drawList->AddText(ImVec2(screenPos.x + 5, screenPos.y + screenSize.y - 20),
                       IM_COL32(150, 150, 150, 255), cameraInfo);
+}
+
+void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
+                                  const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
+                                  ImTextureID textureID, bool isSelected) {
+    // Screen quad in world space
+    float hw = screenWidth * 0.5f * scale.x;
+    float hh = screenHeight * 0.5f * scale.y;
+    float baseY = screenElevation;
+
+    // Build transformation matrix
+    glm::mat4 transform = glm::mat4(1.0f);
+    transform = glm::translate(transform, glm::vec3(position.x, position.y + baseY, position.z));
+    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));  // Yaw
+    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));  // Pitch
+    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));  // Roll
+
+    auto transformPoint = [&transform](const glm::vec3& p) -> glm::vec3 {
+        glm::vec4 result = transform * glm::vec4(p, 1.0f);
+        return glm::vec3(result);
+    };
+
+    // Subdivide for perspective-correct texture mapping
+    const int subdivisionsX = 16;
+    const int subdivisionsY = 16;
+
+    if (textureID) {
+        for (int sy = 0; sy < subdivisionsY; ++sy) {
+            for (int sx = 0; sx < subdivisionsX; ++sx) {
+                float u0 = static_cast<float>(sx) / subdivisionsX;
+                float u1 = static_cast<float>(sx + 1) / subdivisionsX;
+                float v0 = static_cast<float>(sy) / subdivisionsY;
+                float v1 = static_cast<float>(sy + 1) / subdivisionsY;
+
+                float x0 = -hw + u0 * 2.0f * hw;
+                float x1 = -hw + u1 * 2.0f * hw;
+                float y0 = hh - v0 * 2.0f * hh;
+                float y1 = hh - v1 * 2.0f * hh;
+
+                glm::vec3 subCorners[4] = {
+                    transformPoint(glm::vec3(x0, y0, 0)),
+                    transformPoint(glm::vec3(x1, y0, 0)),
+                    transformPoint(glm::vec3(x1, y1, 0)),
+                    transformPoint(glm::vec3(x0, y1, 0))
+                };
+
+                ImVec2 screenSubCorners[4];
+                bool allValid = true;
+                for (int i = 0; i < 4; ++i) {
+                    screenSubCorners[i] = projectPoint(subCorners[i], screenPos, screenSize);
+                    if (screenSubCorners[i].x < 0 && screenSubCorners[i].y < 0) {
+                        allValid = false;
+                        break;
+                    }
+                }
+
+                if (!allValid) continue;
+
+                ImVec2 uvs[4] = {
+                    ImVec2(u0, v0), ImVec2(u1, v0), ImVec2(u1, v1), ImVec2(u0, v1)
+                };
+
+                drawList->AddImageQuad(textureID,
+                    screenSubCorners[0], screenSubCorners[1], screenSubCorners[2], screenSubCorners[3],
+                    uvs[0], uvs[1], uvs[2], uvs[3], IM_COL32_WHITE);
+            }
+        }
+    } else {
+        glm::vec3 corners[4] = {
+            transformPoint(glm::vec3(-hw, hh, 0)),
+            transformPoint(glm::vec3( hw, hh, 0)),
+            transformPoint(glm::vec3( hw, -hh, 0)),
+            transformPoint(glm::vec3(-hw, -hh, 0))
+        };
+
+        ImVec2 screenCorners[4];
+        for (int i = 0; i < 4; ++i) {
+            screenCorners[i] = projectPoint(corners[i], screenPos, screenSize);
+            if (screenCorners[i].x < 0 && screenCorners[i].y < 0) return;
+        }
+
+        drawList->AddQuadFilled(screenCorners[0], screenCorners[1], screenCorners[2], screenCorners[3],
+                                IM_COL32(40, 40, 45, 255));
+
+        ImVec2 center;
+        center.x = (screenCorners[0].x + screenCorners[2].x) * 0.5f;
+        center.y = (screenCorners[0].y + screenCorners[2].y) * 0.5f;
+        const char* text = "No Video";
+        ImVec2 textSize = ImGui::CalcTextSize(text);
+        drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f),
+                          IM_COL32(150, 150, 150, 255), text);
+    }
+
+    // Draw frame/border
+    glm::vec3 frameCorners[4] = {
+        transformPoint(glm::vec3(-hw, hh, 0)),
+        transformPoint(glm::vec3( hw, hh, 0)),
+        transformPoint(glm::vec3( hw, -hh, 0)),
+        transformPoint(glm::vec3(-hw, -hh, 0))
+    };
+    ImVec2 screenFrameCorners[4];
+    for (int i = 0; i < 4; ++i) {
+        screenFrameCorners[i] = projectPoint(frameCorners[i], screenPos, screenSize);
+    }
+
+    // Use different color if selected
+    ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(100, 100, 100, 255);
+    float frameThickness = isSelected ? 3.0f : 2.0f;
+
+    drawList->AddLine(screenFrameCorners[0], screenFrameCorners[1], frameColor, frameThickness);
+    drawList->AddLine(screenFrameCorners[1], screenFrameCorners[2], frameColor, frameThickness);
+    drawList->AddLine(screenFrameCorners[2], screenFrameCorners[3], frameColor, frameThickness);
+    drawList->AddLine(screenFrameCorners[3], screenFrameCorners[0], frameColor, frameThickness);
+}
+
+void Stage3DRenderer::render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
+                              ImTextureID composeTextureID) {
+    // Use new begin/draw/end pattern for backwards compatibility
+    beginRender(drawList, screenPos, screenSize);
+    drawScreen(drawList, screenPos, screenSize, screenPosition, screenRotation, screenScale, composeTextureID, false);
+    endRender(drawList, screenPos, screenSize);
 }
 
 void Stage3DRenderer::handleInput(ImVec2 mousePos, ImVec2 screenPos, ImVec2 screenSize,

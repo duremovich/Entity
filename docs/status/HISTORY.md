@@ -6,6 +6,28 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase 5: Projection Mapping (In Progress)
 
+### Multi-Screen Targeting Fix (2025-11-28)
+
+Fixed critical descriptor heap slot collision that caused video to disappear when a second screen was created.
+
+**Root Cause**: Compose targets and video textures were allocated overlapping descriptor heap slots:
+- Compose targets used slots `2 + slot` (0, 1, 2, ...)
+- Video textures used slots `3 + slot` (0, 1, 2, ...)
+- When compose target 1 was created (heap slot 3), it overwrote video texture 0's SRV
+
+**Fix**:
+- Added `MAX_COMPOSE_TARGETS = 8` constant to D3D12Renderer
+- Fixed heap layout: compose targets at slots 2-9, video textures at slots 10+
+- Video textures now use slot `2 + MAX_COMPOSE_TARGETS + slot`
+
+**New Script Commands**:
+- `AddScreen` - Create new screen via script
+- `SetClipTargetScreen` - Set clip's target screen via script
+
+**Files**: D3D12Renderer.hpp/cpp, Commands.hpp/cpp, CommandDispatcher.cpp
+
+---
+
 ### Window Management Improvements (2025-11-27)
 
 Implemented per-window undocking via right-click context menu and fixed ping-pong playback mode.

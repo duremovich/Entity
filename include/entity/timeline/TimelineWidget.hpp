@@ -100,20 +100,10 @@ private:
     float renderClip(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos);
 
     /**
-     * Render property tracks for an expanded clip.
+     * Render property tracks for an expanded clip (keyframe diamonds only).
      * @return Height of rendered property tracks
      */
     float renderPropertyTracks(entt::entity clipEntity, int trackIndex, ImVec2 baseWindowPos, float clipY);
-
-    /**
-     * Render a single property track row with stopwatch, keyframe nav, and keyframe diamonds.
-     * @param headerX X position of the header area (fixed on left)
-     * @param clipStartX X position of the clip start (scrollable)
-     */
-    void renderPropertyRow(entt::entity clipEntity, AnimatableProperty property,
-                          const char* propertyName, float rowY,
-                          float headerX, float clipStartX,
-                          float clipWidth, float clipStartFrame, float framerate);
 
     /**
      * Render the playhead indicator.
@@ -164,10 +154,29 @@ private:
     Timecode checkClipCollision(entt::entity clipEntity, Timecode newStartTime, int trackIndex);
 
     /**
-     * Render the track header area (left side with track labels).
-     * Returns true if a track header was right-clicked.
+     * Render the track header panel (left side with hierarchy).
+     * This panel shows tracks with twirl-downs for clips and properties.
+     * @param panelHeight Height of the panel
+     * @param verticalScroll Current vertical scroll position to sync
      */
-    void renderTrackHeaders();
+    void renderTrackHeaderPanel(float panelHeight, float verticalScroll);
+
+    /**
+     * Render a single track row in the header panel.
+     * @param trackEntity The track entity
+     * @param trackIndex Track index
+     * @param rowY Y position for this row
+     * @return Height consumed by this track (including expanded clips)
+     */
+    float renderTrackHeaderRow(entt::entity trackEntity, int trackIndex, float rowY);
+
+    /**
+     * Render a clip row in the header panel (indented under track).
+     * @param clipEntity The clip entity
+     * @param rowY Y position for this row
+     * @return Height consumed by this clip (including expanded properties)
+     */
+    float renderClipHeaderRow(entt::entity clipEntity, float rowY);
 
     /**
      * Handle right-click context menus.
@@ -236,10 +245,14 @@ private:
     // Callbacks
     MediaDropCallback m_mediaDropCallback;
 
-    // Clip expansion state (for showing property tracks)
+    // Track and clip expansion state (for showing hierarchy)
+    std::unordered_set<uint32_t> m_expandedTracks;  // Set of expanded track entity IDs
     std::unordered_set<uint32_t> m_expandedClips;  // Set of expanded clip entity IDs
     static constexpr float PROPERTY_ROW_HEIGHT = 20.0f;  // Height of each property track row
-    static constexpr float TRACK_HEADER_WIDTH = 150.0f;  // Width of track header area
+    static constexpr float TRACK_HEADER_WIDTH = 200.0f;  // Width of track header panel
+    static constexpr float HEADER_ROW_HEIGHT = 24.0f;  // Height of track/clip header rows
+    static constexpr float INDENT_WIDTH = 16.0f;  // Indentation for hierarchy levels
+    float m_syncScrollY{0.0f};  // Synchronized vertical scroll position
 
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};
