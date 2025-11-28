@@ -10,7 +10,7 @@ Condensed from code review (2025-11-27). Full details in `docs/archive/CODE_REVI
 
 | ID | File | Issue |
 |----|------|-------|
-| CRIT-01 | FrameRingBuffer.cpp:93-148 | Race condition in `consumeUpTo()` - TOCTOU between search and validity check |
+| ~~CRIT-01~~ | ~~FrameRingBuffer.cpp:93-148~~ | ~~Race condition in `consumeUpTo()` - TOCTOU between search and validity check~~ - **FIXED**: Added count validation and safety checks to prevent wraparound |
 | CRIT-02 | DecodeSystem.cpp:261-296 | Use-after-free in decode thread - raw pointer to DecodeWorker may become dangling |
 | CRIT-03 | D3D12Renderer.cpp:1096-1100 | Static `firstUpload` persists across ALL video textures - breaks state transitions |
 | CRIT-04 | D3D12Renderer.cpp:818-824 | Double-mapped constant buffer without GPU sync - race between CPU writes and GPU reads |

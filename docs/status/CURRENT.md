@@ -15,6 +15,8 @@ Independent per-screen rendering for projection mapping is now functional.
 
 2. **Descriptor heap slot collision** (2025-11-28) - Fixed critical bug where adding a second screen caused video to disappear on ALL screens. Root cause: compose targets and video textures were allocated overlapping descriptor heap slots. Fix: Added `MAX_COMPOSE_TARGETS = 8` constant and proper slot separation.
 
+3. **Multi-video playback freeze** (2025-11-28) - Fixed critical freeze (5+ seconds) when playing multiple videos on timeline. Root cause: Race condition between `clear()` and `consumeUpTo()` in FrameRingBuffer caused count to wrap to UINT32_MAX, resulting in 4 billion loop iterations. Fix: Added count validation checks to detect and handle corrupted count values.
+
 ### Component Status
 
 | Component | Status | Details |

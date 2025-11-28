@@ -76,6 +76,12 @@ bool FrameRingBuffer::peek(DecodedFrame& outFrame) const {
 bool FrameRingBuffer::getFrame(FrameNumber frameNumber, DecodedFrame& outFrame) const {
     // Get current count and read index
     uint32_t count = m_count.load(std::memory_order_acquire);
+
+    // SAFETY: Check for corrupted count (race condition with clear())
+    if (count == 0 || count > m_capacity) {
+        return false;
+    }
+
     uint32_t readIdx = m_readIndex.load(std::memory_order_acquire);
 
     // Search through buffered frames
@@ -97,6 +103,13 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
     uint32_t count = m_count.load(std::memory_order_acquire);
     if (count == 0) {
         return false; // Buffer empty
+    }
+
+    // SAFETY: Check for corrupted count (race condition with clear())
+    // If count is larger than capacity, buffer was cleared during a race - bail out
+    if (count > m_capacity) {
+        m_count.store(0, std::memory_order_release);
+        return false;
     }
 
     uint32_t readIdx = m_readIndex.load(std::memory_order_acquire);
@@ -139,6 +152,13 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
     uint32_t framesToConsume = static_cast<uint32_t>(bestOffset) + 1;
 
     for (uint32_t i = 0; i < framesToConsume; ++i) {
+        // SAFETY: Check count before decrementing to prevent wraparound race with clear()
+        uint32_t currentCount = m_count.load(std::memory_order_acquire);
+        if (currentCount == 0 || currentCount > m_capacity) {
+            // Buffer was cleared by another thread during our operation - stop
+            break;
+        }
+
         uint32_t idx = m_readIndex.load(std::memory_order_acquire);
         m_frames[idx].clear();
 
@@ -153,8 +173,10 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
 bool FrameRingBuffer::getNearestFrame(FrameNumber targetFrame, DecodedFrame& outFrame) const {
     // Get current count and read index
     uint32_t count = m_count.load(std::memory_order_acquire);
-    if (count == 0) {
-        return false; // Buffer empty
+
+    // SAFETY: Check for corrupted count (race condition with clear())
+    if (count == 0 || count > m_capacity) {
+        return false; // Buffer empty or corrupted
     }
 
     uint32_t readIdx = m_readIndex.load(std::memory_order_acquire);
