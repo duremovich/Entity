@@ -44,7 +44,7 @@ jobs:
         id: cache-vcpkg-tool
         with:
           path: ${{ env.VCPKG_ROOT }}
-          key: vcpkg-tool-${{ runner.os }}-256acc64012b23a13041d8705805e1f23b43a024
+          key: vcpkg-tool-${{ runner.os }}-9edb1b8e590cc086563301d735cae4b6e732d2d2
 
       - name: Bootstrap vcpkg
         if: steps.cache-vcpkg-tool.outputs.cache-hit != 'true'
@@ -52,7 +52,7 @@ jobs:
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           cd "$VCPKG_ROOT"
-          git checkout 256acc64012b23a13041d8705805e1f23b43a024
+          git checkout 9edb1b8e590cc086563301d735cae4b6e732d2d2
           ./bootstrap-vcpkg.bat
 
       # Cache the installed packages. This is the big win.
