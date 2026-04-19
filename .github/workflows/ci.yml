@@ -20,10 +20,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # vcpkg is installed on windows-latest runners but in a known-bad state
-      # for manifest mode. Clone a fresh copy pinned to the same baseline we
-      # use locally, so CI builds match developer builds bit-for-bit.
+      # =====================================================================
+      # Caching strategy (two layers):
+      #
+      # 1. actions/cache for build/vcpkg_installed/ — the fully-built installed
+      #    packages, keyed on vcpkg.json content hash. On a cache hit, vcpkg's
+      #    manifest check sees everything already present and skips the entire
+      #    FFmpeg-from-source build (saves ~25 minutes per run).
+      #
+      # 2. NuGet binary cache at vcpkg's PACKAGE level, stored in GitHub
+      #    Packages. Complements layer 1: if vcpkg.json changes so cache-hit
+      #    misses, but most individual packages are unchanged, NuGet can still
+      #    serve them pre-built and only the changed ones rebuild.
+      #
+      # Cold first-run (no caches): ~30 min. Warm run (both caches hit): ~3 min.
+      # Partial (vcpkg.json changed): ~5-10 min depending on what changed.
+      # =====================================================================
+
+      # Cache the vcpkg checkout itself (~200MB clone + bootstrap build).
+      # Key includes the baseline commit so upgrading vcpkg invalidates cleanly.
+      - name: Cache vcpkg tool
+        uses: actions/cache@v4
+        id: cache-vcpkg-tool
+        with:
+          path: ${{ env.VCPKG_ROOT }}
+          key: vcpkg-tool-${{ runner.os }}-9edb1b8e590cc086563301d735cae4b6e732d2d2
+
       - name: Bootstrap vcpkg
+        if: steps.cache-vcpkg-tool.outputs.cache-hit != 'true'
         shell: bash
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
@@ -31,28 +55,53 @@ jobs:
           git checkout 9edb1b8e590cc086563301d735cae4b6e732d2d2
           ./bootstrap-vcpkg.bat
 
-      # Binary-cache vcpkg builds to GitHub Packages (the NuGet source GitHub
-      # injects for every workflow). Without this, every CI run rebuilds FFmpeg
-      # from source (~30 minutes). With it, cold runs are ~30 min but warm runs
-      # are ~2 min.
-      - name: Configure vcpkg binary cache
+      # Cache the installed packages. This is the big win.
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-installed-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-installed-${{ runner.os }}-
+
+      # NuGet binary cache as a secondary layer. Handles the case where
+      # vcpkg.json changes (cache miss on layer 1) but most packages are still
+      # cached by GitHub Packages at the individual-port level.
+      - name: Configure vcpkg NuGet binary cache
         shell: pwsh
         run: |
           $nugetUrl = "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           & "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget | Out-Null
           $nuget = (& "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget) | Select-Object -Last 1
           & $nuget sources add -Source $nugetUrl -StorePasswordInClearText -Name GitHubPackages `
-            -UserName "${{ github.repository_owner }}" -Password "${{ secrets.GITHUB_TOKEN }}"
-          & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" -Source $nugetUrl
+            -UserName "${{ github.repository_owner }}" -Password "${{ secrets.GITHUB_TOKEN }}" 2>&1 | Out-Null
+          & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" -Source $nugetUrl 2>&1 | Out-Null
           echo "VCPKG_BINARY_SOURCES=clear;nuget,$nugetUrl,readwrite" >> $env:GITHUB_ENV
 
-      - name: Configure CMake
+      # Configure CMake — vcpkg install happens here during manifest resolution.
+      # Wrapped in a retry loop because cold runs hit transient MSYS / GitHub
+      # download failures during FFmpeg's build. With caches warm this retry is
+      # rarely exercised, but it's a cheap safety net.
+      - name: Configure CMake (with retry)
         shell: bash
         run: |
-          cmake -B build -S . \
-            -G "Visual Studio 17 2022" \
-            -A x64 \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+          for attempt in 1 2 3; do
+            echo "=== cmake configure attempt $attempt/3 ==="
+            if cmake -B build -S . \
+                -G "Visual Studio 17 2022" \
+                -A x64 \
+                -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"; then
+              echo "=== cmake configure succeeded on attempt $attempt ==="
+              exit 0
+            fi
+            echo "=== cmake configure failed on attempt $attempt ==="
+            if [ $attempt -lt 3 ]; then
+              echo "Sleeping 20s before retry..."
+              sleep 20
+            fi
+          done
+          echo "=== cmake configure failed after 3 attempts ==="
+          exit 1
 
       - name: Build (Release)
         shell: bash
