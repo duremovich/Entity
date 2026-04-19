@@ -16,7 +16,8 @@ struct GLFWwindow;
 namespace entity {
 
 // Forward declarations
-class D3D12Renderer;
+class IRenderer;
+class D3D12Renderer;  // Owned internally; external callers get IRenderer*.
 class Timeline;
 class WindowManager;
 class Decoder;
@@ -77,7 +78,7 @@ public:
     /**
      * Get the D3D12 renderer.
      */
-    D3D12Renderer* getRenderer() { return m_renderer.get(); }
+    IRenderer* getRenderer();  // Definition in Engine.cpp — returns m_renderer.get() upcast.
 
     /**
      * Get the Timeline.

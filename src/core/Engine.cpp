@@ -358,6 +358,11 @@ void Engine::requestExit() {
     m_running = false;
 }
 
+IRenderer* Engine::getRenderer() {
+    // Upcast from the concrete unique_ptr; external callers see only the interface.
+    return m_renderer.get();
+}
+
 void Engine::autoSaveTick(double deltaTime) {
     if (!m_timeline) return;
     m_autosaveAccumulator += deltaTime;
@@ -1624,17 +1629,14 @@ void Engine::updateClipVideos() {
 
             if (gotFrame) {
                 // Got frame from ring buffer - upload to GPU
-                D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
                 bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
                     videoTex.descriptorSlot,
                     ringFrame.data.data(),
                     ringFrame.width,
-                    ringFrame.height,
-                    &srvHandle
+                    ringFrame.height
                 );
 
                 if (uploadSuccess) {
-                    videoTex.srvHandle = srvHandle;
                     videoTex.width = ringFrame.width;
                     videoTex.height = ringFrame.height;
                     if (stateIt != m_clipState.end()) {
@@ -1657,16 +1659,13 @@ void Engine::updateClipVideos() {
                 DecodedFrame nearestFrame;
                 if (frameBuffer->ringBuffer->getNearestFrame(mediaFrame, nearestFrame)) {
                     // Got a frame (might not be exact target, but close enough)
-                    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
                     bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
                         videoTex.descriptorSlot,
                         nearestFrame.data.data(),
                         nearestFrame.width,
-                        nearestFrame.height,
-                        &srvHandle
+                        nearestFrame.height
                     );
                     if (uploadSuccess) {
-                        videoTex.srvHandle = srvHandle;
                         videoTex.width = nearestFrame.width;
                         videoTex.height = nearestFrame.height;
                     }
@@ -1718,17 +1717,14 @@ void Engine::updateClipVideos() {
             stateIt->second.lastDecodedFrame = mediaFrame;
 
             // Upload frame to GPU texture slot
-            D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};
             bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
                 videoTex.descriptorSlot,
                 frame->data.data(),
                 frame->width,
-                frame->height,
-                &srvHandle
+                frame->height
             );
 
             if (uploadSuccess) {
-                videoTex.srvHandle = srvHandle;
                 videoTex.width = frame->width;
                 videoTex.height = frame->height;
             }

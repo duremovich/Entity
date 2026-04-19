@@ -2,20 +2,13 @@
 
 #include "../core/Types.hpp"
 #include "../components/OutputDisplay.hpp"
+#include "../render/IRenderer.hpp"
 #include <entt/entt.hpp>
-#include <d3d12.h>
-#include <dxgi1_6.h>
-#include <wrl/client.h>
 #include <vector>
 #include <string>
 #include <memory>
 
 namespace entity {
-
-using Microsoft::WRL::ComPtr;
-
-// Forward declarations
-class D3D12Renderer;
 
 /**
  * Display info from system enumeration.
@@ -49,7 +42,7 @@ struct DisplayInfo {
  */
 class OutputManager {
 public:
-    OutputManager(D3D12Renderer* renderer, entt::registry& registry);
+    OutputManager(IRenderer* renderer, entt::registry& registry);
     ~OutputManager();
 
     /**
@@ -140,9 +133,9 @@ public:
      * Render all enabled outputs.
      * Called each frame after compositing.
      *
-     * @param compositedTexture GPU handle to the full composited raster
+     * @param compositedTexture Texture reference for the full composited raster
      */
-    void renderOutputs(D3D12_GPU_DESCRIPTOR_HANDLE compositedTexture);
+    void renderOutputs(TextureRef compositedTexture);
 
     /**
      * Get the primary preview output (if any).
@@ -163,9 +156,9 @@ private:
     /**
      * Render to a single output.
      */
-    void renderToOutput(entt::entity outputEntity, D3D12_GPU_DESCRIPTOR_HANDLE compositedTexture);
+    void renderToOutput(entt::entity outputEntity, TextureRef compositedTexture);
 
-    D3D12Renderer* m_renderer{nullptr};
+    IRenderer* m_renderer{nullptr};
     entt::registry& m_registry;
 
     // Available physical displays from enumeration

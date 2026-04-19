@@ -8,7 +8,6 @@
  */
 
 #include "entity/render/OutputManager.hpp"
-#include "entity/render/D3D12Renderer.hpp"
 #include "entity/components/MappingSurface.hpp"
 
 #ifdef _WIN32
@@ -20,7 +19,7 @@
 
 namespace entity {
 
-OutputManager::OutputManager(D3D12Renderer* renderer, entt::registry& registry)
+OutputManager::OutputManager(IRenderer* renderer, entt::registry& registry)
     : m_renderer(renderer)
     , m_registry(registry)
 {
@@ -295,8 +294,8 @@ void OutputManager::setFullscreen(entt::entity outputEntity, bool fullscreen) {
               << (fullscreen ? "on" : "off") << std::endl;
 }
 
-void OutputManager::renderOutputs(D3D12_GPU_DESCRIPTOR_HANDLE compositedTexture) {
-    if (!m_initialized || compositedTexture.ptr == 0) {
+void OutputManager::renderOutputs(TextureRef compositedTexture) {
+    if (!m_initialized || !compositedTexture.valid()) {
         return;
     }
 
@@ -320,7 +319,7 @@ void OutputManager::releaseOutputResources(entt::entity outputEntity) {
     // TODO: Release render resources for this output
 }
 
-void OutputManager::renderToOutput(entt::entity outputEntity, D3D12_GPU_DESCRIPTOR_HANDLE compositedTexture) {
+void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef compositedTexture) {
     if (!m_renderer || !m_registry.valid(outputEntity)) {
         return;
     }

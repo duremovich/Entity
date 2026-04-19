@@ -2,20 +2,19 @@
 
 #include "System.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/render/IRenderer.hpp"
 #include <entt/entt.hpp>
-#include <d3d12.h>
 
 namespace entity {
 
 // Forward declarations
-class D3D12Renderer;
 class Timeline;
 
 /**
  * CompositorSystem - Renders visible layers to screen
  *
  * Queries entities with Transform and MediaLayer components,
- * sorts by z-order, and issues draw calls to the renderer.
+ * sorts by z-order, and issues draw calls through the IRenderer interface.
  *
  * Timeline-aware: Only renders clips that are active at the current frame.
  * Supports multi-layer compositing with alpha blending.
@@ -24,9 +23,9 @@ class CompositorSystem : public System {
 public:
     /**
      * Construct compositor system with renderer reference.
-     * @param renderer Pointer to D3D12 renderer (must outlive this system)
+     * @param renderer Pointer to rendering backend (must outlive this system)
      */
-    explicit CompositorSystem(D3D12Renderer* renderer);
+    explicit CompositorSystem(IRenderer* renderer);
 
     /**
      * Set the timeline for frame-accurate rendering.
@@ -48,9 +47,9 @@ public:
      * Used for projection mapping output.
      *
      * @param registry The ECS registry containing mapping surfaces
-     * @param textureSrv GPU descriptor handle for the video texture to render
+     * @param texture Texture reference for the video texture to render
      */
-    void renderMappingSurfaces(entt::registry& registry, D3D12_GPU_DESCRIPTOR_HANDLE textureSrv);
+    void renderMappingSurfaces(entt::registry& registry, TextureRef texture);
 
 private:
     /**
@@ -67,7 +66,7 @@ private:
      */
     bool ensureScreenRenderTarget(entt::registry& registry, entt::entity screenEntity);
 
-    D3D12Renderer* m_renderer{nullptr};
+    IRenderer* m_renderer{nullptr};
     Timeline* m_timeline{nullptr};
     bool m_debugLogging{false};
 };

@@ -1,6 +1,6 @@
 #include "entity/ui/StageWindow.hpp"
 #include "entity/core/Engine.hpp"
-#include "entity/render/D3D12Renderer.hpp"
+#include "entity/render/IRenderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
@@ -46,7 +46,7 @@ void StageWindow::render2DView() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
 
-    D3D12Renderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
+    IRenderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
     Timeline* timeline = m_engine ? m_engine->getTimeline() : nullptr;
 
     // Try to display the composited result from CompositorSystem
@@ -157,7 +157,7 @@ void StageWindow::render3DView() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
 
-    D3D12Renderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
+    IRenderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
     Timeline* timeline = m_engine ? m_engine->getTimeline() : nullptr;
 
     // Get selected screen for highlighting
