@@ -5,6 +5,7 @@
  */
 
 #include "entity/render/D3D12Renderer.hpp"
+#include "entity/render/DescriptorHeapLayout.hpp"
 
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -972,15 +973,11 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
 
 Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     // Create descriptor heap for ImGui SRV (fonts/textures + video textures)
-    // Descriptor heap layout:
-    // Slot 0: ImGui font texture
-    // Slot 1: Legacy single video texture (for backwards compatibility)
-    // Slots 2 to 2+MAX_COMPOSE_TARGETS-1: Compose targets (one per screen)
-    // Slots 2+MAX_COMPOSE_TARGETS to end: Video texture slots for compositing layers
+    // Descriptor heap layout is owned by DescriptorHeapLayout (see header).
+    // Slots: [0]=ImGui, [1]=legacy video, [compose targets...], [video textures...]
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    // Heap layout: [0]=font, [1]=legacy, [2..2+MAX_COMPOSE_TARGETS-1]=compose targets, [2+MAX_COMPOSE_TARGETS..]=video textures
-    heapDesc.NumDescriptors = 2 + MAX_COMPOSE_TARGETS + MAX_VIDEO_TEXTURE_SLOTS;
+    heapDesc.NumDescriptors = DescriptorHeapLayout::TOTAL_SLOTS;
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
     HRESULT hr = m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
@@ -1268,14 +1265,13 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
         srvDesc.Texture2D.MipLevels = 1;
         srvDesc.Texture2D.MostDetailedMip = 0;
 
-        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
-        cpuHandle.ptr += m_srvDescriptorSize;  // Offset to slot 1
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
+            m_imguiSrvHeap.Get(), DescriptorHeapLayout::LEGACY_VIDEO_SLOT, m_srvDescriptorSize);
 
         m_device->CreateShaderResourceView(m_videoTexture.Get(), &srvDesc, cpuHandle);
 
-        // Store GPU handle for ImGui
-        m_videoTextureGpuHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
-        m_videoTextureGpuHandle.ptr += m_srvDescriptorSize;  // Offset to slot 1
+        m_videoTextureGpuHandle = DescriptorHeapLayout::gpuHandle(
+            m_imguiSrvHeap.Get(), DescriptorHeapLayout::LEGACY_VIDEO_SLOT, m_srvDescriptorSize);
 
         m_videoTextureWidth = width;
         m_videoTextureHeight = height;
@@ -1498,16 +1494,15 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         srvDesc.Texture2D.MipLevels = 1;
         srvDesc.Texture2D.MostDetailedMip = 0;
 
-        // Video textures start after compose targets: [2 + MAX_COMPOSE_TARGETS + slot]
-        uint32_t descriptorIndex = 2 + MAX_COMPOSE_TARGETS + slot;
-        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
-        cpuHandle.ptr += descriptorIndex * m_srvDescriptorSize;
+        // Video texture slot layout owned by DescriptorHeapLayout
+        const uint32_t descriptorIndex = DescriptorHeapLayout::videoTextureSlot(slot);
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
+            m_imguiSrvHeap.Get(), descriptorIndex, m_srvDescriptorSize);
 
         m_device->CreateShaderResourceView(texSlot.texture.Get(), &srvDesc, cpuHandle);
 
-        // Store GPU handle
-        texSlot.gpuHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
-        texSlot.gpuHandle.ptr += descriptorIndex * m_srvDescriptorSize;
+        texSlot.gpuHandle = DescriptorHeapLayout::gpuHandle(
+            m_imguiSrvHeap.Get(), descriptorIndex, m_srvDescriptorSize);
 
         texSlot.width = width;
         texSlot.height = height;
@@ -2314,16 +2309,15 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     srvDesc.Texture2D.MipLevels = 1;
     srvDesc.Texture2D.MostDetailedMip = 0;
 
-    // Compose targets start at slot 2 (0=fonts, 1=legacy)
-    uint32_t heapSlot = 2 + slot;
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
-    cpuHandle.ptr += m_srvDescriptorSize * heapSlot;
+    // Compose target slot layout owned by DescriptorHeapLayout
+    const uint32_t heapSlot = DescriptorHeapLayout::composeTargetSlot(slot);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
+        m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
 
     m_device->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
 
-    // Store GPU handle
-    target.srvHandle = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
-    target.srvHandle.ptr += m_srvDescriptorSize * heapSlot;
+    target.srvHandle = DescriptorHeapLayout::gpuHandle(
+        m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
 
     target.width = width;
     target.height = height;
