@@ -8,6 +8,7 @@
  */
 
 #include "entity/core/Types.hpp"
+#include "entity/render/IRenderer.hpp"
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
@@ -23,73 +24,88 @@ namespace entity {
 
 using Microsoft::WRL::ComPtr;
 
-class D3D12Renderer {
+// D3D12-backed implementation of IRenderer. The class retains some
+// D3D12-typed public methods (e.g. drawTexturedQuad taking
+// D3D12_GPU_DESCRIPTOR_HANDLE) during the Phase B migration — those are the
+// non-virtual legacy overloads. The virtual IRenderer methods use abstract
+// types (TextureRef, glm::*) and delegate to the legacy methods internally.
+// Once all external callers migrate to the IRenderer API (Phase B task 18),
+// the legacy D3D12-typed methods will be removed.
+class D3D12Renderer : public IRenderer {
 public:
-    // Maximum number of video texture slots (layers)
-    static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS = 16;
-
-    // Maximum number of compose targets (screens)
-    static constexpr uint32_t MAX_COMPOSE_TARGETS = 8;
-
     D3D12Renderer();
-    ~D3D12Renderer();
+    ~D3D12Renderer() override;
+
+    // ========================================================================
+    // IRenderer — backend-agnostic API
+    // ========================================================================
+
+    Result initialize(GLFWwindow* window, uint32_t width, uint32_t height) override;
+    void   shutdown() override;
+    Result resize(uint32_t width, uint32_t height) override;
+    bool   isInitialized() const override { return m_initialized; }
+    bool   isDeviceLost() const override  { return m_deviceLost; }
+
+    void     beginFrame() override;
+    void     endFrame() override;
+    void     clear(float r, float g, float b, float a) override;
+    uint32_t getCurrentBackBufferIndex() const override { return m_currentBackBufferIndex; }
+    void     beginImGuiFrame() override;
+    void     endImGuiFrame() override;
+
+    uint32_t   allocateVideoTextureSlot() override;
+    void       freeVideoTextureSlot(uint32_t slot) override;
+    bool       uploadVideoFrameToSlot(uint32_t slot,
+                                      const uint8_t* rgba,
+                                      uint32_t width,
+                                      uint32_t height) override;
+    TextureRef getVideoTexture(uint32_t slot) const override;
+
+    uint32_t   createComposeTarget(uint32_t width, uint32_t height) override;
+    void       beginComposeTarget(uint32_t slot = 0) override;
+    void       endComposeTarget() override;
+    TextureRef getComposeTargetTexture(uint32_t slot = 0) const override;
+    void*      getComposeTargetTextureID(uint32_t slot = 0) const override;
+    uint32_t   getComposeTargetWidth(uint32_t slot = 0) const override;
+    uint32_t   getComposeTargetHeight(uint32_t slot = 0) const override;
+    bool       isComposeTargetReady(uint32_t slot = 0) const override;
+
+    void drawColoredQuad(const glm::mat4& transform,
+                          const glm::vec4& color,
+                          float opacity) override;
+
+    void drawTexturedQuad(TextureRef texture,
+                           const glm::mat4& transform,
+                           float opacity,
+                           BlendMode blendMode = BlendMode::Normal) override;
+
+    void drawMappingSurface(TextureRef texture,
+                             const glm::vec2 corners[4],
+                             const glm::vec2 sourceUVs[4],
+                             const glm::vec4& softEdges,
+                             float brightness,
+                             float gamma,
+                             float opacity) override;
+
+    bool captureComposeTargetToPNG(const std::string& filepath, uint32_t slot = 0) override;
+    bool captureBackBufferToPNG(const std::string& filepath) override;
+    bool readComposeTargetPixels(uint32_t slot,
+                                  uint32_t& outWidth,
+                                  uint32_t& outHeight,
+                                  std::vector<uint8_t>& outPixels) override;
+
+    // ========================================================================
+    // Legacy D3D12-typed API (kept during Phase B migration; callers in
+    // Engine.cpp, CompositorSystem, OutputManager still use these. Task 18
+    // migrates them to the TextureRef/glm overloads above, then these go away)
+    // ========================================================================
 
     /**
-     * Initialize the D3D12 device, command queue, and swap chain.
-     */
-    Result initialize(GLFWwindow* window, uint32_t width, uint32_t height);
-
-    /**
-     * Shutdown and release all D3D12 resources.
-     */
-    void shutdown();
-
-    /**
-     * Resize swap chain buffers.
-     */
-    Result resize(uint32_t width, uint32_t height);
-
-    /**
-     * Begin a new frame.
-     */
-    void beginFrame();
-
-    /**
-     * End frame and present to screen.
-     */
-    void endFrame();
-
-    /**
-     * Clear the current render target to a color.
-     */
-    void clear(float r, float g, float b, float a);
-
-    /**
-     * Get the current back buffer index.
-     */
-    uint32_t getCurrentBackBufferIndex() const { return m_currentBackBufferIndex; }
-
-    /**
-     * Check if renderer is initialized.
-     */
-    bool isInitialized() const { return m_initialized; }
-
-    /**
-     * Draw a colored quad with transform and opacity.
+     * Draw a colored quad with transform and opacity. Legacy D3D12-typed overload.
      */
     void drawColoredQuad(const DirectX::XMMATRIX& transform,
                          const DirectX::XMFLOAT4& color,
                          float opacity);
-
-    /**
-     * Begin ImGui frame for UI rendering.
-     */
-    void beginImGuiFrame();
-
-    /**
-     * End ImGui frame and render UI.
-     */
-    void endImGuiFrame();
 
     /**
      * Upload RGBA video frame data to GPU texture.
@@ -114,68 +130,19 @@ public:
     uint32_t getVideoTextureWidth() const { return m_videoTextureWidth; }
     uint32_t getVideoTextureHeight() const { return m_videoTextureHeight; }
 
-    // ========================================================================
-    // Multi-Texture Support (for multi-layer compositing)
-    // ========================================================================
-
-    /**
-     * Allocate a video texture slot.
-     * @return Slot index (0 to MAX_VIDEO_TEXTURE_SLOTS-1), or UINT32_MAX if none available
-     */
-    uint32_t allocateVideoTextureSlot();
-
-    /**
-     * Free a previously allocated video texture slot.
-     * @param slot The slot index to free
-     */
-    void freeVideoTextureSlot(uint32_t slot);
-
-    /**
-     * Upload RGBA video frame data to a specific texture slot.
-     * @param slot The slot index (from allocateVideoTextureSlot)
-     * @param rgbaData Pointer to RGBA pixel data
-     * @param width Width in pixels
-     * @param height Height in pixels
-     * @param outSrvHandle Output: GPU descriptor handle for the texture
-     * @return true on success, false on failure
-     */
+    /** Upload frame data to a slot, returning the D3D12 SRV handle. Legacy. */
     bool uploadVideoFrameToSlot(uint32_t slot,
                                 const uint8_t* rgbaData,
                                 uint32_t width, uint32_t height,
                                 D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle);
 
-    /**
-     * Draw a textured quad with transform and opacity.
-     * Uses the composite pixel shader for texture sampling.
-     * @param textureSrv GPU descriptor handle for the texture
-     * @param transform Transformation matrix
-     * @param opacity Layer opacity (0.0 - 1.0)
-     * @param blendMode Blend mode (default: Normal)
-     */
+    /** Draw a textured quad with D3D12 SRV + XMMATRIX. Legacy. */
     void drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                           const DirectX::XMMATRIX& transform,
                           float opacity,
                           BlendMode blendMode = BlendMode::Normal);
 
-    /**
-     * Get the D3D12 device (for external texture creation if needed).
-     */
-    ID3D12Device* getDevice() const { return m_device.Get(); }
-
-    // ========================================================================
-    // Mapping Surface Rendering (for projection mapping)
-    // ========================================================================
-
-    /**
-     * Render a video texture through a mapping surface with perspective warping.
-     * @param textureSrv GPU descriptor handle for the video texture
-     * @param corners Array of 4 corner positions in clip space (-1 to 1), order: TL, TR, BR, BL
-     * @param sourceUVs Array of 4 source UV coordinates, order: TL, TR, BR, BL
-     * @param softEdges Soft edge amounts (left, right, top, bottom) in 0-1 range
-     * @param brightness Brightness multiplier (1.0 = normal)
-     * @param gamma Gamma correction (1.0 = linear)
-     * @param opacity Overall opacity (0-1)
-     */
+    /** Draw a mapping surface with D3D12 SRV + XMFLOAT args. Legacy. */
     void drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                             const DirectX::XMFLOAT2 corners[4],
                             const DirectX::XMFLOAT2 sourceUVs[4],
@@ -184,96 +151,12 @@ public:
                             float gamma,
                             float opacity);
 
-    // ========================================================================
-    // Offscreen Compose Target (for multi-clip compositing)
-    // ========================================================================
-
-    /**
-     * Create a new offscreen compose target at specified resolution.
-     * @param width Target width in pixels
-     * @param height Target height in pixels
-     * @return Slot ID for the created target (0-based index)
-     */
-    uint32_t createComposeTarget(uint32_t width, uint32_t height);
-
-    /**
-     * Begin rendering to a specific compose target (clears it first).
-     * Call before drawing clips, end with endComposeTarget().
-     * @param slot Compose target slot (from createComposeTarget), defaults to 0
-     */
-    void beginComposeTarget(uint32_t slot = 0);
-
-    /**
-     * End rendering to compose target and transition for sampling.
-     */
-    void endComposeTarget();
-
-    /**
-     * Get a compose target as ImGui texture ID for display.
-     * @param slot Compose target slot, defaults to 0
-     * @return ImTextureID for ImGui::Image, or nullptr if not ready
-     */
-    void* getComposeTargetTextureID(uint32_t slot = 0) const;
-
-    /**
-     * Get compose target GPU handle for use with drawTexturedQuad.
-     * @param slot Compose target slot, defaults to 0
-     */
+    /** Legacy: compose target GPU handle for the D3D12-typed draw methods. */
     D3D12_GPU_DESCRIPTOR_HANDLE getComposeTargetSrvHandle(uint32_t slot = 0) const;
 
-    /**
-     * Get compose target dimensions.
-     * @param slot Compose target slot, defaults to 0
-     */
-    uint32_t getComposeTargetWidth(uint32_t slot = 0) const;
-    uint32_t getComposeTargetHeight(uint32_t slot = 0) const;
-
-    /**
-     * Check if compose target is ready.
-     * @param slot Compose target slot, defaults to 0
-     */
-    bool isComposeTargetReady(uint32_t slot = 0) const;
-
-    // ========================================================================
-    // Screenshot Capture
-    // ========================================================================
-
-    /**
-     * Capture a compose target (video output) to a PNG file.
-     * @param filepath Destination path for PNG file
-     * @param slot Compose target slot, defaults to 0
-     * @return true on success
-     */
-    bool captureComposeTargetToPNG(const std::string& filepath, uint32_t slot = 0);
-
-    /**
-     * Capture the current back buffer (full window) to a PNG file.
-     * @param filepath Destination path for PNG file
-     * @return true on success
-     */
-    bool captureBackBufferToPNG(const std::string& filepath);
-
-    /**
-     * True if the D3D12 device has been removed (driver crash, TDR, unplugged GPU,
-     * etc.). Main loop should check this each frame and shut down cleanly rather
-     * than trying to keep rendering against a dead device. Phase A baseline: we
-     * detect and exit. Phase D+: full reinitialization + resource reload.
-     */
-    bool isDeviceLost() const { return m_deviceLost; }
-
-    /**
-     * Read a compose target's pixels into a raw RGBA buffer (no file I/O).
-     * Used by integration test harness to hash output deterministically.
-     * @param slot Compose target slot
-     * @param outWidth Output width of the target
-     * @param outHeight Output height of the target
-     * @param outPixels Buffer to fill with tightly-packed RGBA (width*height*4 bytes)
-     * @return true on success
-     */
-    bool readComposeTargetPixels(uint32_t slot,
-                                  uint32_t& outWidth,
-                                  uint32_t& outHeight,
-                                  std::vector<uint8_t>& outPixels);
+    /** D3D12-specific escape hatch for external code that needs the device.
+     *  Going away in Phase B once callers use IRenderer. */
+    ID3D12Device* getDevice() const { return m_device.Get(); }
 
 private:
     // Helper methods for initialization
@@ -312,6 +195,11 @@ private:
     // Device-removed handling: logs the GPU removal reason and latches m_deviceLost.
     // Safe to call from any D3D12 call that returns DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG.
     void handleDeviceLost(HRESULT hr, const char* site);
+
+    // Resolve an abstract TextureRef into a D3D12 SRV descriptor handle.
+    // Returns a zero-ptr handle if the reference is invalid or the resource
+    // isn't ready; legacy draw methods treat that as a no-op.
+    D3D12_GPU_DESCRIPTOR_HANDLE resolveTextureHandle(TextureRef tex) const;
 
     // Helper methods for screenshot capture
     bool ensureScreenshotStagingBuffer(uint32_t width, uint32_t height);

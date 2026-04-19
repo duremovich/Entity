@@ -2689,4 +2689,106 @@ bool D3D12Renderer::captureBackBufferToPNG(const std::string& filepath) {
     );
 }
 
+// ============================================================================
+// IRenderer virtual overrides (abstract-typed delegators)
+//
+// These resolve TextureRef / glm types into D3D12 handles and matrices, then
+// forward to the existing D3D12-typed overloads. Once Phase B task 18 migrates
+// all external callers to these, the D3D12-typed overloads are removed.
+// ============================================================================
+
+namespace {
+
+inline DirectX::XMMATRIX glmToXm(const glm::mat4& m) {
+    // Both glm::mat4 and DirectX::XMMATRIX are column-major. Match the
+    // element-by-element conversion already used in CompositorSystem.
+    return DirectX::XMMatrixSet(
+        m[0][0], m[0][1], m[0][2], m[0][3],
+        m[1][0], m[1][1], m[1][2], m[1][3],
+        m[2][0], m[2][1], m[2][2], m[2][3],
+        m[3][0], m[3][1], m[3][2], m[3][3]
+    );
+}
+
+} // anonymous namespace
+
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) const {
+    switch (tex.kind) {
+        case TextureRef::Kind::VideoSlot:
+            if (tex.slot < MAX_VIDEO_TEXTURE_SLOTS && m_textureSlots[tex.slot].allocated) {
+                return m_textureSlots[tex.slot].gpuHandle;
+            }
+            break;
+        case TextureRef::Kind::ComposeTarget:
+            if (tex.slot < m_composeTargets.size() && m_composeTargets[tex.slot].ready) {
+                return m_composeTargets[tex.slot].srvHandle;
+            }
+            break;
+        case TextureRef::Kind::Invalid:
+        default:
+            break;
+    }
+    return D3D12_GPU_DESCRIPTOR_HANDLE{};  // .ptr == 0 — drawTexturedQuad etc. no-op on this
+}
+
+bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
+                                            const uint8_t* rgba,
+                                            uint32_t width,
+                                            uint32_t height) {
+    D3D12_GPU_DESCRIPTOR_HANDLE discard{};
+    return uploadVideoFrameToSlot(slot, rgba, width, height, &discard);
+}
+
+TextureRef D3D12Renderer::getVideoTexture(uint32_t slot) const {
+    if (slot < MAX_VIDEO_TEXTURE_SLOTS && m_textureSlots[slot].allocated) {
+        return TextureRef::video(slot);
+    }
+    return TextureRef::invalid();
+}
+
+TextureRef D3D12Renderer::getComposeTargetTexture(uint32_t slot) const {
+    if (slot < m_composeTargets.size() && m_composeTargets[slot].ready) {
+        return TextureRef::compose(slot);
+    }
+    return TextureRef::invalid();
+}
+
+void D3D12Renderer::drawColoredQuad(const glm::mat4& transform,
+                                     const glm::vec4& color,
+                                     float opacity) {
+    drawColoredQuad(glmToXm(transform),
+                    DirectX::XMFLOAT4(color.r, color.g, color.b, color.a),
+                    opacity);
+}
+
+void D3D12Renderer::drawTexturedQuad(TextureRef texture,
+                                      const glm::mat4& transform,
+                                      float opacity,
+                                      BlendMode blendMode) {
+    const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveTextureHandle(texture);
+    if (srv.ptr == 0) return;  // Invalid or unready texture — drop silently
+    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode);
+}
+
+void D3D12Renderer::drawMappingSurface(TextureRef texture,
+                                        const glm::vec2 corners[4],
+                                        const glm::vec2 sourceUVs[4],
+                                        const glm::vec4& softEdges,
+                                        float brightness,
+                                        float gamma,
+                                        float opacity) {
+    const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveTextureHandle(texture);
+    if (srv.ptr == 0) return;
+
+    DirectX::XMFLOAT2 xmCorners[4];
+    DirectX::XMFLOAT2 xmUVs[4];
+    for (int i = 0; i < 4; ++i) {
+        xmCorners[i] = DirectX::XMFLOAT2(corners[i].x, corners[i].y);
+        xmUVs[i]     = DirectX::XMFLOAT2(sourceUVs[i].x, sourceUVs[i].y);
+    }
+    const DirectX::XMFLOAT4 xmSoft(softEdges.x, softEdges.y, softEdges.z, softEdges.w);
+
+    drawMappingSurface(srv, xmCorners, xmUVs, xmSoft, brightness, gamma, opacity);
+}
+
 } // namespace entity
