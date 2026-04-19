@@ -31,7 +31,7 @@ public:
      * @param composeTextureID GPU texture ID for the composited output (can be nullptr)
      */
     void render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
-                ImTextureID composeTextureID = nullptr);
+                ImTextureID composeTextureID = 0);
 
     /**
      * Begin rendering the 3D stage (draws background, grid, axes).

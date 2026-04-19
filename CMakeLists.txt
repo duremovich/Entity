@@ -177,10 +177,10 @@ if(ENABLE_D3D12_DEBUG)
     target_compile_definitions(EntityMediaCore PRIVATE ENABLE_D3D12_DEBUG)
 endif()
 
-# Subdirectories
+# Subdirectories — apps/ declares EntityMediaEditor and also compiles HLSL
+# shaders offline via DXC (see apps/CMakeLists.txt). The shaders/ directory
+# holds source .hlsl / .hlsli files only; it has no CMakeLists.txt of its own.
 add_subdirectory(apps)
-# Shaders - commented out temporarily to fix build order issue
-# add_subdirectory(shaders)
 
 if(BUILD_TESTS)
     enable_testing()

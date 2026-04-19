@@ -199,11 +199,13 @@ void StageWindow::render3DView() {
                 glm::vec3 screenCenter = position + glm::vec3(0.0f, m_3dRenderer->screenElevation, 0.0f);
                 float dist = glm::length(screenCenter - cameraPos);
 
-                // Get THIS screen's compose target texture
-                ImTextureID screenTextureID = nullptr;
+                // Get THIS screen's compose target texture.
+                // ImTextureID in recent ImGui is ImU64 (not void*); cast through
+                // uintptr_t to preserve the descriptor-handle bits.
+                ImTextureID screenTextureID = 0;
                 if (renderer && screen.renderTargetValid &&
                     screen.renderTargetSlot != UINT32_MAX) {
-                    screenTextureID = static_cast<ImTextureID>(
+                    screenTextureID = reinterpret_cast<ImTextureID>(
                         renderer->getComposeTargetTextureID(screen.renderTargetSlot));
                 }
 

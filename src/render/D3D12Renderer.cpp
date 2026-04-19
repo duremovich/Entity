@@ -24,6 +24,7 @@
 
 #include <vector>
 #include <filesystem>
+#include <fstream>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -650,34 +651,53 @@ void D3D12Renderer::moveToNextFrame() {
 // Rendering Pipeline Methods
 // ============================================================================
 
-Result D3D12Renderer::compileShader(const std::wstring& filename, const char* entryPoint, const char* target, ID3DBlob** blob) {
-    UINT compileFlags = 0;
-#ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
+Result D3D12Renderer::loadCompiledShader(const std::wstring& csoFilename, ID3DBlob** blob) {
+    // Read a DXC-precompiled DXIL blob from disk. Shaders are built by
+    // shaders/CMakeLists.txt and copied to <exe_dir>/shaders/<name>.cso.
+    // We anchor to the executable directory so integration tests that launch
+    // the app from the project root still resolve paths correctly.
+    wchar_t exePath[MAX_PATH];
+    DWORD exePathLen = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::filesystem::path fullPath;
+    if (exePathLen > 0 && exePathLen < MAX_PATH) {
+        fullPath = std::filesystem::path(exePath).parent_path() / csoFilename;
+    } else {
+        // Fall back to cwd-relative if we somehow can't determine the exe path
+        fullPath = csoFilename;
+    }
 
-    ComPtr<ID3DBlob> errorBlob;
-    HRESULT hr = D3DCompileFromFile(
-        filename.c_str(),
-        nullptr,
-        D3D_COMPILE_STANDARD_FILE_INCLUDE,
-        entryPoint,
-        target,
-        compileFlags,
-        0,
-        blob,
-        &errorBlob
-    );
-
-    if (FAILED(hr)) {
-        if (errorBlob) {
-            std::cerr << "Shader compilation failed: " << (char*)errorBlob->GetBufferPointer() << std::endl;
-        } else {
-            std::wcerr << L"Shader file not found or inaccessible: " << filename << std::endl;
-        }
+    std::ifstream file(fullPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        std::wcerr << L"Compiled shader not found: " << fullPath.wstring()
+                   << L" (did the shader build step run?)" << std::endl;
         return Result::Failure;
     }
 
+    const std::streamsize size = file.tellg();
+    if (size <= 0) {
+        std::wcerr << L"Compiled shader is empty: " << csoFilename << std::endl;
+        return Result::Failure;
+    }
+    file.seekg(0, std::ios::beg);
+
+    // Allocate a D3DBlob and slurp the file into it. D3DCreateBlob gives us
+    // the ID3DBlob interface PSO creation expects without forcing a copy into
+    // a second buffer.
+    ComPtr<ID3DBlob> outBlob;
+    HRESULT hr = D3DCreateBlob(static_cast<SIZE_T>(size), &outBlob);
+    if (FAILED(hr)) {
+        std::cerr << "D3DCreateBlob failed for shader load, HRESULT: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return Result::Failure;
+    }
+
+    file.read(static_cast<char*>(outBlob->GetBufferPointer()), size);
+    if (!file) {
+        std::wcerr << L"Short read from compiled shader: " << csoFilename << std::endl;
+        return Result::Failure;
+    }
+
+    *blob = outBlob.Detach();
     return Result::Success;
 }
 
@@ -729,13 +749,13 @@ Result D3D12Renderer::createPipelineState() {
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
 
-    if (compileShader(L"shaders/composite_vs.hlsl", "VSMain", "vs_5_1", &vertexShader) != Result::Success) {
-        std::cerr << "Failed to compile vertex shader!" << std::endl;
+    if (loadCompiledShader(L"shaders/composite_vs.cso", &vertexShader) != Result::Success) {
+        std::cerr << "Failed to load composite_vs.cso!" << std::endl;
         return Result::Failure;
     }
 
-    if (compileShader(L"shaders/solid_color_ps.hlsl", "PSMain", "ps_5_1", &pixelShader) != Result::Success) {
-        std::cerr << "Failed to compile pixel shader!" << std::endl;
+    if (loadCompiledShader(L"shaders/solid_color_ps.cso", &pixelShader) != Result::Success) {
+        std::cerr << "Failed to load solid_color_ps.cso!" << std::endl;
         return Result::Failure;
     }
 
@@ -1648,13 +1668,13 @@ Result D3D12Renderer::createTexturedPipelineState() {
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
 
-    if (compileShader(L"shaders/composite_vs.hlsl", "VSMain", "vs_5_1", &vertexShader) != Result::Success) {
-        std::cerr << "Failed to compile textured vertex shader!" << std::endl;
+    if (loadCompiledShader(L"shaders/composite_vs.cso", &vertexShader) != Result::Success) {
+        std::cerr << "Failed to load composite_vs.cso (textured pipeline)!" << std::endl;
         return Result::Failure;
     }
 
-    if (compileShader(L"shaders/composite_ps.hlsl", "PSMain", "ps_5_1", &pixelShader) != Result::Success) {
-        std::cerr << "Failed to compile textured pixel shader!" << std::endl;
+    if (loadCompiledShader(L"shaders/composite_ps.cso", &pixelShader) != Result::Success) {
+        std::cerr << "Failed to load composite_ps.cso!" << std::endl;
         return Result::Failure;
     }
 
@@ -1930,13 +1950,13 @@ Result D3D12Renderer::createMappingSurfacePipelineState() {
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
 
-    if (compileShader(L"shaders/mapping_surface_vs.hlsl", "VSMain", "vs_5_1", &vertexShader) != Result::Success) {
-        std::cerr << "Failed to compile mapping surface vertex shader!" << std::endl;
+    if (loadCompiledShader(L"shaders/mapping_surface_vs.cso", &vertexShader) != Result::Success) {
+        std::cerr << "Failed to load mapping_surface_vs.cso!" << std::endl;
         return Result::Failure;
     }
 
-    if (compileShader(L"shaders/mapping_surface_ps.hlsl", "PSMain", "ps_5_1", &pixelShader) != Result::Success) {
-        std::cerr << "Failed to compile mapping surface pixel shader!" << std::endl;
+    if (loadCompiledShader(L"shaders/mapping_surface_ps.cso", &pixelShader) != Result::Success) {
+        std::cerr << "Failed to load mapping_surface_ps.cso!" << std::endl;
         return Result::Failure;
     }
 

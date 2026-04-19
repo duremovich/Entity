@@ -171,7 +171,9 @@ private:
     void moveToNextFrame();
 
     // Helper methods for rendering pipeline
-    Result compileShader(const std::wstring& filename, const char* entryPoint, const char* target, ID3DBlob** blob);
+    // Loads a DXC-precompiled shader blob from disk (shaders/<name>.cso next
+    // to the executable). See shaders/CMakeLists.txt for the build step.
+    Result loadCompiledShader(const std::wstring& csoFilename, ID3DBlob** blob);
     Result createRootSignature();
     Result createPipelineState();
     Result createVertexBuffer();
