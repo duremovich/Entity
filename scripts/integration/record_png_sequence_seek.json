@@ -1,0 +1,51 @@
+{
+    "version": 1,
+    "description": "Record mode for png_sequence_seek. Imports the 16-frame gradient sequence, seeks to frame 0 and frame 8, hashes the compose target at each. Used to seed goldens the first time this test is run.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "PngSeqScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "test_media/gradient_seq/frame_000.png",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/png_sequence_seek/frame_0.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 8
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/png_sequence_seek/frame_8.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -1,0 +1,53 @@
+{
+    "version": 1,
+    "description": "Verifies hashes at the clip's last frame and past the clip's end remain stable. Catches regressions in Timeline::mapToMediaFrame boundary behavior and compositor behavior when no clip is active.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "SeekScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "test_media/gradient_seq/frame_000.png",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 15
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/seek_past_clip_end/at_last_frame.hash",
+            "goldenFilepath": "tests/goldens/seek_past_clip_end/at_last_frame.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 30
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/seek_past_clip_end/past_end.hash",
+            "goldenFilepath": "tests/goldens/seek_past_clip_end/past_end.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

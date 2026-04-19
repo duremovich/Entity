@@ -90,7 +90,12 @@ Thumbs.db
 *~
 
 # Media test files (large binaries)
-test_media/
+# Ignore heavyweight media (ProRes/H264/etc. videos committed into workspaces
+# locally). Procedural, deterministic test fixtures ARE committed so CI can
+# reproduce integration tests.
+test_media/*
+!test_media/scripts/
+!test_media/gradient_seq/
 *.mov
 *.mp4
 *.avi

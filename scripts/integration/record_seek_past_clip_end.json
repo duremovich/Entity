@@ -1,0 +1,51 @@
+{
+    "version": 1,
+    "description": "Record mode for seek_past_clip_end. Seeks to frame 15 (last frame of the 16-frame clip) and frame 30 (past the clip's end — no active clip at this position). Hashes lock in both states; their inequality confirms the past-end path is going through a different code path (cleared target), not silently repeating the last-decoded frame.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "SeekScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "test_media/gradient_seq/frame_000.png",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 15
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/seek_past_clip_end/at_last_frame.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 30
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/seek_past_clip_end/past_end.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}
