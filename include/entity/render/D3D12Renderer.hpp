@@ -14,6 +14,7 @@
 #include <wrl/client.h>
 #include <DirectXMath.h>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -252,17 +253,10 @@ private:
     bool m_videoTextureFirstUpload{true};                   // Track first upload for barrier state
     uint32_t m_srvDescriptorSize{0};
 
-    // Multi-texture support (for multi-layer compositing)
-    struct VideoTextureSlot {
-        ComPtr<ID3D12Resource> texture;           // GPU texture resource
-        ComPtr<ID3D12Resource> uploadBuffer;      // Upload heap buffer
-        D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle{};  // GPU descriptor handle
-        uint32_t width{0};
-        uint32_t height{0};
-        bool allocated{false};                    // Is this slot in use?
-        bool firstUpload{true};                   // Track first upload for barrier state
-    };
-    VideoTextureSlot m_textureSlots[MAX_VIDEO_TEXTURE_SLOTS];
+    // Video texture pool owned by TextureUploader (src/render/TextureUploader.hpp).
+    // Declared here as std::unique_ptr so we don't have to include the header,
+    // keeping the public D3D12Renderer.hpp lean. See destructor for ordering.
+    std::unique_ptr<class TextureUploader> m_textureUploader;
 
     // Textured rendering pipeline (for drawTexturedQuad)
     ComPtr<ID3D12RootSignature> m_texturedRootSignature;

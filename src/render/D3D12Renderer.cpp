@@ -6,6 +6,7 @@
 
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/render/DescriptorHeapLayout.hpp"
+#include "entity/render/TextureUploader.hpp"
 
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -133,9 +134,17 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
-    // Initialize ImGui
+    // Initialize ImGui (creates the shader-visible SRV heap we'll share with
+    // TextureUploader for video texture slots)
     if (initializeImGui(window) != Result::Success) {
         std::cerr << "Failed to initialize ImGui!" << std::endl;
+        return Result::Failure;
+    }
+
+    // Video texture pool — depends on the SRV heap created by initializeImGui
+    m_textureUploader = std::make_unique<TextureUploader>();
+    if (m_textureUploader->initialize(m_device.Get(), m_imguiSrvHeap.Get(), m_srvDescriptorSize) != Result::Success) {
+        std::cerr << "Failed to initialize TextureUploader!" << std::endl;
         return Result::Failure;
     }
 
@@ -207,11 +216,10 @@ void D3D12Renderer::shutdown() {
         m_fenceEvent = nullptr;
     }
 
-    // Release multi-texture slots
-    for (uint32_t i = 0; i < MAX_VIDEO_TEXTURE_SLOTS; ++i) {
-        m_textureSlots[i].texture.Reset();
-        m_textureSlots[i].uploadBuffer.Reset();
-        m_textureSlots[i].allocated = false;
+    // Release the video texture pool (must happen before the device below).
+    if (m_textureUploader) {
+        m_textureUploader->shutdown();
+        m_textureUploader.reset();
     }
 
     // Release legacy video upload buffer
@@ -1358,36 +1366,22 @@ void* D3D12Renderer::getVideoTextureID() const {
 // ============================================================================
 
 uint32_t D3D12Renderer::allocateVideoTextureSlot() {
-    for (uint32_t i = 0; i < MAX_VIDEO_TEXTURE_SLOTS; ++i) {
-        if (!m_textureSlots[i].allocated) {
-            m_textureSlots[i].allocated = true;
-            m_textureSlots[i].firstUpload = true;
-            m_textureSlots[i].width = 0;
-            m_textureSlots[i].height = 0;
-            std::cout << "Allocated video texture slot " << i << std::endl;
-            return i;
-        }
+    if (!m_textureUploader) return UINT32_MAX;
+    const uint32_t slot = m_textureUploader->allocateSlot();
+    if (slot == TextureUploader::INVALID_SLOT) {
+        std::cerr << "No available video texture slots!" << std::endl;
+        return UINT32_MAX;
     }
-    std::cerr << "No available video texture slots!" << std::endl;
-    return UINT32_MAX;
+    std::cout << "Allocated video texture slot " << slot << std::endl;
+    return slot;
 }
 
 void D3D12Renderer::freeVideoTextureSlot(uint32_t slot) {
-    if (slot >= MAX_VIDEO_TEXTURE_SLOTS) {
-        return;
-    }
-
-    // Wait for GPU before releasing resources
+    if (!m_textureUploader) return;
+    // The uploader can't wait on our fence — it's our responsibility to ensure
+    // the GPU isn't using the slot's resources before we release them.
     waitForGpu();
-
-    m_textureSlots[slot].texture.Reset();
-    m_textureSlots[slot].uploadBuffer.Reset();
-    m_textureSlots[slot].gpuHandle = {};
-    m_textureSlots[slot].width = 0;
-    m_textureSlots[slot].height = 0;
-    m_textureSlots[slot].allocated = false;
-    m_textureSlots[slot].firstUpload = true;
-
+    m_textureUploader->freeSlot(slot);
     std::cout << "Freed video texture slot " << slot << std::endl;
 }
 
@@ -1395,188 +1389,24 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                            const uint8_t* rgbaData,
                                            uint32_t width, uint32_t height,
                                            D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle) {
-    if (slot >= MAX_VIDEO_TEXTURE_SLOTS) {
-        std::cerr << "Texture slot " << slot << " out of bounds (max " << MAX_VIDEO_TEXTURE_SLOTS << ")" << std::endl;
+    if (!m_initialized || !m_textureUploader) {
         return false;
     }
 
-    if (!m_initialized || !m_textureSlots[slot].allocated) {
-        return false;
-    }
-
-    if (!rgbaData || width == 0 || height == 0) {
-        return false;
-    }
-
-    VideoTextureSlot& texSlot = m_textureSlots[slot];
-    HRESULT hr;
-
-    // Check if we need to recreate the texture (size changed)
-    if (texSlot.texture && (texSlot.width != width || texSlot.height != height)) {
+    // The uploader can't wait on our fence — if a resize is coming we need
+    // to ensure the GPU is done with the slot's previous resources.
+    if (m_textureUploader->uploadWouldResize(slot, width, height) &&
+        m_textureUploader->hasTexture(slot)) {
         waitForGpu();
-        texSlot.texture.Reset();
-        texSlot.uploadBuffer.Reset();
-        texSlot.width = 0;
-        texSlot.height = 0;
-        texSlot.firstUpload = true;
     }
 
-    // Create texture if it doesn't exist
-    if (!texSlot.texture) {
-        // Create the texture resource
-        D3D12_RESOURCE_DESC textureDesc = {};
-        textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        textureDesc.Width = width;
-        textureDesc.Height = height;
-        textureDesc.DepthOrArraySize = 1;
-        textureDesc.MipLevels = 1;
-        textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        textureDesc.SampleDesc.Count = 1;
-        textureDesc.SampleDesc.Quality = 0;
-        textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-        D3D12_HEAP_PROPERTIES heapProps = {};
-        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-        hr = m_device->CreateCommittedResource(
-            &heapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &textureDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(&texSlot.texture)
-        );
-
-        if (FAILED(hr)) {
-            std::cerr << "Failed to create texture for slot " << slot << "!" << std::endl;
-            return false;
-        }
-
-        // Create upload buffer
-        UINT64 uploadBufferSize = 0;
-        m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
-
-        D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-        uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-        D3D12_RESOURCE_DESC uploadBufferDesc = {};
-        uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        uploadBufferDesc.Width = uploadBufferSize;
-        uploadBufferDesc.Height = 1;
-        uploadBufferDesc.DepthOrArraySize = 1;
-        uploadBufferDesc.MipLevels = 1;
-        uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        uploadBufferDesc.SampleDesc.Count = 1;
-        uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        hr = m_device->CreateCommittedResource(
-            &uploadHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &uploadBufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&texSlot.uploadBuffer)
-        );
-
-        if (FAILED(hr)) {
-            std::cerr << "Failed to create upload buffer for slot " << slot << "!" << std::endl;
-            texSlot.texture.Reset();
-            return false;
-        }
-
-        // Create SRV for the texture
-        // Slots are at indices 3+ (0=font, 1=legacy, 2=compose target)
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
-        srvDesc.Texture2D.MostDetailedMip = 0;
-
-        // Video texture slot layout owned by DescriptorHeapLayout
-        const uint32_t descriptorIndex = DescriptorHeapLayout::videoTextureSlot(slot);
-        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
-            m_imguiSrvHeap.Get(), descriptorIndex, m_srvDescriptorSize);
-
-        m_device->CreateShaderResourceView(texSlot.texture.Get(), &srvDesc, cpuHandle);
-
-        texSlot.gpuHandle = DescriptorHeapLayout::gpuHandle(
-            m_imguiSrvHeap.Get(), descriptorIndex, m_srvDescriptorSize);
-
-        texSlot.width = width;
-        texSlot.height = height;
-
-        std::cout << "Created texture for slot " << slot << ": " << width << "x" << height << std::endl;
-    }
-
-    // Upload texture data
-    D3D12_RESOURCE_DESC textureDesc = texSlot.texture->GetDesc();
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
-    UINT numRows;
-    UINT64 rowSizeInBytes;
-    UINT64 totalBytes;
-
-    m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
-
-    // Map upload buffer and copy data
-    void* mappedData = nullptr;
-    D3D12_RANGE readRange = { 0, 0 };
-    hr = texSlot.uploadBuffer->Map(0, &readRange, &mappedData);
-    if (FAILED(hr)) {
-        std::cerr << "Failed to map upload buffer for slot " << slot << "!" << std::endl;
+    if (!m_textureUploader->upload(m_commandList.Get(), slot, rgbaData, width, height)) {
         return false;
     }
-
-    // Copy row by row (handling pitch differences)
-    uint8_t* dstPtr = static_cast<uint8_t*>(mappedData) + footprint.Offset;
-    const uint8_t* srcPtr = rgbaData;
-    UINT srcRowPitch = width * 4;
-
-    for (UINT row = 0; row < numRows; ++row) {
-        memcpy(dstPtr + row * footprint.Footprint.RowPitch,
-               srcPtr + row * srcRowPitch,
-               srcRowPitch);
-    }
-
-    texSlot.uploadBuffer->Unmap(0, nullptr);
-
-    // Record copy command
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = texSlot.texture.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    // Only transition if texture was previously used
-    if (!texSlot.firstUpload) {
-        m_commandList->ResourceBarrier(1, &barrier);
-    }
-    texSlot.firstUpload = false;
-
-    // Copy from upload buffer to texture
-    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-    srcLocation.pResource = texSlot.uploadBuffer.Get();
-    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    srcLocation.PlacedFootprint = footprint;
-
-    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
-    dstLocation.pResource = texSlot.texture.Get();
-    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dstLocation.SubresourceIndex = 0;
-
-    m_commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
-
-    // Transition texture back to shader resource state
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    m_commandList->ResourceBarrier(1, &barrier);
 
     if (outSrvHandle) {
-        *outSrvHandle = texSlot.gpuHandle;
+        *outSrvHandle = m_textureUploader->gpuHandle(slot);
     }
-
     return true;
 }
 
@@ -2729,8 +2559,8 @@ inline DirectX::XMMATRIX glmToXm(const glm::mat4& m) {
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) const {
     switch (tex.kind) {
         case TextureRef::Kind::VideoSlot:
-            if (tex.slot < MAX_VIDEO_TEXTURE_SLOTS && m_textureSlots[tex.slot].allocated) {
-                return m_textureSlots[tex.slot].gpuHandle;
+            if (m_textureUploader && m_textureUploader->hasTexture(tex.slot)) {
+                return m_textureUploader->gpuHandle(tex.slot);
             }
             break;
         case TextureRef::Kind::ComposeTarget:
@@ -2754,7 +2584,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
 }
 
 TextureRef D3D12Renderer::getVideoTexture(uint32_t slot) const {
-    if (slot < MAX_VIDEO_TEXTURE_SLOTS && m_textureSlots[slot].allocated) {
+    if (m_textureUploader && m_textureUploader->isAllocated(slot)) {
         return TextureRef::video(slot);
     }
     return TextureRef::invalid();

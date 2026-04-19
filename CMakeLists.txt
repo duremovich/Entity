@@ -101,6 +101,7 @@ target_sources(EntityMediaCore
         src/render/D3D12Renderer.cpp
         src/render/OutputManager.cpp
         src/render/Stage3DRenderer.cpp
+        src/render/TextureUploader.cpp
 
         # Timeline
         src/timeline/Timeline.cpp
