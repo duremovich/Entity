@@ -1,5 +1,6 @@
 #include "entity/core/Engine.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/command/CommandDispatcher.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <string>
@@ -20,10 +21,12 @@ void printHelp() {
     std::cout << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "  --script <path>   Run a JSON script file after initialization" << std::endl;
+    std::cout << "  --headless        Run with a hidden window (for integration tests / CI)" << std::endl;
     std::cout << "  --help            Show this help message" << std::endl;
     std::cout << std::endl;
     std::cout << "Example:" << std::endl;
     std::cout << "  EntityMediaEditor --script scripts/test.json" << std::endl;
+    std::cout << "  EntityMediaEditor --headless --script scripts/integration/seek.json" << std::endl;
 }
 
 int main(int argc, char** argv) {
@@ -35,6 +38,7 @@ int main(int argc, char** argv) {
 
     // Parse command-line arguments
     std::string scriptPath;
+    bool headless = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -51,6 +55,9 @@ int main(int argc, char** argv) {
                 return EXIT_FAILURE;
             }
         }
+        else if (arg == "--headless") {
+            headless = true;
+        }
         else {
             std::cerr << "Unknown argument: " << arg << std::endl;
             std::cerr << "Use --help for usage information" << std::endl;
@@ -65,7 +72,8 @@ int main(int argc, char** argv) {
     entity::Result result = engine.initialize(
         1920,  // Width
         1080,  // Height
-        "Entity Media Server - Editor"
+        "Entity Media Server - Editor",
+        headless
     );
 
     if (result != entity::Result::Success) {
@@ -86,8 +94,25 @@ int main(int argc, char** argv) {
     // Run main loop
     engine.run();
 
+    // In script-driven runs (integration tests), propagate command failures
+    // to the process exit code so CI can detect them.
+    bool scriptFailed = false;
+    if (!scriptPath.empty()) {
+        auto* dispatcher = engine.getCommandDispatcher();
+        if (dispatcher && dispatcher->hasErrors()) {
+            std::cerr << "Script reported command failures: "
+                      << dispatcher->getScriptResults().dump() << std::endl;
+            scriptFailed = true;
+        }
+    }
+
     // Shutdown (automatic via destructor, but explicit is clearer)
     engine.shutdown();
+
+    if (scriptFailed) {
+        std::cerr << "Application exited with script failures." << std::endl;
+        return EXIT_FAILURE;
+    }
 
     std::cout << "Application exited normally." << std::endl;
     return EXIT_SUCCESS;

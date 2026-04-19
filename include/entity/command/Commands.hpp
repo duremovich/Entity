@@ -320,6 +320,31 @@ private:
     Region m_region;
 };
 
+// Capture a pixel-hash of a compose target. Used by integration tests for
+// deterministic output comparison. Writes "<hex> <WxH>\n" to `hashFilepath`.
+// If `goldenFilepath` is non-empty, fails on mismatch with the golden file.
+class CaptureHashCommand : public Command {
+public:
+    CaptureHashCommand(std::string hashFilepath,
+                       std::string goldenFilepath = "",
+                       uint32_t composeSlot = 0)
+        : m_hashFilepath(std::move(hashFilepath))
+        , m_goldenFilepath(std::move(goldenFilepath))
+        , m_composeSlot(composeSlot) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CaptureHash"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_hashFilepath;
+    std::string m_goldenFilepath;
+    uint32_t m_composeSlot;
+};
+
 // ============================================================================
 // Application Commands
 // ============================================================================

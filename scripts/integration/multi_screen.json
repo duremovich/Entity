@@ -1,0 +1,37 @@
+{
+    "version": 1,
+    "description": "Two user-added screens plus the default Main Screen produce three compose targets. We hash slot 0 and slot 1 to lock in the cleared-state output and iteration order. If iteration changes, goldens will flag it.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "Left",
+            "width": 800,
+            "height": 600
+        },
+        {
+            "type": "AddScreen",
+            "name": "Right",
+            "width": 1024,
+            "height": 768
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/multi_screen/slot0.hash",
+            "goldenFilepath": "tests/goldens/multi_screen/slot0.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/multi_screen/slot1.hash",
+            "goldenFilepath": "tests/goldens/multi_screen/slot1.hash",
+            "composeSlot": 1
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -1,0 +1,10 @@
+# Integration test goldens are byte-compared against app output, which writes
+# LF-terminated lines. Pin LF regardless of platform autocrlf settings to avoid
+# CRLF corrupting the compare.
+*.hash text eol=lf
+
+# Shell/JSON/YAML stay LF too — cross-platform consistency.
+*.sh text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

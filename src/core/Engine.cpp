@@ -40,8 +40,11 @@
 #endif
 
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 #include <cassert>
 #include <algorithm>
+#include <cstdio>
 
 namespace entity {
 
@@ -71,7 +74,7 @@ Engine::~Engine() {
     shutdown();
 }
 
-Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const char* windowTitle) {
+Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const char* windowTitle, bool headless) {
     if (m_initialized) {
         std::cerr << "Engine already initialized!" << std::endl;
         return Result::Failure;
@@ -91,6 +94,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Create window (no OpenGL context)
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    if (headless) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        std::cout << "  Headless mode: window hidden" << std::endl;
+    }
 
     m_window = glfwCreateWindow(
         static_cast<int>(windowWidth),
@@ -331,6 +338,16 @@ void Engine::run() {
         // Render
         render();
 
+        // Bail on GPU device-lost. Keep rendering into a dead device and you
+        // get silent hangs, not useful for a live show. Shut down cleanly so
+        // the operator knows they need to restart.
+        if (m_renderer && m_renderer->isDeviceLost()) {
+            std::cerr << "[Engine] D3D12 device lost — exiting main loop." << std::endl;
+            m_running = false;
+        }
+
+        autoSaveTick(m_deltaTime);
+
         m_frameCount++;
     }
 
@@ -339,6 +356,26 @@ void Engine::run() {
 
 void Engine::requestExit() {
     m_running = false;
+}
+
+void Engine::autoSaveTick(double deltaTime) {
+    if (!m_timeline) return;
+    m_autosaveAccumulator += deltaTime;
+    if (m_autosaveAccumulator < m_autosaveIntervalSec) return;
+    m_autosaveAccumulator = 0.0;
+
+    std::filesystem::path autosavePath =
+        m_projectPath.empty() ? std::filesystem::path("autosave.entity")
+                              : m_projectPath;
+    autosavePath += ".autosave";
+
+    // Direct serializer call — we don't want to update m_projectPath to point at
+    // the .autosave file. Operator still expects "Save" to write the real path.
+    if (ProjectSerializer::save(*m_timeline, autosavePath)) {
+        std::cout << "[Autosave] " << autosavePath.string() << std::endl;
+    } else {
+        std::cerr << "[Autosave] Failed: " << ProjectSerializer::getLastError() << std::endl;
+    }
 }
 
 void Engine::registerSystem(std::unique_ptr<System> system) {
@@ -1933,6 +1970,75 @@ bool Engine::importVideo(const std::string& filepath, int trackIndex, Timecode p
 
     // Call the internal import method
     onMediaDroppedOnTimeline(filepath, trackIndex, position);
+    return true;
+}
+
+bool Engine::captureHash(const std::string& hashFilepath,
+                          const std::string& goldenFilepath,
+                          uint32_t composeSlot) {
+    if (!m_renderer) {
+        std::cerr << "[Engine] captureHash failed: renderer not initialized" << std::endl;
+        return false;
+    }
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<uint8_t> pixels;
+    if (!m_renderer->readComposeTargetPixels(composeSlot, width, height, pixels)) {
+        return false;
+    }
+
+    // FNV-1a 64-bit — deterministic, dependency-free, good enough for exact-match
+    // pixel comparisons in tests. Not cryptographic.
+    constexpr uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
+    constexpr uint64_t FNV_PRIME  = 0x00000100000001b3ULL;
+    uint64_t hash = FNV_OFFSET;
+    for (uint8_t b : pixels) {
+        hash ^= static_cast<uint64_t>(b);
+        hash *= FNV_PRIME;
+    }
+
+    // Format: "<16-hex-digits> <width>x<height>\n"
+    char buf[64];
+    int n = std::snprintf(buf, sizeof(buf), "%016llx %ux%u\n",
+                          static_cast<unsigned long long>(hash), width, height);
+    if (n <= 0) {
+        return false;
+    }
+    std::string line(buf, static_cast<size_t>(n));
+
+    // Write hash file
+    std::filesystem::path outPath(hashFilepath);
+    if (outPath.has_parent_path()) {
+        std::filesystem::create_directories(outPath.parent_path());
+    }
+    std::ofstream out(outPath, std::ios::binary);
+    if (!out) {
+        std::cerr << "[Engine] captureHash: failed to open for write: " << hashFilepath << std::endl;
+        return false;
+    }
+    out.write(line.data(), static_cast<std::streamsize>(line.size()));
+    out.close();
+
+    std::cout << "[CaptureHash] " << hashFilepath << " -> " << line;
+
+    // Compare to golden if provided
+    if (!goldenFilepath.empty()) {
+        std::ifstream gf(goldenFilepath, std::ios::binary);
+        if (!gf) {
+            std::cerr << "[CaptureHash] MISS: golden not found: " << goldenFilepath << std::endl;
+            return false;
+        }
+        std::string golden((std::istreambuf_iterator<char>(gf)),
+                            std::istreambuf_iterator<char>());
+        if (golden != line) {
+            std::cerr << "[CaptureHash] FAIL: mismatch\n  got:    " << line
+                      << "  golden: " << golden << std::endl;
+            return false;
+        }
+        std::cout << "[CaptureHash] PASS against " << goldenFilepath << std::endl;
+    }
+
     return true;
 }
 

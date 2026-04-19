@@ -1,0 +1,35 @@
+{
+    "version": 1,
+    "description": "Record mode for multi_screen — no golden compare, just emit hashes. Copy the resulting test_output/multi_screen/*.hash files to tests/goldens/multi_screen/ to seed the suite.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "Left",
+            "width": 800,
+            "height": 600
+        },
+        {
+            "type": "AddScreen",
+            "name": "Right",
+            "width": 1024,
+            "height": 768
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/multi_screen/slot0.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/multi_screen/slot1.hash",
+            "composeSlot": 1
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

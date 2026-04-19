@@ -253,6 +253,28 @@ public:
      */
     bool captureBackBufferToPNG(const std::string& filepath);
 
+    /**
+     * True if the D3D12 device has been removed (driver crash, TDR, unplugged GPU,
+     * etc.). Main loop should check this each frame and shut down cleanly rather
+     * than trying to keep rendering against a dead device. Phase A baseline: we
+     * detect and exit. Phase D+: full reinitialization + resource reload.
+     */
+    bool isDeviceLost() const { return m_deviceLost; }
+
+    /**
+     * Read a compose target's pixels into a raw RGBA buffer (no file I/O).
+     * Used by integration test harness to hash output deterministically.
+     * @param slot Compose target slot
+     * @param outWidth Output width of the target
+     * @param outHeight Output height of the target
+     * @param outPixels Buffer to fill with tightly-packed RGBA (width*height*4 bytes)
+     * @return true on success
+     */
+    bool readComposeTargetPixels(uint32_t slot,
+                                  uint32_t& outWidth,
+                                  uint32_t& outHeight,
+                                  std::vector<uint8_t>& outPixels);
+
 private:
     // Helper methods for initialization
     Result createDevice();
@@ -287,12 +309,20 @@ private:
     Result initializeImGui(GLFWwindow* window);
     void shutdownImGui();
 
+    // Device-removed handling: logs the GPU removal reason and latches m_deviceLost.
+    // Safe to call from any D3D12 call that returns DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG.
+    void handleDeviceLost(HRESULT hr, const char* site);
+
     // Helper methods for screenshot capture
     bool ensureScreenshotStagingBuffer(uint32_t width, uint32_t height);
     bool readbackTextureToPNG(ID3D12Resource* sourceTexture,
                                D3D12_RESOURCE_STATES sourceState,
                                uint32_t width, uint32_t height,
                                const std::string& filepath);
+    bool readbackTextureToPixels(ID3D12Resource* sourceTexture,
+                                  D3D12_RESOURCE_STATES sourceState,
+                                  uint32_t width, uint32_t height,
+                                  std::vector<uint8_t>& outPixels);
 
 private:
     static constexpr uint32_t FRAME_COUNT = 2; // Double buffering
@@ -355,9 +385,18 @@ private:
     ComPtr<ID3D12RootSignature> m_mappingSurfaceRootSignature;
     ComPtr<ID3D12PipelineState> m_mappingSurfacePipelineState;
     ComPtr<ID3D12Resource> m_mappingSurfaceVertexBuffer;
-    ComPtr<ID3D12Resource> m_mappingSurfaceConstantBuffer;
     D3D12_VERTEX_BUFFER_VIEW m_mappingSurfaceVertexBufferView;
-    void* m_mappingSurfaceConstantBufferData{nullptr};  // WARNING (CRIT-04): Race condition - see impl for details
+
+    // Per-frame ring buffer of constant buffer slots (CRIT-04 fix).
+    // One slot per drawMappingSurface call. Reset each frame at beginFrame().
+    // Fence sync (moveToNextFrame) ensures the GPU has finished reading the
+    // previous use of the current frame's region before we overwrite.
+    static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 64;
+    ComPtr<ID3D12Resource> m_mappingSurfaceConstantRing;
+    uint8_t* m_mappingSurfaceConstantRingMapped{nullptr};
+    uint32_t m_mappingSurfaceSlotSize{0};          // 256-aligned sizeof(MappingSurfaceConstants)
+    uint32_t m_mappingSurfaceDrawIndex{0};         // Resets to 0 each frame
+    bool m_mappingSurfaceOverflowed{false};        // Latched until next frame — prevents log spam
 
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {
@@ -401,6 +440,7 @@ private:
     uint32_t m_width;
     uint32_t m_height;
     bool m_initialized;
+    bool m_deviceLost{false};  // Set when GPU device-removed is detected; Engine shuts down cleanly.
 
     // Descriptor heap caching (to avoid redundant SetDescriptorHeaps calls)
     ID3D12DescriptorHeap* m_currentDescriptorHeap{nullptr};

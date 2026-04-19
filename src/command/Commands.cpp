@@ -575,6 +575,36 @@ CommandPtr CaptureScreenshotCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<CaptureScreenshotCommand>(filepath, region);
 }
 
+bool CaptureHashCommand::execute(Engine& engine) {
+    std::cout << "[CaptureHash] Hashing compose target " << m_composeSlot
+              << " -> " << m_hashFilepath << std::endl;
+    return engine.captureHash(m_hashFilepath, m_goldenFilepath, m_composeSlot);
+}
+
+nlohmann::json CaptureHashCommand::toJson() const {
+    nlohmann::json j = {
+        {"type", "CaptureHash"},
+        {"hashFilepath", m_hashFilepath},
+        {"composeSlot", m_composeSlot}
+    };
+    if (!m_goldenFilepath.empty()) {
+        j["goldenFilepath"] = m_goldenFilepath;
+    }
+    return j;
+}
+
+std::string CaptureHashCommand::getDescription() const {
+    return "Capture hash: " + m_hashFilepath +
+           (m_goldenFilepath.empty() ? "" : " vs " + m_goldenFilepath);
+}
+
+CommandPtr CaptureHashCommand::fromJson(const nlohmann::json& j) {
+    std::string hashFilepath = j.value("hashFilepath", "output.hash");
+    std::string goldenFilepath = j.value("goldenFilepath", "");
+    uint32_t composeSlot = j.value("composeSlot", 0u);
+    return std::make_unique<CaptureHashCommand>(hashFilepath, goldenFilepath, composeSlot);
+}
+
 // ============================================================================
 // Application Commands
 // ============================================================================

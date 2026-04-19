@@ -70,27 +70,21 @@ TEST_F(DecoderUtilsTest, DetectMediaType_UnixPath) {
 
 // Test decoder factory function
 TEST_F(DecoderUtilsTest, CreateDecoder_CreatesDecoderInstances) {
-    // createDecoder now returns actual decoder instances for implemented decoders
-
-    // HAP decoder should be created for all HAP variants
-    // Note: The decoder's media type is determined when a file is opened,
-    // based on the actual codec in the file. Initial type is VideoHAP.
-    auto decoder = createDecoder(MediaType::VideoHAP);
+    // ProResDecoder
+    auto decoder = createDecoder(MediaType::VideoProRes4444);
     EXPECT_NE(decoder, nullptr);
 
-    decoder = createDecoder(MediaType::VideoHAPAlpha);
-    EXPECT_NE(decoder, nullptr);
-
-    decoder = createDecoder(MediaType::VideoHAPQ);
-    EXPECT_NE(decoder, nullptr);
-
-    // ProResDecoder now created (even if not yet implemented)
-    decoder = createDecoder(MediaType::VideoProRes4444);
-    EXPECT_NE(decoder, nullptr);
-
-    // PNGSequenceDecoder is also created
+    // PNGSequenceDecoder
     decoder = createDecoder(MediaType::PNGSequence);
     EXPECT_NE(decoder, nullptr);
+}
+
+TEST_F(DecoderUtilsTest, CreateDecoder_HAPReturnsNullptr) {
+    // HAP is not yet implemented — factory returns nullptr so callers fail
+    // loudly at load time instead of silently at decode time.
+    EXPECT_EQ(createDecoder(MediaType::VideoHAP), nullptr);
+    EXPECT_EQ(createDecoder(MediaType::VideoHAPAlpha), nullptr);
+    EXPECT_EQ(createDecoder(MediaType::VideoHAPQ), nullptr);
 }
 
 // Mock decoder for interface testing

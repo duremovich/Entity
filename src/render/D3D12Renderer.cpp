@@ -194,9 +194,9 @@ void D3D12Renderer::shutdown() {
         m_constantBufferData = nullptr;
     }
 
-    if (m_mappingSurfaceConstantBuffer && m_mappingSurfaceConstantBufferData) {
-        m_mappingSurfaceConstantBuffer->Unmap(0, nullptr);
-        m_mappingSurfaceConstantBufferData = nullptr;
+    if (m_mappingSurfaceConstantRing && m_mappingSurfaceConstantRingMapped) {
+        m_mappingSurfaceConstantRing->Unmap(0, nullptr);
+        m_mappingSurfaceConstantRingMapped = nullptr;
     }
 
     // Close fence event
@@ -230,7 +230,7 @@ void D3D12Renderer::shutdown() {
     m_mappingSurfacePipelineState.Reset();
     m_mappingSurfaceRootSignature.Reset();
     m_mappingSurfaceVertexBuffer.Reset();
-    m_mappingSurfaceConstantBuffer.Reset();
+    m_mappingSurfaceConstantRing.Reset();
 
     // Release rendering pipeline objects
     m_cbvHeap.Reset();
@@ -292,6 +292,11 @@ void D3D12Renderer::beginFrame() {
     // Get current back buffer index
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 
+    // CRIT-04: reset the per-frame mapping-surface CB ring cursor. Fence sync in
+    // moveToNextFrame() has already ensured the GPU is done with this frame's region.
+    m_mappingSurfaceDrawIndex = 0;
+    m_mappingSurfaceOverflowed = false;
+
     // Reset command allocator for current frame
     m_commandAllocators[m_currentBackBufferIndex]->Reset();
 
@@ -340,6 +345,8 @@ void D3D12Renderer::clear(float r, float g, float b, float a) {
 }
 
 void D3D12Renderer::endFrame() {
+    if (m_deviceLost) return;  // Don't pile more work onto a dead device.
+
     // Transition render target to PRESENT state
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -362,14 +369,51 @@ void D3D12Renderer::endFrame() {
     ID3D12CommandList* commandLists[] = { m_commandList.Get() };
     m_commandQueue->ExecuteCommandLists(1, commandLists);
 
-    // Present
+    // Present — failures here commonly signal device-removed on live systems
+    // (driver timeout, TDR, unplugged external GPU). We detect and latch so the
+    // Engine can shut down cleanly instead of spinning on a dead device.
     hr = m_swapChain->Present(1, 0); // VSync on
     if (FAILED(hr)) {
-        std::cerr << "Failed to present swap chain!" << std::endl;
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            handleDeviceLost(hr, "Present");
+            return;
+        }
+        std::cerr << "Failed to present swap chain! HRESULT: 0x"
+                  << std::hex << hr << std::dec << std::endl;
     }
 
     // Move to next frame
     moveToNextFrame();
+}
+
+void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
+    if (m_deviceLost) return;  // Already reported.
+    m_deviceLost = true;
+
+    HRESULT removedReason = m_device ? m_device->GetDeviceRemovedReason() : hr;
+    std::cerr << "=======================================================" << std::endl;
+    std::cerr << "[D3D12] GPU DEVICE LOST at " << site << std::endl;
+    std::cerr << "        HRESULT:         0x" << std::hex << hr << std::dec << std::endl;
+    std::cerr << "        RemovedReason:   0x" << std::hex << removedReason << std::dec << std::endl;
+    switch (removedReason) {
+        case DXGI_ERROR_DEVICE_HUNG:
+            std::cerr << "        = DXGI_ERROR_DEVICE_HUNG (GPU took too long to respond — driver timeout)" << std::endl;
+            break;
+        case DXGI_ERROR_DEVICE_REMOVED:
+            std::cerr << "        = DXGI_ERROR_DEVICE_REMOVED (GPU was physically removed or driver crashed)" << std::endl;
+            break;
+        case DXGI_ERROR_DEVICE_RESET:
+            std::cerr << "        = DXGI_ERROR_DEVICE_RESET (GPU had a hardware error not caused by this app)" << std::endl;
+            break;
+        case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+            std::cerr << "        = DXGI_ERROR_DRIVER_INTERNAL_ERROR (driver bug)" << std::endl;
+            break;
+        default:
+            std::cerr << "        = (unknown reason)" << std::endl;
+            break;
+    }
+    std::cerr << "        Engine will shut down. Restart the application." << std::endl;
+    std::cerr << "=======================================================" << std::endl;
 }
 
 Result D3D12Renderer::createDevice() {
@@ -2021,15 +2065,20 @@ Result D3D12Renderer::createMappingSurfaceVertexBuffer() {
 }
 
 Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
-    // Create constant buffer in upload heap
-    const UINT constantBufferSize = (sizeof(MappingSurfaceConstants) + 255) & ~255; // Align to 256 bytes
+    // CRIT-04 fix: allocate a ring of per-draw constant buffer slots sized for
+    // FRAME_COUNT frames-in-flight × MAX_MAPPING_SURFACES_PER_FRAME draws per frame.
+    // Each frame occupies a contiguous region; within a frame each draw gets its
+    // own 256-aligned slot. beginFrame() resets the draw index; moveToNextFrame()
+    // fence-syncs a region before it's reused.
+    m_mappingSurfaceSlotSize = (sizeof(MappingSurfaceConstants) + 255) & ~255u;
+    const UINT totalSize = m_mappingSurfaceSlotSize * MAX_MAPPING_SURFACES_PER_FRAME * FRAME_COUNT;
 
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC resourceDesc = {};
     resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    resourceDesc.Width = constantBufferSize;
+    resourceDesc.Width = totalSize;
     resourceDesc.Height = 1;
     resourceDesc.DepthOrArraySize = 1;
     resourceDesc.MipLevels = 1;
@@ -2043,33 +2092,27 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
         &resourceDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
-        IID_PPV_ARGS(&m_mappingSurfaceConstantBuffer)
+        IID_PPV_ARGS(&m_mappingSurfaceConstantRing)
     );
 
     if (FAILED(hr)) {
-        std::cerr << "Failed to create mapping surface constant buffer!" << std::endl;
+        std::cerr << "Failed to create mapping surface constant ring!" << std::endl;
         return Result::Failure;
     }
 
-    // Map constant buffer (keep it mapped for updates)
-    // KNOWN ISSUE (CRIT-04): This creates a CPU/GPU race condition!
-    // The buffer is persistently mapped and written every frame in drawMappingSurface() without
-    // GPU synchronization. If GPU is still reading from previous frame, it may see stale data.
-    //
-    // Current Mitigation: Single-buffered rendering with Present() provides implicit synchronization
-    // in most cases, but not guaranteed by D3D12 spec. Vsync helps reduce probability of tearing.
-    //
-    // Proper Fix (TODO): Implement ring buffer of constant buffers (one per frame in flight).
-    // Allocate NUM_BACK_BUFFERS copies, index by m_frameIndex, and use fence to track when
-    // each buffer is safe to reuse. This is the correct D3D12 pattern for frequently updated resources.
     D3D12_RANGE readRange = { 0, 0 };
-    hr = m_mappingSurfaceConstantBuffer->Map(0, &readRange, &m_mappingSurfaceConstantBufferData);
+    void* mapped = nullptr;
+    hr = m_mappingSurfaceConstantRing->Map(0, &readRange, &mapped);
     if (FAILED(hr)) {
-        std::cerr << "Failed to map mapping surface constant buffer!" << std::endl;
+        std::cerr << "Failed to map mapping surface constant ring!" << std::endl;
         return Result::Failure;
     }
+    m_mappingSurfaceConstantRingMapped = static_cast<uint8_t*>(mapped);
 
-    std::cout << "Mapping surface constant buffer created" << std::endl;
+    std::cout << "Mapping surface constant ring created ("
+              << MAX_MAPPING_SURFACES_PER_FRAME << " slots/frame × "
+              << FRAME_COUNT << " frames, "
+              << (totalSize / 1024) << " KB)" << std::endl;
     return Result::Success;
 }
 
@@ -2084,11 +2127,24 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         return;
     }
 
-    // Update constant buffer
-    // WARNING (CRIT-04): CPU/GPU race condition!
-    // This writes to a persistently mapped upload heap buffer without GPU fence synchronization.
-    // If the GPU hasn't finished reading this buffer from the previous frame, it may see stale data.
-    // Works in practice due to implicit Present() synchronization, but violates D3D12 best practices.
+    // CRIT-04 fix: write to a unique per-draw slot in the ring buffer. Within a
+    // single frame, each drawMappingSurface() call gets its own CB region so the
+    // GPU reads consistent data at execute time even with multiple surfaces. Across
+    // frames, the fence in moveToNextFrame() guarantees the CPU doesn't overwrite a
+    // slot the GPU is still reading.
+    if (m_mappingSurfaceDrawIndex >= MAX_MAPPING_SURFACES_PER_FRAME) {
+        if (!m_mappingSurfaceOverflowed) {
+            std::cerr << "[drawMappingSurface] Surface limit ("
+                      << MAX_MAPPING_SURFACES_PER_FRAME
+                      << "/frame) exceeded — additional surfaces dropped this frame" << std::endl;
+            m_mappingSurfaceOverflowed = true;
+        }
+        return;
+    }
+
+    const uint32_t frameBase = m_currentBackBufferIndex * MAX_MAPPING_SURFACES_PER_FRAME;
+    const uint32_t slotOffset = (frameBase + m_mappingSurfaceDrawIndex) * m_mappingSurfaceSlotSize;
+
     MappingSurfaceConstants constants;
     for (int i = 0; i < 4; ++i) {
         constants.corners[i] = DirectX::XMFLOAT4(corners[i].x, corners[i].y, 0.0f, 0.0f);
@@ -2103,7 +2159,8 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     constants.opacity = opacity;
     constants.padding1 = 0.0f;
 
-    memcpy(m_mappingSurfaceConstantBufferData, &constants, sizeof(MappingSurfaceConstants));
+    memcpy(m_mappingSurfaceConstantRingMapped + slotOffset,
+           &constants, sizeof(MappingSurfaceConstants));
 
     // Set mapping surface pipeline state
     m_commandList->SetPipelineState(m_mappingSurfacePipelineState.Get());
@@ -2116,9 +2173,13 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         m_currentDescriptorHeap = m_imguiSrvHeap.Get();
     }
 
-    // Set root parameters
-    m_commandList->SetGraphicsRootConstantBufferView(0, m_mappingSurfaceConstantBuffer->GetGPUVirtualAddress());
+    // Set root parameters — bind this draw's unique slot in the ring buffer
+    const D3D12_GPU_VIRTUAL_ADDRESS slotGpuVa =
+        m_mappingSurfaceConstantRing->GetGPUVirtualAddress() + slotOffset;
+    m_commandList->SetGraphicsRootConstantBufferView(0, slotGpuVa);
     m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
+
+    m_mappingSurfaceDrawIndex++;
 
     // Set viewport and scissor rect
     D3D12_VIEWPORT viewport = {};
@@ -2429,12 +2490,12 @@ bool D3D12Renderer::ensureScreenshotStagingBuffer(uint32_t width, uint32_t heigh
     return true;
 }
 
-bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
-                                          D3D12_RESOURCE_STATES sourceState,
-                                          uint32_t width, uint32_t height,
-                                          const std::string& filepath) {
+bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
+                                             D3D12_RESOURCE_STATES sourceState,
+                                             uint32_t width, uint32_t height,
+                                             std::vector<uint8_t>& outPixels) {
     if (!sourceTexture) {
-        std::cerr << "[Screenshot] Source texture is null!" << std::endl;
+        std::cerr << "[Readback] Source texture is null!" << std::endl;
         return false;
     }
 
@@ -2448,13 +2509,13 @@ bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
     // Reset command allocator and command list for this operation
     HRESULT hr = m_commandAllocators[m_currentBackBufferIndex]->Reset();
     if (FAILED(hr)) {
-        std::cerr << "[Screenshot] Failed to reset command allocator!" << std::endl;
+        std::cerr << "[Readback] Failed to reset command allocator!" << std::endl;
         return false;
     }
 
     hr = m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
     if (FAILED(hr)) {
-        std::cerr << "[Screenshot] Failed to reset command list!" << std::endl;
+        std::cerr << "[Readback] Failed to reset command list!" << std::endl;
         return false;
     }
 
@@ -2504,7 +2565,7 @@ bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
     // Close and execute command list
     hr = m_commandList->Close();
     if (FAILED(hr)) {
-        std::cerr << "[Screenshot] Failed to close command list!" << std::endl;
+        std::cerr << "[Readback] Failed to close command list!" << std::endl;
         return false;
     }
 
@@ -2519,14 +2580,14 @@ bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
     D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(m_screenshotStagingRowPitch * height) };
     hr = m_screenshotStagingBuffer->Map(0, &readRange, &mappedData);
     if (FAILED(hr)) {
-        std::cerr << "[Screenshot] Failed to map staging buffer! HRESULT: " << std::hex << hr << std::endl;
+        std::cerr << "[Readback] Failed to map staging buffer! HRESULT: " << std::hex << hr << std::endl;
         return false;
     }
 
     // Copy data to a contiguous buffer, removing row pitch padding
-    std::vector<uint8_t> pixels(width * height * 4);
-    uint8_t* src = static_cast<uint8_t*>(mappedData);
-    uint8_t* dst = pixels.data();
+    outPixels.resize(static_cast<size_t>(width) * height * 4);
+    const uint8_t* src = static_cast<uint8_t*>(mappedData);
+    uint8_t* dst = outPixels.data();
     for (uint32_t y = 0; y < height; ++y) {
         memcpy(dst, src, width * 4);
         src += m_screenshotStagingRowPitch;
@@ -2536,6 +2597,18 @@ bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
     // Unmap
     D3D12_RANGE writeRange = { 0, 0 }; // We didn't write
     m_screenshotStagingBuffer->Unmap(0, &writeRange);
+
+    return true;
+}
+
+bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
+                                          D3D12_RESOURCE_STATES sourceState,
+                                          uint32_t width, uint32_t height,
+                                          const std::string& filepath) {
+    std::vector<uint8_t> pixels;
+    if (!readbackTextureToPixels(sourceTexture, sourceState, width, height, pixels)) {
+        return false;
+    }
 
     // Create output directory if needed
     std::filesystem::path path(filepath);
@@ -2575,6 +2648,27 @@ bool D3D12Renderer::captureComposeTargetToPNG(const std::string& filepath, uint3
         target.width,
         target.height,
         filepath
+    );
+}
+
+bool D3D12Renderer::readComposeTargetPixels(uint32_t slot,
+                                             uint32_t& outWidth,
+                                             uint32_t& outHeight,
+                                             std::vector<uint8_t>& outPixels) {
+    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
+        std::cerr << "[Readback] Compose target " << slot << " not ready!" << std::endl;
+        return false;
+    }
+
+    const ComposeTarget& target = m_composeTargets[slot];
+    outWidth = target.width;
+    outHeight = target.height;
+    return readbackTextureToPixels(
+        target.resource.Get(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        target.width,
+        target.height,
+        outPixels
     );
 }
 

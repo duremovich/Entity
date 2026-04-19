@@ -451,6 +451,11 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::
         return;
     }
 
+    // Wrap the whole body in try/catch so a decoder bug (bad file, corrupted stream,
+    // bad_alloc under memory pressure, unexpected FFmpeg return) doesn't tear down
+    // the whole process. The clip is marked failed and playback continues without it.
+    try {
+
     std::cout << "Decode thread started for entity (initializing decoder...)" << std::endl;
 
     // DEFERRED INITIALIZATION: Open decoder in worker thread, not main thread
@@ -579,6 +584,19 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::
     }
 
     std::cout << "Decode thread exiting" << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[DecodeThread] Unhandled exception for " << worker->filepath
+                  << ": " << e.what() << " — marking clip failed, playback continues" << std::endl;
+        worker->initFailed.store(true);
+        worker->running.store(false);
+    } catch (...) {
+        std::cerr << "[DecodeThread] Unknown exception for " << worker->filepath
+                  << " — marking clip failed, playback continues" << std::endl;
+        worker->initFailed.store(true);
+        worker->running.store(false);
+    }
+    (void)entity;  // Suppress unused-parameter warning in unlikely catch paths
 }
 
 } // namespace entity

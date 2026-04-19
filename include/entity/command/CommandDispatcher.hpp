@@ -126,6 +126,16 @@ public:
     const nlohmann::json& getScriptResults() const { return m_scriptResults; }
 
     /**
+     * True if any command has failed, thrown, or failed to parse since
+     * results were last reset. Used by the integration test harness to
+     * propagate failure to the process exit code.
+     */
+    bool hasErrors() const {
+        auto it = m_scriptResults.find("errors");
+        return it != m_scriptResults.end() && it->is_array() && !it->empty();
+    }
+
+    /**
      * Mark script as complete (called when queue empties after script load).
      */
     void finishScript();

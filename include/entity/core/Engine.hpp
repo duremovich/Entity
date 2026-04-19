@@ -47,9 +47,10 @@ public:
      * @param windowWidth Width of the main window
      * @param windowHeight Height of the main window
      * @param windowTitle Window title
+     * @param headless If true, window is created hidden (for integration tests / CI)
      * @return Result::Success on success, error code otherwise
      */
-    Result initialize(uint32_t windowWidth, uint32_t windowHeight, const char* windowTitle);
+    Result initialize(uint32_t windowWidth, uint32_t windowHeight, const char* windowTitle, bool headless = false);
 
     /**
      * Shutdown the engine and clean up resources.
@@ -187,6 +188,21 @@ public:
      * @return true if capture was successful
      */
     bool captureWindowScreenshot(const std::string& filepath);
+
+    /**
+     * Hash the compose target's pixel output (integration test harness).
+     * Computes FNV-1a 64-bit hash of raw RGBA bytes, writes the hex hash
+     * and dimensions to `hashFilepath`. If `goldenFilepath` is non-empty,
+     * reads expected hash from that file and fails on mismatch.
+     *
+     * @param hashFilepath Where to write the computed hash (created/overwritten)
+     * @param goldenFilepath Optional golden hash file to compare against; empty = record-only
+     * @param composeSlot Compose target slot to read (default 0)
+     * @return true if capture succeeded and (if golden given) hash matched
+     */
+    bool captureHash(const std::string& hashFilepath,
+                     const std::string& goldenFilepath,
+                     uint32_t composeSlot = 0);
 
     /**
      * Load and execute a script file.
@@ -330,6 +346,15 @@ private:
 
     // Project file
     std::filesystem::path m_projectPath;
+
+    // Auto-save (Phase A crash-recovery baseline). Every interval seconds we
+    // blocking-write the current timeline to <projectPath>.autosave (or
+    // "autosave.entity" if no project has been saved yet). Not dirty-tracked —
+    // if there's a timeline, we save. Manual restore: rename the .autosave
+    // file to drop the suffix and open.
+    double m_autosaveIntervalSec{30.0};
+    double m_autosaveAccumulator{0.0};
+    void autoSaveTick(double deltaTime);
 };
 
 } // namespace entity

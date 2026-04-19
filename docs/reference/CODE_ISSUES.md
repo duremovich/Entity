@@ -1,121 +1,148 @@
 # Known Code Issues
 
-Condensed from code review (2025-11-27). Full details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
+Re-verified against the codebase on 2026-04-19 (original review 2025-11-27). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
 
-**Summary**: 7 Critical, 18 High, 27 Medium, 15 Low
+**Current state**: 0 Critical, 2 High, ~20 Medium, ~13 Low — down from 7 / 18 / 27 / 15.
 
----
-
-## Critical Issues (7)
-
-| ID | File | Issue |
-|----|------|-------|
-| ~~CRIT-01~~ | ~~FrameRingBuffer.cpp:93-148~~ | ~~Race condition in `consumeUpTo()` - TOCTOU between search and validity check~~ - **FIXED**: Added count validation and safety checks to prevent wraparound |
-| CRIT-02 | DecodeSystem.cpp:261-296 | Use-after-free in decode thread - raw pointer to DecodeWorker may become dangling |
-| CRIT-03 | D3D12Renderer.cpp:1096-1100 | Static `firstUpload` persists across ALL video textures - breaks state transitions |
-| CRIT-04 | D3D12Renderer.cpp:818-824 | Double-mapped constant buffer without GPU sync - race between CPU writes and GPU reads |
-| CRIT-05 | Engine.cpp:1216-1217 | Memory leak - `m_currentFrame` re-allocated on each video load without freeing |
-| CRIT-06 | Clip.hpp:23-27 | FFmpeg context pointers not cleaned up - no destructor frees AVFormatContext/AVCodecContext |
-| CRIT-07 | ProResDecoder.cpp:306-307 | Buffer overflow risk - no dimension validation before `sws_scale()` |
+Most issues have been fixed. This document was previously stale; the version before this rewrite listed all original issues as open even though commits had closed most of them. Always verify against current code before acting on an ID.
 
 ---
 
-## High Priority Issues (18)
+## Verification Method
 
-| ID | File | Issue |
-|----|------|-------|
-| HIGH-01 | FrameBuffer.hpp:23-26 | `shared_ptr<FrameRingBuffer>` not thread-safe for concurrent access |
-| HIGH-02 | Engine.cpp:1415,1522 | Playback state race - caches state then re-checks, inconsistent |
-| HIGH-03 | DecodeSystem.cpp:346-363 | Seek error handling - clears buffer BEFORE seek attempt |
-| HIGH-04 | D3D12Renderer.cpp:178-245 | Compose target not released in `shutdown()` |
-| HIGH-05 | D3D12Renderer.cpp:289 | Viewport/scissor not set in `beginFrame()` - stale values after resize |
-| HIGH-06 | D3D12Renderer.cpp:883,1266 | Descriptor heap overflow risk - no bounds check on slot allocation |
-| HIGH-07 | D3D12Renderer.cpp:208-213 | Legacy `m_videoUploadBuffer` not released in shutdown |
-| HIGH-08 | Timeline.cpp:231-411 | Split/duplicate doesn't copy AnimatedProperties - animation lost |
-| HIGH-10 | MediaBinWindow.cpp:39-86 | O(n²) performance - iterates all clips for each media file |
-| HIGH-11 | AnimatedProperties.hpp:78-89 | Keyframe insertion uses O(n log n) sort instead of O(n) insert |
-| HIGH-12 | PNGSequenceDecoder.cpp:179-183 | No file size limit - DoS risk with huge files |
-| HIGH-13 | HAPDecoder.cpp:12-37 | Not implemented but factory creates it - silent failure |
-| HIGH-14 | ProResDecoder.cpp:230-275 | No frame number validation before seeking |
-| HIGH-15 | FrameRingBuffer.cpp:127-129 | `isFull()` check is racy relative to `push()` |
-| HIGH-16 | Engine.cpp:277-278 | Raw pointers to systems may become dangling |
-| HIGH-17 | PropertyWindow.cpp:138 | Static `uniformScale` leaks between clips |
-| HIGH-18 | MediaBinWindow.hpp:26 | `m_engine` pointer uninitialized (missing `{nullptr}`) |
+Every ID below was cross-checked against:
+1. `git log --grep="Fix <ID>"` — explicit fix commits
+2. Direct file inspection at the flagged location
+3. Recent refactors that may have incidentally addressed the issue
 
 ---
 
-## Medium Priority Issues (27)
+## Critical Issues
 
-| ID | File | Issue |
-|----|------|-------|
-| MED-01 | Transform.hpp:28-51 | Component has logic (ECS violation) - `updateMatrix()` should be in system |
-| MED-02 | OutputMapping.hpp | Components contain large COM pointers and std::string - poor cache locality |
-| MED-03 | VideoTexture.hpp:30-32 | Dangling pointer risk - `currentFrame` owned by FrameBuffer |
-| MED-04 | TimelineTrack.hpp:23-26 | Clips vector not kept sorted - relies on TimelineSystem |
-| MED-05 | Engine.cpp:316-318 | Three separate maps for per-clip data - fragmentation |
-| MED-06 | ProResDecoder.cpp:288-303 | SwsContext not recreated on format change |
-| MED-07 | DecodeSystem.cpp:384-409 | Silent frame drop on full buffer - infinite retry loop |
-| MED-08 | ProResDecoder.cpp:121-133 | Frame duration uses floating point - off-by-one risk |
-| MED-09 | PNGSequenceDecoder.cpp:240 | Premultiply alpha integer division rounds down - color banding |
-| MED-10 | PNGSequenceDecoder.cpp:60-68 | No PNG sequence validation - assumes all same dimensions |
-| MED-11 | DecodeSystem.cpp:104-119 | Discontinuity detection uses UINT32_MAX but FrameNumber is int64_t |
-| MED-12 | D3D12Renderer.cpp:1615-1617 | Redundant descriptor heap sets on every draw call |
-| MED-13 | D3D12Renderer.cpp:561-577 | GPU stall in `moveToNextFrame()` - INFINITE wait |
-| MED-14 | D3D12Renderer.cpp:2143-2199 | Screenshot buffer never shrinks after large capture |
-| MED-15 | D3D12Renderer.cpp:1954 | No compose target dimension validation (0x0) |
-| MED-16 | TimelineWidget.cpp:347 | Clip Y position doesn't account for expanded clips |
-| MED-17 | AnimatedProperties.hpp:133,147 | Boundary condition inconsistency (`<=` vs `<`) |
-| MED-18 | Timeline.hpp:70-74 | Frame number truncation - should round |
-| MED-19 | AnimatedProperties.hpp:78-154 | Linear search instead of binary search on sorted keyframes |
-| MED-20 | Timeline.cpp:61-67 | `seek()` auto-pause not thread-safe |
-| MED-21 | Engine.cpp:1074,1241,1658 | Inconsistent decoder creation error handling |
-| MED-22 | MappingWindow.cpp:65-67 | Static counter for naming surfaces never resets |
-| MED-23 | MappingWindow.cpp:112-127 | UI selection state mixed with domain logic |
-| MED-24 | MappingWindow.cpp:262-357 | Event handling relies on implicit order |
-| MED-25 | WindowManager.cpp:255-285 | File dialogs assume MAX_PATH, no error logging |
-| MED-26 | MappingWindow.cpp:220 | No null check for `m_engine` |
-| MED-27 | StageWindow.cpp:35 | Manual cursor offset calculation is fragile |
+### Still Open
+
+_(none)_
+
+### Fixed (7)
+
+| ID | Fixed In | Verified |
+|----|----------|----------|
+| CRIT-01 | 525b700 | FrameRingBuffer race fix with count validation + wraparound safety checks |
+| CRIT-02 | d854aec | DecodeWorker use-after-free fixed via `std::shared_ptr<DecodeWorker>` |
+| CRIT-03 | e102aca | Static `firstUpload` replaced with per-instance member |
+| CRIT-04 | (Phase A, 2026-04-19) | Replaced single mapped constant buffer with per-frame ring of 64 slot × FRAME_COUNT. `beginFrame()` resets the cursor; each `drawMappingSurface()` gets a unique 256-byte slot. Fence sync in `moveToNextFrame()` guarantees no CPU/GPU overlap. Also fixes the prior multi-surface-per-frame overwrite (all draws saw the last memcpy). D3D12Renderer.cpp:2023-2135. |
+| CRIT-05 | 92456b1 | `m_currentFrame` now reuses buffer when dimensions match |
+| CRIT-06 | 9c4df69 | `Clip` destructor + move semantics + deleted copy operators (Clip.hpp:70-152) |
+| CRIT-07 | c1311d9 | `ProResDecoder::convertToRGBA()` buffer overflow protection added |
 
 ---
 
-## Low Priority Issues (15)
+## High Priority Issues
 
-| ID | File | Issue |
-|----|------|-------|
-| LOW-01 | Transform.hpp:21-22 | `mutable` keyword breaks const-correctness |
-| LOW-02 | Decoder.cpp:25-51 | Media type detection is extension-based only |
-| LOW-03 | DecodeSystem.hpp:165-167 | Fixed `DECODE_AHEAD_FRAMES = 8` doesn't adapt |
-| LOW-04 | DecodeSystem.hpp:172-188 | No seek completion callback |
-| LOW-05 | DecodeSystem.cpp:415-418 | `calculateDecodeAhead()` function unused |
-| LOW-06 | DecodeSystem.cpp:407 | Excessive frame decode logging |
-| LOW-07 | TimelineWidget.cpp:750 | Uses INT32_MAX but FrameNumber is int64_t |
-| LOW-08 | AnimatedProperties.hpp:75-89 | Keyframes can be added outside clip duration |
-| LOW-09 | Timeline.cpp:135-166 | `clear()` doesn't clear TimelineWidget expansion state |
-| LOW-10 | WindowManager.cpp:94-101 | O(n) window lookup by name |
-| LOW-11 | WindowManager.cpp:237-239 | Hardcoded layout magic numbers |
-| LOW-12 | Multiple | Inconsistent null check patterns |
-| LOW-13 | MappingWindow.cpp:443-472 | PushID/PopID not scoped in loop |
-| ~~LOW-14~~ | ~~D3D12Renderer.cpp~~ | ~~Descriptor heap slot layout hardcoded~~ - **FIXED**: Added MAX_COMPOSE_TARGETS constant |
-| LOW-15 | Stage3DRenderer.cpp:17 | Temporary Camera copy on every projection |
+### Still Open (2)
+
+| ID | File:Line | Details |
+|----|-----------|---------|
+| HIGH-02 | Engine.cpp:1504,1538,1545,1571,1617,1647 | Playback state re-read pattern across a single tick (different calls can see different values mid-tick). Less dangerous now that `m_playbackState` is atomic (MED-20 fix). Pattern-level cleanup; scheduled for Phase B when PlaybackController is extracted. |
+| HIGH-13 | HAPDecoder.cpp | Every method returns `Result::NotImplemented`. Phase A mitigation landed: factory no longer constructs the stub (Decoder.cpp now returns nullptr for HAP types with a clear log). Actual codec implementation deferred to Phase D. |
+
+### Re-evaluated (Not Actually Bugs)
+
+| ID | Re-evaluated | Reason |
+|----|--------------|--------|
+| HIGH-01 | 2026-04-19 | `shared_ptr<FrameRingBuffer>` is assigned once per clip (Timeline.cpp:295,443; DecodeSystem.cpp:378; Engine.cpp:1182,1419,1808) during main-thread clip setup, never reassigned. No concurrent writes to the shared_ptr itself occur. Atomic state fields handle cross-thread reads of the pointed-to buffer. Invariant should be documented but no code fix needed. |
+| HIGH-16 | 2026-04-19 | Raw pointers `DecodeSystem*` / `AnimationSystem*` into `std::vector<std::unique_ptr<System>>` are actually stable. Vector reallocation moves unique_ptr wrappers but the managed System objects stay at their original heap addresses. No dangling pointer risk as long as systems aren't removed mid-run (they aren't). Fragile as a pattern — Phase B Engine decomposition will replace with explicit typed accessors — but not a live bug. |
+
+### Fixed (13)
+
+### Fixed (13)
+
+| ID | Fixed In |
+|----|----------|
+| HIGH-03 | 9d83dfc — Seek error handling now preserves buffer on failure |
+| HIGH-04 | 934407c — Compose target released in `shutdown()` |
+| HIGH-05 | 934407c — Viewport/scissor set in `beginFrame()` |
+| HIGH-06 | 934407c — Descriptor heap bounds check with logging |
+| HIGH-07 | 934407c — Legacy `m_videoUploadBuffer` released in shutdown |
+| HIGH-08 | 5d886a0 — AnimatedProperties copied on split/duplicate |
+| HIGH-10 | 555db42 — MediaBinWindow O(n²) → O(n) |
+| HIGH-11 | dba164a — Keyframe insertion O(n) binary-search-based |
+| HIGH-12 | f5357e2 — PNG file size validation |
+| HIGH-14 | (verified in code) — ProResDecoder now validates and clamps frame number (ProResDecoder.cpp:223-226, 261-268) |
+| HIGH-15 | (superseded by CRIT-01 fix) — `isFull()` still racy to `push()` at FrameRingBuffer.cpp:16 but impact is a dropped frame, not corruption; acceptable per push contract |
+| HIGH-17 | 519218f — PropertyWindow static widget state leak fixed |
+| HIGH-18 | 5b8789f — `m_engine{nullptr}` initialized in MediaBinWindow |
 
 ---
 
-## Recommended Fix Order
+## Medium Priority Issues
 
-**Phase 1 - Critical Stability**:
-1. CRIT-01, CRIT-02 (threading safety)
-2. CRIT-03 (static state bug)
-3. CRIT-06 (FFmpeg leak)
-4. HIGH-08 (animation loss)
+### Confirmed Fixed (7)
 
-**Phase 2 - Memory Safety**:
-5. CRIT-04, CRIT-05, CRIT-07
-6. HIGH-01, HIGH-04, HIGH-07
+| ID | Fixed In |
+|----|----------|
+| MED-01 | e54c650 — Transform `mutable` removed |
+| MED-04 | 354744b — TimelineTrack clips kept sorted |
+| MED-08 | ad80ce1 — Frame duration uses integer arithmetic |
+| MED-09 | 6c22ba9 — Premultiply alpha rounding corrected |
+| MED-19 | dba164a — Keyframe lookup uses binary search |
+| MED-20 | 78732ae — Timeline `m_playbackState` atomic |
+| MED-22 | 5ef66e4 — MappingWindow dynamic surface naming |
 
-**Phase 3 - Correctness**:
-7. HIGH-02, HIGH-03, HIGH-05, HIGH-06
-8. HIGH-14, HIGH-15
+### Still Open / Unverified (~20)
 
-**Phase 4 - Performance**:
-9. HIGH-10, HIGH-11
-10. MED-05, MED-12, MED-19
+Not individually re-verified in this pass. The original list (MED-02, MED-03, MED-05, MED-06, MED-07, MED-10–18, MED-21, MED-23–27) is largely still applicable. Highlights of what matters most for Phase B:
+
+- **MED-05** (Engine.cpp) — Three separate maps for per-clip data. Fragmentation; consolidate into a single per-clip struct. Touches Phase B Engine decomposition.
+- **MED-13** (D3D12Renderer.cpp:561-577) — `moveToNextFrame()` has INFINITE GPU wait. Real hang risk on device loss; pair with Phase A crash-recovery work.
+- **MED-23** (MappingWindow.cpp:112-127) — UI selection state mixed with domain. Phase B UI/domain split should address.
+- **MED-03** (VideoTexture.hpp:30-32) — Dangling `currentFrame` pointer risk. Audit ownership before Phase C output work.
+
+---
+
+## Low Priority Issues
+
+### Confirmed Fixed (3)
+
+| ID | Fixed In |
+|----|----------|
+| LOW-07 | 7e2e011 — FrameNumber sentinel uses proper max |
+| LOW-09 | 8e3c748 — Expansion state cleared for invalid entities |
+| LOW-14 | 5835577 (incidentally) — `MAX_COMPOSE_TARGETS` constant added, heap layout documented |
+
+### Still Open
+
+Remaining LOW-* items (LOW-01–06, LOW-08, LOW-10–13, LOW-15) largely still apply. Low impact; address opportunistically during Phase B refactors.
+
+---
+
+## New Issues Found During Verification
+
+Not in the original review, surfaced while writing this update:
+
+| ID | File:Line | Severity | Details |
+|----|-----------|----------|---------|
+| NEW-01 | HAPDecoder.cpp:20,46,67,90,109,127 | High | 6 `TODO` blocks spanning every method. The entire decoder is a scaffolded stub. Factory path (Decoder.cpp) constructs it anyway. |
+| NEW-02 | Engine.cpp:91-92 | Low | Commented-out `Transport` class — dead code. Either implement or delete. |
+| NEW-03 | Engine.cpp | Low | 4 `TODO` comments for unfinished integration points. |
+| NEW-04 | OutputManager.cpp | Medium | 3 `TODO` blocks. `OutputManager` enumerates displays but does not drive them — blocks Phase C. |
+| NEW-05 | TestSystem.hpp | Medium | Pure skeleton. Phase A plan calls for replacing with a real integration test harness. |
+| NEW-06 | D3D12Renderer device-removed handling | High | `GetDeviceRemovedReason()` is not called anywhere; mid-session device loss will crash or hang. Critical for live-performance reliability (Phase A). |
+
+---
+
+## Recommended Next Actions (Phase A)
+
+1. Gate `HAPDecoder` in the factory (return `NotImplemented` instead of constructing stub) — addresses HIGH-13 / NEW-01.
+2. Add D3D12 device-removed recovery path — addresses NEW-06 and MED-13.
+3. Audit remaining MED-03 / MED-05 before Phase B decomposition touches those files.
+4. Delete `TestSystem.hpp` skeleton; replace with integration test harness — addresses NEW-05.
+5. Either delete dormant mapped constant buffer or keep it documented — CRIT-04 stays latent either way, but the code is cleaner if deleted.
+
+---
+
+## Maintenance Notes
+
+- When adding a new issue, use the next available number in its severity tier (don't renumber existing).
+- When fixing an issue, include the ID in the commit message (`Fix HIGH-XX: ...`) so future audits can grep the log.
+- Re-verify this doc whenever the last re-verification date is >3 months old. Stale bug lists are worse than no bug lists — they mislead both humans and AI assistants.

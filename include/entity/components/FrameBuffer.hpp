@@ -19,7 +19,11 @@ namespace entity {
  * Logic for buffer management extracted to BufferSystem.
  */
 struct FrameBuffer {
-    // Shared pointer to ring buffer (may be shared between components)
+    // Shared pointer to ring buffer. INVARIANT: assigned once on the main thread
+    // during clip setup and never reassigned. Decode thread and main thread both
+    // dereference concurrently, which is safe because the pointed-to FrameRingBuffer
+    // has its own synchronization. Do not reassign this from any thread after
+    // clip activation without extending to atomic_shared_ptr or explicit locking.
     std::shared_ptr<FrameRingBuffer> ringBuffer;
 
     // Current presentation timestamp (in microseconds)

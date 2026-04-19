@@ -141,6 +141,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Script control commands
     registerFactory("WaitFrames", WaitFramesCommand::fromJson);
     registerFactory("CaptureScreenshot", CaptureScreenshotCommand::fromJson);
+    registerFactory("CaptureHash", CaptureHashCommand::fromJson);
 
     // Application commands
     registerFactory("Exit", ExitCommand::fromJson);

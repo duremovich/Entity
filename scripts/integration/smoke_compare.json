@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "Smoke test with golden comparison. Expects the same hash recorded previously by smoke.json; fails loudly on divergence.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "SmokeScreen",
+            "width": 640,
+            "height": 360
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath": "test_output/smoke/cleared_frame.hash",
+            "goldenFilepath": "tests/goldens/smoke/cleared_frame.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

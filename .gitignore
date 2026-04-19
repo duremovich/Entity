@@ -101,6 +101,9 @@ test_media/
 screenshots/
 debug/
 
+# Integration test outputs (goldens live at tests/goldens/ and ARE committed)
+test_output/
+
 # ImGui settings
 imgui.ini
 

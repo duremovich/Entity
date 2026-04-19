@@ -1,112 +1,109 @@
 # Current Status
 
-**Phase**: Phase 5 - Projection Mapping
-**Last Updated**: 2025-11-28
+**Phase**: Phase A — Stabilization (see `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md`)
+**Last Updated**: 2026-04-19
 
 ---
 
-## Completed: Mixed Frame Rate Support
+## Goal Recap
 
-Videos now play at their native frame rate regardless of timeline frame rate. A 24fps video on a 30fps timeline plays at correct speed with proper duration display.
-
-### What Was Fixed
-
-1. **Frame rate conversion** (2025-11-28) - Fixed critical bug where videos played at timeline frame rate instead of source frame rate. A 24fps video on 30fps timeline was playing 25% faster and ending early.
-
-   **Root cause**: 1:1 frame mapping between timeline and source frames, ignoring source video's native frame rate.
-
-   **Fix**: Added frame rate ratio conversion throughout the codebase:
-   - `Engine::mapToMediaFrame()` - Converts timeline frames to source frames
-   - `DecodeSystem::update()` - Uses frame rate ratio for target frame calculation
-   - `clip.duration` - Now stored in timeline frames (source frames × timelineFPS/sourceFPS)
-   - `TimelineWidget` - All frame↔time conversions use timeline frame rate
-
-2. **Added `frameBlending` field to Clip component** - Per-clip option for smoother playback at mismatched frame rates (not yet implemented in renderer).
-
-### Previous Fixes (2025-11-28)
-
-3. **Descriptor heap slot collision** - Fixed video disappearing when adding second screen.
-
-4. **Multi-video playback freeze** - Fixed 5+ second freeze from FrameRingBuffer race condition.
-
-5. **Stale frame flash on seek-before-clip** - Fixed wrong frame showing briefly after seek.
-
-6. **Playback freeze after backward scrubbing** - Fixed freeze when dragging playhead backwards.
-
-### Component Status
-
-| Component | Status | Details |
-|-----------|--------|---------|
-| D3D12Renderer | COMPLETE | Vector-based targets, slot-based API |
-| CompositorSystem | COMPLETE | Full per-screen iteration loop with lazy RT allocation |
-| StageWindow | COMPLETE | Per-screen texture display in 3D view |
-
-### How It Works
-
-1. **Lazy Render Target Allocation**: `CompositorSystem::ensureScreenRenderTarget()` creates compose targets on first use
-2. **Per-Screen Iteration**: CompositorSystem iterates ALL visible screens, not just the first
-3. **Clip Filtering**:
-   - `targetScreen == entt::null` renders to ALL screens
-   - `targetScreen == specificEntity` renders only to that screen
-4. **Per-Screen Display**: StageWindow 3D view passes each screen's unique texture to `drawScreen()`
-
-### Key Changes Made
-
-**CompositorSystem.cpp/hpp**:
-- Added `ensureScreenRenderTarget()` helper for lazy allocation
-- Refactored `update()` to iterate all visible screens
-- Each screen gets its own compose target at its resolution
-- Clips filtered per-screen inside the iteration loop
-
-**StageWindow.cpp**:
-- Added `textureID` field to `ScreenDrawData` struct
-- Each screen now gets its own compose target texture
-- Removed shared slot-0 texture lookup
-
-**D3D12Renderer.hpp/cpp**:
-- Added `MAX_COMPOSE_TARGETS = 8` constant
-- Fixed descriptor heap layout to prevent slot collisions
-- Video textures now start at slot `2 + MAX_COMPOSE_TARGETS`
-
-**Commands.hpp/cpp**:
-- Added `AddScreenCommand` for scripted screen creation
-- Added `SetClipTargetScreenCommand` for scripted target assignment
+Production-quality commercial media server for live performance — a Disguise/Watchout/Pixera replacement. Current work is not feature development; it's stabilizing the foundation so feature work stops regressing.
 
 ---
 
-## Next Steps
+## Phase A: Stabilize the Foundation
 
-1. Test with multiple screens and clips with different target assignments
-2. Verify dimension changes trigger render target recreation
-3. Consider adding screen deletion cleanup (currently leaves gaps)
+Before any new feature work. Every regression now costs 10x when debugging at 6pm the day of a show.
+
+### Progress
+
+| # | Task | State |
+|---|------|-------|
+| 1 | Rewrite `docs/reference/CODE_ISSUES.md` from ground truth | Done 2026-04-19 |
+| 2 | Update stale sub-CLAUDE.md files (components, render, systems) | Done 2026-04-19 |
+| 3 | Update `docs/status/CURRENT.md` to reflect Phase A | Done 2026-04-19 |
+| 4 | Gate HAPDecoder in the decoder factory | Done 2026-04-19 |
+| 5 | Integration test harness scaffolding (`--headless`, `CaptureHash`, smoke + multi_screen tests) | Done 2026-04-19 |
+| 6 | Verify / fix remaining real critical bugs | Done 2026-04-19 (CRIT-04 fixed; HIGH-01/-16 re-evaluated as non-bugs) |
+| 7 | Crash-recovery baseline (D3D12 device-removed, decode exception safety, auto-save) | Done 2026-04-19 |
+| 8 | Add integration tests (seek, mixed-fps, ping-pong, blend modes, round-trip) | Partial — 2 tests passing; media-dependent tests blocked on #10 |
+| 9 | CTest + GitHub Actions CI wiring | Done 2026-04-19 |
+| 10 | Procedural PNG sequence generator for decode-heavy tests | Pending |
+
+**Phase A is effectively complete for foundation work. 51/51 tests pass under CTest.** Remaining items (#8 expansion, #10 media generator) are extensions, not blockers.
+
+### Rationale for Phase A before Phase B/C/D
+
+Recent git history (last 20 commits): 16 bug fixes, 2 architecture, 2 docs. The regression treadmill will not stop without automated tests, and for a commercial live-performance product the reliability bar is absolute. Phase A is the cost of entry for everything after it.
 
 ---
 
-## Active Files
+## Verified State Summary
 
-**Modified for Frame Rate Support**:
-- [Clip.hpp](../../include/entity/components/Clip.hpp) - Added `frameBlending` field
-- [Engine.cpp](../../src/core/Engine.cpp) - Frame rate conversion in `mapToMediaFrame()`, duration calculation
-- [DecodeSystem.cpp](../../src/systems/DecodeSystem.cpp) - Frame rate ratio for target frame calculation
-- [TimelineWidget.cpp](../../src/timeline/TimelineWidget.cpp) - All frame↔time conversions use timeline rate
-- [Timeline.cpp](../../src/timeline/Timeline.cpp) - Fixed split/duplicate for mixed frame rates
-- [ProjectSerializer.cpp](../../src/project/ProjectSerializer.cpp) - Recalculates duration on project load
-- [MediaBinWindow.cpp](../../src/ui/MediaBinWindow.cpp) - Shows source duration correctly
+### What works (keep, don't touch)
+- ECS core (entt registry, ~13 components, ~7 systems)
+- ProRes 4444 decode (FFmpeg, end-to-end)
+- PNG sequence decode (stb_image)
+- Timeline: multi-track, transport, seek, split/duplicate with keyframes, ping-pong, mixed frame rate
+- Keyframe animation (6 properties × 5 interpolation types, binary-search lookup)
+- Compositor: z-order, 13 blend modes, per-screen routing via `targetScreen`
+- Corner-pin projection mapping (4-corner quad warp, surface editor UI)
+- Project save/load (JSON round-trip with version field)
+- 3D stage preview (grid, orbit camera, screen quads)
+- ImGui docking UI (8 windows)
+- FrameRingBuffer (recently hardened, has unit tests)
+
+### What's stubbed / broken
+- HAPDecoder: factory constructs it, every method returns `NotImplemented` (Phase A task 4)
+- Physical output driving: `OutputManager` enumerates but doesn't drive displays (Phase C)
+- Soft-edge/edge-blending: data model exists, shader not wired (Phase C)
+- Audio: no pipeline (Phase D)
+- Network/sync/control: no OSC/DMX/Art-Net/MIDI/NDI/timecode/genlock (Phase D+)
+
+### Known critical issues (see `docs/reference/CODE_ISSUES.md`)
+- **CRIT-04** (live): mapping-surface constant buffer writes without GPU fence sync. Race risk under high load.
+- **NEW-06**: no D3D12 device-removed recovery path.
+- **HIGH-01, HIGH-02, HIGH-13, HIGH-16**: detailed in issues doc.
+
+---
+
+## Active Files (Phase A scope)
+
+- `docs/reference/CODE_ISSUES.md` — ground-truth issue list
+- `src/media/Decoder.cpp` — HAP factory gating
+- `src/media/HAPDecoder.cpp` — decide keep-stub vs remove
+- `src/render/D3D12Renderer.cpp:2053-2100` — CRIT-04 ring buffer fix
+- `src/render/D3D12Renderer.cpp:561-577` — MED-13 infinite GPU wait
+- `scripts/` — extend with headless test runner
+- `tests/` — expand beyond FrameRingBuffer
+
+---
+
+## Phase B–E+ Preview
+
+Roadmap lives in `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md`. Not in scope until Phase A exits.
+
+- **Phase B**: Decompose D3D12Renderer (2,598 → 4 classes), Engine (1,966 → 3), TimelineWidget (2,121 → UI/input/command split). ECS hygiene pass.
+- **Phase C**: Physical output driving, soft-edge feather shader, edge blending, undo/redo, save-file migration, color management foundation, transport hardening (cue stacks).
+- **Phase D**: LTC/MTC timecode, OSC, audio, HAP real impl, NDI output, preview/program workflow.
+- **Phase E+**: Multi-machine sync, genlock, shader effect pipeline, color correction + LUTs, mesh warp, DMX/Art-Net, 3D content rendering, hardware output cards, show-file redundancy.
 
 ---
 
 ## Architecture Notes
 
-### Frame Rate Handling
-- **Timeline frame rate**: Fixed rate for the project (e.g., 30fps) - set once, not changed by clips
-- **Clip frame rate**: Source video's native rate (e.g., 24fps) - stored in `clip.framerate`
-- **Duration**: Stored in timeline frames (`clip.duration = totalMediaFrames × timelineFPS/sourceFPS`)
-- **Frame mapping**: `Engine::mapToMediaFrame()` converts timeline frames to source frames
+### Frame Rate Handling (landed 2025-11-28)
+- **Timeline frame rate**: project-fixed (e.g. 30fps)
+- **Clip frame rate**: source video native rate (e.g. 24fps)
+- **Duration**: stored in timeline frames (`clip.duration = totalMediaFrames × timelineFPS/sourceFPS`)
+- **Frame mapping**: `Engine::mapToMediaFrame()` converts timeline → source
 - **Formula**: `sourceFrame = timelineLocalFrame × (sourceFPS / timelineFPS)`
 
-### Multi-Screen Rendering
-- Each Screen entity gets unique `renderTargetSlot` (0-based index, lazy allocated)
-- CompositorSystem iterates all visible screens and composites each independently
+### Multi-Screen Rendering (landed 2025-11-28)
+- Each Screen entity gets unique `renderTargetSlot` (lazy allocated)
+- CompositorSystem iterates all visible screens, composites each independently
 - Clips filtered by `targetScreen` during composition (null = all screens)
 - StageWindow 3D view displays each screen with its unique texture
-- Slots are never reused (gaps left on screen deletion) - acceptable for typical 2-8 screens
+- Descriptor heap: slot 0 = ImGui, slot 1 = legacy, slots 2–9 = compose targets (MAX=8), slots 10+ = video textures
+
+See `docs/status/HISTORY.md` for full phase history.

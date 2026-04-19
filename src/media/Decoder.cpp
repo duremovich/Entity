@@ -1,9 +1,9 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/media/ProResDecoder.hpp"
-#include "entity/media/HAPDecoder.hpp"
 #include "entity/media/PNGSequenceDecoder.hpp"
 #include <algorithm>
 #include <filesystem>
+#include <iostream>
 
 namespace entity {
 
@@ -14,7 +14,11 @@ std::unique_ptr<Decoder> createDecoder(MediaType mediaType) {
         case MediaType::VideoHAP:
         case MediaType::VideoHAPAlpha:
         case MediaType::VideoHAPQ:
-            return std::make_unique<HAPDecoder>();
+            // HAP decoder is not yet implemented. Returning nullptr so callers
+            // surface a clear error instead of constructing a stub that silently
+            // fails on every operation. See docs/reference/CODE_ISSUES.md (HIGH-13).
+            std::cerr << "createDecoder: HAP codec family is not yet implemented" << std::endl;
+            return nullptr;
         case MediaType::PNGSequence:
             return std::make_unique<PNGSequenceDecoder>();
         default:

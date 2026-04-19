@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  windows-build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # vcpkg is installed on windows-latest runners but in a known-bad state
+      # for manifest mode. Clone a fresh copy pinned to the same baseline we
+      # use locally, so CI builds match developer builds bit-for-bit.
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          cd "$VCPKG_ROOT"
+          git checkout 9edb1b8e590cc086563301d735cae4b6e732d2d2
+          ./bootstrap-vcpkg.bat
+
+      # Binary-cache vcpkg builds to GitHub Packages (the NuGet source GitHub
+      # injects for every workflow). Without this, every CI run rebuilds FFmpeg
+      # from source (~30 minutes). With it, cold runs are ~30 min but warm runs
+      # are ~2 min.
+      - name: Configure vcpkg binary cache
+        shell: pwsh
+        run: |
+          $nugetUrl = "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          & "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget | Out-Null
+          $nuget = (& "$env:VCPKG_ROOT/vcpkg.exe" fetch nuget) | Select-Object -Last 1
+          & $nuget sources add -Source $nugetUrl -StorePasswordInClearText -Name GitHubPackages `
+            -UserName "${{ github.repository_owner }}" -Password "${{ secrets.GITHUB_TOKEN }}"
+          & $nuget setapikey "${{ secrets.GITHUB_TOKEN }}" -Source $nugetUrl
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,$nugetUrl,readwrite" >> $env:GITHUB_ENV
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -B build -S . \
+            -G "Visual Studio 17 2022" \
+            -A x64 \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build (Release)
+        shell: bash
+        run: cmake --build build --config Release -j
+
+      - name: Run all tests (unit + integration)
+        shell: bash
+        working-directory: build
+        run: ctest -C Release --output-on-failure
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: |
+            test_output/
+            build/Testing/
+          retention-days: 7
