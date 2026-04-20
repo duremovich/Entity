@@ -129,6 +129,7 @@ target_sources(EntityMediaCore
 
         # Project
         src/project/ProjectSerializer.cpp
+        src/project/ProjectManager.cpp
 
         # Command System
         src/command/CommandDispatcher.cpp

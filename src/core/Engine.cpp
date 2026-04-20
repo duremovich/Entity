@@ -18,6 +18,7 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/media/FrameRingBuffer.hpp"
 #include "entity/project/ProjectSerializer.hpp"
+#include "entity/project/ProjectManager.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
 #include <imgui.h>
@@ -146,6 +147,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     // Initialize timeline
     m_timeline = std::make_unique<Timeline>(m_registry);
+
+    // Initialize project manager (owns project path, media library, autosave)
+    m_projectManager = std::make_unique<ProjectManager>();
+    m_projectManager->initialize(m_timeline.get(), &m_registry, m_renderer.get());
 
     // Set up callback for when new clips are created (split, duplicate)
     m_timeline->setClipCreatedCallback([this](entt::entity clipEntity, const std::string& filepath) {
@@ -365,23 +370,17 @@ IRenderer* Engine::getRenderer() {
 }
 
 void Engine::autoSaveTick(double deltaTime) {
-    if (!m_timeline) return;
-    m_autosaveAccumulator += deltaTime;
-    if (m_autosaveAccumulator < m_autosaveIntervalSec) return;
-    m_autosaveAccumulator = 0.0;
+    if (m_projectManager) m_projectManager->tickAutosave(deltaTime);
+}
 
-    std::filesystem::path autosavePath =
-        m_projectPath.empty() ? std::filesystem::path("autosave.entity")
-                              : m_projectPath;
-    autosavePath += ".autosave";
+const std::vector<std::string>& Engine::getLoadedMediaFiles() const {
+    static const std::vector<std::string> kEmpty;
+    return m_projectManager ? m_projectManager->loadedMediaFiles() : kEmpty;
+}
 
-    // Direct serializer call — we don't want to update m_projectPath to point at
-    // the .autosave file. Operator still expects "Save" to write the real path.
-    if (ProjectSerializer::save(*m_timeline, autosavePath)) {
-        std::cout << "[Autosave] " << autosavePath.string() << std::endl;
-    } else {
-        std::cerr << "[Autosave] Failed: " << ProjectSerializer::getLastError() << std::endl;
-    }
+const std::filesystem::path& Engine::getProjectPath() const {
+    static const std::filesystem::path kEmpty;
+    return m_projectManager ? m_projectManager->projectPath() : kEmpty;
 }
 
 void Engine::registerSystem(std::unique_ptr<System> system) {
@@ -738,13 +737,10 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     // Global shortcuts (work even without timeline focus)
     switch (key) {
         case GLFW_KEY_S:
-            // Ctrl+S = Save project
+            // Ctrl+S = Save project. Empty path means ProjectManager picks its
+            // current project path or defaults to project.entity.
             if (ctrlPressed) {
-                if (m_projectPath.empty()) {
-                    // Default to project.entity in current directory
-                    m_projectPath = "project.entity";
-                }
-                saveProject(m_projectPath);
+                saveProject("");
             }
             break;
 
@@ -1168,7 +1164,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     std::cout << "  Has alpha: " << (m_decoder->hasAlpha() ? "yes" : "no") << std::endl;
 
     // Add to loaded media files list
-    m_loadedMediaFiles.push_back(filePath);
+    if (m_projectManager) m_projectManager->addMediaFile(filePath);
 
     // Create clip entity with all required components for rendering
     entt::entity clipEntity = m_registry.create();
@@ -1344,11 +1340,8 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     std::cout << "  Duration: " << decoder->getDuration() << " frames" << std::endl;
     std::cout << "  Frame rate: " << decoder->getFrameRate() << " fps" << std::endl;
 
-    // Add to loaded media files list if not already there
-    auto it = std::find(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(), filePath);
-    if (it == m_loadedMediaFiles.end()) {
-        m_loadedMediaFiles.push_back(filePath);
-    }
+    // Add to loaded media files list (idempotent)
+    if (m_projectManager) m_projectManager->addMediaFile(filePath);
 
     // Create clip entity with all required components
     entt::entity clipEntity = m_registry.create();
@@ -1749,117 +1742,11 @@ void Engine::updateClipVideos() {
 }
 
 bool Engine::saveProject(const std::filesystem::path& filepath) {
-    std::filesystem::path savePath = filepath;
-
-    // Use current project path if empty
-    if (savePath.empty()) {
-        if (m_projectPath.empty()) {
-            savePath = "project.entity";
-        } else {
-            savePath = m_projectPath;
-        }
-    }
-
-    std::cout << "[Engine] Saving project to " << savePath.string() << "..." << std::endl;
-
-    if (!m_timeline) {
-        std::cerr << "[Engine] Cannot save: No timeline!" << std::endl;
-        return false;
-    }
-
-    bool success = ProjectSerializer::save(*m_timeline, savePath);
-
-    if (success) {
-        m_projectPath = savePath;
-        std::cout << "[Engine] Project saved successfully!" << std::endl;
-    } else {
-        std::cerr << "[Engine] Save failed: " << ProjectSerializer::getLastError() << std::endl;
-    }
-
-    return success;
+    return m_projectManager ? m_projectManager->save(filepath) : false;
 }
 
 bool Engine::loadProject(const std::filesystem::path& filepath) {
-    std::cout << "[Engine] Loading project from " << filepath.string() << "..." << std::endl;
-
-    if (!m_timeline) {
-        std::cerr << "[Engine] Cannot load: No timeline!" << std::endl;
-        return false;
-    }
-
-    // Clear existing clip decode state (destructors release decoders + frames).
-    m_registry.clear<ClipDecodeState>();
-    m_loadedMediaFiles.clear();
-
-    // Define media load callback to recreate decoders for loaded clips
-    ProjectSerializer::MediaLoadCallback loadCallback = [this](entt::entity clipEntity, const std::string& mediaPath) {
-        // Check if file exists
-        if (!std::filesystem::exists(mediaPath)) {
-            std::cerr << "[Engine] Media file not found: " << mediaPath << std::endl;
-            return;
-        }
-
-        // Detect media type and create decoder
-        MediaType mediaType = detectMediaType(mediaPath);
-        if (mediaType == MediaType::Unknown) {
-            std::cerr << "[Engine] Unsupported media type: " << mediaPath << std::endl;
-            return;
-        }
-
-        auto decoder = createDecoder(mediaType);
-        if (!decoder) {
-            std::cerr << "[Engine] Failed to create decoder for: " << mediaPath << std::endl;
-            return;
-        }
-
-        Result result = decoder->open(mediaPath);
-        if (result != Result::Success) {
-            std::cerr << "[Engine] Failed to open media: " << mediaPath << std::endl;
-            return;
-        }
-
-        // Add VideoTexture if not present
-        if (!m_registry.all_of<VideoTexture>(clipEntity)) {
-            auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
-            videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
-            videoTex.width = decoder->getWidth();
-            videoTex.height = decoder->getHeight();
-        }
-
-        // Add FrameBuffer if not present
-        if (!m_registry.all_of<FrameBuffer>(clipEntity)) {
-            auto& frameBuffer = m_registry.emplace<FrameBuffer>(clipEntity);
-            frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
-            frameBuffer.isBuffering.store(true);
-        }
-
-        // Store decoder and create frame buffer
-        auto& state = m_registry.emplace_or_replace<ClipDecodeState>(clipEntity);
-        state.decoder = std::move(decoder);
-        state.frame = std::make_unique<DecodedFrame>();
-
-        auto& clip = m_registry.get<Clip>(clipEntity);
-        state.frame->allocate(clip.width, clip.height);
-        state.lastDecodedFrame = UINT32_MAX;
-
-        // Add to loaded media files
-        if (std::find(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(), mediaPath) == m_loadedMediaFiles.end()) {
-            m_loadedMediaFiles.push_back(mediaPath);
-        }
-
-        std::cout << "[Engine] Loaded media: " << mediaPath << std::endl;
-    };
-
-    bool success = ProjectSerializer::load(*m_timeline, filepath, loadCallback);
-
-    if (success) {
-        m_projectPath = filepath;
-        std::cout << "[Engine] Project loaded successfully!" << std::endl;
-    } else {
-        std::cerr << "[Engine] Load failed: " << ProjectSerializer::getLastError() << std::endl;
-    }
-
-    return success;
+    return m_projectManager ? m_projectManager->load(filepath) : false;
 }
 
 void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath) {

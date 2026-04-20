@@ -19,6 +19,7 @@ class IRenderer;
 class D3D12Renderer;  // Owned internally; external callers get IRenderer*.
 class Timeline;
 class WindowManager;
+class ProjectManager;
 class Decoder;
 class DecodeSystem;
 class AnimationSystem;
@@ -121,7 +122,7 @@ public:
     /**
      * Get list of loaded media files.
      */
-    const std::vector<std::string>& getLoadedMediaFiles() const { return m_loadedMediaFiles; }
+    const std::vector<std::string>& getLoadedMediaFiles() const;  // forwards to ProjectManager
 
     /**
      * Get the current decoder (for metadata access).
@@ -164,7 +165,7 @@ public:
     /**
      * Get the current project file path.
      */
-    const std::filesystem::path& getProjectPath() const { return m_projectPath; }
+    const std::filesystem::path& getProjectPath() const;  // forwards to ProjectManager
 
     /**
      * Import a video file onto the timeline.
@@ -337,19 +338,12 @@ private:
     // (include/entity/components/ClipDecodeState.hpp); access via
     // registry.try_get<ClipDecodeState>(entity) from systems.
 
-    // Media library
-    std::vector<std::string> m_loadedMediaFiles;
+    // Project-scoped state (project path, loaded media library, autosave
+    // timer) lives in ProjectManager. Engine owns it and forwards save/load
+    // / autosave calls. See include/entity/project/ProjectManager.hpp.
+    std::unique_ptr<ProjectManager> m_projectManager;
 
-    // Project file
-    std::filesystem::path m_projectPath;
-
-    // Auto-save (Phase A crash-recovery baseline). Every interval seconds we
-    // blocking-write the current timeline to <projectPath>.autosave (or
-    // "autosave.entity" if no project has been saved yet). Not dirty-tracked —
-    // if there's a timeline, we save. Manual restore: rename the .autosave
-    // file to drop the suffix and open.
-    double m_autosaveIntervalSec{30.0};
-    double m_autosaveAccumulator{0.0};
+    // Per-tick autosave hook — delegates to m_projectManager->tickAutosave.
     void autoSaveTick(double deltaTime);
 };
 
