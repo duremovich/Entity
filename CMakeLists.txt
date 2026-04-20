@@ -56,7 +56,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 message(STATUS "  nlohmann_json: Found")
 
 # FFmpeg - optional for now (will add later)
-find_package(FFMPEG COMPONENTS avcodec avformat swscale swresample)
+find_package(FFMPEG COMPONENTS avcodec avformat avutil swscale swresample)
 if(NOT FFMPEG_FOUND)
     find_package(PkgConfig QUIET)
     if(PKG_CONFIG_FOUND)
