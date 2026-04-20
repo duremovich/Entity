@@ -6,7 +6,6 @@
 #include <memory>
 #include <chrono>
 #include <vector>
-#include <unordered_map>
 #include <filesystem>
 #include <string>
 
@@ -334,13 +333,9 @@ private:
     std::unique_ptr<Decoder> m_decoder;
     std::unique_ptr<DecodedFrame> m_currentFrame;
 
-    // Multi-clip video playback state
-    struct ClipDecodeState {
-        std::unique_ptr<Decoder> decoder;
-        std::unique_ptr<DecodedFrame> frame;
-        FrameNumber lastDecodedFrame{UINT32_MAX};
-    };
-    std::unordered_map<entt::entity, ClipDecodeState> m_clipState;
+    // Per-clip-entity decode state is now a proper component
+    // (include/entity/components/ClipDecodeState.hpp); access via
+    // registry.try_get<ClipDecodeState>(entity) from systems.
 
     // Media library
     std::vector<std::string> m_loadedMediaFiles;
