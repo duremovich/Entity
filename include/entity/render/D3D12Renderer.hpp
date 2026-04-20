@@ -157,12 +157,11 @@ public:
 
     /** D3D12-specific escape hatch for external code that needs the device.
      *  Going away in Phase B once callers use IRenderer. */
-    ID3D12Device* getDevice() const { return m_device.Get(); }
+    ID3D12Device* getDevice() const;  // Defined in .cpp so the header doesn't need D3D12Device.hpp.
 
 private:
     // Helper methods for initialization
-    Result createDevice();
-    Result createCommandQueue();
+    // (createDevice / createCommandQueue moved to D3D12Device class)
     Result createSwapChain(void* windowHandle, uint32_t width, uint32_t height);
     Result createRenderTargetViews();
     Result createCommandAllocators();
@@ -218,9 +217,13 @@ private:
 private:
     static constexpr uint32_t FRAME_COUNT = 2; // Double buffering
 
-    // D3D12 Core objects
-    ComPtr<ID3D12Device> m_device;
-    ComPtr<ID3D12CommandQueue> m_commandQueue;
+    // D3D12 device + command queue — owned by D3D12Device wrapper so the
+    // ID3D12Device/ID3D12CommandQueue lifetime is in one place.
+    std::unique_ptr<class D3D12Device> m_gpu;
+
+    // Swap chain + per-frame render resources. Still on D3D12Renderer
+    // because they couple tightly to the back buffer index (which lives
+    // here). Extracting these cleanly is Phase B+ work.
     ComPtr<IDXGISwapChain3> m_swapChain;
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
     ComPtr<ID3D12Resource> m_renderTargets[FRAME_COUNT];

@@ -5,6 +5,7 @@
  */
 
 #include "entity/render/D3D12Renderer.hpp"
+#include "entity/render/D3D12Device.hpp"
 #include "entity/render/DescriptorHeapLayout.hpp"
 #include "entity/render/TextureUploader.hpp"
 
@@ -64,15 +65,14 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
 
     std::cout << "Initializing D3D12 renderer..." << std::endl;
 
-    // Create D3D12 device
-    if (createDevice() != Result::Success) {
-        std::cerr << "Failed to create D3D12 device!" << std::endl;
-        return Result::Failure;
-    }
-
-    // Create command queue
-    if (createCommandQueue() != Result::Success) {
-        std::cerr << "Failed to create command queue!" << std::endl;
+    // Create D3D12 device + command queue (owned by D3D12Device wrapper)
+    m_gpu = std::make_unique<D3D12Device>();
+#if defined(_DEBUG)
+    constexpr bool kEnableDebugLayer = true;
+#else
+    constexpr bool kEnableDebugLayer = false;
+#endif
+    if (m_gpu->initialize(kEnableDebugLayer) != Result::Success) {
         return Result::Failure;
     }
 
@@ -143,7 +143,7 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
 
     // Video texture pool — depends on the SRV heap created by initializeImGui
     m_textureUploader = std::make_unique<TextureUploader>();
-    if (m_textureUploader->initialize(m_device.Get(), m_imguiSrvHeap.Get(), m_srvDescriptorSize) != Result::Success) {
+    if (m_textureUploader->initialize(m_gpu->device(), m_imguiSrvHeap.Get(), m_srvDescriptorSize) != Result::Success) {
         std::cerr << "Failed to initialize TextureUploader!" << std::endl;
         return Result::Failure;
     }
@@ -257,9 +257,13 @@ void D3D12Renderer::shutdown() {
     }
     m_rtvHeap.Reset();
     m_swapChain.Reset();
-    m_commandQueue.Reset();
     m_fence.Reset();
-    m_device.Reset();
+    // Release the device + queue last (after all resources allocated from
+    // them have been released above).
+    if (m_gpu) {
+        m_gpu->shutdown();
+        m_gpu.reset();
+    }
 
     m_initialized = false;
 }
@@ -377,7 +381,7 @@ void D3D12Renderer::endFrame() {
 
     // Execute command list
     ID3D12CommandList* commandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(1, commandLists);
+    m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
 
     // Present — failures here commonly signal device-removed on live systems
     // (driver timeout, TDR, unplugged external GPU). We detect and latch so the
@@ -400,7 +404,9 @@ void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     if (m_deviceLost) return;  // Already reported.
     m_deviceLost = true;
 
-    HRESULT removedReason = m_device ? m_device->GetDeviceRemovedReason() : hr;
+    HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
+        ? m_gpu->device()->GetDeviceRemovedReason()
+        : hr;
     std::cerr << "=======================================================" << std::endl;
     std::cerr << "[D3D12] GPU DEVICE LOST at " << site << std::endl;
     std::cerr << "        HRESULT:         0x" << std::hex << hr << std::dec << std::endl;
@@ -426,45 +432,8 @@ void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     std::cerr << "=======================================================" << std::endl;
 }
 
-Result D3D12Renderer::createDevice() {
-    // Enable debug layer in debug builds
-#if defined(_DEBUG)
-    ComPtr<ID3D12Debug> debugController;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-        debugController->EnableDebugLayer();
-        std::cout << "D3D12 debug layer enabled" << std::endl;
-    }
-#endif
-
-    // Create device
-    HRESULT hr = D3D12CreateDevice(
-        nullptr,                    // Use default adapter
-        D3D_FEATURE_LEVEL_11_0,     // Minimum feature level
-        IID_PPV_ARGS(&m_device)
-    );
-
-    if (FAILED(hr)) {
-        std::cerr << "Failed to create D3D12 device! HRESULT: 0x" << std::hex << hr << std::endl;
-        return Result::Failure;
-    }
-
-    std::cout << "D3D12 device created" << std::endl;
-    return Result::Success;
-}
-
-Result D3D12Renderer::createCommandQueue() {
-    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-
-    HRESULT hr = m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue));
-    if (FAILED(hr)) {
-        std::cerr << "Failed to create command queue!" << std::endl;
-        return Result::Failure;
-    }
-
-    std::cout << "Command queue created" << std::endl;
-    return Result::Success;
+ID3D12Device* D3D12Renderer::getDevice() const {
+    return m_gpu ? m_gpu->device() : nullptr;
 }
 
 Result D3D12Renderer::createSwapChain(void* windowHandle, uint32_t width, uint32_t height) {
@@ -494,7 +463,7 @@ Result D3D12Renderer::createSwapChain(void* windowHandle, uint32_t width, uint32
     // Create swap chain
     ComPtr<IDXGISwapChain1> swapChain1;
     hr = factory->CreateSwapChainForHwnd(
-        m_commandQueue.Get(),
+        m_gpu->commandQueue(),
         static_cast<HWND>(windowHandle),
         &swapChainDesc,
         nullptr,
@@ -527,13 +496,13 @@ Result D3D12Renderer::createRenderTargetViews() {
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    HRESULT hr = m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap));
+    HRESULT hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap));
     if (FAILED(hr)) {
         std::cerr << "Failed to create RTV descriptor heap!" << std::endl;
         return Result::Failure;
     }
 
-    m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    m_rtvDescriptorSize = m_gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
     // Create RTVs for each frame
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -545,7 +514,7 @@ Result D3D12Renderer::createRenderTargetViews() {
             return Result::Failure;
         }
 
-        m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
+        m_gpu->device()->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
         rtvHandle.ptr += m_rtvDescriptorSize;
     }
 
@@ -555,7 +524,7 @@ Result D3D12Renderer::createRenderTargetViews() {
 
 Result D3D12Renderer::createCommandAllocators() {
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        HRESULT hr = m_device->CreateCommandAllocator(
+        HRESULT hr = m_gpu->device()->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS(&m_commandAllocators[i])
         );
@@ -571,7 +540,7 @@ Result D3D12Renderer::createCommandAllocators() {
 }
 
 Result D3D12Renderer::createCommandList() {
-    HRESULT hr = m_device->CreateCommandList(
+    HRESULT hr = m_gpu->device()->CreateCommandList(
         0,
         D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_commandAllocators[0].Get(),
@@ -592,7 +561,7 @@ Result D3D12Renderer::createCommandList() {
 }
 
 Result D3D12Renderer::createFence() {
-    HRESULT hr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
+    HRESULT hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
     if (FAILED(hr)) {
         std::cerr << "Failed to create fence!" << std::endl;
         return Result::Failure;
@@ -624,7 +593,7 @@ void D3D12Renderer::waitForGpu() {
     }
 
     const uint64_t fenceValueToWaitFor = maxFenceValue;
-    m_commandQueue->Signal(m_fence.Get(), fenceValueToWaitFor);
+    m_gpu->commandQueue()->Signal(m_fence.Get(), fenceValueToWaitFor);
 
     // Wait until the GPU has completed all work up to this fence point
     if (m_fence->GetCompletedValue() < fenceValueToWaitFor) {
@@ -641,7 +610,7 @@ void D3D12Renderer::waitForGpu() {
 void D3D12Renderer::moveToNextFrame() {
     // Signal and increment fence value for current frame
     const uint64_t currentFenceValue = m_fenceValues[m_currentBackBufferIndex];
-    m_commandQueue->Signal(m_fence.Get(), currentFenceValue);
+    m_gpu->commandQueue()->Signal(m_fence.Get(), currentFenceValue);
 
     // Move to next frame
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
@@ -744,7 +713,7 @@ Result D3D12Renderer::createRootSignature() {
     }
 
     // Create root signature
-    hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
+    hr = m_gpu->device()->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
     if (FAILED(hr)) {
         std::cerr << "Failed to create root signature!" << std::endl;
         return Result::Failure;
@@ -810,7 +779,7 @@ Result D3D12Renderer::createPipelineState() {
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
 
-    HRESULT hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
+    HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
     if (FAILED(hr)) {
         std::cerr << "Failed to create pipeline state!" << std::endl;
         return Result::Failure;
@@ -849,7 +818,7 @@ Result D3D12Renderer::createVertexBuffer() {
     resourceDesc.SampleDesc.Count = 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    HRESULT hr = m_device->CreateCommittedResource(
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &resourceDesc,
@@ -900,7 +869,7 @@ Result D3D12Renderer::createConstantBuffer() {
     resourceDesc.SampleDesc.Count = 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    HRESULT hr = m_device->CreateCommittedResource(
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &resourceDesc,
@@ -988,14 +957,14 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     heapDesc.NumDescriptors = DescriptorHeapLayout::TOTAL_SLOTS;
     heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
-    HRESULT hr = m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
+    HRESULT hr = m_gpu->device()->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
     if (FAILED(hr)) {
         std::cerr << "Failed to create ImGui descriptor heap!" << std::endl;
         return Result::Failure;
     }
 
     // Store descriptor size for later use
-    m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    m_srvDescriptorSize = m_gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -1140,7 +1109,7 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOther(window, true);
     ImGui_ImplDX12_Init(
-        m_device.Get(),
+        m_gpu->device(),
         FRAME_COUNT,
         DXGI_FORMAT_R8G8B8A8_UNORM,
         m_imguiSrvHeap.Get(),
@@ -1219,7 +1188,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
         D3D12_HEAP_PROPERTIES heapProps = {};
         heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-        hr = m_device->CreateCommittedResource(
+        hr = m_gpu->device()->CreateCommittedResource(
             &heapProps,
             D3D12_HEAP_FLAG_NONE,
             &textureDesc,
@@ -1235,7 +1204,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
 
         // Create upload buffer
         UINT64 uploadBufferSize = 0;
-        m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+        m_gpu->device()->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
 
         D3D12_HEAP_PROPERTIES uploadHeapProps = {};
         uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -1250,7 +1219,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
         uploadBufferDesc.SampleDesc.Count = 1;
         uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        hr = m_device->CreateCommittedResource(
+        hr = m_gpu->device()->CreateCommittedResource(
             &uploadHeapProps,
             D3D12_HEAP_FLAG_NONE,
             &uploadBufferDesc,
@@ -1276,7 +1245,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
             m_imguiSrvHeap.Get(), DescriptorHeapLayout::LEGACY_VIDEO_SLOT, m_srvDescriptorSize);
 
-        m_device->CreateShaderResourceView(m_videoTexture.Get(), &srvDesc, cpuHandle);
+        m_gpu->device()->CreateShaderResourceView(m_videoTexture.Get(), &srvDesc, cpuHandle);
 
         m_videoTextureGpuHandle = DescriptorHeapLayout::gpuHandle(
             m_imguiSrvHeap.Get(), DescriptorHeapLayout::LEGACY_VIDEO_SLOT, m_srvDescriptorSize);
@@ -1294,7 +1263,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
     UINT64 rowSizeInBytes;
     UINT64 totalBytes;
 
-    m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+    m_gpu->device()->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
 
     // Map upload buffer and copy data
     void* mappedData = nullptr;
@@ -1478,7 +1447,7 @@ Result D3D12Renderer::createTexturedRootSignature() {
     }
 
     // Create root signature
-    hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_texturedRootSignature));
+    hr = m_gpu->device()->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_texturedRootSignature));
     if (FAILED(hr)) {
         std::cerr << "Failed to create textured root signature!" << std::endl;
         return Result::Failure;
@@ -1550,7 +1519,7 @@ Result D3D12Renderer::createTexturedPipelineState() {
     blendDescNormal.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.BlendState = blendDescNormal;
-    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineState));
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineState));
     if (FAILED(hr)) {
         std::cerr << "Failed to create Normal blend pipeline state!" << std::endl;
         return Result::Failure;
@@ -1573,7 +1542,7 @@ Result D3D12Renderer::createTexturedPipelineState() {
     blendDescAdd.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.BlendState = blendDescAdd;
-    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateAdd));
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateAdd));
     if (FAILED(hr)) {
         std::cerr << "Failed to create Add blend pipeline state!" << std::endl;
         return Result::Failure;
@@ -1600,7 +1569,7 @@ Result D3D12Renderer::createTexturedPipelineState() {
     blendDescMultiply.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.BlendState = blendDescMultiply;
-    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateMultiply));
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateMultiply));
     if (FAILED(hr)) {
         std::cerr << "Failed to create Multiply blend pipeline state!" << std::endl;
         return Result::Failure;
@@ -1624,7 +1593,7 @@ Result D3D12Renderer::createTexturedPipelineState() {
     blendDescScreen.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.BlendState = blendDescScreen;
-    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateScreen));
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateScreen));
     if (FAILED(hr)) {
         std::cerr << "Failed to create Screen blend pipeline state!" << std::endl;
         return Result::Failure;
@@ -1760,7 +1729,7 @@ Result D3D12Renderer::createMappingSurfaceRootSignature() {
     }
 
     // Create root signature
-    hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_mappingSurfaceRootSignature));
+    hr = m_gpu->device()->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_mappingSurfaceRootSignature));
     if (FAILED(hr)) {
         std::cerr << "Failed to create mapping surface root signature!" << std::endl;
         return Result::Failure;
@@ -1828,7 +1797,7 @@ Result D3D12Renderer::createMappingSurfacePipelineState() {
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
 
-    HRESULT hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_mappingSurfacePipelineState));
+    HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_mappingSurfacePipelineState));
     if (FAILED(hr)) {
         std::cerr << "Failed to create mapping surface pipeline state!" << std::endl;
         return Result::Failure;
@@ -1874,7 +1843,7 @@ Result D3D12Renderer::createMappingSurfaceVertexBuffer() {
     resourceDesc.SampleDesc.Count = 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    HRESULT hr = m_device->CreateCommittedResource(
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &resourceDesc,
@@ -1931,7 +1900,7 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
     resourceDesc.SampleDesc.Count = 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    HRESULT hr = m_device->CreateCommittedResource(
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &resourceDesc,
@@ -2050,7 +2019,7 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
 // ========================================================================
 
 uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
-    if (!m_initialized || !m_device) {
+    if (!m_initialized || !m_gpu) {
         std::cerr << "Cannot create compose target: renderer not initialized" << std::endl;
         return UINT32_MAX;
     }
@@ -2076,7 +2045,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    HRESULT hr = m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&target.rtvHeap));
+    HRESULT hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&target.rtvHeap));
     if (FAILED(hr)) {
         std::cerr << "Failed to create compose target RTV heap!" << std::endl;
         m_composeTargets.pop_back();
@@ -2106,7 +2075,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     clearValue.Color[2] = 0.0f;
     clearValue.Color[3] = 1.0f;
 
-    hr = m_device->CreateCommittedResource(
+    hr = m_gpu->device()->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &textureDesc,
@@ -2128,7 +2097,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     rtvDesc.Texture2D.MipSlice = 0;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_device->CreateRenderTargetView(target.resource.Get(), &rtvDesc, rtvHandle);
+    m_gpu->device()->CreateRenderTargetView(target.resource.Get(), &rtvDesc, rtvHandle);
 
     // Create SRV for the compose target in the ImGui heap
     // Heap layout: 0=fonts, 1=legacy, 2+=compose targets (one per screen)
@@ -2144,7 +2113,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
         m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
 
-    m_device->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
+    m_gpu->device()->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
 
     target.srvHandle = DescriptorHeapLayout::gpuHandle(
         m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
@@ -2310,7 +2279,7 @@ bool D3D12Renderer::ensureScreenshotStagingBuffer(uint32_t width, uint32_t heigh
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    HRESULT hr = m_device->CreateCommittedResource(
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &bufferDesc,
@@ -2414,7 +2383,7 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     }
 
     ID3D12CommandList* commandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(1, commandLists);
+    m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
 
     // Wait for GPU to finish the copy
     waitForGpu();

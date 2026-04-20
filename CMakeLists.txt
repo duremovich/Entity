@@ -99,6 +99,7 @@ target_sources(EntityMediaCore
 
         # Render
         src/render/D3D12Renderer.cpp
+        src/render/D3D12Device.cpp
         src/render/OutputManager.cpp
         src/render/Stage3DRenderer.cpp
         src/render/TextureUploader.cpp
