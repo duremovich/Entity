@@ -22,7 +22,7 @@
   ],
   "features": {
     "ffmpeg": {
-      "description": "Build FFmpeg via vcpkg. Disable in CI (use setup-ffmpeg GH Action instead — vcpkg's FFmpeg port hits MSYS2 mirror 404s on the pinned baseline).",
+      "description": "Build FFmpeg via vcpkg. Disable in CI (the prebuilt gyan.dev shared build is fetched in the workflow — saves ~20 min vs vcpkg's from-source build).",
       "dependencies": [
         "ffmpeg"
       ]
@@ -31,5 +31,11 @@
   "default-features": [
     "ffmpeg"
   ],
-  "builtin-baseline": "9edb1b8e590cc086563301d735cae4b6e732d2d2"
+  "builtin-baseline": "c3867e714dd3a51c272826eea77267876517ed99",
+  "overrides": [
+    {
+      "name": "imgui",
+      "version": "1.89.7"
+    }
+  ]
 }
