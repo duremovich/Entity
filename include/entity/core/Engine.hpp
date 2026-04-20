@@ -4,7 +4,6 @@
 #include "entity/systems/System.hpp"
 #include <entt/entt.hpp>
 #include <memory>
-#include <chrono>
 #include <vector>
 #include <filesystem>
 #include <string>
@@ -20,6 +19,7 @@ class D3D12Renderer;  // Owned internally; external callers get IRenderer*.
 class Timeline;
 class WindowManager;
 class ProjectManager;
+class PlaybackController;
 class Decoder;
 class DecodeSystem;
 class AnimationSystem;
@@ -99,23 +99,23 @@ public:
     GLFWwindow* getWindow() { return m_window; }
 
     /**
-     * Get delta time for current frame (in seconds).
+     * Get delta time for current frame (in seconds). Forwards to PlaybackController.
      */
-    double getDeltaTime() const { return m_deltaTime; }
+    double getDeltaTime() const;
 
     /**
-     * Get total elapsed time since engine start (in seconds).
+     * Get total elapsed time since engine start (in seconds). Forwards to PlaybackController.
      */
-    double getElapsedTime() const { return m_elapsedTime; }
+    double getElapsedTime() const;
 
     /**
-     * Get current frame number.
+     * Get current frame number. Forwards to PlaybackController.
      */
-    uint64_t getFrameCount() const { return m_frameCount; }
+    uint64_t getFrameCount() const;
 
     /**
      * Get the current decoded video frame for display.
-     * Returns nullptr if no frame is available.
+     * Returns nullptr if no frame is available. Forwards to PlaybackController.
      */
     const DecodedFrame* getCurrentVideoFrame() const;
 
@@ -229,11 +229,6 @@ private:
     void processEvents();
 
     /**
-     * Update timing information.
-     */
-    void updateTiming();
-
-    /**
      * Test all ECS components (Phase 3).
      * Called during initialization to verify component functionality.
      */
@@ -256,22 +251,6 @@ private:
      * Creates a clip at the specified track and position.
      */
     void onMediaDroppedOnTimeline(const std::string& filePath, int trackIndex, Timecode position);
-
-    /**
-     * Update all clip video textures based on current timeline position.
-     * Decodes frames for active clips and uploads to GPU.
-     */
-    void updateClipVideos();
-
-    /**
-     * Check if a clip is active at the given frame.
-     */
-    bool isClipActiveAtFrame(const struct Clip& clip, FrameNumber frame) const;
-
-    /**
-     * Map timeline frame to media frame for a clip.
-     */
-    FrameNumber mapToMediaFrame(const struct Clip& clip, FrameNumber timelineFrame) const;
 
     /**
      * Handle new clip creation (from split/duplicate).
@@ -307,18 +286,11 @@ private:
     uint32_t m_windowWidth{1920};
     uint32_t m_windowHeight{1080};
 
-    // Timing
-    using Clock = std::chrono::high_resolution_clock;
-    using TimePoint = std::chrono::time_point<Clock>;
+    // Playback coordination (frame timing, clip-frame math, per-frame seek-aware updates).
+    // Constructed after Timeline + renderer exist; DecodeSystem is injected after registration.
+    std::unique_ptr<PlaybackController> m_playbackController;
 
-    TimePoint m_startTime;
-    TimePoint m_lastFrameTime;
-    double m_deltaTime{0.0};
-    double m_elapsedTime{0.0};
-    uint64_t m_frameCount{0};
-
-    // FPS tracking
-    double m_fpsUpdateTimer{0.0};
+    // FPS display tracking (window title only)
     double m_fpsAccumulator{0.0};
     uint32_t m_fpsFrameCount{0};
     uint32_t m_currentFPS{0};

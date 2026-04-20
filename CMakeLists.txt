@@ -88,6 +88,7 @@ target_sources(EntityMediaCore
         # Core
         src/core/Engine.cpp
         src/core/Application.cpp
+        src/core/PlaybackController.cpp
 
         # Media
         src/media/FrameRingBuffer.cpp
