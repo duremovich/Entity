@@ -1,7 +1,7 @@
 # Current Status
 
-**Phase**: Phase B — God-file decomposition (nearly done; PlaybackController + CI fix remain)
-**Last Updated**: 2026-04-19
+**Phase**: Phase B — God-file decomposition (done except CI fix + more integration tests)
+**Last Updated**: 2026-04-20
 
 ---
 
@@ -33,7 +33,7 @@ All seven foundation items landed:
 
 **Critical count 7 → 0.** `NEW-06` (device-removed) fixed in Phase A task 7. `HIGH-01`, `HIGH-16` re-evaluated as non-bugs with invariants documented in code.
 
-### Phase B — God-file Decomposition (6/6 done)
+### Phase B — God-file Decomposition (7/7 done)
 
 Architectural re-shape so neither D3D12 nor Engine internals leak through the project. Per `ADR-2026-04-19`: D3D12 stays native, `IRenderer` interface preserves optionality for a future Metal backend.
 
@@ -48,19 +48,19 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | 15a | Promote `ClipDecodeState` to ECS component (DOTS-correct) | `9f03af1` |
 | 15b | Extract `ProjectManager` (project path, media library, autosave) | `891b6ae` |
 | 16 | Split `TimelineWidget.cpp` (2,121 → 347 core) into render/input/core | `e5b78a3` |
+| 15c | Extract `PlaybackController` from Engine (frame timing + clip-frame math + per-frame seek-aware updates) | `f0a47c2` |
 | 11 | ECS hygiene pass — Transform/AnimatedProperties/Clip documented as principled exceptions, no churn | (docs) |
 
 **Still pending in Phase B:**
 
 | # | Task | Notes |
 |---|------|-------|
-| 15c | Extract `PlaybackController` from Engine (frame timing + transport + seek coordination) | Tangled with update loop + Timeline callbacks; needs own design pass. |
 | 20 | CI fix | See "Known issues" below. |
 | 8 | More integration tests (mixed-fps, ping-pong, blend, round-trip) | Blocked on: needs new script commands (`SetClipPlaybackMode`, `SetClipFramerate`); blend test requires non-trivial scene. |
 
 ---
 
-## Verified Working (as of commit `e5b78a3`)
+## Verified Working (as of Phase B #15c PlaybackController extraction)
 
 **Build**: `cmake --build build --config Release` is clean, no errors.
 **Tests**: 53/53 pass (49 unit, 4 integration) under `ctest -C Release`.
@@ -119,7 +119,7 @@ Integration tests wired to CTest, labelled `integration`:
 
 1. **Ship Save/Open file dialogs.** Small, high-impact for real use. Win32 `IFileDialog` via `WindowManager`.
 2. **Fix CI.** Most pragmatic path is using `FedericoCarboni/setup-ffmpeg` GH Action for pre-built FFmpeg, keep vcpkg for local dev. Baseline bisect is also an option.
-3. **Phase B #15c — PlaybackController extraction.** Engine is still ~1,953 lines; playback timing is the last tangled concern.
+3. **Phase C kickoff** — physical output driving, soft-edge feather, edge blending, undo/redo, color management. Phase B decomposition is done.
 
 After those, Phase C begins (physical output, soft-edge feather, edge blending, undo/redo, color management).
 
