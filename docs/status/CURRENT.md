@@ -1,6 +1,6 @@
 # Current Status
 
-**Phase**: Phase B — God-file decomposition (done except CI fix + more integration tests)
+**Phase**: Phase B — God-file decomposition (done except more integration tests)
 **Last Updated**: 2026-04-20
 
 ---
@@ -50,12 +50,12 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | 16 | Split `TimelineWidget.cpp` (2,121 → 347 core) into render/input/core | `e5b78a3` |
 | 15c | Extract `PlaybackController` from Engine (frame timing + clip-frame math + per-frame seek-aware updates) | `f0a47c2` |
 | 11 | ECS hygiene pass — Transform/AnimatedProperties/Clip documented as principled exceptions, no churn | (docs) |
+| 20 | CI fix — switch CI to prebuilt gyan.dev FFmpeg (FFMPEG_ROOT-driven `cmake/FindFFMPEG.cmake`), make vcpkg's ffmpeg an opt-out default feature | (pending commit) |
 
 **Still pending in Phase B:**
 
 | # | Task | Notes |
 |---|------|-------|
-| 20 | CI fix | See "Known issues" below. |
 | 8 | More integration tests (mixed-fps, ping-pong, blend, round-trip) | Blocked on: needs new script commands (`SetClipPlaybackMode`, `SetClipFramerate`); blend test requires non-trivial scene. |
 
 ---
@@ -78,7 +78,6 @@ Integration tests wired to CTest, labelled `integration`:
 
 ### Actively broken / missing
 
-- **CI on GitHub Actions is red.** Root cause: vcpkg baseline from 2023 has MSYS2 dependency URLs that 404. Upgrading the baseline fixes the 404 but the newer ImGui crashes our D3D12 runtime (segfaults after compose-target creation). The baseline upgrade was reverted; CI stays red for now. Fix options laid out in task 20.
 - **No Save As / Open file dialogs.** Ctrl+S writes to `project.entity` in current working directory if no project is open — hardcoded fallback. Real product needs Win32 `IFileDialog`.
 - **Physical output driving** — `OutputManager` enumerates displays but doesn't drive them. Phase C.
 - **Soft-edge / edge blending** — `MappingSurface` components have the data, no shader path.

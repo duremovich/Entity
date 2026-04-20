@@ -5,7 +5,6 @@
   "description": "High-Performance Realtime Media Server and Projection Mapping Engine",
   "dependencies": [
     "entt",
-    "ffmpeg",
     "glfw3",
     "gtest",
     "imgui",
@@ -20,6 +19,17 @@
     },
     "glm",
     "stb"
+  ],
+  "features": {
+    "ffmpeg": {
+      "description": "Build FFmpeg via vcpkg. Disable in CI (use setup-ffmpeg GH Action instead — vcpkg's FFmpeg port hits MSYS2 mirror 404s on the pinned baseline).",
+      "dependencies": [
+        "ffmpeg"
+      ]
+    }
+  },
+  "default-features": [
+    "ffmpeg"
   ],
   "builtin-baseline": "9edb1b8e590cc086563301d735cae4b6e732d2d2"
 }

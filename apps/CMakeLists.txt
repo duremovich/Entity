@@ -101,6 +101,21 @@ entity_compile_shader(mapping_surface_ps.hlsl   ps PSMain 6_0)
 
 message(STATUS "Configured offline HLSL compilation for 5 shaders")
 
+# When FFmpeg was located via FFMPEG_ROOT (CI with setup-ffmpeg action), vcpkg's
+# applocal DLL deploy doesn't run — copy the shared libs next to the exe here.
+# Local dev uses vcpkg's FFmpeg which deploys its own DLLs automatically.
+if(HAVE_FFMPEG AND FFMPEG_DLLS)
+    foreach(_dll IN LISTS FFMPEG_DLLS)
+        add_custom_command(
+            TARGET EntityMediaEditor POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_dll}"
+                "$<TARGET_FILE_DIR:EntityMediaEditor>"
+            VERBATIM
+        )
+    endforeach()
+endif()
+
 # Player application (future - standalone player without editor UI)
 # add_executable(EntityMediaPlayer
 #     player/main.cpp

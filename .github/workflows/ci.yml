@@ -20,21 +20,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Prebuilt FFmpeg (full shared build from gyan.dev). Provides include/,
+      # lib/, and bin/ — cmake/FindFFMPEG.cmake reads FFMPEG_ROOT to locate it
+      # and the runtime DLLs are copied next to EntityMediaEditor at build time.
+      #
+      # Why not FedericoCarboni/setup-ffmpeg: that action only caches the bin/
+      # directory, dropping the headers and import libs we need. Downloading
+      # the gyan.dev archive directly keeps the full install tree.
+      - name: Cache FFmpeg shared build
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-shared
+          key: ffmpeg-shared-${{ runner.os }}-release-full-v1
+
+      - name: Download and extract FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.7z -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path ffmpeg-shared | Out-Null
+          7z x ffmpeg.7z "-offmpeg-shared" -y | Out-Null
+          Remove-Item ffmpeg.7z
+
+      - name: Export FFMPEG_ROOT
+        shell: pwsh
+        run: |
+          $installed = Get-ChildItem -Path ffmpeg-shared -Directory | Select-Object -First 1
+          if (-not $installed) { throw "FFmpeg extraction produced no subdirectory" }
+          $root = $installed.FullName
+          Write-Host "FFMPEG_ROOT=$root"
+          "FFMPEG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       # =====================================================================
       # Caching strategy (two layers):
       #
       # 1. actions/cache for build/vcpkg_installed/ — the fully-built installed
       #    packages, keyed on vcpkg.json content hash. On a cache hit, vcpkg's
-      #    manifest check sees everything already present and skips the entire
-      #    FFmpeg-from-source build (saves ~25 minutes per run).
+      #    manifest check sees everything already present and skips the
+      #    from-source compile step for every port.
       #
       # 2. NuGet binary cache at vcpkg's PACKAGE level, stored in GitHub
       #    Packages. Complements layer 1: if vcpkg.json changes so cache-hit
       #    misses, but most individual packages are unchanged, NuGet can still
       #    serve them pre-built and only the changed ones rebuild.
       #
-      # Cold first-run (no caches): ~30 min. Warm run (both caches hit): ~3 min.
-      # Partial (vcpkg.json changed): ~5-10 min depending on what changed.
+      # Note: FFmpeg is no longer vcpkg-built in CI (the gyan.dev shared build
+      # above handles it); these caches cover entt / glfw3 / imgui / gtest /
+      # glm / stb only.
       # =====================================================================
 
       # Cache the vcpkg checkout itself (~200MB clone + bootstrap build).
@@ -79,18 +115,21 @@ jobs:
           echo "VCPKG_BINARY_SOURCES=clear;nuget,$nugetUrl,readwrite" >> $env:GITHUB_ENV
 
       # Configure CMake — vcpkg install happens here during manifest resolution.
-      # Wrapped in a retry loop because cold runs hit transient MSYS / GitHub
-      # download failures during FFmpeg's build. With caches warm this retry is
-      # rarely exercised, but it's a cheap safety net.
+      # Retry loop kept as a cheap safety net for transient GitHub download
+      # hiccups on other ports; FFmpeg no longer runs through here.
       - name: Configure CMake (with retry)
         shell: bash
         run: |
+          # VCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON skips the `ffmpeg` feature
+          # in vcpkg.json; FFmpeg comes from the prebuilt gyan.dev download
+          # (see FFMPEG_ROOT env + cmake/FindFFMPEG.cmake).
           for attempt in 1 2 3; do
             echo "=== cmake configure attempt $attempt/3 ==="
             if cmake -B build -S . \
                 -G "Visual Studio 17 2022" \
                 -A x64 \
-                -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"; then
+                -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+                -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON; then
               echo "=== cmake configure succeeded on attempt $attempt ==="
               exit 0
             fi
