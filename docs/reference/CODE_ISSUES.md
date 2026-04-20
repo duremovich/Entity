@@ -1,6 +1,6 @@
 # Known Code Issues
 
-Re-verified against the codebase on 2026-04-19 (original review 2025-11-27). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
+Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-20 after PlaybackController extraction (original review 2025-11-27). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
 
 **Current state**: 0 Critical, 2 High, ~20 Medium, ~13 Low — down from 7 / 18 / 27 / 15.
 
@@ -43,7 +43,7 @@ _(none)_
 
 | ID | File:Line | Details |
 |----|-----------|---------|
-| HIGH-02 | Engine.cpp:1504,1538,1545,1571,1617,1647 | Playback state re-read pattern across a single tick (different calls can see different values mid-tick). Less dangerous now that `m_playbackState` is atomic (MED-20 fix). Pattern-level cleanup; scheduled for Phase B when PlaybackController is extracted. |
+| HIGH-02 | PlaybackController.cpp:143,280 (and other playState checks within updateClipVideos) | Playback state re-read pattern within a single tick — `playState` is cached at the top of `updateClipVideos()` but line 280 re-reads `m_timeline->getPlaybackState()` directly, and the cached value is used by multiple branches that could race against a mid-tick transition. Code was moved verbatim into PlaybackController during Phase B #15c (did not alter behavior); the race is atomic-safe (MED-20) but the pattern remains. Fix: cache once and use that value consistently for the whole tick, or if a "live" read is genuinely needed, document why. |
 | HIGH-13 | HAPDecoder.cpp | Every method returns `Result::NotImplemented`. Phase A mitigation landed: factory no longer constructs the stub (Decoder.cpp now returns nullptr for HAP types with a clear log). Actual codec implementation deferred to Phase D. |
 
 ### Re-evaluated (Not Actually Bugs)
