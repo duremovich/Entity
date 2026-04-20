@@ -107,6 +107,8 @@ target_sources(EntityMediaCore
         # Timeline
         src/timeline/Timeline.cpp
         src/timeline/TimelineWidget.cpp
+        src/timeline/TimelineWidgetRender.cpp
+        src/timeline/TimelineWidgetInput.cpp
         # src/timeline/Transport.cpp (to be implemented later)
         # src/timeline/TimeMapping.cpp (to be implemented later)
 
