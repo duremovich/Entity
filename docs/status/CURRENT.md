@@ -78,13 +78,17 @@ Integration tests wired to CTest, labelled `integration`:
 
 ### Actively broken / missing
 
-- **No Save As / Open file dialogs.** Ctrl+S writes to `project.entity` in current working directory if no project is open — hardcoded fallback. Real product needs Win32 `IFileDialog`.
-- **Physical output driving** — `OutputManager` enumerates displays but doesn't drive them. Phase C.
+- **Physical output driving** — `OutputManager` enumerates displays but doesn't drive them. Phase C kickoff — next work item.
 - **Soft-edge / edge blending** — `MappingSurface` components have the data, no shader path.
 - **Audio** — zero pipeline.
 - **HAP codec** — gated in factory, unimplemented.
-- **H264/H265** — not supported.
+- **H264/H265** — now actually decodes via `ProResDecoder` (misnamed; it's a generic FFmpeg decoder). Renaming is opportunistic cleanup, not blocking.
 - **Network / sync / control** — no OSC, DMX, Art-Net, MIDI, NDI, timecode, genlock.
+
+### Recently resolved (this session, 2026-04-20)
+
+- Phase B #20 CI fix — commits `28726b9`, `6182d53`, `d80e4a9`. CI green on a 2026-03 vcpkg baseline with imgui pinned to 1.89.7 + prebuilt gyan.dev FFmpeg in CI.
+- Native Save / Save As / Open via `IFileDialog` — commits `8db06d1`, `78e5b5e`. Ctrl+S / Ctrl+Shift+S / Ctrl+O all wired. Unicode filenames roundtrip correctly as UTF-8.
 
 ### Remaining non-bug issues (from `docs/reference/CODE_ISSUES.md`)
 
