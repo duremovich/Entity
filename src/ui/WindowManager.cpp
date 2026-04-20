@@ -1,7 +1,23 @@
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/FileDialog.hpp"
 #include <imgui_internal.h>  // For DockBuilder API
+#include <filesystem>
 #include <iostream>
+
+namespace {
+
+// std::filesystem::path::string() uses the system ANSI codepage on Windows
+// and throws std::filesystem::filesystem_error when the native wide path
+// contains characters outside that codepage — fullwidth punctuation, curly
+// quotes, emoji, CJK, etc. Since IFileDialog lets users pick any file, we
+// must not crash on such paths. Convert to UTF-8 instead; modern FFmpeg on
+// Windows decodes UTF-8 path arguments correctly.
+std::string pathToUtf8(const std::filesystem::path& p) {
+    auto u8 = p.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+}  // namespace
 
 namespace entity {
 
@@ -450,8 +466,9 @@ std::string WindowManager::openVideoFileDialog() {
             {L"All Files",     L"*.*"},
         });
     if (path.empty()) return "";
-    std::cout << "Selected file: " << path.string() << std::endl;
-    return path.string();
+    std::string utf8 = pathToUtf8(path);
+    std::cout << "Selected file: " << utf8 << std::endl;
+    return utf8;
 }
 
 std::string WindowManager::openProjectFileDialog() {
@@ -463,8 +480,9 @@ std::string WindowManager::openProjectFileDialog() {
             {L"All Files",            L"*.*"},
         });
     if (path.empty()) return "";
-    std::cout << "Selected project file: " << path.string() << std::endl;
-    return path.string();
+    std::string utf8 = pathToUtf8(path);
+    std::cout << "Selected project file: " << utf8 << std::endl;
+    return utf8;
 }
 
 std::string WindowManager::saveProjectFileDialog(const std::string& suggestedPath) {
@@ -481,8 +499,9 @@ std::string WindowManager::saveProjectFileDialog(const std::string& suggestedPat
         L"entity",
         suggestion);
     if (path.empty()) return "";
-    std::cout << "Saving project to: " << path.string() << std::endl;
-    return path.string();
+    std::string utf8 = pathToUtf8(path);
+    std::cout << "Saving project to: " << utf8 << std::endl;
+    return utf8;
 }
 
 std::string WindowManager::openScriptFileDialog() {
@@ -494,8 +513,9 @@ std::string WindowManager::openScriptFileDialog() {
             {L"All Files",         L"*.*"},
         });
     if (path.empty()) return "";
-    std::cout << "Selected script file: " << path.string() << std::endl;
-    return path.string();
+    std::string utf8 = pathToUtf8(path);
+    std::cout << "Selected script file: " << utf8 << std::endl;
+    return utf8;
 }
 
 std::string WindowManager::openOBJFileDialog() {
@@ -507,8 +527,9 @@ std::string WindowManager::openOBJFileDialog() {
             {L"All Files",       L"*.*"},
         });
     if (path.empty()) return "";
-    std::cout << "Selected OBJ file: " << path.string() << std::endl;
-    return path.string();
+    std::string utf8 = pathToUtf8(path);
+    std::cout << "Selected OBJ file: " << utf8 << std::endl;
+    return utf8;
 }
 
 } // namespace entity
