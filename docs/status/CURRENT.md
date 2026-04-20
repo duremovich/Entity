@@ -50,7 +50,7 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | 16 | Split `TimelineWidget.cpp` (2,121 → 347 core) into render/input/core | `e5b78a3` |
 | 15c | Extract `PlaybackController` from Engine (frame timing + clip-frame math + per-frame seek-aware updates) | `f0a47c2` |
 | 11 | ECS hygiene pass — Transform/AnimatedProperties/Clip documented as principled exceptions, no churn | (docs) |
-| 20 | CI fix — switch CI to prebuilt gyan.dev FFmpeg (FFMPEG_ROOT-driven `cmake/FindFFMPEG.cmake`), make vcpkg's ffmpeg an opt-out default feature | (pending commit) |
+| 20 | CI fix — gyan.dev prebuilt FFmpeg in CI, vcpkg baseline bumped 2023-08 → 2026-03, imgui pinned 1.89.7 via overrides | `28726b9`, `6182d53`, `d80e4a9` |
 
 **Still pending in Phase B:**
 

@@ -115,6 +115,7 @@ target_sources(EntityMediaCore
 
         # UI
         src/ui/WindowManager.cpp
+        src/ui/FileDialog.cpp
         src/ui/TimelineWindow.cpp
         src/ui/StageWindow.cpp
         src/ui/MediaBinWindow.cpp

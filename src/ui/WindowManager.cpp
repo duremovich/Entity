@@ -1,11 +1,7 @@
 #include "entity/ui/WindowManager.hpp"
+#include "entity/ui/FileDialog.hpp"
 #include <imgui_internal.h>  // For DockBuilder API
 #include <iostream>
-
-#ifdef _WIN32
-#include <Windows.h>
-#include <commdlg.h>  // For GetOpenFileName
-#endif
 
 namespace entity {
 
@@ -259,6 +255,12 @@ void WindowManager::renderMenuBar() {
                 }
             }
 
+            if (ImGui::MenuItem("Save Project As...", "Ctrl+Shift+S")) {
+                if (m_saveProjectAsCallback) {
+                    m_saveProjectAsCallback();
+                }
+            }
+
             ImGui::Separator();
 
             if (ImGui::MenuItem("Import Video...", nullptr)) {
@@ -370,6 +372,7 @@ void WindowManager::renderMenuBar() {
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Project:");
                 ImGui::BulletText("Ctrl+S       - Save project");
+                ImGui::BulletText("Ctrl+Shift+S - Save project as...");
                 ImGui::BulletText("Ctrl+O       - Open project");
 
                 ImGui::Separator();
@@ -438,128 +441,74 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
 }
 
 std::string WindowManager::openVideoFileDialog() {
-#ifdef _WIN32
-    // Windows native file dialog
-    OPENFILENAMEA ofn;
-    char szFile[260] = {0};
-
-    ZeroMemory(&ofn, sizeof(ofn));
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
-    ofn.lpstrFilter = "Video Files\0*.mov;*.mp4;*.avi;*.mkv;*.webm\0"
-                      "PNG Sequence\0*.png\0"
-                      "All Files\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrFileTitle = NULL;
-    ofn.nMaxFileTitle = 0;
-    ofn.lpstrInitialDir = NULL;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (GetOpenFileNameA(&ofn) == TRUE) {
-        std::cout << "Selected file: " << ofn.lpstrFile << std::endl;
-        return std::string(ofn.lpstrFile);
-    }
-
-    return "";  // User cancelled
-#else
-    std::cerr << "File dialog not implemented for this platform" << std::endl;
-    return "";
-#endif
+    auto path = ui::openFileDialog(
+        m_ownerWindow,
+        L"Import Video",
+        {
+            {L"Video Files",   L"*.mov;*.mp4;*.avi;*.mkv;*.webm"},
+            {L"PNG Sequence",  L"*.png"},
+            {L"All Files",     L"*.*"},
+        });
+    if (path.empty()) return "";
+    std::cout << "Selected file: " << path.string() << std::endl;
+    return path.string();
 }
 
 std::string WindowManager::openProjectFileDialog() {
-#ifdef _WIN32
-    // Windows native file dialog for project files
-    OPENFILENAMEA ofn;
-    char szFile[260] = {0};
+    auto path = ui::openFileDialog(
+        m_ownerWindow,
+        L"Open Project",
+        {
+            {L"Entity Project Files", L"*.entity"},
+            {L"All Files",            L"*.*"},
+        });
+    if (path.empty()) return "";
+    std::cout << "Selected project file: " << path.string() << std::endl;
+    return path.string();
+}
 
-    ZeroMemory(&ofn, sizeof(ofn));
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
-    ofn.lpstrFilter = "Entity Project Files\0*.entity\0"
-                      "All Files\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrFileTitle = NULL;
-    ofn.nMaxFileTitle = 0;
-    ofn.lpstrInitialDir = NULL;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (GetOpenFileNameA(&ofn) == TRUE) {
-        std::cout << "Selected project file: " << ofn.lpstrFile << std::endl;
-        return std::string(ofn.lpstrFile);
-    }
-
-    return "";  // User cancelled
-#else
-    std::cerr << "File dialog not implemented for this platform" << std::endl;
-    return "";
-#endif
+std::string WindowManager::saveProjectFileDialog(const std::string& suggestedPath) {
+    std::filesystem::path suggestion = suggestedPath.empty()
+                                           ? std::filesystem::path{}
+                                           : std::filesystem::path(suggestedPath);
+    auto path = ui::saveFileDialog(
+        m_ownerWindow,
+        L"Save Project As",
+        {
+            {L"Entity Project Files", L"*.entity"},
+            {L"All Files",            L"*.*"},
+        },
+        L"entity",
+        suggestion);
+    if (path.empty()) return "";
+    std::cout << "Saving project to: " << path.string() << std::endl;
+    return path.string();
 }
 
 std::string WindowManager::openScriptFileDialog() {
-#ifdef _WIN32
-    // Windows native file dialog for script files
-    OPENFILENAMEA ofn;
-    char szFile[260] = {0};
-
-    ZeroMemory(&ofn, sizeof(ofn));
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
-    ofn.lpstrFilter = "JSON Script Files\0*.json\0"
-                      "All Files\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrFileTitle = NULL;
-    ofn.nMaxFileTitle = 0;
-    ofn.lpstrInitialDir = NULL;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (GetOpenFileNameA(&ofn) == TRUE) {
-        std::cout << "Selected script file: " << ofn.lpstrFile << std::endl;
-        return std::string(ofn.lpstrFile);
-    }
-
-    return "";  // User cancelled
-#else
-    std::cerr << "File dialog not implemented for this platform" << std::endl;
-    return "";
-#endif
+    auto path = ui::openFileDialog(
+        m_ownerWindow,
+        L"Run Script",
+        {
+            {L"JSON Script Files", L"*.json"},
+            {L"All Files",         L"*.*"},
+        });
+    if (path.empty()) return "";
+    std::cout << "Selected script file: " << path.string() << std::endl;
+    return path.string();
 }
 
 std::string WindowManager::openOBJFileDialog() {
-#ifdef _WIN32
-    // Windows native file dialog for OBJ model files
-    OPENFILENAMEA ofn;
-    char szFile[260] = {0};
-
-    ZeroMemory(&ofn, sizeof(ofn));
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
-    ofn.lpstrFilter = "OBJ Model Files\0*.obj\0"
-                      "All Files\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrFileTitle = NULL;
-    ofn.nMaxFileTitle = 0;
-    ofn.lpstrInitialDir = NULL;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (GetOpenFileNameA(&ofn) == TRUE) {
-        std::cout << "Selected OBJ file: " << ofn.lpstrFile << std::endl;
-        return std::string(ofn.lpstrFile);
-    }
-
-    return "";  // User cancelled
-#else
-    std::cerr << "File dialog not implemented for this platform" << std::endl;
-    return "";
-#endif
+    auto path = ui::openFileDialog(
+        m_ownerWindow,
+        L"Import OBJ Model",
+        {
+            {L"OBJ Model Files", L"*.obj"},
+            {L"All Files",       L"*.*"},
+        });
+    if (path.empty()) return "";
+    std::cout << "Selected OBJ file: " << path.string() << std::endl;
+    return path.string();
 }
 
 } // namespace entity

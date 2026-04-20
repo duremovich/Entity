@@ -191,6 +191,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
 
+    // Parent native modal dialogs (Save/Open) to our GLFW window. Must run
+    // in --headless too: glfwGetWin32Window on the hidden window is fine,
+    // and dialogs are only opened via UI paths that never fire in headless.
+#ifdef _WIN32
+    if (m_window) {
+        m_windowManager->setOwnerWindow(glfwGetWin32Window(m_window));
+    }
+#endif
+
     // Set up video file callback
     m_windowManager->setVideoFileCallback([this](const std::string& filePath) {
         this->onVideoFileSelected(filePath);
@@ -198,7 +207,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     // Set up project save/load callbacks
     m_windowManager->setSaveProjectCallback([this]() {
-        this->saveProject();
+        this->saveProjectInteractive();
+    });
+    m_windowManager->setSaveProjectAsCallback([this]() {
+        this->saveProjectAsInteractive();
     });
     m_windowManager->setOpenProjectCallback([this](const std::string& filePath) {
         this->loadProject(filePath);
@@ -582,6 +594,7 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
 
     // Check for Ctrl modifier
     bool ctrlPressed = (mods & GLFW_MOD_CONTROL) != 0;
+    bool shiftPressed = (mods & GLFW_MOD_SHIFT) != 0;
 
     // Handle ESC key to quit
     if (key == GLFW_KEY_ESCAPE) {
@@ -720,24 +733,18 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     // Global shortcuts (work even without timeline focus)
     switch (key) {
         case GLFW_KEY_S:
-            // Ctrl+S = Save project. Empty path means ProjectManager picks its
-            // current project path or defaults to project.entity.
-            if (ctrlPressed) {
-                saveProject("");
+            // Ctrl+Shift+S = Save As; Ctrl+S = Save (prompts if no path yet)
+            if (ctrlPressed && shiftPressed) {
+                saveProjectAsInteractive();
+            } else if (ctrlPressed) {
+                saveProjectInteractive();
             }
             break;
 
         case GLFW_KEY_O:
-            // Ctrl+O = Open project (use default path for now)
+            // Ctrl+O = Open project via native dialog
             if (ctrlPressed) {
-                // TODO: Integrate with file dialog
-                // For now, try to load project.entity if it exists
-                std::filesystem::path defaultPath = "project.entity";
-                if (std::filesystem::exists(defaultPath)) {
-                    loadProject(defaultPath);
-                } else {
-                    std::cout << "[Engine] No project file found at " << defaultPath.string() << std::endl;
-                }
+                openProjectInteractive();
             }
             break;
 
@@ -1462,6 +1469,32 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
 
 bool Engine::loadProject(const std::filesystem::path& filepath) {
     return m_projectManager ? m_projectManager->load(filepath) : false;
+}
+
+bool Engine::saveProjectInteractive() {
+    if (!m_projectManager) return false;
+    const auto& currentPath = m_projectManager->projectPath();
+    if (currentPath.empty()) {
+        return saveProjectAsInteractive();
+    }
+    return saveProject(currentPath);
+}
+
+bool Engine::saveProjectAsInteractive() {
+    if (!m_windowManager || !m_projectManager) return false;
+    std::string suggested = m_projectManager->projectPath().empty()
+                                ? std::string{}
+                                : m_projectManager->projectPath().string();
+    std::string chosen = m_windowManager->saveProjectFileDialog(suggested);
+    if (chosen.empty()) return false;  // Cancelled
+    return saveProject(chosen);
+}
+
+bool Engine::openProjectInteractive() {
+    if (!m_windowManager) return false;
+    std::string chosen = m_windowManager->openProjectFileDialog();
+    if (chosen.empty()) return false;  // Cancelled
+    return loadProject(chosen);
 }
 
 void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath) {

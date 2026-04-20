@@ -82,6 +82,13 @@ public:
     bool isWindowFloating(const char* name) const;
 
     /**
+     * Owner window for native modal dialogs. Engine passes the HWND here
+     * (via glfwGetWin32Window) so Save/Open prompts are properly parented.
+     * Stored as void* to keep <windows.h> out of this header.
+     */
+    void setOwnerWindow(void* hwnd) { m_ownerWindow = hwnd; }
+
+    /**
      * Set callback for when a video file is selected.
      * Callback receives the file path.
      */
@@ -89,10 +96,18 @@ public:
     void setVideoFileCallback(VideoFileCallback callback) { m_videoFileCallback = callback; }
 
     /**
-     * Set callback for save project action.
+     * Set callback for save project action (Ctrl+S / "File > Save Project").
+     * Engine decides whether to save to the current path or prompt Save As.
      */
     using SaveProjectCallback = std::function<void()>;
     void setSaveProjectCallback(SaveProjectCallback callback) { m_saveProjectCallback = callback; }
+
+    /**
+     * Set callback for save-project-as action (Ctrl+Shift+S / "File > Save Project As...").
+     * Engine always prompts for a path.
+     */
+    using SaveProjectAsCallback = std::function<void()>;
+    void setSaveProjectAsCallback(SaveProjectAsCallback callback) { m_saveProjectAsCallback = callback; }
 
     /**
      * Set callback for open project action.
@@ -125,6 +140,13 @@ public:
      * Returns the selected file path, or empty string if cancelled.
      */
     std::string openProjectFileDialog();
+
+    /**
+     * Open Windows native Save-As dialog for .entity project files.
+     * Returns the chosen file path (with .entity extension applied if
+     * missing), or empty string if cancelled.
+     */
+    std::string saveProjectFileDialog(const std::string& suggestedPath = "");
 
     /**
      * Open Windows native file dialog for script selection.
@@ -162,8 +184,11 @@ private:
     std::unordered_set<std::string> m_pendingUndock;        // Windows to undock next frame
     std::unordered_set<std::string> m_pendingDock;          // Windows to dock next frame
 
+    void* m_ownerWindow{nullptr};  // HWND for modal dialogs
+
     VideoFileCallback m_videoFileCallback;
     SaveProjectCallback m_saveProjectCallback;
+    SaveProjectAsCallback m_saveProjectAsCallback;
     OpenProjectCallback m_openProjectCallback;
     ExitCallback m_exitCallback;
     RunScriptCallback m_runScriptCallback;

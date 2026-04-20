@@ -150,7 +150,8 @@ public:
 
     /**
      * Save the current project to a file.
-     * @param filepath Path to save to (empty = use current project path or prompt)
+     * @param filepath Path to save to (empty = use current project path or
+     *                 ProjectManager's default fallback — non-interactive)
      * @return True if save was successful
      */
     bool saveProject(const std::filesystem::path& filepath = "");
@@ -161,6 +162,25 @@ public:
      * @return True if load was successful
      */
     bool loadProject(const std::filesystem::path& filepath);
+
+    /**
+     * Save flow bound to Ctrl+S / "File > Save Project". Writes to the
+     * current project path if one is set; otherwise prompts the user via
+     * Save-As dialog.
+     */
+    bool saveProjectInteractive();
+
+    /**
+     * Save flow bound to Ctrl+Shift+S / "File > Save Project As...". Always
+     * prompts the user via Save-As dialog.
+     */
+    bool saveProjectAsInteractive();
+
+    /**
+     * Open flow bound to Ctrl+O / "File > Open Project...". Prompts the
+     * user via Open dialog and loads the chosen project.
+     */
+    bool openProjectInteractive();
 
     /**
      * Get the current project file path.
