@@ -12,7 +12,12 @@ struct MappingVSInput {
 // Vertex shader output / Pixel shader input
 struct MappingPSInput {
     float4 position : SV_POSITION;
-    float2 texCoord : TEXCOORD0;
+    // Perspective-correct UV: (u*q, v*q, q). PS divides xy/z to get the
+    // projective texture coordinate. For a rectangle, q is constant and
+    // the divide collapses to the naive UV. For a warped quad, this
+    // eliminates the diagonal "paper fold" crease produced by the
+    // rasterizer's affine attribute interpolation.
+    float3 perspUV : TEXCOORD0;
     float2 surfaceUV : TEXCOORD1;  // UV within surface for soft edge calc
 };
 
@@ -22,7 +27,13 @@ cbuffer MappingSurfaceConstants : register(b0) {
     // Order: TL, TR, BR, BL
     float4 corners[4];
 
-    // Source UV coordinates for each corner
+    // Source UV coordinates per corner, plus per-corner q weight in .w:
+    //   xy = source UV (0..1)
+    //   w  = projective weight (q-trick, Heckbert). For a rectangle all
+    //        four weights equal 2. For a keystoned quad they differ so
+    //        that (u*q, v*q, q) linearly interpolated across the triangle
+    //        and then divided in the PS reconstructs the correct
+    //        projective sample coordinate.
     // Order: TL, TR, BR, BL
     float4 sourceUVs[4];
 

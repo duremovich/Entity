@@ -10,6 +10,8 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/MappingSurface.hpp"
+#include "entity/components/OutputDisplay.hpp"
+#include "entity/components/Screen.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -134,6 +136,17 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 clipJson["hasAlpha"] = clip->hasAlpha;
                 clipJson["frameBlending"] = clip->frameBlending;
 
+                // targetScreen: persist by Screen name since entt::entity
+                // values aren't stable across sessions. Empty string = null
+                // (clip renders to all screens), matching the default.
+                std::string targetScreenName;
+                if (clip->targetScreen != entt::null &&
+                    registry.valid(clip->targetScreen) &&
+                    registry.all_of<Screen>(clip->targetScreen)) {
+                    targetScreenName = registry.get<Screen>(clip->targetScreen).name;
+                }
+                clipJson["targetScreenName"] = targetScreenName;
+
                 // Transform component (if exists)
                 const auto* transform = registry.try_get<Transform>(clipEntity);
                 if (transform) {
@@ -209,6 +222,54 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["mappingSurfaces"] = surfacesJson;
 
+        // Serialize output displays (Phase C #1)
+        // outputWindowSlot is runtime-only and deliberately skipped — it's a
+        // renderer slot ID reassigned every session. sourceScreen is an
+        // entt::entity which isn't stable across sessions, so persist the
+        // referenced Screen's name and re-resolve on load.
+        json outputsJson = json::array();
+        auto outputView = registry.view<OutputDisplay>();
+        for (auto [entity, out] : outputView.each()) {
+            json oj;
+            oj["name"] = out.name;
+            oj["outputIndex"] = out.outputIndex;
+            oj["type"] = static_cast<int>(out.type);
+            oj["enabled"] = out.enabled;
+            oj["width"] = out.width;
+            oj["height"] = out.height;
+            oj["refreshRate"] = out.refreshRate;
+            oj["physicalDisplayIndex"] = out.physicalDisplayIndex;
+            oj["deviceName"] = out.deviceName;
+            oj["displayName"] = out.displayName;
+            oj["brightness"] = out.brightness;
+            oj["gamma"] = out.gamma;
+            oj["fullscreen"] = out.fullscreen;
+            oj["windowX"] = out.windowX;
+            oj["windowY"] = out.windowY;
+            oj["windowWidth"] = out.windowWidth;
+            oj["windowHeight"] = out.windowHeight;
+
+            json ir;
+            ir["x"] = out.inputRegion.x;
+            ir["y"] = out.inputRegion.y;
+            ir["width"] = out.inputRegion.width;
+            ir["height"] = out.inputRegion.height;
+            oj["inputRegion"] = ir;
+
+            // Persist sourceScreen by name (entt::entity values aren't stable
+            // across save/load). Empty string = "first visible screen" fallback.
+            std::string sourceName;
+            if (out.sourceScreen != entt::null &&
+                registry.valid(out.sourceScreen) &&
+                registry.all_of<Screen>(out.sourceScreen)) {
+                sourceName = registry.get<Screen>(out.sourceScreen).name;
+            }
+            oj["sourceScreenName"] = sourceName;
+
+            outputsJson.push_back(oj);
+        }
+        project["outputs"] = outputsJson;
+
         // Write to file with pretty formatting
         std::ofstream file(savePath);
         if (!file.is_open()) {
@@ -265,6 +326,25 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
         timeline.clear();
         auto& registry = timeline.getRegistry();
 
+        // Clear project-scoped entity types that we serialize. Without this,
+        // reloading (or autosave-then-load) would pile up duplicates. Physical
+        // output windows must have been released by the caller *before* this
+        // call (Engine::loadProject does that), because once we clear the
+        // OutputDisplay component, the renderer slot ID is lost.
+        // Destroying the entities entirely (not just the component) because
+        // these are currently "component-per-entity" with no other components
+        // attached worth preserving.
+        {
+            std::vector<entt::entity> toDestroy;
+            auto clearView = registry.view<MappingSurface>();
+            for (auto e : clearView) toDestroy.push_back(e);
+            auto clearOutView = registry.view<OutputDisplay>();
+            for (auto e : clearOutView) toDestroy.push_back(e);
+            for (auto e : toDestroy) {
+                if (registry.valid(e)) registry.destroy(e);
+            }
+        }
+
         // Load timeline settings
         if (project.contains("timeline")) {
             const auto& timelineJson = project["timeline"];
@@ -308,6 +388,20 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         clip.frameBlending = clipJson.value("frameBlending", false);
                         clip.loaded = false;
                         clip.decoding = false;
+
+                        // Resolve targetScreen by name. Empty/missing = null
+                        // (renders to all screens).
+                        std::string targetScreenName = clipJson.value("targetScreenName", "");
+                        clip.targetScreen = entt::null;
+                        if (!targetScreenName.empty()) {
+                            auto screenView = registry.view<Screen>();
+                            for (auto [se, s] : screenView.each()) {
+                                if (s.name == targetScreenName) {
+                                    clip.targetScreen = se;
+                                    break;
+                                }
+                            }
+                        }
 
                         // Load totalMediaFrames and duration
                         // totalMediaFrames is always in source frames
@@ -421,6 +515,65 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 }
 
                 std::cout << "[ProjectSerializer] Loaded mapping surface: " << surface.name << std::endl;
+            }
+        }
+
+        // Load output displays
+        if (project.contains("outputs")) {
+            for (const auto& oj : project["outputs"]) {
+                entt::entity outEntity = registry.create();
+                auto& out = registry.emplace<OutputDisplay>(outEntity);
+
+                out.name = oj.value("name", "Output");
+                out.outputIndex = oj.value("outputIndex", 0u);
+                int typeInt = oj.value("type", 0);
+                out.type = static_cast<OutputType>(typeInt);
+                out.enabled = oj.value("enabled", false);
+                out.width = oj.value("width", 1920);
+                out.height = oj.value("height", 1080);
+                out.refreshRate = oj.value("refreshRate", 60.0f);
+                out.physicalDisplayIndex = oj.value("physicalDisplayIndex", -1);
+                out.deviceName = oj.value("deviceName", "");
+                out.displayName = oj.value("displayName", "");
+                out.brightness = oj.value("brightness", 1.0f);
+                out.gamma = oj.value("gamma", 1.0f);
+                out.fullscreen = oj.value("fullscreen", false);
+                out.windowX = oj.value("windowX", 100);
+                out.windowY = oj.value("windowY", 100);
+                out.windowWidth = oj.value("windowWidth", 1280);
+                out.windowHeight = oj.value("windowHeight", 720);
+
+                if (oj.contains("inputRegion")) {
+                    const auto& ir = oj["inputRegion"];
+                    out.inputRegion.x = ir.value("x", 0.0f);
+                    out.inputRegion.y = ir.value("y", 0.0f);
+                    out.inputRegion.width = ir.value("width", 1.0f);
+                    out.inputRegion.height = ir.value("height", 1.0f);
+                    out.inputRegion.updatePixelCoords(out.width, out.height);
+                }
+
+                // Runtime-only fields: not persisted. Renderer slot gets
+                // allocated when Engine::loadProject brings the window back up.
+                out.outputWindowSlot = UINT32_MAX;
+
+                // Resolve sourceScreen by name. Screens aren't serialized
+                // yet, so this relies on whatever Screens exist in-registry
+                // at load time (the default "Main Screen" from Engine init).
+                std::string sourceName = oj.value("sourceScreenName", "");
+                out.sourceScreen = entt::null;
+                if (!sourceName.empty()) {
+                    auto screenView = registry.view<Screen>();
+                    for (auto [se, s] : screenView.each()) {
+                        if (s.name == sourceName) {
+                            out.sourceScreen = se;
+                            break;
+                        }
+                    }
+                }
+
+                std::cout << "[ProjectSerializer] Loaded output: " << out.name
+                          << " (index " << out.outputIndex
+                          << (out.enabled ? ", enabled" : ", disabled") << ")" << std::endl;
             }
         }
 

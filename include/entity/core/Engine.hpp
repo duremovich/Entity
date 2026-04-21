@@ -24,6 +24,7 @@ class Decoder;
 class DecodeSystem;
 class AnimationSystem;
 class CommandDispatcher;
+class OutputManager;
 struct DecodedFrame;
 // class Transport;
 
@@ -89,6 +90,11 @@ public:
      * Get the CommandDispatcher.
      */
     CommandDispatcher* getCommandDispatcher() { return m_commandDispatcher.get(); }
+
+    /**
+     * Get the OutputManager (display enumeration + physical output driving).
+     */
+    OutputManager* getOutputManager() { return m_outputManager.get(); }
 
     // TODO: Implement this when class is ready
     // Transport* getTransport() { return m_transport.get(); }
@@ -292,6 +298,7 @@ private:
     std::unique_ptr<Timeline> m_timeline;
     std::unique_ptr<WindowManager> m_windowManager;
     std::unique_ptr<CommandDispatcher> m_commandDispatcher;
+    std::unique_ptr<OutputManager> m_outputManager;
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;

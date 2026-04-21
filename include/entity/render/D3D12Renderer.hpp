@@ -88,6 +88,19 @@ public:
                              float gamma,
                              float opacity) override;
 
+    uint32_t createOutputWindow(const char* title,
+                                 int32_t x, int32_t y,
+                                 uint32_t width, uint32_t height) override;
+    void     destroyOutputWindow(uint32_t outputSlot) override;
+    void     resizeOutputWindow(uint32_t outputSlot,
+                                 uint32_t width, uint32_t height) override;
+    uint32_t getOutputWindowWidth(uint32_t outputSlot) const override;
+    uint32_t getOutputWindowHeight(uint32_t outputSlot) const override;
+    void     beginOutputFrame(uint32_t outputSlot) override;
+    void     clearOutputFrame(uint32_t outputSlot,
+                               float r, float g, float b, float a) override;
+    void     endOutputFrame(uint32_t outputSlot) override;
+
     bool captureComposeTargetToPNG(const std::string& filepath, uint32_t slot = 0) override;
     bool captureBackBufferToPNG(const std::string& filepath) override;
     bool readComposeTargetPixels(uint32_t slot,
@@ -221,6 +234,11 @@ private:
     // ID3D12Device/ID3D12CommandQueue lifetime is in one place.
     std::unique_ptr<class D3D12Device> m_gpu;
 
+    // Cached DXGI factory; shared by the main swap chain and per-output
+    // swap chains so we don't re-create it every call. Must outlive any
+    // swap chain that was created from it.
+    ComPtr<IDXGIFactory4> m_dxgiFactory;
+
     // Swap chain + per-frame render resources. Still on D3D12Renderer
     // because they couple tightly to the back buffer index (which lives
     // here). Extracting these cleanly is Phase B+ work.
@@ -320,6 +338,24 @@ private:
     };
     std::vector<ComposeTarget> m_composeTargets;
     uint32_t m_currentComposeTargetSlot{0};  // Currently active slot during rendering
+
+    // Per-output swap chains for physical displays (Phase C #1).
+    // Each OutputWindow owns its own borderless GLFW window, DXGI swap chain,
+    // and set of back-buffer RTVs. Draws go into the shared main command list;
+    // Present happens inside endFrame() alongside the main swap chain.
+    struct OutputWindow {
+        GLFWwindow* window{nullptr};       // Owned GLFW window (nullptr when freed)
+        void* hwnd{nullptr};               // HWND kept as void* to avoid leaking windows.h
+        ComPtr<IDXGISwapChain3> swapChain;
+        ComPtr<ID3D12DescriptorHeap> rtvHeap;
+        ComPtr<ID3D12Resource> renderTargets[FRAME_COUNT];
+        uint32_t width{0};
+        uint32_t height{0};
+        uint32_t currentBackBufferIndex{0};
+        bool active{false};                // false = freed slot, reusable
+    };
+    std::vector<OutputWindow> m_outputWindows;
+    uint32_t m_currentOutputSlot{UINT32_MAX};  // Set during begin/endOutputFrame
 
     // State
     uint32_t m_currentBackBufferIndex;

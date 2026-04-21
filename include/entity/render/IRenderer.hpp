@@ -115,6 +115,49 @@ public:
                                      float opacity) = 0;
 
     // ------------------------------------------------------------------------
+    // Output windows (physical display outputs)
+    //
+    // Create a borderless OS-level window (backed by its own DXGI swap chain)
+    // positioned on a specific physical display. The renderer owns the window;
+    // destroyOutputWindow is the only way to close it.
+    //
+    // Per-frame flow:
+    //   beginFrame()
+    //     ... compose-target rendering ...
+    //     for each output: beginOutputFrame(slot) -> draws -> endOutputFrame(slot)
+    //     ... ImGui overlay on main window ...
+    //   endFrame()   // presents main AND all output swap chains
+    // ------------------------------------------------------------------------
+
+    /** Create a borderless output window at desktop (x,y) with size (w,h).
+     *  Returns a slot ID to pass to subsequent output methods, or UINT32_MAX
+     *  on failure. The window is unfocused, un-decorated, and ignores input —
+     *  it's a projection surface, not an editor. */
+    virtual uint32_t createOutputWindow(const char* title,
+                                         int32_t x, int32_t y,
+                                         uint32_t width, uint32_t height) = 0;
+
+    virtual void     destroyOutputWindow(uint32_t outputSlot) = 0;
+    virtual void     resizeOutputWindow(uint32_t outputSlot,
+                                         uint32_t width, uint32_t height) = 0;
+    virtual uint32_t getOutputWindowWidth(uint32_t outputSlot) const = 0;
+    virtual uint32_t getOutputWindowHeight(uint32_t outputSlot) const = 0;
+
+    /** Switch the active RT to this output's back buffer (transitions to
+     *  RENDER_TARGET, sets viewport/scissor to output size). Subsequent draw
+     *  calls target the output. */
+    virtual void beginOutputFrame(uint32_t outputSlot) = 0;
+
+    /** Clear the active output back buffer (must be inside begin/endOutputFrame). */
+    virtual void clearOutputFrame(uint32_t outputSlot,
+                                   float r, float g, float b, float a) = 0;
+
+    /** Transition output back buffer back to PRESENT state and restore the
+     *  main render target + viewport so ImGui / further draws target the main
+     *  window. */
+    virtual void endOutputFrame(uint32_t outputSlot) = 0;
+
+    // ------------------------------------------------------------------------
     // Screenshot / pixel readback
     // ------------------------------------------------------------------------
     virtual bool captureComposeTargetToPNG(const std::string& filepath, uint32_t slot = 0) = 0;

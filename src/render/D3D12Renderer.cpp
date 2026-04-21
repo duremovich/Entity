@@ -232,6 +232,24 @@ void D3D12Renderer::shutdown() {
     }
     m_composeTargets.clear();
 
+    // Release output windows (swap chains + GLFW windows) — Phase C #1.
+    // GPU has already been waited on above, so back buffers are free.
+    for (auto& ow : m_outputWindows) {
+        if (!ow.active) continue;
+        for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+            ow.renderTargets[i].Reset();
+        }
+        ow.rtvHeap.Reset();
+        ow.swapChain.Reset();
+        if (ow.window) {
+            glfwDestroyWindow(ow.window);
+            ow.window = nullptr;
+        }
+        ow.active = false;
+    }
+    m_outputWindows.clear();
+    m_dxgiFactory.Reset();
+
     // Release textured pipeline objects
     m_texturedPipelineState.Reset();
     m_texturedRootSignature.Reset();
@@ -396,6 +414,22 @@ void D3D12Renderer::endFrame() {
                   << std::hex << hr << std::dec << std::endl;
     }
 
+    // Present all active output swap chains (Phase C #1). They share the main
+    // command queue; the ExecuteCommandLists above committed all their work.
+    for (auto& ow : m_outputWindows) {
+        if (!ow.active || !ow.swapChain) continue;
+        HRESULT ohr = ow.swapChain->Present(1, 0);
+        if (FAILED(ohr)) {
+            if (ohr == DXGI_ERROR_DEVICE_REMOVED || ohr == DXGI_ERROR_DEVICE_RESET) {
+                handleDeviceLost(ohr, "Output Present");
+                return;
+            }
+            std::cerr << "[OutputWindow] Present failed! HRESULT: 0x"
+                      << std::hex << ohr << std::dec << std::endl;
+        }
+        ow.currentBackBufferIndex = ow.swapChain->GetCurrentBackBufferIndex();
+    }
+
     // Move to next frame
     moveToNextFrame();
 }
@@ -437,12 +471,13 @@ ID3D12Device* D3D12Renderer::getDevice() const {
 }
 
 Result D3D12Renderer::createSwapChain(void* windowHandle, uint32_t width, uint32_t height) {
-    // Create DXGI factory
-    ComPtr<IDXGIFactory4> factory;
-    HRESULT hr = CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        std::cerr << "Failed to create DXGI factory!" << std::endl;
-        return Result::Failure;
+    // Cache the DXGI factory on the renderer so per-output swap chains can reuse it.
+    if (!m_dxgiFactory) {
+        HRESULT hr = CreateDXGIFactory2(0, IID_PPV_ARGS(&m_dxgiFactory));
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create DXGI factory!" << std::endl;
+            return Result::Failure;
+        }
     }
 
     // Describe swap chain
@@ -462,7 +497,7 @@ Result D3D12Renderer::createSwapChain(void* windowHandle, uint32_t width, uint32
 
     // Create swap chain
     ComPtr<IDXGISwapChain1> swapChain1;
-    hr = factory->CreateSwapChainForHwnd(
+    HRESULT hr = m_dxgiFactory->CreateSwapChainForHwnd(
         m_gpu->commandQueue(),
         static_cast<HWND>(windowHandle),
         &swapChainDesc,
@@ -1959,10 +1994,47 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     const uint32_t frameBase = m_currentBackBufferIndex * MAX_MAPPING_SURFACES_PER_FRAME;
     const uint32_t slotOffset = (frameBase + m_mappingSurfaceDrawIndex) * m_mappingSurfaceSlotSize;
 
+    // Perspective-correct corner-pin: compute a per-corner `q` weight using
+    // the classic q-trick (Heckbert). Given the 2D intersection I of the
+    // quad's two diagonals (TL-BR and TR-BL), q_i = (d_i + d_opp) / d_opp
+    // where d_X is the distance from corner X to I and d_opp is the same
+    // distance for i's diagonal opposite. For a rectangle, all four q's
+    // collapse to 2 (no-op). For a keystoned quad, the variation drives the
+    // shader's projective divide, eliminating the diagonal texture fold.
+    float q[4] = { 2.0f, 2.0f, 2.0f, 2.0f };
+    {
+        const float ax = corners[2].x - corners[0].x;  // diag TL→BR
+        const float ay = corners[2].y - corners[0].y;
+        const float bx = corners[3].x - corners[1].x;  // diag TR→BL
+        const float by = corners[3].y - corners[1].y;
+        const float cx = corners[1].x - corners[0].x;
+        const float cy = corners[1].y - corners[0].y;
+        const float denom = ax * by - ay * bx;
+        if (fabsf(denom) > 1e-8f) {
+            const float s = (cx * by - cy * bx) / denom;
+            const float Ix = corners[0].x + s * ax;
+            const float Iy = corners[0].y + s * ay;
+            auto dist = [&](int i) {
+                const float dx = corners[i].x - Ix;
+                const float dy = corners[i].y - Iy;
+                return sqrtf(dx * dx + dy * dy);
+            };
+            const float d0 = dist(0), d1 = dist(1), d2 = dist(2), d3 = dist(3);
+            const float eps = 1e-6f;
+            q[0] = (d0 + d2) / std::max(d2, eps);
+            q[1] = (d1 + d3) / std::max(d3, eps);
+            q[2] = (d0 + d2) / std::max(d0, eps);
+            q[3] = (d1 + d3) / std::max(d1, eps);
+        }
+        // denom ~= 0 means the two diagonals are parallel (degenerate /
+        // collinear corners). Fallback to uniform q = 2 → identity mapping.
+    }
+
     MappingSurfaceConstants constants;
     for (int i = 0; i < 4; ++i) {
         constants.corners[i] = DirectX::XMFLOAT4(corners[i].x, corners[i].y, 0.0f, 0.0f);
-        constants.sourceUVs[i] = DirectX::XMFLOAT4(sourceUVs[i].x, sourceUVs[i].y, 0.0f, 0.0f);
+        // sourceUVs.w carries the per-corner projective weight q.
+        constants.sourceUVs[i] = DirectX::XMFLOAT4(sourceUVs[i].x, sourceUVs[i].y, 0.0f, q[i]);
     }
     constants.softEdgeLeft = softEdges.x;
     constants.softEdgeRight = softEdges.y;
@@ -1995,18 +2067,11 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
 
     m_mappingSurfaceDrawIndex++;
 
-    // Set viewport and scissor rect
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-
-    D3D12_RECT scissorRect = {};
-    scissorRect.right = m_width;
-    scissorRect.bottom = m_height;
-
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissorRect);
+    // NOTE: Viewport/scissor are set by the caller (beginFrame,
+    // beginComposeTarget, or beginOutputFrame). Overriding here to the main
+    // back-buffer size was a latent bug that only manifested with per-output
+    // rendering — a 1280x1080 secondary got clipped to the editor's 1920x1080
+    // viewport, or vice-versa. Trust the caller's setup.
 
     // Set vertex buffer and draw (6 vertices = 2 triangles)
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -2238,6 +2303,295 @@ uint32_t D3D12Renderer::getComposeTargetHeight(uint32_t slot) const {
 
 bool D3D12Renderer::isComposeTargetReady(uint32_t slot) const {
     return (slot < m_composeTargets.size() && m_composeTargets[slot].ready);
+}
+
+// ============================================================================
+// Output Windows (physical display outputs) — Phase C #1
+// ============================================================================
+
+uint32_t D3D12Renderer::createOutputWindow(const char* title,
+                                            int32_t x, int32_t y,
+                                            uint32_t width, uint32_t height) {
+    if (!m_initialized || !m_gpu || !m_gpu->isInitialized() || !m_dxgiFactory) {
+        std::cerr << "[OutputWindow] Renderer not initialized" << std::endl;
+        return UINT32_MAX;
+    }
+
+    // Create a borderless GLFW window that takes no focus and ignores input.
+    // Projection surface, not an editor — it exists to show pixels and nothing else.
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // Position first, then show.
+
+    GLFWwindow* win = glfwCreateWindow(
+        static_cast<int>(width),
+        static_cast<int>(height),
+        title ? title : "Entity Output",
+        nullptr, nullptr);
+
+    if (!win) {
+        std::cerr << "[OutputWindow] glfwCreateWindow failed" << std::endl;
+        return UINT32_MAX;
+    }
+
+    glfwSetWindowPos(win, x, y);
+    glfwShowWindow(win);
+
+    HWND hwnd = glfwGetWin32Window(win);
+    if (!hwnd) {
+        std::cerr << "[OutputWindow] glfwGetWin32Window returned null" << std::endl;
+        glfwDestroyWindow(win);
+        return UINT32_MAX;
+    }
+
+    OutputWindow slot;
+    slot.window = win;
+    slot.hwnd = hwnd;
+    slot.width = width;
+    slot.height = height;
+    slot.active = true;
+
+    // Create a swap chain on this HWND, sharing the main command queue and factory.
+    DXGI_SWAP_CHAIN_DESC1 desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Stereo = FALSE;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = FRAME_COUNT;
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+    desc.Flags = 0;
+
+    ComPtr<IDXGISwapChain1> swapChain1;
+    HRESULT hr = m_dxgiFactory->CreateSwapChainForHwnd(
+        m_gpu->commandQueue(),
+        hwnd,
+        &desc,
+        nullptr, nullptr,
+        &swapChain1);
+    if (FAILED(hr)) {
+        std::cerr << "[OutputWindow] CreateSwapChainForHwnd failed: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        glfwDestroyWindow(win);
+        return UINT32_MAX;
+    }
+    if (FAILED(swapChain1.As(&slot.swapChain))) {
+        std::cerr << "[OutputWindow] IDXGISwapChain3 cast failed" << std::endl;
+        glfwDestroyWindow(win);
+        return UINT32_MAX;
+    }
+
+    // Suppress alt-enter fullscreen on this secondary window (DXGI default).
+    m_dxgiFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+    // RTV heap + views (one per back buffer).
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = FRAME_COUNT;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&slot.rtvHeap));
+    if (FAILED(hr)) {
+        std::cerr << "[OutputWindow] RTV heap creation failed" << std::endl;
+        glfwDestroyWindow(win);
+        return UINT32_MAX;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE h = slot.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        hr = slot.swapChain->GetBuffer(i, IID_PPV_ARGS(&slot.renderTargets[i]));
+        if (FAILED(hr)) {
+            std::cerr << "[OutputWindow] GetBuffer " << i << " failed" << std::endl;
+            glfwDestroyWindow(win);
+            return UINT32_MAX;
+        }
+        m_gpu->device()->CreateRenderTargetView(slot.renderTargets[i].Get(), nullptr, h);
+        h.ptr += m_rtvDescriptorSize;
+    }
+    slot.currentBackBufferIndex = slot.swapChain->GetCurrentBackBufferIndex();
+
+    // Find a free slot (freed via destroyOutputWindow) or append.
+    uint32_t slotIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < m_outputWindows.size(); ++i) {
+        if (!m_outputWindows[i].active && !m_outputWindows[i].window) {
+            m_outputWindows[i] = std::move(slot);
+            slotIndex = i;
+            break;
+        }
+    }
+    if (slotIndex == UINT32_MAX) {
+        slotIndex = static_cast<uint32_t>(m_outputWindows.size());
+        m_outputWindows.push_back(std::move(slot));
+    }
+
+    std::cout << "[OutputWindow] Created slot " << slotIndex
+              << " at (" << x << "," << y << ") "
+              << width << "x" << height
+              << " hwnd=0x" << std::hex << reinterpret_cast<uintptr_t>(hwnd) << std::dec
+              << std::endl;
+    return slotIndex;
+}
+
+void D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
+    if (outputSlot >= m_outputWindows.size()) return;
+    OutputWindow& ow = m_outputWindows[outputSlot];
+    if (!ow.active) return;
+
+    // Wait for GPU so we don't yank back buffers still in flight.
+    waitForGpu();
+
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        ow.renderTargets[i].Reset();
+    }
+    ow.rtvHeap.Reset();
+    ow.swapChain.Reset();
+
+    if (ow.window) {
+        glfwDestroyWindow(ow.window);
+        ow.window = nullptr;
+    }
+    ow.hwnd = nullptr;
+    ow.active = false;
+    ow.width = 0;
+    ow.height = 0;
+    ow.currentBackBufferIndex = 0;
+
+    std::cout << "[OutputWindow] Destroyed slot " << outputSlot << std::endl;
+}
+
+void D3D12Renderer::resizeOutputWindow(uint32_t outputSlot,
+                                        uint32_t width, uint32_t height) {
+    if (outputSlot >= m_outputWindows.size()) return;
+    OutputWindow& ow = m_outputWindows[outputSlot];
+    if (!ow.active || !ow.swapChain) return;
+    if (width == 0 || height == 0) return;
+    if (width == ow.width && height == ow.height) return;
+
+    waitForGpu();
+
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        ow.renderTargets[i].Reset();
+    }
+
+    HRESULT hr = ow.swapChain->ResizeBuffers(
+        FRAME_COUNT, width, height,
+        DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+    if (FAILED(hr)) {
+        std::cerr << "[OutputWindow] ResizeBuffers failed: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE h = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        if (FAILED(ow.swapChain->GetBuffer(i, IID_PPV_ARGS(&ow.renderTargets[i])))) {
+            std::cerr << "[OutputWindow] GetBuffer after resize failed" << std::endl;
+            return;
+        }
+        m_gpu->device()->CreateRenderTargetView(ow.renderTargets[i].Get(), nullptr, h);
+        h.ptr += m_rtvDescriptorSize;
+    }
+    ow.width = width;
+    ow.height = height;
+    ow.currentBackBufferIndex = ow.swapChain->GetCurrentBackBufferIndex();
+}
+
+uint32_t D3D12Renderer::getOutputWindowWidth(uint32_t outputSlot) const {
+    if (outputSlot >= m_outputWindows.size()) return 0;
+    const OutputWindow& ow = m_outputWindows[outputSlot];
+    return ow.active ? ow.width : 0;
+}
+
+uint32_t D3D12Renderer::getOutputWindowHeight(uint32_t outputSlot) const {
+    if (outputSlot >= m_outputWindows.size()) return 0;
+    const OutputWindow& ow = m_outputWindows[outputSlot];
+    return ow.active ? ow.height : 0;
+}
+
+void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
+    if (outputSlot >= m_outputWindows.size()) return;
+    OutputWindow& ow = m_outputWindows[outputSlot];
+    if (!ow.active) return;
+
+    // Transition this back buffer to RENDER_TARGET.
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = ow.renderTargets[ow.currentBackBufferIndex].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += ow.currentBackBufferIndex * m_rtvDescriptorSize;
+    m_commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(ow.width);
+    viewport.Height = static_cast<float>(ow.height);
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissor = {};
+    scissor.right = static_cast<LONG>(ow.width);
+    scissor.bottom = static_cast<LONG>(ow.height);
+
+    m_commandList->RSSetViewports(1, &viewport);
+    m_commandList->RSSetScissorRects(1, &scissor);
+
+    m_currentOutputSlot = outputSlot;
+}
+
+void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
+                                      float r, float g, float b, float a) {
+    if (outputSlot >= m_outputWindows.size()) return;
+    OutputWindow& ow = m_outputWindows[outputSlot];
+    if (!ow.active) return;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += ow.currentBackBufferIndex * m_rtvDescriptorSize;
+    const float color[] = { r, g, b, a };
+    m_commandList->ClearRenderTargetView(rtv, color, 0, nullptr);
+}
+
+void D3D12Renderer::endOutputFrame(uint32_t outputSlot) {
+    if (outputSlot >= m_outputWindows.size()) return;
+    OutputWindow& ow = m_outputWindows[outputSlot];
+    if (!ow.active) return;
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = ow.renderTargets[ow.currentBackBufferIndex].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    // Restore the main render target + viewport so subsequent draws
+    // (ImGui overlay) target the editor window.
+    D3D12_CPU_DESCRIPTOR_HANDLE mainRtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    mainRtv.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
+    m_commandList->OMSetRenderTargets(1, &mainRtv, FALSE, nullptr);
+
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(m_width);
+    viewport.Height = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissor = {};
+    scissor.right = static_cast<LONG>(m_width);
+    scissor.bottom = static_cast<LONG>(m_height);
+
+    m_commandList->RSSetViewports(1, &viewport);
+    m_commandList->RSSetScissorRects(1, &scissor);
+
+    m_currentOutputSlot = UINT32_MAX;
 }
 
 // ============================================================================

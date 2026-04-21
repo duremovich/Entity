@@ -1,8 +1,11 @@
 #include "entity/ui/MappingWindow.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/components/Screen.hpp"
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/render/OutputManager.hpp"
+#include <cstdio>
 #include <iostream>
+#include <string>
 
 namespace entity {
 
@@ -233,6 +236,37 @@ void MappingWindow::renderPropertiesPanel() {
     ImGui::SameLine(ImGui::GetWindowWidth() - 100);
     ImGui::Checkbox("Visible", &surface->visible);
 
+    // Output assignment — surfaces are drawn on the output whose outputIndex matches.
+    {
+        const char* preview = "(unassigned)";
+        std::string label;
+        auto outView = registry.view<OutputDisplay>();
+        entt::entity assigned = entt::null;
+        for (auto [outEntity, out] : outView.each()) {
+            if (out.outputIndex == surface->outputIndex) {
+                label = out.name + " [" + out.getTypeString() + "]";
+                preview = label.c_str();
+                assigned = outEntity;
+                break;
+            }
+        }
+        if (ImGui::BeginCombo("Output##surfAssign", preview)) {
+            for (auto [outEntity, out] : outView.each()) {
+                char item[256];
+                std::snprintf(item, sizeof(item), "%s [%s]",
+                              out.name.c_str(), out.getTypeString());
+                bool sel = (outEntity == assigned);
+                ImGui::PushID(static_cast<int>(outEntity));
+                if (ImGui::Selectable(item, sel)) {
+                    surface->outputIndex = out.outputIndex;
+                }
+                if (sel) ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
     ImGui::Separator();
 
     // Two columns: corners on left, properties on right
@@ -252,6 +286,77 @@ void MappingWindow::renderPropertiesPanel() {
 
     if (ImGui::Button("Reset Corners")) {
         surface->resetCorners();
+    }
+
+    // Sizing presets — reshape the surface corners to standard fit modes.
+    // Requires knowing source (compose target = sourceScreen of the
+    // assigned output) and output (physical display) dimensions.
+    int sourceW = 0, sourceH = 0;
+    int outputW = 0, outputH = 0;
+    {
+        OutputDisplay* assigned = nullptr;
+        auto outView = registry.view<OutputDisplay>();
+        for (auto [oe, out] : outView.each()) {
+            if (out.outputIndex == surface->outputIndex) {
+                assigned = &out;
+                break;
+            }
+        }
+        if (assigned) {
+            outputW = assigned->width;
+            outputH = assigned->height;
+            entt::entity src = assigned->sourceScreen;
+            if (src == entt::null) {
+                for (auto [se, s] : registry.view<Screen>().each()) {
+                    if (s.visible) { src = se; break; }
+                }
+            }
+            if (registry.valid(src) && registry.all_of<Screen>(src)) {
+                const auto& s = registry.get<Screen>(src);
+                sourceW = static_cast<int>(s.width);
+                sourceH = static_cast<int>(s.height);
+            }
+        }
+    }
+
+    auto setCorners = [&](float halfX, float halfY) {
+        surface->corners = {{
+            {-halfX,  halfY}, { halfX,  halfY},
+            { halfX, -halfY}, {-halfX, -halfY}
+        }};
+    };
+
+    if (outputW > 0 && outputH > 0 && sourceW > 0 && sourceH > 0) {
+        const float srcAR = float(sourceW) / float(sourceH);
+        const float outAR = float(outputW) / float(outputH);
+
+        ImGui::Text("Sizing Presets");
+        if (ImGui::Button("Stretch")) {
+            setCorners(1.0f, 1.0f);  // fullscreen, ignores aspect
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit")) {
+            // Letterbox/pillarbox inside output preserving source aspect.
+            if (srcAR > outAR) setCorners(1.0f, outAR / srcAR);    // letterbox
+            else               setCorners(srcAR / outAR, 1.0f);    // pillarbox
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit W")) {
+            setCorners(1.0f, outAR / srcAR);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit H")) {
+            setCorners(srcAR / outAR, 1.0f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("1:1")) {
+            // Pixel-perfect — source pixels land 1:1 on output pixels.
+            setCorners(float(sourceW) / float(outputW),
+                       float(sourceH) / float(outputH));
+        }
+        ImGui::TextDisabled("src %dx%d  out %dx%d", sourceW, sourceH, outputW, outputH);
+    } else {
+        ImGui::TextDisabled("(assign output + source screen for presets)");
     }
 
     ImGui::NextColumn();
@@ -397,6 +502,21 @@ entt::entity MappingWindow::createSurface(const std::string& name) {
     auto view = registry.view<MappingSurface>();
     surface.surfaceIndex = static_cast<uint32_t>(std::distance(view.begin(), view.end())) - 1;
 
+    // Auto-associate with the currently-selected output so dragging corners
+    // immediately affects the projection you're looking at. Falls back to
+    // output 0 if no output is selected (matches the component default).
+    if (m_selectedOutput != entt::null && registry.valid(m_selectedOutput)) {
+        auto* out = registry.try_get<OutputDisplay>(m_selectedOutput);
+        if (out) {
+            surface.outputIndex = out->outputIndex;
+            std::cout << "[MappingWindow] Surface '" << name << "' assigned to output '"
+                      << out->name << "' (index " << out->outputIndex << ")" << std::endl;
+        }
+    } else {
+        std::cout << "[MappingWindow] Surface '" << name
+                  << "' has no selected output — defaulting to output 0" << std::endl;
+    }
+
     std::cout << "[MappingWindow] Created surface: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
 
     return entity;
@@ -446,8 +566,39 @@ void MappingWindow::renderOutputsPanel() {
         auto& output = registry.emplace<OutputDisplay>(newOutput);
         output.name = "Output " + std::to_string(maxOutputNum + 1);
         output.type = OutputType::Physical;
+        // Start disabled with no display — user explicitly picks display
+        // then ticks Enabled. Prevents "+ Physical" from immediately
+        // blacking out the primary display.
+        output.enabled = false;
+        output.physicalDisplayIndex = -1;
         m_selectedOutput = newOutput;
-        std::cout << "[MappingWindow] Created physical output: " << output.name << std::endl;
+
+        // Auto-create a fullscreen mapping surface for this output so
+        // enabling it immediately shows the composited raster. User can
+        // drag corners or hit a preset button without first clicking
+        // "Add Surface".
+        int maxSurfaceNum = 0;
+        auto surfCountView = registry.view<MappingSurface>();
+        for (auto [se, existingSurf] : surfCountView.each()) {
+            if (existingSurf.name.find("Surface ") == 0) {
+                try {
+                    maxSurfaceNum = std::max(maxSurfaceNum,
+                        std::stoi(existingSurf.name.substr(8)));
+                } catch (...) {}
+            }
+        }
+        std::string surfName = "Surface " + std::to_string(maxSurfaceNum + 1);
+        entt::entity newSurf = createSurface(surfName);
+        if (auto* s = registry.try_get<MappingSurface>(newSurf)) {
+            s->corners = {{
+                {-1.0f,  1.0f}, { 1.0f,  1.0f},
+                { 1.0f, -1.0f}, {-1.0f, -1.0f}
+            }};
+        }
+        m_selectedSurface = newSurf;
+
+        std::cout << "[MappingWindow] Created physical output: " << output.name
+                  << " (disabled, no display assigned, 1 fullscreen surface)" << std::endl;
     }
     ImGui::SameLine();
     if (ImGui::Button("+ Preview")) {
@@ -531,8 +682,16 @@ void MappingWindow::renderOutputsPanel() {
             // Type display
             ImGui::Text("Type: %s", output->getTypeString());
 
-            // Enable toggle
-            ImGui::Checkbox("Enabled", &output->enabled);
+            // Enable toggle — routed through OutputManager so the
+            // physical output window actually gets created/destroyed.
+            bool enabled = output->enabled;
+            if (ImGui::Checkbox("Enabled", &enabled)) {
+                if (auto* om = m_engine->getOutputManager()) {
+                    om->setOutputEnabled(m_selectedOutput, enabled);
+                } else {
+                    output->enabled = enabled;
+                }
+            }
 
             // Resolution
             int resolution[2] = {output->width, output->height};
@@ -552,9 +711,79 @@ void MappingWindow::renderOutputsPanel() {
                 ImGui::Separator();
                 ImGui::Text("Display Assignment");
 
-                // Placeholder for display dropdown - will be populated by OutputManager
-                ImGui::TextDisabled("(Display enumeration not yet integrated)");
-                ImGui::Checkbox("Fullscreen", &output->fullscreen);
+                auto* om = m_engine->getOutputManager();
+                if (om) {
+                    const auto& displays = om->getAvailableDisplays();
+                    int current = output->physicalDisplayIndex;
+                    if (current < 0 || current >= static_cast<int>(displays.size())) {
+                        current = -1;
+                    }
+                    const char* preview = (current >= 0 && current < static_cast<int>(displays.size()))
+                        ? displays[current].displayName.c_str()
+                        : "(no display)";
+                    if (ImGui::BeginCombo("Display", preview)) {
+                        for (int i = 0; i < static_cast<int>(displays.size()); ++i) {
+                            const auto& d = displays[i];
+                            char label[256];
+                            std::snprintf(label, sizeof(label), "%d: %s (%dx%d%s)",
+                                          i, d.displayName.c_str(),
+                                          d.width, d.height,
+                                          d.isPrimary ? ", primary" : "");
+                            bool selected = (i == current);
+                            if (ImGui::Selectable(label, selected)) {
+                                om->assignDisplay(m_selectedOutput, i);
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::Button("Refresh displays")) {
+                        om->enumerateDisplays();
+                    }
+                } else {
+                    ImGui::TextDisabled("(OutputManager not available)");
+                }
+            }
+
+            // Source Screen routing — which Screen's compose target feeds
+            // this output. Unset (entt::null) falls back to first visible
+            // Screen in OutputManager::resolveSourceTexture().
+            if (output->type == OutputType::Physical || output->type == OutputType::Preview) {
+                ImGui::Separator();
+                ImGui::Text("Source Screen");
+
+                const char* sourcePreview = "(first visible screen)";
+                std::string sourceLabel;
+                if (output->sourceScreen != entt::null &&
+                    registry.valid(output->sourceScreen) &&
+                    registry.all_of<Screen>(output->sourceScreen)) {
+                    const auto& s = registry.get<Screen>(output->sourceScreen);
+                    sourceLabel = s.name + " (" +
+                        std::to_string(s.width) + "x" + std::to_string(s.height) + ")";
+                    sourcePreview = sourceLabel.c_str();
+                }
+                if (ImGui::BeginCombo("Screen##src", sourcePreview)) {
+                    bool autoSelected = (output->sourceScreen == entt::null);
+                    if (ImGui::Selectable("(first visible screen)", autoSelected)) {
+                        output->sourceScreen = entt::null;
+                    }
+                    if (autoSelected) ImGui::SetItemDefaultFocus();
+
+                    auto screenView = registry.view<Screen>();
+                    for (auto [screenEntity, screen] : screenView.each()) {
+                        char label[256];
+                        std::snprintf(label, sizeof(label), "%s (%ux%u)",
+                                      screen.name.c_str(), screen.width, screen.height);
+                        bool sel = (output->sourceScreen == screenEntity);
+                        ImGui::PushID(static_cast<int>(screenEntity));
+                        if (ImGui::Selectable(label, sel)) {
+                            output->sourceScreen = screenEntity;
+                        }
+                        if (sel) ImGui::SetItemDefaultFocus();
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
             }
 
             // Color/gamma calibration

@@ -15,6 +15,37 @@
 #include <algorithm>
 #include <iostream>
 
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+
+namespace {
+
+// Inverse of WindowManager::pathToUtf8. The std::string -> filesystem::path
+// constructor on Windows interprets the bytes as the active narrow codepage
+// (typically Windows-1252), so a UTF-8 path with characters outside that
+// page (fullwidth colon, CJK, emoji, curly quotes...) gets garbled before it
+// reaches std::filesystem::exists. Convert UTF-8 -> wide -> path so the
+// native API sees the right bytes.
+std::filesystem::path utf8ToPath(const std::string& utf8) {
+    if (utf8.empty()) return {};
+#ifdef _WIN32
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                                          static_cast<int>(utf8.size()),
+                                          nullptr, 0);
+    if (wlen <= 0) return std::filesystem::path(utf8);  // best-effort
+    std::wstring w(static_cast<size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                        static_cast<int>(utf8.size()),
+                        w.data(), wlen);
+    return std::filesystem::path(w);
+#else
+    return std::filesystem::path(utf8);
+#endif
+}
+
+}  // namespace
+
 namespace entity {
 
 void ProjectManager::initialize(Timeline* timeline, entt::registry* registry, IRenderer* renderer) {
@@ -64,7 +95,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
     // ClipDecodeState).
     ProjectSerializer::MediaLoadCallback loadCallback =
         [this](entt::entity clipEntity, const std::string& mediaPath) {
-        if (!std::filesystem::exists(mediaPath)) {
+        if (!std::filesystem::exists(utf8ToPath(mediaPath))) {
             std::cerr << "[ProjectManager] Media file not found: " << mediaPath << std::endl;
             return;
         }
@@ -110,6 +141,13 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         auto& clip = m_registry->get<Clip>(clipEntity);
         state.frame->allocate(clip.width, clip.height);
         state.lastDecodedFrame = UINT32_MAX;
+
+        // Mark the clip as loaded so DecodeSystem actually picks it up.
+        // ProjectSerializer sets loaded=false during deserialization; without
+        // flipping it back here the decode worker skips the clip and the
+        // compose target stays empty (user-visible as cyan bleed-through on
+        // the stage preview after a project reload).
+        clip.loaded = true;
 
         addMediaFile(mediaPath);
 

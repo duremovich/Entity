@@ -22,6 +22,7 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
+#include "entity/render/OutputManager.hpp"
 #include <imgui.h>
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -133,6 +134,14 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     if (rendererResult != Result::Success) {
         std::cerr << "Failed to initialize D3D12 renderer!" << std::endl;
         return rendererResult;
+    }
+
+    // Output manager — enumerates displays and owns physical-output windows.
+    // Constructed before systems so any scripted output setup can work.
+    m_outputManager = std::make_unique<OutputManager>(m_renderer.get(), m_registry);
+    if (m_outputManager->initialize() != Result::Success) {
+        std::cerr << "Failed to initialize OutputManager!" << std::endl;
+        return Result::Failure;
     }
 
     // Register compositor system (renders layers to screen)
@@ -294,6 +303,12 @@ void Engine::shutdown() {
     // TODO: Shutdown systems when they exist
     // m_transport.reset();
     // m_timeline.reset();
+    // OutputManager must release its output windows BEFORE the renderer
+    // shuts down — it holds slot IDs into the renderer's swap-chain pool.
+    if (m_outputManager) {
+        m_outputManager->shutdown();
+        m_outputManager.reset();
+    }
     m_renderer.reset();
 
     // Destroy window
@@ -515,6 +530,14 @@ void Engine::render() {
             double deltaTime = m_playbackController ? m_playbackController->getDeltaTime() : 0.0;
             m_systems[0]->update(m_registry, static_cast<float>(deltaTime));
         }
+
+        // Physical outputs: fan out each enabled output's compose target to
+        // its dedicated swap chain. Must run after the compositor (compose
+        // targets are now in SHADER_RESOURCE state) and before ImGui (so the
+        // main RT stays selected for the overlay).
+        if (m_outputManager) {
+            m_outputManager->renderOutputs();
+        }
         auto t3 = std::chrono::high_resolution_clock::now();
 
         // Begin ImGui frame for UI rendering
@@ -596,10 +619,28 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     bool ctrlPressed = (mods & GLFW_MOD_CONTROL) != 0;
     bool shiftPressed = (mods & GLFW_MOD_SHIFT) != 0;
 
-    // Handle ESC key to quit
+    // Handle ESC — live-performance safety. If any Physical output is
+    // currently driving a display, the first ESC disables them all so the
+    // editor becomes visible again. Only if no outputs are live does ESC
+    // exit the app. Avoids the "accidental ESC during a show kills the
+    // whole program" footgun.
     if (key == GLFW_KEY_ESCAPE) {
-        std::cout << "ESC pressed, requesting exit..." << std::endl;
-        requestExit();
+        bool killedAny = false;
+        if (m_outputManager) {
+            auto view = m_registry.view<OutputDisplay>();
+            for (auto [entity, output] : view.each()) {
+                if (output.isPhysical() && output.enabled && output.outputWindowSlot != UINT32_MAX) {
+                    m_outputManager->setOutputEnabled(entity, false);
+                    killedAny = true;
+                }
+            }
+        }
+        if (killedAny) {
+            std::cout << "ESC pressed: disabled active physical outputs." << std::endl;
+        } else {
+            std::cout << "ESC pressed, requesting exit..." << std::endl;
+            requestExit();
+        }
         return;
     }
 
@@ -1468,7 +1509,48 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
 }
 
 bool Engine::loadProject(const std::filesystem::path& filepath) {
-    return m_projectManager ? m_projectManager->load(filepath) : false;
+    if (!m_projectManager) return false;
+
+    // Pre-load: tear down any currently-active physical output windows. The
+    // load will clear the OutputDisplay entities that hold the slot IDs; if
+    // we don't release them first, those renderer slots leak for the rest
+    // of the session.
+    if (m_outputManager) {
+        auto view = m_registry.view<OutputDisplay>();
+        std::vector<entt::entity> toDisable;
+        for (auto [entity, out] : view.each()) {
+            if (out.outputWindowSlot != UINT32_MAX) {
+                toDisable.push_back(entity);
+            }
+        }
+        for (auto e : toDisable) {
+            m_outputManager->setOutputEnabled(e, false);
+        }
+    }
+
+    bool ok = m_projectManager->load(filepath);
+    if (!ok) return false;
+
+    // Post-load: sync the output-index counter so new outputs the user
+    // creates don't collide with loaded indices; then bring up windows for
+    // any physical outputs that were saved as enabled.
+    if (m_outputManager) {
+        m_outputManager->syncCounterFromRegistry();
+
+        auto view = m_registry.view<OutputDisplay>();
+        std::vector<entt::entity> toEnable;
+        for (auto [entity, out] : view.each()) {
+            if (out.enabled && out.isPhysical() && out.physicalDisplayIndex >= 0) {
+                toEnable.push_back(entity);
+            }
+        }
+        for (auto e : toEnable) {
+            // setOutputEnabled(true) will call ensureOutputWindow which
+            // allocates the swap chain + back buffers for the display.
+            m_outputManager->setOutputEnabled(e, true);
+        }
+    }
+    return true;
 }
 
 bool Engine::saveProjectInteractive() {

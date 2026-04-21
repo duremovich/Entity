@@ -3,6 +3,7 @@
 #include "../core/Types.hpp"
 #include <string>
 #include <cstdint>
+#include <entt/entt.hpp>
 
 namespace entity {
 
@@ -122,6 +123,16 @@ struct OutputDisplay {
     // Color/gamma per output (for display calibration)
     float brightness{1.0f};
     float gamma{1.0f};
+
+    // Renderer slot for the physical output window/swap chain.
+    // UINT32_MAX = not created yet (disabled, no display assigned, or virtual).
+    // Populated by OutputManager when the output is enabled with a display assigned.
+    uint32_t outputWindowSlot{UINT32_MAX};
+
+    // Which Screen's compose target feeds this output. entt::null = use the
+    // first visible Screen found in the registry (sane default when there's
+    // only one). Explicit routing comes later — Phase C #1 is single-raster.
+    entt::entity sourceScreen{entt::null};
 
     /**
      * Get the aspect ratio of the output.

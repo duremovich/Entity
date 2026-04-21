@@ -131,16 +131,26 @@ public:
 
     /**
      * Render all enabled outputs.
-     * Called each frame after compositing.
      *
-     * @param compositedTexture Texture reference for the full composited raster
+     * Called each frame AFTER the compositor has rendered to its compose
+     * targets and BEFORE the ImGui overlay. Each enabled Physical output
+     * gets its back buffer drawn with the composited raster cropped by
+     * InputRegion.
      */
-    void renderOutputs(TextureRef compositedTexture);
+    void renderOutputs();
 
     /**
      * Get the primary preview output (if any).
      */
     entt::entity getPreviewOutput() const { return m_previewOutput; }
+
+    /**
+     * Re-sync the internal output-index counter from entities already in the
+     * registry. Call after loading a project — the serializer restores each
+     * output's outputIndex verbatim, so a naive auto-increment on the next
+     * `+ Physical` click would collide with a loaded one.
+     */
+    void syncCounterFromRegistry();
 
 private:
     /**
@@ -157,6 +167,20 @@ private:
      * Render to a single output.
      */
     void renderToOutput(entt::entity outputEntity, TextureRef compositedTexture);
+
+    /**
+     * Resolve which compose target texture feeds a given output. Returns an
+     * invalid TextureRef if no suitable Screen exists. Uses output.sourceScreen
+     * if set, else falls back to the first visible Screen with a valid slot.
+     */
+    TextureRef resolveSourceTexture(const OutputDisplay& output) const;
+
+    /**
+     * Ensure a Physical output has an owned GLFW window + swap chain on the
+     * renderer. No-op if already created or if the output has no display
+     * assigned. Called lazily from renderOutputs() and from setOutputEnabled.
+     */
+    void ensureOutputWindow(entt::entity outputEntity);
 
     IRenderer* m_renderer{nullptr};
     entt::registry& m_registry;

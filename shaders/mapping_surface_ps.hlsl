@@ -17,8 +17,13 @@ Texture2D videoTexture : register(t0);
 SamplerState textureSampler : register(s0);
 
 float4 PSMain(MappingPSInput input) : SV_TARGET {
+    // Projective UV recovery: (u*q, v*q) / q. See mapping_surface.hlsli for
+    // the q-trick explanation. For a rectangle, q is constant and this is a
+    // no-op; for a warped quad, this eliminates the diagonal crease.
+    float2 uv = input.perspUV.xy / input.perspUV.z;
+
     // Sample the video texture (straight alpha)
-    float4 color = videoTexture.Sample(textureSampler, input.texCoord);
+    float4 color = videoTexture.Sample(textureSampler, uv);
 
     // Apply brightness
     color.rgb *= brightness;
