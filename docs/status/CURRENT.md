@@ -56,14 +56,14 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 
 | # | Task | Notes |
 |---|------|-------|
-| 8 | More integration tests (mixed-fps, ping-pong, blend, round-trip) | Blocked on: needs new script commands (`SetClipPlaybackMode`, `SetClipFramerate`); blend test requires non-trivial scene. |
+| 8 | More integration tests (mixed-fps, ping-pong, blend) | **Partially done:** screen-persistence round-trip landed (added `AssertScreenExists` / `AssertScreenCount` script commands; two CTest tests joined by a `screen_persistence_data` fixture). Mixed-fps / ping-pong still blocked on `SetClipPlaybackMode` / `SetClipFramerate` script commands; blend test still needs a non-trivial scene. |
 
 ---
 
 ## Verified Working (as of Phase B #15c PlaybackController extraction)
 
 **Build**: `cmake --build build --config Release` is clean, no errors.
-**Tests**: 53/53 pass (49 unit, 4 integration) under `ctest -C Release`.
+**Tests**: 55/55 pass (49 unit, 6 integration) under `ctest -C Release`.
 **Binary**: `build/bin/Release/EntityMediaEditor.exe` launches and runs in windowed or `--headless` mode.
 
 Integration tests wired to CTest, labelled `integration`:
@@ -71,6 +71,7 @@ Integration tests wired to CTest, labelled `integration`:
 - `integration_multi_screen` — two user screens, hash both
 - `integration_png_sequence_seek` — PNG seq decode + seek correctness
 - `integration_seek_past_clip_end` — boundary behavior past clip duration
+- `integration_screen_persistence_save` / `_load` — round-trip via CTest fixture; load asserts both default and custom screens survive serializer
 
 ---
 

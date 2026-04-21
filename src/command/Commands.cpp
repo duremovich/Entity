@@ -1151,4 +1151,63 @@ CommandPtr SetClipTargetScreenCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetClipTargetScreenCommand>(trackIndex, clipIndex, screenName);
 }
 
+// ============================================================================
+// AssertScreenExistsCommand
+// ============================================================================
+
+bool AssertScreenExistsCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    auto view = registry.view<Screen>();
+    for (auto [entity, screen] : view.each()) {
+        if (screen.name == m_name) {
+            std::cout << "[AssertScreenExists] OK name=" << m_name << std::endl;
+            return true;
+        }
+    }
+    std::cerr << "[AssertScreenExists] FAIL: no screen named '" << m_name << "'" << std::endl;
+    return false;
+}
+
+nlohmann::json AssertScreenExistsCommand::toJson() const {
+    return {{"type", "AssertScreenExists"}, {"name", m_name}};
+}
+
+std::string AssertScreenExistsCommand::getDescription() const {
+    return "Assert screen exists: " + m_name;
+}
+
+CommandPtr AssertScreenExistsCommand::fromJson(const nlohmann::json& j) {
+    std::string name = j.value("name", "");
+    return std::make_unique<AssertScreenExistsCommand>(name);
+}
+
+// ============================================================================
+// AssertScreenCountCommand
+// ============================================================================
+
+bool AssertScreenCountCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    size_t actual = registry.view<Screen>().size();
+    if (actual == m_count) {
+        std::cout << "[AssertScreenCount] OK count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertScreenCount] FAIL: expected " << m_count
+              << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertScreenCountCommand::toJson() const {
+    return {{"type", "AssertScreenCount"}, {"count", m_count}};
+}
+
+std::string AssertScreenCountCommand::getDescription() const {
+    return "Assert screen count == " + std::to_string(m_count);
+}
+
+CommandPtr AssertScreenCountCommand::fromJson(const nlohmann::json& j) {
+    size_t count = j.value("count", static_cast<size_t>(0));
+    return std::make_unique<AssertScreenCountCommand>(count);
+}
+
 } // namespace entity

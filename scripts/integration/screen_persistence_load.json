@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "description": "Phase B #8 — Screen persistence round-trip (load half). Loads the project saved by screen_persistence_save.json and asserts both Main Screen (default) and CustomScreen survived. CTest fixture screen_persistence_data ensures the save script ran first.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "test_output/screen_persistence/test.entity"},
+        {"type": "WaitFrames", "count": 4},
+        {"type": "AssertScreenCount", "count": 2},
+        {"type": "AssertScreenExists", "name": "Main Screen"},
+        {"type": "AssertScreenExists", "name": "CustomScreen"},
+        {"type": "Exit"}
+    ]
+}

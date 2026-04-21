@@ -585,4 +585,54 @@ private:
     std::string m_screenName;
 };
 
+/**
+ * Assert that a Screen with the given name exists in the registry.
+ * Fails the script (non-zero exit) if absent. Used by integration tests
+ * to verify project-load preserved screens by name.
+ *
+ * JSON format:
+ * {
+ *     "type": "AssertScreenExists",
+ *     "name": "Main Screen"
+ * }
+ */
+class AssertScreenExistsCommand : public Command {
+public:
+    explicit AssertScreenExistsCommand(const std::string& name) : m_name(name) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertScreenExists"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_name;
+};
+
+/**
+ * Assert that the registry contains exactly N Screen entities.
+ *
+ * JSON format:
+ * {
+ *     "type": "AssertScreenCount",
+ *     "count": 2
+ * }
+ */
+class AssertScreenCountCommand : public Command {
+public:
+    explicit AssertScreenCountCommand(size_t count) : m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertScreenCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    size_t m_count;
+};
+
 } // namespace entity

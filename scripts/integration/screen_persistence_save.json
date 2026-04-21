@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Phase C Screen persistence — add a custom Screen, save project, exit",
+    "description": "Phase B #8 — Screen persistence round-trip (save half). Adds CustomScreen alongside the default Main Screen, saves project to test_output/screen_persistence/test.entity. The load script (run via CTest fixture) reloads and asserts both screens survive.",
     "commands": [
         {"type": "AddScreen", "name": "CustomScreen", "width": 2560, "height": 1440},
         {"type": "WaitFrames", "count": 2},

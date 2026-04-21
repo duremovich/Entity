@@ -42,3 +42,13 @@ entity_add_integration_test(smoke              smoke_compare.json)
 entity_add_integration_test(multi_screen       multi_screen.json)
 entity_add_integration_test(png_sequence_seek  png_sequence_seek.json)
 entity_add_integration_test(seek_past_clip_end seek_past_clip_end.json)
+
+# Screen-persistence round-trip: save runs first (FIXTURES_SETUP), produces
+# test_output/screen_persistence/test.entity; load consumes it and asserts.
+# Running just the load test re-runs the save automatically.
+entity_add_integration_test(screen_persistence_save screen_persistence_save.json)
+entity_add_integration_test(screen_persistence_load screen_persistence_load.json)
+set_tests_properties(integration_screen_persistence_save PROPERTIES
+    FIXTURES_SETUP screen_persistence_data)
+set_tests_properties(integration_screen_persistence_load PROPERTIES
+    FIXTURES_REQUIRED screen_persistence_data)
