@@ -1,6 +1,6 @@
 # Current Status
 
-**Phase**: Phase C — Single-machine MVP. Physical output, surface-driven warp (perspective-correct), and persistence landed. Soft-edge/blending/undo-redo/color-management/audio still ahead.
+**Phase**: Phase C — Single-machine MVP. Physical output, surface-driven warp (perspective-correct), and full project persistence (including Models + Screens) landed. Soft-edge/blending/undo-redo/color-management/audio still ahead.
 **Last Updated**: 2026-04-21
 
 ---
@@ -97,6 +97,7 @@ Integration tests wired to CTest, labelled `integration`:
   - `clip.loaded = true` in `ProjectManager::load`'s media callback (was left `false` by `ProjectSerializer`, so `DecodeSystem` skipped reloaded clips, leaving video-texture slots empty → cyan bleed-through on stage).
   - `utf8ToPath()` helper in `ProjectManager.cpp` for `std::filesystem::exists` checks. The default `path(string)` constructor on Windows interprets bytes as the active narrow codepage, mangling fullwidth/CJK/emoji filenames (e.g. youtube-dl uses `：` U+FF1A for `:`). Symptom: empty media bin + magenta colored-quad fallback after loading a project with non-ASCII filenames.
 - **ESC scoped to outputs.** First ESC disables active physical outputs (live-show safety — accidental ESC mid-show no longer kills the editor). ESC quits only when no outputs are running. New physical outputs default to `enabled=false` with no display assigned (no instant screen-blank on `+ Physical`).
+- **Phase C #3 — Screen + Model persistence.** `ProjectSerializer` now writes `models` (name + filepath) and `screens` (transform, dimensions, visibility + `modelName` link) arrays. `PROJECT_VERSION` bumped 1 → 2; v1 files still load (fall back to the default `Main Screen` created by `Engine::createDefaultScreen` at init). Load strategy is **preserve-by-name**: existing Models/Screens matching a saved name are updated in place (so the default Screen keeps its `renderTargetSlot` — compose-target slots currently can't be released). Entities with names not in the saved set get destroyed; saved entries with no existing match get created. User-imported OBJ models reload from their original filepath; the built-in default plane (empty `filepath`) is rebuilt via `createDefaultScreenMesh()`. Smoke-tested round-trip via `scripts/test_screen_persistence_{save,load}.json`.
 
 ### Remaining non-bug issues (from `docs/reference/CODE_ISSUES.md`)
 
@@ -130,14 +131,12 @@ Integration tests wired to CTest, labelled `integration`:
 
 Phase C remaining items, rough priority:
 
-1. **Commit the Phase C #1/#2 work.** ~16 modified files uncommitted as of 2026-04-21. Single big commit or split by concern (output infra / surface rendering / persistence / shader fix) — caller's choice.
-2. **Screen persistence.** `OutputDisplay.sourceScreen` and `Clip.targetScreen` already serialize by Screen name, but Screen itself isn't saved. Default Main Screen is recreated by `Engine::createDefaultScreen` on every startup — works for single-screen projects, falls apart the moment a user adds a custom screen.
-3. **Soft-edge feather visual check.** Shader code exists (`computeSoftEdge` in `mapping_surface.hlsli`) and per-surface softEdge values flow through. Worth eyeballing whether the fade is correct on a warped surface and whether the 0.5 max in the slider is the right cap.
-4. **Audio pipeline.** Currently zero. Every media server needs it — usually the highest-impact missing feature for a Disguise-class tool.
-5. **Undo/redo.** `CommandDispatcher` exists; needs an undo stack + reversal logic per command. First time a corner gets yanked across the stage, you'll wish for it.
-6. **Color management.** LUTs, per-output gamma curves beyond the linear `gamma` field already wired.
-7. **Subdivisions / mesh warp.** Punted last session — only matters for curved screens. Probably wants bezier control points rather than uniform grid when it lands.
-8. **Phase B #8 — more integration tests.** Mixed-fps, ping-pong, blend, round-trip. Blocked on new script commands.
+1. **Soft-edge feather visual check.** Shader code exists (`computeSoftEdge` in `mapping_surface.hlsli`) and per-surface softEdge values flow through. Worth eyeballing whether the fade is correct on a warped surface and whether the 0.5 max in the slider is the right cap.
+2. **Audio pipeline.** Currently zero. Every media server needs it — usually the highest-impact missing feature for a Disguise-class tool.
+3. **Undo/redo.** `CommandDispatcher` exists; needs an undo stack + reversal logic per command. First time a corner gets yanked across the stage, you'll wish for it.
+4. **Color management.** LUTs, per-output gamma curves beyond the linear `gamma` field already wired.
+5. **Subdivisions / mesh warp.** Punted last session — only matters for curved screens. Probably wants bezier control points rather than uniform grid when it lands.
+6. **Phase B #8 — more integration tests.** Mixed-fps, ping-pong, blend, round-trip. Blocked on new script commands; `AssertScreenExists` / `AssertScreenCount` would unblock a screen-persistence round-trip test.
 
 ---
 

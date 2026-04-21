@@ -12,9 +12,12 @@
 #include "entity/components/MappingSurface.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Screen.hpp"
+#include "entity/components/Model.hpp"
+#include "entity/media/ObjLoader.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
+#include <unordered_set>
 
 using json = nlohmann::json;
 
@@ -222,6 +225,49 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["mappingSurfaces"] = surfacesJson;
 
+        // Serialize Models. Mesh data is not persisted; on load, file-backed
+        // models reload from their OBJ, and models with an empty filepath are
+        // treated as the built-in default 16:9 plane (createDefaultScreenMesh).
+        // GPU slot fields (vertexBufferSlot/indexBufferSlot) are runtime-only.
+        json modelsJson = json::array();
+        auto modelView = registry.view<Model>();
+        for (auto [entity, model] : modelView.each()) {
+            json mj;
+            mj["name"] = model.name;
+            mj["filepath"] = model.filepath;
+            modelsJson.push_back(mj);
+        }
+        project["models"] = modelsJson;
+
+        // Serialize Screens. modelEntity is resolved by Model name on load
+        // since entt::entity values aren't stable across sessions.
+        // renderTargetSlot/renderTargetValid are runtime-only.
+        json screensJson = json::array();
+        auto screenView = registry.view<Screen>();
+        for (auto [entity, screen] : screenView.each()) {
+            json sj;
+            sj["name"] = screen.name;
+            sj["width"] = screen.width;
+            sj["height"] = screen.height;
+            sj["position"] = {screen.position[0], screen.position[1], screen.position[2]};
+            sj["rotation"] = {screen.rotation[0], screen.rotation[1], screen.rotation[2]};
+            sj["scale"]    = {screen.scale[0],    screen.scale[1],    screen.scale[2]};
+            sj["visible"] = screen.visible;
+            sj["opacity"] = screen.opacity;
+            sj["zOrder"]  = screen.zOrder;
+
+            std::string modelName;
+            if (screen.modelEntity != entt::null &&
+                registry.valid(screen.modelEntity) &&
+                registry.all_of<Model>(screen.modelEntity)) {
+                modelName = registry.get<Model>(screen.modelEntity).name;
+            }
+            sj["modelName"] = modelName;
+
+            screensJson.push_back(sj);
+        }
+        project["screens"] = screensJson;
+
         // Serialize output displays (Phase C #1)
         // outputWindowSlot is runtime-only and deliberately skipped — it's a
         // renderer slot ID reassigned every session. sourceScreen is an
@@ -342,6 +388,133 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             for (auto e : clearOutView) toDestroy.push_back(e);
             for (auto e : toDestroy) {
                 if (registry.valid(e)) registry.destroy(e);
+            }
+        }
+
+        // Load Models. Match existing Models by name and update in place
+        // (so we don't leak GPU resources tied to stale entities); create
+        // new entities for saved models with no existing match; destroy
+        // existing models whose names don't appear in the saved set.
+        //
+        // Only touch Models when the project JSON contains a "models" key —
+        // v1 projects predate this and rely on the default Model/Screen
+        // created by Engine::createDefaultScreen at init.
+        if (project.contains("models")) {
+            std::unordered_set<std::string> savedModelNames;
+            for (const auto& mj : project["models"]) {
+                savedModelNames.insert(mj.value("name", ""));
+            }
+
+            std::vector<entt::entity> toDestroy;
+            auto existing = registry.view<Model>();
+            for (auto [e, m] : existing.each()) {
+                if (savedModelNames.find(m.name) == savedModelNames.end()) {
+                    toDestroy.push_back(e);
+                }
+            }
+            for (auto e : toDestroy) {
+                if (registry.valid(e)) registry.destroy(e);
+            }
+
+            for (const auto& mj : project["models"]) {
+                std::string name = mj.value("name", "Model");
+                std::string modelFilepath = mj.value("filepath", "");
+
+                entt::entity modelEntity = entt::null;
+                auto view = registry.view<Model>();
+                for (auto [e, m] : view.each()) {
+                    if (m.name == name) { modelEntity = e; break; }
+                }
+
+                if (modelEntity == entt::null) {
+                    modelEntity = registry.create();
+                    auto& model = registry.emplace<Model>(modelEntity);
+                    model.name = name;
+                    model.filepath = modelFilepath;
+                    if (!modelFilepath.empty() && std::filesystem::exists(modelFilepath)) {
+                        model.mesh = ObjLoader::load(modelFilepath);
+                    } else {
+                        model.mesh = createDefaultScreenMesh();
+                    }
+                    std::cout << "[ProjectSerializer] Loaded model: " << name
+                              << " (from " << (modelFilepath.empty() ? "built-in plane" : modelFilepath) << ")" << std::endl;
+                }
+                // Existing matches keep their mesh + GPU handles as-is.
+            }
+        }
+
+        // Load Screens. Same preserve-by-name strategy as Models — existing
+        // Screens that match a saved name keep their renderTargetSlot intact
+        // (compose-target slots currently can't be released, so destroying
+        // and recreating would leak).
+        if (project.contains("screens")) {
+            std::unordered_set<std::string> savedScreenNames;
+            for (const auto& sj : project["screens"]) {
+                savedScreenNames.insert(sj.value("name", ""));
+            }
+
+            std::vector<entt::entity> toDestroy;
+            auto existing = registry.view<Screen>();
+            for (auto [e, s] : existing.each()) {
+                if (savedScreenNames.find(s.name) == savedScreenNames.end()) {
+                    toDestroy.push_back(e);
+                }
+            }
+            for (auto e : toDestroy) {
+                if (registry.valid(e)) registry.destroy(e);
+            }
+
+            for (const auto& sj : project["screens"]) {
+                std::string name = sj.value("name", "Screen");
+
+                entt::entity screenEntity = entt::null;
+                auto view = registry.view<Screen>();
+                for (auto [e, s] : view.each()) {
+                    if (s.name == name) { screenEntity = e; break; }
+                }
+                if (screenEntity == entt::null) {
+                    screenEntity = registry.create();
+                    registry.emplace<Screen>(screenEntity);
+                }
+                auto& screen = registry.get<Screen>(screenEntity);
+
+                screen.name    = name;
+                screen.width   = sj.value("width",  1920u);
+                screen.height  = sj.value("height", 1080u);
+                screen.visible = sj.value("visible", true);
+                screen.opacity = sj.value("opacity", 1.0f);
+                screen.zOrder  = sj.value("zOrder",  0);
+
+                if (sj.contains("position") && sj["position"].is_array() && sj["position"].size() >= 3) {
+                    screen.position = {sj["position"][0].get<float>(),
+                                       sj["position"][1].get<float>(),
+                                       sj["position"][2].get<float>()};
+                }
+                if (sj.contains("rotation") && sj["rotation"].is_array() && sj["rotation"].size() >= 3) {
+                    screen.rotation = {sj["rotation"][0].get<float>(),
+                                       sj["rotation"][1].get<float>(),
+                                       sj["rotation"][2].get<float>()};
+                }
+                if (sj.contains("scale") && sj["scale"].is_array() && sj["scale"].size() >= 3) {
+                    screen.scale = {sj["scale"][0].get<float>(),
+                                    sj["scale"][1].get<float>(),
+                                    sj["scale"][2].get<float>()};
+                }
+
+                // Resolve modelEntity by Model name. Missing model leaves
+                // screen.modelEntity as null — Screen still renders its
+                // compose target but has no geometry.
+                std::string modelName = sj.value("modelName", "");
+                screen.modelEntity = entt::null;
+                if (!modelName.empty()) {
+                    auto modelViewForLookup = registry.view<Model>();
+                    for (auto [me, m] : modelViewForLookup.each()) {
+                        if (m.name == modelName) { screen.modelEntity = me; break; }
+                    }
+                }
+
+                std::cout << "[ProjectSerializer] Loaded screen: " << name
+                          << " (" << screen.width << "x" << screen.height << ")" << std::endl;
             }
         }
 
@@ -556,9 +729,10 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 // allocated when Engine::loadProject brings the window back up.
                 out.outputWindowSlot = UINT32_MAX;
 
-                // Resolve sourceScreen by name. Screens aren't serialized
-                // yet, so this relies on whatever Screens exist in-registry
-                // at load time (the default "Main Screen" from Engine init).
+                // Resolve sourceScreen by name. Screens are loaded earlier
+                // in this function, so matching against the registry finds
+                // whatever the saved project contained (falls back to the
+                // default "Main Screen" for v1 projects).
                 std::string sourceName = oj.value("sourceScreenName", "");
                 out.sourceScreen = entt::null;
                 if (!sourceName.empty()) {

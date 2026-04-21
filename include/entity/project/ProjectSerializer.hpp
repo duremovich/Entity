@@ -18,7 +18,7 @@ namespace entity {
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility
-    static constexpr int PROJECT_VERSION = 1;
+    static constexpr int PROJECT_VERSION = 2;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

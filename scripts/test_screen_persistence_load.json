@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "description": "Phase C Screen persistence — load the saved project and exit (check logs for 'Loaded screen: CustomScreen')",
+    "commands": [
+        {"type": "LoadProject", "filepath": "test_output/screen_persistence/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}

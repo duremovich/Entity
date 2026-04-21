@@ -1,0 +1,11 @@
+{
+    "version": 1,
+    "description": "Phase C Screen persistence — add a custom Screen, save project, exit",
+    "commands": [
+        {"type": "AddScreen", "name": "CustomScreen", "width": 2560, "height": 1440},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "SaveProject", "filepath": "test_output/screen_persistence/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}
