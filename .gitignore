@@ -96,6 +96,8 @@ Thumbs.db
 test_media/*
 !test_media/scripts/
 !test_media/gradient_seq/
+!test_media/blend_bg/
+!test_media/blend_fg/
 *.mov
 *.mp4
 *.avi

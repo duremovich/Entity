@@ -1,0 +1,28 @@
+{
+    "version": 1,
+    "description": "Record-pass for blend-mode integration test. Stacks two solid mid-tone clips on track 1 (blend_bg, zOrder 999) and track 0 (blend_fg, zOrder 1000). For each supported blend mode, sets the mode on the top clip and captures a compose-target hash. Mid-tone channels are required because pure 0/1 values are fixed points for these modes. No golden comparison - emits hashes for promotion into tests/goldens/blend/.",
+    "commands": [
+        {"type": "AddScreen", "name": "BlendScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 1, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/blend_fg/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 20},
+
+        {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Normal"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_normal.hash", "composeSlot": 0},
+
+        {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Add"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_add.hash", "composeSlot": 0},
+
+        {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Multiply"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_multiply.hash", "composeSlot": 0},
+
+        {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Screen"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_screen.hash", "composeSlot": 0},
+
+        {"type": "Exit"}
+    ]
+}
