@@ -125,7 +125,7 @@ Not in the original review, surfaced while writing this update:
 | NEW-01 | HAPDecoder.cpp:20,46,67,90,109,127 | High | 6 `TODO` blocks spanning every method. The entire decoder is a scaffolded stub. Factory path (Decoder.cpp) constructs it anyway. |
 | NEW-02 | Engine.cpp:91-92 | Low | Commented-out `Transport` class — dead code. Either implement or delete. |
 | NEW-03 | Engine.cpp | Low | 4 `TODO` comments for unfinished integration points. |
-| NEW-04 | OutputManager.cpp | Medium | 3 `TODO` blocks. `OutputManager` enumerates displays but does not drive them — blocks Phase C. |
+| NEW-04 | OutputManager.cpp | ~~Medium~~ **Fixed (Phase C #1, 2026-04-20)** | OutputManager now drives physical displays. Per-output swap chains on `IRenderer`; `renderOutputs()` fans the selected Screen's compose target to each enabled Physical output with InputRegion UV cropping. Mapping-surface warping + soft edges deferred to Phase C #2. |
 | NEW-05 | TestSystem.hpp | Medium | Pure skeleton. Phase A plan calls for replacing with a real integration test harness. |
 | NEW-06 | D3D12Renderer device-removed handling | High | `GetDeviceRemovedReason()` is not called anywhere; mid-session device loss will crash or hang. Critical for live-performance reliability (Phase A). |
 

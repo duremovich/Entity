@@ -1,7 +1,7 @@
 # Current Status
 
-**Phase**: Phase B — God-file decomposition (done except more integration tests)
-**Last Updated**: 2026-04-20
+**Phase**: Phase C — Single-machine MVP. Physical output, surface-driven warp (perspective-correct), and persistence landed. Soft-edge/blending/undo-redo/color-management/audio still ahead.
+**Last Updated**: 2026-04-21
 
 ---
 
@@ -78,17 +78,25 @@ Integration tests wired to CTest, labelled `integration`:
 
 ### Actively broken / missing
 
-- **Physical output driving** — `OutputManager` enumerates displays but doesn't drive them. Phase C kickoff — next work item.
 - **Soft-edge / edge blending** — `MappingSurface` components have the data, no shader path.
 - **Audio** — zero pipeline.
 - **HAP codec** — gated in factory, unimplemented.
 - **H264/H265** — now actually decodes via `ProResDecoder` (misnamed; it's a generic FFmpeg decoder). Renaming is opportunistic cleanup, not blocking.
 - **Network / sync / control** — no OSC, DMX, Art-Net, MIDI, NDI, timecode, genlock.
 
-### Recently resolved (this session, 2026-04-20)
+### Recently resolved (sessions 2026-04-20 and 2026-04-21, all uncommitted)
 
 - Phase B #20 CI fix — commits `28726b9`, `6182d53`, `d80e4a9`. CI green on a 2026-03 vcpkg baseline with imgui pinned to 1.89.7 + prebuilt gyan.dev FFmpeg in CI.
-- Native Save / Save As / Open via `IFileDialog` — commits `8db06d1`, `78e5b5e`. Ctrl+S / Ctrl+Shift+S / Ctrl+O all wired. Unicode filenames roundtrip correctly as UTF-8.
+- Native Save / Save As / Open via `IFileDialog` — commits `8db06d1`, `78e5b5e`. Ctrl+S / Ctrl+Shift+S / Ctrl+O all wired.
+- **Phase C #1 — Physical output driving.** `OutputManager` actually drives displays. New per-output swap-chain API on `IRenderer` (`createOutputWindow` / `resize` / `beginOutputFrame` / `clearOutputFrame` / `endOutputFrame`), each backed by a borderless GLFW window + `IDXGISwapChain3` on the assigned display. All output swap chains share the main command list; presented together in `endFrame()`. Engine wires `OutputManager` between compositor and ImGui in `render()`. MappingWindow exposes display dropdown, Source-Screen dropdown, routes Enable/Assign through `OutputManager`. Resolves `NEW-04`.
+- **Phase C #2 — Surface-driven output rendering.** `OutputManager::renderToOutput` now iterates `MappingSurface` entities whose `outputIndex` matches the output, drawing each with corner-warp + (`InputRegion × surface.sourceUVs`) combined source UVs + per-surface softEdge/brightness/gamma multiplied with the output's. Outputs with zero surfaces fall back to a fullscreen InputRegion quad so setup is never staring at black.
+- **Surface UX.** `+ Physical` auto-creates a fullscreen MappingSurface bound to the new output. Surface properties panel adds an Output dropdown and **sizing presets**: Stretch, Fit, Fit W, Fit H, 1:1 (pixel-perfect). Presets compute corners from source-vs-output dimensions (Screen → compose-target res, OutputDisplay → display res).
+- **Perspective-correct corner-pin (q-trick).** Replaced affine UV interpolation with Heckbert's projective q-coordinate technique — eliminates the diagonal "paper fold" crease. CPU-side q computation in `drawMappingSurface` writes per-corner `q` to `sourceUVs[i].w`; VS interpolates `(u*q, v*q, q)`; PS divides `xy/z`. Rectangle case degenerates to identity (q=2 everywhere) — zero cost when no warp.
+- **OutputDisplay + Clip.targetScreen persistence.** `OutputDisplay` now saves/loads in `ProjectSerializer`. Clip's `targetScreen` persists by Screen *name* (entt::entity isn't stable across sessions). `Engine::loadProject` pre-disables active outputs (so swap-chain slot IDs aren't leaked when entities are cleared), calls `OutputManager::syncCounterFromRegistry()` post-load to bump the index counter past loaded values, then re-enables any output saved as enabled (re-creates its window).
+- **Reload bug fixes.**
+  - `clip.loaded = true` in `ProjectManager::load`'s media callback (was left `false` by `ProjectSerializer`, so `DecodeSystem` skipped reloaded clips, leaving video-texture slots empty → cyan bleed-through on stage).
+  - `utf8ToPath()` helper in `ProjectManager.cpp` for `std::filesystem::exists` checks. The default `path(string)` constructor on Windows interprets bytes as the active narrow codepage, mangling fullwidth/CJK/emoji filenames (e.g. youtube-dl uses `：` U+FF1A for `:`). Symptom: empty media bin + magenta colored-quad fallback after loading a project with non-ASCII filenames.
+- **ESC scoped to outputs.** First ESC disables active physical outputs (live-show safety — accidental ESC mid-show no longer kills the editor). ESC quits only when no outputs are running. New physical outputs default to `enabled=false` with no display assigned (no instant screen-blank on `+ Physical`).
 
 ### Remaining non-bug issues (from `docs/reference/CODE_ISSUES.md`)
 
@@ -120,11 +128,16 @@ Integration tests wired to CTest, labelled `integration`:
 
 ## Recommended Next Steps
 
-1. **Ship Save/Open file dialogs.** Small, high-impact for real use. Win32 `IFileDialog` via `WindowManager`.
-2. **Fix CI.** Most pragmatic path is using `FedericoCarboni/setup-ffmpeg` GH Action for pre-built FFmpeg, keep vcpkg for local dev. Baseline bisect is also an option.
-3. **Phase C kickoff** — physical output driving, soft-edge feather, edge blending, undo/redo, color management. Phase B decomposition is done.
+Phase C remaining items, rough priority:
 
-After those, Phase C begins (physical output, soft-edge feather, edge blending, undo/redo, color management).
+1. **Commit the Phase C #1/#2 work.** ~16 modified files uncommitted as of 2026-04-21. Single big commit or split by concern (output infra / surface rendering / persistence / shader fix) — caller's choice.
+2. **Screen persistence.** `OutputDisplay.sourceScreen` and `Clip.targetScreen` already serialize by Screen name, but Screen itself isn't saved. Default Main Screen is recreated by `Engine::createDefaultScreen` on every startup — works for single-screen projects, falls apart the moment a user adds a custom screen.
+3. **Soft-edge feather visual check.** Shader code exists (`computeSoftEdge` in `mapping_surface.hlsli`) and per-surface softEdge values flow through. Worth eyeballing whether the fade is correct on a warped surface and whether the 0.5 max in the slider is the right cap.
+4. **Audio pipeline.** Currently zero. Every media server needs it — usually the highest-impact missing feature for a Disguise-class tool.
+5. **Undo/redo.** `CommandDispatcher` exists; needs an undo stack + reversal logic per command. First time a corner gets yanked across the stage, you'll wish for it.
+6. **Color management.** LUTs, per-output gamma curves beyond the linear `gamma` field already wired.
+7. **Subdivisions / mesh warp.** Punted last session — only matters for curved screens. Probably wants bezier control points rather than uniform grid when it lands.
+8. **Phase B #8 — more integration tests.** Mixed-fps, ping-pong, blend, round-trip. Blocked on new script commands.
 
 ---
 
