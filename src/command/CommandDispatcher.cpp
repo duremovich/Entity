@@ -151,6 +151,9 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetClipOpacity", SetClipOpacityCommand::fromJson);
     registerFactory("LogClipState", LogClipStateCommand::fromJson);
     registerFactory("SetClipRotation", SetClipRotationCommand::fromJson);
+    registerFactory("SetClipPlaybackMode", SetClipPlaybackModeCommand::fromJson);
+    registerFactory("SetClipFramerate", SetClipFramerateCommand::fromJson);
+    registerFactory("SetClipDuration", SetClipDurationCommand::fromJson);
 
     // Keyframe animation commands
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);

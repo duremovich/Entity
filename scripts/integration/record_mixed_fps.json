@@ -1,0 +1,18 @@
+{
+    "version": 1,
+    "description": "Record mode for mixed_fps. 16-frame PNG sequence forced to 24fps on a 30fps timeline — exercises the sourceFrame = localFrame * (srcFps / tlFps) mapping. Timeline frame 0 -> source 0, timeline frame 10 -> source 8.",
+    "commands": [
+        {"type": "AddScreen", "name": "MixedFpsScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipFramerate", "trackIndex": 0, "clipIndex": 0, "framerate": 24.0},
+        {"type": "WaitFrames", "count": 20},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/mixed_fps/frame_0.hash", "composeSlot": 0},
+        {"type": "SeekToFrame", "frame": 10},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/mixed_fps/frame_10.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}

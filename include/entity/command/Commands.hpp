@@ -2,6 +2,7 @@
 
 #include "Command.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/components/Clip.hpp"   // PlaybackMode
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
@@ -633,6 +634,105 @@ public:
 
 private:
     size_t m_count;
+};
+
+// ============================================================================
+// Playback-mode / framerate / duration overrides (for integration tests)
+// ============================================================================
+
+/**
+ * Override a clip's PlaybackMode.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetClipPlaybackMode",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "mode": "PingPong"   // Freeze | Loop | PingPong
+ * }
+ */
+class SetClipPlaybackModeCommand : public Command {
+public:
+    SetClipPlaybackModeCommand(int trackIndex, int clipIndex, PlaybackMode mode)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_mode(mode) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipPlaybackMode"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    PlaybackMode m_mode;
+};
+
+/**
+ * Override a clip's source framerate. Also recomputes `clip.duration` from
+ * `totalMediaFrames * (timelineFrameRate / clip.framerate)` so the clip's
+ * natural length on the timeline matches the new rate — mirroring the behavior
+ * of ProjectSerializer::load and Engine import paths. Use to drive mixed-fps
+ * tests that exercise the sourceFrame = localFrame * (srcFps / tlFps) mapping
+ * in DecodeSystem / PlaybackController.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetClipFramerate",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "framerate": 24.0
+ * }
+ */
+class SetClipFramerateCommand : public Command {
+public:
+    SetClipFramerateCommand(int trackIndex, int clipIndex, double framerate)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_framerate(framerate) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipFramerate"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    double m_framerate;
+};
+
+/**
+ * Override a clip's duration in timeline frames. Mirrors what UI trim does.
+ * Required for ping-pong tests because the Freeze/Loop/PingPong branch in
+ * DecodeSystem only triggers when sourceLocalFrame >= sourceLength, which
+ * requires duration > natural length.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetClipDuration",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "duration": 64
+ * }
+ */
+class SetClipDurationCommand : public Command {
+public:
+    SetClipDurationCommand(int trackIndex, int clipIndex, FrameNumber duration)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipDuration"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    FrameNumber m_duration;
 };
 
 } // namespace entity

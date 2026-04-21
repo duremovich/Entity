@@ -1,7 +1,7 @@
 # Current Status
 
 **Phase**: Phase C — Single-machine MVP. Physical output, surface-driven warp (perspective-correct), and full project persistence (including Models + Screens) landed. Soft-edge/blending/undo-redo/color-management/audio still ahead.
-**Last Updated**: 2026-04-21
+**Last Updated**: 2026-04-21 (late)
 
 ---
 
@@ -56,14 +56,14 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 
 | # | Task | Notes |
 |---|------|-------|
-| 8 | More integration tests (mixed-fps, ping-pong, blend) | **Partially done:** screen-persistence round-trip landed (added `AssertScreenExists` / `AssertScreenCount` script commands; two CTest tests joined by a `screen_persistence_data` fixture). Mixed-fps / ping-pong still blocked on `SetClipPlaybackMode` / `SetClipFramerate` script commands; blend test still needs a non-trivial scene. |
+| 8 | More integration tests (mixed-fps, ping-pong, blend) | **Partially done:** screen-persistence round-trip + mixed-fps + ping-pong all landed. Added `AssertScreenExists` / `AssertScreenCount` + `SetClipPlaybackMode` / `SetClipFramerate` / `SetClipDuration` script commands. Blend test still needs a non-trivial scene. |
 
 ---
 
 ## Verified Working (as of Phase B #15c PlaybackController extraction)
 
 **Build**: `cmake --build build --config Release` is clean, no errors.
-**Tests**: 55/55 pass (49 unit, 6 integration) under `ctest -C Release`.
+**Tests**: 57/57 pass (49 unit, 8 integration) under `ctest -C Release`.
 **Binary**: `build/bin/Release/EntityMediaEditor.exe` launches and runs in windowed or `--headless` mode.
 
 Integration tests wired to CTest, labelled `integration`:
@@ -72,6 +72,8 @@ Integration tests wired to CTest, labelled `integration`:
 - `integration_png_sequence_seek` — PNG seq decode + seek correctness
 - `integration_seek_past_clip_end` — boundary behavior past clip duration
 - `integration_screen_persistence_save` / `_load` — round-trip via CTest fixture; load asserts both default and custom screens survive serializer
+- `integration_mixed_fps` — 16-frame seq forced to 24fps on a 30fps timeline; asserts tl-frame-10 maps to source frame 8 via `floor(localFrame * srcFps/tlFps)`
+- `integration_ping_pong` — 16-frame seq stretched to 64 timeline frames in PingPong mode; asserts tl 8 is forward-phase source 8 and tl 24 is reverse-phase source 7 (mirror-index 15 - (24 % 16))
 
 ---
 
@@ -137,7 +139,7 @@ Phase C remaining items, rough priority:
 3. **Undo/redo.** `CommandDispatcher` exists; needs an undo stack + reversal logic per command. First time a corner gets yanked across the stage, you'll wish for it.
 4. **Color management.** LUTs, per-output gamma curves beyond the linear `gamma` field already wired.
 5. **Subdivisions / mesh warp.** Punted last session — only matters for curved screens. Probably wants bezier control points rather than uniform grid when it lands.
-6. **Phase B #8 — more integration tests.** Mixed-fps, ping-pong, blend, round-trip. Blocked on new script commands; `AssertScreenExists` / `AssertScreenCount` would unblock a screen-persistence round-trip test.
+6. **Phase B #8 — more integration tests.** Mixed-fps, ping-pong, and screen-persistence round-trip now covered. Blend-mode test still outstanding — needs a non-trivial scene (two overlapping clips on different tracks, verify the compositor blends them).
 
 ---
 

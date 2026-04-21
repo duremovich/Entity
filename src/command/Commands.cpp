@@ -12,6 +12,8 @@
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
+#include <cmath>
+#include <optional>
 
 namespace entity {
 
@@ -1208,6 +1210,169 @@ std::string AssertScreenCountCommand::getDescription() const {
 CommandPtr AssertScreenCountCommand::fromJson(const nlohmann::json& j) {
     size_t count = j.value("count", static_cast<size_t>(0));
     return std::make_unique<AssertScreenCountCommand>(count);
+}
+
+// ============================================================================
+// SetClipPlaybackModeCommand
+// ============================================================================
+
+namespace {
+
+Clip* lookupClipByTrack(Engine& engine, int trackIndex, int clipIndex, const char* who) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[" << who << "] No timeline" << std::endl;
+        return nullptr;
+    }
+    const auto& tracks = timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[" << who << "] Invalid track index " << trackIndex << std::endl;
+        return nullptr;
+    }
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track || clipIndex < 0 || clipIndex >= static_cast<int>(track->clips.size())) {
+        std::cerr << "[" << who << "] Invalid clip index " << clipIndex << std::endl;
+        return nullptr;
+    }
+    return registry.try_get<Clip>(track->clips[clipIndex]);
+}
+
+const char* playbackModeName(PlaybackMode mode) {
+    switch (mode) {
+        case PlaybackMode::Freeze:   return "Freeze";
+        case PlaybackMode::Loop:     return "Loop";
+        case PlaybackMode::PingPong: return "PingPong";
+    }
+    return "Freeze";
+}
+
+std::optional<PlaybackMode> parsePlaybackMode(const std::string& s) {
+    if (s == "Freeze")   return PlaybackMode::Freeze;
+    if (s == "Loop")     return PlaybackMode::Loop;
+    if (s == "PingPong" || s == "Ping-Pong" || s == "pingpong")
+        return PlaybackMode::PingPong;
+    return std::nullopt;
+}
+
+} // namespace
+
+bool SetClipPlaybackModeCommand::execute(Engine& engine) {
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipPlaybackMode");
+    if (!clip) return false;
+    clip->playbackMode = m_mode;
+    std::cout << "[SetClipPlaybackMode] Track " << m_trackIndex
+              << ", Clip " << m_clipIndex
+              << " -> " << playbackModeName(m_mode) << std::endl;
+    return true;
+}
+
+nlohmann::json SetClipPlaybackModeCommand::toJson() const {
+    return {{"type", "SetClipPlaybackMode"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"mode", playbackModeName(m_mode)}};
+}
+
+std::string SetClipPlaybackModeCommand::getDescription() const {
+    return std::string("Set playback mode -> ") + playbackModeName(m_mode) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr SetClipPlaybackModeCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string modeStr = j.value("mode", "Freeze");
+    PlaybackMode mode = parsePlaybackMode(modeStr).value_or(PlaybackMode::Freeze);
+    return std::make_unique<SetClipPlaybackModeCommand>(trackIndex, clipIndex, mode);
+}
+
+// ============================================================================
+// SetClipFramerateCommand
+// ============================================================================
+
+bool SetClipFramerateCommand::execute(Engine& engine) {
+    if (m_framerate <= 0.0) {
+        std::cerr << "[SetClipFramerate] Framerate must be positive: " << m_framerate << std::endl;
+        return false;
+    }
+    auto* timeline = engine.getTimeline();
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipFramerate");
+    if (!clip || !timeline) return false;
+
+    clip->framerate = m_framerate;
+    // Recompute duration from totalMediaFrames so the natural clip length on
+    // the timeline matches the new rate. Matches Engine::loadClip /
+    // ProjectSerializer::load semantics. See Engine.cpp:1213-1215.
+    if (clip->totalMediaFrames > 0) {
+        double tlFps = timeline->getFrameRate();
+        clip->duration = std::max<FrameNumber>(1, static_cast<FrameNumber>(std::ceil(
+            clip->totalMediaFrames * (tlFps / clip->framerate))));
+    }
+    std::cout << "[SetClipFramerate] Track " << m_trackIndex
+              << ", Clip " << m_clipIndex
+              << " -> " << clip->framerate << " fps"
+              << " (duration now " << clip->duration << " frames)" << std::endl;
+    return true;
+}
+
+nlohmann::json SetClipFramerateCommand::toJson() const {
+    return {{"type", "SetClipFramerate"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"framerate", m_framerate}};
+}
+
+std::string SetClipFramerateCommand::getDescription() const {
+    return "Set framerate -> " + std::to_string(m_framerate) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr SetClipFramerateCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    double framerate = j.value("framerate", 30.0);
+    return std::make_unique<SetClipFramerateCommand>(trackIndex, clipIndex, framerate);
+}
+
+// ============================================================================
+// SetClipDurationCommand
+// ============================================================================
+
+bool SetClipDurationCommand::execute(Engine& engine) {
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipDuration");
+    if (!clip) return false;
+    if (m_duration == 0) {
+        std::cerr << "[SetClipDuration] Duration must be > 0" << std::endl;
+        return false;
+    }
+    clip->duration = m_duration;
+    std::cout << "[SetClipDuration] Track " << m_trackIndex
+              << ", Clip " << m_clipIndex
+              << " -> " << m_duration << " frames" << std::endl;
+    return true;
+}
+
+nlohmann::json SetClipDurationCommand::toJson() const {
+    return {{"type", "SetClipDuration"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"duration", m_duration}};
+}
+
+std::string SetClipDurationCommand::getDescription() const {
+    return "Set duration -> " + std::to_string(m_duration) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr SetClipDurationCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    FrameNumber duration = j.value("duration", static_cast<FrameNumber>(0));
+    return std::make_unique<SetClipDurationCommand>(trackIndex, clipIndex, duration);
 }
 
 } // namespace entity

@@ -1,0 +1,19 @@
+{
+    "version": 1,
+    "description": "Record mode for ping_pong. 16-frame PNG sequence extended to 64 timeline frames with PingPong mode. Probes forward phase (tl 8 -> src 8) and reverse phase (tl 24 -> src 7 via mirror-index 15 - (24 % 16)).",
+    "commands": [
+        {"type": "AddScreen", "name": "PingPongScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "PingPong"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 64},
+        {"type": "WaitFrames", "count": 20},
+        {"type": "SeekToFrame", "frame": 8},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/ping_pong/frame_forward_8.hash", "composeSlot": 0},
+        {"type": "SeekToFrame", "frame": 24},
+        {"type": "WaitFrames", "count": 45},
+        {"type": "CaptureHash", "hashFilepath": "test_output/ping_pong/frame_reverse_24.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}
