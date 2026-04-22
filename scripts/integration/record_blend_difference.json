@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "Record-pass for the shader-blend Difference test. Stacks blend_bg (track 1) under blend_fg (track 0), sets the top clip to Difference, captures the compose-target hash. No golden comparison - emits the hash for promotion into tests/goldens/blend/. Expected output (per-channel |fg-bg|) for our mid-tone fixtures: |0.40-0.50|, |0.60-0.25|, |0.20-0.75| = (0.10, 0.35, 0.55), composited over the bg via the fg's opaque alpha.",
+    "commands": [
+        {"type": "AddScreen", "name": "BlendDiffScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 1, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/blend_fg/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 20},
+
+        {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Difference"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_difference.hash", "composeSlot": 0},
+
+        {"type": "Exit"}
+    ]
+}

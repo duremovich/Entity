@@ -240,8 +240,14 @@ void PropertyWindow::renderLayerSection() {
     ImGui::SameLine();
     ImGui::TextDisabled("(determined by track)");
 
-    // Blend mode combo (placeholder for future)
-    static const char* blendModes[] = { "Normal", "Add", "Multiply", "Screen" };
+    // Blend mode combo. Order must match the BlendMode enum in
+    // include/entity/core/Types.hpp; the combo index is static_cast'd straight
+    // to BlendMode.
+    static const char* blendModes[] = {
+        "Normal", "Add", "Multiply", "Screen", "Overlay",
+        "Soft Light", "Hard Light", "Color Dodge", "Color Burn",
+        "Darken", "Lighten", "Difference", "Exclusion"
+    };
     int currentBlendMode = static_cast<int>(layer->blendMode);
     ImGui::Text("Blend Mode");
     ImGui::SetNextItemWidth(-1);

@@ -45,6 +45,7 @@ entity_add_integration_test(seek_past_clip_end seek_past_clip_end.json)
 entity_add_integration_test(mixed_fps          mixed_fps.json)
 entity_add_integration_test(ping_pong          ping_pong.json)
 entity_add_integration_test(blend              blend.json)
+entity_add_integration_test(blend_difference   blend_difference.json)
 
 # Screen-persistence round-trip: save runs first (FIXTURES_SETUP), produces
 # test_output/screen_persistence/test.entity; load consumes it and asserts.

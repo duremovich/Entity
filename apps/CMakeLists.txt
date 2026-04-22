@@ -95,11 +95,12 @@ add_custom_command(
 # real GPU 3D-stage rendering lands.
 entity_compile_shader(composite_vs.hlsl         vs VSMain 6_0)
 entity_compile_shader(composite_ps.hlsl         ps PSMain 6_0)
+entity_compile_shader(composite_blend_ps.hlsl   ps PSMain 6_0)
 entity_compile_shader(solid_color_ps.hlsl       ps PSMain 6_0)
 entity_compile_shader(mapping_surface_vs.hlsl   vs VSMain 6_0)
 entity_compile_shader(mapping_surface_ps.hlsl   ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 5 shaders")
+message(STATUS "Configured offline HLSL compilation for 6 shaders")
 
 # When FFmpeg was located via FFMPEG_ROOT (CI with setup-ffmpeg action), vcpkg's
 # applocal DLL deploy doesn't run — copy the shared libs next to the exe here.

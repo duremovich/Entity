@@ -11,10 +11,12 @@
  * the layout class stays stateless and header-only.
  *
  * Layout:
- *   [0]:                                        ImGui fonts/textures
- *   [1]:                                        Legacy single-video path
- *   [COMPOSE_TARGET_BASE, VIDEO_TEXTURE_BASE):  Compose targets (one per screen)
- *   [VIDEO_TEXTURE_BASE, TOTAL_SLOTS):          Video texture slots (per clip)
+ *   [0]:                                            ImGui fonts/textures
+ *   [1]:                                            Legacy single-video path
+ *   [COMPOSE_TARGET_BASE, VIDEO_TEXTURE_BASE):      Compose targets (one per screen)
+ *   [VIDEO_TEXTURE_BASE, SNAPSHOT_BASE):            Video texture slots (per clip)
+ *   [SNAPSHOT_BASE, TOTAL_SLOTS):                   Compose-target snapshots (read-back
+ *                                                   for shader-blend modes; one per screen)
  */
 
 #include <d3d12.h>
@@ -34,7 +36,8 @@ public:
     static constexpr uint32_t LEGACY_VIDEO_SLOT    = 1;
     static constexpr uint32_t COMPOSE_TARGET_BASE  = 2;
     static constexpr uint32_t VIDEO_TEXTURE_BASE   = COMPOSE_TARGET_BASE + MAX_COMPOSE_TARGETS;
-    static constexpr uint32_t TOTAL_SLOTS          = VIDEO_TEXTURE_BASE + MAX_VIDEO_TEXTURE_SLOTS;
+    static constexpr uint32_t SNAPSHOT_BASE        = VIDEO_TEXTURE_BASE + MAX_VIDEO_TEXTURE_SLOTS;
+    static constexpr uint32_t TOTAL_SLOTS          = SNAPSHOT_BASE + MAX_COMPOSE_TARGETS;
 
     // Slot-index computation (the "2 + MAX_COMPOSE_TARGETS + slot" math)
     static constexpr uint32_t composeTargetSlot(uint32_t composeIndex) {
@@ -42,6 +45,12 @@ public:
     }
     static constexpr uint32_t videoTextureSlot(uint32_t videoIndex) {
         return VIDEO_TEXTURE_BASE + videoIndex;
+    }
+    // Snapshot SRV that holds a copy of compose target N taken just before each
+    // shader-blend draw. Lets the blend pixel shader sample (fg, bg) when D3D12
+    // fixed-function blend can't express the mode (Overlay, Difference, etc.).
+    static constexpr uint32_t snapshotSlot(uint32_t composeIndex) {
+        return SNAPSHOT_BASE + composeIndex;
     }
 
     // Bounds checks (useful in allocation paths)

@@ -159,6 +159,16 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
+    if (createBlendRootSignature() != Result::Success) {
+        std::cerr << "Failed to create blend root signature!" << std::endl;
+        return Result::Failure;
+    }
+
+    if (createBlendPipelineState() != Result::Success) {
+        std::cerr << "Failed to create blend pipeline state!" << std::endl;
+        return Result::Failure;
+    }
+
     // Create mapping surface rendering pipeline (for projection mapping)
     if (createMappingSurfaceRootSignature() != Result::Success) {
         std::cerr << "Failed to create mapping surface root signature!" << std::endl;
@@ -1638,6 +1648,162 @@ Result D3D12Renderer::createTexturedPipelineState() {
     return Result::Success;
 }
 
+// Root signature for the shader-blend pipeline. Same root constants + sampler
+// as the textured root sig, but exposes two SRV descriptor tables instead of
+// one (t0 = fg clip texture, t1 = compose-target snapshot for read-back).
+Result D3D12Renderer::createBlendRootSignature() {
+    D3D12_ROOT_PARAMETER rootParameters[3] = {};
+
+    // [0] Root constants (b0)
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[0].Constants.ShaderRegister = 0;
+    rootParameters[0].Constants.RegisterSpace = 0;
+    rootParameters[0].Constants.Num32BitValues = 24;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // [1] fg SRV (t0)
+    D3D12_DESCRIPTOR_RANGE fgRange = {};
+    fgRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    fgRange.NumDescriptors = 1;
+    fgRange.BaseShaderRegister = 0;
+    fgRange.RegisterSpace = 0;
+    fgRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &fgRange;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // [2] bg snapshot SRV (t1)
+    D3D12_DESCRIPTOR_RANGE bgRange = {};
+    bgRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    bgRange.NumDescriptors = 1;
+    bgRange.BaseShaderRegister = 1;
+    bgRange.RegisterSpace = 0;
+    bgRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[2].DescriptorTable.pDescriptorRanges = &bgRange;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Same static sampler (s0) as the textured pipeline.
+    D3D12_STATIC_SAMPLER_DESC staticSampler = {};
+    staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    staticSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    staticSampler.MinLOD = 0.0f;
+    staticSampler.MaxLOD = D3D12_FLOAT32_MAX;
+    staticSampler.ShaderRegister = 0;
+    staticSampler.RegisterSpace = 0;
+    staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
+    rootSignatureDesc.NumParameters = 3;
+    rootSignatureDesc.pParameters = rootParameters;
+    rootSignatureDesc.NumStaticSamplers = 1;
+    rootSignatureDesc.pStaticSamplers = &staticSampler;
+    rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> signature;
+    ComPtr<ID3DBlob> error;
+    HRESULT hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
+    if (FAILED(hr)) {
+        if (error) {
+            std::cerr << "Blend root signature serialization failed: " << (char*)error->GetBufferPointer() << std::endl;
+        }
+        return Result::Failure;
+    }
+
+    hr = m_gpu->device()->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_blendRootSignature));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create blend root signature!" << std::endl;
+        return Result::Failure;
+    }
+
+    std::cout << "Blend root signature created" << std::endl;
+    return Result::Success;
+}
+
+Result D3D12Renderer::createBlendPipelineState() {
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+
+    if (loadCompiledShader(L"shaders/composite_vs.cso", &vertexShader) != Result::Success) {
+        std::cerr << "Failed to load composite_vs.cso (blend pipeline)!" << std::endl;
+        return Result::Failure;
+    }
+
+    if (loadCompiledShader(L"shaders/composite_blend_ps.cso", &pixelShader) != Result::Success) {
+        std::cerr << "Failed to load composite_blend_ps.cso!" << std::endl;
+        return Result::Failure;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_RASTERIZER_DESC rasterizerDesc = {};
+    rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+    rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
+    rasterizerDesc.FrontCounterClockwise = FALSE;
+    rasterizerDesc.DepthClipEnable = TRUE;
+
+    // Shader writes the final composited color, so disable fixed-function blend.
+    D3D12_BLEND_DESC blendDescReplace = {};
+    blendDescReplace.AlphaToCoverageEnable = FALSE;
+    blendDescReplace.IndependentBlendEnable = FALSE;
+    blendDescReplace.RenderTarget[0].BlendEnable = FALSE;
+    blendDescReplace.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
+    psoDesc.pRootSignature = m_blendRootSignature.Get();
+    psoDesc.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
+    psoDesc.PS = { pixelShader->GetBufferPointer(), pixelShader->GetBufferSize() };
+    psoDesc.RasterizerState = rasterizerDesc;
+    psoDesc.BlendState = blendDescReplace;
+    psoDesc.DepthStencilState.DepthEnable = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.SampleDesc.Count = 1;
+
+    HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateBlend));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create blend pipeline state!" << std::endl;
+        return Result::Failure;
+    }
+
+    std::cout << "Blend pipeline state created" << std::endl;
+    return Result::Success;
+}
+
+// Modes that need the shader-blend pipeline (D3D12 fixed-function blend can't
+// express any of these without a per-channel conditional or non-linear math).
+static bool isShaderBlendMode(BlendMode mode) {
+    switch (mode) {
+        case BlendMode::Overlay:
+        case BlendMode::SoftLight:
+        case BlendMode::HardLight:
+        case BlendMode::ColorDodge:
+        case BlendMode::ColorBurn:
+        case BlendMode::Darken:
+        case BlendMode::Lighten:
+        case BlendMode::Difference:
+        case BlendMode::Exclusion:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                      const DirectX::XMMATRIX& transform,
                                      float opacity,
@@ -1655,7 +1821,72 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     constants.padding2 = 0.0f;
     constants.padding3 = 0.0f;
 
-    // Select pipeline state based on blend mode
+    // Ensure the shader-visible heap is bound regardless of which path we take.
+    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        m_commandList->SetDescriptorHeaps(1, heaps);
+        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
+
+    // ------------------------------------------------------------------------
+    // Shader-blend modes: snapshot the current compose target into a separate
+    // SRV so the pixel shader can sample it as the bg. Then run the blend PSO
+    // (BlendEnable=FALSE) so the shader's output replaces the destination.
+    // ------------------------------------------------------------------------
+    if (isShaderBlendMode(blendMode) &&
+        m_currentComposeTargetSlot < m_composeTargets.size() &&
+        m_composeTargets[m_currentComposeTargetSlot].snapshotResource) {
+
+        ComposeTarget& target = m_composeTargets[m_currentComposeTargetSlot];
+
+        // RENDER_TARGET -> COPY_SOURCE on compose target, PIXEL_SHADER_RESOURCE
+        // -> COPY_DEST on the snapshot, batched in one ResourceBarrier call.
+        D3D12_RESOURCE_BARRIER pre[2] = {};
+        pre[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        pre[0].Transition.pResource = target.resource.Get();
+        pre[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        pre[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        pre[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        pre[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        pre[1].Transition.pResource = target.snapshotResource.Get();
+        pre[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        pre[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        pre[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_commandList->ResourceBarrier(2, pre);
+
+        m_commandList->CopyResource(target.snapshotResource.Get(), target.resource.Get());
+
+        // Restore both resources to their pre-snapshot states. Compose target
+        // returns to RENDER_TARGET so subsequent draws (this one + any later
+        // ones in the same beginComposeTarget cycle) keep working.
+        D3D12_RESOURCE_BARRIER post[2] = {};
+        post[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        post[0].Transition.pResource = target.resource.Get();
+        post[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        post[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        post[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        post[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        post[1].Transition.pResource = target.snapshotResource.Get();
+        post[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        post[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        post[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_commandList->ResourceBarrier(2, post);
+
+        m_commandList->SetPipelineState(m_texturedPipelineStateBlend.Get());
+        m_commandList->SetGraphicsRootSignature(m_blendRootSignature.Get());
+        m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+        m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);            // fg (t0)
+        m_commandList->SetGraphicsRootDescriptorTable(2, target.snapshotSrvHandle); // bg (t1)
+
+        m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+        m_commandList->DrawInstanced(4, 1, 0, 0);
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    // Fixed-function blend modes: zero-copy, dispatched via per-mode PSOs.
+    // ------------------------------------------------------------------------
     ID3D12PipelineState* pipelineState = m_texturedPipelineState.Get();  // Default: Normal
     switch (blendMode) {
         case BlendMode::Add:
@@ -1668,30 +1899,20 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
             pipelineState = m_texturedPipelineStateScreen.Get();
             break;
         default:
-            // For unsupported blend modes, fall back to Normal
+            // Normal, plus any shader-blend mode that fell through because the
+            // current compose target wasn't ready. Fallback is Normal.
             pipelineState = m_texturedPipelineState.Get();
             break;
     }
 
-    // Set textured pipeline state
     m_commandList->SetPipelineState(pipelineState);
     m_commandList->SetGraphicsRootSignature(m_texturedRootSignature.Get());
-
-    // Set descriptor heap (only if not already set)
-    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
-        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-        m_commandList->SetDescriptorHeaps(1, heaps);
-        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
-    }
-
-    // Set root parameters - use root constants (copied into command buffer)
     m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
     m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
 
     // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginFrame) sets these
     // This allows drawTexturedQuad to work correctly with both main window and offscreen targets
 
-    // Set vertex buffer and draw
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
     m_commandList->DrawInstanced(4, 1, 0, 0);
@@ -2182,6 +2403,35 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
 
     target.srvHandle = DescriptorHeapLayout::gpuHandle(
         m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+
+    // Snapshot texture for shader-blend modes. Identical layout to the main
+    // compose target but used as a copy destination and SRV. Resting state is
+    // PIXEL_SHADER_RESOURCE; drawTexturedQuad transitions through COPY_DEST and
+    // back when a shader-blend draw needs a fresh background sample.
+    D3D12_RESOURCE_DESC snapshotDesc = textureDesc;
+    snapshotDesc.Flags = D3D12_RESOURCE_FLAG_NONE;  // No RTV needed on the snapshot
+
+    hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &snapshotDesc,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        nullptr,  // No clear value: snapshot is always overwritten before sampling
+        IID_PPV_ARGS(&target.snapshotResource)
+    );
+
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create compose target snapshot texture!" << std::endl;
+        m_composeTargets.pop_back();
+        return UINT32_MAX;
+    }
+
+    const uint32_t snapshotHeapSlot = DescriptorHeapLayout::snapshotSlot(slot);
+    D3D12_CPU_DESCRIPTOR_HANDLE snapshotCpuHandle = DescriptorHeapLayout::cpuHandle(
+        m_imguiSrvHeap.Get(), snapshotHeapSlot, m_srvDescriptorSize);
+    m_gpu->device()->CreateShaderResourceView(target.snapshotResource.Get(), &srvDesc, snapshotCpuHandle);
+    target.snapshotSrvHandle = DescriptorHeapLayout::gpuHandle(
+        m_imguiSrvHeap.Get(), snapshotHeapSlot, m_srvDescriptorSize);
 
     target.width = width;
     target.height = height;

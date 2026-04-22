@@ -655,17 +655,43 @@ bool SetClipBlendModeCommand::execute(Engine& engine) {
     return true;
 }
 
-nlohmann::json SetClipBlendModeCommand::toJson() const {
-    std::string modeStr = "Normal";
-    switch (m_blendMode) {
-        case BlendMode::Add: modeStr = "Add"; break;
-        case BlendMode::Multiply: modeStr = "Multiply"; break;
-        case BlendMode::Screen: modeStr = "Screen"; break;
-        case BlendMode::Overlay: modeStr = "Overlay"; break;
-        default: modeStr = "Normal"; break;
+// Canonical name table for all BlendMode enum values. Keep in sync with
+// include/entity/core/Types.hpp and shaders/common.hlsli.
+namespace {
+constexpr std::pair<BlendMode, const char*> kBlendModeNames[] = {
+    {BlendMode::Normal,     "Normal"},
+    {BlendMode::Add,        "Add"},
+    {BlendMode::Multiply,   "Multiply"},
+    {BlendMode::Screen,     "Screen"},
+    {BlendMode::Overlay,    "Overlay"},
+    {BlendMode::SoftLight,  "SoftLight"},
+    {BlendMode::HardLight,  "HardLight"},
+    {BlendMode::ColorDodge, "ColorDodge"},
+    {BlendMode::ColorBurn,  "ColorBurn"},
+    {BlendMode::Darken,     "Darken"},
+    {BlendMode::Lighten,    "Lighten"},
+    {BlendMode::Difference, "Difference"},
+    {BlendMode::Exclusion,  "Exclusion"},
+};
+
+const char* blendModeToString(BlendMode mode) {
+    for (const auto& [m, name] : kBlendModeNames) {
+        if (m == mode) return name;
     }
+    return "Normal";
+}
+
+BlendMode blendModeFromString(const std::string& s) {
+    for (const auto& [m, name] : kBlendModeNames) {
+        if (s == name) return m;
+    }
+    return BlendMode::Normal;
+}
+} // namespace
+
+nlohmann::json SetClipBlendModeCommand::toJson() const {
     return {{"type", "SetClipBlendMode"}, {"trackIndex", m_trackIndex},
-            {"clipIndex", m_clipIndex}, {"blendMode", modeStr}};
+            {"clipIndex", m_clipIndex}, {"blendMode", blendModeToString(m_blendMode)}};
 }
 
 std::string SetClipBlendModeCommand::getDescription() const {
@@ -677,13 +703,7 @@ CommandPtr SetClipBlendModeCommand::fromJson(const nlohmann::json& j) {
     int trackIndex = j.value("trackIndex", 0);
     int clipIndex = j.value("clipIndex", 0);
     std::string modeStr = j.value("blendMode", "Normal");
-
-    BlendMode mode = BlendMode::Normal;
-    if (modeStr == "Add") mode = BlendMode::Add;
-    else if (modeStr == "Multiply") mode = BlendMode::Multiply;
-    else if (modeStr == "Screen") mode = BlendMode::Screen;
-    else if (modeStr == "Overlay") mode = BlendMode::Overlay;
-
+    BlendMode mode = blendModeFromString(modeStr);
     return std::make_unique<SetClipBlendModeCommand>(trackIndex, clipIndex, mode);
 }
 

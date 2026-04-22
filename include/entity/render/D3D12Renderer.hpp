@@ -196,6 +196,8 @@ private:
     // Helper methods for textured rendering pipeline
     Result createTexturedRootSignature();
     Result createTexturedPipelineState();
+    Result createBlendRootSignature();
+    Result createBlendPipelineState();
 
     // Helper methods for mapping surface rendering pipeline
     Result createMappingSurfaceRootSignature();
@@ -286,6 +288,13 @@ private:
     ComPtr<ID3D12PipelineState> m_texturedPipelineStateMultiply; // Multiply blend
     ComPtr<ID3D12PipelineState> m_texturedPipelineStateScreen;   // Screen blend
 
+    // Shader-based blend pipeline (Overlay / SoftLight / HardLight / ColorDodge /
+    // ColorBurn / Darken / Lighten / Difference / Exclusion). PS samples both
+    // fg (t0) and a snapshot of the current compose target (t1), computes the
+    // blend in HLSL, writes final color (BlendEnable=FALSE on the PSO).
+    ComPtr<ID3D12RootSignature> m_blendRootSignature;
+    ComPtr<ID3D12PipelineState> m_texturedPipelineStateBlend;
+
     // Mapping surface rendering pipeline (for projection mapping)
     ComPtr<ID3D12RootSignature> m_mappingSurfaceRootSignature;
     ComPtr<ID3D12PipelineState> m_mappingSurfacePipelineState;
@@ -332,6 +341,12 @@ private:
         ComPtr<ID3D12Resource> resource;               // Render target texture
         ComPtr<ID3D12DescriptorHeap> rtvHeap;         // RTV for rendering to it
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};      // SRV for sampling
+        // Read-back copy of `resource` taken just before each shader-blend
+        // draw, sampled as t1 in composite_blend_ps. Resting state is
+        // PIXEL_SHADER_RESOURCE; transitions to COPY_DEST and back during the
+        // snapshot copy in drawTexturedQuad.
+        ComPtr<ID3D12Resource> snapshotResource;
+        D3D12_GPU_DESCRIPTOR_HANDLE snapshotSrvHandle{};
         uint32_t width{0};
         uint32_t height{0};
         bool ready{false};

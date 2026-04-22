@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "Shader-blend Difference integration test. Stacks blend_bg (track 1, zOrder 999) under blend_fg (track 0, zOrder 1000), sets the top clip to Difference, asserts the compose-target hash matches the golden. Regression gate for the shader-based blend pipeline (composite_blend_ps + snapshot SRV) - if the snapshot copy or the in-shader blend math regresses, this hash diverges. To regenerate, run scripts/integration/record_blend_difference.json and copy the produced hash into tests/goldens/blend/.",
+    "commands": [
+        {"type": "AddScreen", "name": "BlendDiffScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 1, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/blend_fg/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 20},
+
+        {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Difference"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_difference.hash", "goldenFilepath": "tests/goldens/blend/blend_difference.hash", "composeSlot": 0},
+
+        {"type": "Exit"}
+    ]
+}
