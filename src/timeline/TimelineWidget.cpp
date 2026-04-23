@@ -350,6 +350,15 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
     return snapPosition;
 }
 
+Timecode TimelineWidget::snapTimeToTickGrid(Timecode t) const {
+    if (!m_timeline) return t;
+    const FrameNumber majorEvery = static_cast<FrameNumber>(framesPerMajorTick());
+    const FrameNumber minorEvery = std::max<FrameNumber>(1, majorEvery / 5);
+    FrameNumber f = m_timeline->timeToFrame(t);
+    f = ((f + minorEvery / 2) / minorEvery) * minorEvery;  // round to nearest minor
+    return m_timeline->frameToTime(f);
+}
+
 int TimelineWidget::findTrackAtY(float mouseY, float windowY) const {
     if (!m_timeline) return -1;
 

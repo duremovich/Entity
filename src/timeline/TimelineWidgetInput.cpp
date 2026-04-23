@@ -266,44 +266,66 @@ void TimelineWidget::handleRulerInteraction() {
                       mousePos.y >= windowPos.y &&
                       mousePos.y <= windowPos.y + RULER_HEIGHT);
 
-    // Handle Alt + Mouse Wheel for zoom
+    // Alt+scroll over the ruler also steps the discrete zoom ladder.
+    // (Same as in handleInteraction(); ruler is its own child window so the
+    // event arrives here instead.)
     if (overRuler && io.MouseWheel != 0.0f && io.KeyAlt) {
-        float zoomFactor = io.MouseWheel > 0.0f ? 1.2f : 0.8f;
-        float newZoom = m_pixelsPerSecond * zoomFactor;
-
-        // Clamp zoom to reasonable range
-        newZoom = std::max(10.0f, std::min(500.0f, newZoom));
-
-        m_pixelsPerSecond = newZoom;
+        setZoomIndex(m_zoomIndex + (io.MouseWheel > 0.0f ? -1 : 1));
     }
 
-    // Handle ruler click and drag for seeking/scrubbing
+    // Shift+click on the ruler starts a range selection. Plain click keeps
+    // the existing scrub gesture and clears any prior range so the user can
+    // get back to scrubbing without hunting for a clear command.
     if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        m_isDraggingRuler = true;
-        m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
         float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
-        Timecode newTime = pixelToTime(relativeX);
-        if (newTime != m_lastSeekTime) {
-            m_lastSeekTime = newTime;
-            m_timeline->seek(newTime);
+        Timecode clickTime = pixelToTime(relativeX);
+        if (clickTime < 0) clickTime = 0;
+
+        if (io.KeyShift) {
+            m_isCreatingRange = true;
+            m_rangeAnchorTime = snapTimeToTickGrid(clickTime);
+            m_range.start = m_rangeAnchorTime;
+            m_range.end = m_rangeAnchorTime;
+            m_range.active = true;
+        } else {
+            m_isDraggingRuler = true;
+            m_timeline->setScrubbing(true);
+            if (clickTime != m_lastSeekTime) {
+                m_lastSeekTime = clickTime;
+                m_timeline->seek(clickTime);
+            }
+            // Plain ruler click also clears any selection — Disguise/Resolve
+            // both behave this way so the user isn't left wondering why the
+            // ripple-delete shortcut is greyed out.
+            m_range = {};
         }
     }
 
-    if (m_isDraggingRuler) {
+    if (m_isCreatingRange) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            // Continue dragging - update time as mouse moves
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            Timecode mouseTime = pixelToTime(relativeX);
+            if (mouseTime < 0) mouseTime = 0;
+            mouseTime = snapTimeToTickGrid(mouseTime);
+            m_range.start = std::min(m_rangeAnchorTime, mouseTime);
+            m_range.end   = std::max(m_rangeAnchorTime, mouseTime);
+        } else {
+            m_isCreatingRange = false;
+            // Zero-length drag = treat as just clearing the range.
+            if (m_range.end <= m_range.start) m_range = {};
+        }
+    } else if (m_isDraggingRuler) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
             Timecode newTime = pixelToTime(relativeX);
-            // Only seek if time actually changed (debounce)
             if (newTime != m_lastSeekTime) {
                 m_lastSeekTime = newTime;
                 m_timeline->seek(newTime);
             }
         } else {
-            // Mouse released - stop dragging
             m_isDraggingRuler = false;
-            m_timeline->setScrubbing(false);  // Exit scrubbing mode - triggers final seek
-            m_lastSeekTime = -1;  // Reset debounce on release
+            m_timeline->setScrubbing(false);
+            m_lastSeekTime = -1;
         }
     }
 }

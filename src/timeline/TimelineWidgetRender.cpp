@@ -15,6 +15,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <cstdio>
 #include <set>
 #include <limits>
 
@@ -86,6 +87,35 @@ void TimelineWidget::renderTimeRuler() {
             );
         }
     }
+
+    // Range-selection overlay on the ruler — stronger tint than the tracks
+    // band so the endpoints are obviously interactive. While the user is
+    // actively shift+dragging, show the In/Out/Δ frame readout near the
+    // mouse so they can land an exact span without fishing.
+    if (m_range.active && m_range.end > m_range.start) {
+        const float xStart = windowPos.x + timeToPixel(m_range.start);
+        const float xEnd   = windowPos.x + timeToPixel(m_range.end);
+        drawList->AddRectFilled(
+            ImVec2(xStart, rulerMin.y), ImVec2(xEnd, rulerMax.y),
+            IM_COL32(80, 160, 255, 80));
+        drawList->AddLine(ImVec2(xStart, rulerMin.y), ImVec2(xStart, rulerMax.y),
+            IM_COL32(160, 220, 255, 255), 1.5f);
+        drawList->AddLine(ImVec2(xEnd, rulerMin.y), ImVec2(xEnd, rulerMax.y),
+            IM_COL32(160, 220, 255, 255), 1.5f);
+
+        if (m_isCreatingRange) {
+            FrameNumber inF  = m_timeline->timeToFrame(m_range.start);
+            FrameNumber outF = m_timeline->timeToFrame(m_range.end);
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "In F%lld | Out F%lld | %lldf",
+                static_cast<long long>(inF),
+                static_cast<long long>(outF),
+                static_cast<long long>(outF - inF));
+            const float labelX = std::min(xEnd + 6.0f, rulerMax.x - 200.0f);
+            drawList->AddText(ImVec2(labelX, rulerMin.y + 5.0f),
+                IM_COL32(220, 240, 255, 255), buf);
+        }
+    }
 }
 
 void TimelineWidget::renderTracks() {
@@ -126,6 +156,22 @@ void TimelineWidget::renderTracks() {
                 drawList->AddLine(ImVec2(x, gridTop), ImVec2(x, gridBot),
                     isMajor ? IM_COL32(255, 255, 255, 32) : IM_COL32(255, 255, 255, 14), 1.0f);
             }
+        }
+
+        // Range-selection band across all tracks (sits above gridlines, below
+        // clips). Endpoints get thin vertical accent lines so the boundary
+        // reads cleanly even when the band's tint is subtle.
+        if (m_range.active && m_range.end > m_range.start) {
+            const float xStart = baseWindowPos.x + (timeToPixel(m_range.start) - scrollX);
+            const float xEnd   = baseWindowPos.x + (timeToPixel(m_range.end)   - scrollX);
+            const float yTop = baseWindowPos.y;
+            const float yBot = baseWindowPos.y + visibleH;
+            drawList->AddRectFilled(ImVec2(xStart, yTop), ImVec2(xEnd, yBot),
+                IM_COL32(80, 160, 255, 36));
+            drawList->AddLine(ImVec2(xStart, yTop), ImVec2(xStart, yBot),
+                IM_COL32(120, 200, 255, 220), 1.0f);
+            drawList->AddLine(ImVec2(xEnd, yTop), ImVec2(xEnd, yBot),
+                IM_COL32(120, 200, 255, 220), 1.0f);
         }
     }
 

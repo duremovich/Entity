@@ -264,6 +264,30 @@ private:
     bool m_isSnapping{false};          // True when actively snapping
     Timecode m_snapTargetTime{0};      // Time position being snapped to
 
+    // Time-range selection on the ruler (shift+drag). Used as the input to
+    // upcoming ripple-insert / ripple-delete ops and for naming sections.
+    struct TimeRange {
+        Timecode start{0};
+        Timecode end{0};
+        bool active{false};
+    };
+    TimeRange m_range;
+    bool m_isCreatingRange{false};
+    Timecode m_rangeAnchorTime{0};
+
+public:
+    /** Public range accessors so command code (and tests) can read the
+     *  selection without poking widget internals. */
+    bool hasRangeSelection() const { return m_range.active && m_range.end > m_range.start; }
+    Timecode getRangeStart() const { return m_range.start; }
+    Timecode getRangeEnd() const { return m_range.end; }
+    void clearRangeSelection() { m_range = {}; }
+
+private:
+    /** Snap a Timecode to the nearest minor-tick frame boundary at the
+     *  current zoom level. Used to keep range endpoints frame-aligned. */
+    Timecode snapTimeToTickGrid(Timecode t) const;
+
     // Callbacks
     MediaDropCallback m_mediaDropCallback;
 
