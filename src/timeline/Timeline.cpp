@@ -535,4 +535,179 @@ bool Timeline::moveClipToTrack(entt::entity clipEntity, int newTrackIndex) {
     return true;
 }
 
+// ============================================================================
+// Ripple time edits
+// ============================================================================
+
+Timeline::RippleInsertResult Timeline::rippleInsertTime(FrameNumber insertFrame, FrameNumber durationFrames) {
+    RippleInsertResult result{};
+    if (insertFrame < 0 || durationFrames <= 0) {
+        std::cerr << "[Timeline] rippleInsertTime: bad args (insertFrame=" << insertFrame
+                  << ", durationFrames=" << durationFrames << ")" << std::endl;
+        return result;
+    }
+
+    // Phase 1: split clips that span insertFrame. Capture original duration
+    // and AnimatedProperties so undo can merge cleanly.
+    // Snapshot the entity list first because splitClip mutates track->clips.
+    std::vector<entt::entity> toSplit;
+    for (entt::entity trackEntity : m_tracks) {
+        auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+        if (!track) continue;
+        for (entt::entity clipEntity : track->clips) {
+            auto* clip = m_registry.try_get<Clip>(clipEntity);
+            if (!clip) continue;
+            FrameNumber endF = clip->startFrame + clip->duration;
+            if (clip->startFrame < insertFrame && endF > insertFrame) {
+                toSplit.push_back(clipEntity);
+            }
+        }
+    }
+    for (entt::entity e : toSplit) {
+        auto* clip = m_registry.try_get<Clip>(e);
+        if (!clip) continue;
+        ClipSplitRecord rec;
+        rec.originalEntity = e;
+        rec.oldDuration = clip->duration;
+        if (auto* ap = m_registry.try_get<AnimatedProperties>(e)) {
+            rec.hadAnimProps = true;
+            rec.oldAnimProps = *ap;
+        }
+        rec.newRightEntity = splitClip(e, insertFrame);
+        if (rec.newRightEntity == entt::null) {
+            std::cerr << "[Timeline] rippleInsertTime: splitClip failed mid-op; aborting." << std::endl;
+            // Roll back any splits we already did so we don't leave the timeline half-modified.
+            for (auto it = result.splits.rbegin(); it != result.splits.rend(); ++it) {
+                if (m_registry.valid(it->newRightEntity)) {
+                    deleteClip(it->newRightEntity);
+                }
+                if (auto* origClip = m_registry.try_get<Clip>(it->originalEntity)) {
+                    origClip->duration = it->oldDuration;
+                }
+                if (it->hadAnimProps) {
+                    if (auto* ap = m_registry.try_get<AnimatedProperties>(it->originalEntity)) {
+                        *ap = it->oldAnimProps;
+                    }
+                }
+            }
+            return result;
+        }
+        result.splits.push_back(std::move(rec));
+    }
+
+    // Phase 2: shift everything starting at or after insertFrame.
+    for (entt::entity trackEntity : m_tracks) {
+        auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+        if (!track) continue;
+        for (entt::entity clipEntity : track->clips) {
+            auto* clip = m_registry.try_get<Clip>(clipEntity);
+            if (!clip) continue;
+            if (clip->startFrame >= insertFrame) {
+                result.shifted.push_back({clipEntity, clip->startFrame});
+                clip->startFrame += durationFrames;
+            }
+        }
+    }
+
+    result.success = true;
+    std::cout << "[Timeline] rippleInsertTime: inserted " << durationFrames
+              << " frames at " << insertFrame
+              << " (split " << result.splits.size()
+              << ", shifted " << result.shifted.size() << ")" << std::endl;
+    return result;
+}
+
+void Timeline::undoRippleInsertTime(RippleInsertResult& record) {
+    if (!record.success) return;
+
+    // Reverse Phase 2: restore shifted startFrames.
+    for (auto& s : record.shifted) {
+        if (auto* clip = m_registry.try_get<Clip>(s.entity)) {
+            clip->startFrame = s.oldStartFrame;
+        }
+    }
+    record.shifted.clear();
+
+    // Reverse Phase 1: undo splits in reverse order. Delete the right halves
+    // and restore the left halves' duration + AnimatedProperties.
+    for (auto it = record.splits.rbegin(); it != record.splits.rend(); ++it) {
+        if (m_registry.valid(it->newRightEntity)) {
+            deleteClip(it->newRightEntity);
+        }
+        if (auto* clip = m_registry.try_get<Clip>(it->originalEntity)) {
+            clip->duration = it->oldDuration;
+        }
+        if (it->hadAnimProps) {
+            if (auto* ap = m_registry.try_get<AnimatedProperties>(it->originalEntity)) {
+                *ap = it->oldAnimProps;
+            } else {
+                m_registry.emplace<AnimatedProperties>(it->originalEntity, it->oldAnimProps);
+            }
+        }
+    }
+    record.splits.clear();
+    record.success = false;
+}
+
+Timeline::RippleDeleteResult Timeline::rippleDeleteTime(FrameNumber rangeStart, FrameNumber rangeEnd) {
+    RippleDeleteResult result{};
+    if (rangeStart < 0 || rangeEnd <= rangeStart) {
+        std::cerr << "[Timeline] rippleDeleteTime: bad range [" << rangeStart << ", " << rangeEnd << ")" << std::endl;
+        return result;
+    }
+    const FrameNumber removeDur = rangeEnd - rangeStart;
+
+    // Pre-flight: refuse if any clip overlaps the range. Splitting + recreating
+    // deleted clips needs a different undo path than a simple shift snapshot;
+    // saving that for v2.
+    for (entt::entity trackEntity : m_tracks) {
+        auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+        if (!track) continue;
+        for (entt::entity clipEntity : track->clips) {
+            auto* clip = m_registry.try_get<Clip>(clipEntity);
+            if (!clip) continue;
+            const FrameNumber endF = clip->startFrame + clip->duration;
+            const bool overlaps = (clip->startFrame < rangeEnd) && (endF > rangeStart);
+            if (overlaps) {
+                std::cerr << "[Timeline] rippleDeleteTime: aborted — clip entity="
+                          << static_cast<uint32_t>(clipEntity)
+                          << " (frames [" << clip->startFrame << ", " << endF << "))"
+                          << " overlaps [" << rangeStart << ", " << rangeEnd << "). "
+                          << "Split or move overlapping clips, then retry." << std::endl;
+                return result;
+            }
+        }
+    }
+
+    // Shift everything entirely after rangeEnd left by removeDur.
+    for (entt::entity trackEntity : m_tracks) {
+        auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+        if (!track) continue;
+        for (entt::entity clipEntity : track->clips) {
+            auto* clip = m_registry.try_get<Clip>(clipEntity);
+            if (!clip) continue;
+            if (clip->startFrame >= rangeEnd) {
+                result.shifted.push_back({clipEntity, clip->startFrame});
+                clip->startFrame -= removeDur;
+            }
+        }
+    }
+
+    result.success = true;
+    std::cout << "[Timeline] rippleDeleteTime: removed [" << rangeStart << ", " << rangeEnd
+              << ") (shifted " << result.shifted.size() << " clips)" << std::endl;
+    return result;
+}
+
+void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
+    if (!record.success) return;
+    for (auto& s : record.shifted) {
+        if (auto* clip = m_registry.try_get<Clip>(s.entity)) {
+            clip->startFrame = s.oldStartFrame;
+        }
+    }
+    record.shifted.clear();
+    record.success = false;
+}
+
 } // namespace entity

@@ -5,6 +5,7 @@
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
+#include "entity/timeline/Timeline.hpp"  // Ripple{Insert,Delete}Result
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
@@ -804,6 +805,51 @@ private:
  *     "duration": 64
  * }
  */
+// ============================================================================
+// Ripple time edits (Phase C #4) — wrap Timeline::ripple{Insert,Delete}Time
+// and own the captured undo records.
+// ============================================================================
+
+class RippleInsertTimeCommand : public UndoableCommand {
+public:
+    RippleInsertTimeCommand(FrameNumber insertFrame, FrameNumber durationFrames)
+        : m_insertFrame(insertFrame), m_duration(durationFrames) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "RippleInsertTime"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    FrameNumber m_insertFrame;
+    FrameNumber m_duration;
+    Timeline::RippleInsertResult m_record;
+};
+
+class RippleDeleteTimeCommand : public UndoableCommand {
+public:
+    RippleDeleteTimeCommand(FrameNumber rangeStart, FrameNumber rangeEnd)
+        : m_rangeStart(rangeStart), m_rangeEnd(rangeEnd) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "RippleDeleteTime"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    FrameNumber m_rangeStart;
+    FrameNumber m_rangeEnd;
+    Timeline::RippleDeleteResult m_record;
+};
+
 class SetClipDurationCommand : public UndoableCommand {
 public:
     SetClipDurationCommand(int trackIndex, int clipIndex, FrameNumber duration)

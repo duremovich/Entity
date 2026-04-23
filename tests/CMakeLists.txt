@@ -6,6 +6,7 @@ add_executable(EntityMediaTests
     unit/FrameRingBufferTests.cpp
     unit/BufferSystemTests.cpp
     unit/KeyframeRoundtripTests.cpp
+    unit/RippleTimeTests.cpp
     test_Decoder.cpp
 )
 

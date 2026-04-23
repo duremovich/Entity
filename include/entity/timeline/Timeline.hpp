@@ -1,6 +1,7 @@
 #pragma once
 
 #include "entity/core/Types.hpp"
+#include "entity/components/AnimatedProperties.hpp"
 #include <entt/entt.hpp>
 #include <vector>
 #include <string>
@@ -146,6 +147,51 @@ public:
      * @return True if move was successful
      */
     bool moveClipToTrack(entt::entity clipEntity, int newTrackIndex);
+
+    // ============================================================================
+    // Ripple time edits (Phase C #4) — undoable via the captured records below.
+    // Helpers operate directly on the registry so they can be unit-tested
+    // without spinning up an Engine; the matching Commands wrap these and
+    // own the captured-state vectors for undo.
+    // ============================================================================
+
+    struct ClipShiftRecord {
+        entt::entity entity{entt::null};
+        FrameNumber oldStartFrame{0};
+    };
+    struct ClipSplitRecord {
+        entt::entity originalEntity{entt::null};
+        FrameNumber oldDuration{0};
+        bool hadAnimProps{false};
+        AnimatedProperties oldAnimProps{};
+        entt::entity newRightEntity{entt::null};
+    };
+    struct RippleInsertResult {
+        bool success{false};
+        std::vector<ClipShiftRecord> shifted;
+        std::vector<ClipSplitRecord> splits;
+    };
+    struct RippleDeleteResult {
+        bool success{false};
+        std::vector<ClipShiftRecord> shifted;
+    };
+
+    /**
+     * Insert `durationFrames` of empty time at `insertFrame`. Splits any clip
+     * that spans `insertFrame` and shifts every clip starting at or after
+     * `insertFrame` by `+durationFrames`. Capture the returned record to undo.
+     */
+    RippleInsertResult rippleInsertTime(FrameNumber insertFrame, FrameNumber durationFrames);
+    void undoRippleInsertTime(RippleInsertResult& record);
+
+    /**
+     * Delete the time span `[rangeStart, rangeEnd)` from every track. v1
+     * limitation: refuses if any clip overlaps the range — caller must split
+     * or move overlapping clips first. Clips entirely after the range shift
+     * left by `(rangeEnd - rangeStart)`. Capture the returned record to undo.
+     */
+    RippleDeleteResult rippleDeleteTime(FrameNumber rangeStart, FrameNumber rangeEnd);
+    void undoRippleDeleteTime(RippleDeleteResult& record);
 
     // Get registry reference
     entt::registry& getRegistry() { return m_registry; }

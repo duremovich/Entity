@@ -1639,4 +1639,78 @@ CommandPtr SetClipDurationCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetClipDurationCommand>(trackIndex, clipIndex, duration);
 }
 
+// ============================================================================
+// Ripple time edits
+// ============================================================================
+
+bool RippleInsertTimeCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    m_record = timeline->rippleInsertTime(m_insertFrame, m_duration);
+    return m_record.success;
+}
+
+bool RippleInsertTimeCommand::undo(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    timeline->undoRippleInsertTime(m_record);
+    return true;
+}
+
+bool RippleInsertTimeCommand::redo(Engine& engine) {
+    // Re-run from scratch — undo cleared the captured record, so execute()
+    // will repopulate it. (Same approach SetClipOpacityCommand uses.)
+    return execute(engine);
+}
+
+nlohmann::json RippleInsertTimeCommand::toJson() const {
+    return {{"type", "RippleInsertTime"},
+            {"insertFrame", m_insertFrame},
+            {"durationFrames", m_duration}};
+}
+
+std::string RippleInsertTimeCommand::getDescription() const {
+    return "Insert " + std::to_string(m_duration) + " frames at " + std::to_string(m_insertFrame);
+}
+
+CommandPtr RippleInsertTimeCommand::fromJson(const nlohmann::json& j) {
+    FrameNumber insertFrame = j.value("insertFrame", static_cast<FrameNumber>(0));
+    FrameNumber durationFrames = j.value("durationFrames", static_cast<FrameNumber>(0));
+    return std::make_unique<RippleInsertTimeCommand>(insertFrame, durationFrames);
+}
+
+bool RippleDeleteTimeCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    m_record = timeline->rippleDeleteTime(m_rangeStart, m_rangeEnd);
+    return m_record.success;
+}
+
+bool RippleDeleteTimeCommand::undo(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    timeline->undoRippleDeleteTime(m_record);
+    return true;
+}
+
+bool RippleDeleteTimeCommand::redo(Engine& engine) {
+    return execute(engine);
+}
+
+nlohmann::json RippleDeleteTimeCommand::toJson() const {
+    return {{"type", "RippleDeleteTime"},
+            {"rangeStart", m_rangeStart},
+            {"rangeEnd", m_rangeEnd}};
+}
+
+std::string RippleDeleteTimeCommand::getDescription() const {
+    return "Remove time [" + std::to_string(m_rangeStart) + ", " + std::to_string(m_rangeEnd) + ")";
+}
+
+CommandPtr RippleDeleteTimeCommand::fromJson(const nlohmann::json& j) {
+    FrameNumber rangeStart = j.value("rangeStart", static_cast<FrameNumber>(0));
+    FrameNumber rangeEnd = j.value("rangeEnd", static_cast<FrameNumber>(0));
+    return std::make_unique<RippleDeleteTimeCommand>(rangeStart, rangeEnd);
+}
+
 } // namespace entity
