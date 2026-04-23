@@ -40,52 +40,43 @@ void TimelineWidget::renderTimeRuler() {
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
     FrameNumber totalFrames = static_cast<FrameNumber>(durationSeconds * frameRate);
 
-    // Tick spacing comes from the discrete zoom ladder. Minor lives at
-    // major/5 (clamped to >=1 frame so 1f/major doesn't loop forever), and
-    // we skip minors entirely when major <=2 (they'd visually fight the
-    // majors at that zoom).
-    const FrameNumber majorEvery = static_cast<FrameNumber>(framesPerMajorTick());
-    const FrameNumber minorEvery = std::max<FrameNumber>(1, majorEvery / 5);
-    const bool drawMinors = (majorEvery > 2);
-    const FrameNumber stepEvery = drawMinors ? minorEvery : majorEvery;
+    // Tick spacing IS the zoom ladder value — single tier, no major/minor
+    // confusion. Tick = snap unit = label increment.
+    const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
 
-    for (FrameNumber frame = 0; frame <= totalFrames; frame += stepEvery) {
+    for (FrameNumber frame = 0; frame <= totalFrames; frame += tickEvery) {
         float timeSeconds = static_cast<float>(frame) / static_cast<float>(frameRate);
         float x = windowPos.x + timeToPixel(static_cast<Timecode>(timeSeconds * 1000000.0f));
 
         if (x < windowPos.x || x > rulerMax.x) continue;
 
-        const bool isMajorTick = (frame % majorEvery == 0);
-        float tickHeight = isMajorTick ? 12.0f : 6.0f;
         drawList->AddLine(
-            ImVec2(x, rulerMax.y - tickHeight),
+            ImVec2(x, rulerMax.y - 12.0f),
             ImVec2(x, rulerMax.y),
-            IM_COL32(200, 200, 200, isMajorTick ? 255 : 160),
+            IM_COL32(200, 200, 200, 255),
             1.0f
         );
 
-        // Label only majors. SMPTE timecode HH:MM:SS:FF.
-        if (isMajorTick) {
-            int totalSeconds = static_cast<int>(frame / frameRate);
-            int hours = totalSeconds / 3600;
-            int minutes = (totalSeconds % 3600) / 60;
-            int seconds = totalSeconds % 60;
-            int frames = static_cast<int>(frame % static_cast<FrameNumber>(frameRate));
+        // SMPTE timecode label HH:MM:SS:FF on every tick.
+        int totalSeconds = static_cast<int>(frame / frameRate);
+        int hours = totalSeconds / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+        int seconds = totalSeconds % 60;
+        int frames = static_cast<int>(frame % static_cast<FrameNumber>(frameRate));
 
-            std::ostringstream oss;
-            if (hours > 0) {
-                oss << std::setfill('0') << std::setw(2) << hours << ":";
-            }
-            oss << std::setfill('0') << std::setw(2) << minutes << ":"
-                << std::setfill('0') << std::setw(2) << seconds << ":"
-                << std::setfill('0') << std::setw(2) << frames;
-
-            drawList->AddText(
-                ImVec2(x + 3.0f, rulerMin.y + 5.0f),
-                IM_COL32(200, 200, 200, 255),
-                oss.str().c_str()
-            );
+        std::ostringstream oss;
+        if (hours > 0) {
+            oss << std::setfill('0') << std::setw(2) << hours << ":";
         }
+        oss << std::setfill('0') << std::setw(2) << minutes << ":"
+            << std::setfill('0') << std::setw(2) << seconds << ":"
+            << std::setfill('0') << std::setw(2) << frames;
+
+        drawList->AddText(
+            ImVec2(x + 3.0f, rulerMin.y + 5.0f),
+            IM_COL32(200, 200, 200, 255),
+            oss.str().c_str()
+        );
     }
 
     // Named-section bands. Drawn before the range-selection overlay so the
@@ -153,42 +144,14 @@ void TimelineWidget::renderTracks() {
     // This prevents cursor drift from InvisibleButtons affecting subsequent tracks
     ImVec2 baseWindowPos = ImGui::GetCursorScreenPos();
 
-    // Background gridlines (drawn first so clips/headers stack on top).
-    // Iteration is over the visible viewport only — a 24h timeline at 1f/major
-    // would otherwise enumerate ~2.6M frames per render.
+    // Range-selection band across all tracks. Drawn before the track loop
+    // so track bg fills can sit on top — the band tint mixes with the bg.
+    // We re-draw the endpoint accent lines AFTER the track loop so they
+    // remain crisp on top of clips.
     {
         ImDrawList* drawList = ImGui::GetWindowDrawList();
-        const float visibleW = ImGui::GetWindowWidth();
         const float visibleH = ImGui::GetWindowHeight();
         const float scrollX = m_syncScrollX;
-        const double frameRate = m_timeline->getFrameRate();
-        const FrameNumber majorEvery = static_cast<FrameNumber>(framesPerMajorTick());
-        const FrameNumber minorEvery = std::max<FrameNumber>(1, majorEvery / 5);
-        const bool drawMinors = (majorEvery > 2);
-        const FrameNumber stepEvery = drawMinors ? minorEvery : majorEvery;
-        const float pxPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
-
-        if (pxPerFrame > 0.0f) {
-            FrameNumber firstFrame = static_cast<FrameNumber>(std::floor(scrollX / pxPerFrame));
-            FrameNumber lastFrame  = static_cast<FrameNumber>(std::ceil((scrollX + visibleW) / pxPerFrame));
-            firstFrame = std::max<FrameNumber>(0, (firstFrame / stepEvery) * stepEvery);
-
-            const float gridTop = baseWindowPos.y;
-            const float gridBot = baseWindowPos.y + visibleH;
-
-            for (FrameNumber f = firstFrame; f <= lastFrame; f += stepEvery) {
-                const float xRel = f * pxPerFrame - scrollX;
-                if (xRel < 0 || xRel > visibleW) continue;
-                const float x = baseWindowPos.x + xRel;
-                const bool isMajor = (f % majorEvery == 0);
-                drawList->AddLine(ImVec2(x, gridTop), ImVec2(x, gridBot),
-                    isMajor ? IM_COL32(255, 255, 255, 32) : IM_COL32(255, 255, 255, 14), 1.0f);
-            }
-        }
-
-        // Range-selection band across all tracks (sits above gridlines, below
-        // clips). Endpoints get thin vertical accent lines so the boundary
-        // reads cleanly even when the band's tint is subtle.
         if (m_range.active && m_range.end > m_range.start) {
             const float xStart = baseWindowPos.x + (timeToPixel(m_range.start) - scrollX);
             const float xEnd   = baseWindowPos.x + (timeToPixel(m_range.end)   - scrollX);
@@ -196,10 +159,6 @@ void TimelineWidget::renderTracks() {
             const float yBot = baseWindowPos.y + visibleH;
             drawList->AddRectFilled(ImVec2(xStart, yTop), ImVec2(xEnd, yBot),
                 IM_COL32(80, 160, 255, 36));
-            drawList->AddLine(ImVec2(xStart, yTop), ImVec2(xStart, yBot),
-                IM_COL32(120, 200, 255, 220), 1.0f);
-            drawList->AddLine(ImVec2(xEnd, yTop), ImVec2(xEnd, yBot),
-                IM_COL32(120, 200, 255, 220), 1.0f);
         }
     }
 
@@ -246,6 +205,67 @@ void TimelineWidget::renderTracks() {
             cumulativeY = clipContentY + TRACK_PADDING;
         } else {
             cumulativeY += trackHeight + TRACK_PADDING;
+        }
+    }
+
+    // Tick gridlines + range endpoint accents — drawn AFTER the track loop
+    // so they sit on top of the (opaque) track-bg fills and clip rects.
+    // Iteration is clamped to the visible viewport so a 24h timeline at
+    // 1f tick spacing doesn't enumerate millions of off-screen frames.
+    //
+    // gridBot extends to whichever is larger of:
+    //   (a) cumulativeY — the painted track-content area (so lines reach
+    //       every track even when the pane is shorter than total content
+    //       and the user scrolls), and
+    //   (b) the child window's visible height — so lines also extend
+    //       through the empty canvas BELOW the last track when the pane
+    //       is taller than total content. Without this, the grid stops
+    //       partway down the visible pane and looks like it's bound to
+    //       the pane rather than the timeline.
+    // The actual draw is scissor-clipped by ImGui to the child's visible
+    // bounds, so overdrawing past the bottom is free.
+    {
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const float visibleW = ImGui::GetWindowWidth();
+        const float visibleH = ImGui::GetWindowHeight();
+        const float scrollY = ImGui::GetScrollY();
+        const float scrollX = m_syncScrollX;
+        const double frameRate = m_timeline->getFrameRate();
+        const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
+        const float pxPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
+
+        // Visible bottom in screen coords (window-y baseline + visible
+        // height). baseWindowPos.y already includes -scrollY, so add it
+        // back to translate cumulativeY's content-space bottom into the
+        // same screen-coord reference as the visible bottom.
+        const float gridTop = baseWindowPos.y;
+        const float contentBot = baseWindowPos.y + cumulativeY;
+        const float visibleBot = baseWindowPos.y + scrollY + visibleH;
+        const float gridBot = std::max(contentBot, visibleBot);
+
+        if (pxPerFrame > 0.0f && tickEvery > 0) {
+            FrameNumber firstFrame = static_cast<FrameNumber>(std::floor(scrollX / pxPerFrame));
+            FrameNumber lastFrame  = static_cast<FrameNumber>(std::ceil((scrollX + visibleW) / pxPerFrame));
+            firstFrame = std::max<FrameNumber>(0, (firstFrame / tickEvery) * tickEvery);
+
+            for (FrameNumber f = firstFrame; f <= lastFrame; f += tickEvery) {
+                const float xRel = f * pxPerFrame - scrollX;
+                if (xRel < 0 || xRel > visibleW) continue;
+                const float x = baseWindowPos.x + xRel;
+                drawList->AddLine(ImVec2(x, gridTop), ImVec2(x, gridBot),
+                    IM_COL32(255, 255, 255, 56), 1.0f);
+            }
+        }
+
+        // Range endpoint accent lines on top of clips so the boundary stays
+        // visible even when a clip is colored similar to the band tint.
+        if (m_range.active && m_range.end > m_range.start) {
+            const float xStart = baseWindowPos.x + (timeToPixel(m_range.start) - scrollX);
+            const float xEnd   = baseWindowPos.x + (timeToPixel(m_range.end)   - scrollX);
+            drawList->AddLine(ImVec2(xStart, gridTop), ImVec2(xStart, gridBot),
+                IM_COL32(120, 200, 255, 220), 1.0f);
+            drawList->AddLine(ImVec2(xEnd, gridTop), ImVec2(xEnd, gridBot),
+                IM_COL32(120, 200, 255, 220), 1.0f);
         }
     }
 }

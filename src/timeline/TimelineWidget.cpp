@@ -28,7 +28,7 @@ TimelineWidget::TimelineWidget(Timeline* timeline)
 
 void TimelineWidget::applyZoomIndex() {
     if (!m_timeline) return;
-    const float pxPerFrame = MAJOR_TICK_PX / static_cast<float>(framesPerMajorTick());
+    const float pxPerFrame = TICK_PX / static_cast<float>(framesPerTick());
     m_pixelsPerSecond = pxPerFrame * static_cast<float>(m_timeline->getFrameRate());
 }
 
@@ -352,10 +352,9 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
 
 Timecode TimelineWidget::snapTimeToTickGrid(Timecode t) const {
     if (!m_timeline) return t;
-    const FrameNumber majorEvery = static_cast<FrameNumber>(framesPerMajorTick());
-    const FrameNumber minorEvery = std::max<FrameNumber>(1, majorEvery / 5);
+    const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
     FrameNumber f = m_timeline->timeToFrame(t);
-    f = ((f + minorEvery / 2) / minorEvery) * minorEvery;  // round to nearest minor
+    f = ((f + tickEvery / 2) / tickEvery) * tickEvery;  // round to nearest tick
     return m_timeline->frameToTime(f);
 }
 

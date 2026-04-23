@@ -290,9 +290,15 @@ void TimelineWidget::handleRulerInteraction() {
         } else {
             m_isDraggingRuler = true;
             m_timeline->setScrubbing(true);
-            if (clickTime != m_lastSeekTime) {
-                m_lastSeekTime = clickTime;
-                m_timeline->seek(clickTime);
+            // User-driven scrub snaps to the minor-tick grid at the current
+            // zoom level. Sub-frame playhead positions are visually meaningless
+            // and let the user accidentally land between integer frames.
+            // Playback (Timeline::update) and programmatic seeks are NOT
+            // snapped — only mouse-driven seeks pass through this branch.
+            Timecode snapped = snapTimeToTickGrid(clickTime);
+            if (snapped != m_lastSeekTime) {
+                m_lastSeekTime = snapped;
+                m_timeline->seek(snapped);
             }
             // Plain ruler click also clears any selection — Disguise/Resolve
             // both behave this way so the user isn't left wondering why the
@@ -317,10 +323,10 @@ void TimelineWidget::handleRulerInteraction() {
     } else if (m_isDraggingRuler) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
-            Timecode newTime = pixelToTime(relativeX);
-            if (newTime != m_lastSeekTime) {
-                m_lastSeekTime = newTime;
-                m_timeline->seek(newTime);
+            Timecode snapped = snapTimeToTickGrid(pixelToTime(relativeX));
+            if (snapped != m_lastSeekTime) {
+                m_lastSeekTime = snapped;
+                m_timeline->seek(snapped);
             }
         } else {
             m_isDraggingRuler = false;

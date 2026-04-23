@@ -58,19 +58,21 @@ public:
     Timeline* getTimeline() const { return m_timeline; }
 
     /**
-     * Discrete zoom ladder, in frames per major tick. Lower index = zoomed in
-     * (fewer frames per division). Disguise / Resolve-style stepping rather
-     * than continuous, so users can talk about zoom in shared units.
+     * Discrete zoom ladder, in frames per tick. Single tier — the ladder
+     * value IS the tick spacing AND the snap increment AND the dropdown
+     * label. "10f" means: tick lines every 10 frames, scrub snaps to every
+     * 10 frames. No separate minor/major hierarchy (it confused users about
+     * what the snap actually was). Disguise / Resolve-style stepping.
      */
-    static constexpr int FRAMES_PER_MAJOR_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
+    static constexpr int FRAMES_PER_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
     static constexpr int ZOOM_LEVEL_COUNT = 9;
-    static constexpr float MAJOR_TICK_PX = 80.0f;  // visual target width of one major division
+    static constexpr float TICK_PX = 80.0f;  // visual target width of one tick division
 
     int getZoomIndex() const { return m_zoomIndex; }
     void setZoomIndex(int idx) {
         m_zoomIndex = std::clamp(idx, 0, ZOOM_LEVEL_COUNT - 1);
     }
-    int framesPerMajorTick() const { return FRAMES_PER_MAJOR_TICK[m_zoomIndex]; }
+    int framesPerTick() const { return FRAMES_PER_TICK[m_zoomIndex]; }
 
     /**
      * Derived pixels-per-second based on current zoom level + timeline framerate.
@@ -214,7 +216,7 @@ private:
     Timeline* m_timeline{nullptr};
 
     // View settings
-    int m_zoomIndex{3};                // index into FRAMES_PER_MAJOR_TICK; default 10f/major
+    int m_zoomIndex{3};                // index into FRAMES_PER_TICK; default 10f tick
     float m_pixelsPerSecond{100.0f};  // derived from zoom index + frame rate, refreshed each render()
     float m_scrollX{0.0f};             // Horizontal scroll position
     float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks

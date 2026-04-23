@@ -638,8 +638,17 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     // Mark unused parameters to avoid warnings
     (void)scancode;
 
-    // Only handle key press events (not release or repeat)
-    if (action != GLFW_PRESS) return;
+    // Allow REPEAT events only for a small allowlist of keys where holding
+    // makes sense (frame-step arrows). Everything else stays press-only so
+    // accidental hold-Ctrl+Z doesn't undo a hundred edits.
+    const bool isRepeatableKey = (key == GLFW_KEY_LEFT) || (key == GLFW_KEY_RIGHT);
+    if (action == GLFW_PRESS) {
+        // ok — fall through
+    } else if (action == GLFW_REPEAT && isRepeatableKey) {
+        // ok — fall through
+    } else {
+        return;
+    }
 
     // Don't handle shortcuts if user is actively typing in a text field
     // WantTextInput is more specific than WantCaptureKeyboard - it's only true
@@ -727,26 +736,36 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 break;
 
             case GLFW_KEY_LEFT:
-                // Left arrow = Step back one frame
+                // Left arrow = step back by one zoom-tick increment.
+                // Disguise convention. GLFW_REPEAT is allowed for this key
+                // (allowlisted at the top of the handler) so holding the
+                // arrow scrubs continuously by tick increments.
                 {
-                    Timecode currentTime = m_timeline->getCurrentTime();
-                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
-                    if (currentTime > frameTime) {
-                        m_timeline->seek(currentTime - frameTime);
-                    } else {
-                        m_timeline->seek(0);
-                    }
+                    FrameNumber step = m_timelineWidget ? m_timelineWidget->framesPerTick() : 1;
+                    FrameNumber cur = m_timeline->getCurrentFrame();
+                    FrameNumber target = cur > step ? cur - step : 0;
+                    // Snap target to the tick grid so repeated presses don't
+                    // drift off-grid when the playhead started between ticks
+                    // (e.g. landed mid-tick from playback then user hit Left).
+                    target = (target / step) * step;
+                    m_timeline->seekToFrame(target);
                 }
                 break;
 
             case GLFW_KEY_RIGHT:
-                // Right arrow = Step forward one frame
+                // Right arrow = step forward by one zoom-tick increment.
+                // Holding repeats (allowlisted for REPEAT events).
                 {
-                    Timecode currentTime = m_timeline->getCurrentTime();
-                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
-                    Timecode newTime = currentTime + frameTime;
-                    if (newTime < m_timeline->getDuration()) {
-                        m_timeline->seek(newTime);
+                    FrameNumber step = m_timelineWidget ? m_timelineWidget->framesPerTick() : 1;
+                    FrameNumber cur = m_timeline->getCurrentFrame();
+                    // Snap cur up to the next tick boundary, then add step.
+                    // Without the snap, repeated presses from a mid-tick start
+                    // would forever-step from a non-aligned position.
+                    FrameNumber aligned = ((cur + step - 1) / step) * step;
+                    FrameNumber target = (aligned == cur) ? cur + step : aligned;
+                    Timecode targetTime = m_timeline->frameToTime(target);
+                    if (targetTime < m_timeline->getDuration()) {
+                        m_timeline->seekToFrame(target);
                     }
                 }
                 break;
