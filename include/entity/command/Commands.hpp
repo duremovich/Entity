@@ -1,11 +1,13 @@
 #pragma once
 
 #include "Command.hpp"
+#include "UndoableCommand.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
+#include <array>
 
 namespace entity {
 
@@ -363,12 +365,17 @@ public:
 // Property Commands (for debugging and scripting)
 // ============================================================================
 
-class SetClipBlendModeCommand : public Command {
+class SetClipBlendModeCommand : public UndoableCommand {
 public:
     SetClipBlendModeCommand(int trackIndex, int clipIndex, BlendMode mode)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_blendMode(mode) {}
 
+    // UI sets this to the pre-edit value so undo restores the right state.
+    // Scripts can skip it and execute() will auto-capture from live state.
+    void setPreviousMode(BlendMode prev) { m_previousMode = prev; }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipBlendMode"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -379,14 +386,18 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     BlendMode m_blendMode;
+    std::optional<BlendMode> m_previousMode;
 };
 
-class SetClipOpacityCommand : public Command {
+class SetClipOpacityCommand : public UndoableCommand {
 public:
     SetClipOpacityCommand(int trackIndex, int clipIndex, float opacity)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_opacity(opacity) {}
 
+    void setPreviousOpacity(float prev) { m_previousOpacity = prev; }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipOpacity"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -397,6 +408,7 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     float m_opacity;
+    std::optional<float> m_previousOpacity;
 };
 
 class LogClipStateCommand : public Command {
@@ -437,13 +449,18 @@ private:
     std::string m_tabName;  // "Stage" or "Mapping"
 };
 
-class SetClipRotationCommand : public Command {
+class SetClipRotationCommand : public UndoableCommand {
 public:
     SetClipRotationCommand(int trackIndex, int clipIndex, float rotX, float rotY, float rotZ)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
           m_rotX(rotX), m_rotY(rotY), m_rotZ(rotZ) {}
 
+    void setPreviousRotation(float prevX, float prevY, float prevZ) {
+        m_previousRotation = std::array<float, 3>{prevX, prevY, prevZ};
+    }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipRotation"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -454,6 +471,7 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     float m_rotX, m_rotY, m_rotZ;
+    std::optional<std::array<float, 3>> m_previousRotation;
 };
 
 // ============================================================================
@@ -651,12 +669,15 @@ private:
  *     "mode": "PingPong"   // Freeze | Loop | PingPong
  * }
  */
-class SetClipPlaybackModeCommand : public Command {
+class SetClipPlaybackModeCommand : public UndoableCommand {
 public:
     SetClipPlaybackModeCommand(int trackIndex, int clipIndex, PlaybackMode mode)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_mode(mode) {}
 
+    void setPreviousMode(PlaybackMode prev) { m_previousMode = prev; }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipPlaybackMode"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -667,6 +688,7 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     PlaybackMode m_mode;
+    std::optional<PlaybackMode> m_previousMode;
 };
 
 /**
@@ -685,12 +707,19 @@ private:
  *     "framerate": 24.0
  * }
  */
-class SetClipFramerateCommand : public Command {
+class SetClipFramerateCommand : public UndoableCommand {
 public:
     SetClipFramerateCommand(int trackIndex, int clipIndex, double framerate)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_framerate(framerate) {}
 
+    // Framerate changes recompute clip duration — both need to restore.
+    void setPreviousState(double prevFramerate, FrameNumber prevDuration) {
+        m_previousFramerate = prevFramerate;
+        m_previousDuration = prevDuration;
+    }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipFramerate"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -701,6 +730,8 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     double m_framerate;
+    std::optional<double> m_previousFramerate;
+    std::optional<FrameNumber> m_previousDuration;
 };
 
 /**
@@ -717,12 +748,15 @@ private:
  *     "duration": 64
  * }
  */
-class SetClipDurationCommand : public Command {
+class SetClipDurationCommand : public UndoableCommand {
 public:
     SetClipDurationCommand(int trackIndex, int clipIndex, FrameNumber duration)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_duration(duration) {}
 
+    void setPreviousDuration(FrameNumber prev) { m_previousDuration = prev; }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipDuration"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -733,6 +767,7 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     FrameNumber m_duration;
+    std::optional<FrameNumber> m_previousDuration;
 };
 
 } // namespace entity

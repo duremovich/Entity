@@ -13,15 +13,43 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/components/TimelineTrack.hpp"
+#include "entity/command/CommandDispatcher.hpp"
+#include "entity/command/Commands.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace entity {
+
+namespace {
+
+// Map a clip entity back to (trackIndex, clipIndex) — the address commands
+// use. Returns nullopt if the clip isn't actually on any track.
+std::optional<std::pair<int, int>>
+findClipIndices(Timeline* timeline, entt::entity clipEntity) {
+    if (!timeline || clipEntity == entt::null) return std::nullopt;
+    auto& registry = timeline->getRegistry();
+    const auto& tracks = timeline->getTracks();
+    for (size_t ti = 0; ti < tracks.size(); ++ti) {
+        auto* track = registry.try_get<TimelineTrack>(tracks[ti]);
+        if (!track) continue;
+        for (size_t ci = 0; ci < track->clips.size(); ++ci) {
+            if (track->clips[ci] == clipEntity) {
+                return std::make_pair(static_cast<int>(ti), static_cast<int>(ci));
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
 
 PropertyWindow::PropertyWindow(Timeline* timeline)
     : m_timeline(timeline)
@@ -139,9 +167,22 @@ void PropertyWindow::renderTransformSection() {
     ImGui::Text("Rotation");
     ImGui::SetNextItemWidth(-1);
     float rotZ = transform->rotation.z;
-    if (ImGui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
+    bool rotChanged = ImGui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg");
+    if (ImGui::IsItemActivated()) {
+        m_preEditRotZ = transform->rotation.z;
+    }
+    if (rotChanged) {
         transform->setRotation(glm::vec3(transform->rotation.x, transform->rotation.y, rotZ));
         updateKeyframeOnValueChange(AnimatableProperty::Rotation, rotZ);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+        if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+            auto cmd = std::make_unique<SetClipRotationCommand>(
+                idx->first, idx->second,
+                transform->rotation.x, transform->rotation.y, transform->rotation.z);
+            cmd->setPreviousRotation(transform->rotation.x, transform->rotation.y, m_preEditRotZ);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
     }
 
     ImGui::Spacing();
@@ -227,9 +268,24 @@ void PropertyWindow::renderLayerSection() {
     ImGui::Text("Opacity");
     ImGui::SetNextItemWidth(-1);
     float opacity = layer->opacity;
-    if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+    bool opacityChanged = ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemActivated()) {
+        m_preEditOpacity = layer->opacity;
+    }
+    if (opacityChanged) {
         layer->opacity = opacity;
         updateKeyframeOnValueChange(AnimatableProperty::Opacity, opacity);
+    }
+    // Emit the undoable command on drag end so a single drag = single undo
+    // entry. Live state has already been mutated above for responsiveness;
+    // the command's execute() is effectively a no-op on current state but
+    // stores m_previousOpacity = m_preEditOpacity for undo.
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+        if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+            auto cmd = std::make_unique<SetClipOpacityCommand>(idx->first, idx->second, layer->opacity);
+            cmd->setPreviousOpacity(m_preEditOpacity);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
     }
 
     // Visibility toggle
@@ -252,7 +308,16 @@ void PropertyWindow::renderLayerSection() {
     ImGui::Text("Blend Mode");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##blendmode", &currentBlendMode, blendModes, IM_ARRAYSIZE(blendModes))) {
-        layer->blendMode = static_cast<BlendMode>(currentBlendMode);
+        BlendMode prev = layer->blendMode;
+        BlendMode next = static_cast<BlendMode>(currentBlendMode);
+        layer->blendMode = next;
+        if (m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                auto cmd = std::make_unique<SetClipBlendModeCommand>(idx->first, idx->second, next);
+                cmd->setPreviousMode(prev);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
     }
 }
 
@@ -283,7 +348,16 @@ void PropertyWindow::renderPlaybackSection() {
     int currentMode = static_cast<int>(clip->playbackMode);
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##playbackMode", &currentMode, playbackModes, IM_ARRAYSIZE(playbackModes))) {
-        clip->playbackMode = static_cast<PlaybackMode>(currentMode);
+        PlaybackMode prev = clip->playbackMode;
+        PlaybackMode next = static_cast<PlaybackMode>(currentMode);
+        clip->playbackMode = next;
+        if (m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                auto cmd = std::make_unique<SetClipPlaybackModeCommand>(idx->first, idx->second, next);
+                cmd->setPreviousMode(prev);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
     }
 
     // Screen mapping (which screen this clip renders to)

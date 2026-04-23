@@ -249,7 +249,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::move(timelineWindow));
 
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
-    m_windowManager->registerWindow(std::make_unique<PropertyWindow>(m_timeline.get()));
+    {
+        auto propertyWindow = std::make_unique<PropertyWindow>(m_timeline.get());
+        propertyWindow->setCommandDispatcher(m_commandDispatcher.get());
+        m_windowManager->registerWindow(std::move(propertyWindow));
+    }
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));
     m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
@@ -795,6 +799,24 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 bool newState = !m_windowManager->isLayoutLocked();
                 m_windowManager->setLayoutLocked(newState);
                 std::cout << "[Engine] Layout " << (newState ? "locked" : "unlocked") << std::endl;
+            }
+            break;
+
+        case GLFW_KEY_Z:
+            // Ctrl+Z = Undo, Ctrl+Shift+Z = Redo.
+            if (ctrlPressed && m_commandDispatcher) {
+                if (shiftPressed) {
+                    m_commandDispatcher->redo(*this);
+                } else {
+                    m_commandDispatcher->undo(*this);
+                }
+            }
+            break;
+
+        case GLFW_KEY_Y:
+            // Ctrl+Y = Redo (Windows convention; Ctrl+Shift+Z also works).
+            if (ctrlPressed && m_commandDispatcher) {
+                m_commandDispatcher->redo(*this);
             }
             break;
 

@@ -89,6 +89,18 @@ size_t CommandDispatcher::processQueue(Engine& engine) {
             m_recordedCommands.push_back(command->toJson());
         }
 
+        // Undoable commands get moved onto the undo stack after successful
+        // execute(). A dynamic_cast is cheap compared to the rest of a
+        // command tick and avoids polluting the base Command vtable.
+        if (success && dynamic_cast<UndoableCommand*>(command.get())) {
+            auto* raw = static_cast<UndoableCommand*>(command.release());
+            m_undoStack.emplace_back(raw);
+            if (m_undoStack.size() > MAX_UNDO_DEPTH) {
+                m_undoStack.pop_front();
+            }
+            m_redoStack.clear();
+        }
+
         executed++;
         m_scriptCommandsExecuted++;
 
@@ -292,6 +304,59 @@ void CommandDispatcher::addScreenshotToResults(const std::string& path) {
 void CommandDispatcher::addErrorToResults(const std::string& error) {
     m_scriptResults["errors"].push_back(error);
     m_scriptResults["success"] = false;
+}
+
+bool CommandDispatcher::undo(Engine& engine) {
+    if (m_undoStack.empty()) {
+        std::cout << "[Undo] Nothing to undo" << std::endl;
+        return false;
+    }
+
+    auto cmd = std::move(m_undoStack.back());
+    m_undoStack.pop_back();
+
+    std::cout << "[Undo] " << cmd->getDescription() << std::endl;
+    bool ok = false;
+    try {
+        ok = cmd->undo(engine);
+    } catch (const std::exception& e) {
+        std::cerr << "[Undo] Exception: " << e.what() << std::endl;
+    }
+
+    if (ok) {
+        m_redoStack.push_back(std::move(cmd));
+    }
+    // On failure drop the command — pushing a failed undo back onto the
+    // undo stack invites an infinite Ctrl+Z loop with no progress.
+    return ok;
+}
+
+bool CommandDispatcher::redo(Engine& engine) {
+    if (m_redoStack.empty()) {
+        std::cout << "[Redo] Nothing to redo" << std::endl;
+        return false;
+    }
+
+    auto cmd = std::move(m_redoStack.back());
+    m_redoStack.pop_back();
+
+    std::cout << "[Redo] " << cmd->getDescription() << std::endl;
+    bool ok = false;
+    try {
+        ok = cmd->redo(engine);
+    } catch (const std::exception& e) {
+        std::cerr << "[Redo] Exception: " << e.what() << std::endl;
+    }
+
+    if (ok) {
+        m_undoStack.push_back(std::move(cmd));
+    }
+    return ok;
+}
+
+void CommandDispatcher::clearHistory() {
+    m_undoStack.clear();
+    m_redoStack.clear();
 }
 
 void CommandDispatcher::writeScriptResults() {

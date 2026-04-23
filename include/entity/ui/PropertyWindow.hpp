@@ -11,6 +11,7 @@ namespace entity {
 
 // Forward declarations
 class Timeline;
+class CommandDispatcher;
 
 /**
  * PropertyWindow - Displays and edits properties of the selected clip.
@@ -24,6 +25,12 @@ class PropertyWindow : public EditorWindow {
 public:
     explicit PropertyWindow(Timeline* timeline);
     ~PropertyWindow() override = default;
+
+    // Optional — when set, UI edits go through the dispatcher as
+    // undoable commands. Without it, edits still mutate live state but
+    // aren't recorded on the undo stack (fallback path for headless tests
+    // that construct PropertyWindow without an Engine).
+    void setCommandDispatcher(CommandDispatcher* dispatcher) { m_dispatcher = dispatcher; }
 
     void render() override;
     const char* getName() const override { return "Properties"; }
@@ -108,9 +115,17 @@ private:
 
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
+    CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
 
     // Per-entity UI state (prevents static variable leak between clips)
     std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
+
+    // Pre-edit values captured on IsItemActivated for undo support.
+    // ImGui guarantees only one widget is active at a time, so these don't
+    // need to be per-widget — the drag-end handler reads whichever was
+    // captured on the matching activation.
+    float m_preEditOpacity{0.0f};
+    float m_preEditRotZ{0.0f};
 };
 
 } // namespace entity

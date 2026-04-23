@@ -649,9 +649,27 @@ bool SetClipBlendModeCommand::execute(Engine& engine) {
         return false;
     }
 
+    if (!m_previousMode.has_value()) {
+        m_previousMode = layer->blendMode;
+    }
     layer->blendMode = m_blendMode;
     std::cout << "[SetClipBlendMode] Track " << m_trackIndex << ", Clip " << m_clipIndex
               << " -> " << static_cast<int>(m_blendMode) << std::endl;
+    return true;
+}
+
+bool SetClipBlendModeCommand::undo(Engine& engine) {
+    if (!m_previousMode.has_value()) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+    auto* layer = registry.try_get<MediaLayer>(track->clips[m_clipIndex]);
+    if (!layer) return false;
+    layer->blendMode = *m_previousMode;
     return true;
 }
 
@@ -731,9 +749,27 @@ bool SetClipOpacityCommand::execute(Engine& engine) {
         return false;
     }
 
+    if (!m_previousOpacity.has_value()) {
+        m_previousOpacity = layer->opacity;
+    }
     layer->opacity = std::clamp(m_opacity, 0.0f, 1.0f);
     std::cout << "[SetClipOpacity] Track " << m_trackIndex << ", Clip " << m_clipIndex
               << " -> " << layer->opacity << std::endl;
+    return true;
+}
+
+bool SetClipOpacityCommand::undo(Engine& engine) {
+    if (!m_previousOpacity.has_value()) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+    auto* layer = registry.try_get<MediaLayer>(track->clips[m_clipIndex]);
+    if (!layer) return false;
+    layer->opacity = *m_previousOpacity;
     return true;
 }
 
@@ -871,8 +907,28 @@ bool SetClipRotationCommand::execute(Engine& engine) {
         return false;
     }
 
+    if (!m_previousRotation.has_value()) {
+        m_previousRotation = std::array<float, 3>{
+            transform->rotation.x, transform->rotation.y, transform->rotation.z};
+    }
     transform->setRotation(glm::vec3(m_rotX, m_rotY, m_rotZ));
     std::cout << "[SetClipRotation] Set rotation to (" << m_rotX << ", " << m_rotY << ", " << m_rotZ << ")" << std::endl;
+    return true;
+}
+
+bool SetClipRotationCommand::undo(Engine& engine) {
+    if (!m_previousRotation.has_value()) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+    auto* transform = registry.try_get<Transform>(track->clips[m_clipIndex]);
+    if (!transform) return false;
+    const auto& prev = *m_previousRotation;
+    transform->setRotation(glm::vec3(prev[0], prev[1], prev[2]));
     return true;
 }
 
@@ -1280,10 +1336,21 @@ std::optional<PlaybackMode> parsePlaybackMode(const std::string& s) {
 bool SetClipPlaybackModeCommand::execute(Engine& engine) {
     Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipPlaybackMode");
     if (!clip) return false;
+    if (!m_previousMode.has_value()) {
+        m_previousMode = clip->playbackMode;
+    }
     clip->playbackMode = m_mode;
     std::cout << "[SetClipPlaybackMode] Track " << m_trackIndex
               << ", Clip " << m_clipIndex
               << " -> " << playbackModeName(m_mode) << std::endl;
+    return true;
+}
+
+bool SetClipPlaybackModeCommand::undo(Engine& engine) {
+    if (!m_previousMode.has_value()) return false;
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipPlaybackMode");
+    if (!clip) return false;
+    clip->playbackMode = *m_previousMode;
     return true;
 }
 
@@ -1321,6 +1388,11 @@ bool SetClipFramerateCommand::execute(Engine& engine) {
     Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipFramerate");
     if (!clip || !timeline) return false;
 
+    if (!m_previousFramerate.has_value()) {
+        m_previousFramerate = clip->framerate;
+        m_previousDuration = clip->duration;
+    }
+
     clip->framerate = m_framerate;
     // Recompute duration from totalMediaFrames so the natural clip length on
     // the timeline matches the new rate. Matches Engine::loadClip /
@@ -1334,6 +1406,15 @@ bool SetClipFramerateCommand::execute(Engine& engine) {
               << ", Clip " << m_clipIndex
               << " -> " << clip->framerate << " fps"
               << " (duration now " << clip->duration << " frames)" << std::endl;
+    return true;
+}
+
+bool SetClipFramerateCommand::undo(Engine& engine) {
+    if (!m_previousFramerate.has_value() || !m_previousDuration.has_value()) return false;
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipFramerate");
+    if (!clip) return false;
+    clip->framerate = *m_previousFramerate;
+    clip->duration = *m_previousDuration;
     return true;
 }
 
@@ -1368,10 +1449,21 @@ bool SetClipDurationCommand::execute(Engine& engine) {
         std::cerr << "[SetClipDuration] Duration must be > 0" << std::endl;
         return false;
     }
+    if (!m_previousDuration.has_value()) {
+        m_previousDuration = clip->duration;
+    }
     clip->duration = m_duration;
     std::cout << "[SetClipDuration] Track " << m_trackIndex
               << ", Clip " << m_clipIndex
               << " -> " << m_duration << " frames" << std::endl;
+    return true;
+}
+
+bool SetClipDurationCommand::undo(Engine& engine) {
+    if (!m_previousDuration.has_value()) return false;
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipDuration");
+    if (!clip) return false;
+    clip->duration = *m_previousDuration;
     return true;
 }
 

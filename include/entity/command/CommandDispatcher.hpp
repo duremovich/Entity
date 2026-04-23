@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Command.hpp"
+#include "UndoableCommand.hpp"
 #include <queue>
+#include <deque>
 #include <mutex>
 #include <functional>
 #include <unordered_map>
@@ -150,6 +152,30 @@ public:
      */
     void addErrorToResults(const std::string& error);
 
+    /**
+     * Undo the most recently executed undoable command.
+     * Non-undoable commands (e.g. Seek, Save) are skipped by the stack —
+     * they never land on it in the first place, so they don't block undo.
+     * @return true if a command was undone.
+     */
+    bool undo(Engine& engine);
+
+    /**
+     * Redo the most recently undone command.
+     * @return true if a command was redone.
+     */
+    bool redo(Engine& engine);
+
+    size_t getUndoDepth() const { return m_undoStack.size(); }
+    size_t getRedoDepth() const { return m_redoStack.size(); }
+
+    /**
+     * Clear undo + redo stacks. Called on project load so that you can't
+     * undo past the project boundary into a state that doesn't match the
+     * currently loaded entities.
+     */
+    void clearHistory();
+
 private:
     std::queue<CommandPtr> m_commandQueue;
     mutable std::mutex m_queueMutex;
@@ -168,6 +194,13 @@ private:
     size_t m_scriptCommandsTotal{0};
     size_t m_scriptCommandsExecuted{0};
     nlohmann::json m_scriptResults;
+
+    // Undo / redo stacks. Bounded to MAX_UNDO_DEPTH; overflow drops the
+    // oldest entry. A new non-undo execute() clears the redo stack (standard
+    // editor behaviour — branching timelines aren't worth the complexity).
+    static constexpr size_t MAX_UNDO_DEPTH = 200;
+    std::deque<std::unique_ptr<UndoableCommand>> m_undoStack;
+    std::deque<std::unique_ptr<UndoableCommand>> m_redoStack;
 
     /**
      * Write script results to fixed path.
