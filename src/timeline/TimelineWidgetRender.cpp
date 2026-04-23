@@ -978,9 +978,7 @@ float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
                         }
                     }
                     if (prevFrame >= 0) {
-                        FrameNumber globalFrame = prevFrame + clip->startFrame;
-                        double timelineFrameRate = m_timeline->getFrameRate();
-                        m_timeline->seek(static_cast<Timecode>(globalFrame / timelineFrameRate * 1000000.0f));
+                        m_timeline->seekToFrame(prevFrame + clip->startFrame);
                     }
                 }
 
@@ -1012,9 +1010,7 @@ float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
                         }
                     }
                     if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
-                        FrameNumber globalFrame = nextFrame + clip->startFrame;
-                        double timelineFrameRate = m_timeline->getFrameRate();
-                        m_timeline->seek(static_cast<Timecode>(globalFrame / timelineFrameRate * 1000000.0f));
+                        m_timeline->seekToFrame(nextFrame + clip->startFrame);
                     }
                 }
             }

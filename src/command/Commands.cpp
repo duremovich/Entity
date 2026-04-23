@@ -84,11 +84,7 @@ CommandPtr SeekCommand::fromJson(const nlohmann::json& j) {
 bool SeekToFrameCommand::execute(Engine& engine) {
     auto* timeline = engine.getTimeline();
     if (!timeline) return false;
-
-    // Convert frame to timecode
-    double frameRate = timeline->getFrameRate();
-    Timecode time = static_cast<Timecode>((m_frame / frameRate) * 1000000.0);
-    timeline->seek(time);
+    timeline->seekToFrame(m_frame);
     return true;
 }
 

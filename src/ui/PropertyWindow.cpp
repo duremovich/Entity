@@ -59,10 +59,7 @@ bool clipFrameFromPlayhead(Timeline* timeline, entt::entity clipEntity, FrameNum
     auto& registry = timeline->getRegistry();
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) return false;
-    Timecode currentTime = timeline->getCurrentTime();
-    FrameNumber currentFrame = static_cast<FrameNumber>(
-        (currentTime / 1000000.0) * timeline->getFrameRate());
-    FrameNumber clipFrame = currentFrame - clip->startFrame;
+    FrameNumber clipFrame = timeline->getCurrentFrame() - clip->startFrame;
     if (clipFrame < 0 || clipFrame >= clip->duration) return false;
     outFrame = clipFrame;
     return true;
@@ -611,13 +608,11 @@ int PropertyWindow::getCurrentClipFrame() const {
     const auto* clip = registry.try_get<Clip>(selectedClip);
     if (!clip) return -1;
 
-    // Get current timeline frame
-    Timecode currentTime = m_timeline->getCurrentTime();
-    FrameNumber currentFrame = static_cast<FrameNumber>(
-        (currentTime / 1000000.0) * m_timeline->getFrameRate());
-
-    // Convert to clip-relative frame
-    FrameNumber clipFrame = currentFrame - clip->startFrame;
+    // Convert to clip-relative frame. Routes through Timeline::getCurrentFrame()
+    // which uses std::round, matching Timeline::seekToFrame()'s rounding so a
+    // frame number round-trips cleanly. Truncating here was the cause of the
+    // "edit at keyframe inserts new keyframe one frame off" bug.
+    FrameNumber clipFrame = m_timeline->getCurrentFrame() - clip->startFrame;
 
     // Check if playhead is within clip bounds
     if (clipFrame < 0 || clipFrame >= clip->duration) {
@@ -645,11 +640,7 @@ void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
     int currentClipFrame = getCurrentClipFrame();
     if (currentClipFrame < 0) {
         // If outside clip, go to last keyframe
-        FrameNumber lastKfFrame = track->keyframes.back().frame;
-        FrameNumber timelineFrame = clip->startFrame + lastKfFrame;
-        Timecode targetTime = static_cast<Timecode>(
-            (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
-        m_timeline->seek(targetTime);
+        m_timeline->seekToFrame(clip->startFrame + track->keyframes.back().frame);
         return;
     }
 
@@ -664,10 +655,7 @@ void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
     }
 
     if (prevFrame >= 0) {
-        FrameNumber timelineFrame = clip->startFrame + prevFrame;
-        Timecode targetTime = static_cast<Timecode>(
-            (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
-        m_timeline->seek(targetTime);
+        m_timeline->seekToFrame(clip->startFrame + prevFrame);
     }
 }
 
@@ -689,21 +677,14 @@ void PropertyWindow::goToNextKeyframe(AnimatableProperty property) {
     int currentClipFrame = getCurrentClipFrame();
     if (currentClipFrame < 0) {
         // If outside clip, go to first keyframe
-        FrameNumber firstKfFrame = track->keyframes.front().frame;
-        FrameNumber timelineFrame = clip->startFrame + firstKfFrame;
-        Timecode targetTime = static_cast<Timecode>(
-            (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
-        m_timeline->seek(targetTime);
+        m_timeline->seekToFrame(clip->startFrame + track->keyframes.front().frame);
         return;
     }
 
     // Find next keyframe
     for (const auto& kf : track->keyframes) {
         if (kf.frame > currentClipFrame) {
-            FrameNumber timelineFrame = clip->startFrame + kf.frame;
-            Timecode targetTime = static_cast<Timecode>(
-                (timelineFrame / m_timeline->getFrameRate()) * 1000000.0);
-            m_timeline->seek(targetTime);
+            m_timeline->seekToFrame(clip->startFrame + kf.frame);
             return;
         }
     }

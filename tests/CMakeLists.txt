@@ -5,6 +5,7 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(EntityMediaTests
     unit/FrameRingBufferTests.cpp
     unit/BufferSystemTests.cpp
+    unit/KeyframeRoundtripTests.cpp
     test_Decoder.cpp
 )
 

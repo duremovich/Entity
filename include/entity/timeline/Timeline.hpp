@@ -69,15 +69,30 @@ public:
     bool isScrubbing() const { return m_isScrubbing.load(); }
 
     /**
-     * Get current frame number based on timeline position.
-     * Converts current time (in microseconds) to frame number using frame rate.
-     * @return Frame number (0-based)
+     * Convert a frame number to a Timecode (microseconds).
+     * Uses std::round so seekToFrame(N) -> getCurrentFrame() round-trips to N.
      */
-    FrameNumber getCurrentFrame() const {
-        // Convert microseconds to seconds, multiply by frame rate
-        double seconds = m_currentTime / 1000000.0;
-        return static_cast<FrameNumber>(std::round(seconds * m_frameRate));
+    Timecode frameToTime(FrameNumber frame) const {
+        return static_cast<Timecode>(std::round((frame / m_frameRate) * 1000000.0));
     }
+
+    /**
+     * Convert a Timecode (microseconds) to a frame number.
+     * Rounds to nearest. Single source of truth for time->frame across the app.
+     */
+    FrameNumber timeToFrame(Timecode time) const {
+        return static_cast<FrameNumber>(std::round((time / 1000000.0) * m_frameRate));
+    }
+
+    /**
+     * Get current frame number based on timeline position.
+     */
+    FrameNumber getCurrentFrame() const { return timeToFrame(m_currentTime); }
+
+    /**
+     * Seek to a specific integer frame. Round-trip safe with getCurrentFrame().
+     */
+    void seekToFrame(FrameNumber frame) { seek(frameToTime(frame)); }
 
     // Time setters
     void setDuration(Timecode duration) { m_duration = duration; }
