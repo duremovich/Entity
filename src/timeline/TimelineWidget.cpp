@@ -26,11 +26,21 @@ TimelineWidget::TimelineWidget(Timeline* timeline)
 {
 }
 
+void TimelineWidget::applyZoomIndex() {
+    if (!m_timeline) return;
+    const float pxPerFrame = MAJOR_TICK_PX / static_cast<float>(framesPerMajorTick());
+    m_pixelsPerSecond = pxPerFrame * static_cast<float>(m_timeline->getFrameRate());
+}
+
 void TimelineWidget::render() {
     if (!m_timeline) {
         ImGui::Text("No timeline set");
         return;
     }
+
+    // Refresh derived zoom from the discrete ladder. Cheap and keeps
+    // m_pixelsPerSecond in sync with both zoom-index and frame-rate changes.
+    applyZoomIndex();
 
     // Clean up stale entity references in expansion state
     {
@@ -199,15 +209,24 @@ void TimelineWidget::render() {
     int frames = static_cast<int>(currentFrame % static_cast<FrameNumber>(frameRate));
     ImGui::Text("Time: %02d:%02d:%02d", minutes, seconds, frames);
     ImGui::SameLine();
-    ImGui::TextDisabled("(Frame %d)", static_cast<int>(currentFrame));
+    ImGui::Text("Frame %lld", static_cast<long long>(currentFrame));
 
     ImGui::SameLine();
 
-    // Zoom controls
+    // Discrete zoom ladder: dropdown + minus/plus + Alt+scroll all step the
+    // same m_zoomIndex. Disguise/Resolve-style fixed division sizes instead
+    // of a continuous px/sec slider.
+    static const char* kZoomLabels[ZOOM_LEVEL_COUNT] = {
+        "1f", "2f", "5f", "10f", "20f", "50f", "100f", "200f", "500f"
+    };
     ImGui::Text("Zoom:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
-    ImGui::SliderFloat("##zoom", &m_pixelsPerSecond, 10.0f, 500.0f, "%.0f px/s");
+    if (ImGui::SmallButton("-##zoomOut")) setZoomIndex(m_zoomIndex + 1);  // larger frames/div = zoomed out
+    ImGui::SameLine(0, 2);
+    ImGui::SetNextItemWidth(70.0f);
+    ImGui::Combo("##zoom", &m_zoomIndex, kZoomLabels, ZOOM_LEVEL_COUNT);
+    ImGui::SameLine(0, 2);
+    if (ImGui::SmallButton("+##zoomIn")) setZoomIndex(m_zoomIndex - 1);   // smaller frames/div = zoomed in
 
     ImGui::SameLine();
     ImGui::Separator();

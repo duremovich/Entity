@@ -29,15 +29,10 @@ void TimelineWidget::handleInteraction() {
                          mousePos.x <= windowPos.x + windowSize.x &&
                          mousePos.y >= windowPos.y);
 
-    // Handle Alt + Mouse Wheel for zoom
+    // Alt+scroll steps the discrete zoom ladder. Wheel up = zoom in =
+    // smaller frames per major tick = lower index.
     if (overTimeline && io.MouseWheel != 0.0f && io.KeyAlt) {
-        float zoomFactor = io.MouseWheel > 0.0f ? 1.2f : 0.8f;
-        float newZoom = m_pixelsPerSecond * zoomFactor;
-
-        // Clamp zoom to reasonable range
-        newZoom = std::max(10.0f, std::min(500.0f, newZoom));
-
-        m_pixelsPerSecond = newZoom;
+        setZoomIndex(m_zoomIndex + (io.MouseWheel > 0.0f ? -1 : 1));
     }
 
     // Check if mouse is over the time ruler

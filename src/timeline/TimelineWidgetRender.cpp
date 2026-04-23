@@ -39,40 +39,32 @@ void TimelineWidget::renderTimeRuler() {
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
     FrameNumber totalFrames = static_cast<FrameNumber>(durationSeconds * frameRate);
 
-    // Determine marker interval in frames based on zoom
-    // pixelsPerSecond = pixelsPerFrame * frameRate
-    float pixelsPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
+    // Tick spacing comes from the discrete zoom ladder. Minor lives at
+    // major/5 (clamped to >=1 frame so 1f/major doesn't loop forever), and
+    // we skip minors entirely when major <=2 (they'd visually fight the
+    // majors at that zoom).
+    const FrameNumber majorEvery = static_cast<FrameNumber>(framesPerMajorTick());
+    const FrameNumber minorEvery = std::max<FrameNumber>(1, majorEvery / 5);
+    const bool drawMinors = (majorEvery > 2);
+    const FrameNumber stepEvery = drawMinors ? minorEvery : majorEvery;
 
-    FrameNumber frameInterval = 30;  // Default: every second at 30fps
-    if (pixelsPerFrame < 2.0f) {
-        frameInterval = 150;  // Every 5 seconds
-    } else if (pixelsPerFrame < 5.0f) {
-        frameInterval = 30;   // Every second
-    } else if (pixelsPerFrame < 15.0f) {
-        frameInterval = 10;   // Every 10 frames
-    } else {
-        frameInterval = 1;    // Every frame
-    }
-
-    // Draw frame markers
-    for (FrameNumber frame = 0; frame <= totalFrames; frame += frameInterval) {
+    for (FrameNumber frame = 0; frame <= totalFrames; frame += stepEvery) {
         float timeSeconds = static_cast<float>(frame) / static_cast<float>(frameRate);
         float x = windowPos.x + timeToPixel(static_cast<Timecode>(timeSeconds * 1000000.0f));
 
         if (x < windowPos.x || x > rulerMax.x) continue;
 
-        // Draw tick mark
-        bool isMajorTick = (frame % static_cast<FrameNumber>(frameRate) == 0);  // Major tick every second
+        const bool isMajorTick = (frame % majorEvery == 0);
         float tickHeight = isMajorTick ? 12.0f : 6.0f;
         drawList->AddLine(
             ImVec2(x, rulerMax.y - tickHeight),
             ImVec2(x, rulerMax.y),
-            IM_COL32(200, 200, 200, 255),
+            IM_COL32(200, 200, 200, isMajorTick ? 255 : 160),
             1.0f
         );
 
-        // Draw time label (SMPTE timecode: HH:MM:SS:FF)
-        if (isMajorTick || frameInterval <= 10) {
+        // Label only majors. SMPTE timecode HH:MM:SS:FF.
+        if (isMajorTick) {
             int totalSeconds = static_cast<int>(frame / frameRate);
             int hours = totalSeconds / 3600;
             int minutes = (totalSeconds % 3600) / 60;
@@ -102,6 +94,40 @@ void TimelineWidget::renderTracks() {
     // Get base window position ONCE at the start
     // This prevents cursor drift from InvisibleButtons affecting subsequent tracks
     ImVec2 baseWindowPos = ImGui::GetCursorScreenPos();
+
+    // Background gridlines (drawn first so clips/headers stack on top).
+    // Iteration is over the visible viewport only — a 24h timeline at 1f/major
+    // would otherwise enumerate ~2.6M frames per render.
+    {
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const float visibleW = ImGui::GetWindowWidth();
+        const float visibleH = ImGui::GetWindowHeight();
+        const float scrollX = m_syncScrollX;
+        const double frameRate = m_timeline->getFrameRate();
+        const FrameNumber majorEvery = static_cast<FrameNumber>(framesPerMajorTick());
+        const FrameNumber minorEvery = std::max<FrameNumber>(1, majorEvery / 5);
+        const bool drawMinors = (majorEvery > 2);
+        const FrameNumber stepEvery = drawMinors ? minorEvery : majorEvery;
+        const float pxPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
+
+        if (pxPerFrame > 0.0f) {
+            FrameNumber firstFrame = static_cast<FrameNumber>(std::floor(scrollX / pxPerFrame));
+            FrameNumber lastFrame  = static_cast<FrameNumber>(std::ceil((scrollX + visibleW) / pxPerFrame));
+            firstFrame = std::max<FrameNumber>(0, (firstFrame / stepEvery) * stepEvery);
+
+            const float gridTop = baseWindowPos.y;
+            const float gridBot = baseWindowPos.y + visibleH;
+
+            for (FrameNumber f = firstFrame; f <= lastFrame; f += stepEvery) {
+                const float xRel = f * pxPerFrame - scrollX;
+                if (xRel < 0 || xRel > visibleW) continue;
+                const float x = baseWindowPos.x + xRel;
+                const bool isMajor = (f % majorEvery == 0);
+                drawList->AddLine(ImVec2(x, gridTop), ImVec2(x, gridBot),
+                    isMajor ? IM_COL32(255, 255, 255, 32) : IM_COL32(255, 255, 255, 14), 1.0f);
+            }
+        }
+    }
 
     // Calculate cumulative Y offset for tracks to account for expanded tracks/clips
     float cumulativeY = 0.0f;

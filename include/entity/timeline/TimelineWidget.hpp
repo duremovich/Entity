@@ -3,6 +3,7 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include <imgui.h>
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <unordered_set>
@@ -57,10 +58,25 @@ public:
     Timeline* getTimeline() const { return m_timeline; }
 
     /**
-     * Get/set the zoom level (pixels per second).
-     * Higher values = more zoomed in.
+     * Discrete zoom ladder, in frames per major tick. Lower index = zoomed in
+     * (fewer frames per division). Disguise / Resolve-style stepping rather
+     * than continuous, so users can talk about zoom in shared units.
      */
-    void setZoom(float pixelsPerSecond) { m_pixelsPerSecond = pixelsPerSecond; }
+    static constexpr int FRAMES_PER_MAJOR_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
+    static constexpr int ZOOM_LEVEL_COUNT = 9;
+    static constexpr float MAJOR_TICK_PX = 80.0f;  // visual target width of one major division
+
+    int getZoomIndex() const { return m_zoomIndex; }
+    void setZoomIndex(int idx) {
+        m_zoomIndex = std::clamp(idx, 0, ZOOM_LEVEL_COUNT - 1);
+    }
+    int framesPerMajorTick() const { return FRAMES_PER_MAJOR_TICK[m_zoomIndex]; }
+
+    /**
+     * Derived pixels-per-second based on current zoom level + timeline framerate.
+     * Cached in m_pixelsPerSecond at render() top so the rest of the widget can
+     * stay unchanged.
+     */
     float getZoom() const { return m_pixelsPerSecond; }
 
     /**
@@ -198,9 +214,14 @@ private:
     Timeline* m_timeline{nullptr};
 
     // View settings
-    float m_pixelsPerSecond{100.0f};  // Zoom level
+    int m_zoomIndex{3};                // index into FRAMES_PER_MAJOR_TICK; default 10f/major
+    float m_pixelsPerSecond{100.0f};  // derived from zoom index + frame rate, refreshed each render()
     float m_scrollX{0.0f};             // Horizontal scroll position
     float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks
+
+    // Recompute m_pixelsPerSecond from m_zoomIndex + Timeline frame rate.
+    // Called at the top of render() so a frame-rate change picks up immediately.
+    void applyZoomIndex();
 
     // Cached positions for rendering playhead across child windows
     ImVec2 m_rulerScreenPos{0, 0};
