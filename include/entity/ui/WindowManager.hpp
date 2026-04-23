@@ -130,6 +130,30 @@ public:
     void setRunScriptCallback(RunScriptCallback callback) { m_runScriptCallback = callback; }
 
     /**
+     * Edit menu — ripple insert / delete time on the active range selection.
+     * Engine wires these to read TimelineWidget's range and dispatch the
+     * Ripple{Insert,Delete}TimeCommand through CommandDispatcher (so they
+     * land on the undo stack like any other UI-driven edit).
+     *
+     * The bool returned by hasRangeSelectionCallback gates the menu's enable
+     * state — disabled when there's no active selection.
+     */
+    using HasRangeSelectionCallback = std::function<bool()>;
+    using RippleInsertCallback = std::function<void()>;
+    using RippleDeleteCallback = std::function<void()>;
+    using UndoCallback = std::function<void()>;
+    using RedoCallback = std::function<void()>;
+    using CanUndoCallback = std::function<bool()>;
+    using CanRedoCallback = std::function<bool()>;
+    void setHasRangeSelectionCallback(HasRangeSelectionCallback cb) { m_hasRangeSelectionCallback = std::move(cb); }
+    void setRippleInsertCallback(RippleInsertCallback cb) { m_rippleInsertCallback = std::move(cb); }
+    void setRippleDeleteCallback(RippleDeleteCallback cb) { m_rippleDeleteCallback = std::move(cb); }
+    void setUndoCallback(UndoCallback cb) { m_undoCallback = std::move(cb); }
+    void setRedoCallback(RedoCallback cb) { m_redoCallback = std::move(cb); }
+    void setCanUndoCallback(CanUndoCallback cb) { m_canUndoCallback = std::move(cb); }
+    void setCanRedoCallback(CanRedoCallback cb) { m_canRedoCallback = std::move(cb); }
+
+    /**
      * Open Windows native file dialog for video selection.
      * Returns the selected file path, or empty string if cancelled.
      */
@@ -192,6 +216,14 @@ private:
     OpenProjectCallback m_openProjectCallback;
     ExitCallback m_exitCallback;
     RunScriptCallback m_runScriptCallback;
+
+    HasRangeSelectionCallback m_hasRangeSelectionCallback;
+    RippleInsertCallback m_rippleInsertCallback;
+    RippleDeleteCallback m_rippleDeleteCallback;
+    UndoCallback m_undoCallback;
+    RedoCallback m_redoCallback;
+    CanUndoCallback m_canUndoCallback;
+    CanRedoCallback m_canRedoCallback;
 };
 
 } // namespace entity

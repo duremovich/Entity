@@ -240,13 +240,43 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     // Create and configure TimelineWindow
     auto timelineWindow = std::make_unique<TimelineWindow>(m_timeline.get());
-    if (auto* widget = timelineWindow->getWidget()) {
+    m_timelineWidget = timelineWindow->getWidget();
+    TimelineWidget* timelineWidget = m_timelineWidget;
+    if (timelineWidget) {
         // Set up callback for media dropped onto timeline tracks
-        widget->setMediaDropCallback([this](const std::string& filepath, int trackIndex, Timecode position) {
+        timelineWidget->setMediaDropCallback([this](const std::string& filepath, int trackIndex, Timecode position) {
             this->onMediaDroppedOnTimeline(filepath, trackIndex, position);
         });
     }
     m_windowManager->registerWindow(std::move(timelineWindow));
+
+    // Edit menu wiring — undo/redo + ripple ops bridged through CommandDispatcher.
+    // TimelineWidget owns the range selection; CommandDispatcher owns the undo
+    // stack. Engine just routes between them.
+    m_windowManager->setHasRangeSelectionCallback([timelineWidget]() {
+        return timelineWidget && timelineWidget->hasRangeSelection();
+    });
+    m_windowManager->setRippleInsertCallback([this, timelineWidget]() {
+        if (!timelineWidget || !timelineWidget->hasRangeSelection()) return;
+        FrameNumber startF = m_timeline->timeToFrame(timelineWidget->getRangeStart());
+        FrameNumber endF   = m_timeline->timeToFrame(timelineWidget->getRangeEnd());
+        FrameNumber dur = endF - startF;
+        if (dur <= 0) return;
+        m_commandDispatcher->enqueue(std::make_unique<RippleInsertTimeCommand>(startF, dur));
+        timelineWidget->clearRangeSelection();
+    });
+    m_windowManager->setRippleDeleteCallback([this, timelineWidget]() {
+        if (!timelineWidget || !timelineWidget->hasRangeSelection()) return;
+        FrameNumber startF = m_timeline->timeToFrame(timelineWidget->getRangeStart());
+        FrameNumber endF   = m_timeline->timeToFrame(timelineWidget->getRangeEnd());
+        if (endF <= startF) return;
+        m_commandDispatcher->enqueue(std::make_unique<RippleDeleteTimeCommand>(startF, endF));
+        timelineWidget->clearRangeSelection();
+    });
+    m_windowManager->setUndoCallback([this]() { m_commandDispatcher->undo(*this); });
+    m_windowManager->setRedoCallback([this]() { m_commandDispatcher->redo(*this); });
+    m_windowManager->setCanUndoCallback([this]() { return m_commandDispatcher->getUndoDepth() > 0; });
+    m_windowManager->setCanRedoCallback([this]() { return m_commandDispatcher->getRedoDepth() > 0; });
 
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
     {
@@ -817,6 +847,36 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
             // Ctrl+Y = Redo (Windows convention; Ctrl+Shift+Z also works).
             if (ctrlPressed && m_commandDispatcher) {
                 m_commandDispatcher->redo(*this);
+            }
+            break;
+
+        case GLFW_KEY_I:
+            // Ctrl+Shift+I = Insert time at the active range selection.
+            // Same path as the Edit menu item — go through CommandDispatcher
+            // so it's undoable + recordable.
+            if (ctrlPressed && shiftPressed && m_timelineWidget && m_commandDispatcher
+                && m_timelineWidget->hasRangeSelection()) {
+                FrameNumber startF = m_timeline->timeToFrame(m_timelineWidget->getRangeStart());
+                FrameNumber endF   = m_timeline->timeToFrame(m_timelineWidget->getRangeEnd());
+                FrameNumber dur = endF - startF;
+                if (dur > 0) {
+                    m_commandDispatcher->enqueue(std::make_unique<RippleInsertTimeCommand>(startF, dur));
+                    m_timelineWidget->clearRangeSelection();
+                }
+            }
+            break;
+
+        case GLFW_KEY_DELETE:
+            // Ctrl+Shift+Delete = Remove selected time. (Plain Delete is left
+            // alone — that's the existing clip-delete shortcut.)
+            if (ctrlPressed && shiftPressed && m_timelineWidget && m_commandDispatcher
+                && m_timelineWidget->hasRangeSelection()) {
+                FrameNumber startF = m_timeline->timeToFrame(m_timelineWidget->getRangeStart());
+                FrameNumber endF   = m_timeline->timeToFrame(m_timelineWidget->getRangeEnd());
+                if (endF > startF) {
+                    m_commandDispatcher->enqueue(std::make_unique<RippleDeleteTimeCommand>(startF, endF));
+                    m_timelineWidget->clearRangeSelection();
+                }
             }
             break;
 

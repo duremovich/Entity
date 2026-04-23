@@ -305,6 +305,11 @@ private:
     DecodeSystem* m_decodeSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
     AnimationSystem* m_animationSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
 
+    // Non-owning ref to the active TimelineWidget. Used by the Edit menu and
+    // keyboard handler to read the current range selection. Owned by the
+    // WindowManager via TimelineWindow.
+    class TimelineWidget* m_timelineWidget{nullptr};
+
     // TODO: implement when class is ready
     // std::unique_ptr<Transport> m_transport;
 

@@ -306,6 +306,33 @@ void WindowManager::renderMenuBar() {
             ImGui::EndMenu();
         }
 
+        // Edit menu — undo/redo + ripple time ops on the active range selection.
+        if (ImGui::BeginMenu("Edit")) {
+            const bool canUndo = m_canUndoCallback && m_canUndoCallback();
+            const bool canRedo = m_canRedoCallback && m_canRedoCallback();
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo)) {
+                if (m_undoCallback) m_undoCallback();
+            }
+            if (ImGui::MenuItem("Redo", "Ctrl+Shift+Z", false, canRedo)) {
+                if (m_redoCallback) m_redoCallback();
+            }
+
+            ImGui::Separator();
+
+            const bool hasRange = m_hasRangeSelectionCallback && m_hasRangeSelectionCallback();
+            if (ImGui::MenuItem("Insert Time at Selection", "Ctrl+Shift+I", false, hasRange)) {
+                if (m_rippleInsertCallback) m_rippleInsertCallback();
+            }
+            if (ImGui::MenuItem("Remove Selected Time", "Ctrl+Shift+Del", false, hasRange)) {
+                if (m_rippleDeleteCallback) m_rippleDeleteCallback();
+            }
+            if (!hasRange && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Shift+drag on the ruler to select a time range first.");
+            }
+
+            ImGui::EndMenu();
+        }
+
         // Windows menu
         if (ImGui::BeginMenu("Windows")) {
             // Window visibility toggles
