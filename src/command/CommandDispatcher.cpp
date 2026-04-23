@@ -170,6 +170,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Keyframe animation commands
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
+    registerFactory("UpsertKeyframe", UpsertKeyframeCommand::fromJson);
 
     // Screen commands
     registerFactory("AddScreen", AddScreenCommand::fromJson);

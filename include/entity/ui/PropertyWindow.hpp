@@ -2,8 +2,10 @@
 
 #include "EditorWindow.hpp"
 #include "../components/AnimatedProperties.hpp"
+#include "../core/Types.hpp"
 #include <imgui.h>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <entt/entt.hpp>
 
@@ -120,12 +122,21 @@ private:
     // Per-entity UI state (prevents static variable leak between clips)
     std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
 
-    // Pre-edit values captured on IsItemActivated for undo support.
-    // ImGui guarantees only one widget is active at a time, so these don't
-    // need to be per-widget — the drag-end handler reads whichever was
-    // captured on the matching activation.
-    float m_preEditOpacity{0.0f};
-    float m_preEditRotZ{0.0f};
+    // Pre-edit snapshot captured on IsItemActivated. If the property was
+    // keyframed at drag start AND the playhead is inside the clip,
+    // updateKeyframeOnValueChange() rewrites the keyframe at that clip
+    // frame during the drag. In that case the undoable unit is the
+    // keyframe (restore-or-delete), not the scalar — restoring the scalar
+    // alone does nothing because AnimationSystem will overwrite it from
+    // the keyframe track on the next tick.
+    struct PreEditState {
+        float scalarValue{0.0f};
+        bool wasKeyframed{false};            // emit UpsertKeyframe vs scalar command
+        FrameNumber keyframeFrame{0};        // clip-local frame of the keyframe write
+        std::optional<float> keyframeValue;  // nullopt = no keyframe existed there
+    };
+    PreEditState m_preEditOpacity;
+    PreEditState m_preEditRotZ;
 };
 
 } // namespace entity

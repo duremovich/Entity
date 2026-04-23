@@ -4,6 +4,7 @@
 #include "UndoableCommand.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
+#include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
@@ -516,6 +517,54 @@ private:
 };
 
 /**
+ * Add-or-update a single keyframe on an animated-property track. Used by
+ * the PropertyWindow sliders when they detect the property is already
+ * keyframed — dragging the slider rewrites the keyframe at the current
+ * frame (After Effects-style), and this command lets that action be
+ * undone. Pre-edit state is either "keyframe at this frame had value V"
+ * or "no keyframe existed at this frame" (undo removes the new one).
+ *
+ * Unlike AddKeyframeCommand, this one is undoable and round-trips both
+ * existing-keyframe overwrite and new-keyframe insert. Not currently
+ * exposed to JSON scripts — emitted only from UI paths.
+ */
+class UpsertKeyframeCommand : public UndoableCommand {
+public:
+    UpsertKeyframeCommand(int trackIndex, int clipIndex,
+                          AnimatableProperty property, FrameNumber frame,
+                          float newValue,
+                          InterpolationType interp = InterpolationType::Linear)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_frame(frame),
+          m_newValue(newValue), m_interp(interp) {}
+
+    // Pre-edit state. setPreviousValue(nullopt) means no keyframe existed
+    // at m_frame before the drag — undo then removes the new one.
+    void setPreviousValue(std::optional<float> prev) {
+        m_previousValue = prev;
+        m_hasPreviousState = true;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "UpsertKeyframe"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    FrameNumber m_frame;
+    float m_newValue;
+    InterpolationType m_interp;
+    bool m_hasPreviousState{false};
+    std::optional<float> m_previousValue;  // nullopt = keyframe didn't exist
+};
+
+/**
  * Clear all keyframes from a clip.
  *
  * JSON format:
@@ -586,12 +635,18 @@ private:
  *     "screenName": "Main Screen"  // Use "All Screens" for null target
  * }
  */
-class SetClipTargetScreenCommand : public Command {
+class SetClipTargetScreenCommand : public UndoableCommand {
 public:
     SetClipTargetScreenCommand(int trackIndex, int clipIndex, const std::string& screenName)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_screenName(screenName) {}
 
+    // Screens are identified by name, not entity — matches JSON schema and
+    // survives project reloads where entt::entity values aren't stable.
+    // Pass "All Screens" (or empty) for the null-target case.
+    void setPreviousScreenName(std::string prev) { m_previousScreenName = std::move(prev); }
+
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "SetClipTargetScreen"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
@@ -602,6 +657,7 @@ private:
     int m_trackIndex;
     int m_clipIndex;
     std::string m_screenName;
+    std::optional<std::string> m_previousScreenName;
 };
 
 /**

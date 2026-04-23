@@ -1102,6 +1102,119 @@ CommandPtr ClearKeyframesCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// UpsertKeyframeCommand
+// ============================================================================
+
+namespace {
+
+const char* animatablePropertyName(AnimatableProperty p) {
+    switch (p) {
+        case AnimatableProperty::PositionX: return "PositionX";
+        case AnimatableProperty::PositionY: return "PositionY";
+        case AnimatableProperty::Rotation:  return "Rotation";
+        case AnimatableProperty::ScaleX:    return "ScaleX";
+        case AnimatableProperty::ScaleY:    return "ScaleY";
+        case AnimatableProperty::Opacity:   return "Opacity";
+    }
+    return "Opacity";
+}
+
+std::optional<AnimatableProperty> parseAnimatableProperty(const std::string& s) {
+    if (s == "PositionX") return AnimatableProperty::PositionX;
+    if (s == "PositionY") return AnimatableProperty::PositionY;
+    if (s == "Rotation")  return AnimatableProperty::Rotation;
+    if (s == "ScaleX")    return AnimatableProperty::ScaleX;
+    if (s == "ScaleY")    return AnimatableProperty::ScaleY;
+    if (s == "Opacity")   return AnimatableProperty::Opacity;
+    return std::nullopt;
+}
+
+} // namespace
+
+bool UpsertKeyframeCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+
+    entt::entity clipEntity = track->clips[m_clipIndex];
+    auto& animProps = registry.get_or_emplace<AnimatedProperties>(clipEntity);
+
+    // Auto-capture pre-edit state if the caller didn't provide it. Script
+    // path doesn't set it; UI path should, since it captures on mouse-down
+    // before any live mutation.
+    if (!m_hasPreviousState) {
+        const KeyframeTrack* kfTrack = animProps.getTrack(m_property);
+        if (kfTrack) {
+            const Keyframe* existing = kfTrack->getKeyframeAt(m_frame);
+            m_previousValue = existing ? std::optional<float>(existing->value) : std::nullopt;
+        } else {
+            m_previousValue = std::nullopt;
+        }
+        m_hasPreviousState = true;
+    }
+
+    animProps.addKeyframe(m_property, m_frame, m_newValue, m_interp);
+    return true;
+}
+
+bool UpsertKeyframeCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+    entt::entity clipEntity = track->clips[m_clipIndex];
+    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+    if (!animProps) return false;
+
+    KeyframeTrack& kfTrack = animProps->getOrCreateTrack(m_property);
+    if (m_previousValue.has_value()) {
+        // Overwrite with the prior value — addKeyframe replaces at the same frame.
+        kfTrack.addKeyframe(m_frame, *m_previousValue);
+    } else {
+        // No keyframe existed before — remove the one we just added.
+        kfTrack.removeKeyframe(m_frame);
+    }
+    return true;
+}
+
+nlohmann::json UpsertKeyframeCommand::toJson() const {
+    return {
+        {"type", "UpsertKeyframe"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"property", animatablePropertyName(m_property)},
+        {"frame", m_frame},
+        {"value", m_newValue}
+    };
+}
+
+std::string UpsertKeyframeCommand::getDescription() const {
+    return std::string("Upsert keyframe ") + animatablePropertyName(m_property) +
+           " @ frame " + std::to_string(m_frame) +
+           " = " + std::to_string(m_newValue);
+}
+
+CommandPtr UpsertKeyframeCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string propStr = j.value("property", "Opacity");
+    AnimatableProperty prop = parseAnimatableProperty(propStr).value_or(AnimatableProperty::Opacity);
+    FrameNumber frame = j.value("frame", 0);
+    float value = j.value("value", 0.0f);
+    return std::make_unique<UpsertKeyframeCommand>(trackIndex, clipIndex, prop, frame, value);
+}
+
+// ============================================================================
 // AddScreenCommand
 // ============================================================================
 
@@ -1150,6 +1263,19 @@ CommandPtr AddScreenCommand::fromJson(const nlohmann::json& j) {
 // SetClipTargetScreenCommand
 // ============================================================================
 
+namespace {
+
+// Lookup screen name from entity. Returns "All Screens" for entt::null so
+// the string value round-trips through the command's public API cleanly.
+std::string screenNameForEntity(entt::registry& registry, entt::entity screen) {
+    if (screen == entt::null) return "All Screens";
+    auto* s = registry.try_get<Screen>(screen);
+    if (!s) return "All Screens";
+    return s->name;
+}
+
+} // namespace
+
 bool SetClipTargetScreenCommand::execute(Engine& engine) {
     auto* timeline = engine.getTimeline();
     if (!timeline) {
@@ -1176,6 +1302,10 @@ bool SetClipTargetScreenCommand::execute(Engine& engine) {
     if (!clip) {
         std::cerr << "[SetClipTargetScreen] Clip component not found!" << std::endl;
         return false;
+    }
+
+    if (!m_previousScreenName.has_value()) {
+        m_previousScreenName = screenNameForEntity(registry, clip->targetScreen);
     }
 
     // Find screen by name
@@ -1205,6 +1335,32 @@ bool SetClipTargetScreenCommand::execute(Engine& engine) {
                   << " -> " << m_screenName << " (entity=" << static_cast<uint32_t>(foundScreen) << ")" << std::endl;
     }
 
+    return true;
+}
+
+bool SetClipTargetScreenCommand::undo(Engine& engine) {
+    if (!m_previousScreenName.has_value()) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+    auto* clip = registry.try_get<Clip>(track->clips[m_clipIndex]);
+    if (!clip) return false;
+
+    const std::string& name = *m_previousScreenName;
+    if (name == "All Screens" || name.empty()) {
+        clip->targetScreen = entt::null;
+    } else {
+        entt::entity found = entt::null;
+        for (auto [e, s] : registry.view<Screen>().each()) {
+            if (s.name == name) { found = e; break; }
+        }
+        if (found == entt::null) return false;
+        clip->targetScreen = found;
+    }
     return true;
 }
 

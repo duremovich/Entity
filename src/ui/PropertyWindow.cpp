@@ -49,6 +49,25 @@ findClipIndices(Timeline* timeline, entt::entity clipEntity) {
     return std::nullopt;
 }
 
+// Mirrors the gate in PropertyWindow::updateKeyframeOnValueChange — the
+// drag-side rewrite of keyframes only fires when (a) the property has
+// existing keyframes and (b) the playhead is inside the clip. The
+// drag-start snapshot must use the same condition or undo will try to
+// restore a keyframe write that never happened.
+bool clipFrameFromPlayhead(Timeline* timeline, entt::entity clipEntity, FrameNumber& outFrame) {
+    if (!timeline || clipEntity == entt::null) return false;
+    auto& registry = timeline->getRegistry();
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) return false;
+    Timecode currentTime = timeline->getCurrentTime();
+    FrameNumber currentFrame = static_cast<FrameNumber>(
+        (currentTime / 1000000.0) * timeline->getFrameRate());
+    FrameNumber clipFrame = currentFrame - clip->startFrame;
+    if (clipFrame < 0 || clipFrame >= clip->duration) return false;
+    outFrame = clipFrame;
+    return true;
+}
+
 } // namespace
 
 PropertyWindow::PropertyWindow(Timeline* timeline)
@@ -169,7 +188,19 @@ void PropertyWindow::renderTransformSection() {
     float rotZ = transform->rotation.z;
     bool rotChanged = ImGui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg");
     if (ImGui::IsItemActivated()) {
-        m_preEditRotZ = transform->rotation.z;
+        m_preEditRotZ.scalarValue = transform->rotation.z;
+        m_preEditRotZ.wasKeyframed = false;
+        m_preEditRotZ.keyframeValue.reset();
+        auto* ap = registry.try_get<AnimatedProperties>(selectedClip);
+        FrameNumber clipFrame;
+        if (ap && ap->getTrack(AnimatableProperty::Rotation) &&
+            ap->getTrack(AnimatableProperty::Rotation)->hasKeyframes() &&
+            clipFrameFromPlayhead(m_timeline, selectedClip, clipFrame)) {
+            m_preEditRotZ.wasKeyframed = true;
+            m_preEditRotZ.keyframeFrame = clipFrame;
+            const Keyframe* existing = ap->getTrack(AnimatableProperty::Rotation)->getKeyframeAt(clipFrame);
+            m_preEditRotZ.keyframeValue = existing ? std::optional<float>(existing->value) : std::nullopt;
+        }
     }
     if (rotChanged) {
         transform->setRotation(glm::vec3(transform->rotation.x, transform->rotation.y, rotZ));
@@ -177,11 +208,21 @@ void PropertyWindow::renderTransformSection() {
     }
     if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
         if (auto idx = findClipIndices(m_timeline, selectedClip)) {
-            auto cmd = std::make_unique<SetClipRotationCommand>(
-                idx->first, idx->second,
-                transform->rotation.x, transform->rotation.y, transform->rotation.z);
-            cmd->setPreviousRotation(transform->rotation.x, transform->rotation.y, m_preEditRotZ);
-            m_dispatcher->enqueue(std::move(cmd));
+            if (m_preEditRotZ.wasKeyframed) {
+                auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                    idx->first, idx->second,
+                    AnimatableProperty::Rotation,
+                    m_preEditRotZ.keyframeFrame,
+                    transform->rotation.z);
+                cmd->setPreviousValue(m_preEditRotZ.keyframeValue);
+                m_dispatcher->enqueue(std::move(cmd));
+            } else {
+                auto cmd = std::make_unique<SetClipRotationCommand>(
+                    idx->first, idx->second,
+                    transform->rotation.x, transform->rotation.y, transform->rotation.z);
+                cmd->setPreviousRotation(transform->rotation.x, transform->rotation.y, m_preEditRotZ.scalarValue);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
         }
     }
 
@@ -270,21 +311,44 @@ void PropertyWindow::renderLayerSection() {
     float opacity = layer->opacity;
     bool opacityChanged = ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f");
     if (ImGui::IsItemActivated()) {
-        m_preEditOpacity = layer->opacity;
+        m_preEditOpacity.scalarValue = layer->opacity;
+        m_preEditOpacity.wasKeyframed = false;
+        m_preEditOpacity.keyframeValue.reset();
+        auto* ap = registry.try_get<AnimatedProperties>(selectedClip);
+        FrameNumber clipFrame;
+        if (ap && ap->getTrack(AnimatableProperty::Opacity) &&
+            ap->getTrack(AnimatableProperty::Opacity)->hasKeyframes() &&
+            clipFrameFromPlayhead(m_timeline, selectedClip, clipFrame)) {
+            m_preEditOpacity.wasKeyframed = true;
+            m_preEditOpacity.keyframeFrame = clipFrame;
+            const Keyframe* existing = ap->getTrack(AnimatableProperty::Opacity)->getKeyframeAt(clipFrame);
+            m_preEditOpacity.keyframeValue = existing ? std::optional<float>(existing->value) : std::nullopt;
+        }
     }
     if (opacityChanged) {
         layer->opacity = opacity;
         updateKeyframeOnValueChange(AnimatableProperty::Opacity, opacity);
     }
-    // Emit the undoable command on drag end so a single drag = single undo
-    // entry. Live state has already been mutated above for responsiveness;
-    // the command's execute() is effectively a no-op on current state but
-    // stores m_previousOpacity = m_preEditOpacity for undo.
+    // On drag end: emit either a keyframe-upsert (when the drag rewrote a
+    // keyframe) or a scalar-opacity command. The scalar command is useless
+    // on keyframed properties because AnimationSystem would overwrite
+    // layer->opacity next tick from the (now-reverted-to-pre-drag) keyframe.
     if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
         if (auto idx = findClipIndices(m_timeline, selectedClip)) {
-            auto cmd = std::make_unique<SetClipOpacityCommand>(idx->first, idx->second, layer->opacity);
-            cmd->setPreviousOpacity(m_preEditOpacity);
-            m_dispatcher->enqueue(std::move(cmd));
+            if (m_preEditOpacity.wasKeyframed) {
+                auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                    idx->first, idx->second,
+                    AnimatableProperty::Opacity,
+                    m_preEditOpacity.keyframeFrame,
+                    layer->opacity);
+                cmd->setPreviousValue(m_preEditOpacity.keyframeValue);
+                m_dispatcher->enqueue(std::move(cmd));
+            } else {
+                auto cmd = std::make_unique<SetClipOpacityCommand>(
+                    idx->first, idx->second, layer->opacity);
+                cmd->setPreviousOpacity(m_preEditOpacity.scalarValue);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
         }
     }
 
@@ -392,10 +456,31 @@ void PropertyWindow::renderPlaybackSection() {
 
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##targetScreen", &currentScreenIdx, screenNames.data(), static_cast<int>(screenNames.size()))) {
+        // Capture previous screen NAME before mutating (names are the stable
+        // identifier used by the command API — entt::entity isn't stable
+        // across project reloads).
+        std::string prevName = "All Screens";
+        if (clip->targetScreen != entt::null) {
+            if (auto* prev = registry.try_get<Screen>(clip->targetScreen)) {
+                prevName = prev->name;
+            }
+        }
+        std::string newName = (screens[currentScreenIdx] == entt::null)
+            ? std::string("All Screens")
+            : std::string(screenNames[currentScreenIdx]);
+
         clip->targetScreen = screens[currentScreenIdx];
         std::cout << "[PropertyWindow] Target screen changed to: "
                   << (clip->targetScreen == entt::null ? "ALL" : std::to_string(static_cast<uint32_t>(clip->targetScreen)))
                   << " (" << screenNames[currentScreenIdx] << ")" << std::endl;
+
+        if (m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                auto cmd = std::make_unique<SetClipTargetScreenCommand>(idx->first, idx->second, newName);
+                cmd->setPreviousScreenName(prevName);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
     }
 
     // Show source vs timeline duration info
