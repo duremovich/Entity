@@ -806,6 +806,53 @@ private:
  * }
  */
 // ============================================================================
+// Named-section commands (Phase C #5) — scriptable so save/load round-trip
+// can be regression-tested via integration scripts.
+// ============================================================================
+
+class AddSectionCommand : public Command {
+public:
+    AddSectionCommand(std::string name, Timecode start, Timecode end, uint32_t color = 0xFF6090C8)
+        : m_name(std::move(name)), m_start(start), m_end(end), m_color(color) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AddSection"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_name;
+    Timecode m_start;
+    Timecode m_end;
+    uint32_t m_color;
+};
+
+class AssertSectionCountCommand : public Command {
+public:
+    explicit AssertSectionCountCommand(size_t count) : m_count(count) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertSectionCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    size_t m_count;
+};
+
+class AssertSectionExistsCommand : public Command {
+public:
+    explicit AssertSectionExistsCommand(std::string name) : m_name(std::move(name)) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertSectionExists"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    std::string m_name;
+};
+
+// ============================================================================
 // Ripple time edits (Phase C #4) — wrap Timeline::ripple{Insert,Delete}Time
 // and own the captured undo records.
 // ============================================================================

@@ -68,6 +68,19 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
 
     std::cout << "[ProjectManager] Saving project to " << savePath.string() << "..." << std::endl;
 
+    // Create the parent directory if needed — without this, scripted Save
+    // commands writing to fresh test_output/ subdirs hit ofstream::open
+    // failure in ProjectSerializer.
+    if (savePath.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(savePath.parent_path(), ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] Failed to create parent directory '"
+                      << savePath.parent_path().string() << "': " << ec.message() << std::endl;
+            return false;
+        }
+    }
+
     if (!ProjectSerializer::save(*m_timeline, savePath)) {
         std::cerr << "[ProjectManager] Save failed: " << ProjectSerializer::getLastError() << std::endl;
         return false;

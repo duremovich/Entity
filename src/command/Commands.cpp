@@ -1640,6 +1640,95 @@ CommandPtr SetClipDurationCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// Section commands
+// ============================================================================
+
+bool AddSectionCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    if (m_end <= m_start) {
+        std::cerr << "[AddSection] FAIL: bad range [" << m_start << ", " << m_end << ")" << std::endl;
+        return false;
+    }
+    Timeline::Section sec;
+    sec.name = m_name;
+    sec.start = m_start;
+    sec.end = m_end;
+    sec.color = m_color;
+    timeline->addSection(std::move(sec));
+    std::cout << "[AddSection] OK '" << m_name << "' [" << m_start << ", " << m_end << ")" << std::endl;
+    return true;
+}
+
+nlohmann::json AddSectionCommand::toJson() const {
+    return {{"type", "AddSection"}, {"name", m_name},
+            {"start", m_start}, {"end", m_end}, {"color", m_color}};
+}
+
+std::string AddSectionCommand::getDescription() const {
+    return "Add section '" + m_name + "' [" + std::to_string(m_start) + ", " + std::to_string(m_end) + ")";
+}
+
+CommandPtr AddSectionCommand::fromJson(const nlohmann::json& j) {
+    std::string name = j.value("name", "Section");
+    Timecode start = j.value("start", static_cast<Timecode>(0));
+    Timecode end = j.value("end", static_cast<Timecode>(0));
+    uint32_t color = j.value("color", static_cast<uint32_t>(0xFF6090C8));
+    return std::make_unique<AddSectionCommand>(std::move(name), start, end, color);
+}
+
+bool AssertSectionCountCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    size_t actual = timeline->getSections().size();
+    if (actual == m_count) {
+        std::cout << "[AssertSectionCount] OK count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertSectionCount] FAIL: expected " << m_count << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertSectionCountCommand::toJson() const {
+    return {{"type", "AssertSectionCount"}, {"count", m_count}};
+}
+
+std::string AssertSectionCountCommand::getDescription() const {
+    return "Assert section count == " + std::to_string(m_count);
+}
+
+CommandPtr AssertSectionCountCommand::fromJson(const nlohmann::json& j) {
+    size_t count = j.value("count", static_cast<size_t>(0));
+    return std::make_unique<AssertSectionCountCommand>(count);
+}
+
+bool AssertSectionExistsCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    for (const auto& sec : timeline->getSections()) {
+        if (sec.name == m_name) {
+            std::cout << "[AssertSectionExists] OK name=" << m_name << std::endl;
+            return true;
+        }
+    }
+    std::cerr << "[AssertSectionExists] FAIL: no section named '" << m_name << "'" << std::endl;
+    return false;
+}
+
+nlohmann::json AssertSectionExistsCommand::toJson() const {
+    return {{"type", "AssertSectionExists"}, {"name", m_name}};
+}
+
+std::string AssertSectionExistsCommand::getDescription() const {
+    return "Assert section exists: " + m_name;
+}
+
+CommandPtr AssertSectionExistsCommand::fromJson(const nlohmann::json& j) {
+    std::string name = j.value("name", "");
+    return std::make_unique<AssertSectionExistsCommand>(name);
+}
+
+// ============================================================================
 // Ripple time edits
 // ============================================================================
 

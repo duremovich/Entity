@@ -316,6 +316,20 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["outputs"] = outputsJson;
 
+        // Serialize timeline sections (Phase C #5). Bumps PROJECT_VERSION to 3,
+        // but the loader treats a missing "sections" array as empty so v2
+        // projects still load without modification.
+        json sectionsJson = json::array();
+        for (const auto& sec : timeline.getSections()) {
+            json sj;
+            sj["name"] = sec.name;
+            sj["start"] = sec.start;
+            sj["end"] = sec.end;
+            sj["color"] = sec.color;
+            sectionsJson.push_back(sj);
+        }
+        project["sections"] = sectionsJson;
+
         // Write to file with pretty formatting
         std::ofstream file(savePath);
         if (!file.is_open()) {
@@ -749,6 +763,22 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                           << " (index " << out.outputIndex
                           << (out.enabled ? ", enabled" : ", disabled") << ")" << std::endl;
             }
+        }
+
+        // Load timeline sections (added in v3). Always clear first so a
+        // re-load doesn't accumulate. Missing array = empty (v1/v2 files).
+        timeline.clearSections();
+        if (project.contains("sections")) {
+            for (const auto& sj : project["sections"]) {
+                Timeline::Section sec;
+                sec.name = sj.value("name", std::string{});
+                sec.start = sj.value("start", static_cast<Timecode>(0));
+                sec.end = sj.value("end", static_cast<Timecode>(0));
+                sec.color = sj.value("color", static_cast<uint32_t>(0xFF6090C8));
+                timeline.addSection(std::move(sec));
+            }
+            std::cout << "[ProjectSerializer] Loaded " << timeline.getSections().size()
+                      << " sections" << std::endl;
         }
 
         std::cout << "[ProjectSerializer] Loaded project from " << filepath.string() << std::endl;

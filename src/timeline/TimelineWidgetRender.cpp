@@ -88,6 +88,34 @@ void TimelineWidget::renderTimeRuler() {
         }
     }
 
+    // Named-section bands. Drawn before the range-selection overlay so the
+    // active selection always sits on top (the selection is what the next
+    // ripple/section op acts on, so it gets visual priority).
+    {
+        const float bandH = 6.0f;
+        const float bandY = rulerMin.y + 1.0f;
+        for (const auto& sec : m_timeline->getSections()) {
+            if (sec.end <= sec.start) continue;
+            const float xs = windowPos.x + timeToPixel(sec.start);
+            const float xe = windowPos.x + timeToPixel(sec.end);
+            if (xe < windowPos.x || xs > rulerMax.x) continue;
+            drawList->AddRectFilled(ImVec2(xs, bandY), ImVec2(xe, bandY + bandH), sec.color);
+            // Section name centered, clamped to the band's pixel bounds so
+            // long names don't bleed past the boundary.
+            if (!sec.name.empty()) {
+                const float textW = ImGui::CalcTextSize(sec.name.c_str()).x;
+                const float bandW = xe - xs;
+                if (bandW > 12.0f) {
+                    const float labelX = std::max(xs + 4.0f, xs + (bandW - textW) * 0.5f);
+                    drawList->PushClipRect(ImVec2(xs, bandY), ImVec2(xe, bandY + 18.0f), true);
+                    drawList->AddText(ImVec2(labelX, bandY + bandH + 1.0f),
+                        IM_COL32(240, 240, 240, 230), sec.name.c_str());
+                    drawList->PopClipRect();
+                }
+            }
+        }
+    }
+
     // Range-selection overlay on the ruler — stronger tint than the tracks
     // band so the endpoints are obviously interactive. While the user is
     // actively shift+dragging, show the In/Out/Δ frame readout near the

@@ -58,3 +58,11 @@ set_tests_properties(integration_screen_persistence_save PROPERTIES
     FIXTURES_SETUP screen_persistence_data)
 set_tests_properties(integration_screen_persistence_load PROPERTIES
     FIXTURES_REQUIRED screen_persistence_data)
+
+# Sections persistence round-trip (Phase C #5).
+entity_add_integration_test(sections_persistence_save sections_persistence_save.json)
+entity_add_integration_test(sections_persistence_load sections_persistence_load.json)
+set_tests_properties(integration_sections_persistence_save PROPERTIES
+    FIXTURES_SETUP sections_persistence_data)
+set_tests_properties(integration_sections_persistence_load PROPERTIES
+    FIXTURES_REQUIRED sections_persistence_data)

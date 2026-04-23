@@ -157,6 +157,9 @@ void Timeline::clear() {
     // Clear tracks list
     m_tracks.clear();
 
+    // Clear named sections too — they were tied to the project being unloaded.
+    m_sections.clear();
+
     // Reset selection
     m_selectedClip = entt::null;
 

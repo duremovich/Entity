@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "description": "Phase C #5 — Sections persistence round-trip (save half). Adds two named timeline sections, then saves the project. The load half asserts both survive the JSON serializer.",
+    "commands": [
+        {"type": "AddSection", "name": "Verse 1",  "start": 1000000,  "end": 5000000},
+        {"type": "AddSection", "name": "Chorus",   "start": 5000000,  "end": 9000000, "color": 4286074559},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "SaveProject", "filepath": "test_output/sections_persistence/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}

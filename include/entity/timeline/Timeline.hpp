@@ -197,6 +197,25 @@ public:
     entt::registry& getRegistry() { return m_registry; }
     const entt::registry& getRegistry() const { return m_registry; }
 
+    // ============================================================================
+    // Named time-range sections (Phase C #5). User-named labelled spans on the
+    // timeline used for show structure ("Verse 1", "Chorus", "Drop"). Persists
+    // through ProjectSerializer at PROJECT_VERSION 3.
+    // ============================================================================
+    struct Section {
+        std::string name;
+        Timecode start{0};
+        Timecode end{0};
+        uint32_t color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
+    };
+    const std::vector<Section>& getSections() const { return m_sections; }
+    std::vector<Section>& getMutableSections() { return m_sections; }
+    void addSection(Section s) { m_sections.push_back(std::move(s)); }
+    void removeSection(size_t index) {
+        if (index < m_sections.size()) m_sections.erase(m_sections.begin() + index);
+    }
+    void clearSections() { m_sections.clear(); }
+
     // Selection management
     void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
     entt::entity getSelectedClip() const { return m_selectedClip; }
@@ -247,6 +266,9 @@ private:
 
     // Track entities (stored in ECS)
     std::vector<entt::entity> m_tracks;
+
+    // Named time-range sections, persisted in project files.
+    std::vector<Section> m_sections;
 
     // Selection state
     entt::entity m_selectedClip{entt::null};

@@ -169,6 +169,11 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("RippleInsertTime", RippleInsertTimeCommand::fromJson);
     registerFactory("RippleDeleteTime", RippleDeleteTimeCommand::fromJson);
 
+    // Section commands (Phase C #5)
+    registerFactory("AddSection", AddSectionCommand::fromJson);
+    registerFactory("AssertSectionCount", AssertSectionCountCommand::fromJson);
+    registerFactory("AssertSectionExists", AssertSectionExistsCommand::fromJson);
+
     // Keyframe animation commands
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);

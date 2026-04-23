@@ -17,8 +17,12 @@ namespace entity {
  */
 class ProjectSerializer {
 public:
-    // Project file version for forward compatibility
-    static constexpr int PROJECT_VERSION = 2;
+    // Project file version for forward compatibility.
+    //   v3 (2026-04-23) — adds Timeline::Section array.
+    //   v2 — adds OutputDisplay + Models + Screens.
+    //   v1 — original.
+    // Loader is forward-compatible with older files: missing arrays no-op.
+    static constexpr int PROJECT_VERSION = 3;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

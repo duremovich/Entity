@@ -288,6 +288,11 @@ private:
      *  current zoom level. Used to keep range endpoints frame-aligned. */
     Timecode snapTimeToTickGrid(Timecode t) const;
 
+    // Section context-menu state. -1 means "no section right-clicked";
+    // otherwise it's an index into Timeline::getSections().
+    int m_rightClickedSection{-1};
+    bool m_rangeContextMenuRequested{false};
+
     // Callbacks
     MediaDropCallback m_mediaDropCallback;
 

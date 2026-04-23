@@ -328,6 +328,70 @@ void TimelineWidget::handleRulerInteraction() {
             m_lastSeekTime = -1;
         }
     }
+
+    // Right-click handling on the ruler — section ops. Hit-tests existing
+    // section bands first (delete/jump-to-start menu), then falls back to
+    // "create section from active range" when the user has a selection.
+    if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        Timecode clickTime = pixelToTime(relativeX);
+
+        m_rightClickedSection = -1;
+        const auto& sections = m_timeline->getSections();
+        for (size_t i = 0; i < sections.size(); ++i) {
+            if (clickTime >= sections[i].start && clickTime <= sections[i].end) {
+                m_rightClickedSection = static_cast<int>(i);
+                break;
+            }
+        }
+
+        if (m_rightClickedSection >= 0) {
+            ImGui::OpenPopup("SectionContextMenu");
+        } else if (m_range.active && m_range.end > m_range.start) {
+            // No section under cursor but a range is active — offer to make one.
+            m_rangeContextMenuRequested = true;
+            ImGui::OpenPopup("RangeContextMenu");
+        }
+    }
+
+    // "Create Section from Selection" popup.
+    if (ImGui::BeginPopup("RangeContextMenu")) {
+        if (m_range.active && m_range.end > m_range.start) {
+            if (ImGui::MenuItem("Create Section from Selection")) {
+                Timeline::Section sec;
+                sec.start = m_range.start;
+                sec.end = m_range.end;
+                sec.name = "Section " + std::to_string(m_timeline->getSections().size() + 1);
+                m_timeline->addSection(std::move(sec));
+            }
+            ImGui::Separator();
+            FrameNumber inF = m_timeline->timeToFrame(m_range.start);
+            FrameNumber outF = m_timeline->timeToFrame(m_range.end);
+            ImGui::TextDisabled("Range: F%lld - F%lld (%lldf)",
+                static_cast<long long>(inF),
+                static_cast<long long>(outF),
+                static_cast<long long>(outF - inF));
+        }
+        ImGui::EndPopup();
+    }
+
+    // Section band right-click: delete + jump-to-start.
+    if (ImGui::BeginPopup("SectionContextMenu")) {
+        const auto& sections = m_timeline->getSections();
+        if (m_rightClickedSection >= 0 && m_rightClickedSection < static_cast<int>(sections.size())) {
+            const auto& sec = sections[m_rightClickedSection];
+            ImGui::TextDisabled("%s", sec.name.c_str());
+            ImGui::Separator();
+            if (ImGui::MenuItem("Jump to Start")) {
+                m_timeline->seek(sec.start);
+            }
+            if (ImGui::MenuItem("Delete Section")) {
+                m_timeline->removeSection(static_cast<size_t>(m_rightClickedSection));
+                m_rightClickedSection = -1;
+            }
+        }
+        ImGui::EndPopup();
+    }
 }
 
 void TimelineWidget::handleTracksInteraction() {
