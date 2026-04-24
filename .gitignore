@@ -121,6 +121,14 @@ script_result.json
 *.autosave
 *.backup
 *.tmp
+*.autosave.entity
+/project.entity
+
+# Claude Code runtime state
+.claude/
+
+# CTest runtime artifacts
+/Testing/
 
 # IDE
 *.idea/

@@ -7,6 +7,7 @@ add_executable(EntityMediaTests
     unit/BufferSystemTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
+    unit/HapFormatTests.cpp
     test_Decoder.cpp
 )
 
@@ -15,6 +16,7 @@ target_link_libraries(EntityMediaTests
         EntityMediaCore
         GTest::gtest
         GTest::gtest_main
+        Snappy::snappy
 )
 
 include(GoogleTest)
