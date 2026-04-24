@@ -14,11 +14,12 @@ namespace entity {
  * Contains raw RGBA pixel data and frame information.
  */
 struct DecodedFrame {
-    std::vector<uint8_t> data;    // Raw RGBA pixel data (premultiplied alpha)
+    std::vector<uint8_t> data;    // Pixel data OR pre-compressed BC blocks (see `format`)
     FrameNumber frameNumber{-1};   // Frame number in media timeline
     uint32_t width{0};
     uint32_t height{0};
     Timestamp pts{0};              // Presentation timestamp (microseconds)
+    TextureFormat format{TextureFormat::RGBA8_UNORM}; // How to interpret `data` on upload
     std::atomic<bool> valid{false}; // True if frame contains valid data (atomic for thread safety)
 
     // Default constructor
@@ -31,6 +32,7 @@ struct DecodedFrame {
         , width(other.width)
         , height(other.height)
         , pts(other.pts)
+        , format(other.format)
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
@@ -42,6 +44,7 @@ struct DecodedFrame {
             width = other.width;
             height = other.height;
             pts = other.pts;
+            format = other.format;
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -54,6 +57,7 @@ struct DecodedFrame {
         , width(other.width)
         , height(other.height)
         , pts(other.pts)
+        , format(other.format)
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
@@ -65,18 +69,48 @@ struct DecodedFrame {
             width = other.width;
             height = other.height;
             pts = other.pts;
+            format = other.format;
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
     }
 
     /**
-     * Allocate memory for pixel data.
+     * Bytes required for a frame of (w, h) in the given format.
+     * RGBA8 → w*h*4. BC formats use 4x4 blocks (8 or 16 bytes per block).
      */
-    void allocate(uint32_t w, uint32_t h) {
+    static size_t bytesFor(uint32_t w, uint32_t h, TextureFormat fmt) {
+        switch (fmt) {
+            case TextureFormat::RGBA8_UNORM:
+                return static_cast<size_t>(w) * h * 4;
+            case TextureFormat::BC1_UNORM:
+            case TextureFormat::BC4_UNORM: {
+                const size_t bx = (w + 3) / 4;
+                const size_t by = (h + 3) / 4;
+                return bx * by * 8;
+            }
+            case TextureFormat::BC3_UNORM:
+            case TextureFormat::BC6H_UF16:
+            case TextureFormat::BC6H_SF16:
+            case TextureFormat::BC7_UNORM: {
+                const size_t bx = (w + 3) / 4;
+                const size_t by = (h + 3) / 4;
+                return bx * by * 16;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Allocate memory for pixel data. Defaults to RGBA8 sizing for
+     * backward compatibility with the ProRes / PNG / H.264 CPU paths;
+     * HAP callers pass a BC format and get block-packed sizing.
+     */
+    void allocate(uint32_t w, uint32_t h, TextureFormat fmt = TextureFormat::RGBA8_UNORM) {
         width = w;
         height = h;
-        data.resize(static_cast<size_t>(width) * height * 4); // RGBA = 4 bytes per pixel
+        format = fmt;
+        data.resize(bytesFor(w, h, fmt));
     }
 
     /**
@@ -88,6 +122,7 @@ struct DecodedFrame {
         width = 0;
         height = 0;
         pts = 0;
+        format = TextureFormat::RGBA8_UNORM;
         valid.store(false, std::memory_order_release);
     }
 };

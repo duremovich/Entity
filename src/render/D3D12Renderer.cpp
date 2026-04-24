@@ -1400,21 +1400,23 @@ void D3D12Renderer::freeVideoTextureSlot(uint32_t slot) {
 }
 
 bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
-                                           const uint8_t* rgbaData,
+                                           const uint8_t* data,
                                            uint32_t width, uint32_t height,
-                                           D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle) {
+                                           D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle,
+                                           TextureFormat format) {
     if (!m_initialized || !m_textureUploader) {
         return false;
     }
 
-    // The uploader can't wait on our fence — if a resize is coming we need
-    // to ensure the GPU is done with the slot's previous resources.
-    if (m_textureUploader->uploadWouldResize(slot, width, height) &&
+    // The uploader can't wait on our fence — if a resize or format change is
+    // coming we need to ensure the GPU is done with the slot's previous
+    // resources before we re-create them.
+    if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
         m_textureUploader->hasTexture(slot)) {
         waitForGpu();
     }
 
-    if (!m_textureUploader->upload(m_commandList.Get(), slot, rgbaData, width, height)) {
+    if (!m_textureUploader->upload(m_commandList.Get(), slot, data, width, height, format)) {
         return false;
     }
 
@@ -3153,7 +3155,17 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                             uint32_t width,
                                             uint32_t height) {
     D3D12_GPU_DESCRIPTOR_HANDLE discard{};
-    return uploadVideoFrameToSlot(slot, rgba, width, height, &discard);
+    return uploadVideoFrameToSlot(slot, rgba, width, height, &discard,
+                                  TextureFormat::RGBA8_UNORM);
+}
+
+bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
+                                            const uint8_t* data,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            TextureFormat format) {
+    D3D12_GPU_DESCRIPTOR_HANDLE discard{};
+    return uploadVideoFrameToSlot(slot, data, width, height, &discard, format);
 }
 
 TextureRef D3D12Renderer::getVideoTexture(uint32_t slot) const {

@@ -2,9 +2,9 @@
  * TextureUploader - extracted from D3D12Renderer (Phase B #13).
  *
  * See header for the contract. This file contains the D3D12 mechanics:
- *  - Texture / upload-buffer resource creation
+ *  - Texture / upload-buffer resource creation (RGBA or BC-compressed)
  *  - SRV descriptor writes
- *  - Row-pitch-aware memcpy into the upload buffer
+ *  - Row-pitch-aware memcpy into the upload buffer (block-aware for BC)
  *  - Command-list barrier + CopyTextureRegion recording
  *
  * All fence / waitForGpu coordination stays in D3D12Renderer — the caller
@@ -16,6 +16,23 @@
 #include <iostream>
 
 namespace entity {
+
+namespace {
+
+DXGI_FORMAT dxgiFormatFromTextureFormat(TextureFormat fmt) {
+    switch (fmt) {
+        case TextureFormat::RGBA8_UNORM: return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case TextureFormat::BC1_UNORM:   return DXGI_FORMAT_BC1_UNORM;
+        case TextureFormat::BC3_UNORM:   return DXGI_FORMAT_BC3_UNORM;
+        case TextureFormat::BC4_UNORM:   return DXGI_FORMAT_BC4_UNORM;
+        case TextureFormat::BC6H_UF16:   return DXGI_FORMAT_BC6H_UF16;
+        case TextureFormat::BC6H_SF16:   return DXGI_FORMAT_BC6H_SF16;
+        case TextureFormat::BC7_UNORM:   return DXGI_FORMAT_BC7_UNORM;
+    }
+    return DXGI_FORMAT_UNKNOWN;
+}
+
+} // anonymous namespace
 
 Result TextureUploader::initialize(ID3D12Device* device,
                                     ID3D12DescriptorHeap* srvHeap,
@@ -36,6 +53,7 @@ void TextureUploader::shutdown() {
         slot.gpuHandle = {};
         slot.width = 0;
         slot.height = 0;
+        slot.format = TextureFormat::RGBA8_UNORM;
         slot.allocated = false;
         slot.firstUpload = true;
     }
@@ -51,6 +69,7 @@ uint32_t TextureUploader::allocateSlot() {
             m_slots[i].firstUpload = true;
             m_slots[i].width = 0;
             m_slots[i].height = 0;
+            m_slots[i].format = TextureFormat::RGBA8_UNORM;
             return i;
         }
     }
@@ -65,6 +84,7 @@ void TextureUploader::freeSlot(uint32_t slot) {
     s.gpuHandle = {};
     s.width = 0;
     s.height = 0;
+    s.format = TextureFormat::RGBA8_UNORM;
     s.allocated = false;
     s.firstUpload = true;
 }
@@ -84,23 +104,31 @@ D3D12_GPU_DESCRIPTOR_HANDLE TextureUploader::gpuHandle(uint32_t slot) const {
     return m_slots[slot].gpuHandle;
 }
 
-bool TextureUploader::uploadWouldResize(uint32_t slot, uint32_t width, uint32_t height) const {
+bool TextureUploader::uploadWouldResize(uint32_t slot, uint32_t width, uint32_t height,
+                                         TextureFormat format) const {
     if (slot >= MAX_SLOTS) return false;
     const auto& s = m_slots[slot];
     if (!s.allocated) return false;
     if (!s.texture) return true;  // First upload allocates
-    return s.width != width || s.height != height;
+    return s.width != width || s.height != height || s.format != format;
 }
 
 bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
-                                     uint32_t width, uint32_t height) {
-    // Already sized correctly — nothing to do
-    if (slot.texture && slot.width == width && slot.height == height) {
+                                     uint32_t width, uint32_t height,
+                                     TextureFormat format) {
+    const DXGI_FORMAT dxgi = dxgiFormatFromTextureFormat(format);
+    if (dxgi == DXGI_FORMAT_UNKNOWN) {
+        std::cerr << "TextureUploader: unknown TextureFormat for slot " << slotIndex << std::endl;
+        return false;
+    }
+
+    // Already correct — nothing to do
+    if (slot.texture && slot.width == width && slot.height == height && slot.format == format) {
         return true;
     }
 
-    // Size changed — release old resources. Caller was responsible for GPU
-    // synchronization (waitForGpu) before calling us. See uploadWouldResize().
+    // Dimensions or format changed — release old resources. Caller was
+    // responsible for GPU synchronization (waitForGpu) before calling us.
     if (slot.texture) {
         slot.texture.Reset();
         slot.uploadBuffer.Reset();
@@ -116,7 +144,7 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
     textureDesc.Height = height;
     textureDesc.DepthOrArraySize = 1;
     textureDesc.MipLevels = 1;
-    textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textureDesc.Format = dxgi;
     textureDesc.SampleDesc.Count = 1;
 
     D3D12_HEAP_PROPERTIES heapProps = {};
@@ -132,7 +160,9 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
         return false;
     }
 
-    // Create the staging upload buffer (UPLOAD heap, GENERIC_READ state)
+    // Create the staging upload buffer (UPLOAD heap, GENERIC_READ state).
+    // GetCopyableFootprints handles BC-block row-pitch alignment automatically —
+    // the staging buffer size it returns already covers the compressed case.
     UINT64 uploadBufferSize = 0;
     m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
 
@@ -162,7 +192,7 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
 
     // Write the SRV descriptor at the heap index owned by DescriptorHeapLayout
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = dxgi;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels = 1;
@@ -176,18 +206,25 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
         m_srvHeap, descIdx, m_srvDescriptorSize);
     slot.width = width;
     slot.height = height;
+    slot.format = format;
 
     std::cout << "TextureUploader: created slot " << slotIndex << " ("
-              << width << "x" << height << ")" << std::endl;
+              << width << "x" << height << ", dxgi=" << static_cast<int>(dxgi) << ")" << std::endl;
     return true;
 }
 
 bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
                                            Slot& slot,
-                                           const uint8_t* rgba,
+                                           const uint8_t* data,
                                            uint32_t width,
-                                           uint32_t height) {
-    // Query upload buffer footprint (row pitch alignment)
+                                           uint32_t height,
+                                           TextureFormat format) {
+    (void)format; // pitch is derived from footprint below; format selected the texture desc earlier
+    (void)width;
+
+    // Query upload buffer footprint (handles row-pitch alignment automatically
+    // for BOTH RGBA and BC formats — rowSizeInBytes is the unpadded source
+    // stride per row of pixels OR per row of 4x4 blocks).
     D3D12_RESOURCE_DESC textureDesc = slot.texture->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
     UINT numRows = 0;
@@ -195,7 +232,9 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
     UINT64 totalBytes = 0;
     m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
 
-    // Map upload buffer and memcpy rgba with row-pitch fix-up
+    // Map upload buffer and memcpy source with row-pitch fix-up. Source stride
+    // is rowSizeInBytes (unpadded); destination stride is footprint.RowPitch
+    // (aligned to D3D12_TEXTURE_DATA_PITCH_ALIGNMENT = 256).
     void* mappedData = nullptr;
     D3D12_RANGE readRange = { 0, 0 };
     HRESULT hr = slot.uploadBuffer->Map(0, &readRange, &mappedData);
@@ -206,15 +245,15 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
     }
 
     uint8_t* dst = static_cast<uint8_t*>(mappedData) + footprint.Offset;
-    const uint8_t* src = rgba;
-    const UINT srcRowPitch = width * 4;  // RGBA tightly packed
+    const uint8_t* src = data;
 
     for (UINT row = 0; row < numRows; ++row) {
         std::memcpy(dst + row * footprint.Footprint.RowPitch,
-                    src + row * srcRowPitch,
-                    srcRowPitch);
+                    src + row * rowSizeInBytes,
+                    rowSizeInBytes);
     }
     slot.uploadBuffer->Unmap(0, nullptr);
+    (void)height;
 
     // Record barriers + copy onto the command list
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -253,10 +292,11 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
 
 bool TextureUploader::upload(ID3D12GraphicsCommandList* cmdList,
                               uint32_t slot,
-                              const uint8_t* rgba,
+                              const uint8_t* data,
                               uint32_t width,
-                              uint32_t height) {
-    if (!m_device || !cmdList || !rgba || width == 0 || height == 0) {
+                              uint32_t height,
+                              TextureFormat format) {
+    if (!m_device || !cmdList || !data || width == 0 || height == 0) {
         return false;
     }
     if (slot >= MAX_SLOTS) {
@@ -270,10 +310,10 @@ bool TextureUploader::upload(ID3D12GraphicsCommandList* cmdList,
         return false;
     }
 
-    if (!ensureTexture(s, slot, width, height)) {
+    if (!ensureTexture(s, slot, width, height, format)) {
         return false;
     }
-    return copyPixelsAndRecord(cmdList, s, rgba, width, height);
+    return copyPixelsAndRecord(cmdList, s, data, width, height, format);
 }
 
 } // namespace entity

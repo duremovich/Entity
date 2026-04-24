@@ -96,6 +96,7 @@ target_sources(EntityMediaCore
         src/media/PNGSequenceDecoder.cpp
         src/media/ProResDecoder.cpp
         src/media/HAPDecoder.cpp
+        src/media/HapFormat.cpp
         src/media/ObjLoader.cpp
 
         # Render
@@ -155,6 +156,8 @@ if(HAVE_FFMPEG)
     target_compile_definitions(EntityMediaCore PRIVATE HAVE_FFMPEG)
 endif()
 
+find_package(Snappy CONFIG REQUIRED)
+
 target_link_libraries(EntityMediaCore
     PUBLIC
         EnTT::EnTT
@@ -163,6 +166,7 @@ target_link_libraries(EntityMediaCore
         glfw
         imgui::imgui
         nlohmann_json::nlohmann_json
+        Snappy::snappy
 )
 
 # Windows-specific libraries

@@ -1,7 +1,67 @@
 #include "entity/media/HAPDecoder.hpp"
+#include "entity/media/HapFormat.hpp"
+
 #include <iostream>
+#include <cstring>
+
+#ifdef HAVE_FFMPEG
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/rational.h>
+}
+#endif
 
 namespace entity {
+
+namespace {
+
+#ifdef HAVE_FFMPEG
+
+// Map HAP FourCC codec_tag → (MediaType, hasAlpha). The codec_tag is a
+// LE-packed ASCII quad; compare via memcmp after unpacking. Per HAP spec,
+// codec_tag values are 'Hap1', 'Hap5', 'HapY', 'Hap7', 'HapA', 'HapH',
+// 'HapM' (multi-image YCoCg+Alpha).
+struct VariantInfo {
+    MediaType mediaType;
+    bool hasAlpha;
+    const char* name;
+};
+
+VariantInfo describeCodecTag(uint32_t codecTag) {
+    char tag[5] = {0};
+    tag[0] = static_cast<char>(codecTag & 0xFF);
+    tag[1] = static_cast<char>((codecTag >> 8) & 0xFF);
+    tag[2] = static_cast<char>((codecTag >> 16) & 0xFF);
+    tag[3] = static_cast<char>((codecTag >> 24) & 0xFF);
+
+    if (std::memcmp(tag, "Hap1", 4) == 0) return {MediaType::VideoHAP,      false, "Hap (BC1 RGB)"};
+    if (std::memcmp(tag, "Hap5", 4) == 0) return {MediaType::VideoHAPAlpha, true,  "Hap Alpha (BC3 RGBA)"};
+    if (std::memcmp(tag, "HapY", 4) == 0) return {MediaType::VideoHAPQ,    false, "Hap Q (YCoCg BC3)"};
+    if (std::memcmp(tag, "HapM", 4) == 0) return {MediaType::VideoHAPQ,    true,  "Hap Q Alpha (YCoCg+A)"};
+    if (std::memcmp(tag, "Hap7", 4) == 0) return {MediaType::VideoHAPR,    true,  "Hap R (BC7 RGBA)"};
+    if (std::memcmp(tag, "HapA", 4) == 0) return {MediaType::VideoHAP,      false, "Hap Alpha-only (BC4)"};
+    if (std::memcmp(tag, "HapH", 4) == 0) return {MediaType::VideoHAP,      false, "Hap HDR (BC6H)"};
+    return {MediaType::VideoHAP, false, "unknown-HAP-variant"};
+}
+
+// Convert HapFormat's pixel format into the renderer-facing TextureFormat.
+TextureFormat textureFormatFor(HapPixelFormat fmt) {
+    switch (fmt) {
+        case HapPixelFormat::BC1_UNORM: return TextureFormat::BC1_UNORM;
+        case HapPixelFormat::BC3_UNORM: return TextureFormat::BC3_UNORM;
+        case HapPixelFormat::BC4_UNORM: return TextureFormat::BC4_UNORM;
+        case HapPixelFormat::BC6H_UF16: return TextureFormat::BC6H_UF16;
+        case HapPixelFormat::BC6H_SF16: return TextureFormat::BC6H_SF16;
+        case HapPixelFormat::BC7_UNORM: return TextureFormat::BC7_UNORM;
+        default:                        return TextureFormat::RGBA8_UNORM;
+    }
+}
+
+#endif // HAVE_FFMPEG
+
+} // anonymous namespace
 
 HAPDecoder::HAPDecoder() = default;
 
@@ -13,45 +73,119 @@ Result HAPDecoder::open(const std::string& filepath) {
     if (m_isOpen) {
         close();
     }
-
     m_filepath = filepath;
 
 #ifdef HAVE_FFMPEG
-    // TODO: Implement FFmpeg opening for HAP
-    // 1. Allocate and open input file with avformat_open_input()
-    // 2. Get stream information with avformat_find_stream_info()
-    // 3. Find video stream by iterating through streams
-    // 4. Get codec from stream and allocate codec context
-    // 5. Open codec with avcodec_open2()
-    // 6. Allocate AVFrame and AVPacket structures
-    // 7. Call detectHAPVariant() to identify which HAP variant
-    // 8. Extract metadata (width, height, frame rate, duration)
-    // 9. Set m_isOpen = true on success
-    // 10. Return Result::Success
+    int ret = avformat_open_input(&m_formatContext, filepath.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        char buf[256]; av_strerror(ret, buf, sizeof(buf));
+        std::cerr << "HAPDecoder: avformat_open_input failed: " << buf << std::endl;
+        return Result::FileNotFound;
+    }
 
-    std::cerr << "HAPDecoder: FFmpeg integration not yet implemented" << std::endl;
-    return Result::NotImplemented;
+    ret = avformat_find_stream_info(m_formatContext, nullptr);
+    if (ret < 0) {
+        std::cerr << "HAPDecoder: avformat_find_stream_info failed" << std::endl;
+        close();
+        return Result::DecoderError;
+    }
+
+    // Find the video stream (should be the only stream in a HAP .mov/.avi)
+    m_videoStreamIndex = -1;
+    for (unsigned i = 0; i < m_formatContext->nb_streams; ++i) {
+        if (m_formatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            m_videoStreamIndex = static_cast<int>(i);
+            break;
+        }
+    }
+    if (m_videoStreamIndex < 0) {
+        std::cerr << "HAPDecoder: no video stream in " << filepath << std::endl;
+        close();
+        return Result::UnsupportedFormat;
+    }
+
+    AVStream* stream = m_formatContext->streams[m_videoStreamIndex];
+    AVCodecParameters* codecpar = stream->codecpar;
+
+    // Sanity: verify this is actually a HAP stream. We refuse non-HAP to keep
+    // the decoder-factory routing honest (the factory should dispatch HAP
+    // files here; other codecs go to ProResDecoder/etc.).
+    if (codecpar->codec_id != AV_CODEC_ID_HAP) {
+        std::cerr << "HAPDecoder: stream codec_id is not HAP (got "
+                  << codecpar->codec_id << ")" << std::endl;
+        close();
+        return Result::UnsupportedFormat;
+    }
+
+    // Metadata
+    m_width  = static_cast<uint32_t>(codecpar->width);
+    m_height = static_cast<uint32_t>(codecpar->height);
+
+    if (stream->r_frame_rate.den > 0) {
+        m_frameRate = av_q2d(stream->r_frame_rate);
+    } else if (stream->avg_frame_rate.den > 0) {
+        m_frameRate = av_q2d(stream->avg_frame_rate);
+    } else {
+        m_frameRate = 30.0;
+    }
+
+    if (stream->nb_frames > 0) {
+        m_duration = static_cast<FrameNumber>(stream->nb_frames);
+    } else if (stream->duration > 0) {
+        AVRational fr = (stream->r_frame_rate.den > 0) ? stream->r_frame_rate
+                                                        : stream->avg_frame_rate;
+        if (fr.num <= 0 || fr.den <= 0) { fr.num = 30; fr.den = 1; }
+        m_duration = static_cast<FrameNumber>(
+            av_rescale_q(stream->duration, stream->time_base, av_inv_q(fr)));
+    } else {
+        m_duration = 0;
+    }
+
+    // Variant identification via FourCC codec_tag
+    VariantInfo vi = describeCodecTag(codecpar->codec_tag);
+    m_mediaType = vi.mediaType;
+    m_hasAlpha = vi.hasAlpha;
+
+    // Allocate reusable packet
+    m_packet = av_packet_alloc();
+    if (!m_packet) {
+        std::cerr << "HAPDecoder: av_packet_alloc failed" << std::endl;
+        close();
+        return Result::OutOfMemory;
+    }
+
+    std::cout << "HAPDecoder opened " << filepath
+              << " [" << vi.name << "] " << m_width << "x" << m_height
+              << " @ " << m_frameRate << " fps, " << m_duration << " frames" << std::endl;
+
+    m_isOpen = true;
+    m_currentFrame = -1;
+    return Result::Success;
 #else
+    (void)filepath;
     std::cerr << "HAPDecoder: FFmpeg not available" << std::endl;
     return Result::NotImplemented;
 #endif
 }
 
 void HAPDecoder::close() {
-    if (!m_isOpen) {
-        return;
-    }
-
 #ifdef HAVE_FFMPEG
-    // TODO: Cleanup FFmpeg resources
-    // 1. Free AVFrame with av_frame_free(&m_frame)
-    // 2. Free AVPacket with av_packet_free(&m_packet)
-    // 3. Close codec context with avcodec_close(m_codecContext)
-    // 4. Free codec context with avcodec_free_context(&m_codecContext)
-    // 5. Close input file with avformat_close_input(&m_formatContext)
-    // 6. Reset all member variables to initial state
+    if (m_packet) {
+        av_packet_free(&m_packet);
+        m_packet = nullptr;
+    }
+    if (m_codecContext) {
+        // We don't actually open a codec (no avcodec_open2), but future code
+        // paths might — cleanup is safe against never-opened contexts.
+        avcodec_free_context(&m_codecContext);
+        m_codecContext = nullptr;
+    }
+    if (m_formatContext) {
+        avformat_close_input(&m_formatContext);
+        m_formatContext = nullptr;
+    }
+    m_frame = nullptr; // never allocated; we bypass libavcodec's decode
 #endif
-
     m_isOpen = false;
     m_width = 0;
     m_height = 0;
@@ -62,96 +196,128 @@ void HAPDecoder::close() {
     m_videoStreamIndex = -1;
 }
 
-Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) {
+Result HAPDecoder::seek(FrameNumber frameNumber) {
 #ifdef HAVE_FFMPEG
-    // TODO: Decode HAP frame
-    // 1. Check if decoder is open, return error if not
-    // 2. If seeking needed, call seek(frameNumber)
-    // 3. Read packets with av_read_frame() until we find video packet for our frame
-    // 4. Decode packet with avcodec_send_packet() and avcodec_receive_frame()
-    // 5. Check frame number from decoded frame matches requested frame
-    // 6. Call convertToRGBA() to convert HAP data to RGBA
-    // 7. Fill outFrame with decoded data
-    // 8. Return Result::Success on success
-    // 9. Handle EOF and error conditions gracefully
+    if (!m_isOpen || !m_formatContext) return Result::Failure;
 
-    (void)frameNumber;
-    (void)outFrame;
-    return Result::NotImplemented;
+    AVStream* stream = m_formatContext->streams[m_videoStreamIndex];
+    AVRational fr = (stream->r_frame_rate.den > 0) ? stream->r_frame_rate
+                                                   : stream->avg_frame_rate;
+    if (fr.num <= 0 || fr.den <= 0) { fr.num = 30; fr.den = 1; }
+
+    // Convert frame number → stream timebase timestamp. HAP is intra-frame
+    // so every frame is a keyframe — AVSEEK_FLAG_BACKWARD lands exactly
+    // on the target (no keyframe rounding to worry about).
+    int64_t ts = av_rescale_q(static_cast<int64_t>(frameNumber),
+                              av_inv_q(fr), stream->time_base);
+
+    int ret = av_seek_frame(m_formatContext, m_videoStreamIndex, ts, AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        char buf[256]; av_strerror(ret, buf, sizeof(buf));
+        std::cerr << "HAPDecoder: seek failed: " << buf << std::endl;
+        return Result::DecoderError;
+    }
+    m_currentFrame = frameNumber - 1;
+    return Result::Success;
 #else
     (void)frameNumber;
-    (void)outFrame;
     return Result::NotImplemented;
 #endif
 }
 
-Result HAPDecoder::seek(FrameNumber frameNumber) {
+Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) {
 #ifdef HAVE_FFMPEG
-    // TODO: Implement seeking
-    // 1. Check if decoder is open
-    // 2. Calculate timestamp from frame number and frame rate
-    // 3. Call av_seek_frame() with AVSEEK_FLAG_BACKWARD
-    // 4. Flush codec buffers with avcodec_flush_buffers()
-    // 5. Update m_currentFrame to seeked position
-    // 6. Return Result::Success on success, error code otherwise
-    // Note: HAP seeking may have limitations depending on keyframe frequency
+    if (!m_isOpen || !m_packet) {
+        return Result::Failure;
+    }
 
-    (void)frameNumber;
-    return Result::NotImplemented;
+    // Seek if the target isn't the next sequential frame. For random access
+    // this is free; for forward playback (nextFrame = current + 1) the seek
+    // is skipped.
+    if (frameNumber != m_currentFrame + 1) {
+        Result sr = seek(frameNumber);
+        if (sr != Result::Success) return sr;
+    }
+
+    // Read packets until we hit the target frame. In practice after a seek
+    // the first packet is our target (HAP is all keyframes), but we stay
+    // defensive against container-level padding / reordering.
+    while (true) {
+        av_packet_unref(m_packet);
+        int ret = av_read_frame(m_formatContext, m_packet);
+        if (ret < 0) {
+            // EOF or error
+            return (ret == AVERROR_EOF) ? Result::Failure : Result::DecoderError;
+        }
+        if (m_packet->stream_index != m_videoStreamIndex) {
+            continue;
+        }
+        ++m_currentFrame;
+        if (m_currentFrame < frameNumber) {
+            continue; // keep reading toward target
+        }
+        break;
+    }
+
+    // Parse the raw HAP packet into BC block data + format metadata.
+    // Reuse outFrame.data for the decompressed blocks (capacity is preserved
+    // across ring-buffer push/pop, so steady state is allocation-free).
+    HapFrame hap;
+    hap.textureData = std::move(outFrame.data);
+    hap.alphaData   = {};
+
+    if (!parseHapPacket(m_packet->data, static_cast<size_t>(m_packet->size),
+                        m_width, m_height, hap)) {
+        outFrame.data = std::move(hap.textureData); // restore for retry
+        outFrame.valid.store(false, std::memory_order_release);
+        std::cerr << "HAPDecoder: parseHapPacket failed at frame " << frameNumber << std::endl;
+        return Result::DecoderError;
+    }
+
+    // HapM multi-image (YCoCg + BC4 alpha) isn't fully wired through the
+    // renderer yet — it needs a second texture slot for the alpha plane.
+    // For now, play the color plane and drop alpha. TODO when any user
+    // actually hits this path.
+    if (hap.alphaFormat != HapPixelFormat::Unknown) {
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "HAPDecoder: HapM second (alpha) plane not yet supported — "
+                         "color plane only" << std::endl;
+            warned = true;
+        }
+    }
+
+    outFrame.data = std::move(hap.textureData);
+    outFrame.frameNumber = frameNumber;
+    outFrame.width = m_width;
+    outFrame.height = m_height;
+    outFrame.pts = m_packet->pts;
+    outFrame.format = textureFormatFor(hap.format);
+    outFrame.valid.store(true, std::memory_order_release);
+    return Result::Success;
 #else
     (void)frameNumber;
+    (void)outFrame;
     return Result::NotImplemented;
 #endif
 }
 
 Result HAPDecoder::detectHAPVariant() {
-#ifdef HAVE_FFMPEG
-    // TODO: Detect HAP, HAP Alpha, or HAP Q
-    // 1. Check codec name from m_codecContext->codec->name
-    // 2. Compare against "hap", "hap_alpha", "hap_q", etc.
-    // 3. Set m_mediaType accordingly:
-    //    - "hap" -> MediaType::VideoHAP, m_hasAlpha = false
-    //    - "hap_alpha" -> MediaType::VideoHAPAlpha, m_hasAlpha = true
-    //    - "hap_q" -> MediaType::VideoHAPQ, m_hasAlpha = false
-    // 4. Log detected variant for debugging
-    // 5. Return Result::Success on successful detection
-
-    return Result::NotImplemented;
-#else
-    return Result::NotImplemented;
-#endif
+    // Variant is detected at open() via codec_tag; nothing to do here.
+    // Kept for API compatibility with the original stub.
+    return Result::Success;
 }
 
 Result HAPDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
-#ifdef HAVE_FFMPEG
-    // TODO: DXT decompression to RGBA
-    // 1. Check input parameters, return error if invalid
-    // 2. Allocate output frame if needed using outFrame.allocate()
-    // 3. Extract DXT compressed data from srcFrame (format depends on variant)
-    // 4. Decompress DXT1/DXT5 to RGBA:
-    //    - HAP: DXT1 -> RGB (no alpha, set alpha to 255)
-    //    - HAP Alpha: DXT5 -> RGBA with interpolated alpha
-    //    - HAP Q: Similar to HAP with quality considerations
-    // 5. Premultiply alpha for all pixels (for GPU blending)
-    //    - R = (R * A) / 255
-    //    - G = (G * A) / 255
-    //    - B = (B * A) / 255
-    //    - A = A
-    // 6. Set metadata (frame number, timestamp, valid flag)
-    // 7. Return Result::Success
-    //
-    // Note: Future optimization would upload DXT directly to GPU
-    // without decompression (requires special GPU texture formats).
-    // For now, decompression ensures compatibility with standard RGBA path.
-
+    // Not used — HAP decoding skips CPU decompression entirely. The parser
+    // extracts pre-compressed BC blocks that go straight to a BC GPU
+    // texture. Kept as a stub to satisfy the header, though we never call
+    // it from this decoder. If a future path needs CPU RGBA (e.g. a
+    // software fallback on systems without BC support), implement here by
+    // running a block-decompression pass per format.
     (void)srcFrame;
     (void)outFrame;
     return Result::NotImplemented;
-#else
-    (void)srcFrame;
-    (void)outFrame;
-    return Result::NotImplemented;
-#endif
 }
 
 } // namespace entity

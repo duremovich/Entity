@@ -225,12 +225,13 @@ void PlaybackController::updateClipVideos() {
             ringBufferCount++;
 
             if (gotFrame) {
-                // Got frame from ring buffer - upload to GPU
+                // Got frame from ring buffer - upload to GPU (RGBA or pre-compressed BC).
                 bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
                     videoTex.descriptorSlot,
                     ringFrame.data.data(),
                     ringFrame.width,
-                    ringFrame.height
+                    ringFrame.height,
+                    ringFrame.format
                 );
 
                 if (uploadSuccess) {
@@ -260,7 +261,8 @@ void PlaybackController::updateClipVideos() {
                         videoTex.descriptorSlot,
                         nearestFrame.data.data(),
                         nearestFrame.width,
-                        nearestFrame.height
+                        nearestFrame.height,
+                        nearestFrame.format
                     );
                     if (uploadSuccess) {
                         videoTex.width = nearestFrame.width;
@@ -313,12 +315,13 @@ void PlaybackController::updateClipVideos() {
             frame->valid = true;
             state->lastDecodedFrame = mediaFrame;
 
-            // Upload frame to GPU texture slot
+            // Upload frame to GPU texture slot (sync-decode path — RGBA or BC).
             bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
                 videoTex.descriptorSlot,
                 frame->data.data(),
                 frame->width,
-                frame->height
+                frame->height,
+                frame->format
             );
 
             if (uploadSuccess) {

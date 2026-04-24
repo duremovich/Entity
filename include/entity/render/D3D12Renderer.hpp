@@ -60,6 +60,11 @@ public:
                                       const uint8_t* rgba,
                                       uint32_t width,
                                       uint32_t height) override;
+    bool       uploadVideoFrameToSlot(uint32_t slot,
+                                      const uint8_t* data,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      TextureFormat format) override;
     TextureRef getVideoTexture(uint32_t slot) const override;
 
     uint32_t   createComposeTarget(uint32_t width, uint32_t height) override;
@@ -144,11 +149,12 @@ public:
     uint32_t getVideoTextureWidth() const { return m_videoTextureWidth; }
     uint32_t getVideoTextureHeight() const { return m_videoTextureHeight; }
 
-    /** Upload frame data to a slot, returning the D3D12 SRV handle. Legacy. */
+    /** Upload frame data to a slot, returning the D3D12 SRV handle. Internal. */
     bool uploadVideoFrameToSlot(uint32_t slot,
-                                const uint8_t* rgbaData,
+                                const uint8_t* data,
                                 uint32_t width, uint32_t height,
-                                D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle);
+                                D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle,
+                                TextureFormat format = TextureFormat::RGBA8_UNORM);
 
     /** Draw a textured quad with D3D12 SRV + XMMATRIX. Legacy. */
     void drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,

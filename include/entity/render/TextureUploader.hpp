@@ -78,30 +78,36 @@ public:
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle(uint32_t slot) const;
 
     /**
-     * Returns true if a subsequent upload(slot, w, h, ...) would resize the
-     * texture (either first upload or dimension change). Caller should
-     * waitForGpu() before calling upload() in that case, since the previous
-     * texture may still be in-flight.
+     * Returns true if a subsequent upload(slot, w, h, fmt, ...) would resize or
+     * re-create the texture (first upload, dimension change, or format change).
+     * Caller should waitForGpu() before calling upload() in that case.
      */
-    bool uploadWouldResize(uint32_t slot, uint32_t width, uint32_t height) const;
+    bool uploadWouldResize(uint32_t slot, uint32_t width, uint32_t height,
+                           TextureFormat format = TextureFormat::RGBA8_UNORM) const;
 
     /**
      * Perform an upload. Records copy commands into `cmdList`:
-     *  1. If first upload or dimensions changed, (re)creates the GPU texture,
-     *     upload buffer, and SRV descriptor.
-     *  2. memcpy rgba into the upload buffer (with row-pitch fix-up).
+     *  1. If first upload, dimensions changed, or format changed, (re)creates
+     *     the GPU texture, upload buffer, and SRV descriptor using the DXGI
+     *     format that matches `format`.
+     *  2. memcpy source data into the upload buffer (with row-pitch fix-up
+     *     that correctly handles BC-block row pitch for compressed formats).
      *  3. Records: transition COPY_DEST, CopyTextureRegion, transition
      *     PIXEL_SHADER_RESOURCE.
      * Caller is responsible for executing the command list and fence-signaling.
+     *
+     * `data` is RGBA for RGBA8_UNORM, or densely-packed BC blocks for BC*.
+     * Format defaults to RGBA8_UNORM so legacy callers compile unchanged.
      *
      * Returns false on slot-out-of-bounds, uninitialized, bad args, or
      * resource-creation failure.
      */
     bool upload(ID3D12GraphicsCommandList* cmdList,
                 uint32_t slot,
-                const uint8_t* rgba,
+                const uint8_t* data,
                 uint32_t width,
-                uint32_t height);
+                uint32_t height,
+                TextureFormat format = TextureFormat::RGBA8_UNORM);
 
 private:
     struct Slot {
@@ -110,16 +116,19 @@ private:
         D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle{};
         uint32_t width{0};
         uint32_t height{0};
+        TextureFormat format{TextureFormat::RGBA8_UNORM};
         bool allocated{false};
         bool firstUpload{true};  // Tracks whether we need a state-transition barrier
     };
 
-    bool ensureTexture(Slot& slot, uint32_t slotIndex, uint32_t width, uint32_t height);
+    bool ensureTexture(Slot& slot, uint32_t slotIndex, uint32_t width, uint32_t height,
+                       TextureFormat format);
     bool copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
                               Slot& slot,
-                              const uint8_t* rgba,
+                              const uint8_t* data,
                               uint32_t width,
-                              uint32_t height);
+                              uint32_t height,
+                              TextureFormat format);
 
     ID3D12Device*          m_device{nullptr};
     ID3D12DescriptorHeap*  m_srvHeap{nullptr};

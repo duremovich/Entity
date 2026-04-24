@@ -9,11 +9,12 @@ namespace entity {
 enum class MediaType {
     Unknown,
     VideoProRes4444,
-    VideoHAP,
-    VideoHAPAlpha,
-    VideoHAPQ,
+    VideoHAP,         // Hap1 — RGB BC1
+    VideoHAPAlpha,    // Hap5 — RGBA BC3
+    VideoHAPQ,        // HapY — scaled YCoCg in BC3
+    VideoHAPR,        // Hap7 — RGBA BC7 (newer, higher-quality HAP variant)
     PNGSequence,
-    DPXSequence  // Future
+    DPXSequence       // Future
 };
 
 // Blend mode enumeration (After Effects style)
@@ -51,6 +52,22 @@ enum class PixelFormat {
     YUV444          // YUV 4:4:4
 };
 
+// GPU-facing texture format. Maps 1:1 onto DXGI_FORMAT at the D3D12
+// boundary. Used by TextureUploader / IRenderer to create video
+// textures of the right kind for the decoded content.
+// RGBA8_UNORM is the default for legacy / CPU-decoded content; the
+// BC* variants carry pre-compressed HAP payloads uploaded directly
+// to the GPU (zero CPU decompression).
+enum class TextureFormat : uint8_t {
+    RGBA8_UNORM,    // Default — existing ProRes / PNG / H264 CPU-decoded paths
+    BC1_UNORM,      // HAP
+    BC3_UNORM,      // HAP Alpha / HAP Q (YCoCg lives here, shader decodes)
+    BC4_UNORM,      // HAP Alpha-only
+    BC6H_UF16,      // HAP HDR unsigned float
+    BC6H_SF16,      // HAP HDR signed float
+    BC7_UNORM       // HAP R
+};
+
 // Result codes for operations
 enum class Result {
     Success,
@@ -82,6 +99,7 @@ inline const char* MediaTypeToString(MediaType type) {
         case MediaType::VideoHAP: return "HAP";
         case MediaType::VideoHAPAlpha: return "HAP Alpha";
         case MediaType::VideoHAPQ: return "HAP Q";
+        case MediaType::VideoHAPR: return "HAP R";
         case MediaType::PNGSequence: return "PNG Sequence";
         case MediaType::DPXSequence: return "DPX Sequence";
         default: return "Unknown";

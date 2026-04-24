@@ -79,12 +79,13 @@ TEST_F(DecoderUtilsTest, CreateDecoder_CreatesDecoderInstances) {
     EXPECT_NE(decoder, nullptr);
 }
 
-TEST_F(DecoderUtilsTest, CreateDecoder_HAPReturnsNullptr) {
-    // HAP is not yet implemented — factory returns nullptr so callers fail
-    // loudly at load time instead of silently at decode time.
-    EXPECT_EQ(createDecoder(MediaType::VideoHAP), nullptr);
-    EXPECT_EQ(createDecoder(MediaType::VideoHAPAlpha), nullptr);
-    EXPECT_EQ(createDecoder(MediaType::VideoHAPQ), nullptr);
+TEST_F(DecoderUtilsTest, CreateDecoder_HAPReturnsInstance) {
+    // Phase C #6 — HAP decoder now constructs. No open() here, just verify
+    // the factory returns a real instance for every HAP variant.
+    EXPECT_NE(createDecoder(MediaType::VideoHAP), nullptr);
+    EXPECT_NE(createDecoder(MediaType::VideoHAPAlpha), nullptr);
+    EXPECT_NE(createDecoder(MediaType::VideoHAPQ), nullptr);
+    EXPECT_NE(createDecoder(MediaType::VideoHAPR), nullptr);
 }
 
 // Mock decoder for interface testing

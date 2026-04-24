@@ -76,10 +76,22 @@ public:
     // ------------------------------------------------------------------------
     virtual uint32_t   allocateVideoTextureSlot() = 0;
     virtual void       freeVideoTextureSlot(uint32_t slot) = 0;
+    // Upload an RGBA8 frame to a video slot. Legacy convenience — equivalent
+    // to uploadVideoFrameToSlot(slot, data, w, h, TextureFormat::RGBA8_UNORM).
     virtual bool       uploadVideoFrameToSlot(uint32_t slot,
                                               const uint8_t* rgba,
                                               uint32_t width,
                                               uint32_t height) = 0;
+    // Upload a frame in any supported format (RGBA8 or pre-compressed BC*).
+    // `data` is the raw decoded bytes; size is inferred from `width`, `height`
+    // and `format` (RGBA = w*h*4, BC* = block-packed). For HAP playback this
+    // uploads pre-compressed blocks directly to a BC-format GPU texture
+    // with zero CPU decompression.
+    virtual bool       uploadVideoFrameToSlot(uint32_t slot,
+                                              const uint8_t* data,
+                                              uint32_t width,
+                                              uint32_t height,
+                                              TextureFormat format) = 0;
     virtual TextureRef getVideoTexture(uint32_t slot) const = 0;
 
     // ------------------------------------------------------------------------
