@@ -481,9 +481,11 @@ void Engine::pollTranscodes() {
         }
     }
 
-    // Reap terminal workers so the manager doesn't grow unbounded across
-    // long sessions. Workers in Running/Queued are left alone.
-    m_transcodeManager->clearFinished();
+    // Reap Done workers so the manager doesn't grow unbounded across
+    // long sessions. Failed workers stay — the MediaBin shows them in
+    // red + offers Retry, which uses remove(src) to wipe the entry
+    // before enqueuing a fresh attempt.
+    m_transcodeManager->clearDone();
 }
 
 const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFiles() const {

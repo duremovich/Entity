@@ -149,8 +149,8 @@ TEST(TranscodeManagerRoundTrip, HapToHapAlpha) {
     ASSERT_TRUE(fs::exists(dst));
     EXPECT_GT(fs::file_size(dst), 256u);
 
-    // Cleanup test — finished worker can be reaped.
-    mgr.clearFinished();
+    // Cleanup test — Done workers are reaped by clearDone().
+    mgr.clearDone();
     EXPECT_FALSE(mgr.has(src));
 }
 
@@ -166,4 +166,28 @@ TEST(TranscodeManagerRoundTrip, NonExistentSourceFailsCleanly) {
     auto snap = mgr.statusOf(src);
     ASSERT_TRUE(snap.has_value());
     EXPECT_NE(snap->result, Result::Success);
+}
+
+// Regression: failing workers must survive clearDone() so the MediaBin
+// can keep showing the "Failed" state + Retry menu item. Previously
+// clearFinished() reaped them immediately, causing a one-frame-flash
+// bug where the UI fell back to the grey "Source" label.
+TEST(TranscodeManagerRoundTrip, ClearDoneKeepsFailedWorkers) {
+    TempCacheDir tmp;
+    TranscodeManager mgr;
+    mgr.setCacheDir(tmp.path);
+
+    const std::string src = "still/does/not/exist.mov";
+    (void)mgr.enqueue(src);
+    EXPECT_EQ(waitForTerminal(mgr, src, 5000), TranscodeState::Failed);
+
+    // clearDone() must NOT remove Failed workers.
+    mgr.clearDone();
+    auto snap = mgr.statusOf(src);
+    ASSERT_TRUE(snap.has_value());
+    EXPECT_EQ(snap->state, TranscodeState::Failed);
+
+    // remove() explicitly wipes the entry regardless of state.
+    mgr.remove(src);
+    EXPECT_FALSE(mgr.has(src));
 }

@@ -86,11 +86,21 @@ public:
     void cancel(const std::string& absSrcPath);
 
     /**
-     * Remove workers whose state is Done or Failed. Blocks briefly while
-     * their threads join. Safe to call from the UI thread — removed
-     * workers don't hold anything expensive.
+     * Remove workers whose state is Done. Failed workers are LEFT IN PLACE
+     * so the MediaBin can keep showing the failure + offer a Retry menu
+     * item; without this, a fast-failing transcode (e.g. 4-alignment
+     * rejection by the HAP encoder) vanished from the UI within one
+     * frame. Use remove(src) or joinAll() to drop a Failed worker.
      */
-    void clearFinished();
+    void clearDone();
+
+    /**
+     * Drop a specific worker by source path. Requests cancel, joins the
+     * thread, erases the map entry. Safe in any state. Used by the
+     * MediaBin "Retry transcode" flow to wipe the Failed worker before
+     * enqueuing a fresh one.
+     */
+    void remove(const std::string& absSrcPath);
 
     /// All workers, joined. Call from Engine shutdown.
     void joinAll();

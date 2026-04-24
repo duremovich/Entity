@@ -128,17 +128,26 @@ void TranscodeManager::cancel(const std::string& absSrcPath) {
     }
 }
 
-void TranscodeManager::clearFinished() {
+void TranscodeManager::clearDone() {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto it = m_workers.begin(); it != m_workers.end();) {
-        const TranscodeState st = it->second->state();
-        if (st == TranscodeState::Done || st == TranscodeState::Failed) {
-            // Destructor joins the thread — terminal states mean the thread
-            // has already exited, so join() is effectively free.
+        if (it->second->state() == TranscodeState::Done) {
+            // Destructor joins the thread — Done means it's already
+            // exited, so join() is effectively free.
             it = m_workers.erase(it);
         } else {
             ++it;
         }
+    }
+}
+
+void TranscodeManager::remove(const std::string& absSrcPath) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (auto it = m_workers.find(absSrcPath); it != m_workers.end()) {
+        // Worker dtor calls requestCancel() + thread.join(), so this
+        // handles Running/Queued states too (though Retry's main caller
+        // is on Failed, where the thread has already exited).
+        m_workers.erase(it);
     }
 }
 

@@ -200,7 +200,7 @@ void MediaBinWindow::render() {
                 if (status.hasActiveWorker && status.transState == TranscodeState::Failed) {
                     if (ImGui::MenuItem("Retry transcode")) {
                         if (tmgr) {
-                            tmgr->clearFinished();  // drop the failed worker
+                            tmgr->remove(filepath);  // wipe the failed worker first
                             tmgr->enqueue(filepath, "hap_alpha", 0.0);
                         }
                     }
