@@ -66,12 +66,16 @@ public:
      */
     static constexpr int FRAMES_PER_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
     static constexpr int ZOOM_LEVEL_COUNT = 9;
-    static constexpr float TICK_PX = 80.0f;  // visual target width of one tick division
+    static constexpr float TICK_PX = 20.0f;  // visual width of one tick division (fixed — zoom changes the time each tick represents, not the spacing)
 
     int getZoomIndex() const { return m_zoomIndex; }
-    void setZoomIndex(int idx) {
-        m_zoomIndex = std::clamp(idx, 0, ZOOM_LEVEL_COUNT - 1);
-    }
+    /**
+     * Set zoom index. Re-anchors scroll so the playhead (if visible) or the
+     * viewport center stays at the same screen position across the zoom change
+     * — otherwise the view jumps unpredictably because scroll is in absolute
+     * pixels and zoom changes the px/sec ratio.
+     */
+    void setZoomIndex(int idx);
     int framesPerTick() const { return FRAMES_PER_TICK[m_zoomIndex]; }
 
     /**
@@ -91,6 +95,14 @@ public:
      * Set callback for when media is dropped onto a track.
      */
     void setMediaDropCallback(MediaDropCallback callback) { m_mediaDropCallback = std::move(callback); }
+
+    /**
+     * Adjust horizontal scroll so the playhead is within the visible range.
+     * Called after keyboard seeks (arrow keys, Home/End, J/L) so the playhead
+     * never walks off-screen. No-op if the widget hasn't rendered yet.
+     * Vertical scroll is untouched.
+     */
+    void ensurePlayheadVisible();
 
 private:
     /**
@@ -220,6 +232,13 @@ private:
     float m_pixelsPerSecond{100.0f};  // derived from zoom index + frame rate, refreshed each render()
     float m_scrollX{0.0f};             // Horizontal scroll position
     float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks
+    float m_lastVisibleWidth{0.0f};    // Horizontal viewport width captured each render(),
+                                       // used by ensurePlayheadVisible() to follow the playhead.
+    bool m_pendingScrollX{false};      // True for one render() after ensurePlayheadVisible()
+                                       // moved m_syncScrollX programmatically — suppresses the
+                                       // read-back at the bottom of render() that would otherwise
+                                       // stomp the target (ImGui's SetScrollX sets a target that
+                                       // doesn't reach GetScrollX until the NEXT Begin()).
 
     // Recompute m_pixelsPerSecond from m_zoomIndex + Timeline frame rate.
     // Called at the top of render() so a frame-rate change picks up immediately.

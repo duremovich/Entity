@@ -17,6 +17,7 @@
 #include "entity/media/FrameRingBuffer.hpp"
 #include <sstream>
 #include <cmath>
+#include <iostream>
 #include <limits>
 
 namespace entity {
@@ -28,8 +29,49 @@ TimelineWidget::TimelineWidget(Timeline* timeline)
 
 void TimelineWidget::applyZoomIndex() {
     if (!m_timeline) return;
+    // Tick spacing is fixed at TICK_PX. Zoom changes how much TIME a tick
+    // represents (framesPerTick), which scales pxPerSec accordingly.
     const float pxPerFrame = TICK_PX / static_cast<float>(framesPerTick());
     m_pixelsPerSecond = pxPerFrame * static_cast<float>(m_timeline->getFrameRate());
+}
+
+void TimelineWidget::setZoomIndex(int idx) {
+    const int newIdx = std::clamp(idx, 0, ZOOM_LEVEL_COUNT - 1);
+    if (newIdx == m_zoomIndex) return;
+
+    // Re-anchor scroll so a reference time stays at the same screen position
+    // across the zoom change — otherwise scroll stays at the old absolute pixel
+    // value and the viewport jumps to a completely different time when zoom
+    // (and therefore pxPerSec) changes.
+    const bool canReanchor = (m_lastVisibleWidth > 0.0f && m_timeline != nullptr);
+    float anchorScreenOffset = 0.0f;
+    Timecode anchorTime = 0;
+    if (canReanchor) {
+        const float playheadPx = timeToPixel(m_timeline->getCurrentTime());
+        const float viewLeft  = m_syncScrollX;
+        const float viewRight = m_syncScrollX + m_lastVisibleWidth;
+        const bool playheadVisible = (playheadPx >= viewLeft && playheadPx <= viewRight);
+        if (playheadVisible) {
+            anchorTime = m_timeline->getCurrentTime();
+            anchorScreenOffset = playheadPx - viewLeft;
+        } else {
+            anchorScreenOffset = m_lastVisibleWidth * 0.5f;
+            anchorTime = pixelToTime(viewLeft + anchorScreenOffset);
+        }
+    }
+
+    m_zoomIndex = newIdx;
+    applyZoomIndex();
+
+    if (canReanchor) {
+        const float anchorPxNew = timeToPixel(anchorTime);
+        const float durationPx = timeToPixel(m_timeline->getDuration());
+        const float maxScrollX = std::max(0.0f, durationPx - m_lastVisibleWidth);
+        float newScroll = anchorPxNew - anchorScreenOffset;
+        newScroll = std::clamp(newScroll, 0.0f, maxScrollX);
+        m_syncScrollX = newScroll;
+        m_pendingScrollX = true;
+    }
 }
 
 void TimelineWidget::render() {
@@ -37,10 +79,6 @@ void TimelineWidget::render() {
         ImGui::Text("No timeline set");
         return;
     }
-
-    // Refresh derived zoom from the discrete ladder. Cheap and keeps
-    // m_pixelsPerSecond in sync with both zoom-index and frame-rate changes.
-    applyZoomIndex();
 
     // Clean up stale entity references in expansion state
     {
@@ -68,9 +106,13 @@ void TimelineWidget::render() {
 
     ImVec2 contentRegion = ImGui::GetContentRegionAvail();
 
-    // Calculate timeline dimensions
+    // Calculate timeline dimensions. Tick spacing is fixed at TICK_PX; zoom
+    // changes the time each tick represents, so content width grows/shrinks
+    // with zoom (and horizontal scroll is used to pan within long timelines).
     int trackCount = static_cast<int>(m_timeline->getTrackCount());
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
+    m_lastVisibleWidth = contentRegion.x - TRACK_HEADER_WIDTH - 4.0f;
+    applyZoomIndex();
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
 
     // Calculate total tracks content height (accounting for expanded tracks/clips)
@@ -102,7 +144,7 @@ void TimelineWidget::render() {
     float controlsHeight = 40.0f;
     float availableHeight = contentRegion.y - controlsHeight;
     float tracksWindowHeight = availableHeight - RULER_HEIGHT;
-    float timelineContentWidth = contentRegion.x - TRACK_HEADER_WIDTH - 4.0f;  // 4px spacing
+    float timelineContentWidth = m_lastVisibleWidth;
 
     // === TOP ROW: Header corner + Ruler ===
     // Header corner (empty space above track headers, aligned with ruler)
@@ -118,10 +160,11 @@ void TimelineWidget::render() {
     ImGui::SameLine(0, 2.0f);
 
     // === STICKY RULER (Fixed at top, right side) ===
+    // NoNav: arrow keys are owned by Engine::handleKey(). NoScrollWithMouse so
+    // the wheel scrolls the tracks child (below), not the ruler independently;
+    // the ruler's scroll is mirrored from the tracks child via m_syncScrollX.
     ImGui::BeginChild("TimelineRuler", ImVec2(timelineContentWidth, RULER_HEIGHT), false,
-                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-
-    // Set scroll to synced position
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
     ImGui::SetScrollX(m_syncScrollX);
 
     // Save ruler position for playhead rendering
@@ -139,11 +182,11 @@ void TimelineWidget::render() {
     // === BOTTOM ROW: Track headers + Tracks content ===
     // Track header panel (left side, syncs vertical scroll only)
     ImGui::BeginChild("TrackHeaders", ImVec2(TRACK_HEADER_WIDTH, tracksWindowHeight), false,
-                      ImGuiWindowFlags_NoScrollbar);
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
 
     // Create inner scrollable region for header content
     ImGui::BeginChild("TrackHeadersInner", ImVec2(TRACK_HEADER_WIDTH - 2, tracksContentHeight + 100), false,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
 
     // Apply synced vertical scroll
     ImGui::SetScrollY(m_syncScrollY);
@@ -155,11 +198,10 @@ void TimelineWidget::render() {
 
     ImGui::SameLine(0, 2.0f);
 
-    // === SCROLLABLE TRACKS (right side, scrolls both ways) ===
+    // === SCROLLABLE TRACKS (right side — horizontal + vertical scroll) ===
     ImGui::BeginChild("TimelineTracks", ImVec2(timelineContentWidth, tracksWindowHeight), false,
-                      ImGuiWindowFlags_HorizontalScrollbar);
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoNav);
 
-    // Set scroll to synced position
     ImGui::SetScrollX(m_syncScrollX);
     ImGui::SetScrollY(m_syncScrollY);
 
@@ -173,10 +215,18 @@ void TimelineWidget::render() {
     renderTracks();
     handleTracksInteraction();
 
-    // Save scroll position for next frame (from whichever window was scrolled)
-    m_syncScrollX = ImGui::GetScrollX();
+    // Save scroll position for next frame. Skip X read-back for one frame after
+    // ensurePlayheadVisible() moved m_syncScrollX programmatically — SetScrollX
+    // sets a target that isn't reflected in GetScrollX until the NEXT Begin(),
+    // so reading it now returns the pre-target value and stomps our move
+    // (produces a 2-frame ping-pong).
+    if (!m_pendingScrollX) {
+        m_syncScrollX = ImGui::GetScrollX();
+    }
+    m_pendingScrollX = false;
     m_syncScrollY = ImGui::GetScrollY();
     m_tracksHeight = tracksContentHeight;
+
 
     ImGui::EndChild();
 
@@ -224,7 +274,14 @@ void TimelineWidget::render() {
     if (ImGui::SmallButton("-##zoomOut")) setZoomIndex(m_zoomIndex + 1);  // larger frames/div = zoomed out
     ImGui::SameLine(0, 2);
     ImGui::SetNextItemWidth(70.0f);
-    ImGui::Combo("##zoom", &m_zoomIndex, kZoomLabels, ZOOM_LEVEL_COUNT);
+    {
+        // Route through setZoomIndex() so the re-anchor happens. Writing directly
+        // to m_zoomIndex via Combo bypasses the scroll adjustment.
+        int pickedIdx = m_zoomIndex;
+        if (ImGui::Combo("##zoom", &pickedIdx, kZoomLabels, ZOOM_LEVEL_COUNT)) {
+            setZoomIndex(pickedIdx);
+        }
+    }
     ImGui::SameLine(0, 2);
     if (ImGui::SmallButton("+##zoomIn")) setZoomIndex(m_zoomIndex - 1);   // smaller frames/div = zoomed in
 
@@ -281,6 +338,32 @@ float TimelineWidget::timeToPixel(Timecode time) const {
 Timecode TimelineWidget::pixelToTime(float pixel) const {
     float seconds = pixel / m_pixelsPerSecond;
     return static_cast<Timecode>(seconds * 1000000.0f);  // Timecode is in microseconds
+}
+
+void TimelineWidget::ensurePlayheadVisible() {
+    if (!m_timeline) return;
+    if (m_lastVisibleWidth <= 0.0f) return;
+    applyZoomIndex();
+
+    const float playheadPx = timeToPixel(m_timeline->getCurrentTime());
+    const float durationPx = timeToPixel(m_timeline->getDuration());
+    const float margin = 20.0f;
+    const float viewLeft  = m_syncScrollX;
+    const float viewRight = m_syncScrollX + m_lastVisibleWidth;
+    const float maxScrollX = std::max(0.0f, durationPx - m_lastVisibleWidth);
+
+    float newScrollX = m_syncScrollX;
+    if (playheadPx < viewLeft + margin) {
+        newScrollX = playheadPx - margin;
+    } else if (playheadPx > viewRight - margin) {
+        newScrollX = playheadPx - m_lastVisibleWidth + margin;
+    }
+    newScrollX = std::clamp(newScrollX, 0.0f, maxScrollX);
+
+    if (newScrollX != m_syncScrollX) {
+        m_syncScrollX = newScrollX;
+        m_pendingScrollX = true;
+    }
 }
 
 Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode newStartTime, int trackIndex) {

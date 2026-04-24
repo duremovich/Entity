@@ -718,6 +718,7 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                         m_timeline->seek(0);
                     }
                 }
+                if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_L:
@@ -733,6 +734,7 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                         m_timeline->seek(newTime);
                     }
                 }
+                if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_LEFT:
@@ -750,6 +752,7 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                     target = (target / step) * step;
                     m_timeline->seekToFrame(target);
                 }
+                if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_RIGHT:
@@ -768,16 +771,19 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                         m_timeline->seekToFrame(target);
                     }
                 }
+                if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_HOME:
                 // Home = Go to start
                 m_timeline->seek(0);
+                if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_END:
-                // End = Go to end
+                // End = Go to end of timeline duration
                 m_timeline->seek(m_timeline->getDuration());
+                if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_S:

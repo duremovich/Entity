@@ -25,39 +25,65 @@ void TimelineWidget::renderTimeRuler() {
     if (!m_timeline) return;
 
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
-    ImVec2 windowSize = ImGui::GetContentRegionAvail();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-
-    // Calculate ruler bounds
-    ImVec2 rulerMin = windowPos;
-    ImVec2 rulerMax = ImVec2(windowPos.x + windowSize.x, windowPos.y + RULER_HEIGHT);
-
-    // Draw ruler background
-    drawList->AddRectFilled(rulerMin, rulerMax, IM_COL32(40, 40, 40, 255));
 
     // Get timeline framerate
     double frameRate = m_timeline->getFrameRate();
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
     FrameNumber totalFrames = static_cast<FrameNumber>(durationSeconds * frameRate);
+    const float timelinePx = durationSeconds * m_pixelsPerSecond;
 
-    // Tick spacing IS the zoom ladder value — single tier, no major/minor
-    // confusion. Tick = snap unit = label increment.
+    // Ruler bounds: background stretches across the FULL content width, not the
+    // visible region (GetContentRegionAvail caps at window width, which makes
+    // the background vanish once the user scrolls past a small offset). ImGui's
+    // clip rect handles hiding the off-screen portion.
+    ImVec2 rulerMin = windowPos;
+    ImVec2 rulerMax = ImVec2(windowPos.x + timelinePx, windowPos.y + RULER_HEIGHT);
+
+    // Draw ruler background
+    drawList->AddRectFilled(rulerMin, rulerMax, IM_COL32(40, 40, 40, 255));
+
+    // Tick stride = zoom-ladder value. Tick pixel spacing is fixed at TICK_PX;
+    // zoom changes the time each tick represents, not the spacing. Labels only
+    // appear on every 5th tick (major ticks) so the ruler doesn't get crowded;
+    // minor ticks are shorter and unlabeled.
     const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
+    const int LABEL_EVERY_N = 5;
 
-    for (FrameNumber frame = 0; frame <= totalFrames; frame += tickEvery) {
+    // Only iterate the visible range — at extreme zoom (1f over 10 min) the
+    // total frame count hits 18000. Drawing all of them would blow past ImGui's
+    // default 16-bit vertex index limit and silently drop past a threshold.
+    const float pxPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
+    const float visibleStartPx = m_syncScrollX - TICK_PX;
+    const float visibleEndPx   = m_syncScrollX + m_lastVisibleWidth + TICK_PX;
+    FrameNumber firstVisibleFrame = pxPerFrame > 0.0f
+        ? std::max<FrameNumber>(0, static_cast<FrameNumber>(visibleStartPx / pxPerFrame))
+        : 0;
+    FrameNumber lastVisibleFrame = pxPerFrame > 0.0f
+        ? std::min(totalFrames, static_cast<FrameNumber>(visibleEndPx / pxPerFrame) + 1)
+        : totalFrames;
+    // Snap to tick-stride grid and preserve the tickCounter modulo relative to
+    // frame 0 so major/minor striping stays stable as the user scrolls.
+    FrameNumber firstTick = (firstVisibleFrame / tickEvery) * tickEvery;
+    int tickCounter = static_cast<int>(firstTick / tickEvery);
+
+    for (FrameNumber frame = firstTick; frame <= lastVisibleFrame; frame += tickEvery, ++tickCounter) {
         float timeSeconds = static_cast<float>(frame) / static_cast<float>(frameRate);
         float x = windowPos.x + timeToPixel(static_cast<Timecode>(timeSeconds * 1000000.0f));
 
-        if (x < windowPos.x || x > rulerMax.x) continue;
-
-        drawList->AddLine(
-            ImVec2(x, rulerMax.y - 12.0f),
-            ImVec2(x, rulerMax.y),
-            IM_COL32(200, 200, 200, 255),
-            1.0f
+        const bool isMajor = (tickCounter % LABEL_EVERY_N == 0);
+        const float tickHeight = isMajor ? 12.0f : 6.0f;
+        const ImU32 tickColor = isMajor ? IM_COL32(200, 200, 200, 255)
+                                        : IM_COL32(140, 140, 140, 255);
+        drawList->AddRectFilled(
+            ImVec2(x, rulerMax.y - tickHeight),
+            ImVec2(x + 1.0f, rulerMax.y),
+            tickColor
         );
 
-        // SMPTE timecode label HH:MM:SS:FF on every tick.
+        if (!isMajor) continue;
+
+        // SMPTE timecode label HH:MM:SS:FF on every major (5th) tick.
         int totalSeconds = static_cast<int>(frame / frameRate);
         int hours = totalSeconds / 3600;
         int minutes = (totalSeconds % 3600) / 60;
@@ -249,11 +275,20 @@ void TimelineWidget::renderTracks() {
             firstFrame = std::max<FrameNumber>(0, (firstFrame / tickEvery) * tickEvery);
 
             for (FrameNumber f = firstFrame; f <= lastFrame; f += tickEvery) {
+                // Cull on xRel (content offset from scroll — tells us if this
+                // frame is in the viewport) but draw at absolute content pos:
+                // baseWindowPos.x already includes -Scroll (ImGui sets
+                // CursorStartPos = Pos + Padding - Scroll), so adding xRel
+                // would subtract scroll a second time and push the line off
+                // screen left. Use f*pxPerFrame directly.
                 const float xRel = f * pxPerFrame - scrollX;
                 if (xRel < 0 || xRel > visibleW) continue;
-                const float x = baseWindowPos.x + xRel;
-                drawList->AddLine(ImVec2(x, gridTop), ImVec2(x, gridBot),
-                    IM_COL32(255, 255, 255, 56), 1.0f);
+                const float x = baseWindowPos.x + f * pxPerFrame;
+                drawList->AddRectFilled(
+                    ImVec2(x, gridTop),
+                    ImVec2(x + 1.0f, gridBot),
+                    IM_COL32(255, 255, 255, 56)
+                );
             }
         }
 
@@ -273,17 +308,20 @@ void TimelineWidget::renderTracks() {
 void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec2 baseWindowPos, float trackHeight) {
     if (!m_timeline) return;
 
-    ImVec2 windowSize = ImGui::GetContentRegionAvail();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     auto& registry = m_timeline->getRegistry();
     const auto* track = registry.try_get<TimelineTrack>(trackEntity);
     if (!track) return;
 
-    // Use the provided base position (already accounts for cumulative offset)
+    // Track rect spans the full timeline content width, not GetContentRegionAvail
+    // (which caps at window width and makes the background vanish past a small
+    // scroll offset). ImGui's clip rect handles hiding the off-screen portion.
+    const float durationSec = m_timeline->getDuration() / 1000000.0f;
+    const float timelinePx = durationSec * m_pixelsPerSecond;
     float trackY = baseWindowPos.y;
     ImVec2 trackMin = ImVec2(baseWindowPos.x, trackY);
-    ImVec2 trackMax = ImVec2(baseWindowPos.x + windowSize.x, trackY + trackHeight);
+    ImVec2 trackMax = ImVec2(baseWindowPos.x + timelinePx, trackY + trackHeight);
 
     // Draw track background (alternating colors)
     ImU32 trackColor = (trackIndex % 2 == 0)
