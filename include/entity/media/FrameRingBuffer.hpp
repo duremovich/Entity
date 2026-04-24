@@ -106,7 +106,7 @@ struct DecodedFrame {
  */
 class FrameRingBuffer {
 public:
-    static constexpr uint32_t DEFAULT_CAPACITY = 32; // ~1 second @ 30fps
+    static constexpr uint32_t DEFAULT_CAPACITY = 64; // ~2s @ 30fps / ~1s @ 60fps; bumped from 32 for decode-dip headroom
 
     /**
      * Construct ring buffer with specified capacity.

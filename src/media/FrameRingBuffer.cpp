@@ -116,27 +116,37 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
 
     // Find the best frame to return:
     // 1. If exact frame found, use it
-    // 2. Otherwise, use the oldest frame in buffer (for smooth playback)
-    int32_t foundOffset = -1;
-    int32_t bestOffset = 0; // Default to oldest frame
+    // 2. Otherwise, use the NEWEST frame with frameNumber <= target (drain stale frames)
+    // 3. Last resort: if all buffered frames are past target, use oldest
+    int32_t foundOffset      = -1;
+    int32_t newestBelowOff   = -1;
+    FrameNumber newestBelowNum = 0;
 
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t idx = (readIdx + i) % m_capacity;
         const DecodedFrame& frame = m_frames[idx];
 
-        // Use atomic load with acquire semantics to ensure we see writes from decode thread
-        if (frame.valid.load(std::memory_order_acquire) && frame.frameNumber == frameNumber) {
+        if (!frame.valid.load(std::memory_order_acquire)) continue;
+
+        if (frame.frameNumber == frameNumber) {
             foundOffset = static_cast<int32_t>(i);
             break;
         }
+        if (frame.frameNumber < frameNumber &&
+            (newestBelowOff < 0 || frame.frameNumber > newestBelowNum)) {
+            newestBelowOff = static_cast<int32_t>(i);
+            newestBelowNum = frame.frameNumber;
+        }
     }
 
-    // Use exact frame if found, otherwise use oldest available frame
+    int32_t bestOffset = 0;
     if (foundOffset >= 0) {
         bestOffset = foundOffset;
+    } else if (newestBelowOff >= 0) {
+        // Decoder is behind - return the closest-to-target frame we have, drop everything older
+        bestOffset = newestBelowOff;
     } else {
-        // Exact frame not found - use the oldest frame in buffer
-        // This ensures smooth playback even if decode is slightly behind
+        // All frames are past target (unusual) - drop the oldest and retry next tick
         bestOffset = 0;
     }
 

@@ -370,19 +370,20 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
         return Result::DecoderError;
     }
 
-    // Premultiply alpha if present
+    // Premultiply alpha if present.
+    // Branchless + fast div255: (c*a + 128 + ((c*a + 128) >> 8)) >> 8 approximates (c*a)/255
+    // with round-to-nearest. Exact for a==255 (identity). Enables auto-vectorization (AVX2) —
+    // the previous if (a<255) branch blocked SIMD and the integer divide was expensive.
+    // At 4K × 3 streams, this loop runs ~24M pixels/frame — vectorization is critical.
     if (m_hasAlpha) {
         uint8_t* rgba = outFrame.data.data();
-        size_t pixelCount = static_cast<size_t>(m_width) * m_height;
+        const size_t pixelCount = static_cast<size_t>(m_width) * m_height;
         for (size_t i = 0; i < pixelCount; ++i) {
-            size_t offset = i * 4;
-            uint8_t a = rgba[offset + 3];
-            if (a < 255) {
-                // Premultiply with rounding to nearest
-                rgba[offset + 0] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 0]) * a + 127) / 255);
-                rgba[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 1]) * a + 127) / 255);
-                rgba[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(rgba[offset + 2]) * a + 127) / 255);
-            }
+            const size_t off = i * 4;
+            const uint32_t a = rgba[off + 3];
+            uint32_t t0 = rgba[off + 0] * a + 128; rgba[off + 0] = static_cast<uint8_t>((t0 + (t0 >> 8)) >> 8);
+            uint32_t t1 = rgba[off + 1] * a + 128; rgba[off + 1] = static_cast<uint8_t>((t1 + (t1 >> 8)) >> 8);
+            uint32_t t2 = rgba[off + 2] * a + 128; rgba[off + 2] = static_cast<uint8_t>((t2 + (t2 >> 8)) >> 8);
         }
     }
 

@@ -225,6 +225,15 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                         needsSeek = true;
                     } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
                         needsSeek = true;
+                    } else {
+                        // Decoder too slow to keep up (CPU-bound): seek forward to target
+                        // so playback holds wall-clock pacing by dropping intermediate frames
+                        // instead of playing in slow-motion.
+                        FrameNumber currentDecoded = worker->currentFrame.load();
+                        if (mediaFrame > currentDecoded &&
+                            (mediaFrame - currentDecoded) > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
+                            needsSeek = true;
+                        }
                     }
                 }
             }
@@ -554,26 +563,30 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::
             continue;
         }
 
+        // Ensure frame.data is sized for decode. After a successful push, the ring-buffer
+        // move-assignment swaps our vector with the slot's previous (cleared) vector —
+        // size becomes 0 but capacity is preserved (std::vector::clear contract).
+        // resize() back to full is free at steady state; one-time alloc per ring slot.
+        const size_t expectedBytes = static_cast<size_t>(
+            worker->decoder->getWidth()) * worker->decoder->getHeight() * 4;
+        if (frame.data.size() < expectedBytes) {
+            frame.data.resize(expectedBytes);
+        }
+
         // Decode the next frame
         Result result = worker->decoder->decodeFrame(nextFrame, frame);
 
         if (result == Result::Success && frame.valid.load(std::memory_order_acquire)) {
             frame.frameNumber = nextFrame;
 
-            // Push to ring buffer (move semantics)
-            DecodedFrame frameCopy;
-            frameCopy.data = frame.data;  // Copy data
-            frameCopy.frameNumber = frame.frameNumber;
-            frameCopy.width = frame.width;
-            frameCopy.height = frame.height;
-            frameCopy.pts = frame.pts;
-            frameCopy.valid.store(frame.valid.load(std::memory_order_acquire), std::memory_order_release);
-
-            if (worker->ringBuffer->push(std::move(frameCopy))) {
+            // Move frame directly into ring buffer (O(1) vector pointer swap, no 8.3 MB copy).
+            // Ring buffer's move-assignment swaps frame.data with the slot's old (empty) buffer;
+            // the resize check at the top of the next iteration restores size for the next decode.
+            if (worker->ringBuffer->push(std::move(frame))) {
                 worker->currentFrame.store(nextFrame);
                 nextFrame++;
             } else {
-                // Buffer full - wait and retry
+                // Buffer full - wait and retry. frame.data is unchanged (push was no-op on isFull).
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         } else {
