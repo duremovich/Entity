@@ -59,7 +59,7 @@ void MediaBinWindow::render() {
 
             // Render each media item
             for (size_t i = 0; i < mediaFiles.size(); i++) {
-                const std::string& filepath = mediaFiles[i];
+                const std::string& filepath = mediaFiles[i].originalPath;
 
                 ImGui::TableNextRow();
 

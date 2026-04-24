@@ -81,7 +81,7 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
         }
     }
 
-    if (!ProjectSerializer::save(*m_timeline, savePath)) {
+    if (!ProjectSerializer::save(*m_timeline, savePath, this)) {
         std::cerr << "[ProjectManager] Save failed: " << ProjectSerializer::getLastError() << std::endl;
         return false;
     }
@@ -167,7 +167,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         std::cout << "[ProjectManager] Loaded media: " << mediaPath << std::endl;
     };
 
-    if (!ProjectSerializer::load(*m_timeline, filepath, loadCallback)) {
+    if (!ProjectSerializer::load(*m_timeline, filepath, loadCallback, this)) {
         std::cerr << "[ProjectManager] Load failed: " << ProjectSerializer::getLastError() << std::endl;
         return false;
     }
@@ -190,18 +190,57 @@ void ProjectManager::tickAutosave(double deltaTime) {
 
     // Write directly via the serializer — autosave is a side channel, don't
     // touch m_projectPath. Operator still expects "Save" to write the real file.
-    if (ProjectSerializer::save(*m_timeline, autosavePath)) {
+    if (ProjectSerializer::save(*m_timeline, autosavePath, this)) {
         std::cout << "[Autosave] " << autosavePath.string() << std::endl;
     } else {
         std::cerr << "[Autosave] Failed: " << ProjectSerializer::getLastError() << std::endl;
     }
 }
 
-void ProjectManager::addMediaFile(const std::string& filepath) {
-    if (std::find(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(), filepath)
-        == m_loadedMediaFiles.end()) {
-        m_loadedMediaFiles.push_back(filepath);
+ProjectManager::MediaLibraryEntry& ProjectManager::addMediaFile(const std::string& originalPath) {
+    if (auto* existing = findEntry(originalPath)) return *existing;
+    m_loadedMediaFiles.push_back(MediaLibraryEntry{originalPath, {}, {}});
+    return m_loadedMediaFiles.back();
+}
+
+void ProjectManager::setTranscodedPath(const std::string& originalPath,
+                                       const std::string& transcodedPath,
+                                       const std::string& variant) {
+    auto& entry = addMediaFile(originalPath);  // create-or-get
+    entry.transcodedPath = transcodedPath;
+    entry.variant = variant;
+}
+
+const ProjectManager::MediaLibraryEntry*
+ProjectManager::findEntry(const std::string& originalPath) const {
+    auto it = std::find_if(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(),
+        [&](const MediaLibraryEntry& e) { return e.originalPath == originalPath; });
+    return (it != m_loadedMediaFiles.end()) ? &(*it) : nullptr;
+}
+
+ProjectManager::MediaLibraryEntry*
+ProjectManager::findEntry(const std::string& originalPath) {
+    auto it = std::find_if(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(),
+        [&](const MediaLibraryEntry& e) { return e.originalPath == originalPath; });
+    return (it != m_loadedMediaFiles.end()) ? &(*it) : nullptr;
+}
+
+void ProjectManager::removeMediaFile(const std::string& originalPath) {
+    m_loadedMediaFiles.erase(
+        std::remove_if(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(),
+            [&](const MediaLibraryEntry& e) { return e.originalPath == originalPath; }),
+        m_loadedMediaFiles.end());
+}
+
+std::string ProjectManager::decoderPathFor(const std::string& originalPath) const {
+    if (auto* e = findEntry(originalPath); e && !e->transcodedPath.empty()) {
+        // Verify the transcoded file still exists on disk — a stale project
+        // might reference a cache that was deleted since save.
+        if (std::filesystem::exists(utf8ToPath(e->transcodedPath))) {
+            return e->transcodedPath;
+        }
     }
+    return originalPath;
 }
 
 } // namespace entity

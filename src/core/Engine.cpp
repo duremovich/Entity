@@ -437,8 +437,8 @@ void Engine::autoSaveTick(double deltaTime) {
     if (m_projectManager) m_projectManager->tickAutosave(deltaTime);
 }
 
-const std::vector<std::string>& Engine::getLoadedMediaFiles() const {
-    static const std::vector<std::string> kEmpty;
+const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFiles() const {
+    static const std::vector<ProjectManager::MediaLibraryEntry> kEmpty;
     return m_projectManager ? m_projectManager->loadedMediaFiles() : kEmpty;
 }
 

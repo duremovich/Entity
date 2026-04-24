@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types.hpp"
+#include "entity/project/ProjectManager.hpp"
 #include "entity/systems/System.hpp"
 #include <entt/entt.hpp>
 #include <memory>
@@ -18,7 +19,6 @@ class IRenderer;
 class D3D12Renderer;  // Owned internally; external callers get IRenderer*.
 class Timeline;
 class WindowManager;
-class ProjectManager;
 class PlaybackController;
 class Decoder;
 class DecodeSystem;
@@ -128,7 +128,7 @@ public:
     /**
      * Get list of loaded media files.
      */
-    const std::vector<std::string>& getLoadedMediaFiles() const;  // forwards to ProjectManager
+    const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
 
     /**
      * Get the current decoder (for metadata access).

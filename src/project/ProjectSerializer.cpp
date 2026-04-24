@@ -5,6 +5,7 @@
  */
 
 #include "entity/project/ProjectSerializer.hpp"
+#include "entity/project/ProjectManager.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
@@ -87,7 +88,8 @@ static BlendMode jsonToBlendMode(const std::string& str) {
     return BlendMode::Normal;
 }
 
-bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::path& filepath) {
+bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::path& filepath,
+                              const ProjectManager* projectMgr) {
     try {
         // Ensure file has correct extension
         std::filesystem::path savePath = filepath;
@@ -187,6 +189,21 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
 
         project["tracks"] = tracksJson;
+
+        // Project-wide media library + import prefs (v4+). Optional —
+        // callers that only care about timeline content can pass nullptr.
+        if (projectMgr) {
+            json libJson = json::array();
+            for (const auto& entry : projectMgr->loadedMediaFiles()) {
+                json ej;
+                ej["originalPath"] = entry.originalPath;
+                ej["transcodedPath"] = entry.transcodedPath;
+                ej["variant"] = entry.variant;
+                libJson.push_back(ej);
+            }
+            project["mediaLibrary"] = libJson;
+            project["autoTranscodeOnImport"] = projectMgr->autoTranscodeOnImport();
+        }
 
         // Serialize mapping surfaces
         json surfacesJson = json::array();
@@ -351,7 +368,8 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
 }
 
 bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& filepath,
-                              MediaLoadCallback mediaLoadCallback) {
+                              MediaLoadCallback mediaLoadCallback,
+                              ProjectManager* projectMgr) {
     try {
         // Check file exists
         if (!std::filesystem::exists(filepath)) {
@@ -543,6 +561,27 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             }
             if (timelineJson.contains("currentTime")) {
                 timeline.seek(timelineJson["currentTime"].get<Timecode>());
+            }
+        }
+
+        // Media library (v4+). Populated before clips so the per-clip
+        // media-load callback can resolve transcoded paths via
+        // ProjectManager::decoderPathFor.
+        if (projectMgr) {
+            if (project.contains("mediaLibrary")) {
+                for (const auto& ej : project["mediaLibrary"]) {
+                    const std::string original   = ej.value("originalPath",   "");
+                    const std::string transcoded = ej.value("transcodedPath", "");
+                    const std::string variant    = ej.value("variant",        "");
+                    if (original.empty()) continue;
+                    auto& entry = projectMgr->addMediaFile(original);
+                    entry.transcodedPath = transcoded;
+                    entry.variant        = variant;
+                }
+            }
+            if (project.contains("autoTranscodeOnImport")) {
+                projectMgr->setAutoTranscodeOnImport(
+                    project["autoTranscodeOnImport"].get<bool>());
             }
         }
 

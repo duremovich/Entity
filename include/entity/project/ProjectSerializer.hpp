@@ -6,6 +6,8 @@
 
 namespace entity {
 
+class ProjectManager;  // forward-declared; optional save/load argument
+
 /**
  * ProjectSerializer - Save and load Entity project files.
  *
@@ -18,32 +20,38 @@ namespace entity {
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
-    //   v3 (2026-04-23) — adds Timeline::Section array.
+    //   v4 (2026-04-24) — adds mediaLibrary array + autoTranscodeOnImport.
+    //   v3 — adds Timeline::Section array.
     //   v2 — adds OutputDisplay + Models + Screens.
     //   v1 — original.
     // Loader is forward-compatible with older files: missing arrays no-op.
-    static constexpr int PROJECT_VERSION = 3;
+    static constexpr int PROJECT_VERSION = 4;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**
      * Save a timeline to a project file.
-     * @param timeline The timeline to save
-     * @param filepath Path to save to (will append .entity if needed)
-     * @return True if save was successful
+     * @param timeline  Timeline to save
+     * @param filepath  Path to save to (will append .entity if needed)
+     * @param projectMgr Optional; if non-null, its media library +
+     *                   auto-transcode flag are serialized. Pass nullptr
+     *                   when only the timeline portion matters.
      */
-    static bool save(const Timeline& timeline, const std::filesystem::path& filepath);
+    static bool save(const Timeline& timeline, const std::filesystem::path& filepath,
+                     const ProjectManager* projectMgr = nullptr);
 
     /**
      * Load a project file into a timeline.
      * Clears existing timeline content before loading.
-     * @param timeline The timeline to load into
-     * @param filepath Path to the project file
-     * @param mediaLoadCallback Callback to load media after clips are created
-     * @return True if load was successful
+     * @param timeline           Timeline to load into
+     * @param filepath           Project file path
+     * @param mediaLoadCallback  Per-clip media-open callback
+     * @param projectMgr         Optional; if non-null, populated with the
+     *                           saved media library + auto-transcode flag.
      */
     using MediaLoadCallback = std::function<void(entt::entity clipEntity, const std::string& filepath)>;
     static bool load(Timeline& timeline, const std::filesystem::path& filepath,
-                     MediaLoadCallback mediaLoadCallback = nullptr);
+                     MediaLoadCallback mediaLoadCallback = nullptr,
+                     ProjectManager* projectMgr = nullptr);
 
     /**
      * Get the last error message (if save/load failed).

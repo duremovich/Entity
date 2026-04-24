@@ -74,12 +74,66 @@ public:
     // --- Media library -------------------------------------------------------
 
     /**
-     * Record that `filepath` has been loaded. Idempotent — duplicates are
-     * ignored. Used by import flows on Engine.
+     * One entry per imported source file. `originalPath` is the user-picked
+     * path (shown in the bin, used as the canonical identity of the clip's
+     * source). `transcodedPath` is the HAP variant the TranscodeManager
+     * produced, empty until the worker finishes (or forever if auto-
+     * transcode was off). `variant` records which HAP variant was written
+     * so a re-transcode with a different variant doesn't silently overwrite.
+     *
+     * When the decoder opens a clip, it calls `decoderPathFor(clip.filepath)`
+     * to pick between original and transcoded.
      */
-    void addMediaFile(const std::string& filepath);
+    struct MediaLibraryEntry {
+        std::string originalPath;
+        std::string transcodedPath;   // empty if not transcoded (yet)
+        std::string variant;          // e.g. "hap_alpha"; empty if transcoded empty
+    };
 
-    const std::vector<std::string>& loadedMediaFiles() const { return m_loadedMediaFiles; }
+    /**
+     * Register `originalPath`. Idempotent — if an entry exists it is not
+     * touched. Returns a reference to the (possibly-existing) entry.
+     */
+    MediaLibraryEntry& addMediaFile(const std::string& originalPath);
+
+    /**
+     * Update (or create) the transcoded side of the entry. Used by Engine
+     * when a TranscodeManager worker flips to Done.
+     */
+    void setTranscodedPath(const std::string& originalPath,
+                           const std::string& transcodedPath,
+                           const std::string& variant);
+
+    /**
+     * Find an entry by original path. Returns nullptr if none exists.
+     */
+    const MediaLibraryEntry* findEntry(const std::string& originalPath) const;
+    MediaLibraryEntry*       findEntry(const std::string& originalPath);
+
+    /**
+     * Remove the entry. Caller is responsible for any in-flight transcode
+     * worker.
+     */
+    void removeMediaFile(const std::string& originalPath);
+
+    /**
+     * Resolve which file path the decoder should actually open for a clip
+     * whose stored `filepath` is `originalPath`. Returns the transcoded
+     * path when available and on-disk, else the original.
+     */
+    std::string decoderPathFor(const std::string& originalPath) const;
+
+    const std::vector<MediaLibraryEntry>& loadedMediaFiles() const { return m_loadedMediaFiles; }
+
+    // --- Import preferences -------------------------------------------------
+
+    /**
+     * When true, non-HAP files dropped into the bin are queued for
+     * background transcode. Persisted with the project. User-toggleable
+     * via the MediaBin toolbar.
+     */
+    bool autoTranscodeOnImport() const         { return m_autoTranscodeOnImport; }
+    void setAutoTranscodeOnImport(bool enable) { m_autoTranscodeOnImport = enable; }
 
 private:
     // Non-owning dependencies (Engine owns and outlives this)
@@ -87,8 +141,9 @@ private:
     entt::registry*  m_registry{nullptr};
     IRenderer*       m_renderer{nullptr};
 
-    std::filesystem::path    m_projectPath;
-    std::vector<std::string> m_loadedMediaFiles;
+    std::filesystem::path           m_projectPath;
+    std::vector<MediaLibraryEntry>  m_loadedMediaFiles;
+    bool                            m_autoTranscodeOnImport{true};
 
     double m_autosaveInterval{30.0};
     double m_autosaveAccumulator{0.0};
