@@ -166,6 +166,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_projectManager = std::make_unique<ProjectManager>();
     m_projectManager->initialize(m_timeline.get(), &m_registry, m_renderer.get());
 
+    // Background HAP transcoder — cache dir gets set lazily via
+    // updateTranscodeCacheDir() when a project path is established.
+    m_transcodeManager = std::make_unique<TranscodeManager>();
+    updateTranscodeCacheDir();
+
     // Set up callback for when new clips are created (split, duplicate)
     m_timeline->setClipCreatedCallback([this](entt::entity clipEntity, const std::string& filepath) {
         this->onClipCreated(clipEntity, filepath);
@@ -327,6 +332,12 @@ void Engine::shutdown() {
     // Stop running if still active
     m_running = false;
 
+    // Cancel + join any in-flight transcode workers before we tear down
+    // FFmpeg state or systems they might be touching.
+    if (m_transcodeManager) {
+        m_transcodeManager->joinAll();
+    }
+
     // Shutdown systems in reverse order
     for (auto it = m_systems.rbegin(); it != m_systems.rend(); ++it) {
         (*it)->shutdown(m_registry);
@@ -417,6 +428,7 @@ void Engine::run() {
         }
 
         autoSaveTick(deltaTime);
+        pollTranscodes();
 
         m_playbackController->incrementFrameCount();
     }
@@ -435,6 +447,43 @@ IRenderer* Engine::getRenderer() {
 
 void Engine::autoSaveTick(double deltaTime) {
     if (m_projectManager) m_projectManager->tickAutosave(deltaTime);
+}
+
+void Engine::updateTranscodeCacheDir() {
+    if (!m_transcodeManager) return;
+    std::filesystem::path cacheDir;
+    if (m_projectManager && !m_projectManager->projectPath().empty()) {
+        cacheDir = m_projectManager->projectPath().parent_path() / ".cache" / "hap";
+    } else {
+        cacheDir = std::filesystem::temp_directory_path() / "entity_hap_cache";
+    }
+    m_transcodeManager->setCacheDir(cacheDir);
+}
+
+void Engine::pollTranscodes() {
+    if (!m_transcodeManager || !m_projectManager) return;
+
+    // Snapshot the library so we don't hold a mutable reference across
+    // setTranscodedPath calls (which could in principle grow the vector).
+    std::vector<std::string> originals;
+    originals.reserve(m_projectManager->loadedMediaFiles().size());
+    for (const auto& e : m_projectManager->loadedMediaFiles()) {
+        if (e.transcodedPath.empty()) originals.push_back(e.originalPath);
+    }
+
+    for (const auto& src : originals) {
+        auto st = m_transcodeManager->statusOf(src);
+        if (!st) continue;
+        if (st->state == TranscodeState::Done) {
+            m_projectManager->setTranscodedPath(src, st->outputPath, st->variant);
+            std::cout << "[Engine] Transcode done: " << src
+                      << " -> " << st->outputPath << std::endl;
+        }
+    }
+
+    // Reap terminal workers so the manager doesn't grow unbounded across
+    // long sessions. Workers in Running/Queued are left alone.
+    m_transcodeManager->clearFinished();
 }
 
 const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFiles() const {
@@ -1275,6 +1324,22 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
 
     std::cout << "Detected media type: " << MediaTypeToString(mediaType) << std::endl;
 
+    // If auto-transcode is on and the source is a non-HAP container the
+    // HAP encoder can actually handle (i.e. ProRes / H264 / HEVC — not PNG
+    // sequences, since vcpkg FFmpeg lacks a PNG decoder), register in the
+    // media library and queue a background transcode. No clip gets created
+    // until the user drags it out of the MediaBin once Done.
+    if (m_projectManager && m_transcodeManager &&
+        m_projectManager->autoTranscodeOnImport() &&
+        !isHapMediaType(mediaType) &&
+        mediaType == MediaType::VideoProRes4444) {
+        m_projectManager->addMediaFile(filePath);
+        m_transcodeManager->enqueue(filePath, "hap_alpha", 0.0);
+        std::cout << "[Engine] Queued transcode for " << filePath << std::endl;
+        std::cout << "========================================\n" << std::endl;
+        return;
+    }
+
     // Create decoder for the media type
     m_decoder = createDecoder(mediaType);
     if (!m_decoder) {
@@ -1448,10 +1513,20 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     std::cout << "Track: " << (trackIndex + 1) << std::endl;
     std::cout << "Position: " << (position / 1000000.0) << " seconds" << std::endl;
 
-    // Detect media type from file extension
-    MediaType mediaType = detectMediaType(filePath);
+    // If the source has a transcoded HAP sibling in the library, open that
+    // instead — clip.filepath stays as the original-path identity the
+    // MediaBin drag payload carries.
+    const std::string openPath = m_projectManager
+        ? m_projectManager->decoderPathFor(filePath)
+        : filePath;
+    if (openPath != filePath) {
+        std::cout << "  Resolving to transcoded: " << openPath << std::endl;
+    }
+
+    // Detect media type from the path we're actually going to open.
+    MediaType mediaType = detectMediaType(openPath);
     if (mediaType == MediaType::Unknown) {
-        std::cerr << "ERROR: Unsupported media type: " << filePath << std::endl;
+        std::cerr << "ERROR: Unsupported media type: " << openPath << std::endl;
         std::cerr << "========================================\n" << std::endl;
         return;
     }
@@ -1465,8 +1540,8 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
         return;
     }
 
-    // Open the media file
-    Result result = decoder->open(filePath);
+    // Open the media file (transcoded if available, else original).
+    Result result = decoder->open(openPath);
     if (result != Result::Success) {
         std::cerr << "ERROR: Failed to open media file: " << filePath << std::endl;
         std::cerr << "========================================\n" << std::endl;
@@ -1612,7 +1687,10 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
 }
 
 bool Engine::saveProject(const std::filesystem::path& filepath) {
-    return m_projectManager ? m_projectManager->save(filepath) : false;
+    if (!m_projectManager) return false;
+    bool ok = m_projectManager->save(filepath);
+    if (ok) updateTranscodeCacheDir();
+    return ok;
 }
 
 bool Engine::loadProject(const std::filesystem::path& filepath) {
@@ -1637,6 +1715,27 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
 
     bool ok = m_projectManager->load(filepath);
     if (!ok) return false;
+
+    // Point the transcode cache at <projectDir>/.cache/hap so subsequent
+    // enqueue() writes land next to the project, not in %TEMP%.
+    updateTranscodeCacheDir();
+
+    // Re-queue library entries whose transcoded side is missing — either
+    // because auto-transcode ran mid-session before save, or the cache
+    // was cleared. Only entries whose source is a non-HAP media type and
+    // the project still wants auto-transcode get re-enqueued.
+    if (m_transcodeManager) {
+        for (const auto& entry : m_projectManager->loadedMediaFiles()) {
+            if (!entry.transcodedPath.empty()) continue;
+            if (!m_projectManager->autoTranscodeOnImport()) break;
+            const MediaType mt = detectMediaType(entry.originalPath);
+            if (isHapMediaType(mt)) continue;
+            if (mt == MediaType::Unknown) continue;
+            const double srcFps = (mt == MediaType::PNGSequence) ? 30.0 : 0.0;
+            m_transcodeManager->enqueue(entry.originalPath, "hap_alpha", srcFps);
+            std::cout << "[Engine] Re-enqueued transcode for " << entry.originalPath << std::endl;
+        }
+    }
 
     // Post-load: sync the output-index counter so new outputs the user
     // creates don't collide with loaded indices; then bring up windows for

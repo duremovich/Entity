@@ -108,26 +108,31 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
     // ClipDecodeState).
     ProjectSerializer::MediaLoadCallback loadCallback =
         [this](entt::entity clipEntity, const std::string& mediaPath) {
-        if (!std::filesystem::exists(utf8ToPath(mediaPath))) {
-            std::cerr << "[ProjectManager] Media file not found: " << mediaPath << std::endl;
+        // clip.filepath is the canonical original path; if the library
+        // has a transcoded HAP file for it, open that instead. Falls
+        // through to the original when no transcode exists (yet).
+        const std::string openPath = decoderPathFor(mediaPath);
+
+        if (!std::filesystem::exists(utf8ToPath(openPath))) {
+            std::cerr << "[ProjectManager] Media file not found: " << openPath << std::endl;
             return;
         }
 
-        MediaType mediaType = detectMediaType(mediaPath);
+        MediaType mediaType = detectMediaType(openPath);
         if (mediaType == MediaType::Unknown) {
-            std::cerr << "[ProjectManager] Unsupported media type: " << mediaPath << std::endl;
+            std::cerr << "[ProjectManager] Unsupported media type: " << openPath << std::endl;
             return;
         }
 
         auto decoder = createDecoder(mediaType);
         if (!decoder) {
-            std::cerr << "[ProjectManager] Failed to create decoder for: " << mediaPath << std::endl;
+            std::cerr << "[ProjectManager] Failed to create decoder for: " << openPath << std::endl;
             return;
         }
 
-        Result result = decoder->open(mediaPath);
+        Result result = decoder->open(openPath);
         if (result != Result::Success) {
-            std::cerr << "[ProjectManager] Failed to open media: " << mediaPath << std::endl;
+            std::cerr << "[ProjectManager] Failed to open media: " << openPath << std::endl;
             return;
         }
 
@@ -162,9 +167,11 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         // the stage preview after a project reload).
         clip.loaded = true;
 
+        // Original path is the identity — library already has it from the
+        // serializer loading mediaLibrary above, but this is idempotent.
         addMediaFile(mediaPath);
 
-        std::cout << "[ProjectManager] Loaded media: " << mediaPath << std::endl;
+        std::cout << "[ProjectManager] Loaded media: " << openPath << std::endl;
     };
 
     if (!ProjectSerializer::load(*m_timeline, filepath, loadCallback, this)) {

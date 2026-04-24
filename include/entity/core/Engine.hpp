@@ -2,6 +2,7 @@
 
 #include "Types.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/media/TranscodeManager.hpp"
 #include "entity/systems/System.hpp"
 #include <entt/entt.hpp>
 #include <memory>
@@ -347,8 +348,27 @@ private:
     // / autosave calls. See include/entity/project/ProjectManager.hpp.
     std::unique_ptr<ProjectManager> m_projectManager;
 
+    // Background HAP-transcode workers for imported media. Status polled
+    // each tick; finished workers update ProjectManager's media library
+    // with their output paths.
+    std::unique_ptr<TranscodeManager> m_transcodeManager;
+
     // Per-tick autosave hook — delegates to m_projectManager->tickAutosave.
     void autoSaveTick(double deltaTime);
+
+    // Per-tick transcode-status poll. Moves Done workers' output paths
+    // into the media library and prunes finished entries.
+    void pollTranscodes();
+
+    /**
+     * Point the transcode manager at <projectDir>/.cache/hap, creating
+     * the dir on demand. Called on project save/load. Falls back to the
+     * system temp dir when no project path is set yet.
+     */
+    void updateTranscodeCacheDir();
+public:
+    TranscodeManager* getTranscodeManager() { return m_transcodeManager.get(); }
+    const TranscodeManager* getTranscodeManager() const { return m_transcodeManager.get(); }
 };
 
 } // namespace entity
