@@ -491,6 +491,13 @@ const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFile
     return m_projectManager ? m_projectManager->loadedMediaFiles() : kEmpty;
 }
 
+bool Engine::autoTranscodeOnImport() const {
+    return m_projectManager && m_projectManager->autoTranscodeOnImport();
+}
+void Engine::setAutoTranscodeOnImport(bool enable) {
+    if (m_projectManager) m_projectManager->setAutoTranscodeOnImport(enable);
+}
+
 const std::filesystem::path& Engine::getProjectPath() const {
     static const std::filesystem::path kEmpty;
     return m_projectManager ? m_projectManager->projectPath() : kEmpty;

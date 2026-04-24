@@ -131,6 +131,10 @@ public:
      */
     const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
 
+    /// Auto-transcode-on-import preference (persisted with project).
+    bool autoTranscodeOnImport() const;
+    void setAutoTranscodeOnImport(bool enable);
+
     /**
      * Get the current decoder (for metadata access).
      * Returns nullptr if no media is loaded.
