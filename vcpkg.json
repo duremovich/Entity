@@ -23,9 +23,14 @@
   ],
   "features": {
     "ffmpeg": {
-      "description": "Build FFmpeg via vcpkg. Disable in CI (the prebuilt gyan.dev shared build is fetched in the workflow — saves ~20 min vs vcpkg's from-source build). For transcode-on-import (Phase C.1 #11) enable the ffmpeg 'snappy' feature here to pull in HAP Q encoder support.",
+      "description": "Build FFmpeg via vcpkg. Disable in CI (the prebuilt gyan.dev shared build is fetched in the workflow — saves ~20 min vs vcpkg's from-source build). Snappy feature enables the HAP encoder (transcode-on-import, Phase C.1 #11).",
       "dependencies": [
-        "ffmpeg"
+        {
+          "name": "ffmpeg",
+          "features": [
+            "snappy"
+          ]
+        }
       ]
     }
   },

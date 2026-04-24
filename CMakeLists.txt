@@ -97,6 +97,7 @@ target_sources(EntityMediaCore
         src/media/ProResDecoder.cpp
         src/media/HAPDecoder.cpp
         src/media/HapFormat.cpp
+        src/media/HapTranscoder.cpp
         src/media/ObjLoader.cpp
 
         # Render

@@ -22,6 +22,13 @@ target_link_libraries(EntityMediaTests
 include(GoogleTest)
 gtest_discover_tests(EntityMediaTests)
 
+# Dev-time fixture regeneration tool (not wired into CTest).
+add_executable(generate_hap_fixture tools/generate_hap_fixture.cpp)
+target_link_libraries(generate_hap_fixture PRIVATE EntityMediaCore)
+
+add_executable(probe_codecs tools/probe_codecs.cpp)
+target_link_libraries(probe_codecs PRIVATE EntityMediaCore)
+
 # ============================================================================
 # Integration Tests (headless scripts driving the full app)
 #
@@ -50,6 +57,7 @@ entity_add_integration_test(mixed_fps          mixed_fps.json)
 entity_add_integration_test(ping_pong          ping_pong.json)
 entity_add_integration_test(blend              blend.json)
 entity_add_integration_test(blend_difference   blend_difference.json)
+entity_add_integration_test(hap_roundtrip      hap_roundtrip.json)
 
 # Screen-persistence round-trip: save runs first (FIXTURES_SETUP), produces
 # test_output/screen_persistence/test.entity; load consumes it and asserts.
