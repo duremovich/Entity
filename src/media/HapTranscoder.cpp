@@ -135,6 +135,19 @@ Result transcodeToHap(const std::string& srcPath,
     const int width  = inCtx.ctx->width;
     const int height = inCtx.ctx->height;
 
+    // HAP stores BC1/BC3/BC7 blocks — the FFmpeg encoder rejects dims that
+    // aren't multiples of 4 with "Invalid data found when processing input".
+    // Round up and let sws_scale resize the content to fit. Aspect-ratio
+    // drift is at most 3/W (worst case 0.07% on 4K-class input) —
+    // imperceptible. Rounding up (vs down) preserves every source pixel.
+    const int encW = (width  + 3) & ~3;
+    const int encH = (height + 3) & ~3;
+    if (encW != width || encH != height) {
+        std::cout << "HapTranscoder: source " << width << "x" << height
+                  << " not 4-aligned; encoding at " << encW << "x" << encH
+                  << " (HAP requires 4-aligned dimensions)" << std::endl;
+    }
+
     // ---------- 2. Set up HAP encoder -------------------------------------
     const AVCodec* hapEnc = avcodec_find_encoder(AV_CODEC_ID_HAP);
     if (!hapEnc) {
@@ -146,8 +159,8 @@ Result transcodeToHap(const std::string& srcPath,
     CodecCtxFree encCtx;
     encCtx.ctx = avcodec_alloc_context3(hapEnc);
     if (!encCtx.ctx) return Result::OutOfMemory;
-    encCtx.ctx->width     = width;
-    encCtx.ctx->height    = height;
+    encCtx.ctx->width     = encW;
+    encCtx.ctx->height    = encH;
     encCtx.ctx->pix_fmt   = AV_PIX_FMT_RGBA; // HAP encoder input format
     encCtx.ctx->time_base = inStream->time_base;
     encCtx.ctx->framerate = (inStream->r_frame_rate.den > 0) ? inStream->r_frame_rate
@@ -189,9 +202,11 @@ Result transcodeToHap(const std::string& srcPath,
     }
 
     // ---------- 4. Pixel-format conversion context (src → RGBA) -----------
+    // Source is WxH (original), dest is encWxencH (4-aligned). sws_scale
+    // handles the resize in the same pass as the YUV→RGBA conversion.
     SwsFree sws;
     sws.s = sws_getContext(width, height, inCtx.ctx->pix_fmt,
-                            width, height, AV_PIX_FMT_RGBA,
+                            encW, encH, AV_PIX_FMT_RGBA,
                             SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws.s) {
         std::cerr << "HapTranscoder: sws_getContext failed" << std::endl;
@@ -203,8 +218,8 @@ Result transcodeToHap(const std::string& srcPath,
     if (!srcFrame.f || !rgbaFrame.f) return Result::OutOfMemory;
 
     rgbaFrame.f->format = AV_PIX_FMT_RGBA;
-    rgbaFrame.f->width  = width;
-    rgbaFrame.f->height = height;
+    rgbaFrame.f->width  = encW;
+    rgbaFrame.f->height = encH;
     if (int ret = av_frame_get_buffer(rgbaFrame.f, 0); ret < 0) {
         logAvError("av_frame_get_buffer (RGBA)", ret);
         return Result::OutOfMemory;
