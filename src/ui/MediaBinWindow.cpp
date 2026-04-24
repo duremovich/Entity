@@ -25,6 +25,7 @@ struct StatusDisplay {
     float progress01{0.0f};
     int64_t framesDone{0};
     int64_t framesTotal{0};
+    Result failureResult{Result::Success};  // only meaningful when state == Failed
     bool hasTranscode{false};
     bool isSourceAlreadyHap{false};
 };
@@ -38,10 +39,11 @@ StatusDisplay computeStatus(const ProjectManager::MediaLibraryEntry& entry,
     if (tmgr) {
         if (auto s = tmgr->statusOf(entry.originalPath)) {
             d.hasActiveWorker = true;
-            d.transState = s->state;
-            d.progress01 = s->progress01;
-            d.framesDone = s->framesDone;
-            d.framesTotal = s->framesTotal;
+            d.transState    = s->state;
+            d.progress01    = s->progress01;
+            d.framesDone    = s->framesDone;
+            d.framesTotal   = s->framesTotal;
+            d.failureResult = s->result;
         }
     }
 
@@ -73,7 +75,8 @@ void renderStatusCell(const StatusDisplay& d) {
     } else if (d.hasActiveWorker && d.transState == TranscodeState::Queued) {
         ImGui::TextDisabled("Queued");
     } else if (d.hasActiveWorker && d.transState == TranscodeState::Failed) {
-        ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "Failed");
+        ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f),
+                           "Failed: %s", ResultToString(d.failureResult));
     } else if (d.hasTranscode) {
         ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.5f, 1.0f), "HAP (transcoded)");
     } else if (d.isSourceAlreadyHap) {
@@ -162,6 +165,13 @@ void MediaBinWindow::render() {
                 if (!entry.transcodedPath.empty()) {
                     ImGui::Text("Transcoded: %s", entry.transcodedPath.c_str());
                     ImGui::Text("Variant: %s", entry.variant.c_str());
+                }
+                if (status.hasActiveWorker && status.transState == TranscodeState::Failed) {
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f),
+                                       "Transcode failed: %s",
+                                       ResultToString(status.failureResult));
+                    ImGui::TextDisabled("Right-click for Retry. Check console for FFmpeg detail.");
                 }
                 ImGui::EndTooltip();
             }
