@@ -98,6 +98,8 @@ target_sources(EntityMediaCore
         src/media/HAPDecoder.cpp
         src/media/HapFormat.cpp
         src/media/HapTranscoder.cpp
+        src/media/TranscodeWorker.cpp
+        src/media/TranscodeManager.cpp
         src/media/ObjLoader.cpp
 
         # Render

@@ -8,6 +8,7 @@ add_executable(EntityMediaTests
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
     unit/HapFormatTests.cpp
+    unit/TranscodeManagerTests.cpp
     test_Decoder.cpp
 )
 
