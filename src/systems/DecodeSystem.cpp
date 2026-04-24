@@ -7,8 +7,10 @@
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/VideoTexture.hpp"
+#include "entity/media/Decoder.hpp"
 #include <iostream>
 #include <chrono>
 
@@ -399,9 +401,23 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     worker->currentFrame.store(initialFrame);
     worker->targetFrame.store(initialFrame + DECODE_AHEAD_FRAMES);
 
-    // Store info for deferred decoder initialization in worker thread
-    worker->filepath = clip->filepath;
-    worker->mediaType = clip->mediaType;
+    // Store info for deferred decoder initialization in worker thread.
+    //
+    // If the main thread already opened a decoder on this entity (via
+    // Engine::onMediaDroppedOnTimeline or ProjectManager::load's callback),
+    // prefer the path + media type reported by THAT decoder — those values
+    // have been resolved through ProjectManager::decoderPathFor and reflect
+    // whatever transcoded HAP file the library entry points at. Falling back
+    // to clip->filepath/mediaType would open the ORIGINAL (e.g. ProRes) path
+    // with a HAPDecoder, which fails at the codec_id check.
+    const ClipDecodeState* state = registry.try_get<ClipDecodeState>(entity);
+    if (state && state->decoder && state->decoder->isOpen()) {
+        worker->filepath  = state->decoder->getFilePath();
+        worker->mediaType = state->decoder->getMediaType();
+    } else {
+        worker->filepath  = clip->filepath;
+        worker->mediaType = clip->mediaType;
+    }
     worker->initialized.store(false);
     worker->initFailed.store(false);
 
