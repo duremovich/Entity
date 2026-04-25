@@ -150,13 +150,16 @@ bool FrameRingBuffer::consumeUpTo(FrameNumber frameNumber, DecodedFrame& outFram
         bestOffset = 0;
     }
 
-    // Copy the frame - check validity with atomic load to prevent TOCTOU race
+    // Move the frame out — the slot is about to be cleared by the consume loop
+    // below, so a copy here would be ~33 MB of pointless memcpy for a 4K RGBA
+    // frame (and ProRes 4444 with alpha is exactly that size). Move turns it
+    // into a pointer swap. SPSC discipline guarantees no other reader is
+    // touching this slot.
     uint32_t frameIdx = (readIdx + static_cast<uint32_t>(bestOffset)) % m_capacity;
-    const DecodedFrame& selectedFrame = m_frames[frameIdx];
-    if (!selectedFrame.valid.load(std::memory_order_acquire)) {
+    if (!m_frames[frameIdx].valid.load(std::memory_order_acquire)) {
         return false; // No valid frame
     }
-    outFrame = selectedFrame;
+    outFrame = std::move(m_frames[frameIdx]);
 
     // Pop all frames from head up to and including the selected frame
     uint32_t framesToConsume = static_cast<uint32_t>(bestOffset) + 1;

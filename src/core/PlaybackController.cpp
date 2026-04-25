@@ -196,12 +196,16 @@ void PlaybackController::updateClipVideos() {
                 continue;
             }
 
-            DecodedFrame ringFrame;
-            bool gotFrame = false;
+            // Target state->frame directly so the ring buffer's move (or copy
+            // for ping-pong/scrub) lands in its final home with no intermediate
+            // DecodedFrame. For 4K ProRes 4444 each DecodedFrame holds ~33 MB
+            // of pixel data, so the previous "consume into local, upload, then
+            // copy local into state" pattern was an extra 33 MB memcpy per
+            // active clip per frame.
+            DecodedFrame fallbackFrame;  // used only if state has no frame slot
+            DecodedFrame& target = (state && state->frame) ? *state->frame : fallbackFrame;
 
-            // During playback, consume frames to keep buffer flowing
-            // During scrubbing/paused, just peek without consuming
-            // EXCEPTION: For ping-pong mode, NEVER consume frames - we need them for both directions
+            bool gotFrame = false;
             auto ringStart = std::chrono::high_resolution_clock::now();
 
             // For ping-pong, don't consume frames at all - we need them in both directions
@@ -209,11 +213,11 @@ void PlaybackController::updateClipVideos() {
 
             if (playState == PlaybackState::Playing && !isPingPong) {
                 // Normal forward playback (non-ping-pong) - consume frames to keep buffer flowing
-                gotFrame = frameBuffer->ringBuffer->consumeUpTo(mediaFrame, ringFrame);
+                gotFrame = frameBuffer->ringBuffer->consumeUpTo(mediaFrame, target);
             } else {
                 // Scrubbing, paused, OR ping-pong mode - don't consume, just get
                 // This preserves frames in buffer for ping-pong bidirectional access
-                gotFrame = frameBuffer->ringBuffer->getFrame(mediaFrame, ringFrame);
+                gotFrame = frameBuffer->ringBuffer->getFrame(mediaFrame, target);
             }
 
             auto ringMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -228,51 +232,64 @@ void PlaybackController::updateClipVideos() {
                 // Got frame from ring buffer - upload to GPU (RGBA or pre-compressed BC).
                 bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
                     videoTex.descriptorSlot,
-                    ringFrame.data.data(),
-                    ringFrame.width,
-                    ringFrame.height,
-                    ringFrame.format
+                    target.data.data(),
+                    target.width,
+                    target.height,
+                    target.format
                 );
 
                 if (uploadSuccess) {
-                    videoTex.width = ringFrame.width;
-                    videoTex.height = ringFrame.height;
+                    videoTex.width = target.width;
+                    videoTex.height = target.height;
                     if (state) {
                         state->lastDecodedFrame = mediaFrame;
-
-                        // Also update frame so getCurrentVideoFrame() returns this frame
-                        if (state->frame) {
-                            *state->frame = ringFrame;
-                        }
                     }
                 }
                 continue;  // Frame processed from ring buffer, skip legacy path
             }
 
-            // Frame not in ring buffer - try to get nearest available frame
-            // This prevents visual "freeze" when decode thread is catching up
-            if (playState == PlaybackState::Playing) {
-                // During playback, try to get any frame that's in the buffer
-                // This is better than showing nothing (freeze)
-                DecodedFrame nearestFrame;
-                if (frameBuffer->ringBuffer->getNearestFrame(mediaFrame, nearestFrame)) {
-                    // Got a frame (might not be exact target, but close enough)
-                    bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
-                        videoTex.descriptorSlot,
-                        nearestFrame.data.data(),
-                        nearestFrame.width,
-                        nearestFrame.height,
-                        nearestFrame.format
-                    );
-                    if (uploadSuccess) {
-                        videoTex.width = nearestFrame.width;
-                        videoTex.height = nearestFrame.height;
-                    }
+            // Closest-available-frame fallback ONLY during Playing. The fallback
+            // exists to keep playback progressing when the decoder is behind but
+            // moving in the right direction — there, showing N-1 instead of N
+            // for one tick is the right call.
+            //
+            // For Paused/Scrubbing it's actively wrong:
+            //   - Decoder seeks are suppressed during scrub (DecodeSystem.cpp:196),
+            //     so the decoder keeps decoding forward from its old position.
+            //     getNearestFrame's answer drifts as the buffer fills — we'd
+            //     watch the decoder's *prior* progress crawl past while waiting
+            //     for the actually-clicked frame. That's the visible bounce.
+            //   - The "live preview during drag" intent isn't even satisfied:
+            //     since seeks are suppressed, the buffer reflects where the
+            //     decoder was, not where the playhead is. We're paying complexity
+            //     for a broken feature.
+            // Leave the texture as-is until the exact target arrives via the
+            // main consumeUpTo/getFrame path. Discrete jumps, no in-between.
+            if (playState == PlaybackState::Playing &&
+                frameBuffer->ringBuffer->getNearestFrame(mediaFrame, target)) {
+                bool uploadSuccess = m_renderer->uploadVideoFrameToSlot(
+                    videoTex.descriptorSlot,
+                    target.data.data(),
+                    target.width,
+                    target.height,
+                    target.format
+                );
+                if (uploadSuccess) {
+                    videoTex.width = target.width;
+                    videoTex.height = target.height;
                 }
-                // Either way, don't fall through to sync decode during playback
-                continue;
             }
-            // During paused/scrubbing - fall through to legacy decode (blocking is OK)
+
+            // Never sync-decode from this path. The freeze isn't only during
+            // the drag — it also fires in the post-scrub-release window
+            // (isScrubbing() flips to false, but the async decoder is still
+            // mid-seek, so consumeUpTo/getFrame/getNearestFrame all return
+            // false). For 4K ProRes 4444 with N active clips that gap is N ×
+            // ~250 ms of synchronous main-thread decode = ~1 s of frozen UI
+            // per click-to-seek. Trust the async DecodeWorker to deliver the
+            // target frame within ~200 ms; until then the previously-uploaded
+            // texture (or getNearestFrame's best guess) stands.
+            continue;
         }
 
         // Legacy path: synchronous decode on main thread (only used when paused/scrubbing)
