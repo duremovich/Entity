@@ -249,8 +249,10 @@ void MediaBinWindow::render() {
                     ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f),
                                        "Transcode failed: %s",
                                        ResultToString(status.failureResult));
-                    ImGui::TextDisabled("Right-click for Retry. Check console for FFmpeg detail.");
+                    ImGui::TextDisabled("Check console for FFmpeg detail.");
                 }
+                ImGui::Separator();
+                ImGui::TextDisabled("Right-click for options.");
                 ImGui::EndTooltip();
             }
 
@@ -292,6 +294,11 @@ void MediaBinWindow::render() {
                             tmgr->enqueue(filepath, "hap_alpha", 0.0);
                         }
                     }
+                }
+
+                ImGui::Separator();
+                if (ImGui::MenuItem("Remove from library")) {
+                    m_engine->removeMediaFromLibrary(filepath);
                 }
                 ImGui::EndPopup();
             }

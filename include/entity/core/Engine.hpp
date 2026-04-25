@@ -132,6 +132,14 @@ public:
      */
     const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
 
+    /**
+     * Remove a media library entry: cancel any in-flight transcode worker,
+     * delete the cached HAP file from disk if present, drop the library
+     * entry. Clips on the timeline that referenced this media keep playing
+     * from the original source path via decoderPathFor's fallback.
+     */
+    void removeMediaFromLibrary(const std::string& originalPath);
+
     /// Non-HAP import policy preference (persisted with project).
     ProjectManager::NonHapImportPolicy nonHapImportPolicy() const;
     void setNonHapImportPolicy(ProjectManager::NonHapImportPolicy policy);

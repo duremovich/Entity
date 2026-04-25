@@ -493,6 +493,35 @@ const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFile
     return m_projectManager ? m_projectManager->loadedMediaFiles() : kEmpty;
 }
 
+void Engine::removeMediaFromLibrary(const std::string& originalPath) {
+    if (!m_projectManager) return;
+
+    // Capture transcoded path before removing the entry.
+    std::string transcoded;
+    if (auto* e = m_projectManager->findEntry(originalPath)) {
+        transcoded = e->transcodedPath;
+    }
+
+    // Cancel + reap any in-flight worker. Safe in any state — remove()
+    // requests cancel + joins the thread.
+    if (m_transcodeManager) m_transcodeManager->remove(originalPath);
+
+    // Delete cached HAP file from disk. error_code variant so a missing
+    // file (already cleaned up by hand, never finished transcoding, etc)
+    // doesn't throw.
+    if (!transcoded.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(transcoded), ec);
+        if (ec) {
+            std::cerr << "[Engine] Failed to delete cached HAP " << transcoded
+                      << ": " << ec.message() << std::endl;
+        }
+    }
+
+    m_projectManager->removeMediaFile(originalPath);
+    std::cout << "[Engine] Removed from library: " << originalPath << std::endl;
+}
+
 ProjectManager::NonHapImportPolicy Engine::nonHapImportPolicy() const {
     return m_projectManager ? m_projectManager->nonHapImportPolicy()
                             : ProjectManager::NonHapImportPolicy::Ask;
