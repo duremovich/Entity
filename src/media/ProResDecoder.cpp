@@ -424,13 +424,16 @@ Result ProResDecoder::decodeNextPacket() {
                     return Result::DecoderError;
                 }
 
-                // Try to receive remaining frames
+                // Try to receive remaining frames buffered inside the codec.
                 ret = avcodec_receive_frame(m_codecContext, m_frame);
                 if (ret == 0) {
                     m_currentFrame++;
                     return Result::Success;
                 }
-                return Result::DecoderError; // No more frames
+                // Truly no more frames: stream exhausted, decoder flushed.
+                // EndOfStream lets DecodeSystem distinguish "expected end" from
+                // a real DecoderError and skip the log spam.
+                return Result::EndOfStream;
             }
             char errBuf[256];
             av_strerror(ret, errBuf, sizeof(errBuf));
