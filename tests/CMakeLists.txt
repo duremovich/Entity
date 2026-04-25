@@ -3,8 +3,7 @@
 find_package(GTest CONFIG REQUIRED)
 
 add_executable(EntityMediaTests
-    unit/FrameRingBufferTests.cpp
-    unit/BufferSystemTests.cpp
+    unit/FrameCacheTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
     unit/HapFormatTests.cpp
@@ -62,6 +61,8 @@ entity_add_integration_test(blend_difference   blend_difference.json)
 entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
 entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
 entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)
+entity_add_integration_test(cache_hit_after_seek cache_hit_after_seek.json)
+entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
 
 # Screen-persistence round-trip: save runs first (FIXTURES_SETUP), produces
 # test_output/screen_persistence/test.entity; load consumes it and asserts.

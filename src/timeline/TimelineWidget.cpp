@@ -13,8 +13,6 @@
 #include "entity/timeline/TimelineWidget.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
-#include "entity/components/FrameBuffer.hpp"
-#include "entity/media/FrameRingBuffer.hpp"
 #include <sstream>
 #include <cmath>
 #include <iostream>
@@ -296,33 +294,9 @@ void TimelineWidget::render() {
         m_timeline->createTrack(trackName.str());
     }
 
-    // Buffer status indicator for selected clip
-    if (m_selectedClip != entt::null) {
-        auto& registry = m_timeline->getRegistry();
-        auto* frameBuffer = registry.try_get<FrameBuffer>(m_selectedClip);
-        if (frameBuffer && frameBuffer->ringBuffer) {
-            ImGui::SameLine();
-            ImGui::Separator();
-            ImGui::SameLine();
-
-            uint32_t bufferedFrames = frameBuffer->ringBuffer->getCount();
-            uint32_t capacity = frameBuffer->ringBuffer->getCapacity();
-            float fillPct = frameBuffer->ringBuffer->getFillPercentage();
-
-            // Color based on buffer level
-            ImVec4 bufferColor;
-            if (fillPct > 0.5f) {
-                bufferColor = ImVec4(0.2f, 0.8f, 0.2f, 1.0f);  // Green - healthy
-            } else if (fillPct > 0.2f) {
-                bufferColor = ImVec4(0.8f, 0.8f, 0.2f, 1.0f);  // Yellow - low
-            } else {
-                bufferColor = ImVec4(0.8f, 0.2f, 0.2f, 1.0f);  // Red - critical
-            }
-
-            ImGui::TextColored(bufferColor, "Buffer: %u/%u (%.0f%%)",
-                bufferedFrames, capacity, fillPct * 100.0f);
-        }
-    }
+    // Per-clip buffer-fill indicator removed in Phase C.10 — frames now
+    // live in an engine-global FrameCache. A cache-wide bytesUsed/maxBytes
+    // overlay can come back here once the widget gets an Engine* injected.
 
     // Handle context menus
     handleContextMenus();

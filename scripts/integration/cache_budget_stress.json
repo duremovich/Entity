@@ -1,0 +1,46 @@
+{
+    "version": 1,
+    "description": "Phase C.10 gate (second half): the FrameCache must hold its byte budget under continuous random seeking. Shrinks the cache to 80 KB while feeding it the 16-frame 64x64 RGBA gradient (~16 KB/frame, ~256 KB working set — only ~4-5 frames fit). Does several waves of pseudo-random seeks across the whole range, asserting bytesUsed <= maxBytes && entryCount > 0 after each wave. A failure means either the eviction path regressed or the cache stops getting filled.",
+    "commands": [
+        { "type": "AddScreen", "name": "BudgetStressScreen", "width": 64, "height": 64 },
+
+        { "type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0 },
+        { "type": "WaitFrames", "count": 30 },
+
+        { "type": "SetFrameCacheBudget", "bytes": 81920 },
+        { "type": "WaitFrames", "count": 10 },
+        { "type": "AssertFrameCacheBudgetOK" },
+
+        { "type": "SeekToFrame", "frame": 0  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 8  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 4  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 12 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 2  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 10 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 6  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 14 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "AssertFrameCacheBudgetOK" },
+
+        { "type": "SeekToFrame", "frame": 1  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 9  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 5  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 13 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 3  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 11 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 7  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 15 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "AssertFrameCacheBudgetOK" },
+
+        { "type": "SeekToFrame", "frame": 5  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 0  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 14 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 7  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 11 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 3  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 12 }, { "type": "WaitFrames", "count": 3 },
+        { "type": "SeekToFrame", "frame": 8  }, { "type": "WaitFrames", "count": 3 },
+        { "type": "AssertFrameCacheBudgetOK" },
+
+        { "type": "Exit" }
+    ]
+}

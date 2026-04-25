@@ -12,7 +12,6 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
-#include "entity/media/FrameRingBuffer.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -291,15 +290,9 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
         // They will be created fresh by the decoder
     }
 
-    // Create new FrameBuffer (with fresh ring buffer)
-    auto* srcFrameBuffer = m_registry.try_get<FrameBuffer>(clipEntity);
-    if (srcFrameBuffer) {
-        auto& newFrameBuffer = m_registry.emplace<FrameBuffer>(newClipEntity);
-        newFrameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>(32);
-        newFrameBuffer.currentPTS.store(0);
-        newFrameBuffer.targetFrame.store(0);
-        newFrameBuffer.isBuffering.store(true);
-        newFrameBuffer.bufferedFrames.store(0);
+    // FrameBuffer is just a marker; the engine-global FrameCache holds frames.
+    if (m_registry.all_of<FrameBuffer>(clipEntity)) {
+        m_registry.emplace<FrameBuffer>(newClipEntity);
     }
 
     // Copy and adjust AnimatedProperties for split
@@ -439,15 +432,9 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
         newVideoTex.height = srcVideoTex->height;
     }
 
-    // Create new FrameBuffer with fresh ring buffer
-    auto* srcFrameBuffer = m_registry.try_get<FrameBuffer>(clipEntity);
-    if (srcFrameBuffer) {
-        auto& newFrameBuffer = m_registry.emplace<FrameBuffer>(newClipEntity);
-        newFrameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>(32);
-        newFrameBuffer.currentPTS.store(0);
-        newFrameBuffer.targetFrame.store(0);
-        newFrameBuffer.isBuffering.store(true);
-        newFrameBuffer.bufferedFrames.store(0);
+    // FrameBuffer is just a marker; the engine-global FrameCache holds frames.
+    if (m_registry.all_of<FrameBuffer>(clipEntity)) {
+        m_registry.emplace<FrameBuffer>(newClipEntity);
     }
 
     // Copy AnimatedProperties if exists (duplicate gets identical keyframes)

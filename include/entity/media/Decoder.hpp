@@ -1,7 +1,7 @@
 #pragma once
 
 #include "entity/core/Types.hpp"
-#include "entity/media/FrameRingBuffer.hpp"
+#include "entity/media/DecodedFrame.hpp"
 #include <string>
 #include <memory>
 

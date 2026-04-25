@@ -12,12 +12,12 @@
 #include "entity/ui/ScreensWindow.hpp"
 #include "entity/systems/TestSystem.hpp"
 #include "entity/systems/TimelineSystem.hpp"
-#include "entity/systems/BufferSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/media/Decoder.hpp"
-#include "entity/media/FrameRingBuffer.hpp"
+#include "entity/media/DecodedFrame.hpp"
+#include "entity/media/FrameCache.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/command/CommandDispatcher.hpp"
@@ -155,12 +155,28 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         system->initialize(m_registry);
     }
 
+    // Load machine-global settings up front — the FrameCache below sizes
+    // itself from m_settings.frameCacheBytes, and the Preferences dialog
+    // (created below) reads the loaded values to populate its initial state.
+    m_settings = loadSettings();
+    std::cout << "  Settings loaded: frameCacheBytes="
+              << (m_settings.frameCacheBytes / (1024ull * 1024ull)) << " MiB"
+              << " from " << reinterpret_cast<const char*>(settingsPath().u8string().c_str())
+              << std::endl;
+
+    // Engine-global frame cache. Replaces the per-clip FrameRingBuffer:
+    // decode workers push into it, PlaybackController reads via lease.
+    // Budget is the user-tunable knob (Preferences dialog), with live
+    // re-budgeting wired further down via setSettingsAppliedCallback.
+    m_frameCache = std::make_unique<FrameCache>(static_cast<size_t>(m_settings.frameCacheBytes));
+
     // Initialize timeline
     m_timeline = std::make_unique<Timeline>(m_registry);
 
     // Initialize playback controller (owns frame timing + per-frame seek-aware updates).
     // DecodeSystem is injected below after registration.
     m_playbackController = std::make_unique<PlaybackController>(m_registry, m_timeline.get(), m_renderer.get());
+    m_playbackController->setFrameCache(m_frameCache.get());
 
     // Initialize project manager (owns project path, media library, autosave)
     m_projectManager = std::make_unique<ProjectManager>();
@@ -184,9 +200,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         }
     }
 
-    // Register decode system (needs timeline for frame position)
+    // Register decode system (needs timeline for frame position + cache for output)
     auto decodeSystem = std::make_unique<DecodeSystem>();
     decodeSystem->setTimeline(m_timeline.get());
+    decodeSystem->setFrameCache(m_frameCache.get());
     m_decodeSystem = decodeSystem.get();  // Keep raw pointer for direct access
     m_playbackController->setDecodeSystem(m_decodeSystem);
     registerSystem(std::move(decodeSystem));
@@ -201,14 +218,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_commandDispatcher = std::make_unique<CommandDispatcher>();
     std::cout << "  Command dispatcher initialized" << std::endl;
 
-    // Load machine-global settings before the UI exists — Preferences dialog
-    // reads from m_settings on open, and any future cache/transcode subsystems
-    // that need budget values can find them already populated.
-    m_settings = loadSettings();
-    std::cout << "  Settings loaded: frameCacheBytes="
-              << (m_settings.frameCacheBytes / (1024ull * 1024ull)) << " MiB"
-              << " from " << reinterpret_cast<const char*>(settingsPath().u8string().c_str())
-              << std::endl;
+    // (Settings + FrameCache were loaded earlier — see Initialize timeline above.)
 
     // Initialize window manager
     m_windowManager = std::make_unique<WindowManager>();
@@ -292,10 +302,16 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->setCanUndoCallback([this]() { return m_commandDispatcher->getUndoDepth() > 0; });
     m_windowManager->setCanRedoCallback([this]() { return m_commandDispatcher->getRedoDepth() > 0; });
 
-    // Preferences dialog — reads from m_settings on open; OK persists.
+    // Preferences dialog — reads from m_settings on open; OK persists +
+    // re-budgets the live FrameCache so the user gets the new limit
+    // without a restart (shrinks evict LRU immediately, grows take effect
+    // on the next put).
     m_windowManager->setCurrentSettingsCallback([this]() { return m_settings; });
     m_windowManager->setSettingsAppliedCallback([this](const Settings& updated) {
         m_settings = updated;
+        if (m_frameCache) {
+            m_frameCache->setMaxBytes(static_cast<size_t>(m_settings.frameCacheBytes));
+        }
         if (!saveSettings(m_settings)) {
             std::cerr << "[Engine] Could not persist settings to disk; "
                          "in-memory values are still updated." << std::endl;
@@ -1160,32 +1176,9 @@ void Engine::testComponents() {
         std::cout << "  ✓ Resolution: " << texture.width << "x" << texture.height << std::endl;
     }
 
-    // Test 5: FrameBuffer Component
-    std::cout << "\nTest 5: FrameBuffer Component" << std::endl;
-    {
-        // Create BufferSystem for testing buffer logic
-        BufferSystem bufferSystem;
-
-        auto entity = m_registry.create();
-        testEntities.push_back(entity);
-        auto& frameBuffer = m_registry.emplace<FrameBuffer>(entity);
-
-        // Note: Full ring buffer functionality requires FrameRingBuffer class
-        // For now, just test basic state
-        frameBuffer.currentPTS = 1000000; // 1 second in microseconds
-        frameBuffer.targetFrame = 30;
-        frameBuffer.bufferedFrames = 16;
-
-        // Use BufferSystem instead of component methods
-        assert(bufferSystem.hasFrames(frameBuffer) == true);
-        assert(bufferSystem.isReady(frameBuffer) == true); // >= 8 frames
-
-        float fillPercentage = bufferSystem.getFillPercentage(frameBuffer);
-        assert(fillPercentage == 16.0f / 32.0f); // 50% full
-
-        std::cout << "  ✓ FrameBuffer state tracking works (via BufferSystem)" << std::endl;
-        std::cout << "  ✓ Buffer fill: " << (fillPercentage * 100.0f) << "%" << std::endl;
-    }
+    // Test 5 (FrameBuffer atomic-state probe + BufferSystem) removed in
+    // Phase C.10: FrameBuffer is now an empty marker, BufferSystem is gone,
+    // and buffer state lives in the engine-global FrameCache instead.
 
     // Test 6: TimelineTrack Component
     std::cout << "\nTest 6: TimelineTrack Component" << std::endl;
@@ -1521,11 +1514,9 @@ void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
         std::cout << "Allocated video texture slot: " << videoTex.descriptorSlot << std::endl;
     }
 
-    // Add FrameBuffer component for threaded decoding
-    auto& frameBuffer = m_registry.emplace<FrameBuffer>(clipEntity);
-    frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
-    frameBuffer.isBuffering.store(true);
-    std::cout << "Created FrameBuffer with ring buffer for threaded decoding" << std::endl;
+    // Marker tag for DecodeSystem's view query — frames go through the
+    // engine-global FrameCache now, not a per-clip ring buffer.
+    m_registry.emplace<FrameBuffer>(clipEntity);
 
     // Store decoder and create frame buffer for this clip (legacy path)
     auto& state = m_registry.emplace_or_replace<ClipDecodeState>(clipEntity);
@@ -1765,10 +1756,8 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
         std::cerr << "ERROR: Failed to allocate video texture slot!" << std::endl;
     }
 
-    // Add FrameBuffer component for threaded decoding
-    auto& frameBuffer = m_registry.emplace<FrameBuffer>(clipEntity);
-    frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
-    frameBuffer.isBuffering.store(true);
+    // Marker tag for DecodeSystem (decoded frames live in the engine cache).
+    m_registry.emplace<FrameBuffer>(clipEntity);
 
     // Store decoder and create frame buffer for this clip (legacy path)
     auto& state = m_registry.emplace_or_replace<ClipDecodeState>(clipEntity);

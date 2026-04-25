@@ -11,7 +11,7 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/media/Decoder.hpp"
-#include "entity/media/FrameRingBuffer.hpp"
+#include "entity/media/DecodedFrame.hpp"
 #include <algorithm>
 #include <iostream>
 
@@ -144,11 +144,9 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
             videoTex.height = decoder->getHeight();
         }
 
-        // Attach FrameBuffer if not already present
+        // Marker tag for DecodeSystem (decoded frames live in the engine cache).
         if (!m_registry->all_of<FrameBuffer>(clipEntity)) {
-            auto& frameBuffer = m_registry->emplace<FrameBuffer>(clipEntity);
-            frameBuffer.ringBuffer = std::make_shared<FrameRingBuffer>();
-            frameBuffer.isBuffering.store(true);
+            m_registry->emplace<FrameBuffer>(clipEntity);
         }
 
         // Emplace decode state (moves decoder in, allocates frame)

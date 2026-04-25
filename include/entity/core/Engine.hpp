@@ -28,6 +28,7 @@ class DecodeSystem;
 class AnimationSystem;
 class CommandDispatcher;
 class OutputManager;
+class FrameCache;
 struct DecodedFrame;
 // class Transport;
 
@@ -98,6 +99,11 @@ public:
      * Get the OutputManager (display enumeration + physical output driving).
      */
     OutputManager* getOutputManager() { return m_outputManager.get(); }
+
+    /**
+     * Get the engine-global FrameCache (decoded frames for all active clips).
+     */
+    FrameCache* getFrameCache() { return m_frameCache.get(); }
 
     // TODO: Implement this when class is ready
     // Transport* getTransport() { return m_transport.get(); }
@@ -351,6 +357,12 @@ private:
     // the user clicks OK in the Preferences dialog. Per-project state lives
     // in ProjectManager / .entity files; this is the other side of that line.
     Settings m_settings{};
+
+    // Engine-global frame cache. Sized from m_settings.frameCacheBytes at
+    // initialize() and re-budgeted live when the user changes the value in
+    // Preferences. Owned here; injected by raw pointer into DecodeSystem
+    // (producer) and PlaybackController (consumer).
+    std::unique_ptr<FrameCache> m_frameCache;
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;

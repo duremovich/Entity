@@ -1,0 +1,73 @@
+{
+    "version": 1,
+    "description": "Phase C.10 gate: re-seeking to a recently-viewed frame must be a FrameCache hit, not a re-decode. Imports the gradient PNG seq, seeks to frames 8 + 0 + 8 (warming the cache through both, then returning), asserts both are still in the cache, and verifies the final pixel hash matches the same golden as integration_png_sequence_seek frame 8 — proving the cache returned the correct frame.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "CacheHitScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "test_media/gradient_seq/frame_000.png",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 8
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "AssertFrameCached",
+            "trackIndex": 0,
+            "clipIndex":  0,
+            "sourceFrame": 8
+        },
+        {
+            "type": "AssertFrameCached",
+            "trackIndex": 0,
+            "clipIndex":  0,
+            "sourceFrame": 0
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 8
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "AssertFrameCached",
+            "trackIndex": 0,
+            "clipIndex":  0,
+            "sourceFrame": 8
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath":   "test_output/cache_hit_after_seek/frame_8.hash",
+            "goldenFilepath": "tests/goldens/png_sequence_seek/frame_8.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -5,7 +5,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/Screen.hpp"
-#include "entity/media/FrameRingBuffer.hpp"  // For DecodedFrame definition
+#include "entity/media/DecodedFrame.hpp"
 #include <algorithm>  // For std::sort
 #include <vector>
 

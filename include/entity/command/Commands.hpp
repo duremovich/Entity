@@ -711,6 +711,96 @@ private:
     size_t m_count;
 };
 
+/**
+ * Assert that the engine-global FrameCache currently holds an exact entry
+ * for (clipEntity at trackIndex/clipIndex, sourceFrame). This is the gate
+ * for the click-to-recently-viewed-frame fast path — Phase C.10's promise
+ * is that re-seeking to a recently-decoded source frame is a cache hit, not
+ * a re-decode.
+ *
+ * Usage in tests: warm the cache by seeking to N, seek elsewhere, seek back
+ * to N, then AssertFrameCached the source frame N maps to. Failure here means
+ * either the cache evicted under-budget (regression in eviction policy), or
+ * the producer/consumer wiring is broken (frames aren't landing in the cache).
+ *
+ * JSON:
+ * {
+ *     "type": "AssertFrameCached",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "sourceFrame": 8
+ * }
+ */
+class AssertFrameCachedCommand : public Command {
+public:
+    AssertFrameCachedCommand(int trackIndex, int clipIndex, FrameNumber sourceFrame)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_sourceFrame(sourceFrame) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertFrameCached"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    FrameNumber m_sourceFrame;
+};
+
+/**
+ * Live-set the engine-global FrameCache budget. Used by the budget-stress
+ * test to shrink the cache below a clip's working set, forcing the LRU
+ * eviction path to do real work.
+ *
+ * JSON:
+ * {
+ *     "type": "SetFrameCacheBudget",
+ *     "bytes": 81920
+ * }
+ */
+class SetFrameCacheBudgetCommand : public Command {
+public:
+    explicit SetFrameCacheBudgetCommand(uint64_t bytes) : m_bytes(bytes) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetFrameCacheBudget"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint64_t m_bytes;
+};
+
+/**
+ * Assert the cache invariant `bytesUsed <= maxBytes && entryCount > 0`.
+ *
+ * The `entryCount > 0` check guards against the trivial-pass: a cache with
+ * zero entries trivially satisfies the budget. We want to prove the cache
+ * is *alive* (decoder is filling it) AND staying within budget.
+ *
+ * JSON:
+ * {
+ *     "type": "AssertFrameCacheBudgetOK"
+ * }
+ */
+class AssertFrameCacheBudgetOKCommand : public Command {
+public:
+    AssertFrameCacheBudgetOKCommand() = default;
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertFrameCacheBudgetOK"; }
+    nlohmann::json toJson() const override { return {{"type", "AssertFrameCacheBudgetOK"}}; }
+    std::string getDescription() const override { return "Assert FrameCache stays within budget"; }
+
+    static CommandPtr fromJson(const nlohmann::json&) {
+        return std::make_unique<AssertFrameCacheBudgetOKCommand>();
+    }
+};
+
 // ============================================================================
 // Playback-mode / framerate / duration overrides (for integration tests)
 // ============================================================================

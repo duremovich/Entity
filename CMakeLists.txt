@@ -92,7 +92,7 @@ target_sources(EntityMediaCore
         src/core/Settings.cpp
 
         # Media
-        src/media/FrameRingBuffer.cpp
+        src/media/FrameCache.cpp
         src/media/Decoder.cpp
         src/media/PNGSequenceDecoder.cpp
         src/media/ProResDecoder.cpp

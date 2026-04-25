@@ -9,6 +9,7 @@ namespace entity {
 class IRenderer;
 class Timeline;
 class DecodeSystem;
+class FrameCache;
 struct Clip;
 struct DecodedFrame;
 
@@ -45,6 +46,7 @@ public:
     PlaybackController& operator=(const PlaybackController&) = delete;
 
     void setDecodeSystem(DecodeSystem* s) { m_decodeSystem = s; }
+    void setFrameCache(FrameCache* c) { m_frameCache = c; }
 
     // Per-frame hooks from the engine main loop.
     void startTiming();
@@ -67,6 +69,7 @@ private:
     Timeline* m_timeline{nullptr};
     IRenderer* m_renderer{nullptr};
     DecodeSystem* m_decodeSystem{nullptr};
+    FrameCache*   m_frameCache{nullptr};
 
     using Clock = std::chrono::high_resolution_clock;
     using TimePoint = std::chrono::time_point<Clock>;

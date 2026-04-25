@@ -1,40 +1,20 @@
 #pragma once
 
-#include "../core/Types.hpp"
-#include <atomic>
-#include <memory>
-
-// Forward declaration
-namespace entity { class FrameRingBuffer; }
-
 namespace entity {
 
 /**
- * FrameBuffer component for decoded frame buffering.
+ * FrameBuffer - empty marker tag for clips that are decode-managed.
  *
- * Contains a circular ring buffer of decoded frames and tracks
- * the current playback position (PTS - Presentation TimeStamp).
+ * Pre-Phase C.10 this carried a per-clip FrameRingBuffer and atomic state
+ * for the decode-thread / main-thread handshake. With the engine-global
+ * FrameCache (include/entity/media/FrameCache.hpp) all of that state lives
+ * in one place; the only thing left for FrameBuffer to do is mark "this
+ * clip should have a decode worker" so DecodeSystem's view query keeps
+ * working without touching every emplace site.
  *
- * PURE DATA COMPONENT - No methods, only data members.
- * Logic for buffer management extracted to BufferSystem.
+ * Will likely be removed entirely once a follow-up confirms `Clip` alone is
+ * a sufficient marker (every Clip-with-media is decode-managed today).
  */
-struct FrameBuffer {
-    // Shared pointer to ring buffer. INVARIANT: assigned once on the main thread
-    // during clip setup and never reassigned. Decode thread and main thread both
-    // dereference concurrently, which is safe because the pointed-to FrameRingBuffer
-    // has its own synchronization. Do not reassign this from any thread after
-    // clip activation without extending to atomic_shared_ptr or explicit locking.
-    std::shared_ptr<FrameRingBuffer> ringBuffer;
-
-    // Current presentation timestamp (in microseconds)
-    std::atomic<Timestamp> currentPTS{0};
-
-    // Target frame for decode-ahead
-    std::atomic<FrameNumber> targetFrame{0};
-
-    // Buffer state (atomic for thread-safe access from decode threads)
-    std::atomic<bool> isBuffering{true};   // True if still filling buffer
-    std::atomic<uint32_t> bufferedFrames{0};  // Number of frames in buffer
-};
+struct FrameBuffer {};
 
 } // namespace entity

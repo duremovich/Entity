@@ -8,6 +8,7 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
+#include "entity/media/FrameCache.hpp"
 #include <imgui.h>
 #include <iostream>
 #include <filesystem>
@@ -1438,6 +1439,136 @@ std::string AssertScreenCountCommand::getDescription() const {
 CommandPtr AssertScreenCountCommand::fromJson(const nlohmann::json& j) {
     size_t count = j.value("count", static_cast<size_t>(0));
     return std::make_unique<AssertScreenCountCommand>(count);
+}
+
+// ============================================================================
+// AssertFrameCachedCommand
+// ============================================================================
+
+bool AssertFrameCachedCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertFrameCached] No timeline" << std::endl;
+        return false;
+    }
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[AssertFrameCached] Invalid track index " << m_trackIndex << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+        std::cerr << "[AssertFrameCached] Invalid clip index " << m_clipIndex << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->clips[m_clipIndex];
+
+    auto* cache = engine.getFrameCache();
+    if (!cache) {
+        std::cerr << "[AssertFrameCached] FAIL: no FrameCache" << std::endl;
+        return false;
+    }
+    if (!cache->has(clipEntity, m_sourceFrame)) {
+        std::cerr << "[AssertFrameCached] FAIL: source frame " << m_sourceFrame
+                  << " not in cache (track " << m_trackIndex << ", clip " << m_clipIndex
+                  << "). cache bytes=" << cache->bytesUsed()
+                  << " entries=" << cache->entryCount() << std::endl;
+        return false;
+    }
+    std::cout << "[AssertFrameCached] OK frame=" << m_sourceFrame
+              << " (track " << m_trackIndex << ", clip " << m_clipIndex
+              << "); cache entries=" << cache->entryCount()
+              << " bytes=" << cache->bytesUsed() << std::endl;
+    return true;
+}
+
+nlohmann::json AssertFrameCachedCommand::toJson() const {
+    return {
+        {"type", "AssertFrameCached"},
+        {"trackIndex",  m_trackIndex},
+        {"clipIndex",   m_clipIndex},
+        {"sourceFrame", m_sourceFrame},
+    };
+}
+
+std::string AssertFrameCachedCommand::getDescription() const {
+    return "Assert frame " + std::to_string(m_sourceFrame) + " cached for clip "
+         + std::to_string(m_trackIndex) + "/" + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertFrameCachedCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex   = j.value("trackIndex", 0);
+    int clipIndex    = j.value("clipIndex", 0);
+    FrameNumber f    = j.value("sourceFrame", static_cast<FrameNumber>(0));
+    return std::make_unique<AssertFrameCachedCommand>(trackIndex, clipIndex, f);
+}
+
+// ============================================================================
+// SetFrameCacheBudgetCommand
+// ============================================================================
+
+bool SetFrameCacheBudgetCommand::execute(Engine& engine) {
+    auto* cache = engine.getFrameCache();
+    if (!cache) {
+        std::cerr << "[SetFrameCacheBudget] FAIL: no FrameCache" << std::endl;
+        return false;
+    }
+    cache->setMaxBytes(static_cast<size_t>(m_bytes));
+    std::cout << "[SetFrameCacheBudget] OK budget=" << m_bytes
+              << " (bytesUsed now=" << cache->bytesUsed()
+              << ", entries=" << cache->entryCount() << ")" << std::endl;
+    return true;
+}
+
+nlohmann::json SetFrameCacheBudgetCommand::toJson() const {
+    return {{"type", "SetFrameCacheBudget"}, {"bytes", m_bytes}};
+}
+
+std::string SetFrameCacheBudgetCommand::getDescription() const {
+    return "Set FrameCache budget = " + std::to_string(m_bytes) + " bytes";
+}
+
+CommandPtr SetFrameCacheBudgetCommand::fromJson(const nlohmann::json& j) {
+    uint64_t bytes = j.value("bytes", static_cast<uint64_t>(0));
+    return std::make_unique<SetFrameCacheBudgetCommand>(bytes);
+}
+
+// ============================================================================
+// AssertFrameCacheBudgetOKCommand
+// ============================================================================
+
+bool AssertFrameCacheBudgetOKCommand::execute(Engine& engine) {
+    auto* cache = engine.getFrameCache();
+    if (!cache) {
+        std::cerr << "[AssertFrameCacheBudgetOK] FAIL: no FrameCache" << std::endl;
+        return false;
+    }
+    const size_t used    = cache->bytesUsed();
+    const size_t budget  = cache->maxBytes();
+    const size_t entries = cache->entryCount();
+
+    // Invariant 1: cache must not exceed its budget. Holds at the level of
+    // any single put/setMaxBytes call (those run evictUntilUnderBudget under
+    // the mutex). A failure here means the eviction path regressed.
+    if (used > budget) {
+        std::cerr << "[AssertFrameCacheBudgetOK] FAIL: bytesUsed=" << used
+                  << " > maxBytes=" << budget
+                  << " (entries=" << entries << ")" << std::endl;
+        return false;
+    }
+    // Invariant 2: cache must be alive. A trivially-empty cache satisfies
+    // invariant 1 too — that's not what we want to gate. Production code
+    // should always have at least the most-recent decoded frame held.
+    if (entries == 0) {
+        std::cerr << "[AssertFrameCacheBudgetOK] FAIL: cache empty"
+                  << " (bytesUsed=" << used << ", maxBytes=" << budget
+                  << "). Decoder isn't reaching the cache, or eviction is too aggressive." << std::endl;
+        return false;
+    }
+    std::cout << "[AssertFrameCacheBudgetOK] OK used=" << used
+              << "/" << budget << " entries=" << entries << std::endl;
+    return true;
 }
 
 // ============================================================================

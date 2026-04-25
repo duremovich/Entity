@@ -9,9 +9,7 @@
 #include "entity/timeline/TimelineWidget.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
-#include "entity/components/FrameBuffer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
-#include "entity/media/FrameRingBuffer.hpp"
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -473,36 +471,10 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
         filename.c_str()
     );
 
-    // Draw buffer progress bar at bottom of clip
-    const auto* frameBuffer = registry.try_get<FrameBuffer>(clipEntity);
-    if (frameBuffer && frameBuffer->ringBuffer) {
-        float fillPct = frameBuffer->ringBuffer->getFillPercentage();
-
-        // Progress bar dimensions
-        float barHeight = 4.0f;
-        float barY = clipMax.y - barHeight - 2.0f;
-        float barWidth = clipWidth - 6.0f;
-
-        // Background bar
-        ImVec2 barMin(clipMin.x + 3.0f, barY);
-        ImVec2 barMax(clipMin.x + 3.0f + barWidth, barY + barHeight);
-        drawList->AddRectFilled(barMin, barMax, IM_COL32(30, 30, 30, 200), 2.0f);
-
-        // Fill bar (color based on level)
-        ImU32 fillColor;
-        if (fillPct > 0.5f) {
-            fillColor = IM_COL32(50, 200, 50, 255);  // Green
-        } else if (fillPct > 0.2f) {
-            fillColor = IM_COL32(200, 200, 50, 255); // Yellow
-        } else {
-            fillColor = IM_COL32(200, 50, 50, 255);  // Red
-        }
-
-        ImVec2 fillMax(barMin.x + barWidth * fillPct, barMax.y);
-        if (fillPct > 0.01f) {
-            drawList->AddRectFilled(barMin, fillMax, fillColor, 2.0f);
-        }
-    }
+    // Per-clip buffer-fill bar removed in Phase C.10 — frames now live in
+    // an engine-global FrameCache, so per-clip fill % is no longer a
+    // meaningful concept. A "this clip's working set is hot" indicator
+    // could come back later by walking cache.entryCount per clip.
 
     // Draw keyframe markers if clip has animated properties
     const auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);

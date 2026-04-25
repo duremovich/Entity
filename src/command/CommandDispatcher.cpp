@@ -184,6 +184,9 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetClipTargetScreen", SetClipTargetScreenCommand::fromJson);
     registerFactory("AssertScreenExists", AssertScreenExistsCommand::fromJson);
     registerFactory("AssertScreenCount", AssertScreenCountCommand::fromJson);
+    registerFactory("AssertFrameCached", AssertFrameCachedCommand::fromJson);
+    registerFactory("SetFrameCacheBudget", SetFrameCacheBudgetCommand::fromJson);
+    registerFactory("AssertFrameCacheBudgetOK", AssertFrameCacheBudgetOKCommand::fromJson);
 
     // UI commands
     registerFactory("SelectTab", SelectTabCommand::fromJson);
