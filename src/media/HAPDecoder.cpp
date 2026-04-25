@@ -260,8 +260,12 @@ Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
         av_packet_unref(m_packet);
         int ret = av_read_frame(m_formatContext, m_packet);
         if (ret < 0) {
-            // EOF or error
-            return (ret == AVERROR_EOF) ? Result::Failure : Result::DecoderError;
+            // EOF is expected when the reported duration overshoots the actual
+            // packet count — common with FFmpeg-encoded HAP, where the muxer's
+            // nb_frames sometimes claims one more than `av_read_frame` will
+            // deliver. Caller treats EndOfStream as "stop, no error" while
+            // still distinguishing it from a real demux/parser failure.
+            return (ret == AVERROR_EOF) ? Result::EndOfStream : Result::DecoderError;
         }
         if (m_packet->stream_index != m_videoStreamIndex) {
             continue;

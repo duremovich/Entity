@@ -171,7 +171,7 @@ Following the **so-even-with-hap-cosmic-glacier** roadmap (decisions locked 2026
 1. **HAP Q YCoCg shader path** *(in progress)* — branch `composite_ps.hlsl` (or new `composite_hapq_ps.hlsl` PSO) on the texture's `HapColorSpace`, do the scaled-YCoCg→RGB conversion. Add `integration_hap_q_roundtrip` golden test against a HapY fixture.
 2. **HapM second plane** — wire the alpha-plane texture so Hap Q Alpha actually shows alpha.
 3. **Per-variant integration tests** — `_alpha_`, `_q_`, `_q_alpha_`, `_alpha_only_`, `_r_`, `_hdr_` round-trip goldens. Locks the family in against regressions.
-4. **EOF off-by-one** — HAPDecoder logs a spurious "Failed to decode frame N" at end-of-stream (noted in `93c4772`).
+4. ~~**EOF off-by-one**~~ *(closed)* — `Result::EndOfStream` sentinel; HAPDecoder returns it on `AVERROR_EOF` and `DecodeSystem` parks `nextFrame` at the duration without logging. Underlying cause: FFmpeg-encoded HAP fixtures report `nb_frames=N` but the demuxer delivers `N-1` packets (encoder buffering quirk).
 5. **Multi-clip stress with HAP files** — the perf gate: `clipVideos=` consistently <10 ms during steady-state with HAP content.
 
 ### Phase C.10 — FrameCache replaces the per-clip ring buffer

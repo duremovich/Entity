@@ -605,6 +605,13 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker, entt::
                 // Buffer full - wait and retry. frame.data is unchanged (push was no-op on isFull).
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
+        } else if (result == Result::EndOfStream) {
+            // Reported duration overshot the actual packet count — common with
+            // HAP fixtures where FFmpeg's nb_frames is one more than the
+            // demuxer will deliver. Treat as a soft stop: park nextFrame at
+            // the duration so the guard at the top of the loop sleeps until
+            // a seek arrives. Not a decode failure, no log spam.
+            nextFrame = worker->decoder->getDuration();
         } else {
             // Decode failed - skip frame
             std::cerr << "Failed to decode frame " << nextFrame << std::endl;

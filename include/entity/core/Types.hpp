@@ -89,7 +89,8 @@ enum class Result {
     UnsupportedFormat,
     OutOfMemory,
     DeviceError,
-    DecoderError
+    DecoderError,
+    EndOfStream    // Decoder exhausted — no more frames available, not an error
 };
 
 // Common type aliases
@@ -156,6 +157,7 @@ inline const char* ResultToString(Result result) {
         case Result::OutOfMemory: return "Out of Memory";
         case Result::DeviceError: return "Device Error";
         case Result::DecoderError: return "Decoder Error";
+        case Result::EndOfStream: return "End of Stream";
         default: return "Unknown";
     }
 }
