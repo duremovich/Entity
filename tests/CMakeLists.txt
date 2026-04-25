@@ -58,8 +58,9 @@ entity_add_integration_test(mixed_fps          mixed_fps.json)
 entity_add_integration_test(ping_pong          ping_pong.json)
 entity_add_integration_test(blend              blend.json)
 entity_add_integration_test(blend_difference   blend_difference.json)
-entity_add_integration_test(hap_roundtrip      hap_roundtrip.json)
-entity_add_integration_test(hap_q_roundtrip    hap_q_roundtrip.json)
+entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
+entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
+entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)
 
 # Screen-persistence round-trip: save runs first (FIXTURES_SETUP), produces
 # test_output/screen_persistence/test.entity; load consumes it and asserts.

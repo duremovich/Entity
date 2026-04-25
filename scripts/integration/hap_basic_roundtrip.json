@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "Hap1 (basic HAP, BC1 RGB, no alpha) decode + upload regression gate. Loads a tiny BC1 .mov fixture, seeks, hashes the compose target. Verifies the BC1 path end-to-end: HAPDecoder routes Hap1 to TextureFormat::BC1_UNORM (8 bytes/block, half the size of BC3) and the compositor samples it as plain RGBA via colorSpace=Linear. Distinct golden from hap_roundtrip (BC3) and hap_q_roundtrip (YCoCg) — a regression in BC1 row-pitch math or DXGI_FORMAT_BC1_UNORM wiring will mismatch this hash. Fixture: `generate_hap_fixture <dst> hap 64 64 16 30`.",
+    "commands": [
+        {"type": "AddScreen", "name": "HapBasicScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/hap_gradient_basic/test.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/hap_basic_roundtrip/frame_0.hash", "goldenFilepath": "tests/goldens/hap_basic_roundtrip/frame_0.hash", "composeSlot": 0},
+        {"type": "SeekToFrame", "frame": 8},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/hap_basic_roundtrip/frame_8.hash", "goldenFilepath": "tests/goldens/hap_basic_roundtrip/frame_8.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}
