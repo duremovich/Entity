@@ -201,6 +201,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_commandDispatcher = std::make_unique<CommandDispatcher>();
     std::cout << "  Command dispatcher initialized" << std::endl;
 
+    // Load machine-global settings before the UI exists — Preferences dialog
+    // reads from m_settings on open, and any future cache/transcode subsystems
+    // that need budget values can find them already populated.
+    m_settings = loadSettings();
+    std::cout << "  Settings loaded: frameCacheBytes="
+              << (m_settings.frameCacheBytes / (1024ull * 1024ull)) << " MiB"
+              << " from " << reinterpret_cast<const char*>(settingsPath().u8string().c_str())
+              << std::endl;
+
     // Initialize window manager
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
@@ -282,6 +291,20 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->setRedoCallback([this]() { m_commandDispatcher->redo(*this); });
     m_windowManager->setCanUndoCallback([this]() { return m_commandDispatcher->getUndoDepth() > 0; });
     m_windowManager->setCanRedoCallback([this]() { return m_commandDispatcher->getRedoDepth() > 0; });
+
+    // Preferences dialog — reads from m_settings on open; OK persists.
+    m_windowManager->setCurrentSettingsCallback([this]() { return m_settings; });
+    m_windowManager->setSettingsAppliedCallback([this](const Settings& updated) {
+        m_settings = updated;
+        if (!saveSettings(m_settings)) {
+            std::cerr << "[Engine] Could not persist settings to disk; "
+                         "in-memory values are still updated." << std::endl;
+        } else {
+            std::cout << "[Engine] Settings saved (frameCacheBytes="
+                      << (m_settings.frameCacheBytes / (1024ull * 1024ull)) << " MiB)"
+                      << std::endl;
+        }
+    });
 
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
     {

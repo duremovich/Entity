@@ -211,6 +211,20 @@ void WindowManager::render() {
             window->popPreBeginStyles();
         }
     }
+
+    // Preferences modal — rendered last so it draws over the dockspace + windows.
+    // No-op when not open; cheap to call every frame.
+    m_settingsWindow.render();
+}
+
+void WindowManager::setSettingsAppliedCallback(SettingsAppliedCallback cb) {
+    m_settingsAppliedCallback = std::move(cb);
+    // Forward to the popup; the popup hands the staged copy back through this
+    // callback when the user clicks OK.
+    m_settingsWindow.setApplyCallback(
+        [this](const Settings& s) {
+            if (m_settingsAppliedCallback) m_settingsAppliedCallback(s);
+        });
 }
 
 void WindowManager::registerWindow(std::unique_ptr<EditorWindow> window) {
@@ -328,6 +342,16 @@ void WindowManager::renderMenuBar() {
             }
             if (!hasRange && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                 ImGui::SetTooltip("Shift+drag on the ruler to select a time range first.");
+            }
+
+            ImGui::Separator();
+
+            // Preferences — opens the modal seeded with the live Settings.
+            // Disabled until Engine has wired the callbacks (avoids a useless
+            // menu entry in degenerate harness configurations).
+            const bool prefsReady = static_cast<bool>(m_currentSettingsCallback);
+            if (ImGui::MenuItem("Preferences...", nullptr, false, prefsReady)) {
+                m_settingsWindow.open(m_currentSettingsCallback());
             }
 
             ImGui::EndMenu();

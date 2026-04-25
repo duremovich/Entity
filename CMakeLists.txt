@@ -89,6 +89,7 @@ target_sources(EntityMediaCore
         src/core/Engine.cpp
         src/core/Application.cpp
         src/core/PlaybackController.cpp
+        src/core/Settings.cpp
 
         # Media
         src/media/FrameRingBuffer.cpp
@@ -127,6 +128,7 @@ target_sources(EntityMediaCore
         src/ui/MappingWindow.cpp
         src/ui/ModelBinWindow.cpp
         src/ui/ScreensWindow.cpp
+        src/ui/SettingsWindow.cpp
 
         # Systems
         src/systems/DecodeSystem.cpp

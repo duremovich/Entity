@@ -1,6 +1,8 @@
 #pragma once
 
 #include "EditorWindow.hpp"
+#include "SettingsWindow.hpp"
+#include "entity/core/Settings.hpp"
 #include <imgui.h>
 #include <memory>
 #include <vector>
@@ -154,6 +156,16 @@ public:
     void setCanRedoCallback(CanRedoCallback cb) { m_canRedoCallback = std::move(cb); }
 
     /**
+     * Settings/Preferences integration. Engine owns the live Settings; the
+     * Edit > Preferences... menu item opens a modal seeded with `currentSettings()`,
+     * and `onSettingsApplied(newValues)` fires when the user clicks OK.
+     */
+    using CurrentSettingsCallback = std::function<Settings()>;
+    using SettingsAppliedCallback = std::function<void(const Settings&)>;
+    void setCurrentSettingsCallback(CurrentSettingsCallback cb) { m_currentSettingsCallback = std::move(cb); }
+    void setSettingsAppliedCallback(SettingsAppliedCallback cb);
+
+    /**
      * Open Windows native file dialog for video selection.
      * Returns the selected file path, or empty string if cancelled.
      */
@@ -224,6 +236,12 @@ private:
     RedoCallback m_redoCallback;
     CanUndoCallback m_canUndoCallback;
     CanRedoCallback m_canRedoCallback;
+
+    // Preferences modal — owned by WindowManager so the Edit > Preferences...
+    // menu item can pop it open without per-frame plumbing through Engine.
+    SettingsWindow            m_settingsWindow;
+    CurrentSettingsCallback   m_currentSettingsCallback;
+    SettingsAppliedCallback   m_settingsAppliedCallback;
 };
 
 } // namespace entity

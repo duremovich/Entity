@@ -2,6 +2,7 @@
 
 #include "Types.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/core/Settings.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/systems/System.hpp"
 #include <entt/entt.hpp>
@@ -344,6 +345,12 @@ private:
     std::unique_ptr<WindowManager> m_windowManager;
     std::unique_ptr<CommandDispatcher> m_commandDispatcher;
     std::unique_ptr<OutputManager> m_outputManager;
+
+    // Machine-global settings (frame-cache budget etc). Loaded from
+    // settingsPath() at construction; persisted by saveSettings() whenever
+    // the user clicks OK in the Preferences dialog. Per-project state lives
+    // in ProjectManager / .entity files; this is the other side of that line.
+    Settings m_settings{};
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;
