@@ -1,7 +1,7 @@
 # Current Status
 
-**Phase**: Phase C — Single-machine MVP. Physical output, surface-driven warp (perspective-correct), and full project persistence (including Models + Screens) landed. Phase B #8 fully done — blend, mixed-fps, ping-pong, screen-persistence round-trip all gated. Soft-edge/undo-redo/color-management/audio still ahead.
-**Last Updated**: 2026-04-21 (late)
+**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, and a playback-perf overhaul have all landed since the last update. Currently working through the **so-even-with-hap-cosmic-glacier** roadmap — the playback/render-engine deep-dive that targets Disguise/d3 architecture.
+**Last Updated**: 2026-04-25
 
 ---
 
@@ -9,7 +9,8 @@
 
 Production-quality commercial media server for live performance — a Disguise/Watchout/Pixera replacement. The foundational work (Phase A stabilization + Phase B architecture decomposition) is largely complete; next is Phase C (single-machine MVP feature work).
 
-See `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md` for the full roadmap and architecture decisions.
+See `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md` for the master roadmap.
+See `~/.claude/plans/so-even-with-hap-cosmic-glacier.md` for the **playback/render engine deep-dive** (Phase C.9 → D handoff). All five open questions are now answered (2026-04-25 decisions section). HAP-first codec, 512 MB frame cache w/ Settings dialog, Director/Renderer split before Phase D, full ACES end-to-end, cluster-ready plumbing from day one.
 
 ---
 
@@ -52,12 +53,36 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | 11 | ECS hygiene pass — Transform/AnimatedProperties/Clip documented as principled exceptions, no churn | (docs) |
 | 20 | CI fix — gyan.dev prebuilt FFmpeg in CI, vcpkg baseline bumped 2023-08 → 2026-03, imgui pinned 1.89.7 via overrides | `28726b9`, `6182d53`, `d80e4a9` |
 
+### Phase C — Single-machine MVP (in progress)
+
+| # | Task | Commit |
+|---|------|--------|
+| 1 + 2 | Physical output driving (per-output swap chains) + surface-driven warp w/ q-trick perspective-correct corner-pin | `d8d9b0b`, `7854fca` |
+| 3 | Screen + Model persistence in `ProjectSerializer` (PROJECT_VERSION 1→2, preserve-by-name load strategy) | `9bfb97c` |
+| 3.5 | Undo/redo for property-slider commands (gain, opacity, transform sliders) | `087d0d7`, `32d6c6c` |
+| 4.1–4.8 | Timeline UX overhaul — keyframe rounding fix, discrete zoom ladder, time-range selection, ripple insert/delete (undoable), Edit menu + key bindings, named sections w/ persistence, snap + zoom + gridlines + key-repeat polish, playhead auto-follow | `cf5c311`, `0a8a334`, `4878413`, `8388a9d`, `e65d32a`, `73099de`, `861a2a6`, `a4c29c7` |
+| 5 | Playback perf round 1 — wall pacing under load + decode overhead reduction | `0ba96b3` |
+| 6 | **HAP decode pipeline scaffolding** — HapFormat parser handles all 7 variants, HAPDecoder uses libavformat for demux but bypasses libavcodec for the BC-block payload, TextureUploader carries `TextureFormat` for BC{1,3,4,7,6H} uploads, `Decoder` factory probes `.mov` codec_tag for HAP variant routing. snappy added as a vcpkg dep. | `f5cabf8` |
+| 6.1 | HapFormat parser unit tests (16 tests, hand-crafted byte fixtures, no FFmpeg dep) | `3ef53ca` |
+| 7 | **HAP transcoder** — `HapTranscoder::transcodeToHap` (libavcodec encode), `integration_hap_roundtrip` end-to-end test, `test_media/hap_gradient/test.mov` procedural fixture, ffmpeg vcpkg `snappy` feature enabled | `93c4772` |
+| 8 | **Playback perf round 2** — eliminate per-frame copies + remove main-thread sync decode. Steady-state ~5 → 50-500+ FPS depending on clip count; 5-simultaneous-4K-alpha stress holds 140-160 FPS | `59a047b` |
+| C.1 #6.1 | TranscodeWorker + TranscodeManager (engine-level transcode-on-import) | `511b367` |
+| C.1 #6.2 | `MediaLibraryEntry` (original + transcoded) persistence | `fe54fdb` |
+| C.1 #6.3 | Route non-HAP imports through TranscodeManager | `cddcdb1` |
+| C.1 #6.4 | MediaBin UI — status column + toolbar + context menu | `7ebde39` |
+| C.1 #6.5 | HapTranscoder rounds non-4-aligned dims up via sws_scale | `798b013` |
+| C.1 #6.6 | Keep Failed transcode workers visible in MediaBin | `ab0b87f` |
+| C.1 #6.7 | MediaBin shows the transcode failure reason | `ab07b97` |
+| C.1 #6.8 | DecodeSystem uses the main-thread decoder's path + type (HAP-vs-original disambiguation) | `db1ac2c` |
+| C.1 #6.9 | Non-HAP import policy = Ask by default + modal prompt | `385559a` |
+| C.1 #6.10 | MediaBin "Remove from library" + right-click hint | `90b46f9` |
+
 ---
 
-## Verified Working (as of Phase B #8 blend-mode test)
+## Verified Working (as of Phase C #8)
 
 **Build**: `cmake --build build --config Release` is clean, no errors.
-**Tests**: 59/59 pass (49 unit, 10 integration) under `ctest -C Release`.
+**Tests**: 104/104 pass per Phase C #8 commit message (~49 unit, 16 HapFormat unit, ~13 integration suites; HAP roundtrip + Phase B #8 gates included). Run via `ctest -C Release`.
 **Binary**: `build/bin/Release/EntityMediaEditor.exe` launches and runs in windowed or `--headless` mode.
 
 Integration tests wired to CTest, labelled `integration`:
@@ -77,11 +102,17 @@ Integration tests wired to CTest, labelled `integration`:
 
 ### Actively broken / missing
 
-- **Soft-edge / edge blending** — `MappingSurface` components have the data, no shader path.
+- **HAP Q YCoCg shader path** — decoder produces BC3 textures with `HapColorSpace::YCoCg_scaled` but `composite_ps.hlsl` samples them as RGBA. HapY content displays as garbled green/orange. Called out as TODO in commit `93c4772`. **Next item up the queue per the so-even-with-hap-cosmic-glacier plan.**
+- **HapM second plane (Hap Q Alpha)** — decoder logs warning and drops the alpha plane.
+- **HAP HDR (HapH)** — decoder produces BC6H, but compose targets are UNORM8 → HDR values clip. Per Decision 4 in the plan, gated on the Phase C.12 ACES pipeline (FP16 compose targets).
+- **Soft-edge / edge blending** — `MappingSurface` components have the data, shader code (`computeSoftEdge`) exists; visual verification on a warped surface still pending.
 - **Audio** — zero pipeline.
-- **HAP codec** — gated in factory, unimplemented.
-- **H264/H265** — now actually decodes via `ProResDecoder` (misnamed; it's a generic FFmpeg decoder). Renaming is opportunistic cleanup, not blocking.
+- **H264/H265** — decodes via `ProResDecoder` (misnamed; it's a generic FFmpeg decoder). Phase C.1 #6 routes these through TranscodeManager → HAP on import by default. Renaming is opportunistic cleanup, not blocking.
 - **Network / sync / control** — no OSC, DMX, Art-Net, MIDI, NDI, timecode, genlock.
+- **Director/Renderer split** — single Engine class still owns everything. Plan calls this a Phase D entry condition (do it before Phase D feature work attaches to the wrong layer).
+- **Frame cache** — per-clip ring buffer is the wrong shape for click-to-seek-into-already-decoded territory. Plan's Phase C.10 replaces with a sparse LRU `FrameCache` keyed by `(clipEntity, frameNumber)`, 512 MB default budget.
+- **Settings/Preferences window** — none today; needs to land alongside the cache work to expose the budget.
+- **Color pipeline** — sRGB-encoded compose targets, no per-codec input transforms, no per-output display transforms. Plan's Phase C.12 commits to full ACES end-to-end with FP16 compose targets.
 
 ### Recently resolved (sessions 2026-04-20 and 2026-04-21, all uncommitted)
 
@@ -104,8 +135,8 @@ Integration tests wired to CTest, labelled `integration`:
 
 ### Remaining non-bug issues (from `docs/reference/CODE_ISSUES.md`)
 
-- `HIGH-02` — playback state re-read pattern across a tick. Less dangerous now that state is atomic (MED-20 fix); Phase B refactor will remove the pattern when `PlaybackController` lands.
-- `HIGH-13` — HAPDecoder not implemented (gated in factory).
+- `HIGH-02` — playback state re-read pattern across a tick. Less dangerous now that state is atomic (MED-20 fix); the pattern survived the Phase B #15c PlaybackController extraction unchanged. Worth a follow-up cleanup.
+- `HIGH-13` — **closed by Phase C #6** (`f5cabf8`); HAPDecoder is now real, just needs the YCoCg shader path for full HapY support.
 - ~20 medium-priority items; see the doc.
 
 ---
@@ -133,21 +164,47 @@ Integration tests wired to CTest, labelled `integration`:
 
 ## Recommended Next Steps
 
-Phase C remaining items, rough priority:
+Following the **so-even-with-hap-cosmic-glacier** roadmap (decisions locked 2026-04-25). ROI-ordered:
 
-1. **Soft-edge feather visual check.** Shader code exists (`computeSoftEdge` in `mapping_surface.hlsli`) and per-surface softEdge values flow through. Worth eyeballing whether the fade is correct on a warped surface and whether the 0.5 max in the slider is the right cap.
-2. **Audio pipeline.** Currently zero. Every media server needs it — usually the highest-impact missing feature for a Disguise-class tool.
-3. **Undo/redo.** `CommandDispatcher` exists; needs an undo stack + reversal logic per command. First time a corner gets yanked across the stage, you'll wish for it.
-4. **Color management.** LUTs, per-output gamma curves beyond the linear `gamma` field already wired.
-5. **Subdivisions / mesh warp.** Punted last session — only matters for curved screens. Probably wants bezier control points rather than uniform grid when it lands.
+### Phase C.9 — Close out the HAP variant family
+
+1. **HAP Q YCoCg shader path** *(in progress)* — branch `composite_ps.hlsl` (or new `composite_hapq_ps.hlsl` PSO) on the texture's `HapColorSpace`, do the scaled-YCoCg→RGB conversion. Add `integration_hap_q_roundtrip` golden test against a HapY fixture.
+2. **HapM second plane** — wire the alpha-plane texture so Hap Q Alpha actually shows alpha.
+3. **Per-variant integration tests** — `_alpha_`, `_q_`, `_q_alpha_`, `_alpha_only_`, `_r_`, `_hdr_` round-trip goldens. Locks the family in against regressions.
+4. **EOF off-by-one** — HAPDecoder logs a spurious "Failed to decode frame N" at end-of-stream (noted in `93c4772`).
+5. **Multi-clip stress with HAP files** — the perf gate: `clipVideos=` consistently <10 ms during steady-state with HAP content.
+
+### Phase C.10 — FrameCache replaces the per-clip ring buffer
+
+Sparse LRU cache keyed by `(clipEntity, frameNumber)`, 512 MB global budget, exposed in a new **Settings/Preferences** ImGui window. Eliminates re-decode on click-to-seek into already-viewed frames. ~1-2 weeks.
+
+### Phase C.11 — Async copy queue
+
+Dedicated `D3D12_COMMAND_LIST_TYPE_COPY` queue so uploads run in parallel with composite. Targets the residual `clipVideos=51-81 ms` blips under multi-clip stress. ~1 week.
+
+### Phase C.12 — Full ACES color pipeline
+
+OpenColorIO (or hand-rolled ACES 1.3 reference transforms). Per-codec input transforms, ACEScg linear working space, per-output display transforms (sRGB / Rec.709 / DCI-P3 / Rec.2020 / PQ HDR). Compose targets become FP16 — unblocks HAP HDR. ~2-3 weeks.
+
+### Phase D entry — Director/Renderer split
+
+Decompose `Engine` into `DirectorService` + `RendererService` with a serializable message bus. **Network-serializable from day one** (per Decision 5) — transport starts in-memory, becomes UDP in Phase E with no message-format changes. Asset references move to content-hash IDs. ~1.5 weeks; lands *before* Phase D feature work (timecode/OSC/audio/NDI) so each one attaches to the right layer.
+
+### Out-of-scope-here but in the master plan
+
+- Audio pipeline (Phase D)
+- Undo/redo for non-property commands (Phase C, CommandDispatcher already exists)
+- Soft-edge feather visual check (Phase C continuation)
+- Mesh warp / cylindrical mapping (Phase C continuation)
 
 ---
 
 ## Pointers for the next session
 
-- Full assessment + plan: `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md`
-- Issue list (up-to-date): `docs/reference/CODE_ISSUES.md`
+- **Playback/render-engine deep-dive plan**: `~/.claude/plans/so-even-with-hap-cosmic-glacier.md` *(this is the active driver)*
+- Master roadmap: `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md`
+- Issue list: `docs/reference/CODE_ISSUES.md` (last verified 2026-04-19; needs another pass)
 - Development history: `docs/status/HISTORY.md`
 - Component rules + exceptions: `include/entity/components/CLAUDE.md`
 - Integration test pattern: `scripts/integration/README.md`
-- ADR for D3D12-vs-abstraction choice: in the plan file under "Architecture Decisions"
+- ADR for D3D12-vs-abstraction choice: in the master plan under "Architecture Decisions"
