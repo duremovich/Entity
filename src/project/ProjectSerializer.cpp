@@ -202,7 +202,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 libJson.push_back(ej);
             }
             project["mediaLibrary"] = libJson;
-            project["autoTranscodeOnImport"] = projectMgr->autoTranscodeOnImport();
+            project["nonHapImportPolicy"] = static_cast<int>(projectMgr->nonHapImportPolicy());
         }
 
         // Serialize mapping surfaces
@@ -579,9 +579,18 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     entry.variant        = variant;
                 }
             }
-            if (project.contains("autoTranscodeOnImport")) {
-                projectMgr->setAutoTranscodeOnImport(
-                    project["autoTranscodeOnImport"].get<bool>());
+            // Prefer v5 field. Fall back to v4 autoTranscodeOnImport if present
+            // (true → AlwaysTranscode, false → NeverTranscode — matches the
+            // boolean semantics the user had set).
+            if (project.contains("nonHapImportPolicy")) {
+                const int raw = project["nonHapImportPolicy"].get<int>();
+                projectMgr->setNonHapImportPolicy(
+                    static_cast<ProjectManager::NonHapImportPolicy>(raw));
+            } else if (project.contains("autoTranscodeOnImport")) {
+                const bool autoOn = project["autoTranscodeOnImport"].get<bool>();
+                projectMgr->setNonHapImportPolicy(
+                    autoOn ? ProjectManager::NonHapImportPolicy::AlwaysTranscode
+                           : ProjectManager::NonHapImportPolicy::NeverTranscode);
             }
         }
 

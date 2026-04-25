@@ -493,11 +493,38 @@ const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFile
     return m_projectManager ? m_projectManager->loadedMediaFiles() : kEmpty;
 }
 
-bool Engine::autoTranscodeOnImport() const {
-    return m_projectManager && m_projectManager->autoTranscodeOnImport();
+ProjectManager::NonHapImportPolicy Engine::nonHapImportPolicy() const {
+    return m_projectManager ? m_projectManager->nonHapImportPolicy()
+                            : ProjectManager::NonHapImportPolicy::Ask;
 }
-void Engine::setAutoTranscodeOnImport(bool enable) {
-    if (m_projectManager) m_projectManager->setAutoTranscodeOnImport(enable);
+void Engine::setNonHapImportPolicy(ProjectManager::NonHapImportPolicy policy) {
+    if (m_projectManager) m_projectManager->setNonHapImportPolicy(policy);
+}
+
+const Engine::PendingImport* Engine::pendingImport() const {
+    return m_pendingImport ? &*m_pendingImport : nullptr;
+}
+
+void Engine::resolvePendingImport(bool transcode, bool dontAskAgain) {
+    if (!m_pendingImport) return;
+    PendingImport p = *m_pendingImport;   // copy before clearing
+    m_pendingImport.reset();
+
+    if (dontAskAgain && m_projectManager) {
+        m_projectManager->setNonHapImportPolicy(
+            transcode ? ProjectManager::NonHapImportPolicy::AlwaysTranscode
+                      : ProjectManager::NonHapImportPolicy::NeverTranscode);
+    }
+
+    if (transcode) {
+        if (m_projectManager) m_projectManager->addMediaFile(p.filepath);
+        if (m_transcodeManager) m_transcodeManager->enqueue(p.filepath, "hap_alpha", 0.0);
+        std::cout << "[Engine] Queued transcode for " << p.filepath << std::endl;
+        return;
+    }
+
+    // User chose Skip — create the clip on the source directly.
+    ingestVideoClip(p.filepath, p.mediaType);
 }
 
 const std::filesystem::path& Engine::getProjectPath() const {
@@ -1323,7 +1350,6 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     std::cout << "========================================" << std::endl;
     std::cout << "File: " << filePath << std::endl;
 
-    // Detect media type from file extension
     MediaType mediaType = detectMediaType(filePath);
     if (mediaType == MediaType::Unknown) {
         std::cerr << "ERROR: Unsupported media type: " << filePath << std::endl;
@@ -1333,22 +1359,44 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
 
     std::cout << "Detected media type: " << MediaTypeToString(mediaType) << std::endl;
 
-    // If auto-transcode is on and the source is a non-HAP container the
-    // HAP encoder can actually handle (i.e. ProRes / H264 / HEVC — not PNG
-    // sequences, since vcpkg FFmpeg lacks a PNG decoder), register in the
-    // media library and queue a background transcode. No clip gets created
-    // until the user drags it out of the MediaBin once Done.
-    if (m_projectManager && m_transcodeManager &&
-        m_projectManager->autoTranscodeOnImport() &&
+    // Only ProRes / H264 / HEVC containers are transcode-eligible — vcpkg
+    // FFmpeg lacks a PNG decoder so image sequences stay on the CPU path,
+    // and HAP files obviously need no work.
+    const bool transcodeEligible =
         !isHapMediaType(mediaType) &&
-        mediaType == MediaType::VideoProRes4444) {
-        m_projectManager->addMediaFile(filePath);
-        m_transcodeManager->enqueue(filePath, "hap_alpha", 0.0);
-        std::cout << "[Engine] Queued transcode for " << filePath << std::endl;
-        std::cout << "========================================\n" << std::endl;
-        return;
+        mediaType == MediaType::VideoProRes4444 &&
+        m_projectManager && m_transcodeManager;
+
+    if (transcodeEligible) {
+        const auto policy = m_projectManager->nonHapImportPolicy();
+        switch (policy) {
+            case ProjectManager::NonHapImportPolicy::AlwaysTranscode:
+                m_projectManager->addMediaFile(filePath);
+                m_transcodeManager->enqueue(filePath, "hap_alpha", 0.0);
+                std::cout << "[Engine] Queued transcode for " << filePath << std::endl;
+                std::cout << "========================================\n" << std::endl;
+                return;
+            case ProjectManager::NonHapImportPolicy::Ask:
+                if (m_pendingImport) {
+                    std::cerr << "[Engine] Import already awaiting user decision ("
+                              << m_pendingImport->filepath
+                              << "); dropping " << filePath << std::endl;
+                    return;
+                }
+                m_pendingImport = PendingImport{filePath, mediaType};
+                std::cout << "[Engine] Awaiting user decision on non-HAP import: "
+                          << filePath << std::endl;
+                std::cout << "========================================\n" << std::endl;
+                return;
+            case ProjectManager::NonHapImportPolicy::NeverTranscode:
+                break;  // fall through to ingest
+        }
     }
 
+    ingestVideoClip(filePath, mediaType);
+}
+
+void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
     // Create decoder for the media type
     m_decoder = createDecoder(mediaType);
     if (!m_decoder) {
@@ -1729,14 +1777,15 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // enqueue() writes land next to the project, not in %TEMP%.
     updateTranscodeCacheDir();
 
-    // Re-queue library entries whose transcoded side is missing — either
-    // because auto-transcode ran mid-session before save, or the cache
-    // was cleared. Only entries whose source is a non-HAP media type and
-    // the project still wants auto-transcode get re-enqueued.
-    if (m_transcodeManager) {
+    // Re-queue library entries whose transcoded side is missing, IFF the
+    // project's policy is AlwaysTranscode. Ask/NeverTranscode projects
+    // don't get silent re-transcode kicks on load — respect the user's
+    // earlier decision.
+    if (m_transcodeManager &&
+        m_projectManager->nonHapImportPolicy() ==
+            ProjectManager::NonHapImportPolicy::AlwaysTranscode) {
         for (const auto& entry : m_projectManager->loadedMediaFiles()) {
             if (!entry.transcodedPath.empty()) continue;
-            if (!m_projectManager->autoTranscodeOnImport()) break;
             const MediaType mt = detectMediaType(entry.originalPath);
             if (isHapMediaType(mt)) continue;
             if (mt == MediaType::Unknown) continue;

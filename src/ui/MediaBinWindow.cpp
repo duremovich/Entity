@@ -88,25 +88,103 @@ void renderStatusCell(const StatusDisplay& d) {
 
 } // namespace
 
+void MediaBinWindow::renderPendingImportModal() {
+    const Engine::PendingImport* pending = m_engine->pendingImport();
+
+    // Open the popup exactly once per new pending import. Popup state is
+    // keyed by string ID — if it's already open ImGui ignores repeat opens.
+    if (pending) {
+        if (pending->filepath != m_modalLastFilepath) {
+            m_modalLastFilepath = pending->filepath;
+            m_modalDontAskAgain = false;   // fresh import, reset checkbox
+            ImGui::OpenPopup("Transcode to HAP?");
+        }
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Transcode to HAP?", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Popup survives a single frame where pendingImport() returns null
+        // (after resolve, before the next render). Use the stashed path for
+        // display + close if the engine's pending state has truly cleared.
+        const std::string& path = pending ? pending->filepath : m_modalLastFilepath;
+        const size_t lastSlash = path.find_last_of("/\\");
+        const std::string stem = (lastSlash != std::string::npos)
+            ? path.substr(lastSlash + 1) : path;
+
+        ImGui::Text("\"%s\" isn't HAP.", stem.c_str());
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "HAP is a GPU-friendly codec — transcoding this file will let you "
+            "play it smoothly on a multi-layer timeline. The source stays "
+            "untouched; the HAP version is cached in <project>/.cache/hap/.");
+        ImGui::Spacing();
+        ImGui::Checkbox("Don't ask again for this project", &m_modalDontAskAgain);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Saves your choice as the project default. You can change it\n"
+                "later via the \"Non-HAP imports\" dropdown above.");
+        }
+        ImGui::Spacing();
+
+        const float btnWidth = 140.0f;
+        if (ImGui::Button("Transcode to HAP", ImVec2(btnWidth, 0))) {
+            m_engine->resolvePendingImport(/*transcode*/ true, m_modalDontAskAgain);
+            m_modalLastFilepath.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Skip (use source)", ImVec2(btnWidth, 0))) {
+            m_engine->resolvePendingImport(/*transcode*/ false, m_modalDontAskAgain);
+            m_modalLastFilepath.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else if (pending && m_modalLastFilepath == pending->filepath) {
+        // Popup got dismissed by some other means (e.g. ESC — though we
+        // didn't set ImGuiWindowFlags_Popup to allow it). Default = Skip
+        // without don't-ask-again, same as the button.
+        m_engine->resolvePendingImport(false, false);
+        m_modalLastFilepath.clear();
+    }
+}
+
 void MediaBinWindow::render() {
     const auto& mediaFiles = m_engine->getLoadedMediaFiles();
     TranscodeManager* tmgr = m_engine->getTranscodeManager();
 
-    // --- Toolbar: auto-transcode preference --------------------------------
-    bool autoTranscode = m_engine->autoTranscodeOnImport();
-    if (ImGui::Checkbox("Auto-transcode to HAP on import", &autoTranscode)) {
-        m_engine->setAutoTranscodeOnImport(autoTranscode);
+    // --- Toolbar: non-HAP import policy ------------------------------------
+    using Policy = ProjectManager::NonHapImportPolicy;
+    const char* policyLabels[] = {
+        "Ask each time",
+        "Auto-transcode",
+        "Use source as-is",
+    };
+    Policy policy = m_engine->nonHapImportPolicy();
+    int policyIdx = static_cast<int>(policy);
+    ImGui::Text("Non-HAP imports:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::Combo("##nonhap-policy", &policyIdx, policyLabels, IM_ARRAYSIZE(policyLabels))) {
+        m_engine->setNonHapImportPolicy(static_cast<Policy>(policyIdx));
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
-            "When on, ProRes / H264 imports are re-encoded to HAP in the\n"
-            "background for realtime multi-layer playback. Source stays\n"
-            "untouched; the cached HAP file lives in <project>/.cache/hap/.");
+            "What to do when you import a non-HAP file:\n"
+            "  Ask each time — prompt with Transcode / Skip per import\n"
+            "  Auto-transcode — silently re-encode to HAP in <project>/.cache/hap\n"
+            "  Use source as-is — keep the slow source (ProRes / H264 / ...)"
+            );
     }
 
     ImGui::SameLine();
     ImGui::Text("  |  Loaded: %zu", mediaFiles.size());
     ImGui::Separator();
+
+    // --- First-import modal ------------------------------------------------
+    renderPendingImportModal();
 
     if (mediaFiles.empty()) {
         ImGui::TextDisabled("No media loaded");

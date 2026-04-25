@@ -23,7 +23,16 @@ public:
     const char* getName() const override { return "Media Bin"; }
 
 private:
+    void renderPendingImportModal();
+
     Engine* m_engine{nullptr};
+
+    // Local "Don't ask again" checkbox state that persists across frames
+    // while the popup is open. Reset each time a fresh pending import arrives.
+    bool m_modalDontAskAgain{false};
+    // Track the filepath the modal was opened for so we can reset the
+    // checkbox when a new import triggers a new modal instance.
+    std::string m_modalLastFilepath;
 };
 
 } // namespace entity

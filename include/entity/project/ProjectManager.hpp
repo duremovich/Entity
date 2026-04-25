@@ -128,12 +128,28 @@ public:
     // --- Import preferences -------------------------------------------------
 
     /**
-     * When true, non-HAP files dropped into the bin are queued for
-     * background transcode. Persisted with the project. User-toggleable
-     * via the MediaBin toolbar.
+     * What to do with a non-HAP source file on import. Persisted with the
+     * project. User-toggleable via the MediaBin toolbar combo; the
+     * first-import modal's "Don't ask again" checkbox also writes here.
+     *
+     * Ask (default): stash a pending decision on Engine + show a modal
+     * the next MediaBin render. Until the user picks, nothing is added
+     * to the timeline.
+     *
+     * AlwaysTranscode: silently enqueue a HAP transcode. Used to be
+     * behavior of `autoTranscodeOnImport = true`.
+     *
+     * NeverTranscode: silently create a clip on the source. Slow for
+     * ProRes 4K but matches what the user asked for.
      */
-    bool autoTranscodeOnImport() const         { return m_autoTranscodeOnImport; }
-    void setAutoTranscodeOnImport(bool enable) { m_autoTranscodeOnImport = enable; }
+    enum class NonHapImportPolicy : uint8_t {
+        Ask = 0,
+        AlwaysTranscode = 1,
+        NeverTranscode = 2,
+    };
+
+    NonHapImportPolicy nonHapImportPolicy() const         { return m_nonHapImportPolicy; }
+    void setNonHapImportPolicy(NonHapImportPolicy policy) { m_nonHapImportPolicy = policy; }
 
 private:
     // Non-owning dependencies (Engine owns and outlives this)
@@ -143,7 +159,7 @@ private:
 
     std::filesystem::path           m_projectPath;
     std::vector<MediaLibraryEntry>  m_loadedMediaFiles;
-    bool                            m_autoTranscodeOnImport{true};
+    NonHapImportPolicy              m_nonHapImportPolicy{NonHapImportPolicy::Ask};
 
     double m_autosaveInterval{30.0};
     double m_autosaveAccumulator{0.0};

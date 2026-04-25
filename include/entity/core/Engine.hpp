@@ -6,6 +6,7 @@
 #include "entity/systems/System.hpp"
 #include <entt/entt.hpp>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <filesystem>
 #include <string>
@@ -131,9 +132,32 @@ public:
      */
     const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
 
-    /// Auto-transcode-on-import preference (persisted with project).
-    bool autoTranscodeOnImport() const;
-    void setAutoTranscodeOnImport(bool enable);
+    /// Non-HAP import policy preference (persisted with project).
+    ProjectManager::NonHapImportPolicy nonHapImportPolicy() const;
+    void setNonHapImportPolicy(ProjectManager::NonHapImportPolicy policy);
+
+    // --- Pending transcode decision (first-import modal) ------------------
+    //
+    // When policy == Ask and the user imports a non-HAP file, we stash the
+    // decision here and let MediaBinWindow render a modal to resolve it.
+    // Only one decision can be pending at a time — a second import while
+    // one is queued gets dropped with a warning.
+    struct PendingImport {
+        std::string filepath;
+        MediaType   mediaType;
+    };
+    const PendingImport* pendingImport() const;
+
+    /**
+     * Called by the modal when the user picks a choice.
+     *
+     * @param transcode     true = enqueue the transcode worker;
+     *                      false = create a clip on the source as-is
+     * @param dontAskAgain  if true, save the choice to the project policy
+     *                      (AlwaysTranscode / NeverTranscode) so future
+     *                      imports don't prompt again
+     */
+    void resolvePendingImport(bool transcode, bool dontAskAgain);
 
     /**
      * Get the current decoder (for metadata access).
@@ -278,6 +302,14 @@ private:
     void onVideoFileSelected(const std::string& filePath);
 
     /**
+     * Open a decoder, create a Clip + Transform + MediaLayer + VideoTexture +
+     * FrameBuffer + ClipDecodeState, place it on the timeline. Shared by
+     * `onVideoFileSelected`'s NeverTranscode branch and
+     * `resolvePendingImport`'s Skip branch.
+     */
+    void ingestVideoClip(const std::string& filePath, MediaType mediaType);
+
+    /**
      * Handle media dropped onto timeline track.
      * Creates a clip at the specified track and position.
      */
@@ -351,6 +383,10 @@ private:
     // timer) lives in ProjectManager. Engine owns it and forwards save/load
     // / autosave calls. See include/entity/project/ProjectManager.hpp.
     std::unique_ptr<ProjectManager> m_projectManager;
+
+    // Set when onVideoFileSelected runs into a non-HAP source with policy =
+    // Ask. MediaBinWindow renders a modal; resolvePendingImport() clears it.
+    std::optional<PendingImport> m_pendingImport;
 
     // Background HAP-transcode workers for imported media. Status polled
     // each tick; finished workers update ProjectManager's media library

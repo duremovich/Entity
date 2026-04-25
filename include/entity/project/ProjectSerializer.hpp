@@ -20,12 +20,14 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
-    //   v4 (2026-04-24) — adds mediaLibrary array + autoTranscodeOnImport.
+    //   v5 (2026-04-24) — replaces autoTranscodeOnImport with nonHapImportPolicy.
+    //   v4 — adds mediaLibrary array + autoTranscodeOnImport.
     //   v3 — adds Timeline::Section array.
     //   v2 — adds OutputDisplay + Models + Screens.
     //   v1 — original.
-    // Loader is forward-compatible with older files: missing arrays no-op.
-    static constexpr int PROJECT_VERSION = 4;
+    // Loader is forward-compatible with older files: missing arrays no-op;
+    // v4 autoTranscodeOnImport is translated to AlwaysTranscode/NeverTranscode.
+    static constexpr int PROJECT_VERSION = 5;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**
