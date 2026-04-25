@@ -58,7 +58,8 @@ float3 blendExclusion(float3 fg, float3 bg)  { return fg + bg - 2.0 * fg * bg; }
 
 float4 PSMain(PSInput input) : SV_TARGET {
     // Sample fg via the interpolated UVs from the VS (clip-space quad UVs).
-    float4 fg = fgTexture.Sample(samplerState, input.texCoord);
+    // Helper undoes HAP Q's scaled-YCoCg encoding when colorSpace says so.
+    float4 fg = sampleLayerTexture(fgTexture, samplerState, input.texCoord);
 
     // Sample bg from the snapshot at the screen-space pixel we're writing to.
     uint bgW, bgH;

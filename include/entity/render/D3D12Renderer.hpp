@@ -83,7 +83,8 @@ public:
     void drawTexturedQuad(TextureRef texture,
                            const glm::mat4& transform,
                            float opacity,
-                           BlendMode blendMode = BlendMode::Normal) override;
+                           BlendMode blendMode = BlendMode::Normal,
+                           TextureColorSpace colorSpace = TextureColorSpace::Linear) override;
 
     void drawMappingSurface(TextureRef texture,
                              const glm::vec2 corners[4],
@@ -160,7 +161,8 @@ public:
     void drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                           const DirectX::XMMATRIX& transform,
                           float opacity,
-                          BlendMode blendMode = BlendMode::Normal);
+                          BlendMode blendMode = BlendMode::Normal,
+                          TextureColorSpace colorSpace = TextureColorSpace::Linear);
 
     /** Draw a mapping surface with D3D12 SRV + XMFLOAT args. Legacy. */
     void drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
@@ -337,8 +339,8 @@ private:
         DirectX::XMFLOAT4X4 transform;
         DirectX::XMFLOAT4 color;
         float opacity;
-        uint32_t blendMode;    // 0=Normal, 1=Add, 2=Multiply, 3=Screen
-        float padding2;
+        uint32_t blendMode;    // 0=Normal, 1=Add, 2=Multiply, 3=Screen, ...
+        uint32_t colorSpace;   // 0=Linear, 1=YCoCg_scaled (matches TextureColorSpace + COLOR_SPACE_* in common.hlsli)
         float padding3;
     };
 

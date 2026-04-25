@@ -953,7 +953,7 @@ void D3D12Renderer::updateConstantBuffer(const DirectX::XMMATRIX& transform, con
     constants.color = color;
     constants.opacity = opacity;
     constants.blendMode = 0;  // Normal blend mode for colored quads
-    constants.padding2 = 0.0f;
+    constants.colorSpace = 0; // Linear — colored quads carry no texture
     constants.padding3 = 0.0f;
 
     memcpy(m_constantBufferData, &constants, sizeof(LayerConstants));
@@ -970,7 +970,7 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
     constants.color = color;
     constants.opacity = opacity;
     constants.blendMode = 0;  // Normal blend mode for colored quads
-    constants.padding2 = 0.0f;
+    constants.colorSpace = 0; // Linear — colored quads carry no texture
     constants.padding3 = 0.0f;
 
     // Set pipeline state
@@ -1809,7 +1809,8 @@ static bool isShaderBlendMode(BlendMode mode) {
 void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                      const DirectX::XMMATRIX& transform,
                                      float opacity,
-                                     BlendMode blendMode) {
+                                     BlendMode blendMode,
+                                     TextureColorSpace colorSpace) {
     if (!m_initialized || textureSrv.ptr == 0) {
         return;
     }
@@ -1820,7 +1821,7 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     constants.color = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
     constants.opacity = opacity;
     constants.blendMode = static_cast<uint32_t>(blendMode);  // Pass blend mode to shader
-    constants.padding2 = 0.0f;
+    constants.colorSpace = static_cast<uint32_t>(colorSpace); // 0=Linear, 1=YCoCg_scaled
     constants.padding3 = 0.0f;
 
     // Ensure the shader-visible heap is bound regardless of which path we take.
@@ -3193,10 +3194,11 @@ void D3D12Renderer::drawColoredQuad(const glm::mat4& transform,
 void D3D12Renderer::drawTexturedQuad(TextureRef texture,
                                       const glm::mat4& transform,
                                       float opacity,
-                                      BlendMode blendMode) {
+                                      BlendMode blendMode,
+                                      TextureColorSpace colorSpace) {
     const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveTextureHandle(texture);
     if (srv.ptr == 0) return;  // Invalid or unready texture — drop silently
-    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode);
+    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode, colorSpace);
 }
 
 void D3D12Renderer::drawMappingSurface(TextureRef texture,

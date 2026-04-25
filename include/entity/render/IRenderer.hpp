@@ -116,7 +116,8 @@ public:
     virtual void drawTexturedQuad(TextureRef texture,
                                    const glm::mat4& transform,
                                    float opacity,
-                                   BlendMode blendMode = BlendMode::Normal) = 0;
+                                   BlendMode blendMode = BlendMode::Normal,
+                                   TextureColorSpace colorSpace = TextureColorSpace::Linear) = 0;
 
     virtual void drawMappingSurface(TextureRef texture,
                                      const glm::vec2 corners[4],

@@ -68,6 +68,17 @@ enum class TextureFormat : uint8_t {
     BC7_UNORM       // HAP R
 };
 
+// Sampler-side colour-space hint for a video texture. The pixel shader uses
+// this to decide whether to do an in-shader colour-space conversion before
+// composition. Format alone isn't enough: HAP Alpha and HAP Q are both BC3
+// but only HAP Q needs YCoCg→RGB. Numeric values must match the
+// COLOR_SPACE_* defines in shaders/common.hlsli.
+enum class TextureColorSpace : uint8_t {
+    Linear        = 0,  // Direct RGB or RGBA — Hap, Hap Alpha, Hap R, ProRes, PNG, H.264
+    YCoCg_scaled  = 1,  // Hap Q (HapY / HapM colour plane) — shader unscales + CoCg→RGB
+    // Future: HDR_float (Hap HDR with FP16 compose target), Rec709, etc.
+};
+
 // Result codes for operations
 enum class Result {
     Success,

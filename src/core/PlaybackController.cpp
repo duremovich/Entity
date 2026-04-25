@@ -241,6 +241,7 @@ void PlaybackController::updateClipVideos() {
                 if (uploadSuccess) {
                     videoTex.width = target.width;
                     videoTex.height = target.height;
+                    videoTex.colorSpace = target.colorSpace;
                     if (state) {
                         state->lastDecodedFrame = mediaFrame;
                     }
@@ -277,6 +278,7 @@ void PlaybackController::updateClipVideos() {
                 if (uploadSuccess) {
                     videoTex.width = target.width;
                     videoTex.height = target.height;
+                    videoTex.colorSpace = target.colorSpace;
                 }
             }
 
@@ -344,6 +346,7 @@ void PlaybackController::updateClipVideos() {
             if (uploadSuccess) {
                 videoTex.width = frame->width;
                 videoTex.height = frame->height;
+                videoTex.colorSpace = frame->colorSpace;
             }
         } else {
             frame->valid = false;

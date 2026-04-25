@@ -20,6 +20,7 @@ struct DecodedFrame {
     uint32_t height{0};
     Timestamp pts{0};              // Presentation timestamp (microseconds)
     TextureFormat format{TextureFormat::RGBA8_UNORM}; // How to interpret `data` on upload
+    TextureColorSpace colorSpace{TextureColorSpace::Linear}; // Colour-space hint for the compositor PS (HAP Q → YCoCg_scaled)
     std::atomic<bool> valid{false}; // True if frame contains valid data (atomic for thread safety)
 
     // Default constructor
@@ -33,6 +34,7 @@ struct DecodedFrame {
         , height(other.height)
         , pts(other.pts)
         , format(other.format)
+        , colorSpace(other.colorSpace)
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
@@ -45,6 +47,7 @@ struct DecodedFrame {
             height = other.height;
             pts = other.pts;
             format = other.format;
+            colorSpace = other.colorSpace;
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -58,6 +61,7 @@ struct DecodedFrame {
         , height(other.height)
         , pts(other.pts)
         , format(other.format)
+        , colorSpace(other.colorSpace)
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
@@ -70,6 +74,7 @@ struct DecodedFrame {
             height = other.height;
             pts = other.pts;
             format = other.format;
+            colorSpace = other.colorSpace;
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -123,6 +128,7 @@ struct DecodedFrame {
         height = 0;
         pts = 0;
         format = TextureFormat::RGBA8_UNORM;
+        colorSpace = TextureColorSpace::Linear;
         valid.store(false, std::memory_order_release);
     }
 };

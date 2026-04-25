@@ -25,6 +25,13 @@ struct VideoTexture {
     uint32_t height{0};
     PixelFormat format{PixelFormat::RGBA8};
 
+    // Sampler-side colour-space hint for the compositor PS. HAP Q content
+    // sets this to YCoCg_scaled; everything else stays Linear. Sticky once
+    // set — colour space is a property of the codec, not of any one frame —
+    // but PlaybackController stamps it on every upload so a clip swap (e.g.
+    // re-import as a different variant) is picked up without extra wiring.
+    TextureColorSpace colorSpace{TextureColorSpace::Linear};
+
     // Frame data to upload (owned by decode system, not this component)
     bool needsUpload{false};                // True if new frame ready for upload
     AVFrame* currentFrame{nullptr};         // Frame to upload (owned by FrameBuffer)

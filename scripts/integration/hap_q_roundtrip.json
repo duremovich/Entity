@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "HAP Q (HapY) decode + YCoCg shader path regression gate. Loads a tiny HapY (scaled-YCoCg in BC3) .mov fixture, seeks to a known frame, hashes the compose target. Verifies that (1) HAPDecoder routes HapY content with TextureColorSpace::YCoCg_scaled, (2) the colour-space hint flows VideoTexture -> drawTexturedQuad -> LayerConstants, (3) sampleLayerTexture in common.hlsli undoes HAP Q's scaled-YCoCg encoding before composition. Distinct golden from hap_roundtrip (Hap5) — if the YCoCg path regresses to plain RGBA sampling these hashes will not match. Fixture generated via `generate_hap_fixture <dst> hap_q 64 64 16 30`; same gradient pattern as test_media/hap_gradient/.",
+    "commands": [
+        {"type": "AddScreen", "name": "HapQScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/hap_gradient_q/test.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/hap_q_roundtrip/frame_0.hash", "goldenFilepath": "tests/goldens/hap_q_roundtrip/frame_0.hash", "composeSlot": 0},
+        {"type": "SeekToFrame", "frame": 8},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/hap_q_roundtrip/frame_8.hash", "goldenFilepath": "tests/goldens/hap_q_roundtrip/frame_8.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}

@@ -15,8 +15,10 @@ Texture2D layerTexture : register(t0);
 SamplerState samplerState : register(s0);
 
 float4 PSMain(PSInput input) : SV_TARGET {
-    // Sample the texture (straight alpha)
-    float4 color = layerTexture.Sample(samplerState, input.texCoord);
+    // Sample the texture (straight alpha). For HAP Q the helper undoes the
+    // scaled-YCoCg encoding before composition; for everything else it's a
+    // plain Sample() and the dynamic-uniform branch costs ~nothing.
+    float4 color = sampleLayerTexture(layerTexture, samplerState, input.texCoord);
 
     // Apply layer opacity to alpha channel
     color.a *= opacity;

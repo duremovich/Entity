@@ -59,6 +59,20 @@ TextureFormat textureFormatFor(HapPixelFormat fmt) {
     }
 }
 
+// Map the HAP-spec colour space onto the renderer-side hint. The PS branches
+// on this and undoes HAP Q's scaled-YCoCg encoding before composition. HDR /
+// alpha-only return Linear for now — the HDR FP16 path waits on Phase C.12,
+// and HapA is single-channel, no colour conversion.
+TextureColorSpace textureColorSpaceFor(HapColorSpace cs) {
+    switch (cs) {
+        case HapColorSpace::YCoCg_scaled: return TextureColorSpace::YCoCg_scaled;
+        case HapColorSpace::RGB:
+        case HapColorSpace::Alpha:
+        case HapColorSpace::HDR_float:
+        default:                          return TextureColorSpace::Linear;
+    }
+}
+
 #endif // HAVE_FFMPEG
 
 } // anonymous namespace
@@ -293,6 +307,7 @@ Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
     outFrame.height = m_height;
     outFrame.pts = m_packet->pts;
     outFrame.format = textureFormatFor(hap.format);
+    outFrame.colorSpace = textureColorSpaceFor(hap.colorSpace);
     outFrame.valid.store(true, std::memory_order_release);
     return Result::Success;
 #else

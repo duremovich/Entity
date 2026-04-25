@@ -107,10 +107,12 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
             auto* videoTex = registry.try_get<VideoTexture>(entity);
 
             if (videoTex && videoTex->isValid()) {
-                // Draw textured quad for video layers with blend mode
+                // Draw textured quad for video layers with blend mode + colour-space hint
+                // (HAP Q content needs in-shader YCoCg→RGB; everything else is Linear).
                 TextureRef tex = m_renderer->getVideoTexture(videoTex->descriptorSlot);
                 if (tex.valid()) {
-                    m_renderer->drawTexturedQuad(tex, transformMatrix, layer.opacity, layer.blendMode);
+                    m_renderer->drawTexturedQuad(tex, transformMatrix, layer.opacity,
+                                                 layer.blendMode, videoTex->colorSpace);
                     continue;
                 }
                 // Fall through to colored-quad fallback if the slot isn't ready yet.
