@@ -1,6 +1,6 @@
 # Current Status
 
-**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, playback-perf overhaul, Settings UI, **engine-global FrameCache** (replacing per-clip FrameRingBuffer), and **async D3D12 COPY queue** for texture uploads have all landed. Currently working through the **so-even-with-hap-cosmic-glacier** roadmap — the playback/render-engine deep-dive. Phase C.11 closed; remaining before Phase D are C.12 (ACES color pipeline) and the Director/Renderer split (order TBD).
+**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, playback-perf overhaul, Settings UI, **engine-global FrameCache** (replacing per-clip FrameRingBuffer), and **async D3D12 COPY queue** for texture uploads have all landed. **Phase C.12 is now an OCIO-native color pipeline** (was hand-rolled ACES; pivoted 2026-04-27 to match Disguise's direction and unlock LogC / .ocio configs / 3D LUTs out of the gate). Subtasks #1 (OCIO dep + OcioManager skeleton) and #2 (runtime DXC compile path) have landed; #3 starts the CI-red window that #6 closes via golden rebake. After C.12, the Director/Renderer split is the only remaining Phase D entry condition.
 **Last Updated**: 2026-04-27
 
 ---
@@ -11,6 +11,8 @@ Production-quality commercial media server for live performance — a Disguise/W
 
 See `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md` for the master roadmap.
 See `~/.claude/plans/so-even-with-hap-cosmic-glacier.md` for the **playback/render engine deep-dive** (Phase C.9 → D handoff). All five open questions are now answered (2026-04-25 decisions section). HAP-first codec, 512 MB frame cache w/ Settings dialog, Director/Renderer split before Phase D, full ACES end-to-end, cluster-ready plumbing from day one.
+
+**Active driver:** `~/.claude/plans/quick-thought-before-we-pure-thompson.md` — the OCIO-native rewrite of Phase C.12 (supersedes `~/.claude/plans/jaunty-launching-tulip.md`, which committed to hand-rolled ACES). Decision: OCIO is the right abstraction for a Disguise/Watchout-class media server; user .ocio configs + camera log encodings + 3D LUTs all fall out for free, where hand-rolled ACES would force a rewrite the moment a user shows up with LogC footage. The bundled ACES Studio Config 1.3 ships inside the OCIO library (since 2.4) — no on-disk resource needed.
 
 ---
 
@@ -83,14 +85,16 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | C #10.0 | Settings/Preferences window + machine-global JSON config (`%APPDATA%/Entity/settings.json`) | `2d35dd0` |
 | C #10.1 | **FrameCache** replaces per-clip FrameRingBuffer end-to-end. Sparse LRU keyed by `(clipEntity, FrameNumber)`, `shared_ptr<const DecodedFrame>` + RAII `FrameLease` for safe eviction-while-leased, single-mutex thread-safety, live-tunable budget via `setMaxBytes` (Preferences "Apply" wires through). Decode-thread fast path: `cache.has` short-circuits FFmpeg seek when re-seeking into cached territory — that's the click-to-recently-viewed-frame zero-decode-work case. PlaybackController reads via lease + `nearestTo` fallback during Playing only. `FrameRingBuffer` + `BufferSystem` deleted; `FrameBuffer` is now a 0-byte marker; `DecodedFrame` in its own header. 13 cache unit tests + 2 integration tests (`cache_hit_after_seek`, `cache_budget_stress`) gate both halves of the Phase C.10 done-when. | `19da3e0` |
 | C #11 | **Async D3D12 COPY queue.** `D3D12Device` owns a second `D3D12_COMMAND_LIST_TYPE_COPY` queue. `D3D12Renderer` owns a per-`FRAME_COUNT` ring of copy command allocators + a single `m_copyCommandList` + a monotonic `m_uploadFence`. `uploadVideoFrameToSlot` records into the copy list; `endFrame` executes it on the copy queue, signals the upload fence, has the direct queue `Wait` on it (only if uploads were recorded this frame), then executes the direct list — copy work overlaps with last frame's render and this frame's composite waits only as long as the upload actually takes. `TextureUploader` strips all explicit barriers — textures rest in `D3D12_RESOURCE_STATE_COMMON`, implicit promotion handles `COMMON → COPY_DEST` and `COMMON → PIXEL_SHADER_RESOURCE` (the COPY queue can't transition to PIXEL_SHADER_RESOURCE anyway, so this is the only correct model). `waitForGpu` drains both queues. 102/102 green. PIX overlap verification is user-local manual work; the cross-queue handoff is exercised by all 17 integration tests on real GPU. | `ea62168` |
+| C.12 #1 | **OCIO dependency + `OcioManager` skeleton.** `opencolorio` (vcpkg 2.5.1) added; `find_package(OpenColorIO CONFIG REQUIRED)` linked into `EntityMediaCore`. `OcioManager` loads the bundled ACES Studio Config 1.3 via `Config::CreateFromBuiltinConfig("studio-config-v2.1.0_aces-v1.3_ocio-v2.3")` — no on-disk resource needed since OCIO 2.4+ ships builtins inside the library. `CreateFromFile` overrides when `Settings.ocioConfigPath` is set; falls back through the rest of `BuiltinConfigRegistry` (recommended-only) and ultimately to `CreateRaw` so the editor always launches with a non-null config. Read-only accessors (config / displays / views / color spaces / defaults) feed the Settings + MappingWindow UIs in C.12 #7-8. No rendering path consumes OcioManager yet — that lands in C.12 #4. 5 unit tests gate the loader. | `f2e5f09` |
+| C.12 #2 | **Runtime DXC compile path.** `RuntimeShaderCompiler` wraps `IDxcCompiler3::Compile` against in-memory HLSL source. Used by C.12 #5 to splice OCIO-emitted function fragments onto `composite_ps`/`mapping_surface_ps` — those PSOs become config-dependent and can't stay on the offline DXC path. Cache keyed by FNV-1a of `(source, entry, profile, includeDirs, extraArgs)`; failed compiles are cached too so a bad OCIO config doesn't re-attempt every frame. `dxcompiler.lib` linked from the Windows SDK; `dxcompiler.dll` + `dxil.dll` deployed next to `EntityMediaEditor.exe` via POST_BUILD copy keyed off the same `DXC_EXECUTABLE` the offline shader build uses (dxil signs the DXIL). 6 unit tests gate compile/cache/error-reporting behavior. | `08b87f4` |
 
 ---
 
-## Verified Working (as of Phase C #10.1)
+## Verified Working (as of Phase C.12 #2)
 
 **Build**: `cmake --build build --config Release` is clean, no errors.
-**Tests**: 102/102 pass via `ctest -C Release` (~31 unit incl. 13 FrameCache, 16 HapFormat, 8 Settings, 4 TranscodeManager + the keyframe roundtrip + ripple time suites; 17 integration suites including HAP variants + cache hit/budget gates). Test count dropped 114 → 102 with C #10.1: deleted 28 ring-buffer + 10 BufferSystem tests, added 13 cache unit + 2 cache integration tests; behavioral coverage broader.
-**Binary**: `build/bin/Release/EntityMediaEditor.exe` launches and runs in windowed or `--headless` mode.
+**Tests**: 113/113 pass via `ctest -C Release` (96 unit incl. 13 FrameCache, 16 HapFormat, 8 Settings, 4 TranscodeManager, 5 OcioManager, 6 RuntimeShaderCompiler + the keyframe roundtrip + ripple time suites; 17 integration suites including HAP variants + cache hit/budget gates).
+**Binary**: `build/bin/Release/EntityMediaEditor.exe` launches and runs in windowed or `--headless` mode. `dxcompiler.dll` + `dxil.dll` ship next to it for runtime shader compilation.
 
 Integration tests wired to CTest, labelled `integration`:
 - `integration_smoke` — cleared compose target hash
@@ -123,7 +127,7 @@ Integration tests wired to CTest, labelled `integration`:
 - **Director/Renderer split** — single Engine class still owns everything. Plan calls this a Phase D entry condition (do it before Phase D feature work attaches to the wrong layer).
 - ~~**Frame cache**~~ ✅ shipped in Phase C #10.1 (`19da3e0`). Sparse LRU `FrameCache` keyed by `(clipEntity, FrameNumber)`, 512 MB default budget, `FrameLease` RAII for safe eviction-while-leased. Replaces per-clip ring buffer end-to-end.
 - ~~**Settings/Preferences window**~~ ✅ shipped in Phase C #10.0 (`2d35dd0`); cache-budget setting wires through live to `FrameCache::setMaxBytes` since #10.1.
-- **Color pipeline** — sRGB-encoded compose targets, no per-codec input transforms, no per-output display transforms. Plan's Phase C.12 commits to full ACES end-to-end with FP16 compose targets.
+- **Color pipeline** — sRGB-encoded compose targets, no per-codec input transforms, no per-output display transforms. **Phase C.12 (now OCIO-native, see active driver above) is in flight** — subtasks #1 + #2 (foundation) landed 2026-04-27; #3-#6 are the CI-red window where compose targets flip to FP16 and OCIO replaces hand-rolled gamma; #6 closes by rebaking 22 golden hashes; #7-#11 are configurability + tests on top of the green pipeline.
 
 ### Recently resolved (sessions 2026-04-20 and 2026-04-21, all uncommitted)
 
@@ -192,9 +196,24 @@ Following the **so-even-with-hap-cosmic-glacier** roadmap (decisions locked 2026
 
 ### ~~Phase C.11 — Async copy queue~~ ✅ done (`ea62168`)
 
-### Phase C.12 — Full ACES color pipeline
+### Phase C.12 — OCIO-native color pipeline (in progress)
 
-OpenColorIO (or hand-rolled ACES 1.3 reference transforms). Per-codec input transforms, ACEScg linear working space, per-output display transforms (sRGB / Rec.709 / DCI-P3 / Rec.2020 / PQ HDR). Compose targets become FP16 — unblocks HAP HDR. ~2-3 weeks.
+Active driver: `~/.claude/plans/quick-thought-before-we-pure-thompson.md`. OpenColorIO 2.5.1 (vcpkg), bundled ACES Studio Config 1.3 via `Config::CreateFromBuiltinConfig` (no on-disk resource needed). Per-codec input transforms, ACEScg linear working space, per-output OCIO display+view transforms (sRGB / Rec.709 / DCI-P3 / Rec.2020 / PQ HDR). FP16 compose targets unblock HAP HDR. User .ocio configs + camera log encodings + 3D LUTs + look files all fall out for free. ~4-5 weeks.
+
+**Status:**
+- ✅ #1 — OCIO dep + `OcioManager` skeleton (`f2e5f09`)
+- ✅ #2 — Runtime DXC compile path (`08b87f4`)
+- 🔄 #3 — FP16 compose targets + capture-buffer pass *(starts the CI-red window)*
+- ⏳ #4 — `OcioManager` GPU processor cache + `GpuShaderDesc` HLSL emission
+- ⏳ #5 — Wire OCIO into `composite_ps` + `mapping_surface_ps` via runtime DXC
+- ⏳ #6 — Per-decoder OCIO tags + 22-golden rebake *(closes CI red)*
+- ⏳ #7 — Settings + Preferences "Color" section
+- ⏳ #8 — Per-output display+view UI + project persistence (PROJECT_VERSION 5→6)
+- ⏳ #9 — MediaBin per-clip color-space override
+- ⏳ #10 — HAP HDR (BC6H) FP16 survival smoke test
+- ⏳ #11 — `integration_aces_smoke` + OCIO ODT unit test
+
+The previous hand-rolled-ACES plan (`~/.claude/plans/jaunty-launching-tulip.md`) is **superseded** — left in place for reference.
 
 ### Phase D entry — Director/Renderer split
 
@@ -211,7 +230,9 @@ Decompose `Engine` into `DirectorService` + `RendererService` with a serializabl
 
 ## Pointers for the next session
 
-- **Playback/render-engine deep-dive plan**: `~/.claude/plans/so-even-with-hap-cosmic-glacier.md` *(this is the active driver)*
+- **Active C.12 plan (OCIO-native color pipeline)**: `~/.claude/plans/quick-thought-before-we-pure-thompson.md` — **this is the current driver**
+- Superseded C.12 plan (hand-rolled ACES, kept for reference): `~/.claude/plans/jaunty-launching-tulip.md`
+- Playback/render-engine deep-dive plan: `~/.claude/plans/so-even-with-hap-cosmic-glacier.md`
 - Master roadmap: `~/.claude/plans/i-haven-t-worked-on-declarative-hennessy.md`
 - Issue list: `docs/reference/CODE_ISSUES.md` (last verified 2026-04-19; needs another pass)
 - Development history: `docs/status/HISTORY.md`
