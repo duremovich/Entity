@@ -1,8 +1,13 @@
 #pragma once
 
+#include "entity/color/OcioGpuProcessor.hpp"
+
 #include <OpenColorIO/OpenColorTypes.h>
 
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace entity {
@@ -57,11 +62,54 @@ public:
     std::string getDefaultDisplay() const;
     std::string getDefaultView(const std::string& display) const;
 
+    // -----------------------------------------------------------------
+    // Phase C.12 #4 — GPU processor cache.
+    //
+    // buildInputProcessor   — transform from a clip's source color space
+    //                         to the engine's working space (ACEScg).
+    //                         Used by composite_ps in subtask 5.
+    //
+    // buildDisplayProcessor — transform from working space (ACEScg) out
+    //                         to a display+view (e.g. sRGB / ACES SDR).
+    //                         Used by mapping_surface_ps + the C.12 #3
+    //                         capture pass.
+    //
+    // Both methods cache. Repeat calls with the same key return the same
+    // shared_ptr (no recompile / no recodegen). Returns nullptr if the
+    // requested transform doesn't exist in the active config (logs).
+    // -----------------------------------------------------------------
+    std::shared_ptr<const OcioGpuProcessor>
+        buildInputProcessor(const std::string& srcColorSpace,
+                            const std::string& workingSpace = "ACEScg");
+
+    std::shared_ptr<const OcioGpuProcessor>
+        buildDisplayProcessor(const std::string& workingSpace,
+                              const std::string& display,
+                              const std::string& view);
+
+    /** Drop all cached processors. Called when the OCIO config is reloaded. */
+    void clearProcessorCache();
+
+    size_t inputCacheSize() const;
+    size_t displayCacheSize() const;
+
 private:
+    // Build and populate an OcioGpuProcessor from an OCIO Processor +
+    // function-name choice. Pulls textures + uniforms + HLSL out of OCIO's
+    // GpuShaderDesc into the project value type.
+    std::shared_ptr<const OcioGpuProcessor>
+        bakeProcessor(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+                      const std::string& functionName,
+                      const std::string& resourcePrefix) const;
+
     OCIO_NAMESPACE::ConstConfigRcPtr m_config;
     std::string m_source;
     bool m_isBuiltin{false};
     bool m_isFallback{false};
+
+    mutable std::mutex                                                   m_cacheMutex;
+    std::unordered_map<std::string, std::shared_ptr<const OcioGpuProcessor>> m_inputCache;
+    std::unordered_map<std::string, std::shared_ptr<const OcioGpuProcessor>> m_displayCache;
 };
 
 } // namespace entity

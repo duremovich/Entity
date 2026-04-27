@@ -15,8 +15,13 @@
  *   [1]:                                            Legacy single-video path
  *   [COMPOSE_TARGET_BASE, VIDEO_TEXTURE_BASE):      Compose targets (one per screen)
  *   [VIDEO_TEXTURE_BASE, SNAPSHOT_BASE):            Video texture slots (per clip)
- *   [SNAPSHOT_BASE, TOTAL_SLOTS):                   Compose-target snapshots (read-back
+ *   [SNAPSHOT_BASE, OCIO_LUT_BASE):                 Compose-target snapshots (read-back
  *                                                   for shader-blend modes; one per screen)
+ *   [OCIO_LUT_BASE, TOTAL_SLOTS):                   OCIO LUT SRVs — Phase C.12 #4. The
+ *                                                   ACES Studio Config typically uses
+ *                                                   6-12 LUTs across input + display
+ *                                                   processors; 32 slots gives comfortable
+ *                                                   headroom for custom .ocio configs.
  */
 
 #include <d3d12.h>
@@ -29,6 +34,7 @@ public:
     // Capacity limits. Must match IRenderer's public constants.
     static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS = 16;
     static constexpr uint32_t MAX_COMPOSE_TARGETS     = 8;
+    static constexpr uint32_t MAX_OCIO_LUT_SLOTS      = 32;
 
     // Fixed layout — changing these shifts runtime descriptor references,
     // so validate carefully if you need to.
@@ -37,7 +43,8 @@ public:
     static constexpr uint32_t COMPOSE_TARGET_BASE  = 2;
     static constexpr uint32_t VIDEO_TEXTURE_BASE   = COMPOSE_TARGET_BASE + MAX_COMPOSE_TARGETS;
     static constexpr uint32_t SNAPSHOT_BASE        = VIDEO_TEXTURE_BASE + MAX_VIDEO_TEXTURE_SLOTS;
-    static constexpr uint32_t TOTAL_SLOTS          = SNAPSHOT_BASE + MAX_COMPOSE_TARGETS;
+    static constexpr uint32_t OCIO_LUT_BASE        = SNAPSHOT_BASE + MAX_COMPOSE_TARGETS;
+    static constexpr uint32_t TOTAL_SLOTS          = OCIO_LUT_BASE + MAX_OCIO_LUT_SLOTS;
 
     // Slot-index computation (the "2 + MAX_COMPOSE_TARGETS + slot" math)
     static constexpr uint32_t composeTargetSlot(uint32_t composeIndex) {
@@ -52,6 +59,12 @@ public:
     static constexpr uint32_t snapshotSlot(uint32_t composeIndex) {
         return SNAPSHOT_BASE + composeIndex;
     }
+    // OCIO LUT SRV slot. lutIndex is allocated by OcioManager — there is no
+    // fixed mapping from processor → slot, since LUTs are pooled across all
+    // active processors (input transforms + display transforms).
+    static constexpr uint32_t ocioLutSlot(uint32_t lutIndex) {
+        return OCIO_LUT_BASE + lutIndex;
+    }
 
     // Bounds checks (useful in allocation paths)
     static constexpr bool isComposeIndexValid(uint32_t composeIndex) {
@@ -59,6 +72,9 @@ public:
     }
     static constexpr bool isVideoIndexValid(uint32_t videoIndex) {
         return videoIndex < MAX_VIDEO_TEXTURE_SLOTS;
+    }
+    static constexpr bool isOcioLutIndexValid(uint32_t lutIndex) {
+        return lutIndex < MAX_OCIO_LUT_SLOTS;
     }
 
     // Handle-from-slot helpers. Caller supplies the live heap and the

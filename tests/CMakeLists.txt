@@ -10,6 +10,7 @@ add_executable(EntityMediaTests
     unit/TranscodeManagerTests.cpp
     unit/SettingsTests.cpp
     unit/OcioManagerTests.cpp
+    unit/OcioGpuProcessorTests.cpp
     unit/RuntimeShaderCompilerTests.cpp
     test_Decoder.cpp
 )
