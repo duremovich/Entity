@@ -99,8 +99,12 @@ entity_compile_shader(composite_blend_ps.hlsl   ps PSMain 6_0)
 entity_compile_shader(solid_color_ps.hlsl       ps PSMain 6_0)
 entity_compile_shader(mapping_surface_vs.hlsl   vs VSMain 6_0)
 entity_compile_shader(mapping_surface_ps.hlsl   ps PSMain 6_0)
+# Phase C.12 #3 — FP16 compose target → UNORM8 capture (sRGB stub for now;
+# subtask 5 swaps the PS for an OCIO-emitted display transform).
+entity_compile_shader(aces_capture_vs.hlsl      vs VSMain 6_0)
+entity_compile_shader(aces_capture_ps.hlsl      ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 6 shaders")
+message(STATUS "Configured offline HLSL compilation for 8 shaders")
 
 # =============================================================================
 # Runtime DXC redistribution (Phase C.12 — OCIO-generated shader fragments)

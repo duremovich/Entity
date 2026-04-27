@@ -358,23 +358,65 @@ private:
         float padding3;
     };
 
-    // Offscreen compose targets (for multi-clip compositing, one per screen)
+    // Offscreen compose targets (for multi-clip compositing, one per screen).
+    // Phase C.12 #3 changed the format from R8G8B8A8_UNORM to
+    // R16G16B16A16_FLOAT — the linear ACEScg working space the OCIO display
+    // transform in mapping_surface_ps consumes when it writes to the
+    // (still-UNORM8) swap chain.
     struct ComposeTarget {
-        ComPtr<ID3D12Resource> resource;               // Render target texture
+        ComPtr<ID3D12Resource> resource;               // FP16 render target texture
         ComPtr<ID3D12DescriptorHeap> rtvHeap;         // RTV for rendering to it
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};      // SRV for sampling
         // Read-back copy of `resource` taken just before each shader-blend
-        // draw, sampled as t1 in composite_blend_ps. Resting state is
-        // PIXEL_SHADER_RESOURCE; transitions to COPY_DEST and back during the
-        // snapshot copy in drawTexturedQuad.
+        // draw, sampled as t1 in composite_blend_ps. Lazily allocated on
+        // first shader-blend draw (see ensureSnapshotResource); workloads
+        // that never use Overlay/Difference/etc. skip this entirely.
+        // Resting state is PIXEL_SHADER_RESOURCE; transitions to COPY_DEST
+        // and back during the snapshot copy in drawTexturedQuad.
         ComPtr<ID3D12Resource> snapshotResource;
         D3D12_GPU_DESCRIPTOR_HANDLE snapshotSrvHandle{};
+        uint32_t snapshotSrvSlot{0};                  // Reserved slot in m_imguiSrvHeap (populated lazily)
         uint32_t width{0};
         uint32_t height{0};
         bool ready{false};
     };
     std::vector<ComposeTarget> m_composeTargets;
     uint32_t m_currentComposeTargetSlot{0};  // Currently active slot during rendering
+
+    /**
+     * Lazily allocate the FP16 snapshot resource for a compose target and
+     * register its SRV in the descriptor heap at the slot reserved by
+     * createComposeTarget. Returns true if the snapshot is valid afterwards
+     * (already-allocated or freshly created); false if the GPU resource
+     * couldn't be created (out-of-VRAM, device removed, etc.).
+     */
+    bool ensureSnapshotResource(ComposeTarget& target);
+
+    // ---------------------------------------------------------------------
+    // Phase C.12 #3 — capture buffer + tone-mapping pass.
+    //
+    // The compose target is FP16 linear; integration-test goldens hash a
+    // bytewise UNORM8 snapshot of "what an sRGB monitor would show". To
+    // keep that hash portable across machines (vs hashing raw FP16 bits
+    // which are hardware-quantization-sensitive), we render the compose
+    // SRV through aces_capture_ps.hlsl into a UNORM8 capture texture and
+    // read THAT back. Subtask 3 ships an sRGB-only stub (linearToSrgb);
+    // subtask 5 swaps it for an OCIO-emitted display transform.
+    // ---------------------------------------------------------------------
+    ComPtr<ID3D12Resource>       m_captureResource;
+    ComPtr<ID3D12DescriptorHeap> m_captureRtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE  m_captureRtv{};
+    ComPtr<ID3D12RootSignature>  m_captureRootSignature;
+    ComPtr<ID3D12PipelineState>  m_capturePipelineState;
+    uint32_t                     m_captureWidth{0};
+    uint32_t                     m_captureHeight{0};
+
+    bool createCaptureRootSignatureAndPSO();
+    bool ensureCaptureResource(uint32_t width, uint32_t height);
+    bool tonemapAndReadbackComposeTarget(uint32_t slot,
+                                          uint32_t& outWidth,
+                                          uint32_t& outHeight,
+                                          std::vector<uint8_t>& outPixels);
 
     // Per-output swap chains for physical displays (Phase C #1).
     // Each OutputWindow owns its own borderless GLFW window, DXGI swap chain,

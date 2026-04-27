@@ -196,6 +196,16 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
+    // Phase C.12 #3: tone-mapping pass (FP16 compose → UNORM8 capture) used
+    // by readComposeTargetPixels / captureComposeTargetToPNG so the goldens
+    // hash a portable, machine-independent UNORM8 image. The capture
+    // resource is allocated lazily on first capture; only the PSO needs to
+    // exist up front.
+    if (!createCaptureRootSignatureAndPSO()) {
+        std::cerr << "Failed to create capture pipeline state!" << std::endl;
+        return Result::Failure;
+    }
+
     m_initialized = true;
     std::cout << "D3D12 renderer initialized successfully!" << std::endl;
 
@@ -275,6 +285,12 @@ void D3D12Renderer::shutdown() {
     m_mappingSurfaceRootSignature.Reset();
     m_mappingSurfaceVertexBuffer.Reset();
     m_mappingSurfaceConstantRing.Reset();
+
+    // Phase C.12 #3 capture-pass resources
+    m_capturePipelineState.Reset();
+    m_captureRootSignature.Reset();
+    m_captureResource.Reset();
+    m_captureRtvHeap.Reset();
 
     // Release rendering pipeline objects
     m_cbvHeap.Reset();
@@ -911,7 +927,10 @@ Result D3D12Renderer::createPipelineState() {
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // Compose-target PSO — Phase C.12 #3 flips the working space to FP16
+    // linear so OCIO ODT in mapping_surface_ps has unclamped headroom for
+    // HAP HDR + ACEScg compositing. Swap chains stay UNORM8.
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.SampleDesc.Count = 1;
 
     HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
@@ -1639,7 +1658,8 @@ Result D3D12Renderer::createTexturedPipelineState() {
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // Composite-textured PSO base — Phase C.12 #3 FP16 compose target.
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.SampleDesc.Count = 1;
 
     HRESULT hr;
@@ -1869,7 +1889,8 @@ Result D3D12Renderer::createBlendPipelineState() {
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // Shader-blend PSO (BlendEnable=FALSE) — also writes to FP16 compose.
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.SampleDesc.Count = 1;
 
     HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_texturedPipelineStateBlend));
@@ -1931,9 +1952,12 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     // SRV so the pixel shader can sample it as the bg. Then run the blend PSO
     // (BlendEnable=FALSE) so the shader's output replaces the destination.
     // ------------------------------------------------------------------------
+    // Phase C.12 #3: FP16 snapshot is allocated lazily on first shader-blend
+    // draw. Workloads that never hit Overlay/Difference/etc. skip the ~33
+    // MB-per-target allocation entirely.
     if (isShaderBlendMode(blendMode) &&
         m_currentComposeTargetSlot < m_composeTargets.size() &&
-        m_composeTargets[m_currentComposeTargetSlot].snapshotResource) {
+        ensureSnapshotResource(m_composeTargets[m_currentComposeTargetSlot])) {
 
         ComposeTarget& target = m_composeTargets[m_currentComposeTargetSlot];
 
@@ -2436,14 +2460,17 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
         return UINT32_MAX;
     }
 
-    // Create the render target texture
+    // Create the render target texture.
+    // Phase C.12 #3: compose targets become FP16 linear ACEScg working space.
+    // Mapping-surface PSO (writes to swap chain) and the per-output capture
+    // buffer (subtask 3 capture pass) stay UNORM8.
     D3D12_RESOURCE_DESC textureDesc = {};
     textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     textureDesc.Width = width;
     textureDesc.Height = height;
     textureDesc.DepthOrArraySize = 1;
     textureDesc.MipLevels = 1;
-    textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textureDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     textureDesc.SampleDesc.Count = 1;
     textureDesc.SampleDesc.Quality = 0;
     textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -2453,7 +2480,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_CLEAR_VALUE clearValue = {};
-    clearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    clearValue.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     clearValue.Color[0] = 0.0f;
     clearValue.Color[1] = 0.0f;
     clearValue.Color[2] = 0.0f;
@@ -2476,7 +2503,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
 
     // Create RTV for the compose target
     D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-    rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     rtvDesc.Texture2D.MipSlice = 0;
 
@@ -2486,7 +2513,7 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     // Create SRV for the compose target in the ImGui heap
     // Heap layout: 0=fonts, 1=legacy, 2+=compose targets (one per screen)
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels = 1;
@@ -2502,34 +2529,12 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     target.srvHandle = DescriptorHeapLayout::gpuHandle(
         m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
 
-    // Snapshot texture for shader-blend modes. Identical layout to the main
-    // compose target but used as a copy destination and SRV. Resting state is
-    // PIXEL_SHADER_RESOURCE; drawTexturedQuad transitions through COPY_DEST and
-    // back when a shader-blend draw needs a fresh background sample.
-    D3D12_RESOURCE_DESC snapshotDesc = textureDesc;
-    snapshotDesc.Flags = D3D12_RESOURCE_FLAG_NONE;  // No RTV needed on the snapshot
-
-    hr = m_gpu->device()->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &snapshotDesc,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        nullptr,  // No clear value: snapshot is always overwritten before sampling
-        IID_PPV_ARGS(&target.snapshotResource)
-    );
-
-    if (FAILED(hr)) {
-        std::cerr << "Failed to create compose target snapshot texture!" << std::endl;
-        m_composeTargets.pop_back();
-        return UINT32_MAX;
-    }
-
-    const uint32_t snapshotHeapSlot = DescriptorHeapLayout::snapshotSlot(slot);
-    D3D12_CPU_DESCRIPTOR_HANDLE snapshotCpuHandle = DescriptorHeapLayout::cpuHandle(
-        m_imguiSrvHeap.Get(), snapshotHeapSlot, m_srvDescriptorSize);
-    m_gpu->device()->CreateShaderResourceView(target.snapshotResource.Get(), &srvDesc, snapshotCpuHandle);
-    target.snapshotSrvHandle = DescriptorHeapLayout::gpuHandle(
-        m_imguiSrvHeap.Get(), snapshotHeapSlot, m_srvDescriptorSize);
+    // Snapshot texture is now lazily allocated on first shader-blend draw
+    // (see ensureSnapshotResource(), invoked from drawTexturedQuad's shader-
+    // blend branch). With Phase C.12 #3's FP16 compose target a snapshot per
+    // compose × FRAME_COUNT × 1080p is ~33 MB; lazy allocation saves the
+    // entire ~265 MB on workloads that never use Overlay/Difference/etc.
+    target.snapshotSrvSlot = DescriptorHeapLayout::snapshotSlot(slot);
 
     target.width = width;
     target.height = height;
@@ -3151,40 +3156,41 @@ bool D3D12Renderer::readbackTextureToPNG(ID3D12Resource* sourceTexture,
 }
 
 bool D3D12Renderer::captureComposeTargetToPNG(const std::string& filepath, uint32_t slot) {
-    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
-        std::cerr << "[Screenshot] Compose target " << slot << " not ready!" << std::endl;
+    // Phase C.12 #3: route through the tone-mapping capture pass so the
+    // saved PNG represents "what an sRGB monitor would show" rather than
+    // raw FP16 linear values. Subtask 5 swaps the sRGB stub in
+    // aces_capture_ps for an OCIO-emitted display transform.
+    uint32_t width = 0, height = 0;
+    std::vector<uint8_t> pixels;
+    if (!tonemapAndReadbackComposeTarget(slot, width, height, pixels)) return false;
+
+    std::filesystem::path path(filepath);
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    int result = stbi_write_png(filepath.c_str(),
+                                static_cast<int>(width),
+                                static_cast<int>(height),
+                                4,
+                                pixels.data(),
+                                static_cast<int>(width * 4));
+    if (result == 0) {
+        std::cerr << "[Screenshot] Failed to write PNG: " << filepath << std::endl;
         return false;
     }
-
-    const ComposeTarget& target = m_composeTargets[slot];
-    return readbackTextureToPNG(
-        target.resource.Get(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        target.width,
-        target.height,
-        filepath
-    );
+    std::cout << "[Screenshot] Saved: " << filepath
+              << " (" << width << "x" << height << ")" << std::endl;
+    return true;
 }
 
 bool D3D12Renderer::readComposeTargetPixels(uint32_t slot,
                                              uint32_t& outWidth,
                                              uint32_t& outHeight,
                                              std::vector<uint8_t>& outPixels) {
-    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
-        std::cerr << "[Readback] Compose target " << slot << " not ready!" << std::endl;
-        return false;
-    }
-
-    const ComposeTarget& target = m_composeTargets[slot];
-    outWidth = target.width;
-    outHeight = target.height;
-    return readbackTextureToPixels(
-        target.resource.Get(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        target.width,
-        target.height,
-        outPixels
-    );
+    // Phase C.12 #3: tone-mapping capture pass keeps the readback bytes
+    // portable across machines (vs hashing raw FP16 quantization). The
+    // golden tests under tests/goldens/**/*.hash hash these bytes.
+    return tonemapAndReadbackComposeTarget(slot, outWidth, outHeight, outPixels);
 }
 
 bool D3D12Renderer::captureBackBufferToPNG(const std::string& filepath) {
@@ -3315,6 +3321,314 @@ void D3D12Renderer::drawMappingSurface(TextureRef texture,
     const DirectX::XMFLOAT4 xmSoft(softEdges.x, softEdges.y, softEdges.z, softEdges.w);
 
     drawMappingSurface(srv, xmCorners, xmUVs, xmSoft, brightness, gamma, opacity);
+}
+
+// =============================================================================
+// Phase C.12 #3 — lazy snapshot allocation + capture/tone-mapping pass
+// =============================================================================
+
+bool D3D12Renderer::ensureSnapshotResource(ComposeTarget& target) {
+    if (target.snapshotResource) return true;
+    if (!target.resource || target.width == 0 || target.height == 0) return false;
+
+    D3D12_RESOURCE_DESC snapshotDesc = target.resource->GetDesc();
+    snapshotDesc.Flags = D3D12_RESOURCE_FLAG_NONE; // No RTV needed on the snapshot
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &snapshotDesc,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        nullptr,
+        IID_PPV_ARGS(&target.snapshotResource));
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] ensureSnapshotResource: CreateCommittedResource failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format                        = snapshotDesc.Format;
+    srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels           = 1;
+    srvDesc.Texture2D.MostDetailedMip     = 0;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = DescriptorHeapLayout::cpuHandle(
+        m_imguiSrvHeap.Get(), target.snapshotSrvSlot, m_srvDescriptorSize);
+    m_gpu->device()->CreateShaderResourceView(target.snapshotResource.Get(), &srvDesc, cpu);
+    target.snapshotSrvHandle = DescriptorHeapLayout::gpuHandle(
+        m_imguiSrvHeap.Get(), target.snapshotSrvSlot, m_srvDescriptorSize);
+    return true;
+}
+
+bool D3D12Renderer::createCaptureRootSignatureAndPSO() {
+    // Root signature: one SRV (the FP16 compose target) + static sampler.
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType                          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors                     = 1;
+    srvRange.BaseShaderRegister                 = 0;
+    srvRange.RegisterSpace                      = 0;
+    srvRange.OffsetInDescriptorsFromTableStart  = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParam = {};
+    rootParam.ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParam.DescriptorTable.NumDescriptorRanges = 1;
+    rootParam.DescriptorTable.pDescriptorRanges   = &srvRange;
+    rootParam.ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MaxLOD           = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister   = 0;
+    sampler.RegisterSpace    = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters     = 1;
+    rsDesc.pParameters       = &rootParam;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers   = &sampler;
+    rsDesc.Flags             = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
+                               D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                               D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                               D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) {
+        if (err) std::cerr << "[Capture] root sig serialize: "
+                           << static_cast<const char*>(err->GetBufferPointer()) << std::endl;
+        return false;
+    }
+    hr = m_gpu->device()->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+                                              IID_PPV_ARGS(&m_captureRootSignature));
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] CreateRootSignature failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    ComPtr<ID3DBlob> vs, ps;
+    if (loadCompiledShader(L"shaders/aces_capture_vs.cso", &vs) != Result::Success) {
+        std::cerr << "[Capture] missing shaders/aces_capture_vs.cso" << std::endl;
+        return false;
+    }
+    if (loadCompiledShader(L"shaders/aces_capture_ps.cso", &ps) != Result::Success) {
+        std::cerr << "[Capture] missing shaders/aces_capture_ps.cso" << std::endl;
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature  = m_captureRootSignature.Get();
+    psoDesc.VS              = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS              = { ps->GetBufferPointer(), ps->GetBufferSize() };
+
+    psoDesc.RasterizerState.FillMode              = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode              = D3D12_CULL_MODE_NONE; // full-screen tri
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthClipEnable       = TRUE;
+
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.DepthStencilState.DepthEnable   = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.SampleMask                      = UINT_MAX;
+    psoDesc.PrimitiveTopologyType           = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets                = 1;
+    psoDesc.RTVFormats[0]                   = DXGI_FORMAT_R8G8B8A8_UNORM; // capture output is UNORM8
+    psoDesc.SampleDesc.Count                = 1;
+
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_capturePipelineState));
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] CreateGraphicsPipelineState failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool D3D12Renderer::ensureCaptureResource(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) return false;
+    if (m_captureResource && m_captureWidth >= width && m_captureHeight >= height) {
+        return true;
+    }
+
+    waitForGpu();
+    m_captureResource.Reset();
+
+    if (!m_captureRtvHeap) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+        rtvHeapDesc.NumDescriptors = 1;
+        rtvHeapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        HRESULT hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc,
+                                                          IID_PPV_ARGS(&m_captureRtvHeap));
+        if (FAILED(hr)) {
+            std::cerr << "[Capture] CreateDescriptorHeap(RTV) failed hr=0x"
+                      << std::hex << hr << std::dec << std::endl;
+            return false;
+        }
+        m_captureRtv = m_captureRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    }
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width              = width;
+    desc.Height             = height;
+    desc.DepthOrArraySize   = 1;
+    desc.MipLevels          = 1;
+    desc.Format             = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count   = 1;
+    desc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_CLEAR_VALUE clear = {};
+    clear.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    clear.Color[3] = 1.0f;
+
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+        IID_PPV_ARGS(&m_captureResource));
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] capture resource alloc failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format        = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    m_gpu->device()->CreateRenderTargetView(m_captureResource.Get(), &rtvDesc, m_captureRtv);
+
+    m_captureWidth  = width;
+    m_captureHeight = height;
+    return true;
+}
+
+bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
+                                                    uint32_t& outWidth,
+                                                    uint32_t& outHeight,
+                                                    std::vector<uint8_t>& outPixels) {
+    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
+        std::cerr << "[Capture] compose target " << slot << " not ready" << std::endl;
+        return false;
+    }
+    const ComposeTarget& target = m_composeTargets[slot];
+    outWidth  = target.width;
+    outHeight = target.height;
+
+    if (!ensureCaptureResource(target.width, target.height)) return false;
+    if (!ensureScreenshotStagingBuffer(target.width, target.height)) return false;
+
+    waitForGpu();
+
+    HRESULT hr = m_commandAllocators[m_currentBackBufferIndex]->Reset();
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] command allocator Reset failed" << std::endl;
+        return false;
+    }
+    hr = m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] command list Reset failed" << std::endl;
+        return false;
+    }
+
+    // 1. Bind the SRV heap, viewport, RTV, and run the tone-map pass.
+    ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+    m_commandList->SetDescriptorHeaps(1, heaps);
+    m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+
+    D3D12_VIEWPORT vp = { 0, 0, static_cast<float>(target.width), static_cast<float>(target.height), 0.0f, 1.0f };
+    D3D12_RECT scissor = { 0, 0, static_cast<LONG>(target.width), static_cast<LONG>(target.height) };
+    m_commandList->RSSetViewports(1, &vp);
+    m_commandList->RSSetScissorRects(1, &scissor);
+    m_commandList->OMSetRenderTargets(1, &m_captureRtv, FALSE, nullptr);
+
+    m_commandList->SetPipelineState(m_capturePipelineState.Get());
+    m_commandList->SetGraphicsRootSignature(m_captureRootSignature.Get());
+    m_commandList->SetGraphicsRootDescriptorTable(0, target.srvHandle);
+
+    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_commandList->DrawInstanced(3, 1, 0, 0); // full-screen triangle from SV_VERTEXID
+
+    // 2. RENDER_TARGET -> COPY_SOURCE, copy to staging, restore.
+    D3D12_RESOURCE_BARRIER toCopy = {};
+    toCopy.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toCopy.Transition.pResource   = m_captureResource.Get();
+    toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toCopy.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &toCopy);
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource         = m_captureResource.Get();
+    src.Type              = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex  = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource                              = m_screenshotStagingBuffer.Get();
+    dst.Type                                   = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset                 = 0;
+    dst.PlacedFootprint.Footprint.Format       = DXGI_FORMAT_R8G8B8A8_UNORM;
+    dst.PlacedFootprint.Footprint.Width        = target.width;
+    dst.PlacedFootprint.Footprint.Height       = target.height;
+    dst.PlacedFootprint.Footprint.Depth        = 1;
+    dst.PlacedFootprint.Footprint.RowPitch     = static_cast<UINT>(m_screenshotStagingRowPitch);
+
+    m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    D3D12_RESOURCE_BARRIER restore = {};
+    restore.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    restore.Transition.pResource   = m_captureResource.Get();
+    restore.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    restore.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    restore.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &restore);
+
+    hr = m_commandList->Close();
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] command list Close failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    ID3D12CommandList* lists[] = { m_commandList.Get() };
+    m_gpu->commandQueue()->ExecuteCommandLists(1, lists);
+    waitForGpu();
+
+    void* mapped = nullptr;
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(m_screenshotStagingRowPitch * target.height) };
+    hr = m_screenshotStagingBuffer->Map(0, &readRange, &mapped);
+    if (FAILED(hr)) {
+        std::cerr << "[Capture] staging Map failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    outPixels.resize(static_cast<size_t>(target.width) * target.height * 4);
+    const uint8_t* srcBytes = static_cast<const uint8_t*>(mapped);
+    uint8_t*       dstBytes = outPixels.data();
+    for (uint32_t y = 0; y < target.height; ++y) {
+        memcpy(dstBytes, srcBytes, static_cast<size_t>(target.width) * 4);
+        srcBytes += m_screenshotStagingRowPitch;
+        dstBytes += target.width * 4;
+    }
+
+    D3D12_RANGE writeRange = { 0, 0 };
+    m_screenshotStagingBuffer->Unmap(0, &writeRange);
+    return true;
 }
 
 } // namespace entity
