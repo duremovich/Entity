@@ -1,7 +1,7 @@
 # Current Status
 
-**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, and a playback-perf overhaul have all landed since the last update. Currently working through the **so-even-with-hap-cosmic-glacier** roadmap — the playback/render-engine deep-dive that targets Disguise/d3 architecture.
-**Last Updated**: 2026-04-25
+**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, playback-perf overhaul, Settings UI, and **engine-global FrameCache** (replacing per-clip FrameRingBuffer) have all landed. Currently working through the **so-even-with-hap-cosmic-glacier** roadmap — the playback/render-engine deep-dive. Phase C.10 closed; Phase C.11 (async D3D12 copy queue) is next.
+**Last Updated**: 2026-04-27
 
 ---
 
@@ -76,13 +76,19 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | C.1 #6.8 | DecodeSystem uses the main-thread decoder's path + type (HAP-vs-original disambiguation) | `db1ac2c` |
 | C.1 #6.9 | Non-HAP import policy = Ask by default + modal prompt | `385559a` |
 | C.1 #6.10 | MediaBin "Remove from library" + right-click hint | `90b46f9` |
+| C #9.1 | HAP Q YCoCg shader path + `integration_hap_q_roundtrip` | `525b6ee` |
+| C #9.2 | `Result::EndOfStream` sentinel — silence HAPDecoder EOF spam | `973f91d` |
+| C #9.3 | `integration_hap_basic_roundtrip` (Hap1 / BC1 RGB) | `4998e65` |
+| C #9.4 | ProResDecoder also returns `EndOfStream` on EOF | `30e3df9` |
+| C #10.0 | Settings/Preferences window + machine-global JSON config (`%APPDATA%/Entity/settings.json`) | `2d35dd0` |
+| C #10.1 | **FrameCache** replaces per-clip FrameRingBuffer end-to-end. Sparse LRU keyed by `(clipEntity, FrameNumber)`, `shared_ptr<const DecodedFrame>` + RAII `FrameLease` for safe eviction-while-leased, single-mutex thread-safety, live-tunable budget via `setMaxBytes` (Preferences "Apply" wires through). Decode-thread fast path: `cache.has` short-circuits FFmpeg seek when re-seeking into cached territory — that's the click-to-recently-viewed-frame zero-decode-work case. PlaybackController reads via lease + `nearestTo` fallback during Playing only. `FrameRingBuffer` + `BufferSystem` deleted; `FrameBuffer` is now a 0-byte marker; `DecodedFrame` in its own header. 13 cache unit tests + 2 integration tests (`cache_hit_after_seek`, `cache_budget_stress`) gate both halves of the Phase C.10 done-when. | `19da3e0` |
 
 ---
 
-## Verified Working (as of Phase C #8)
+## Verified Working (as of Phase C #10.1)
 
 **Build**: `cmake --build build --config Release` is clean, no errors.
-**Tests**: 104/104 pass per Phase C #8 commit message (~49 unit, 16 HapFormat unit, ~13 integration suites; HAP roundtrip + Phase B #8 gates included). Run via `ctest -C Release`.
+**Tests**: 102/102 pass via `ctest -C Release` (~31 unit incl. 13 FrameCache, 16 HapFormat, 8 Settings, 4 TranscodeManager + the keyframe roundtrip + ripple time suites; 17 integration suites including HAP variants + cache hit/budget gates). Test count dropped 114 → 102 with C #10.1: deleted 28 ring-buffer + 10 BufferSystem tests, added 13 cache unit + 2 cache integration tests; behavioral coverage broader.
 **Binary**: `build/bin/Release/EntityMediaEditor.exe` launches and runs in windowed or `--headless` mode.
 
 Integration tests wired to CTest, labelled `integration`:
@@ -91,10 +97,14 @@ Integration tests wired to CTest, labelled `integration`:
 - `integration_png_sequence_seek` — PNG seq decode + seek correctness
 - `integration_seek_past_clip_end` — boundary behavior past clip duration
 - `integration_screen_persistence_save` / `_load` — round-trip via CTest fixture; load asserts both default and custom screens survive serializer
+- `integration_sections_persistence_save` / `_load` — named sections round-trip
 - `integration_mixed_fps` — 16-frame seq forced to 24fps on a 30fps timeline; asserts tl-frame-10 maps to source frame 8 via `floor(localFrame * srcFps/tlFps)`
 - `integration_ping_pong` — 16-frame seq stretched to 64 timeline frames in PingPong mode; asserts tl 8 is forward-phase source 8 and tl 24 is reverse-phase source 7 (mirror-index 15 - (24 % 16))
 - `integration_blend` — two solid mid-tone clips stacked on track 0 + track 1; sets Normal/Add/Multiply/Screen on the top clip, asserts four distinct compose-target hashes. Mid-tone channels required: pure 0/1 are fixed points for these modes.
 - `integration_blend_difference` — same fixture stack, sets Difference on the top clip, asserts the hash. Different code path from `integration_blend` (shader-based blend pipeline w/ snapshot SRV, not fixed-function blend state) — separate gate so a shader-blend regression is unambiguous.
+- `integration_hap_roundtrip` (Hap5/Alpha), `integration_hap_basic_roundtrip` (Hap1), `integration_hap_q_roundtrip` (HapY YCoCg) — three HAP variants gated end-to-end.
+- `integration_cache_hit_after_seek` — warms cache by seeking 8 → 0, re-seeks to 8, asserts frame still cached and pixel hash matches `png_sequence_seek/frame_8.hash`. Phase C.10 gate (cache hits land instead of re-decodes).
+- `integration_cache_budget_stress` — shrinks cache to 80 KB against 256 KB working set, runs 24 random seeks across 16 frames, asserts `bytesUsed <= maxBytes && entryCount > 0` after each wave. Cache pins at exactly 81920/81920 with 5 entries — eviction is provably doing real work.
 
 ---
 
@@ -110,8 +120,8 @@ Integration tests wired to CTest, labelled `integration`:
 - **H264/H265** — decodes via `ProResDecoder` (misnamed; it's a generic FFmpeg decoder). Phase C.1 #6 routes these through TranscodeManager → HAP on import by default. Renaming is opportunistic cleanup, not blocking.
 - **Network / sync / control** — no OSC, DMX, Art-Net, MIDI, NDI, timecode, genlock.
 - **Director/Renderer split** — single Engine class still owns everything. Plan calls this a Phase D entry condition (do it before Phase D feature work attaches to the wrong layer).
-- **Frame cache** — per-clip ring buffer is the wrong shape for click-to-seek-into-already-decoded territory. Plan's Phase C.10 replaces with a sparse LRU `FrameCache` keyed by `(clipEntity, frameNumber)`, 512 MB default budget.
-- **Settings/Preferences window** — none today; needs to land alongside the cache work to expose the budget.
+- ~~**Frame cache**~~ ✅ shipped in Phase C #10.1 (`19da3e0`). Sparse LRU `FrameCache` keyed by `(clipEntity, FrameNumber)`, 512 MB default budget, `FrameLease` RAII for safe eviction-while-leased. Replaces per-clip ring buffer end-to-end.
+- ~~**Settings/Preferences window**~~ ✅ shipped in Phase C #10.0 (`2d35dd0`); cache-budget setting wires through live to `FrameCache::setMaxBytes` since #10.1.
 - **Color pipeline** — sRGB-encoded compose targets, no per-codec input transforms, no per-output display transforms. Plan's Phase C.12 commits to full ACES end-to-end with FP16 compose targets.
 
 ### Recently resolved (sessions 2026-04-20 and 2026-04-21, all uncommitted)
@@ -151,6 +161,9 @@ Integration tests wired to CTest, labelled `integration`:
 - `include/entity/render/TextureUploader.hpp` + `src/render/TextureUploader.cpp` — video texture pool
 - `include/entity/components/ClipDecodeState.hpp` — per-clip decoder + frame as ECS component
 - `include/entity/project/ProjectManager.hpp` + `src/project/ProjectManager.cpp` — project path, media library, autosave
+- `include/entity/core/Settings.hpp` + `src/core/Settings.cpp` — machine-global JSON config (Phase C #10.0)
+- `include/entity/media/DecodedFrame.hpp` — extracted from FrameRingBuffer.hpp (Phase C #10.1)
+- `include/entity/media/FrameCache.hpp` + `src/media/FrameCache.cpp` — engine-global LRU frame cache + `FrameLease` RAII handle (Phase C #10.1)
 - `test_media/scripts/generate_gradient_seq.py` — procedural PNG fixture generator
 - `test_media/gradient_seq/*.png` — 16-frame HSV gradient committed as test fixture
 - `test_media/scripts/generate_blend_fixtures.py` + `test_media/blend_{bg,fg}/frame_000.png` — mid-tone blend-test fixtures
@@ -174,9 +187,7 @@ Following the **so-even-with-hap-cosmic-glacier** roadmap (decisions locked 2026
 4. ~~**EOF off-by-one**~~ *(closed)* — `Result::EndOfStream` sentinel; HAPDecoder returns it on `AVERROR_EOF` and `DecodeSystem` parks `nextFrame` at the duration without logging. Underlying cause: FFmpeg-encoded HAP fixtures report `nb_frames=N` but the demuxer delivers `N-1` packets (encoder buffering quirk).
 5. **Multi-clip stress with HAP files** — the perf gate: `clipVideos=` consistently <10 ms during steady-state with HAP content.
 
-### Phase C.10 — FrameCache replaces the per-clip ring buffer
-
-Sparse LRU cache keyed by `(clipEntity, frameNumber)`, 512 MB global budget, exposed in a new **Settings/Preferences** ImGui window. Eliminates re-decode on click-to-seek into already-viewed frames. ~1-2 weeks.
+### ~~Phase C.10 — FrameCache replaces the per-clip ring buffer~~ ✅ done (`19da3e0`)
 
 ### Phase C.11 — Async copy queue
 
