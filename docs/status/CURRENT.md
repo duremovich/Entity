@@ -1,6 +1,6 @@
 # Current Status
 
-**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, playback-perf overhaul, Settings UI, and **engine-global FrameCache** (replacing per-clip FrameRingBuffer) have all landed. Currently working through the **so-even-with-hap-cosmic-glacier** roadmap — the playback/render-engine deep-dive. Phase C.10 closed; Phase C.11 (async D3D12 copy queue) is next.
+**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, playback-perf overhaul, Settings UI, **engine-global FrameCache** (replacing per-clip FrameRingBuffer), and **async D3D12 COPY queue** for texture uploads have all landed. Currently working through the **so-even-with-hap-cosmic-glacier** roadmap — the playback/render-engine deep-dive. Phase C.11 closed; remaining before Phase D are C.12 (ACES color pipeline) and the Director/Renderer split (order TBD).
 **Last Updated**: 2026-04-27
 
 ---
@@ -82,6 +82,7 @@ Architectural re-shape so neither D3D12 nor Engine internals leak through the pr
 | C #9.4 | ProResDecoder also returns `EndOfStream` on EOF | `30e3df9` |
 | C #10.0 | Settings/Preferences window + machine-global JSON config (`%APPDATA%/Entity/settings.json`) | `2d35dd0` |
 | C #10.1 | **FrameCache** replaces per-clip FrameRingBuffer end-to-end. Sparse LRU keyed by `(clipEntity, FrameNumber)`, `shared_ptr<const DecodedFrame>` + RAII `FrameLease` for safe eviction-while-leased, single-mutex thread-safety, live-tunable budget via `setMaxBytes` (Preferences "Apply" wires through). Decode-thread fast path: `cache.has` short-circuits FFmpeg seek when re-seeking into cached territory — that's the click-to-recently-viewed-frame zero-decode-work case. PlaybackController reads via lease + `nearestTo` fallback during Playing only. `FrameRingBuffer` + `BufferSystem` deleted; `FrameBuffer` is now a 0-byte marker; `DecodedFrame` in its own header. 13 cache unit tests + 2 integration tests (`cache_hit_after_seek`, `cache_budget_stress`) gate both halves of the Phase C.10 done-when. | `19da3e0` |
+| C #11 | **Async D3D12 COPY queue.** `D3D12Device` owns a second `D3D12_COMMAND_LIST_TYPE_COPY` queue. `D3D12Renderer` owns a per-`FRAME_COUNT` ring of copy command allocators + a single `m_copyCommandList` + a monotonic `m_uploadFence`. `uploadVideoFrameToSlot` records into the copy list; `endFrame` executes it on the copy queue, signals the upload fence, has the direct queue `Wait` on it (only if uploads were recorded this frame), then executes the direct list — copy work overlaps with last frame's render and this frame's composite waits only as long as the upload actually takes. `TextureUploader` strips all explicit barriers — textures rest in `D3D12_RESOURCE_STATE_COMMON`, implicit promotion handles `COMMON → COPY_DEST` and `COMMON → PIXEL_SHADER_RESOURCE` (the COPY queue can't transition to PIXEL_SHADER_RESOURCE anyway, so this is the only correct model). `waitForGpu` drains both queues. 102/102 green. PIX overlap verification is user-local manual work; the cross-queue handoff is exercised by all 17 integration tests on real GPU. | `ea62168` |
 
 ---
 
@@ -189,9 +190,7 @@ Following the **so-even-with-hap-cosmic-glacier** roadmap (decisions locked 2026
 
 ### ~~Phase C.10 — FrameCache replaces the per-clip ring buffer~~ ✅ done (`19da3e0`)
 
-### Phase C.11 — Async copy queue
-
-Dedicated `D3D12_COMMAND_LIST_TYPE_COPY` queue so uploads run in parallel with composite. Targets the residual `clipVideos=51-81 ms` blips under multi-clip stress. ~1 week.
+### ~~Phase C.11 — Async copy queue~~ ✅ done (`ea62168`)
 
 ### Phase C.12 — Full ACES color pipeline
 
