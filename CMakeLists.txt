@@ -55,6 +55,9 @@ message(STATUS "  GLM: Found")
 find_package(nlohmann_json CONFIG REQUIRED)
 message(STATUS "  nlohmann_json: Found")
 
+find_package(OpenColorIO CONFIG REQUIRED)
+message(STATUS "  OpenColorIO: Found")
+
 # FFmpeg - optional for now (will add later)
 find_package(FFMPEG COMPONENTS avcodec avformat avutil swscale swresample)
 if(NOT FFMPEG_FOUND)
@@ -90,6 +93,9 @@ target_sources(EntityMediaCore
         src/core/Application.cpp
         src/core/PlaybackController.cpp
         src/core/Settings.cpp
+
+        # Color (Phase C.12 — OCIO color management)
+        src/color/OcioManager.cpp
 
         # Media
         src/media/FrameCache.cpp
@@ -171,6 +177,7 @@ target_link_libraries(EntityMediaCore
         glfw
         imgui::imgui
         nlohmann_json::nlohmann_json
+        OpenColorIO::OpenColorIO
         Snappy::snappy
 )
 

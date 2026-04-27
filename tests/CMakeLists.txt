@@ -9,6 +9,7 @@ add_executable(EntityMediaTests
     unit/HapFormatTests.cpp
     unit/TranscodeManagerTests.cpp
     unit/SettingsTests.cpp
+    unit/OcioManagerTests.cpp
     test_Decoder.cpp
 )
 

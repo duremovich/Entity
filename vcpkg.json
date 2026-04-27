@@ -18,6 +18,7 @@
       ]
     },
     "glm",
+    "opencolorio",
     "snappy",
     "stb"
   ],
