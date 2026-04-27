@@ -187,6 +187,7 @@ private:
     Result createRenderTargetViews();
     Result createCommandAllocators();
     Result createCommandList();
+    Result createCopyCommandList();   // Phase C.11: COPY queue cmd list + per-frame allocators
     Result createFence();
     void waitForGpu();
     void moveToNextFrame();
@@ -262,6 +263,19 @@ private:
     ComPtr<ID3D12Fence> m_fence;
     uint64_t m_fenceValues[FRAME_COUNT];
     void* m_fenceEvent;
+
+    // Phase C.11: async copy queue. Texture uploads (TextureUploader::upload)
+    // record into m_copyCommandList and execute on m_gpu->copyQueue() so they
+    // overlap with composite/render on the direct queue. The upload fence
+    // enforces cross-queue ordering: copy queue Signal(uploadFence, ++value)
+    // after Execute, direct queue Wait(uploadFence, value) before its own
+    // Execute. Per-frame allocators (FRAME_COUNT) so the previous frame's
+    // copy commands aren't reset out from under the GPU.
+    ComPtr<ID3D12CommandAllocator>    m_copyCommandAllocators[FRAME_COUNT];
+    ComPtr<ID3D12GraphicsCommandList> m_copyCommandList;
+    ComPtr<ID3D12Fence>               m_uploadFence;
+    uint64_t                          m_uploadFenceValue{0};
+    bool                              m_uploadsRecordedThisFrame{false};
 
     // Rendering pipeline objects
     ComPtr<ID3D12RootSignature> m_rootSignature;

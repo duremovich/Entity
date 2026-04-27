@@ -111,14 +111,13 @@ public:
 
 private:
     struct Slot {
-        ComPtr<ID3D12Resource> texture;
+        ComPtr<ID3D12Resource> texture;        // Resting state: D3D12_RESOURCE_STATE_COMMON (Phase C.11)
         ComPtr<ID3D12Resource> uploadBuffer;
         D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle{};
         uint32_t width{0};
         uint32_t height{0};
         TextureFormat format{TextureFormat::RGBA8_UNORM};
         bool allocated{false};
-        bool firstUpload{true};  // Tracks whether we need a state-transition barrier
     };
 
     bool ensureTexture(Slot& slot, uint32_t slotIndex, uint32_t width, uint32_t height,

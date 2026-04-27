@@ -54,10 +54,27 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
     }
     std::cout << "Command queue created" << std::endl;
 
+    // Dedicated COPY queue (Phase C.11). Async texture uploads run here so
+    // CopyTextureRegion overlaps with composite/render on the direct queue.
+    D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
+    copyQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+    copyQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+
+    hr = m_device->CreateCommandQueue(&copyQueueDesc, IID_PPV_ARGS(&m_copyQueue));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create copy command queue! HRESULT: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        m_commandQueue.Reset();
+        m_device.Reset();
+        return Result::Failure;
+    }
+    std::cout << "Copy command queue created" << std::endl;
+
     return Result::Success;
 }
 
 void D3D12Device::shutdown() {
+    m_copyQueue.Reset();
     m_commandQueue.Reset();
     m_device.Reset();
 }

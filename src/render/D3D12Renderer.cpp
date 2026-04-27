@@ -107,6 +107,12 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
+    // Phase C.11: COPY-queue command allocators + list for async uploads
+    if (createCopyCommandList() != Result::Success) {
+        std::cerr << "Failed to create copy command list!" << std::endl;
+        return Result::Failure;
+    }
+
     // Create fence for synchronization
     if (createFence() != Result::Success) {
         std::cerr << "Failed to create fence!" << std::endl;
@@ -279,13 +285,16 @@ void D3D12Renderer::shutdown() {
 
     // Release all COM objects (ComPtr handles this automatically)
     m_commandList.Reset();
+    m_copyCommandList.Reset();
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         m_commandAllocators[i].Reset();
+        m_copyCommandAllocators[i].Reset();
         m_renderTargets[i].Reset();
     }
     m_rtvHeap.Reset();
     m_swapChain.Reset();
     m_fence.Reset();
+    m_uploadFence.Reset();
     // Release the device + queue last (after all resources allocated from
     // them have been released above).
     if (m_gpu) {
@@ -344,6 +353,14 @@ void D3D12Renderer::beginFrame() {
 
     // Reset command list
     m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+
+    // Phase C.11: reset the COPY queue's allocator + list for this frame.
+    // moveToNextFrame's wait on the direct queue's fence guarantees the
+    // matching copy work has also drained (direct waits on copy before
+    // signaling), so the allocator's previous recording is safe to free.
+    m_copyCommandAllocators[m_currentBackBufferIndex]->Reset();
+    m_copyCommandList->Reset(m_copyCommandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    m_uploadsRecordedThisFrame = false;
 
     // Reset descriptor heap cache (command list state is reset)
     m_currentDescriptorHeap = nullptr;
@@ -405,6 +422,24 @@ void D3D12Renderer::endFrame() {
     if (FAILED(hr)) {
         std::cerr << "Failed to close command list!" << std::endl;
         return;
+    }
+
+    // Phase C.11: close + execute the COPY queue's command list before the
+    // direct queue's. Cross-queue ordering: copy Signals on completion,
+    // direct Wait()s before its own Execute. We always close (D3D12 requires
+    // it after Reset) but only Signal/Wait when uploads were recorded — saves
+    // a fence value when the frame had no upload work.
+    HRESULT chr = m_copyCommandList->Close();
+    if (FAILED(chr)) {
+        std::cerr << "Failed to close copy command list!" << std::endl;
+        return;
+    }
+    if (m_uploadsRecordedThisFrame) {
+        ID3D12CommandList* copyLists[] = { m_copyCommandList.Get() };
+        m_gpu->copyQueue()->ExecuteCommandLists(1, copyLists);
+        const uint64_t copyValue = ++m_uploadFenceValue;
+        m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+        m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
     }
 
     // Execute command list
@@ -605,6 +640,38 @@ Result D3D12Renderer::createCommandList() {
     return Result::Success;
 }
 
+Result D3D12Renderer::createCopyCommandList() {
+    // Per-frame COPY allocators so the previous frame's recorded copies aren't
+    // reset out from under the GPU. moveToNextFrame's fence on the direct queue
+    // implicitly fences copy work too (direct waits on copy before signaling),
+    // so the same backbuffer-index ring is safe.
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        HRESULT hr = m_gpu->device()->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_COPY,
+            IID_PPV_ARGS(&m_copyCommandAllocators[i])
+        );
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create copy command allocator " << i << "!" << std::endl;
+            return Result::Failure;
+        }
+    }
+
+    HRESULT hr = m_gpu->device()->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_COPY,
+        m_copyCommandAllocators[0].Get(),
+        nullptr,
+        IID_PPV_ARGS(&m_copyCommandList)
+    );
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create copy command list!" << std::endl;
+        return Result::Failure;
+    }
+    m_copyCommandList->Close();  // Lists start in recording state; close so beginFrame's Reset works.
+    std::cout << "Copy command list created" << std::endl;
+    return Result::Success;
+}
+
 Result D3D12Renderer::createFence() {
     HRESULT hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
     if (FAILED(hr)) {
@@ -615,6 +682,16 @@ Result D3D12Renderer::createFence() {
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         m_fenceValues[i] = 0;
     }
+
+    // Phase C.11: separate fence for cross-queue ordering (copy → direct).
+    // Monotonic value, not per-frame; copy queue Signals after each frame's
+    // upload Execute, direct queue Wait()s before its own Execute.
+    hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_uploadFence));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create upload fence!" << std::endl;
+        return Result::Failure;
+    }
+    m_uploadFenceValue = 0;
 
     // Create fence event
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -628,7 +705,20 @@ Result D3D12Renderer::createFence() {
 }
 
 void D3D12Renderer::waitForGpu() {
-    // Schedule a signal command in the queue
+    // Drain the COPY queue first (Phase C.11). Resize/shutdown/freeSlot must
+    // not release a texture while an upload is still in flight on the copy
+    // queue. The direct queue's Wait(uploadFence) inside endFrame() does NOT
+    // help here because we may be called outside the per-frame loop.
+    if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
+        const uint64_t copyTarget = ++m_uploadFenceValue;
+        m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
+        if (m_uploadFence->GetCompletedValue() < copyTarget) {
+            m_uploadFence->SetEventOnCompletion(copyTarget, m_fenceEvent);
+            WaitForSingleObject(m_fenceEvent, INFINITE);
+        }
+    }
+
+    // Schedule a signal command in the direct queue
     // Use a fence value higher than any frame's current value to ensure all work completes
     uint64_t maxFenceValue = 0;
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
@@ -1410,15 +1500,20 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
 
     // The uploader can't wait on our fence — if a resize or format change is
     // coming we need to ensure the GPU is done with the slot's previous
-    // resources before we re-create them.
+    // resources before we re-create them. waitForGpu drains both direct and
+    // copy queues (Phase C.11).
     if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
         m_textureUploader->hasTexture(slot)) {
         waitForGpu();
     }
 
-    if (!m_textureUploader->upload(m_commandList.Get(), slot, data, width, height, format)) {
+    // Phase C.11: record into the COPY queue's command list. endFrame()
+    // executes it on the copy queue and inserts a cross-queue fence wait so
+    // the direct queue doesn't sample the texture until the copy completes.
+    if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data, width, height, format)) {
         return false;
     }
+    m_uploadsRecordedThisFrame = true;
 
     if (outSrvHandle) {
         *outSrvHandle = m_textureUploader->gpuHandle(slot);

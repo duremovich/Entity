@@ -5,10 +5,19 @@
  *  - Texture / upload-buffer resource creation (RGBA or BC-compressed)
  *  - SRV descriptor writes
  *  - Row-pitch-aware memcpy into the upload buffer (block-aware for BC)
- *  - Command-list barrier + CopyTextureRegion recording
+ *  - CopyTextureRegion recording (no explicit barriers, see Phase C.11 below)
+ *
+ * Phase C.11 (async copy queue): textures live in D3D12_RESOURCE_STATE_COMMON
+ * between uses. The cmdList passed to upload() lives on a COPY queue; implicit
+ * promotion handles COMMON → COPY_DEST, implicit decay returns to COMMON at
+ * the copy queue's ExecuteCommandLists boundary. The direct queue's draw call
+ * later promotes COMMON → PIXEL_SHADER_RESOURCE implicitly and the read-only
+ * state decays back to COMMON at that queue's ExecuteCommandLists boundary.
+ * COPY queues cannot transition to PIXEL_SHADER_RESOURCE anyway, so the
+ * implicit-state model is the only correct option here.
  *
  * All fence / waitForGpu coordination stays in D3D12Renderer — the caller
- * owns the command queue and its sync story.
+ * owns the command queues and their sync story.
  */
 
 #include "entity/render/TextureUploader.hpp"
@@ -55,7 +64,6 @@ void TextureUploader::shutdown() {
         slot.height = 0;
         slot.format = TextureFormat::RGBA8_UNORM;
         slot.allocated = false;
-        slot.firstUpload = true;
     }
     m_device = nullptr;
     m_srvHeap = nullptr;
@@ -66,7 +74,6 @@ uint32_t TextureUploader::allocateSlot() {
     for (uint32_t i = 0; i < MAX_SLOTS; ++i) {
         if (!m_slots[i].allocated) {
             m_slots[i].allocated = true;
-            m_slots[i].firstUpload = true;
             m_slots[i].width = 0;
             m_slots[i].height = 0;
             m_slots[i].format = TextureFormat::RGBA8_UNORM;
@@ -86,7 +93,6 @@ void TextureUploader::freeSlot(uint32_t slot) {
     s.height = 0;
     s.format = TextureFormat::RGBA8_UNORM;
     s.allocated = false;
-    s.firstUpload = true;
 }
 
 bool TextureUploader::isAllocated(uint32_t slot) const {
@@ -134,10 +140,13 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
         slot.uploadBuffer.Reset();
         slot.width = 0;
         slot.height = 0;
-        slot.firstUpload = true;
     }
 
-    // Create the GPU texture (DEFAULT heap, COPY_DEST initial state)
+    // Create the GPU texture in COMMON state (Phase C.11). The COPY queue
+    // command list does NOT emit an explicit barrier — implicit promotion
+    // takes COMMON → COPY_DEST and implicit decay returns to COMMON at
+    // ExecuteCommandLists. The direct queue's later draw promotes to
+    // PIXEL_SHADER_RESOURCE the same way.
     D3D12_RESOURCE_DESC textureDesc = {};
     textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     textureDesc.Width = width;
@@ -152,7 +161,7 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
 
     HRESULT hr = m_device->CreateCommittedResource(
         &heapProps, D3D12_HEAP_FLAG_NONE,
-        &textureDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+        &textureDesc, D3D12_RESOURCE_STATE_COMMON,
         nullptr, IID_PPV_ARGS(&slot.texture));
     if (FAILED(hr)) {
         std::cerr << "TextureUploader: CreateCommittedResource (texture) failed for slot "
@@ -255,21 +264,10 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
     slot.uploadBuffer->Unmap(0, nullptr);
     (void)height;
 
-    // Record barriers + copy onto the command list
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = slot.texture.Get();
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    // On first upload the texture is already in COPY_DEST state (from creation),
-    // so we skip the PIXEL_SHADER_RESOURCE → COPY_DEST transition.
-    if (!slot.firstUpload) {
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
-        cmdList->ResourceBarrier(1, &barrier);
-    }
-    slot.firstUpload = false;
-
+    // No explicit barriers (Phase C.11). Texture rests in COMMON; implicit
+    // promotion handles COMMON → COPY_DEST here, and the direct queue's draw
+    // later promotes COMMON → PIXEL_SHADER_RESOURCE. Decay returns to COMMON
+    // at each queue's ExecuteCommandLists boundary.
     D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
     srcLocation.pResource = slot.uploadBuffer.Get();
     srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -281,12 +279,6 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
     dstLocation.SubresourceIndex = 0;
 
     cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
-
-    // Transition back to shader resource state
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    cmdList->ResourceBarrier(1, &barrier);
-
     return true;
 }
 

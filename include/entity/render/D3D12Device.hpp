@@ -47,11 +47,18 @@ public:
     ID3D12Device*       device() const       { return m_device.Get(); }
     ID3D12CommandQueue* commandQueue() const { return m_commandQueue.Get(); }
 
+    // Dedicated COPY queue for async texture uploads (Phase C.11). Lets
+    // TextureUploader's CopyTextureRegion work overlap with composite/render on
+    // the direct queue. Cross-queue ordering is enforced by an upload fence
+    // owned by D3D12Renderer (copy queue Signals, direct queue Wait()s).
+    ID3D12CommandQueue* copyQueue() const    { return m_copyQueue.Get(); }
+
     bool isInitialized() const { return m_device != nullptr; }
 
 private:
     ComPtr<ID3D12Device>       m_device;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
+    ComPtr<ID3D12CommandQueue> m_copyQueue;
 };
 
 } // namespace entity
