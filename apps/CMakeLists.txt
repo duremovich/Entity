@@ -102,6 +102,31 @@ entity_compile_shader(mapping_surface_ps.hlsl   ps PSMain 6_0)
 
 message(STATUS "Configured offline HLSL compilation for 6 shaders")
 
+# =============================================================================
+# Runtime DXC redistribution (Phase C.12 — OCIO-generated shader fragments)
+#
+# RuntimeShaderCompiler links against dxcompiler.lib (resolved by the linker
+# from the Windows SDK) and at runtime calls DxcCreateInstance via dxcompiler.dll.
+# DXIL shader signing also requires dxil.dll next to the host process. Both
+# DLLs ship in the Windows SDK alongside dxc.exe; copy them to the output dir
+# so a freshly cloned checkout runs without needing the SDK on PATH.
+# =============================================================================
+get_filename_component(_DXC_BIN_DIR ${DXC_EXECUTABLE} DIRECTORY)
+foreach(_dll dxcompiler.dll dxil.dll)
+    set(_src "${_DXC_BIN_DIR}/${_dll}")
+    if(EXISTS "${_src}")
+        add_custom_command(
+            TARGET EntityMediaEditor POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_src}"
+                "$<TARGET_FILE_DIR:EntityMediaEditor>/${_dll}"
+            VERBATIM
+        )
+    else()
+        message(WARNING "DXC redist '${_dll}' not found in ${_DXC_BIN_DIR} — RuntimeShaderCompiler may fail at startup.")
+    endif()
+endforeach()
+
 # When FFmpeg was located via FFMPEG_ROOT (CI with setup-ffmpeg action), vcpkg's
 # applocal DLL deploy doesn't run — copy the shared libs next to the exe here.
 # Local dev uses vcpkg's FFmpeg which deploys its own DLLs automatically.

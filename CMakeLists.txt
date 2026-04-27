@@ -78,8 +78,11 @@ endif()
 # DirectX 12 (Windows only)
 if(WIN32)
     # D3D12 and DXGI are part of Windows SDK
-    # We just need to link against them
-    set(D3D12_LIBRARIES d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib)
+    # We just need to link against them.
+    # dxcompiler.lib is the runtime DXC API (dxcapi.h) — needed by
+    # RuntimeShaderCompiler for OCIO-generated shader fragments. The
+    # offline shader build path uses dxc.exe from the same SDK.
+    set(D3D12_LIBRARIES d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib dxcompiler.lib)
     message(STATUS "  D3D12: Using Windows SDK libraries")
 endif()
 
@@ -113,6 +116,7 @@ target_sources(EntityMediaCore
         src/render/D3D12Renderer.cpp
         src/render/D3D12Device.cpp
         src/render/OutputManager.cpp
+        src/render/RuntimeShaderCompiler.cpp
         src/render/Stage3DRenderer.cpp
         src/render/TextureUploader.cpp
 
