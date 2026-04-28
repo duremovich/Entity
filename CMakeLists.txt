@@ -86,6 +86,37 @@ if(WIN32)
     message(STATUS "  D3D12: Using Windows SDK libraries")
 endif()
 
+# ----------------------------------------------------------------------------
+# entity-bus (Phase D entry — Director↔Renderer message bus scaffolding)
+#
+# Self-contained: depends only on nlohmann_json + the headers in
+# include/entity/{bus,core}/. No GPU / FFmpeg / D3D12 / EnTT pull-in. Kept
+# out of EntityMediaCore so it stays trivially testable and reusable from
+# both the Director-side and Renderer-side libs that arrive in subtasks 4-5.
+# ----------------------------------------------------------------------------
+add_library(entity-bus STATIC
+    src/bus/Serialization.cpp
+)
+
+target_include_directories(entity-bus
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(entity-bus
+    PUBLIC
+        nlohmann_json::nlohmann_json
+)
+
+target_compile_features(entity-bus PUBLIC cxx_std_20)
+
+if(MSVC)
+    target_compile_options(entity-bus PRIVATE /W4 /WX-)
+else()
+    target_compile_options(entity-bus PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # Core library target
 add_library(EntityMediaCore STATIC)
 
@@ -177,6 +208,7 @@ target_link_libraries(EntityMediaCore
     PUBLIC
         EnTT::EnTT
         glm::glm
+        entity-bus
     PRIVATE
         glfw
         imgui::imgui
