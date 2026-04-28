@@ -88,6 +88,15 @@ public:
         std::string originalPath;
         std::string transcodedPath;   // empty if not transcoded (yet)
         std::string variant;          // e.g. "hap_alpha"; empty if transcoded empty
+
+        // Phase C.12 #9 — optional per-clip OCIO input color-space override.
+        // Empty = "Auto (decoder)" — let the codec/decoder tag drive the OCIO
+        // input transform (HAP RGB → "Linear Rec.709 (sRGB)", ProRes via
+        // AVColorSpace, PNG via Settings.defaultPngInputCs, etc.). Non-empty
+        // forces the named OCIO color space for every clip backed by this
+        // media entry, overriding the decoder tag at upload time. Persisted
+        // in the project file only when non-empty.
+        std::string inputColorSpaceOverride;
     };
 
     /**

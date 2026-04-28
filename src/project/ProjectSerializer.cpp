@@ -199,6 +199,11 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 ej["originalPath"] = entry.originalPath;
                 ej["transcodedPath"] = entry.transcodedPath;
                 ej["variant"] = entry.variant;
+                // Phase C.12 #9 — emit only when set so older loaders that
+                // don't know the key keep working unchanged.
+                if (!entry.inputColorSpaceOverride.empty()) {
+                    ej["inputColorSpaceOverride"] = entry.inputColorSpaceOverride;
+                }
                 libJson.push_back(ej);
             }
             project["mediaLibrary"] = libJson;
@@ -575,10 +580,12 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     const std::string original   = ej.value("originalPath",   "");
                     const std::string transcoded = ej.value("transcodedPath", "");
                     const std::string variant    = ej.value("variant",        "");
+                    const std::string inputCsOverride = ej.value("inputColorSpaceOverride", "");
                     if (original.empty()) continue;
                     auto& entry = projectMgr->addMediaFile(original);
                     entry.transcodedPath = transcoded;
                     entry.variant        = variant;
+                    entry.inputColorSpaceOverride = inputCsOverride;
                 }
             }
             // Prefer v5 field. Fall back to v4 autoTranscodeOnImport if present

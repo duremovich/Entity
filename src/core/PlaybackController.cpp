@@ -9,6 +9,7 @@
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/VideoTexture.hpp"
+#include "entity/project/ProjectManager.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -25,6 +26,15 @@ PlaybackController::PlaybackController(entt::registry& registry, Timeline* timel
 }
 
 PlaybackController::~PlaybackController() = default;
+
+void PlaybackController::applyInputColorSpaceOverride(const Clip& clip, VideoTexture& videoTex) const {
+    if (!m_projectManager) return;
+    if (clip.filepath.empty()) return;
+    const auto* entry = m_projectManager->findEntry(clip.filepath);
+    if (!entry) return;
+    if (entry->inputColorSpaceOverride.empty()) return;
+    videoTex.ocioColorSpace = entry->inputColorSpaceOverride;
+}
 
 void PlaybackController::startTiming() {
     m_startTime = Clock::now();
@@ -149,6 +159,7 @@ void PlaybackController::updateClipVideos() {
                 videoTex.height = f.height;
                 videoTex.colorSpace = f.colorSpace;
                 videoTex.ocioColorSpace = f.ocioColorSpace;
+                applyInputColorSpaceOverride(clip, videoTex);
                 if (state) state->lastDecodedFrame = mediaFrame;
             }
             cacheHits++;
@@ -177,6 +188,8 @@ void PlaybackController::updateClipVideos() {
                     videoTex.width = f.width;
                     videoTex.height = f.height;
                     videoTex.colorSpace = f.colorSpace;
+                    videoTex.ocioColorSpace = f.ocioColorSpace;
+                    applyInputColorSpaceOverride(clip, videoTex);
                     // Don't bump lastDecodedFrame — we want to re-try the
                     // exact frame next tick now that decoder has more time.
                 }

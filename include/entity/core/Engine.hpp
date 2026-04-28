@@ -157,6 +157,17 @@ public:
     ProjectManager::NonHapImportPolicy nonHapImportPolicy() const;
     void setNonHapImportPolicy(ProjectManager::NonHapImportPolicy policy);
 
+    /**
+     * Phase C.12 #9 — per-clip OCIO input color-space override. Empty string
+     * means "Auto (decoder)" — use whatever the codec/decoder tagged the
+     * source as. A non-empty value forces the named OCIO color space for
+     * every clip that resolves to this media entry, replacing the decoder
+     * tag at upload time. Persisted with the project (only when non-empty).
+     */
+    void setInputColorSpaceOverride(const std::string& originalPath,
+                                    const std::string& override);
+    std::string inputColorSpaceOverride(const std::string& originalPath) const;
+
     // --- Pending transcode decision (first-import modal) ------------------
     //
     // When policy == Ask and the user imports a non-HAP file, we stash the

@@ -204,7 +204,7 @@ void ProjectManager::tickAutosave(double deltaTime) {
 
 ProjectManager::MediaLibraryEntry& ProjectManager::addMediaFile(const std::string& originalPath) {
     if (auto* existing = findEntry(originalPath)) return *existing;
-    m_loadedMediaFiles.push_back(MediaLibraryEntry{originalPath, {}, {}});
+    m_loadedMediaFiles.push_back(MediaLibraryEntry{originalPath, {}, {}, {}});
     return m_loadedMediaFiles.back();
 }
 

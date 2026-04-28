@@ -20,7 +20,12 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
-    //   v6 (2026-04-28) — adds OutputDisplay.ocioDisplay + ocioView (Phase C.12 #8).
+    //   v6 (2026-04-28) — adds OutputDisplay.ocioDisplay + ocioView (Phase C.12 #8)
+    //                     and (in #9) the optional MediaLibraryEntry
+    //                     `inputColorSpaceOverride` field. The override is
+    //                     emitted only when non-empty, so older v6 files
+    //                     without it still load cleanly — no separate version
+    //                     bump.
     //   v5 (2026-04-24) — replaces autoTranscodeOnImport with nonHapImportPolicy.
     //   v4 — adds mediaLibrary array + autoTranscodeOnImport.
     //   v3 — adds Timeline::Section array.

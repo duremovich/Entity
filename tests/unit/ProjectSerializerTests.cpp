@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "entity/components/OutputDisplay.hpp"
+#include "entity/project/ProjectManager.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
 
@@ -114,6 +115,100 @@ TEST(ProjectSerializer, EmptyOcioFieldsRoundTripAsEmpty) {
         EXPECT_TRUE(loaded->ocioDisplay.empty());
         EXPECT_TRUE(loaded->ocioView.empty());
     }
+}
+
+// --- Phase C.12 #9 — MediaLibraryEntry.inputColorSpaceOverride -----------
+
+TEST(ProjectSerializer, MediaLibraryInputColorSpaceOverrideRoundTrip) {
+    // Round-trip: a MediaLibraryEntry with a non-empty override must preserve
+    // its value across save+load.
+    TempFile tf("media_input_cs_override");
+    const std::string kPath = "C:/path/to/clip.mov";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        auto& entry = pm.addMediaFile(kPath);
+        entry.inputColorSpaceOverride = "Linear Rec.2020";
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+            << entity::ProjectSerializer::getLastError();
+
+        const auto* loaded = pm.findEntry(kPath);
+        ASSERT_NE(loaded, nullptr);
+        EXPECT_EQ(loaded->inputColorSpaceOverride, "Linear Rec.2020");
+    }
+}
+
+TEST(ProjectSerializer, MediaLibraryEmptyOverrideRoundTripsAsEmpty) {
+    // An empty override stays empty (= "Auto (decoder)") across the round
+    // trip. Save-side intentionally drops the key when empty so older parsers
+    // and projects without the field stay byte-identical; load-side defaults
+    // missing keys to empty.
+    TempFile tf("media_input_cs_empty");
+    const std::string kPath = "C:/path/to/another.mov";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        pm.addMediaFile(kPath);  // override left empty
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm));
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm));
+
+        const auto* loaded = pm.findEntry(kPath);
+        ASSERT_NE(loaded, nullptr);
+        EXPECT_TRUE(loaded->inputColorSpaceOverride.empty());
+    }
+}
+
+TEST(ProjectSerializer, MediaLibraryWithoutOverrideKeyLoadsAsEmpty) {
+    // Forward-compatibility gate for existing v6 projects that pre-date
+    // Phase C.12 #9: a project file whose mediaLibrary entries have no
+    // `inputColorSpaceOverride` key must still load, with the override
+    // defaulting to empty.
+    TempFile tf("media_no_override_key");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 6,
+  "frameRate": 30,
+  "duration": 0,
+  "currentFrame": 0,
+  "tracks": [],
+  "mediaLibrary": [
+    { "originalPath": "C:/legacy/clip.mov", "transcodedPath": "", "variant": "" }
+  ]
+})";
+    }
+    ASSERT_TRUE(fs::exists(tf.path));
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    entity::ProjectManager pm;
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+        << entity::ProjectSerializer::getLastError();
+
+    const auto* loaded = pm.findEntry("C:/legacy/clip.mov");
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_TRUE(loaded->inputColorSpaceOverride.empty());
 }
 
 TEST(ProjectSerializer, V5ProjectLoadsWithEmptyOcioFields) {

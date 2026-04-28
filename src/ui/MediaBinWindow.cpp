@@ -1,9 +1,11 @@
 #include "entity/ui/MediaBinWindow.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/color/OcioManager.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/components/Clip.hpp"
 #include <imgui.h>
+#include <cstring>
 #include <iostream>
 #include <unordered_map>
 #include <tuple>
@@ -209,14 +211,19 @@ void MediaBinWindow::render() {
         }
     }
 
-    if (ImGui::BeginTable("MediaBinTable", 6,
+    OcioManager* ocio = m_engine->getOcioManager();
+    const std::vector<std::string> colorSpaces =
+        (ocio && ocio->getConfig()) ? ocio->listColorSpaces() : std::vector<std::string>{};
+
+    if (ImGui::BeginTable("MediaBinTable", 7,
                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-        ImGui::TableSetupColumn("Filename",   ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Status",     ImGuiTableColumnFlags_WidthFixed, 160.0f);
-        ImGui::TableSetupColumn("Resolution", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-        ImGui::TableSetupColumn("Duration",   ImGuiTableColumnFlags_WidthFixed, 80.0f);
-        ImGui::TableSetupColumn("FPS",        ImGuiTableColumnFlags_WidthFixed, 60.0f);
-        ImGui::TableSetupColumn("Alpha",      ImGuiTableColumnFlags_WidthFixed, 50.0f);
+        ImGui::TableSetupColumn("Filename",    ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Status",      ImGuiTableColumnFlags_WidthFixed, 160.0f);
+        ImGui::TableSetupColumn("Resolution",  ImGuiTableColumnFlags_WidthFixed, 100.0f);
+        ImGui::TableSetupColumn("Duration",    ImGuiTableColumnFlags_WidthFixed, 80.0f);
+        ImGui::TableSetupColumn("FPS",         ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableSetupColumn("Alpha",       ImGuiTableColumnFlags_WidthFixed, 50.0f);
+        ImGui::TableSetupColumn("Color space", ImGuiTableColumnFlags_WidthFixed, 200.0f);
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
@@ -341,6 +348,51 @@ void MediaBinWindow::render() {
             ImGui::TableSetColumnIndex(5);
             if (hasMetadata) ImGui::Text("%s", hasAlpha ? "Yes" : "No");
             else             ImGui::TextDisabled("--");
+
+            // --- Color space override (Phase C.12 #9) ---
+            ImGui::TableSetColumnIndex(6);
+            ImGui::PushID(static_cast<int>(i) ^ 0x6359);  // distinct from row PushID
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ocio && ocio->getConfig()) {
+                const char* preview = entry.inputColorSpaceOverride.empty()
+                    ? "Auto (decoder)"
+                    : entry.inputColorSpaceOverride.c_str();
+                if (ImGui::BeginCombo("##cs", preview)) {
+                    {
+                        bool selected = entry.inputColorSpaceOverride.empty();
+                        if (ImGui::Selectable("Auto (decoder)", selected)) {
+                            m_engine->setInputColorSpaceOverride(filepath, "");
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    for (const auto& cs : colorSpaces) {
+                        bool selected = (cs == entry.inputColorSpaceOverride);
+                        if (ImGui::Selectable(cs.c_str(), selected)) {
+                            m_engine->setInputColorSpaceOverride(filepath, cs);
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "OCIO input color space for this clip.\n"
+                        "Auto = use whatever the decoder tagged (HAP / ProRes\n"
+                        "metadata / PNG default). Override forces a specific\n"
+                        "color space, e.g. when a ProRes file lies about its\n"
+                        "AVColorSpace tag.");
+                }
+            } else {
+                // OcioManager unbound (config failed to load) — let the user
+                // type a name anyway; takes effect once a working config loads.
+                char buf[128];
+                std::strncpy(buf, entry.inputColorSpaceOverride.c_str(), sizeof(buf) - 1);
+                buf[sizeof(buf) - 1] = '\0';
+                if (ImGui::InputTextWithHint("##cs", "Auto (decoder)", buf, sizeof(buf))) {
+                    m_engine->setInputColorSpaceOverride(filepath, buf);
+                }
+            }
+            ImGui::PopID();
         }
 
         ImGui::EndTable();

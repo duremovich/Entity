@@ -10,8 +10,10 @@ class IRenderer;
 class Timeline;
 class DecodeSystem;
 class FrameCache;
+class ProjectManager;
 struct Clip;
 struct DecodedFrame;
+struct VideoTexture;
 
 /**
  * PlaybackController — owns frame timing and per-frame seek-aware playback
@@ -47,6 +49,10 @@ public:
 
     void setDecodeSystem(DecodeSystem* s) { m_decodeSystem = s; }
     void setFrameCache(FrameCache* c) { m_frameCache = c; }
+    // Phase C.12 #9 — optional ProjectManager so per-clip MediaBin
+    // input-color-space overrides can replace the decoder's default OCIO tag
+    // at upload time. Wired by Engine after both objects exist.
+    void setProjectManager(ProjectManager* p) { m_projectManager = p; }
 
     // Per-frame hooks from the engine main loop.
     void startTiming();
@@ -65,11 +71,18 @@ public:
     FrameNumber mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame) const;
 
 private:
+    // After the decoder's OCIO tag has been stamped onto videoTex, replace
+    // it with the per-clip MediaBin override when one is set on the matching
+    // MediaLibraryEntry. No-op when ProjectManager is unbound or the entry
+    // has no override.
+    void applyInputColorSpaceOverride(const Clip& clip, VideoTexture& videoTex) const;
+
     entt::registry& m_registry;
     Timeline* m_timeline{nullptr};
     IRenderer* m_renderer{nullptr};
     DecodeSystem* m_decodeSystem{nullptr};
     FrameCache*   m_frameCache{nullptr};
+    ProjectManager* m_projectManager{nullptr};
 
     using Clock = std::chrono::high_resolution_clock;
     using TimePoint = std::chrono::time_point<Clock>;

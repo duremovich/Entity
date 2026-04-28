@@ -195,6 +195,8 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Initialize project manager (owns project path, media library, autosave)
     m_projectManager = std::make_unique<ProjectManager>();
     m_projectManager->initialize(m_timeline.get(), &m_registry, m_renderer.get());
+    // Phase C.12 #9 — let PlaybackController consult MediaLibraryEntry.
+    m_playbackController->setProjectManager(m_projectManager.get());
 
     // Background HAP transcoder — cache dir gets set lazily via
     // updateTranscodeCacheDir() when a project path is established.
@@ -589,6 +591,22 @@ ProjectManager::NonHapImportPolicy Engine::nonHapImportPolicy() const {
 }
 void Engine::setNonHapImportPolicy(ProjectManager::NonHapImportPolicy policy) {
     if (m_projectManager) m_projectManager->setNonHapImportPolicy(policy);
+}
+
+void Engine::setInputColorSpaceOverride(const std::string& originalPath,
+                                        const std::string& override) {
+    if (!m_projectManager) return;
+    auto* entry = m_projectManager->findEntry(originalPath);
+    if (!entry) return;
+    entry->inputColorSpaceOverride = override;
+}
+
+std::string Engine::inputColorSpaceOverride(const std::string& originalPath) const {
+    if (!m_projectManager) return {};
+    if (const auto* entry = m_projectManager->findEntry(originalPath)) {
+        return entry->inputColorSpaceOverride;
+    }
+    return {};
 }
 
 const Engine::PendingImport* Engine::pendingImport() const {
