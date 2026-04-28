@@ -39,6 +39,8 @@ class Renderer;       // Phase D entry — owns D3D12Renderer, OutputManager,
 struct DecodedFrame;
 namespace bus {
 class IMessageTransport;
+struct SetOutputEnabled;
+struct ApplySettings;
 }
 // class Transport;
 
@@ -324,6 +326,14 @@ public:
      * @return true if script was loaded successfully
      */
     bool runScript(const std::string& filepath);
+
+    // Phase D entry, subtask 7: Director-side publishers for the
+    // Renderer-touching messages. Each helper serializes its argument and
+    // posts on the D2R channel; Renderer drains during `render()`.
+    // No-ops if `m_transport` is null (which is only possible before
+    // initialize() or after shutdown()). Defined in Engine.cpp.
+    void publishSetOutputEnabled(const bus::SetOutputEnabled& msg);
+    void publishApplySettings(const bus::ApplySettings& msg);
 
 private:
     /**

@@ -1,4 +1,5 @@
 #include "entity/ui/MappingWindow.hpp"
+#include "entity/bus/Message.hpp"
 #include "entity/color/OcioManager.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/components/Screen.hpp"
@@ -684,15 +685,14 @@ void MappingWindow::renderOutputsPanel() {
             // Type display
             ImGui::Text("Type: %s", output->getTypeString());
 
-            // Enable toggle — routed through OutputManager so the
-            // physical output window actually gets created/destroyed.
+            // Enable toggle — routed through the Director->Renderer bus
+            // (subtask 7) so the physical output window's
+            // creation/destruction is owned Renderer-side, even when the
+            // toggle is driven from UI living next to Director state.
             bool enabled = output->enabled;
             if (ImGui::Checkbox("Enabled", &enabled)) {
-                if (auto* om = m_engine->getOutputManager()) {
-                    om->setOutputEnabled(m_selectedOutput, enabled);
-                } else {
-                    output->enabled = enabled;
-                }
+                m_engine->publishSetOutputEnabled(bus::SetOutputEnabled{
+                    static_cast<std::uint64_t>(m_selectedOutput), enabled});
             }
 
             // Resolution

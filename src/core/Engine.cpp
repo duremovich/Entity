@@ -311,9 +311,12 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->setSettingsAppliedCallback([this](const Settings& updated) {
         m_settings = updated;
         publishActiveSettings(m_settings);
-        if (m_frameCache) {
-            m_frameCache->setMaxBytes(static_cast<size_t>(m_settings.frameCacheBytes));
-        }
+        // Renderer-side state (FrameCache budget, OCIO config path) flows
+        // through the bus -- Engine no longer reaches into m_frameCache
+        // from the UI callback.
+        publishApplySettings(bus::ApplySettings{
+            m_settings.frameCacheBytes,
+            m_settings.ocioConfigPath});
         if (!saveSettings(m_settings)) {
             std::cerr << "[Engine] Could not persist settings to disk; "
                          "in-memory values are still updated." << std::endl;
@@ -743,16 +746,37 @@ void Engine::render() {
         //
         // Must run after beginFrame() so the GPU upload calls land on a
         // recording command list.
-        if (m_timeAuthority && m_playbackPresenter && m_transport) {
-            bus::RenderFrame rf;
-            m_timeAuthority->buildRenderFrame(rf);
-            m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{rf}));
+        if (m_transport) {
+            if (m_timeAuthority && m_playbackPresenter) {
+                bus::RenderFrame rf;
+                m_timeAuthority->buildRenderFrame(rf);
+                m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{rf}));
+            }
             m_transport->drain(bus::Direction::D2R, [this](std::vector<std::uint8_t>&& bytes) {
                 auto msg = bus::deserialize(bytes);
                 if (!msg) return;
-                if (auto* drained = std::get_if<bus::RenderFrame>(&*msg)) {
-                    m_playbackPresenter->present(*drained);
-                }
+                std::visit([this](auto& body) {
+                    using T = std::decay_t<decltype(body)>;
+                    if constexpr (std::is_same_v<T, bus::RenderFrame>) {
+                        if (m_playbackPresenter) m_playbackPresenter->present(body);
+                    } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
+                        if (m_outputManager) {
+                            m_outputManager->setOutputEnabled(
+                                static_cast<entt::entity>(body.entity), body.enabled);
+                        }
+                    } else if constexpr (std::is_same_v<T, bus::ApplySettings>) {
+                        if (m_frameCache) {
+                            m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
+                        }
+                        // OCIO config-path reload still requires a restart;
+                        // tooltip in Preferences flags this. The path travels
+                        // here so a future hot-reload subtask only touches
+                        // Renderer-side code.
+                        (void)body.ocioConfigPath;
+                    }
+                    // Other variant alternatives are R2D-only or arrive on
+                    // future subtasks; ignore them here.
+                }, *msg);
             });
         }
         auto t2 = std::chrono::high_resolution_clock::now();
@@ -876,7 +900,8 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
             auto view = m_registry.view<OutputDisplay>();
             for (auto [entity, output] : view.each()) {
                 if (output.isPhysical() && output.enabled && output.outputWindowSlot != UINT32_MAX) {
-                    m_outputManager->setOutputEnabled(entity, false);
+                    publishSetOutputEnabled(bus::SetOutputEnabled{
+                        static_cast<std::uint64_t>(entity), false});
                     killedAny = true;
                 }
             }
@@ -2119,6 +2144,16 @@ bool Engine::runScript(const std::string& filepath) {
     }
 
     return m_commandDispatcher->loadScript(filepath);
+}
+
+void Engine::publishSetOutputEnabled(const bus::SetOutputEnabled& msg) {
+    if (!m_transport) return;
+    m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
+}
+
+void Engine::publishApplySettings(const bus::ApplySettings& msg) {
+    if (!m_transport) return;
+    m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
 }
 
 } // namespace entity
