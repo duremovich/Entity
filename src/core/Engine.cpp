@@ -1,4 +1,5 @@
 #include "entity/core/Engine.hpp"
+#include "entity/director/Director.hpp"
 #include "entity/core/PlaybackController.hpp"
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -184,23 +185,30 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         m_renderer->setOcioManager(m_ocioManager.get());
     }
 
-    // Initialize timeline
-    m_timeline = std::make_unique<Timeline>(m_registry);
+    // Phase D entry: Director owns Timeline, ProjectManager,
+    // TranscodeManager, CommandDispatcher. Constructed here -- after the
+    // renderer (so ProjectManager::initialize can route through it for
+    // Screen render-target allocation) and before PlaybackController (which
+    // needs a Timeline*). The raw shortcuts below let existing Engine code
+    // continue to use m_timeline / m_projectManager / m_transcodeManager /
+    // m_commandDispatcher unchanged.
+    m_director = std::make_unique<Director>(m_registry, m_sceneState, m_renderer.get());
+    m_timeline          = m_director->getTimeline();
+    m_projectManager    = m_director->getProjectManager();
+    m_transcodeManager  = m_director->getTranscodeManager();
+    m_commandDispatcher = m_director->getCommandDispatcher();
+    std::cout << "  Director initialized (Timeline + ProjectManager + "
+                 "TranscodeManager + CommandDispatcher)" << std::endl;
 
     // Initialize playback controller (owns frame timing + per-frame seek-aware updates).
     // DecodeSystem is injected below after registration.
-    m_playbackController = std::make_unique<PlaybackController>(m_registry, m_timeline.get(), m_renderer.get());
+    m_playbackController = std::make_unique<PlaybackController>(m_registry, m_timeline, m_renderer.get());
     m_playbackController->setFrameCache(m_frameCache.get());
-
-    // Initialize project manager (owns project path, media library, autosave)
-    m_projectManager = std::make_unique<ProjectManager>();
-    m_projectManager->initialize(m_timeline.get(), &m_registry, m_renderer.get());
     // Phase C.12 #9 — let PlaybackController consult MediaLibraryEntry.
-    m_playbackController->setProjectManager(m_projectManager.get());
+    m_playbackController->setProjectManager(m_projectManager);
 
-    // Background HAP transcoder — cache dir gets set lazily via
+    // Background HAP transcoder cache dir gets set lazily via
     // updateTranscodeCacheDir() when a project path is established.
-    m_transcodeManager = std::make_unique<TranscodeManager>();
     updateTranscodeCacheDir();
 
     // Set up callback for when new clips are created (split, duplicate)
@@ -211,14 +219,14 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Set timeline on CompositorSystem (system 0) for frame-accurate rendering
     if (!m_systems.empty()) {
         if (auto* compositor = dynamic_cast<CompositorSystem*>(m_systems[0].get())) {
-            compositor->setTimeline(m_timeline.get());
+            compositor->setTimeline(m_timeline);
             compositor->setDebugLogging(false);  // Debug logging disabled
         }
     }
 
     // Register decode system (needs timeline for frame position + cache for output)
     auto decodeSystem = std::make_unique<DecodeSystem>();
-    decodeSystem->setTimeline(m_timeline.get());
+    decodeSystem->setTimeline(m_timeline);
     decodeSystem->setFrameCache(m_frameCache.get());
     m_decodeSystem = decodeSystem.get();  // Keep raw pointer for direct access
     m_playbackController->setDecodeSystem(m_decodeSystem);
@@ -226,13 +234,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     // Register animation system (needs timeline for keyframe evaluation)
     auto animSystem = std::make_unique<AnimationSystem>();
-    animSystem->setTimeline(m_timeline.get());
+    animSystem->setTimeline(m_timeline);
     m_animationSystem = animSystem.get();  // Keep raw pointer for direct access
+    m_director->setAnimationSystem(m_animationSystem);  // Director-side reference (subtask 5 will own).
     registerSystem(std::move(animSystem));
 
-    // Initialize command dispatcher
-    m_commandDispatcher = std::make_unique<CommandDispatcher>();
-    std::cout << "  Command dispatcher initialized" << std::endl;
+    // CommandDispatcher was created by Director above; m_commandDispatcher
+    // is the raw shortcut into it.
 
     // (Settings + FrameCache were loaded earlier — see Initialize timeline above.)
 
@@ -286,7 +294,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
 
     // Create and configure TimelineWindow
-    auto timelineWindow = std::make_unique<TimelineWindow>(m_timeline.get());
+    auto timelineWindow = std::make_unique<TimelineWindow>(m_timeline);
     m_timelineWidget = timelineWindow->getWidget();
     TimelineWidget* timelineWidget = m_timelineWidget;
     if (timelineWidget) {
@@ -348,8 +356,8 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     m_windowManager->registerWindow(std::make_unique<StageWindow>(this));
     {
-        auto propertyWindow = std::make_unique<PropertyWindow>(m_timeline.get());
-        propertyWindow->setCommandDispatcher(m_commandDispatcher.get());
+        auto propertyWindow = std::make_unique<PropertyWindow>(m_timeline);
+        propertyWindow->setCommandDispatcher(m_commandDispatcher);
         m_windowManager->registerWindow(std::move(propertyWindow));
     }
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
@@ -418,6 +426,18 @@ void Engine::shutdown() {
         m_outputManager.reset();
     }
     m_renderer.reset();
+
+    // Tear down Director-owned subsystems (Timeline, ProjectManager,
+    // TranscodeManager, CommandDispatcher) explicitly so the raw shortcut
+    // pointers stop being live before m_initialized is cleared. (Member
+    // destruction order would also do this; doing it here surfaces order
+    // bugs early instead of at process exit.)
+    m_animationSystem    = nullptr;
+    m_commandDispatcher  = nullptr;
+    m_transcodeManager   = nullptr;
+    m_projectManager     = nullptr;
+    m_timeline           = nullptr;
+    m_director.reset();
 
     // Destroy window
     if (m_window) {
@@ -884,48 +904,34 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     if (m_timeline) {
         switch (key) {
             case GLFW_KEY_SPACE:
-                // Toggle play/pause
-                if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
-                    m_timeline->pause();
-                } else {
-                    m_timeline->play();
+                // Toggle play/pause -- routed through CommandDispatcher so the
+                // action is undoable + script-recordable (Phase D entry: this
+                // unblocks the bus-routing work in subtask 7).
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<TogglePlayPauseCommand>());
                 }
                 break;
 
             case GLFW_KEY_K:
                 // K = Pause (industry standard)
-                m_timeline->pause();
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<PauseCommand>());
+                }
                 break;
 
             case GLFW_KEY_J:
-                // J = Step backward (simplified - full J/K/L would need speed control)
-                if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
-                    m_timeline->pause();
-                }
-                {
-                    Timecode currentTime = m_timeline->getCurrentTime();
-                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
-                    if (currentTime > frameTime) {
-                        m_timeline->seek(currentTime - frameTime);
-                    } else {
-                        m_timeline->seek(0);
-                    }
+                // J = Step backward one frame at the timeline's frame rate.
+                // StepBackwardCommand handles the pause-then-step semantics.
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<StepBackwardCommand>(1));
                 }
                 if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;
 
             case GLFW_KEY_L:
-                // L = Step forward (simplified - full J/K/L would need speed control)
-                if (m_timeline->getPlaybackState() == PlaybackState::Playing) {
-                    m_timeline->pause();
-                }
-                {
-                    Timecode currentTime = m_timeline->getCurrentTime();
-                    Timecode frameTime = static_cast<Timecode>(1000000.0 / m_timeline->getFrameRate());
-                    Timecode newTime = currentTime + frameTime;
-                    if (newTime < m_timeline->getDuration()) {
-                        m_timeline->seek(newTime);
-                    }
+                // L = Step forward one frame at the timeline's frame rate.
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<StepForwardCommand>(1));
                 }
                 if (m_timelineWidget) m_timelineWidget->ensurePlayheadVisible();
                 break;

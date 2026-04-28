@@ -186,6 +186,12 @@ target_sources(EntityMediaCore
         # Command System
         src/command/CommandDispatcher.cpp
         src/command/Commands.cpp
+
+        # Director (Phase D entry — owns Timeline, ProjectManager,
+        # TranscodeManager, CommandDispatcher). Will move into a
+        # dedicated entity-director static lib once the dependency graph
+        # allows (subtask 5+ untangles the cycle through EntityMediaCore).
+        src/director/Director.cpp
 )
 
 target_include_directories(EntityMediaCore

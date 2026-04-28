@@ -31,6 +31,8 @@ class CommandDispatcher;
 class OutputManager;
 class FrameCache;
 class OcioManager;
+class Director;       // Phase D entry — owns Timeline, ProjectManager,
+                      // TranscodeManager, CommandDispatcher (subtask 4).
 struct DecodedFrame;
 // class Transport;
 
@@ -94,14 +96,21 @@ public:
     IRenderer* getRenderer();  // Definition in Engine.cpp — returns m_renderer.get() upcast.
 
     /**
-     * Get the Timeline.
+     * Get the Timeline. Forwards to Director (Phase D entry).
      */
-    Timeline* getTimeline() { return m_timeline.get(); }
+    Timeline* getTimeline() { return m_timeline; }
 
     /**
-     * Get the CommandDispatcher.
+     * Get the CommandDispatcher. Forwards to Director (Phase D entry).
      */
-    CommandDispatcher* getCommandDispatcher() { return m_commandDispatcher.get(); }
+    CommandDispatcher* getCommandDispatcher() { return m_commandDispatcher; }
+
+    /**
+     * Get the Director (Phase D entry — owns Timeline, ProjectManager,
+     * TranscodeManager, CommandDispatcher). Returns null until initialize().
+     */
+    Director* getDirector() { return m_director.get(); }
+    const Director* getDirector() const { return m_director.get(); }
 
     /**
      * Get the OutputManager (display enumeration + physical output driving).
@@ -373,11 +382,27 @@ private:
     // registry so the in-class member-initializer-list ordering is sound.
     SceneState m_sceneState{m_registry};
 
+    // Phase D entry: Director owns Timeline, ProjectManager,
+    // TranscodeManager, CommandDispatcher. Declared *before* the raw-pointer
+    // shortcuts so destructor order tears the subsystems down (m_director
+    // last) only after the shortcuts are no longer used. The unique_ptr
+    // also outlives PlaybackController etc., which hold raw pointers into
+    // these owned subsystems.
+    std::unique_ptr<Director> m_director;
+
     // Core subsystems
     std::unique_ptr<D3D12Renderer> m_renderer;
-    std::unique_ptr<Timeline> m_timeline;
+
+    // Raw shortcut into m_director->getTimeline(). Set during initialize();
+    // valid for the rest of Engine's lifetime. Existing call sites use the
+    // member unchanged.
+    Timeline* m_timeline{nullptr};
+
     std::unique_ptr<WindowManager> m_windowManager;
-    std::unique_ptr<CommandDispatcher> m_commandDispatcher;
+
+    // Raw shortcut into m_director->getCommandDispatcher().
+    CommandDispatcher* m_commandDispatcher{nullptr};
+
     std::unique_ptr<OutputManager> m_outputManager;
 
     // Machine-global settings (frame-cache budget etc). Loaded from
@@ -439,18 +464,20 @@ private:
     // registry.try_get<ClipDecodeState>(entity) from systems.
 
     // Project-scoped state (project path, loaded media library, autosave
-    // timer) lives in ProjectManager. Engine owns it and forwards save/load
-    // / autosave calls. See include/entity/project/ProjectManager.hpp.
-    std::unique_ptr<ProjectManager> m_projectManager;
+    // timer) lives in ProjectManager. Owned by Director (Phase D entry);
+    // raw shortcut here keeps the existing call sites unchanged. See
+    // include/entity/project/ProjectManager.hpp.
+    ProjectManager* m_projectManager{nullptr};
 
     // Set when onVideoFileSelected runs into a non-HAP source with policy =
     // Ask. MediaBinWindow renders a modal; resolvePendingImport() clears it.
     std::optional<PendingImport> m_pendingImport;
 
-    // Background HAP-transcode workers for imported media. Status polled
-    // each tick; finished workers update ProjectManager's media library
-    // with their output paths.
-    std::unique_ptr<TranscodeManager> m_transcodeManager;
+    // Background HAP-transcode workers for imported media. Owned by
+    // Director (Phase D entry); raw shortcut keeps existing call sites
+    // unchanged. Status polled each tick; finished workers update
+    // ProjectManager's media library with their output paths.
+    TranscodeManager* m_transcodeManager{nullptr};
 
     // Per-tick autosave hook — delegates to m_projectManager->tickAutosave.
     void autoSaveTick(double deltaTime);
@@ -466,8 +493,8 @@ private:
      */
     void updateTranscodeCacheDir();
 public:
-    TranscodeManager* getTranscodeManager() { return m_transcodeManager.get(); }
-    const TranscodeManager* getTranscodeManager() const { return m_transcodeManager.get(); }
+    TranscodeManager* getTranscodeManager() { return m_transcodeManager; }
+    const TranscodeManager* getTranscodeManager() const { return m_transcodeManager; }
 };
 
 } // namespace entity
