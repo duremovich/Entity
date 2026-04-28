@@ -6,6 +6,7 @@
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/render/OutputManager.hpp"
+#include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/systems/TestSystem.hpp"
@@ -86,12 +87,24 @@ Result Renderer::initialize(GLFWwindow* window,
     m_decodeSystem->setFrameCache(m_frameCache.get());
     m_decodeSystem->initialize(m_registry);
 
+    // Renderer-side half of the old PlaybackController (Phase D entry,
+    // subtask 6). Holds backend + cache + decode-system references; the
+    // Timeline pointer is wired by Engine after Director is built (it's
+    // a Director-side state read).
+    m_playbackPresenter = std::make_unique<PlaybackPresenter>(
+        m_registry, m_d3d12Renderer.get(), m_frameCache.get());
+    m_playbackPresenter->setDecodeSystem(m_decodeSystem.get());
+
     m_initialized = true;
     return Result::Success;
 }
 
 void Renderer::shutdown() {
     if (!m_initialized) return;
+
+    // Presenter holds raw refs into FrameCache + DecodeSystem; release
+    // first so those are still alive while it goes away.
+    m_playbackPresenter.reset();
 
     // Systems first -- DecodeSystem joins its worker threads in shutdown,
     // and they may still be reading FrameCache / using the device. Order:

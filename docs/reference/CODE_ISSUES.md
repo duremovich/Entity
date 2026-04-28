@@ -1,6 +1,6 @@
 # Known Code Issues
 
-Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-20 after PlaybackController extraction (original review 2025-11-27). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
+Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-28 after the PlaybackController -> PlaybackTimeAuthority + PlaybackPresenter split (Phase D entry, subtask 6). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
 
 **Current state**: 0 Critical, 2 High, ~20 Medium, ~13 Low — down from 7 / 18 / 27 / 15.
 
@@ -43,7 +43,7 @@ _(none)_
 
 | ID | File:Line | Details |
 |----|-----------|---------|
-| HIGH-02 | PlaybackController.cpp:143,280 (and other playState checks within updateClipVideos) | Playback state re-read pattern within a single tick — `playState` is cached at the top of `updateClipVideos()` but line 280 re-reads `m_timeline->getPlaybackState()` directly, and the cached value is used by multiple branches that could race against a mid-tick transition. Code was moved verbatim into PlaybackController during Phase B #15c (did not alter behavior); the race is atomic-safe (MED-20) but the pattern remains. Fix: cache once and use that value consistently for the whole tick, or if a "live" read is genuinely needed, document why. |
+| HIGH-02 | PlaybackPresenter.cpp (`playState` snapshot in `present()`) | Playback state re-read pattern within a single tick — `playState` is now cached once at the top of `PlaybackPresenter::present()`, and the per-tick active set comes from `PlaybackTimeAuthority::buildActiveSet()` which already saw a consistent timeline state during Director's tick. The remaining concern is that an interactive-mode editor could in principle observe the GLFW input thread changing playback state mid-tick, but the relevant value is `std::atomic<PlaybackState>` (MED-20) so reads are coherent. The Phase D entry split (subtask 6) collapsed the prior multi-read pattern into a single read at the top of the upload pass; revisit only if subtask 8's `RenderFrame` payload exposes per-active-clip playState fields that drift from the snapshot. |
 | HIGH-13 | HAPDecoder.cpp | Every method returns `Result::NotImplemented`. Phase A mitigation landed: factory no longer constructs the stub (Decoder.cpp now returns nullptr for HAP types with a clear log). Actual codec implementation deferred to Phase D. |
 
 ### Re-evaluated (Not Actually Bugs)

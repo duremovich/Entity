@@ -21,7 +21,6 @@ namespace entity {
 class IRenderer;
 class Timeline;
 class WindowManager;
-class PlaybackController;
 class Decoder;
 class DecodeSystem;
 class AnimationSystem;
@@ -29,6 +28,8 @@ class CommandDispatcher;
 class OutputManager;
 class FrameCache;
 class OcioManager;
+class PlaybackTimeAuthority;
+class PlaybackPresenter;
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
                       // TranscodeManager, CommandDispatcher,
                       // AnimationSystem (subtasks 4 + 5).
@@ -147,23 +148,24 @@ public:
     GLFWwindow* getWindow() { return m_window; }
 
     /**
-     * Get delta time for current frame (in seconds). Forwards to PlaybackController.
+     * Get delta time for current frame (in seconds). Forwards to PlaybackTimeAuthority.
      */
     double getDeltaTime() const;
 
     /**
-     * Get total elapsed time since engine start (in seconds). Forwards to PlaybackController.
+     * Get total elapsed time since engine start (in seconds). Forwards to PlaybackTimeAuthority.
      */
     double getElapsedTime() const;
 
     /**
-     * Get current frame number. Forwards to PlaybackController.
+     * Get current frame number. Forwards to PlaybackTimeAuthority.
      */
     uint64_t getFrameCount() const;
 
     /**
      * Get the current decoded video frame for display.
-     * Returns nullptr if no frame is available. Forwards to PlaybackController.
+     * Returns nullptr if no frame is available. Forwards to PlaybackPresenter
+     * (Renderer side) which queries the authority for clip-frame math.
      */
     const DecodedFrame* getCurrentVideoFrame() const;
 
@@ -396,11 +398,10 @@ private:
     std::unique_ptr<Renderer> m_rendererService;
 
     // Phase D entry: Director owns Timeline, ProjectManager,
-    // TranscodeManager, CommandDispatcher, AnimationSystem. Declared
-    // *before* the raw-pointer shortcuts so destructor order tears the
-    // subsystems down (m_director last) only after the shortcuts are no
-    // longer used. The unique_ptr also outlives PlaybackController etc.,
-    // which hold raw pointers into these owned subsystems.
+    // TranscodeManager, CommandDispatcher, AnimationSystem,
+    // PlaybackTimeAuthority. Declared *before* the raw-pointer shortcuts
+    // so destructor order tears the subsystems down (m_director last)
+    // only after the shortcuts are no longer used.
     std::unique_ptr<Director> m_director;
 
     // Raw shortcuts into m_rendererService. Set during initialize(); valid
@@ -446,9 +447,12 @@ private:
     uint32_t m_windowWidth{1920};
     uint32_t m_windowHeight{1080};
 
-    // Playback coordination (frame timing, clip-frame math, per-frame seek-aware updates).
-    // Constructed after Timeline + renderer exist; DecodeSystem is injected after registration.
-    std::unique_ptr<PlaybackController> m_playbackController;
+    // Phase D entry, subtask 6: PlaybackController is gone -- split into
+    // PlaybackTimeAuthority (Director-side) and PlaybackPresenter
+    // (Renderer-side). Both live on their respective owners; the raw
+    // shortcuts here let Engine glue keep its existing call sites short.
+    PlaybackTimeAuthority* m_timeAuthority{nullptr};
+    PlaybackPresenter*     m_playbackPresenter{nullptr};
 
     // FPS display tracking (window title only)
     double m_fpsAccumulator{0.0};

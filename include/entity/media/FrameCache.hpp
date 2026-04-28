@@ -84,7 +84,7 @@ public:
 
     /**
      * Find the cached frame for `clip` whose number is closest to `target`.
-     * Used by PlaybackController to fall back to "nearest available" while
+     * Used by PlaybackPresenter to fall back to "nearest available" while
      * the decoder is still catching up during forward playback.
      *
      * Read-only — does not promote LRU.

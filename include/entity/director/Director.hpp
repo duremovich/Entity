@@ -13,19 +13,19 @@ class TranscodeManager;
 class CommandDispatcher;
 class AnimationSystem;
 class SceneState;
+class PlaybackTimeAuthority;
 
 // Director owns Phase D's "logical-side" subsystems -- the half of the engine
 // that decides *what* to render this tick (timeline state, project state,
 // per-clip math), as opposed to the Renderer half that decides *how* to put
 // pixels on the GPU. Created by Engine, lives for Engine's lifetime.
 //
-// In this milestone (Phase D entry, subtask 5) Director owns the
-// subsystems (including AnimationSystem now that Engine's m_systems vector
-// has gone away) and Engine continues to call into them directly via raw-
-// pointer shortcuts. Subtask 6 will split PlaybackController into a
-// Director-side PlaybackTimeAuthority and a Renderer-side
-// PlaybackPresenter; subtask 8 turns the Director->Renderer per-tick
-// state-snapshot into a bus message.
+// As of subtask 6, Director also owns `PlaybackTimeAuthority` (the
+// Director half of the old PlaybackController) -- frame timing,
+// clip-frame math, per-tick active-set computation. Engine continues
+// to call into the owned subsystems directly via raw-pointer shortcuts.
+// Subtask 8 turns the Director->Renderer per-tick state-snapshot into
+// a bus message.
 class Director {
 public:
     // `renderer` is forwarded to ProjectManager::initialize so it can issue
@@ -46,12 +46,14 @@ public:
     TranscodeManager* getTranscodeManager() noexcept { return m_transcodeManager.get(); }
     CommandDispatcher* getCommandDispatcher() noexcept { return m_commandDispatcher.get(); }
     AnimationSystem* getAnimationSystem()   noexcept { return m_animationSystem.get(); }
+    PlaybackTimeAuthority* getTimeAuthority() noexcept { return m_timeAuthority.get(); }
 
     const Timeline* getTimeline()                 const noexcept { return m_timeline.get(); }
     const ProjectManager* getProjectManager()     const noexcept { return m_projectManager.get(); }
     const TranscodeManager* getTranscodeManager() const noexcept { return m_transcodeManager.get(); }
     const CommandDispatcher* getCommandDispatcher() const noexcept { return m_commandDispatcher.get(); }
     const AnimationSystem* getAnimationSystem()   const noexcept { return m_animationSystem.get(); }
+    const PlaybackTimeAuthority* getTimeAuthority() const noexcept { return m_timeAuthority.get(); }
 
     // SceneState seam. Director writes the registry during its tick (clip
     // creation, keyframe evaluation, ProjectManager load). Subtask 8's
@@ -68,6 +70,11 @@ private:
     std::unique_ptr<TranscodeManager>  m_transcodeManager;
     std::unique_ptr<CommandDispatcher> m_commandDispatcher;
     std::unique_ptr<AnimationSystem>   m_animationSystem;
+    // Owns frame timing + clip-frame math + per-tick active-set
+    // computation (Phase D entry, subtask 6 -- replaces the Director
+    // half of the old PlaybackController). Declared after Timeline +
+    // ProjectManager so its construction can reference both.
+    std::unique_ptr<PlaybackTimeAuthority> m_timeAuthority;
 };
 
 } // namespace entity

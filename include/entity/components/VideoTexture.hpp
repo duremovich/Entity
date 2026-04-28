@@ -29,12 +29,12 @@ struct VideoTexture {
     // Sampler-side colour-space hint for the compositor PS. HAP Q content
     // sets this to YCoCg_scaled; everything else stays Linear. Sticky once
     // set — colour space is a property of the codec, not of any one frame —
-    // but PlaybackController stamps it on every upload so a clip swap (e.g.
+    // but PlaybackPresenter stamps it on every upload so a clip swap (e.g.
     // re-import as a different variant) is picked up without extra wiring.
     TextureColorSpace colorSpace{TextureColorSpace::Linear};
 
     // Phase C.12 #6 — OCIO color-space name for the input transform. Mirrors
-    // the per-frame DecodedFrame.ocioColorSpace; PlaybackController stamps
+    // the per-frame DecodedFrame.ocioColorSpace; PlaybackPresenter stamps
     // this on every upload so the compositor can look up the right OCIO
     // input processor at draw time. Empty = identity (no transform applied).
     std::string ocioColorSpace;

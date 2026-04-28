@@ -844,7 +844,7 @@ private:
  * natural length on the timeline matches the new rate — mirroring the behavior
  * of ProjectSerializer::load and Engine import paths. Use to drive mixed-fps
  * tests that exercise the sourceFrame = localFrame * (srcFps / tlFps) mapping
- * in DecodeSystem / PlaybackController.
+ * in DecodeSystem / PlaybackTimeAuthority.
  *
  * JSON format:
  * {

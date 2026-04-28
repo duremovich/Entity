@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Mixed-fps integration test. Loads 16-frame PNG sequence, forces clip framerate to 24 on a 30fps timeline, seeks to timeline frames 0 and 10. Asserts source-frame mapping: tl 0 -> src 0, tl 10 -> src 8 (via floor(10 * 24/30)). Exercises DecodeSystem / PlaybackController frameRateRatio math.",
+    "description": "Mixed-fps integration test. Loads 16-frame PNG sequence, forces clip framerate to 24 on a 30fps timeline, seeks to timeline frames 0 and 10. Asserts source-frame mapping: tl 0 -> src 0, tl 10 -> src 8 (via floor(10 * 24/30)). Exercises DecodeSystem / PlaybackTimeAuthority frameRateRatio math.",
     "commands": [
         {"type": "AddScreen", "name": "MixedFpsScreen", "width": 64, "height": 64},
         {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},

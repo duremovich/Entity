@@ -126,7 +126,6 @@ target_sources(EntityMediaCore
         # Core
         src/core/Engine.cpp
         src/core/Application.cpp
-        src/core/PlaybackController.cpp
         src/core/Settings.cpp
 
         # Color (Phase C.12 — OCIO color management)
@@ -188,18 +187,21 @@ target_sources(EntityMediaCore
         src/command/Commands.cpp
 
         # Director (Phase D entry — owns Timeline, ProjectManager,
-        # TranscodeManager, CommandDispatcher, AnimationSystem). Will move
-        # into a dedicated entity-director static lib once the dependency
-        # graph allows (subtasks 7-11 untangle the cycle through
-        # EntityMediaCore).
+        # TranscodeManager, CommandDispatcher, AnimationSystem,
+        # PlaybackTimeAuthority). Will move into a dedicated
+        # entity-director static lib once the dependency graph allows
+        # (subtasks 7-11 untangle the cycle through EntityMediaCore).
         src/director/Director.cpp
+        src/director/PlaybackTimeAuthority.cpp
 
         # Renderer service (Phase D entry — owns D3D12Renderer,
         # OutputManager, FrameCache, OcioManager, CompositorSystem,
-        # DecodeSystem). Same lib-split deferral as Director; same
-        # rationale -- pulling it out today would create a cycle through
-        # Engine, which still owns the cross-side wiring.
+        # DecodeSystem, PlaybackPresenter). Same lib-split deferral as
+        # Director; same rationale -- pulling it out today would create
+        # a cycle through Engine, which still owns the cross-side
+        # wiring.
         src/renderer/Renderer.cpp
+        src/renderer/PlaybackPresenter.cpp
 )
 
 target_include_directories(EntityMediaCore

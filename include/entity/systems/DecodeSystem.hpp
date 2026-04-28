@@ -71,7 +71,7 @@ struct DecodeWorker {
  * starts instantly.
  *
  * Decoded frames land in the engine-global FrameCache (set via
- * setFrameCache); all readers (PlaybackController, etc.) pull from there.
+ * setFrameCache); all readers (PlaybackPresenter, etc.) pull from there.
  *
  * Threading:
  *   - Main thread: update() per frame; manages worker lifecycle + seek requests.

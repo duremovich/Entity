@@ -20,6 +20,7 @@ class CompositorSystem;
 class DecodeSystem;
 class TestSystem;
 class SceneState;
+class PlaybackPresenter;
 
 // Renderer is one half of the Phase D entry decomposition. It owns the
 // GPU-side subsystems -- everything that decides *how* to put pixels on a
@@ -34,13 +35,13 @@ class SceneState;
 // `IRenderer*` pointing at the service's owned backend, keeping all
 // existing `m_renderer->beginFrame()` etc. call sites unchanged.
 //
-// In this milestone (Phase D entry, subtask 5) Renderer just owns the
-// subsystems and Engine continues to call into them directly via raw-pointer
-// shortcuts. Subtask 6 will split PlaybackController into a Director-side
-// PlaybackTimeAuthority and a Renderer-side PlaybackPresenter; subtask 8
-// turns the Director->Renderer per-tick state-snapshot into a bus message
-// (`RenderFrame`) and Engine::run() collapses to director.tick() +
-// renderer.tick().
+// As of subtask 6, Renderer also owns `PlaybackPresenter` (the
+// Renderer half of the old PlaybackController) -- consumes
+// `ActiveClip` tuples computed by the Director-side PlaybackTimeAuthority
+// each tick. Engine still wires the cross-side glue with direct method
+// calls; subtask 8 turns the Director->Renderer per-tick state-snapshot
+// into a bus message (`RenderFrame`) and Engine::run() collapses to
+// director.tick() + renderer.tick().
 class Renderer {
 public:
     Renderer(entt::registry& registry, SceneState& sceneState);
@@ -58,11 +59,11 @@ public:
     // Order inside: D3D12Renderer -> OutputManager -> FrameCache ->
     // OcioManager -> wire OcioManager into D3D12Renderer -> CompositorSystem
     // -> TestSystem -> DecodeSystem (decode workers don't run yet -- they
-    // spawn lazily as clips are imported).
+    // spawn lazily as clips are imported) -> PlaybackPresenter (subtask 6).
     //
-    // Timeline pointers on CompositorSystem + DecodeSystem are NOT set here
-    // -- Engine wires them after Director is constructed (subtask 6 moves
-    // that wiring through the bus instead).
+    // Timeline pointers on CompositorSystem / DecodeSystem / PlaybackPresenter
+    // are NOT set here -- Engine wires them after Director is constructed
+    // (subtask 8 moves that wiring through the bus instead).
     Result initialize(GLFWwindow* window,
                       uint32_t width,
                       uint32_t height,
@@ -78,14 +79,15 @@ public:
     // Owned subsystems. Everything is created in initialize() and lives
     // until shutdown(); accessors return nullptr before initialize() and
     // after shutdown().
-    IRenderer*        getRenderer() const noexcept;
-    D3D12Renderer*    getD3D12Renderer() const noexcept   { return m_d3d12Renderer.get(); }
-    OutputManager*    getOutputManager() const noexcept   { return m_outputManager.get(); }
-    FrameCache*       getFrameCache() const noexcept      { return m_frameCache.get(); }
-    OcioManager*      getOcioManager() const noexcept     { return m_ocioManager.get(); }
-    CompositorSystem* getCompositorSystem() const noexcept { return m_compositorSystem.get(); }
-    DecodeSystem*     getDecodeSystem() const noexcept    { return m_decodeSystem.get(); }
-    TestSystem*       getTestSystem() const noexcept      { return m_testSystem.get(); }
+    IRenderer*         getRenderer() const noexcept;
+    D3D12Renderer*     getD3D12Renderer() const noexcept    { return m_d3d12Renderer.get(); }
+    OutputManager*     getOutputManager() const noexcept    { return m_outputManager.get(); }
+    FrameCache*        getFrameCache() const noexcept       { return m_frameCache.get(); }
+    OcioManager*       getOcioManager() const noexcept      { return m_ocioManager.get(); }
+    CompositorSystem*  getCompositorSystem() const noexcept { return m_compositorSystem.get(); }
+    DecodeSystem*      getDecodeSystem() const noexcept     { return m_decodeSystem.get(); }
+    TestSystem*        getTestSystem() const noexcept       { return m_testSystem.get(); }
+    PlaybackPresenter* getPlaybackPresenter() const noexcept { return m_playbackPresenter.get(); }
 
     // SceneState seam. Renderer reads the registry during its tick (clip
     // VideoTexture state, mapping surfaces, screens). Subtask 8's
@@ -102,13 +104,19 @@ private:
     // tear down first, then OutputManager, then OCIO + cache, then the
     // backend. unique_ptr destructors run in reverse-declaration order, so
     // the declaration order here IS the construction order.
-    std::unique_ptr<D3D12Renderer>    m_d3d12Renderer;
-    std::unique_ptr<OutputManager>    m_outputManager;
-    std::unique_ptr<FrameCache>       m_frameCache;
-    std::unique_ptr<OcioManager>      m_ocioManager;
-    std::unique_ptr<CompositorSystem> m_compositorSystem;
-    std::unique_ptr<TestSystem>       m_testSystem;
-    std::unique_ptr<DecodeSystem>     m_decodeSystem;
+    std::unique_ptr<D3D12Renderer>     m_d3d12Renderer;
+    std::unique_ptr<OutputManager>     m_outputManager;
+    std::unique_ptr<FrameCache>        m_frameCache;
+    std::unique_ptr<OcioManager>       m_ocioManager;
+    std::unique_ptr<CompositorSystem>  m_compositorSystem;
+    std::unique_ptr<TestSystem>        m_testSystem;
+    std::unique_ptr<DecodeSystem>      m_decodeSystem;
+    // Renderer-side half of the old PlaybackController (Phase D entry,
+    // subtask 6). Constructed in initialize() after FrameCache + the
+    // backend exist; takes the DecodeSystem pointer right after that
+    // system is up. Tear-down order is reverse-declaration -- presenter
+    // releases its references before DecodeSystem joins worker threads.
+    std::unique_ptr<PlaybackPresenter> m_playbackPresenter;
 
     bool m_initialized{false};
 };

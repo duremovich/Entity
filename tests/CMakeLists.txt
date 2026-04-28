@@ -18,6 +18,7 @@ add_executable(EntityMediaTests
     unit/MessageBusSerializationTests.cpp
     unit/InMemoryTransportTests.cpp
     unit/SceneStateTests.cpp
+    unit/PlaybackTimeAuthorityTests.cpp
     test_Decoder.cpp
 )
 

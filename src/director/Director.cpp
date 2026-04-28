@@ -2,6 +2,7 @@
 
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/SceneState.hpp"
+#include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/systems/AnimationSystem.hpp"
@@ -19,6 +20,7 @@ Director::Director(entt::registry& registry,
     , m_transcodeManager(std::make_unique<TranscodeManager>())
     , m_commandDispatcher(std::make_unique<CommandDispatcher>())
     , m_animationSystem(std::make_unique<AnimationSystem>())
+    , m_timeAuthority(std::make_unique<PlaybackTimeAuthority>(registry, m_timeline.get()))
 {
     // ProjectManager needs the Timeline + registry + renderer to honour
     // load/save calls (it allocates render-target slots for Screens at load
@@ -30,6 +32,12 @@ Director::Director(entt::registry& registry,
     // until clips with AnimatedProperties components show up.
     m_animationSystem->setTimeline(m_timeline.get());
     m_animationSystem->initialize(registry);
+
+    // Wire ProjectManager into the time authority so the per-tick
+    // active-set tuples carry the per-clip MediaBin OCIO override
+    // (Phase C.12 #9). Done after ProjectManager::initialize so the
+    // entry table is ready by the time the authority looks anything up.
+    m_timeAuthority->setProjectManager(m_projectManager.get());
 }
 
 Director::~Director() {

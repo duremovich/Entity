@@ -1,0 +1,212 @@
+#include <gtest/gtest.h>
+
+#include "entity/components/Clip.hpp"
+#include "entity/components/VideoTexture.hpp"
+#include "entity/director/PlaybackTimeAuthority.hpp"
+#include "entity/timeline/Timeline.hpp"
+
+#include <entt/entt.hpp>
+
+using namespace entity;
+
+namespace {
+
+// Helper to fill in just the Clip fields the time authority cares about.
+// Clip is move-only (RAII over FFmpeg contexts) so we mutate via reference
+// after emplacing into the registry.
+void fillClip(Clip& c,
+              FrameNumber start,
+              FrameNumber duration,
+              FrameNumber totalMediaFrames,
+              double clipFps,
+              PlaybackMode mode = PlaybackMode::Freeze) {
+    c.startFrame       = start;
+    c.duration         = duration;
+    c.mediaStartFrame  = 0;
+    c.totalMediaFrames = totalMediaFrames;
+    c.framerate        = clipFps;
+    c.playbackMode     = mode;
+}
+
+} // namespace
+
+class PlaybackTimeAuthorityTest : public ::testing::Test {
+protected:
+    entt::registry registry;
+    Timeline timeline{registry};
+    PlaybackTimeAuthority auth{registry, &timeline};
+};
+
+// --- isClipActiveAtFrame --------------------------------------------------
+
+TEST_F(PlaybackTimeAuthorityTest, IsClipActiveAtFrame_HalfOpenInterval) {
+    // The clip occupies [start, start + duration) -- start is included,
+    // start + duration is the first non-active frame. This is the same
+    // invariant Timeline / DecodeSystem rely on.
+    Clip c;
+    fillClip(c, /*start*/10, /*duration*/5, /*total*/5, 30.0);
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 9));
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 10));
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 14));
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 15));
+}
+
+TEST_F(PlaybackTimeAuthorityTest, IsClipActiveAtFrame_ZeroDurationIsAlwaysInactive) {
+    Clip c;
+    fillClip(c, 5, 0, 0, 30.0);
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 5));
+}
+
+// --- mapToMediaFrame ------------------------------------------------------
+
+TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_SameFrameRate_IsIdentityFromOffset) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/16, /*total*/16, 30.0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 0),  0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 5),  5);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 15), 15);
+}
+
+TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_NonZeroStartFrameOffsetsCorrectly) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/100, /*duration*/16, /*total*/16, 30.0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 100), 0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 105), 5);
+}
+
+TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_MixedFps_FloorsRatio) {
+    // Mirrors integration_mixed_fps: 24fps clip on a 30fps timeline.
+    // tl 10 -> floor(10 * 24/30) = src 8.
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/20, /*total*/16, 24.0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 0),  0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 10), 8);
+}
+
+TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_FreezeClampsToLastFrame) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/5, /*total*/5, 30.0,
+             PlaybackMode::Freeze);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 10), 4);  // past end -> last frame held
+}
+
+TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_LoopWrapsModulo) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/100, /*total*/8, 30.0,
+             PlaybackMode::Loop);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 0),  0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 7),  7);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 8),  0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 15), 7);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 24), 0);
+}
+
+TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_PingPongMirrorsOnOddCycle) {
+    // Mirrors integration_ping_pong: 16-frame clip stretched to 64
+    // timeline frames. tl 24 lands in reverse phase at index
+    // (15 - (24 % 16)) = 15 - 8 = 7.
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/64, /*total*/16, 30.0,
+             PlaybackMode::PingPong);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 0),  0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 8),  8);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 15), 15);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 16), 15);  // start of reverse phase
+    EXPECT_EQ(auth.mapToMediaFrame(c, 24), 7);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 31), 0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 32), 0);   // forward phase resumes
+}
+
+// --- buildActiveSet -------------------------------------------------------
+
+TEST_F(PlaybackTimeAuthorityTest, BuildActiveSet_OnlyIncludesAllocatedActiveClips) {
+    timeline.setFrameRate(30.0);
+    timeline.seekToFrame(5);
+
+    // Active + allocated: included
+    auto includedEntity = registry.create();
+    auto& clipA = registry.emplace<Clip>(includedEntity);
+    fillClip(clipA, 0, 10, 10, 30.0);
+    auto& texA = registry.emplace<VideoTexture>(includedEntity);
+    texA.descriptorSlot = 7;
+
+    // Active but unallocated: skipped
+    auto unallocatedEntity = registry.create();
+    auto& clipB = registry.emplace<Clip>(unallocatedEntity);
+    fillClip(clipB, 0, 10, 10, 30.0);
+    registry.emplace<VideoTexture>(unallocatedEntity);  // descriptorSlot stays UINT32_MAX
+
+    // Allocated but inactive (clip ends at frame 4, current frame is 5)
+    auto inactiveEntity = registry.create();
+    auto& clipC = registry.emplace<Clip>(inactiveEntity);
+    fillClip(clipC, 0, 4, 4, 30.0);
+    auto& texC = registry.emplace<VideoTexture>(inactiveEntity);
+    texC.descriptorSlot = 9;
+
+    std::vector<ActiveClip> active;
+    auth.buildActiveSet(active);
+
+    ASSERT_EQ(active.size(), 1u);
+    EXPECT_EQ(active[0].entity, includedEntity);
+    EXPECT_EQ(active[0].descriptorSlot, 7u);
+    EXPECT_EQ(active[0].mediaFrame, 5);
+    EXPECT_TRUE(active[0].ocioOverride.empty());
+}
+
+TEST_F(PlaybackTimeAuthorityTest, BuildActiveSet_RespectsMixedFpsAtCurrentFrame) {
+    // Same setup as integration_mixed_fps -- a 24fps clip on a 30fps
+    // timeline at tl frame 10 should report sourceFrame 8 in the active
+    // set tuple.
+    timeline.setFrameRate(30.0);
+    timeline.seekToFrame(10);
+
+    auto e = registry.create();
+    auto& clip = registry.emplace<Clip>(e);
+    fillClip(clip, 0, 20, 16, 24.0);
+    auto& tex = registry.emplace<VideoTexture>(e);
+    tex.descriptorSlot = 3;
+
+    std::vector<ActiveClip> active;
+    auth.buildActiveSet(active);
+
+    ASSERT_EQ(active.size(), 1u);
+    EXPECT_EQ(active[0].entity, e);
+    EXPECT_EQ(active[0].mediaFrame, 8);
+}
+
+TEST_F(PlaybackTimeAuthorityTest, BuildActiveSet_ClearsCallerVectorBeforeAppending) {
+    // Caller may reuse a long-lived vector across ticks -- buildActiveSet
+    // must clear it (not append) so stale entries from a previous tick
+    // don't bleed through.
+    timeline.setFrameRate(30.0);
+    timeline.seekToFrame(0);
+
+    std::vector<ActiveClip> active;
+    ActiveClip stale;
+    stale.entity = static_cast<entt::entity>(99);
+    stale.descriptorSlot = 42;
+    active.push_back(std::move(stale));
+    ASSERT_EQ(active.size(), 1u);
+
+    auth.buildActiveSet(active);
+    EXPECT_TRUE(active.empty());
+}
+
+// --- Timing ---------------------------------------------------------------
+
+TEST_F(PlaybackTimeAuthorityTest, Timing_StartTimingResetsCounters) {
+    auth.incrementFrameCount();
+    auth.incrementFrameCount();
+    EXPECT_EQ(auth.getFrameCount(), 2u);
+
+    auth.startTiming();
+    EXPECT_EQ(auth.getFrameCount(), 0u);
+    EXPECT_DOUBLE_EQ(auth.getDeltaTime(), 0.0);
+    EXPECT_DOUBLE_EQ(auth.getElapsedTime(), 0.0);
+}

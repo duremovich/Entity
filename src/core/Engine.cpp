@@ -1,7 +1,8 @@
 #include "entity/core/Engine.hpp"
 #include "entity/director/Director.hpp"
 #include "entity/renderer/Renderer.hpp"
-#include "entity/core/PlaybackController.hpp"
+#include "entity/director/PlaybackTimeAuthority.hpp"
+#include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/ui/WindowManager.hpp"
@@ -161,21 +162,23 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                  "FrameCache + OcioManager + Compositor + Decode)" << std::endl;
 
     // Phase D entry: Director owns Timeline, ProjectManager,
-    // TranscodeManager, CommandDispatcher, AnimationSystem. Constructed
-    // here -- after the renderer (so ProjectManager::initialize can route
-    // through it for Screen render-target allocation) and before
-    // PlaybackController (which needs a Timeline*). The raw shortcuts
-    // below let existing Engine code continue to use m_timeline /
-    // m_projectManager / m_transcodeManager / m_commandDispatcher /
-    // m_animationSystem unchanged.
+    // TranscodeManager, CommandDispatcher, AnimationSystem,
+    // PlaybackTimeAuthority. Constructed here -- after the renderer (so
+    // ProjectManager::initialize can route through it for Screen
+    // render-target allocation). The raw shortcuts below let existing
+    // Engine code continue to use m_timeline / m_projectManager /
+    // m_transcodeManager / m_commandDispatcher / m_animationSystem /
+    // m_timeAuthority unchanged.
     m_director = std::make_unique<Director>(m_registry, m_sceneState, m_renderer);
     m_timeline          = m_director->getTimeline();
     m_projectManager    = m_director->getProjectManager();
     m_transcodeManager  = m_director->getTranscodeManager();
     m_commandDispatcher = m_director->getCommandDispatcher();
     m_animationSystem   = m_director->getAnimationSystem();
+    m_timeAuthority     = m_director->getTimeAuthority();
     std::cout << "  Director initialized (Timeline + ProjectManager + "
-                 "TranscodeManager + CommandDispatcher + AnimationSystem)" << std::endl;
+                 "TranscodeManager + CommandDispatcher + AnimationSystem + "
+                 "PlaybackTimeAuthority)" << std::endl;
 
     // Cross-side wiring -- the Director side owns Timeline; the
     // Renderer-side systems need a raw read-only pointer to it. Subtask 8
@@ -188,15 +191,14 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         m_decodeSystem->setTimeline(m_timeline);
     }
 
-    // Initialize playback controller (owns frame timing + per-frame seek-
-    // aware updates). Sits across the Director/Renderer boundary today;
-    // subtask 6 splits it into PlaybackTimeAuthority (Director) +
-    // PlaybackPresenter (Renderer).
-    m_playbackController = std::make_unique<PlaybackController>(m_registry, m_timeline, m_renderer);
-    m_playbackController->setFrameCache(m_frameCache);
-    m_playbackController->setDecodeSystem(m_decodeSystem);
-    // Phase C.12 #9 -- let PlaybackController consult MediaLibraryEntry.
-    m_playbackController->setProjectManager(m_projectManager);
+    // PlaybackPresenter (Renderer side, owned by Renderer service) needs
+    // a read-only Timeline pointer for the nearest-frame-fallback gate.
+    // Subtask 8 replaces this with a playState field on the per-tick
+    // RenderFrame bus message.
+    m_playbackPresenter = m_rendererService->getPlaybackPresenter();
+    if (m_playbackPresenter) {
+        m_playbackPresenter->setTimeline(m_timeline);
+    }
 
     // Background HAP transcoder cache dir gets set lazily via
     // updateTranscodeCacheDir() when a project path is established.
@@ -340,8 +342,9 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // TODO: Initialize transport
     // m_transport = std::make_unique<Transport>();
 
-    // Initialize timing
-    m_playbackController->startTiming();
+    // Initialize timing -- authority is Director-side; Engine just
+    // forwards startTiming + the per-tick updateTiming/incrementFrameCount.
+    m_timeAuthority->startTiming();
 
     m_initialized = true;
 
@@ -374,9 +377,11 @@ void Engine::shutdown() {
     }
 
     // Tear down Renderer-service-owned subsystems explicitly. Order inside
-    // Renderer::shutdown(): DecodeSystem (joins worker threads) ->
-    // TestSystem -> CompositorSystem -> OutputManager (releases swap-chain
-    // slots) -> OcioManager -> FrameCache -> D3D12Renderer.
+    // Renderer::shutdown(): PlaybackPresenter -> DecodeSystem (joins
+    // worker threads) -> TestSystem -> CompositorSystem -> OutputManager
+    // (releases swap-chain slots) -> OcioManager -> FrameCache ->
+    // D3D12Renderer.
+    m_playbackPresenter = nullptr;
     m_decodeSystem  = nullptr;
     m_ocioManager   = nullptr;
     m_frameCache    = nullptr;
@@ -385,10 +390,12 @@ void Engine::shutdown() {
     m_rendererService.reset();
 
     // Tear down Director-owned subsystems (Timeline, ProjectManager,
-    // TranscodeManager, CommandDispatcher, AnimationSystem) explicitly so
-    // the raw shortcut pointers stop being live before m_initialized is
-    // cleared. (Member destruction order would also do this; doing it here
-    // surfaces order bugs early instead of at process exit.)
+    // TranscodeManager, CommandDispatcher, AnimationSystem,
+    // PlaybackTimeAuthority) explicitly so the raw shortcut pointers
+    // stop being live before m_initialized is cleared. (Member
+    // destruction order would also do this; doing it here surfaces
+    // order bugs early instead of at process exit.)
+    m_timeAuthority      = nullptr;
     m_animationSystem    = nullptr;
     m_commandDispatcher  = nullptr;
     m_transcodeManager   = nullptr;
@@ -420,12 +427,12 @@ void Engine::run() {
 
     while (m_running && !glfwWindowShouldClose(m_window)) {
         // Update timing
-        m_playbackController->updateTiming();
-        double deltaTime = m_playbackController->getDeltaTime();
+        m_timeAuthority->updateTiming();
+        double deltaTime = m_timeAuthority->getDeltaTime();
 
         // Detect potential freeze (frame took > 100ms)
         if (deltaTime > 0.1) {
-            std::cout << "[FREEZE WARNING] Frame " << m_playbackController->getFrameCount() << " took "
+            std::cout << "[FREEZE WARNING] Frame " << m_timeAuthority->getFrameCount() << " took "
                       << (deltaTime * 1000.0) << "ms (timeline frame: "
                       << (m_timeline ? m_timeline->getCurrentFrame() : 0) << ")" << std::endl;
         }
@@ -470,7 +477,7 @@ void Engine::run() {
         autoSaveTick(deltaTime);
         pollTranscodes();
 
-        m_playbackController->incrementFrameCount();
+        m_timeAuthority->incrementFrameCount();
     }
 
     std::cout << "Main loop exited." << std::endl;
@@ -626,7 +633,7 @@ void Engine::processEvents() {
 
 void Engine::update() {
     auto t0 = std::chrono::high_resolution_clock::now();
-    double deltaTime = m_playbackController ? m_playbackController->getDeltaTime() : 0.0;
+    double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
 
     // Update timeline
     if (m_timeline) {
@@ -677,20 +684,20 @@ void Engine::update() {
 }
 
 double Engine::getDeltaTime() const {
-    return m_playbackController ? m_playbackController->getDeltaTime() : 0.0;
+    return m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
 }
 
 double Engine::getElapsedTime() const {
-    return m_playbackController ? m_playbackController->getElapsedTime() : 0.0;
+    return m_timeAuthority ? m_timeAuthority->getElapsedTime() : 0.0;
 }
 
 uint64_t Engine::getFrameCount() const {
-    return m_playbackController ? m_playbackController->getFrameCount() : 0;
+    return m_timeAuthority ? m_timeAuthority->getFrameCount() : 0;
 }
 
 const DecodedFrame* Engine::getCurrentVideoFrame() const {
-    if (m_playbackController) {
-        if (const DecodedFrame* frame = m_playbackController->getCurrentVideoFrame()) {
+    if (m_playbackPresenter && m_timeAuthority) {
+        if (const DecodedFrame* frame = m_playbackPresenter->getCurrentVideoFrame(*m_timeAuthority)) {
             return frame;
         }
     }
@@ -723,9 +730,17 @@ void Engine::render() {
         m_renderer->beginFrame();
         auto t1 = std::chrono::high_resolution_clock::now();
 
-        // Upload video textures to GPU - MUST be after beginFrame() or commands get discarded!
-        if (m_playbackController) {
-            m_playbackController->updateClipVideos();
+        // Upload video textures to GPU - MUST be after beginFrame() or
+        // commands get discarded! Phase D entry, subtask 6: this is the
+        // hand-off seam between Director (active-set computation) and
+        // Renderer (cache fetch + GPU upload). Subtask 8 turns the
+        // hand-off into a serialized RenderFrame bus message; for now
+        // it's a direct in-process call with a stack-local active-set
+        // vector.
+        if (m_timeAuthority && m_playbackPresenter) {
+            std::vector<ActiveClip> active;
+            m_timeAuthority->buildActiveSet(active);
+            m_playbackPresenter->present(active);
         }
         auto t2 = std::chrono::high_resolution_clock::now();
 
@@ -736,7 +751,7 @@ void Engine::render() {
         // beginFrame/endFrame window so draws land on the open command
         // list -- this is why it isn't in update().
         if (auto* compositor = m_rendererService ? m_rendererService->getCompositorSystem() : nullptr) {
-            double deltaTime = m_playbackController ? m_playbackController->getDeltaTime() : 0.0;
+            double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
             compositor->update(m_registry, static_cast<float>(deltaTime));
         }
 
