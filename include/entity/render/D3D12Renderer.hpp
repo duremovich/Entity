@@ -9,6 +9,7 @@
 
 #include "entity/core/Types.hpp"
 #include "entity/render/IRenderer.hpp"
+#include "entity/render/RuntimeShaderCompiler.hpp"
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
@@ -16,12 +17,16 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Forward declarations
 struct GLFWwindow;
 
 namespace entity {
+
+class OcioManager;
+class OcioGpuProcessor;
 
 using Microsoft::WRL::ComPtr;
 
@@ -113,6 +118,20 @@ public:
                                   uint32_t& outWidth,
                                   uint32_t& outHeight,
                                   std::vector<uint8_t>& outPixels) override;
+
+    /**
+     * Phase C.12 #5 — bind the OcioManager that drives input + display
+     * transform PSO selection. Pass nullptr to disable OCIO and fall back
+     * to the offline-compiled PSOs (sRGB-stub capture, no input transform,
+     * legacy gamma-only mapping surface).
+     *
+     * Engine calls this once after both the renderer and OcioManager are
+     * initialized. Subtask 7's "OCIO config reload" path will re-call it.
+     *
+     * Eagerly compiles the default input + display + capture PSOs so the
+     * first frame doesn't pay a runtime DXC cost.
+     */
+    void setOcioManager(OcioManager* mgr);
 
     // ========================================================================
     // Legacy D3D12-typed API (kept during Phase B migration; callers in
@@ -317,6 +336,47 @@ private:
     ComPtr<ID3D12RootSignature> m_blendRootSignature;
     ComPtr<ID3D12PipelineState> m_texturedPipelineStateBlend;
 
+    // ---------------------------------------------------------------------
+    // Phase C.12 #5 — OCIO-spliced PSO variants.
+    //
+    // OcioManager (held as a non-owning pointer; owned by Engine) is the
+    // source of truth for what input transform applies to a given clip and
+    // what display+view applies to a given output. When set, draw paths
+    // look up an OCIO processor + use the runtime-compiled PSO that has
+    // the OCIO HLSL function spliced in. When null, the offline-compiled
+    // PSOs (m_texturedPipelineState etc.) are used unchanged.
+    //
+    // Caches are keyed on the OCIO function name (already canonicalized by
+    // OcioManager::bakeProcessor — see OCIO underscore-collapsing note in
+    // C.12 #4). Lazy-built on first use; persist for the lifetime of the
+    // active OCIO config; cleared when the config reloads.
+    // ---------------------------------------------------------------------
+    OcioManager* m_ocioManager{nullptr};
+    RuntimeShaderCompiler m_runtimeCompiler;
+
+    // 5 PSOs per input transform: Normal / Add / Multiply / Screen + Blend.
+    struct OcioCompositePsoSet {
+        ComPtr<ID3D12PipelineState> psoNormal;
+        ComPtr<ID3D12PipelineState> psoAdd;
+        ComPtr<ID3D12PipelineState> psoMultiply;
+        ComPtr<ID3D12PipelineState> psoScreen;
+        ComPtr<ID3D12PipelineState> psoBlend;          // shader-blend (BlendEnable=FALSE)
+    };
+    std::unordered_map<std::string, OcioCompositePsoSet> m_ocioCompositePsoCache;
+    std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> m_ocioMappingSurfacePsoCache;
+    ComPtr<ID3D12PipelineState>          m_ocioCapturePipelineState;  // overrides m_capturePipelineState when present
+    std::shared_ptr<const OcioGpuProcessor> m_activeInputProcessor;   // currently bound input transform (subtask 6 makes per-clip)
+    std::shared_ptr<const OcioGpuProcessor> m_activeDisplayProcessor; // currently bound display transform (subtask 8 makes per-output)
+    std::shared_ptr<const OcioGpuProcessor> m_activeCaptureProcessor; // pinned to the canonical sRGB display+view
+
+    // Cached HLSL source files loaded from <exe_dir>/shaders/. Re-read on
+    // OCIO config reload so the same file edited on disk gets picked up
+    // (developer convenience).
+    std::string m_compositePsSource;
+    std::string m_compositeBlendPsSource;
+    std::string m_mappingSurfacePsSource;
+    std::string m_acesCapturePsSource;
+
     // Mapping surface rendering pipeline (for projection mapping)
     ComPtr<ID3D12RootSignature> m_mappingSurfaceRootSignature;
     ComPtr<ID3D12PipelineState> m_mappingSurfacePipelineState;
@@ -417,6 +477,28 @@ private:
                                           uint32_t& outWidth,
                                           uint32_t& outHeight,
                                           std::vector<uint8_t>& outPixels);
+
+    // -------------------------------------------------------------------
+    // Phase C.12 #5 — runtime-compiled OCIO PSO helpers.
+    // -------------------------------------------------------------------
+
+    /** Read shaders/<filename> from <exe_dir>/shaders/. Returns empty on miss. */
+    std::string loadShaderSourceFromExeDir(const std::string& filename);
+    /** Read all .hlsl + .hlsli sources we need into m_*Source members. */
+    bool loadOcioShaderSources();
+
+    /** Build the 5-PSO OcioCompositePsoSet for an input transform.
+     *  Splices the input-fn HLSL onto composite_ps.hlsl + composite_blend_ps.hlsl,
+     *  compiles each, then constructs PSOs for the 4 fixed-function blend modes
+     *  + the 1 shader-blend mode. Returns nullptr on failure (logs).
+     */
+    const OcioCompositePsoSet* getOrBuildOcioCompositePsoSet(const OcioGpuProcessor& input);
+
+    /** Build the mapping-surface PSO for a display+view processor. */
+    ComPtr<ID3D12PipelineState> getOrBuildOcioMappingSurfacePso(const OcioGpuProcessor& display);
+
+    /** Compile + return the capture PSO for a fixed sRGB display+view. */
+    ComPtr<ID3D12PipelineState> buildOcioCapturePso(const OcioGpuProcessor& display);
 
     // Per-output swap chains for physical displays (Phase C #1).
     // Each OutputWindow owns its own borderless GLFW window, DXGI swap chain,

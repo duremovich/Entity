@@ -32,5 +32,14 @@ float3 linearToSrgb(float3 c) {
 
 float4 PSMain(PSInput i) : SV_TARGET {
     float4 src = srcTexture.Sample(srcSampler, i.uv);
+    // Phase C.12 #5 — when ENTITY_OCIO_DISPLAY_FN is defined, the OCIO display
+    // transform for the canonical sRGB display+view is spliced in by the
+    // RuntimeShaderCompiler path; the captured PNG then matches what
+    // mapping_surface_ps puts on a sRGB monitor. Offline-compiled fallback
+    // (no OCIO) is the linearToSrgb stub from C.12 #3.
+#ifdef ENTITY_OCIO_DISPLAY_FN
+    return float4(ENTITY_OCIO_DISPLAY_FN(float4(src.rgb, 1.0)).rgb, src.a);
+#else
     return float4(linearToSrgb(src.rgb), src.a);
+#endif
 }

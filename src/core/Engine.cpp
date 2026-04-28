@@ -17,6 +17,7 @@
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
+#include "entity/color/OcioManager.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -169,6 +170,18 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Budget is the user-tunable knob (Preferences dialog), with live
     // re-budgeting wired further down via setSettingsAppliedCallback.
     m_frameCache = std::make_unique<FrameCache>(static_cast<size_t>(m_settings.frameCacheBytes));
+
+    // OCIO color-management (Phase C.12 #1, consumed by D3D12Renderer in #5).
+    // Empty path → bundled ACES Studio Config 1.3 via CreateFromBuiltinConfig.
+    // Settings.ocioConfigPath (subtask 7) will let users override.
+    m_ocioManager = std::make_unique<OcioManager>();
+    if (!m_ocioManager->initialize()) {
+        std::cerr << "Warning: OCIO config init fell back to identity — color "
+                     "management will be a no-op until a valid config is loaded.\n";
+    }
+    if (m_renderer) {
+        m_renderer->setOcioManager(m_ocioManager.get());
+    }
 
     // Initialize timeline
     m_timeline = std::make_unique<Timeline>(m_registry);

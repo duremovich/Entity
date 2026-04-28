@@ -107,6 +107,31 @@ entity_compile_shader(aces_capture_ps.hlsl      ps PSMain 6_0)
 message(STATUS "Configured offline HLSL compilation for 8 shaders")
 
 # =============================================================================
+# Deploy HLSL source files alongside the exe so RuntimeShaderCompiler
+# (Phase C.12 #2) can read them at startup to splice OCIO transforms in.
+# Only the files D3D12Renderer's OCIO splicer reuses are copied — the offline
+# .cso files are still the canonical artifact for shaders that don't get
+# rewritten with OCIO state.
+# =============================================================================
+set(_ENTITY_RUNTIME_SHADER_SOURCES
+    composite_ps.hlsl
+    composite_blend_ps.hlsl
+    mapping_surface_ps.hlsl
+    aces_capture_ps.hlsl
+    common.hlsli
+    mapping_surface.hlsli
+)
+foreach(_src IN LISTS _ENTITY_RUNTIME_SHADER_SOURCES)
+    add_custom_command(
+        TARGET EntityMediaEditor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ENTITY_SHADER_SOURCE_DIR}/${_src}"
+            "$<TARGET_FILE_DIR:EntityMediaEditor>/shaders/${_src}"
+        VERBATIM
+    )
+endforeach()
+
+# =============================================================================
 # Runtime DXC redistribution (Phase C.12 — OCIO-generated shader fragments)
 #
 # RuntimeShaderCompiler links against dxcompiler.lib (resolved by the linker

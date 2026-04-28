@@ -29,6 +29,7 @@ class AnimationSystem;
 class CommandDispatcher;
 class OutputManager;
 class FrameCache;
+class OcioManager;
 struct DecodedFrame;
 // class Transport;
 
@@ -99,6 +100,11 @@ public:
      * Get the OutputManager (display enumeration + physical output driving).
      */
     OutputManager* getOutputManager() { return m_outputManager.get(); }
+
+    /**
+     * Get the engine-global OcioManager (Phase C.12).
+     */
+    OcioManager* getOcioManager() { return m_ocioManager.get(); }
 
     /**
      * Get the engine-global FrameCache (decoded frames for all active clips).
@@ -363,6 +369,10 @@ private:
     // Preferences. Owned here; injected by raw pointer into DecodeSystem
     // (producer) and PlaybackController (consumer).
     std::unique_ptr<FrameCache> m_frameCache;
+
+    // OpenColorIO config + processor cache (Phase C.12 #1, wired into the
+    // renderer in #5). Owned here; D3D12Renderer holds a raw pointer.
+    std::unique_ptr<OcioManager> m_ocioManager;
 
     // Systems
     std::vector<std::unique_ptr<System>> m_systems;

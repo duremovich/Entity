@@ -67,10 +67,26 @@ float4 decodeHapQ(float4 sampled) {
 // Sample the layer texture and apply colour-space conversion if the cbuffer
 // hint says so. Branches on a uniform; modern GPUs handle this in hardware
 // dynamic branching with no per-pixel cost.
+//
+// Phase C.12 #5: when ENTITY_OCIO_INPUT_FN is defined (set via -D at runtime
+// DXC compile by D3D12Renderer + OcioManager), the sampled-and-decoded
+// pixel is fed through the OCIO-emitted input transform function. The
+// function source is prepended to the shader by D3D12Renderer's splicer,
+// so by the time HLSL compilation happens, ENTITY_OCIO_INPUT_FN refers to
+// a real function (e.g. OCIO_input_Linear_Rec_709_sRGB_).
+//
+// HAP Q's YCoCg decode runs FIRST so OCIO sees linear Rec.709 RGB, the
+// post-decode colour space the per-clip OCIO tag refers to.
+//
+// Offline DXC compilation (apps/CMakeLists.txt) leaves the macro undefined,
+// so the offline .cso is identical to the pre-C.12 behaviour.
 float4 sampleLayerTexture(Texture2D tex, SamplerState samp, float2 uv) {
     float4 raw = tex.Sample(samp, uv);
     if (colorSpace == COLOR_SPACE_YCOCG_SCALED) {
-        return decodeHapQ(raw);
+        raw = decodeHapQ(raw);
     }
+#ifdef ENTITY_OCIO_INPUT_FN
+    raw = ENTITY_OCIO_INPUT_FN(raw);
+#endif
     return raw;
 }

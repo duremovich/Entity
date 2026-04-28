@@ -8,6 +8,8 @@
 #include "entity/render/D3D12Device.hpp"
 #include "entity/render/DescriptorHeapLayout.hpp"
 #include "entity/render/TextureUploader.hpp"
+#include "entity/color/OcioManager.hpp"
+#include "entity/color/OcioGpuProcessor.hpp"
 
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -28,6 +30,7 @@
 #include <vector>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -1994,7 +1997,14 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         post[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         m_commandList->ResourceBarrier(2, post);
 
-        m_commandList->SetPipelineState(m_texturedPipelineStateBlend.Get());
+        // Phase C.12 #5: pick OCIO-spliced shader-blend PSO if available.
+        ID3D12PipelineState* blendPso = m_texturedPipelineStateBlend.Get();
+        if (m_activeInputProcessor) {
+            const OcioCompositePsoSet* set =
+                getOrBuildOcioCompositePsoSet(*m_activeInputProcessor);
+            if (set && set->psoBlend) blendPso = set->psoBlend.Get();
+        }
+        m_commandList->SetPipelineState(blendPso);
         m_commandList->SetGraphicsRootSignature(m_blendRootSignature.Get());
         m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
         m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);            // fg (t0)
@@ -2008,23 +2018,29 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
 
     // ------------------------------------------------------------------------
     // Fixed-function blend modes: zero-copy, dispatched via per-mode PSOs.
+    // Phase C.12 #5: when an OCIO input processor is bound, the OCIO-spliced
+    // PSO set takes precedence over the offline-compiled PSOs.
     // ------------------------------------------------------------------------
-    ID3D12PipelineState* pipelineState = m_texturedPipelineState.Get();  // Default: Normal
-    switch (blendMode) {
-        case BlendMode::Add:
-            pipelineState = m_texturedPipelineStateAdd.Get();
-            break;
-        case BlendMode::Multiply:
-            pipelineState = m_texturedPipelineStateMultiply.Get();
-            break;
-        case BlendMode::Screen:
-            pipelineState = m_texturedPipelineStateScreen.Get();
-            break;
-        default:
-            // Normal, plus any shader-blend mode that fell through because the
-            // current compose target wasn't ready. Fallback is Normal.
-            pipelineState = m_texturedPipelineState.Get();
-            break;
+    const OcioCompositePsoSet* ocioSet = nullptr;
+    if (m_activeInputProcessor) {
+        ocioSet = getOrBuildOcioCompositePsoSet(*m_activeInputProcessor);
+    }
+
+    ID3D12PipelineState* pipelineState = nullptr;
+    if (ocioSet) {
+        switch (blendMode) {
+            case BlendMode::Add:      pipelineState = ocioSet->psoAdd.Get();      break;
+            case BlendMode::Multiply: pipelineState = ocioSet->psoMultiply.Get(); break;
+            case BlendMode::Screen:   pipelineState = ocioSet->psoScreen.Get();   break;
+            default:                  pipelineState = ocioSet->psoNormal.Get();   break;
+        }
+    } else {
+        switch (blendMode) {
+            case BlendMode::Add:      pipelineState = m_texturedPipelineStateAdd.Get();      break;
+            case BlendMode::Multiply: pipelineState = m_texturedPipelineStateMultiply.Get(); break;
+            case BlendMode::Screen:   pipelineState = m_texturedPipelineStateScreen.Get();   break;
+            default:                  pipelineState = m_texturedPipelineState.Get();         break;
+        }
     }
 
     m_commandList->SetPipelineState(pipelineState);
@@ -2391,8 +2407,15 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     memcpy(m_mappingSurfaceConstantRingMapped + slotOffset,
            &constants, sizeof(MappingSurfaceConstants));
 
-    // Set mapping surface pipeline state
-    m_commandList->SetPipelineState(m_mappingSurfacePipelineState.Get());
+    // Set mapping surface pipeline state. Phase C.12 #5: pick the OCIO-spliced
+    // PSO when an active display processor is bound; otherwise fall back to
+    // the offline-compiled gamma-only path.
+    ID3D12PipelineState* mappingPso = m_mappingSurfacePipelineState.Get();
+    if (m_activeDisplayProcessor) {
+        auto p = getOrBuildOcioMappingSurfacePso(*m_activeDisplayProcessor);
+        if (p) mappingPso = p.Get();
+    }
+    m_commandList->SetPipelineState(mappingPso);
     m_commandList->SetGraphicsRootSignature(m_mappingSurfaceRootSignature.Get());
 
     // Set descriptor heap (only if not already set)
@@ -3556,7 +3579,13 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     m_commandList->RSSetScissorRects(1, &scissor);
     m_commandList->OMSetRenderTargets(1, &m_captureRtv, FALSE, nullptr);
 
-    m_commandList->SetPipelineState(m_capturePipelineState.Get());
+    // Phase C.12 #5: prefer the OCIO-spliced capture PSO so the captured
+    // image matches what mapping_surface_ps puts on a sRGB monitor. Falls
+    // back to the linearToSrgb stub from C.12 #3 when OCIO isn't bound.
+    ID3D12PipelineState* capturePso = m_ocioCapturePipelineState
+        ? m_ocioCapturePipelineState.Get()
+        : m_capturePipelineState.Get();
+    m_commandList->SetPipelineState(capturePso);
     m_commandList->SetGraphicsRootSignature(m_captureRootSignature.Get());
     m_commandList->SetGraphicsRootDescriptorTable(0, target.srvHandle);
 
@@ -3629,6 +3658,421 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     D3D12_RANGE writeRange = { 0, 0 };
     m_screenshotStagingBuffer->Unmap(0, &writeRange);
     return true;
+}
+
+// =============================================================================
+// Phase C.12 #5 — OCIO PSO splicing + runtime DXC compile + draw-time selection.
+// (entity-namespace includes + std headers live at the top of this file —
+// dropping them here put std symbols inside the entity namespace.)
+// =============================================================================
+
+namespace {
+
+// Splice OCIO's HLSL function source onto a base pixel shader source.
+// Returns the concatenated HLSL ready to feed RuntimeShaderCompiler. The
+// `-D ENTITY_OCIO_*_FN=<name>` macro is passed as a separate compile flag,
+// not embedded here.
+std::string spliceOcioFunction(const std::string& ocioFunctionSource,
+                               const std::string& baseShaderSource) {
+    // OCIO emits a self-contained block of static const arrays + helper
+    // functions + the main fn. We just prepend it. The base shader's
+    // #include "common.hlsli" stays as-is and DXC resolves it via the
+    // include dir we pass.
+    std::string out;
+    out.reserve(ocioFunctionSource.size() + baseShaderSource.size() + 64);
+    out += "// === OCIO-emitted transform (Phase C.12 #5) ===\n";
+    out += ocioFunctionSource;
+    out += "\n// === host shader follows ===\n";
+    out += baseShaderSource;
+    return out;
+}
+
+// Build the standard `D` flag DXC consumes to define the macro.
+std::wstring makeDxcDefineFlag(const std::string& macro, const std::string& value) {
+    std::string s = "-D" + macro + "=" + value;
+    std::wstring w;
+    w.reserve(s.size());
+    for (char c : s) w.push_back(static_cast<wchar_t>(c));
+    return w;
+}
+
+} // anonymous namespace
+
+std::string D3D12Renderer::loadShaderSourceFromExeDir(const std::string& filename) {
+    namespace fs = std::filesystem;
+    fs::path exeDir;
+    {
+        wchar_t buf[MAX_PATH] = {};
+        DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) exeDir = fs::path(buf).parent_path();
+    }
+    fs::path full = exeDir / "shaders" / filename;
+    std::ifstream in(full, std::ios::binary);
+    if (!in) {
+        std::cerr << "[OCIO/PSO] missing shader source: " << full.string() << "\n";
+        return {};
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+bool D3D12Renderer::loadOcioShaderSources() {
+    m_compositePsSource       = loadShaderSourceFromExeDir("composite_ps.hlsl");
+    m_compositeBlendPsSource  = loadShaderSourceFromExeDir("composite_blend_ps.hlsl");
+    m_mappingSurfacePsSource  = loadShaderSourceFromExeDir("mapping_surface_ps.hlsl");
+    m_acesCapturePsSource     = loadShaderSourceFromExeDir("aces_capture_ps.hlsl");
+    return !m_compositePsSource.empty()
+        && !m_compositeBlendPsSource.empty()
+        && !m_mappingSurfacePsSource.empty()
+        && !m_acesCapturePsSource.empty();
+}
+
+void D3D12Renderer::setOcioManager(OcioManager* mgr) {
+    if (m_ocioManager == mgr) return;
+    waitForGpu();
+
+    m_ocioManager = mgr;
+    m_ocioCompositePsoCache.clear();
+    m_ocioMappingSurfacePsoCache.clear();
+    m_ocioCapturePipelineState.Reset();
+    m_activeInputProcessor.reset();
+    m_activeDisplayProcessor.reset();
+    m_activeCaptureProcessor.reset();
+
+    if (!mgr) return;
+
+    if (!loadOcioShaderSources()) {
+        std::cerr << "[OCIO/PSO] could not load shader source files; OCIO PSO "
+                     "splice disabled, falling back to offline-compiled paths\n";
+        m_ocioManager = nullptr;
+        return;
+    }
+
+    // Pre-bake the default input + display + capture PSOs so the first
+    // frame doesn't pay a runtime DXC cost.
+    // Working space is hard-coded to ACEScg until subtask 7 makes it a
+    // Settings field.
+    auto inputProc = mgr->buildInputProcessor("Linear Rec.709 (sRGB)", "ACEScg");
+    if (inputProc) {
+        m_activeInputProcessor = inputProc;
+        if (!getOrBuildOcioCompositePsoSet(*inputProc)) {
+            std::cerr << "[OCIO/PSO] failed to build default input PSO set\n";
+        }
+    }
+
+    const std::string display = mgr->getDefaultDisplay();
+    const std::string view    = mgr->getDefaultView(display);
+    if (!display.empty() && !view.empty()) {
+        auto dispProc = mgr->buildDisplayProcessor("ACEScg", display, view);
+        if (dispProc) {
+            m_activeDisplayProcessor = dispProc;
+            if (!getOrBuildOcioMappingSurfacePso(*dispProc)) {
+                std::cerr << "[OCIO/PSO] failed to build default mapping_surface PSO\n";
+            }
+        }
+    }
+
+    // Capture PSO is pinned to the canonical "sRGB output" pair so the
+    // golden tests hash a portable image regardless of whether the user
+    // configures a fancier display+view for the live output.
+    // Use the same display+view we picked for the live output if it's the
+    // sRGB one; otherwise look for the sRGB Display.
+    std::string capDisplay, capView;
+    for (const auto& d : mgr->listDisplays()) {
+        if (d.find("sRGB") != std::string::npos) {
+            capDisplay = d;
+            for (const auto& v : mgr->listViews(d)) {
+                if (v.find("ACES") != std::string::npos) { capView = v; break; }
+            }
+            if (capView.empty() && !mgr->listViews(d).empty()) {
+                capView = mgr->getDefaultView(d);
+            }
+            break;
+        }
+    }
+    if (capDisplay.empty()) { capDisplay = display; capView = view; }
+
+    if (!capDisplay.empty() && !capView.empty()) {
+        auto capProc = mgr->buildDisplayProcessor("ACEScg", capDisplay, capView);
+        if (capProc) {
+            m_activeCaptureProcessor = capProc;
+            m_ocioCapturePipelineState = buildOcioCapturePso(*capProc);
+            if (!m_ocioCapturePipelineState) {
+                std::cerr << "[OCIO/PSO] failed to build OCIO capture PSO; "
+                             "falling back to sRGB-stub\n";
+            }
+        }
+    }
+}
+
+const D3D12Renderer::OcioCompositePsoSet*
+D3D12Renderer::getOrBuildOcioCompositePsoSet(const OcioGpuProcessor& input) {
+    const std::string& key = input.functionName();
+    auto it = m_ocioCompositePsoCache.find(key);
+    if (it != m_ocioCompositePsoCache.end()) return &it->second;
+
+    namespace fs = std::filesystem;
+    wchar_t exeBuf[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+    fs::path includeDir = (n > 0 && n < MAX_PATH)
+                            ? fs::path(exeBuf).parent_path() / L"shaders"
+                            : fs::path();
+    std::vector<std::wstring> includeDirs{ includeDir.wstring() };
+    std::vector<std::wstring> defines{ makeDxcDefineFlag("ENTITY_OCIO_INPUT_FN", input.functionName()) };
+
+    const std::string compositeSrc      = spliceOcioFunction(input.shaderText(), m_compositePsSource);
+    const std::string compositeBlendSrc = spliceOcioFunction(input.shaderText(), m_compositeBlendPsSource);
+
+    auto compositeBlob      = m_runtimeCompiler.compileAndCache(compositeSrc, "PSMain", "ps_6_0", includeDirs, defines);
+    auto compositeBlendBlob = m_runtimeCompiler.compileAndCache(compositeBlendSrc, "PSMain", "ps_6_0", includeDirs, defines);
+    if (!compositeBlob.success || !compositeBlendBlob.success) {
+        if (!compositeBlob.success)
+            std::cerr << "[OCIO/PSO] composite_ps compile failed for '" << key
+                      << "':\n" << compositeBlob.errors << "\n";
+        if (!compositeBlendBlob.success)
+            std::cerr << "[OCIO/PSO] composite_blend_ps compile failed for '" << key
+                      << "':\n" << compositeBlendBlob.errors << "\n";
+        return nullptr;
+    }
+
+    // Re-use the existing offline VS — only the PS changes for OCIO.
+    ComPtr<ID3DBlob> vsBlob;
+    if (loadCompiledShader(L"shaders/composite_vs.cso", &vsBlob) != Result::Success) {
+        std::cerr << "[OCIO/PSO] missing composite_vs.cso\n";
+        return nullptr;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    auto makePsoBase = [&](ID3D12RootSignature* rs,
+                           const D3D12_BLEND_DESC& blend,
+                           IDxcBlob* psBlob,
+                           ComPtr<ID3D12PipelineState>& outPso) -> bool {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+        d.pRootSignature = rs;
+        d.InputLayout = { inputLayout, _countof(inputLayout) };
+        d.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
+        d.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
+        d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        d.RasterizerState.DepthClipEnable = TRUE;
+        d.BlendState = blend;
+        d.DepthStencilState.DepthEnable = FALSE;
+        d.DepthStencilState.StencilEnable = FALSE;
+        d.SampleMask = UINT_MAX;
+        d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        d.NumRenderTargets = 1;
+        d.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; // FP16 compose target
+        d.SampleDesc.Count = 1;
+        HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&outPso));
+        if (FAILED(hr)) {
+            std::cerr << "[OCIO/PSO] CreateGraphicsPipelineState failed hr=0x"
+                      << std::hex << hr << std::dec << "\n";
+            return false;
+        }
+        return true;
+    };
+
+    // Blend descs for the four fixed-function modes — pulled from the
+    // existing offline createTexturedPipelineState bodies. Kept inline
+    // here so the OCIO PSO builder is self-contained.
+    auto rtNormal = []{
+        D3D12_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = TRUE;
+        b.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        b.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        b.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        return b;
+    }();
+    auto rtAdd = []{
+        D3D12_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = TRUE;
+        b.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        b.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+        b.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        b.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+        b.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        return b;
+    }();
+    auto rtMultiply = []{
+        D3D12_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = TRUE;
+        b.RenderTarget[0].SrcBlend = D3D12_BLEND_DEST_COLOR;
+        b.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        b.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        return b;
+    }();
+    auto rtScreen = []{
+        D3D12_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = TRUE;
+        b.RenderTarget[0].SrcBlend = D3D12_BLEND_INV_DEST_COLOR;
+        b.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+        b.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        b.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        return b;
+    }();
+    auto rtReplace = []{
+        D3D12_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = FALSE;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        return b;
+    }();
+
+    OcioCompositePsoSet set;
+    bool ok = true;
+    ok &= makePsoBase(m_texturedRootSignature.Get(), rtNormal,    compositeBlob.blob.Get(),       set.psoNormal);
+    ok &= makePsoBase(m_texturedRootSignature.Get(), rtAdd,       compositeBlob.blob.Get(),       set.psoAdd);
+    ok &= makePsoBase(m_texturedRootSignature.Get(), rtMultiply,  compositeBlob.blob.Get(),       set.psoMultiply);
+    ok &= makePsoBase(m_texturedRootSignature.Get(), rtScreen,    compositeBlob.blob.Get(),       set.psoScreen);
+    ok &= makePsoBase(m_blendRootSignature.Get(),    rtReplace,   compositeBlendBlob.blob.Get(),  set.psoBlend);
+    if (!ok) {
+        std::cerr << "[OCIO/PSO] partial PSO build failure for '" << key << "'\n";
+        return nullptr;
+    }
+
+    auto [insertedIt, _] = m_ocioCompositePsoCache.try_emplace(key, std::move(set));
+    return &insertedIt->second;
+}
+
+ComPtr<ID3D12PipelineState>
+D3D12Renderer::getOrBuildOcioMappingSurfacePso(const OcioGpuProcessor& display) {
+    const std::string& key = display.functionName();
+    auto it = m_ocioMappingSurfacePsoCache.find(key);
+    if (it != m_ocioMappingSurfacePsoCache.end()) return it->second;
+
+    namespace fs = std::filesystem;
+    wchar_t exeBuf[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+    fs::path includeDir = (n > 0 && n < MAX_PATH)
+                            ? fs::path(exeBuf).parent_path() / L"shaders"
+                            : fs::path();
+    std::vector<std::wstring> includeDirs{ includeDir.wstring() };
+    std::vector<std::wstring> defines{ makeDxcDefineFlag("ENTITY_OCIO_DISPLAY_FN", display.functionName()) };
+
+    const std::string src = spliceOcioFunction(display.shaderText(), m_mappingSurfacePsSource);
+    auto blob = m_runtimeCompiler.compileAndCache(src, "PSMain", "ps_6_0", includeDirs, defines);
+    if (!blob.success) {
+        std::cerr << "[OCIO/PSO] mapping_surface_ps compile failed for '" << key
+                  << "':\n" << blob.errors << "\n";
+        return {};
+    }
+
+    ComPtr<ID3DBlob> vsBlob;
+    if (loadCompiledShader(L"shaders/mapping_surface_vs.cso", &vsBlob) != Result::Success) {
+        std::cerr << "[OCIO/PSO] missing mapping_surface_vs.cso\n";
+        return {};
+    }
+
+    // Mirror the offline mapping-surface PSO blend state — straight alpha.
+    D3D12_BLEND_DESC bd = {};
+    bd.RenderTarget[0].BlendEnable        = TRUE;
+    bd.RenderTarget[0].SrcBlend           = D3D12_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend          = D3D12_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp            = D3D12_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha      = D3D12_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha     = D3D12_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha       = D3D12_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+    d.pRootSignature = m_mappingSurfaceRootSignature.Get();
+    d.InputLayout = { inputLayout, _countof(inputLayout) };
+    d.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
+    d.PS = { blob.blob->GetBufferPointer(), blob.blob->GetBufferSize() };
+    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    d.RasterizerState.DepthClipEnable = TRUE;
+    d.BlendState = bd;
+    d.DepthStencilState.DepthEnable = FALSE;
+    d.DepthStencilState.StencilEnable = FALSE;
+    d.SampleMask = UINT_MAX;
+    d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    d.NumRenderTargets = 1;
+    d.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; // mapping_surface writes to swap chain
+    d.SampleDesc.Count = 1;
+
+    ComPtr<ID3D12PipelineState> pso;
+    HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+        std::cerr << "[OCIO/PSO] mapping_surface CreateGraphicsPipelineState failed hr=0x"
+                  << std::hex << hr << std::dec << "\n";
+        return {};
+    }
+
+    m_ocioMappingSurfacePsoCache.emplace(key, pso);
+    return pso;
+}
+
+ComPtr<ID3D12PipelineState>
+D3D12Renderer::buildOcioCapturePso(const OcioGpuProcessor& display) {
+    namespace fs = std::filesystem;
+    wchar_t exeBuf[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+    fs::path includeDir = (n > 0 && n < MAX_PATH)
+                            ? fs::path(exeBuf).parent_path() / L"shaders"
+                            : fs::path();
+    std::vector<std::wstring> includeDirs{ includeDir.wstring() };
+    std::vector<std::wstring> defines{ makeDxcDefineFlag("ENTITY_OCIO_DISPLAY_FN", display.functionName()) };
+
+    const std::string src = spliceOcioFunction(display.shaderText(), m_acesCapturePsSource);
+    auto psBlob = m_runtimeCompiler.compileAndCache(src, "PSMain", "ps_6_0", includeDirs, defines);
+    if (!psBlob.success) {
+        std::cerr << "[OCIO/PSO] aces_capture_ps compile failed for '" << display.functionName()
+                  << "':\n" << psBlob.errors << "\n";
+        return {};
+    }
+
+    ComPtr<ID3DBlob> vsBlob;
+    if (loadCompiledShader(L"shaders/aces_capture_vs.cso", &vsBlob) != Result::Success) {
+        std::cerr << "[OCIO/PSO] missing aces_capture_vs.cso\n";
+        return {};
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+    d.pRootSignature       = m_captureRootSignature.Get();
+    d.VS                   = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
+    d.PS                   = { psBlob.blob->GetBufferPointer(), psBlob.blob->GetBufferSize() };
+    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    d.RasterizerState.DepthClipEnable = TRUE;
+    d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    d.DepthStencilState.DepthEnable = FALSE;
+    d.SampleMask = UINT_MAX;
+    d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    d.NumRenderTargets = 1;
+    d.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; // capture target is UNORM8
+    d.SampleDesc.Count = 1;
+
+    ComPtr<ID3D12PipelineState> pso;
+    HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+        std::cerr << "[OCIO/PSO] capture CreateGraphicsPipelineState failed hr=0x"
+                  << std::hex << hr << std::dec << "\n";
+        return {};
+    }
+    return pso;
 }
 
 } // namespace entity
