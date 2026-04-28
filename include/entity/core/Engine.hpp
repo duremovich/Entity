@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types.hpp"
+#include "entity/core/SceneState.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/media/TranscodeManager.hpp"
@@ -80,6 +81,12 @@ public:
      */
     entt::registry& getRegistry() { return m_registry; }
     const entt::registry& getRegistry() const { return m_registry; }
+
+    // Phase D entry: wraps m_registry behind a Director/Renderer-aware
+    // interface. New code added in subtasks 4+ uses SceneState::ReadHandle
+    // / WriteHandle. Existing call sites continue to use getRegistry().
+    SceneState& getSceneState() { return m_sceneState; }
+    const SceneState& getSceneState() const { return m_sceneState; }
 
     /**
      * Get the D3D12 renderer.
@@ -361,6 +368,10 @@ private:
 private:
     // ECS registry
     entt::registry m_registry;
+
+    // Director/Renderer access seam over m_registry. Declared after the
+    // registry so the in-class member-initializer-list ordering is sound.
+    SceneState m_sceneState{m_registry};
 
     // Core subsystems
     std::unique_ptr<D3D12Renderer> m_renderer;
