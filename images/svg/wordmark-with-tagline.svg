@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 600" font-family="&#39;Space Grotesk&#39;, sans-serif">
+  <defs>
+    
+    <linearGradient id="wm-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="2000" height="600" fill="#1f0a35"></rect>
+  <text x="1000" y="270" text-anchor="middle" dominant-baseline="alphabetic" font-size="380" font-weight="600" letter-spacing="-9.5" fill="url(#wm-grad)">entity</text>
+  <text x="1000" y="370" text-anchor="middle" font-size="56" font-weight="500" letter-spacing="16" fill="#ff7a2e">MEDIA SERVER</text>
+</svg>
