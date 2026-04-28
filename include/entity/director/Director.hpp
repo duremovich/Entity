@@ -19,15 +19,13 @@ class SceneState;
 // per-clip math), as opposed to the Renderer half that decides *how* to put
 // pixels on the GPU. Created by Engine, lives for Engine's lifetime.
 //
-// In this milestone (Phase D entry, subtask 4) Director just owns the
-// subsystems and Engine continues to call into them directly via raw-pointer
-// shortcuts. Subtask 6 will split PlaybackController into a Director-side
-// PlaybackTimeAuthority and a Renderer-side PlaybackPresenter; subtask 8
-// turns the Director->Renderer per-tick state-snapshot into a bus message.
-//
-// AnimationSystem is referenced here as a non-owning pointer set after
-// registerSystem(); subtask 5 will replace the Engine m_systems vector with
-// explicit named ownership and Director will take the unique_ptr.
+// In this milestone (Phase D entry, subtask 5) Director owns the
+// subsystems (including AnimationSystem now that Engine's m_systems vector
+// has gone away) and Engine continues to call into them directly via raw-
+// pointer shortcuts. Subtask 6 will split PlaybackController into a
+// Director-side PlaybackTimeAuthority and a Renderer-side
+// PlaybackPresenter; subtask 8 turns the Director->Renderer per-tick
+// state-snapshot into a bus message.
 class Director {
 public:
     // `renderer` is forwarded to ProjectManager::initialize so it can issue
@@ -47,16 +45,13 @@ public:
     ProjectManager* getProjectManager()     noexcept { return m_projectManager.get(); }
     TranscodeManager* getTranscodeManager() noexcept { return m_transcodeManager.get(); }
     CommandDispatcher* getCommandDispatcher() noexcept { return m_commandDispatcher.get(); }
+    AnimationSystem* getAnimationSystem()   noexcept { return m_animationSystem.get(); }
 
     const Timeline* getTimeline()                 const noexcept { return m_timeline.get(); }
     const ProjectManager* getProjectManager()     const noexcept { return m_projectManager.get(); }
     const TranscodeManager* getTranscodeManager() const noexcept { return m_transcodeManager.get(); }
     const CommandDispatcher* getCommandDispatcher() const noexcept { return m_commandDispatcher.get(); }
-
-    // Non-owning. Engine sets this after registering the system into its
-    // m_systems vector. Subtask 5 promotes this to unique_ptr ownership.
-    void setAnimationSystem(AnimationSystem* s) noexcept { m_animationSystem = s; }
-    AnimationSystem* getAnimationSystem() noexcept { return m_animationSystem; }
+    const AnimationSystem* getAnimationSystem()   const noexcept { return m_animationSystem.get(); }
 
     // SceneState seam. Director writes the registry during its tick (clip
     // creation, keyframe evaluation, ProjectManager load). Subtask 8's
@@ -72,8 +67,7 @@ private:
     std::unique_ptr<ProjectManager>    m_projectManager;
     std::unique_ptr<TranscodeManager>  m_transcodeManager;
     std::unique_ptr<CommandDispatcher> m_commandDispatcher;
-
-    AnimationSystem* m_animationSystem{nullptr};
+    std::unique_ptr<AnimationSystem>   m_animationSystem;
 };
 
 } // namespace entity

@@ -5,12 +5,9 @@
 
 #ifdef _WIN32
 #include <wrl/client.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
 using Microsoft::WRL::ComPtr;
-
-// Forward declarations for DXGI/D3D12 types
-struct IDXGIOutput;
-struct ID3D12Resource;
-struct IDXGISwapChain3;
 #endif
 
 namespace entity {

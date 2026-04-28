@@ -5,7 +5,6 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/media/TranscodeManager.hpp"
-#include "entity/systems/System.hpp"
 #include <entt/entt.hpp>
 #include <memory>
 #include <optional>
@@ -20,7 +19,6 @@ namespace entity {
 
 // Forward declarations
 class IRenderer;
-class D3D12Renderer;  // Owned internally; external callers get IRenderer*.
 class Timeline;
 class WindowManager;
 class PlaybackController;
@@ -32,7 +30,11 @@ class OutputManager;
 class FrameCache;
 class OcioManager;
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
-                      // TranscodeManager, CommandDispatcher (subtask 4).
+                      // TranscodeManager, CommandDispatcher,
+                      // AnimationSystem (subtasks 4 + 5).
+class Renderer;       // Phase D entry — owns D3D12Renderer, OutputManager,
+                      // FrameCache, OcioManager, CompositorSystem,
+                      // DecodeSystem (subtask 5).
 struct DecodedFrame;
 // class Transport;
 
@@ -107,25 +109,34 @@ public:
 
     /**
      * Get the Director (Phase D entry — owns Timeline, ProjectManager,
-     * TranscodeManager, CommandDispatcher). Returns null until initialize().
+     * TranscodeManager, CommandDispatcher, AnimationSystem). Returns null
+     * until initialize().
      */
     Director* getDirector() { return m_director.get(); }
     const Director* getDirector() const { return m_director.get(); }
 
     /**
+     * Get the Renderer service (Phase D entry — owns D3D12Renderer,
+     * OutputManager, FrameCache, OcioManager, CompositorSystem,
+     * DecodeSystem). Returns null until initialize().
+     */
+    Renderer* getRendererService() { return m_rendererService.get(); }
+    const Renderer* getRendererService() const { return m_rendererService.get(); }
+
+    /**
      * Get the OutputManager (display enumeration + physical output driving).
      */
-    OutputManager* getOutputManager() { return m_outputManager.get(); }
+    OutputManager* getOutputManager() { return m_outputManager; }
 
     /**
      * Get the engine-global OcioManager (Phase C.12).
      */
-    OcioManager* getOcioManager() { return m_ocioManager.get(); }
+    OcioManager* getOcioManager() { return m_ocioManager; }
 
     /**
      * Get the engine-global FrameCache (decoded frames for all active clips).
      */
-    FrameCache* getFrameCache() { return m_frameCache.get(); }
+    FrameCache* getFrameCache() { return m_frameCache; }
 
     // TODO: Implement this when class is ready
     // Transport* getTransport() { return m_transport.get(); }
@@ -212,12 +223,6 @@ public:
      * Returns nullptr if no media is loaded.
      */
     const Decoder* getDecoder() const { return m_decoder.get(); }
-
-    /**
-     * Register a system with the engine.
-     * Systems are updated in registration order.
-     */
-    void registerSystem(std::unique_ptr<System> system);
 
     /**
      * Handle window resize event.
@@ -382,16 +387,31 @@ private:
     // registry so the in-class member-initializer-list ordering is sound.
     SceneState m_sceneState{m_registry};
 
+    // Phase D entry: Renderer service owns the GPU-side stack
+    // (D3D12Renderer, OutputManager, FrameCache, OcioManager,
+    // CompositorSystem, DecodeSystem, TestSystem). Declared *before*
+    // m_director so it constructs first (Director's ProjectManager wants
+    // an IRenderer*) and *before* the raw-pointer shortcuts below so the
+    // shortcuts stay valid until shutdown explicitly nulls them.
+    std::unique_ptr<Renderer> m_rendererService;
+
     // Phase D entry: Director owns Timeline, ProjectManager,
-    // TranscodeManager, CommandDispatcher. Declared *before* the raw-pointer
-    // shortcuts so destructor order tears the subsystems down (m_director
-    // last) only after the shortcuts are no longer used. The unique_ptr
-    // also outlives PlaybackController etc., which hold raw pointers into
-    // these owned subsystems.
+    // TranscodeManager, CommandDispatcher, AnimationSystem. Declared
+    // *before* the raw-pointer shortcuts so destructor order tears the
+    // subsystems down (m_director last) only after the shortcuts are no
+    // longer used. The unique_ptr also outlives PlaybackController etc.,
+    // which hold raw pointers into these owned subsystems.
     std::unique_ptr<Director> m_director;
 
-    // Core subsystems
-    std::unique_ptr<D3D12Renderer> m_renderer;
+    // Raw shortcuts into m_rendererService. Set during initialize(); valid
+    // for the rest of Engine's lifetime. Existing call sites use the member
+    // unchanged. Subtask 8 will replace the per-tick reads with the
+    // RenderFrame bus message.
+    IRenderer*       m_renderer{nullptr};
+    OutputManager*   m_outputManager{nullptr};
+    FrameCache*      m_frameCache{nullptr};
+    OcioManager*     m_ocioManager{nullptr};
+    DecodeSystem*    m_decodeSystem{nullptr};
 
     // Raw shortcut into m_director->getTimeline(). Set during initialize();
     // valid for the rest of Engine's lifetime. Existing call sites use the
@@ -403,28 +423,15 @@ private:
     // Raw shortcut into m_director->getCommandDispatcher().
     CommandDispatcher* m_commandDispatcher{nullptr};
 
-    std::unique_ptr<OutputManager> m_outputManager;
+    // Raw shortcut into m_director->getAnimationSystem(). Director owns
+    // AnimationSystem (Phase D entry, subtask 5).
+    AnimationSystem* m_animationSystem{nullptr};
 
     // Machine-global settings (frame-cache budget etc). Loaded from
     // settingsPath() at construction; persisted by saveSettings() whenever
     // the user clicks OK in the Preferences dialog. Per-project state lives
     // in ProjectManager / .entity files; this is the other side of that line.
     Settings m_settings{};
-
-    // Engine-global frame cache. Sized from m_settings.frameCacheBytes at
-    // initialize() and re-budgeted live when the user changes the value in
-    // Preferences. Owned here; injected by raw pointer into DecodeSystem
-    // (producer) and PlaybackController (consumer).
-    std::unique_ptr<FrameCache> m_frameCache;
-
-    // OpenColorIO config + processor cache (Phase C.12 #1, wired into the
-    // renderer in #5). Owned here; D3D12Renderer holds a raw pointer.
-    std::unique_ptr<OcioManager> m_ocioManager;
-
-    // Systems
-    std::vector<std::unique_ptr<System>> m_systems;
-    DecodeSystem* m_decodeSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
-    AnimationSystem* m_animationSystem{nullptr};  // Raw pointer for direct access (owned by m_systems)
 
     // Non-owning ref to the active TimelineWidget. Used by the Edit menu and
     // keyboard handler to read the current range selection. Owned by the

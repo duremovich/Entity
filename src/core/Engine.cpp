@@ -1,7 +1,8 @@
 #include "entity/core/Engine.hpp"
 #include "entity/director/Director.hpp"
+#include "entity/renderer/Renderer.hpp"
 #include "entity/core/PlaybackController.hpp"
-#include "entity/render/D3D12Renderer.hpp"
+#include "entity/render/IRenderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/TimelineWindow.hpp"
@@ -11,7 +12,6 @@
 #include "entity/ui/MappingWindow.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
 #include "entity/ui/ScreensWindow.hpp"
-#include "entity/systems/TestSystem.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
@@ -130,36 +130,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Set keyboard input callback
     glfwSetKeyCallback(m_window, keyCallback);
 
-    // Initialize D3D12 renderer
-    m_renderer = std::make_unique<D3D12Renderer>();
-    Result rendererResult = m_renderer->initialize(m_window, windowWidth, windowHeight);
-    if (rendererResult != Result::Success) {
-        std::cerr << "Failed to initialize D3D12 renderer!" << std::endl;
-        return rendererResult;
-    }
-
-    // Output manager — enumerates displays and owns physical-output windows.
-    // Constructed before systems so any scripted output setup can work.
-    m_outputManager = std::make_unique<OutputManager>(m_renderer.get(), m_registry);
-    if (m_outputManager->initialize() != Result::Success) {
-        std::cerr << "Failed to initialize OutputManager!" << std::endl;
-        return Result::Failure;
-    }
-
-    // Register compositor system (renders layers to screen)
-    registerSystem(std::make_unique<CompositorSystem>(m_renderer.get()));
-
-    // Register test system to validate infrastructure
-    registerSystem(std::make_unique<TestSystem>());
-
-    // Initialize all registered systems
-    for (auto& system : m_systems) {
-        system->initialize(m_registry);
-    }
-
-    // Load machine-global settings up front — the FrameCache below sizes
-    // itself from m_settings.frameCacheBytes, and the Preferences dialog
-    // (created below) reads the loaded values to populate its initial state.
+    // Load machine-global settings up front -- the Renderer service sizes
+    // its FrameCache from m_settings.frameCacheBytes, and the Preferences
+    // dialog (wired below) reads the loaded values to populate its initial
+    // state.
     m_settings = loadSettings();
     publishActiveSettings(m_settings);
     std::cout << "  Settings loaded: frameCacheBytes="
@@ -167,44 +141,61 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
               << " from " << reinterpret_cast<const char*>(settingsPath().u8string().c_str())
               << std::endl;
 
-    // Engine-global frame cache. Replaces the per-clip FrameRingBuffer:
-    // decode workers push into it, PlaybackController reads via lease.
-    // Budget is the user-tunable knob (Preferences dialog), with live
-    // re-budgeting wired further down via setSettingsAppliedCallback.
-    m_frameCache = std::make_unique<FrameCache>(static_cast<size_t>(m_settings.frameCacheBytes));
-
-    // OCIO color-management (Phase C.12 #1, consumed by D3D12Renderer in #5).
-    // Empty path → bundled ACES Studio Config 1.3 via CreateFromBuiltinConfig.
-    // Settings.ocioConfigPath (subtask 7) will let users override.
-    m_ocioManager = std::make_unique<OcioManager>();
-    if (!m_ocioManager->initialize()) {
-        std::cerr << "Warning: OCIO config init fell back to identity — color "
-                     "management will be a no-op until a valid config is loaded.\n";
+    // Phase D entry: Renderer service owns the GPU stack -- D3D12Renderer,
+    // OutputManager, FrameCache, OcioManager, CompositorSystem,
+    // DecodeSystem, TestSystem. Construction order inside mirrors what
+    // Engine used to do step-by-step.
+    m_rendererService = std::make_unique<Renderer>(m_registry, m_sceneState);
+    if (Result r = m_rendererService->initialize(m_window, windowWidth, windowHeight,
+                                                 static_cast<size_t>(m_settings.frameCacheBytes));
+        r != Result::Success) {
+        std::cerr << "Failed to initialize Renderer service!" << std::endl;
+        return r;
     }
-    if (m_renderer) {
-        m_renderer->setOcioManager(m_ocioManager.get());
-    }
+    m_renderer       = m_rendererService->getRenderer();
+    m_outputManager  = m_rendererService->getOutputManager();
+    m_frameCache     = m_rendererService->getFrameCache();
+    m_ocioManager    = m_rendererService->getOcioManager();
+    m_decodeSystem   = m_rendererService->getDecodeSystem();
+    std::cout << "  Renderer service initialized (D3D12 + OutputManager + "
+                 "FrameCache + OcioManager + Compositor + Decode)" << std::endl;
 
     // Phase D entry: Director owns Timeline, ProjectManager,
-    // TranscodeManager, CommandDispatcher. Constructed here -- after the
-    // renderer (so ProjectManager::initialize can route through it for
-    // Screen render-target allocation) and before PlaybackController (which
-    // needs a Timeline*). The raw shortcuts below let existing Engine code
-    // continue to use m_timeline / m_projectManager / m_transcodeManager /
-    // m_commandDispatcher unchanged.
-    m_director = std::make_unique<Director>(m_registry, m_sceneState, m_renderer.get());
+    // TranscodeManager, CommandDispatcher, AnimationSystem. Constructed
+    // here -- after the renderer (so ProjectManager::initialize can route
+    // through it for Screen render-target allocation) and before
+    // PlaybackController (which needs a Timeline*). The raw shortcuts
+    // below let existing Engine code continue to use m_timeline /
+    // m_projectManager / m_transcodeManager / m_commandDispatcher /
+    // m_animationSystem unchanged.
+    m_director = std::make_unique<Director>(m_registry, m_sceneState, m_renderer);
     m_timeline          = m_director->getTimeline();
     m_projectManager    = m_director->getProjectManager();
     m_transcodeManager  = m_director->getTranscodeManager();
     m_commandDispatcher = m_director->getCommandDispatcher();
+    m_animationSystem   = m_director->getAnimationSystem();
     std::cout << "  Director initialized (Timeline + ProjectManager + "
-                 "TranscodeManager + CommandDispatcher)" << std::endl;
+                 "TranscodeManager + CommandDispatcher + AnimationSystem)" << std::endl;
 
-    // Initialize playback controller (owns frame timing + per-frame seek-aware updates).
-    // DecodeSystem is injected below after registration.
-    m_playbackController = std::make_unique<PlaybackController>(m_registry, m_timeline, m_renderer.get());
-    m_playbackController->setFrameCache(m_frameCache.get());
-    // Phase C.12 #9 — let PlaybackController consult MediaLibraryEntry.
+    // Cross-side wiring -- the Director side owns Timeline; the
+    // Renderer-side systems need a raw read-only pointer to it. Subtask 8
+    // replaces this with the per-tick RenderFrame bus message.
+    if (auto* compositor = m_rendererService->getCompositorSystem()) {
+        compositor->setTimeline(m_timeline);
+        compositor->setDebugLogging(false);
+    }
+    if (m_decodeSystem) {
+        m_decodeSystem->setTimeline(m_timeline);
+    }
+
+    // Initialize playback controller (owns frame timing + per-frame seek-
+    // aware updates). Sits across the Director/Renderer boundary today;
+    // subtask 6 splits it into PlaybackTimeAuthority (Director) +
+    // PlaybackPresenter (Renderer).
+    m_playbackController = std::make_unique<PlaybackController>(m_registry, m_timeline, m_renderer);
+    m_playbackController->setFrameCache(m_frameCache);
+    m_playbackController->setDecodeSystem(m_decodeSystem);
+    // Phase C.12 #9 -- let PlaybackController consult MediaLibraryEntry.
     m_playbackController->setProjectManager(m_projectManager);
 
     // Background HAP transcoder cache dir gets set lazily via
@@ -216,43 +207,16 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         this->onClipCreated(clipEntity, filepath);
     });
 
-    // Set timeline on CompositorSystem (system 0) for frame-accurate rendering
-    if (!m_systems.empty()) {
-        if (auto* compositor = dynamic_cast<CompositorSystem*>(m_systems[0].get())) {
-            compositor->setTimeline(m_timeline);
-            compositor->setDebugLogging(false);  // Debug logging disabled
-        }
-    }
-
-    // Register decode system (needs timeline for frame position + cache for output)
-    auto decodeSystem = std::make_unique<DecodeSystem>();
-    decodeSystem->setTimeline(m_timeline);
-    decodeSystem->setFrameCache(m_frameCache.get());
-    m_decodeSystem = decodeSystem.get();  // Keep raw pointer for direct access
-    m_playbackController->setDecodeSystem(m_decodeSystem);
-    registerSystem(std::move(decodeSystem));
-
-    // Register animation system (needs timeline for keyframe evaluation)
-    auto animSystem = std::make_unique<AnimationSystem>();
-    animSystem->setTimeline(m_timeline);
-    m_animationSystem = animSystem.get();  // Keep raw pointer for direct access
-    m_director->setAnimationSystem(m_animationSystem);  // Director-side reference (subtask 5 will own).
-    registerSystem(std::move(animSystem));
-
-    // CommandDispatcher was created by Director above; m_commandDispatcher
-    // is the raw shortcut into it.
-
-    // (Settings + FrameCache were loaded earlier — see Initialize timeline above.)
-
     // Initialize window manager
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
 
     // Lend OcioManager to the Preferences dialog so its Color section can
     // populate color-space / display / view dropdowns from the active OCIO
-    // config. Engine owns OcioManager — it outlives the WindowManager.
+    // config. Renderer service owns OcioManager -- it outlives the
+    // WindowManager.
     if (m_ocioManager) {
-        m_windowManager->setOcioManager(m_ocioManager.get());
+        m_windowManager->setOcioManager(m_ocioManager);
     }
 
     // Parent native modal dialogs (Save/Open) to our GLFW window. Must run
@@ -409,29 +373,22 @@ void Engine::shutdown() {
         m_transcodeManager->joinAll();
     }
 
-    // Shutdown systems in reverse order
-    for (auto it = m_systems.rbegin(); it != m_systems.rend(); ++it) {
-        (*it)->shutdown(m_registry);
-    }
-    m_systems.clear();
-
-    // Shutdown subsystems
-    // TODO: Shutdown systems when they exist
-    // m_transport.reset();
-    // m_timeline.reset();
-    // OutputManager must release its output windows BEFORE the renderer
-    // shuts down — it holds slot IDs into the renderer's swap-chain pool.
-    if (m_outputManager) {
-        m_outputManager->shutdown();
-        m_outputManager.reset();
-    }
-    m_renderer.reset();
+    // Tear down Renderer-service-owned subsystems explicitly. Order inside
+    // Renderer::shutdown(): DecodeSystem (joins worker threads) ->
+    // TestSystem -> CompositorSystem -> OutputManager (releases swap-chain
+    // slots) -> OcioManager -> FrameCache -> D3D12Renderer.
+    m_decodeSystem  = nullptr;
+    m_ocioManager   = nullptr;
+    m_frameCache    = nullptr;
+    m_outputManager = nullptr;
+    m_renderer      = nullptr;
+    m_rendererService.reset();
 
     // Tear down Director-owned subsystems (Timeline, ProjectManager,
-    // TranscodeManager, CommandDispatcher) explicitly so the raw shortcut
-    // pointers stop being live before m_initialized is cleared. (Member
-    // destruction order would also do this; doing it here surfaces order
-    // bugs early instead of at process exit.)
+    // TranscodeManager, CommandDispatcher, AnimationSystem) explicitly so
+    // the raw shortcut pointers stop being live before m_initialized is
+    // cleared. (Member destruction order would also do this; doing it here
+    // surfaces order bugs early instead of at process exit.)
     m_animationSystem    = nullptr;
     m_commandDispatcher  = nullptr;
     m_transcodeManager   = nullptr;
@@ -524,8 +481,9 @@ void Engine::requestExit() {
 }
 
 IRenderer* Engine::getRenderer() {
-    // Upcast from the concrete unique_ptr; external callers see only the interface.
-    return m_renderer.get();
+    // Raw shortcut into m_rendererService->getRenderer(); external callers
+    // see only the interface.
+    return m_renderer;
 }
 
 void Engine::autoSaveTick(double deltaTime) {
@@ -660,11 +618,6 @@ const std::filesystem::path& Engine::getProjectPath() const {
     return m_projectManager ? m_projectManager->projectPath() : kEmpty;
 }
 
-void Engine::registerSystem(std::unique_ptr<System> system) {
-    std::cout << "Registering system: " << system->getName() << std::endl;
-    m_systems.push_back(std::move(system));
-}
-
 void Engine::processEvents() {
     glfwPollEvents();
 
@@ -694,10 +647,18 @@ void Engine::update() {
     }
     auto t2 = std::chrono::high_resolution_clock::now();
 
-    // Update all registered systems except CompositorSystem (index 0)
-    // CompositorSystem is called in render() between beginFrame/endFrame
-    for (size_t i = 1; i < m_systems.size(); ++i) {
-        m_systems[i]->update(m_registry, static_cast<float>(deltaTime));
+    // Update Director + Renderer-side systems by hand. CompositorSystem
+    // stays out of this list -- it must run inside render() between
+    // beginFrame/endFrame so its draw calls land on a recording command
+    // list. Order: Animation (Director) -> Decode (Renderer). DecodeSystem
+    // doesn't depend on Animation; the order is "Director-side first,
+    // Renderer-side second" to match the eventual director.tick() ->
+    // renderer.tick() split (subtask 8).
+    if (m_animationSystem) {
+        m_animationSystem->update(m_registry, static_cast<float>(deltaTime));
+    }
+    if (m_decodeSystem) {
+        m_decodeSystem->update(m_registry, static_cast<float>(deltaTime));
     }
     auto t3 = std::chrono::high_resolution_clock::now();
 
@@ -771,11 +732,12 @@ void Engine::render() {
         // Clear to a nice teal/cyan color (to warm your heart!)
         m_renderer->clear(0.0f, 0.5f, 0.6f, 1.0f);
 
-        // Render all layers via CompositorSystem
-        // CompositorSystem is first in m_systems, so we call it explicitly here
-        if (!m_systems.empty()) {
+        // Render all layers via CompositorSystem. Must run inside the
+        // beginFrame/endFrame window so draws land on the open command
+        // list -- this is why it isn't in update().
+        if (auto* compositor = m_rendererService ? m_rendererService->getCompositorSystem() : nullptr) {
             double deltaTime = m_playbackController ? m_playbackController->getDeltaTime() : 0.0;
-            m_systems[0]->update(m_registry, static_cast<float>(deltaTime));
+            compositor->update(m_registry, static_cast<float>(deltaTime));
         }
 
         // Physical outputs: fan out each enabled output's compose target to
