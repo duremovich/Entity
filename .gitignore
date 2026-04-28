@@ -124,6 +124,9 @@ imgui.ini
 # Script results
 script_result.json
 
+# Local perf diagnostics (--script output from scripts/perf_diag_*.json runs)
+scripts/perf_diag_*.json
+
 # Project files
 *.autosave
 *.backup
