@@ -160,6 +160,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // itself from m_settings.frameCacheBytes, and the Preferences dialog
     // (created below) reads the loaded values to populate its initial state.
     m_settings = loadSettings();
+    publishActiveSettings(m_settings);
     std::cout << "  Settings loaded: frameCacheBytes="
               << (m_settings.frameCacheBytes / (1024ull * 1024ull)) << " MiB"
               << " from " << reinterpret_cast<const char*>(settingsPath().u8string().c_str())
@@ -236,6 +237,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Initialize window manager
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
+
+    // Lend OcioManager to the Preferences dialog so its Color section can
+    // populate color-space / display / view dropdowns from the active OCIO
+    // config. Engine owns OcioManager — it outlives the WindowManager.
+    if (m_ocioManager) {
+        m_windowManager->setOcioManager(m_ocioManager.get());
+    }
 
     // Parent native modal dialogs (Save/Open) to our GLFW window. Must run
     // in --headless too: glfwGetWin32Window on the hidden window is fine,
@@ -322,6 +330,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->setCurrentSettingsCallback([this]() { return m_settings; });
     m_windowManager->setSettingsAppliedCallback([this](const Settings& updated) {
         m_settings = updated;
+        publishActiveSettings(m_settings);
         if (m_frameCache) {
             m_frameCache->setMaxBytes(static_cast<size_t>(m_settings.frameCacheBytes));
         }

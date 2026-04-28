@@ -5,6 +5,8 @@
 
 namespace entity {
 
+class OcioManager;
+
 /**
  * SettingsWindow — modal Preferences dialog.
  *
@@ -22,6 +24,10 @@ class SettingsWindow {
 public:
     using ApplyCallback = std::function<void(const Settings&)>;
 
+    // Returns the chosen .ocio file path, or empty on cancel. Wired to
+    // WindowManager's HWND-aware native dialog by Engine.
+    using BrowseOcioCallback = std::function<std::string()>;
+
     SettingsWindow() = default;
 
     /** Begin showing the modal. Captures `current` as the starting values. */
@@ -33,11 +39,24 @@ public:
     /** Hand back staged values when the user clicks OK. */
     void setApplyCallback(ApplyCallback cb) { m_apply = std::move(cb); }
 
+    /**
+     * Optional non-owning OcioManager pointer. Used to populate the Color
+     * section's color-space / display / view dropdowns from the active
+     * config. Null = the Color section renders raw text fields instead of
+     * dropdowns (graceful fallback when OCIO isn't initialized yet).
+     */
+    void setOcioManager(OcioManager* mgr) { m_ocioManager = mgr; }
+
+    /** Optional callback to open a native file dialog for the OCIO config path. */
+    void setBrowseOcioCallback(BrowseOcioCallback cb) { m_browseOcio = std::move(cb); }
+
 private:
     bool      m_open{false};
     bool      m_pendingOpen{false}; // OpenPopup must run inside the BeginMenuBar pass
     Settings  m_staged{};
     ApplyCallback m_apply;
+    BrowseOcioCallback m_browseOcio;
+    OcioManager* m_ocioManager{nullptr};
 };
 
 } // namespace entity

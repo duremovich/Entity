@@ -12,6 +12,8 @@
 
 namespace entity {
 
+class OcioManager;
+
 /**
  * WindowManager - Central manager for all dockable editor windows.
  *
@@ -166,6 +168,14 @@ public:
     void setSettingsAppliedCallback(SettingsAppliedCallback cb);
 
     /**
+     * Hand the OcioManager to the Preferences modal so its Color section
+     * can populate color-space / display / view dropdowns from the active
+     * config. Pointer is non-owning; caller (Engine) keeps OcioManager
+     * alive for the SettingsWindow's lifetime.
+     */
+    void setOcioManager(OcioManager* mgr) { m_settingsWindow.setOcioManager(mgr); }
+
+    /**
      * Open Windows native file dialog for video selection.
      * Returns the selected file path, or empty string if cancelled.
      */
@@ -195,6 +205,12 @@ public:
      * Returns the selected file path, or empty string if cancelled.
      */
     std::string openOBJFileDialog();
+
+    /**
+     * Open Windows native file dialog for OCIO config selection (.ocio).
+     * Used by the Preferences > Color > Browse... button.
+     */
+    std::string openOcioConfigFileDialog();
 
 private:
     /**

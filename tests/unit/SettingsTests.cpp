@@ -127,3 +127,86 @@ TEST(Settings, SettingsPathReturnsAbsolute) {
     EXPECT_TRUE(p.is_absolute());
     EXPECT_EQ(p.filename().string(), "settings.json");
 }
+
+// ---------------------------------------------------------------------------
+// Phase C.12 #7 — OCIO color settings.
+// ---------------------------------------------------------------------------
+
+TEST(Settings, OcioFieldsHaveExpectedDefaults) {
+    entity::Settings s;
+    EXPECT_TRUE(s.ocioConfigPath.empty());
+    EXPECT_EQ(s.defaultVideoInputCs, "Linear Rec.709 (sRGB)");
+    EXPECT_EQ(s.defaultPngInputCs,   "sRGB - Display");
+    EXPECT_TRUE(s.defaultDisplay.empty());
+    EXPECT_TRUE(s.defaultView.empty());
+}
+
+TEST(Settings, OcioFieldsRoundTrip) {
+    TempFile tf("ocio_roundtrip");
+
+    entity::Settings written;
+    written.ocioConfigPath      = "C:/configs/custom.ocio";
+    written.defaultVideoInputCs = "ACEScg";
+    written.defaultPngInputCs   = "Linear Rec.709 (sRGB)";
+    written.defaultDisplay      = "Rec.1886";
+    written.defaultView         = "Rec.709";
+    ASSERT_TRUE(entity::saveSettings(written, tf.path));
+
+    auto loaded = entity::loadSettings(tf.path);
+    EXPECT_EQ(loaded.ocioConfigPath,      written.ocioConfigPath);
+    EXPECT_EQ(loaded.defaultVideoInputCs, written.defaultVideoInputCs);
+    EXPECT_EQ(loaded.defaultPngInputCs,   written.defaultPngInputCs);
+    EXPECT_EQ(loaded.defaultDisplay,      written.defaultDisplay);
+    EXPECT_EQ(loaded.defaultView,         written.defaultView);
+}
+
+TEST(Settings, OcioFieldsMissingKeysKeepDefaults) {
+    // Forward-compat: a settings.json from a build older than C.12 #7 has
+    // no OCIO keys. Loading must not throw and must leave defaults intact.
+    TempFile tf("ocio_missingkeys");
+    {
+        std::ofstream out(tf.path);
+        out << R"({"version": 1, "frameCacheBytes": 268435456})";
+    }
+    auto loaded = entity::loadSettings(tf.path);
+    EXPECT_EQ(loaded.frameCacheBytes,     268435456ull);
+    EXPECT_TRUE(loaded.ocioConfigPath.empty());
+    EXPECT_EQ(loaded.defaultVideoInputCs, "Linear Rec.709 (sRGB)");
+    EXPECT_EQ(loaded.defaultPngInputCs,   "sRGB - Display");
+    EXPECT_TRUE(loaded.defaultDisplay.empty());
+    EXPECT_TRUE(loaded.defaultView.empty());
+}
+
+TEST(Settings, OcioFieldsWrongTypeKeepsDefaults) {
+    TempFile tf("ocio_wrongtype");
+    {
+        std::ofstream out(tf.path);
+        out << R"({"defaultVideoInputCs": 42, "defaultDisplay": false})";
+    }
+    auto loaded = entity::loadSettings(tf.path);
+    EXPECT_EQ(loaded.defaultVideoInputCs, "Linear Rec.709 (sRGB)");
+    EXPECT_TRUE(loaded.defaultDisplay.empty());
+}
+
+TEST(Settings, ActiveSettingsSnapshotPublishAndRead) {
+    // The decoder threads consult activeSettings() — it must read whatever
+    // Engine last published. Mutex-guarded copy semantics; the snapshot is
+    // independent of the original after publish.
+    entity::Settings s;
+    s.defaultVideoInputCs = "ACEScg";
+    s.defaultPngInputCs   = "Raw";
+    entity::publishActiveSettings(s);
+
+    auto snap = entity::activeSettings();
+    EXPECT_EQ(snap.defaultVideoInputCs, "ACEScg");
+    EXPECT_EQ(snap.defaultPngInputCs,   "Raw");
+
+    // Mutating the original after publish doesn't affect the snapshot
+    // (publishActiveSettings stores a copy).
+    s.defaultVideoInputCs = "MUTATED";
+    auto snap2 = entity::activeSettings();
+    EXPECT_EQ(snap2.defaultVideoInputCs, "ACEScg");
+
+    // Restore defaults so other tests aren't affected by leakage.
+    entity::publishActiveSettings(entity::Settings{});
+}

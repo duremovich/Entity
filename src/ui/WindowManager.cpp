@@ -225,6 +225,11 @@ void WindowManager::setSettingsAppliedCallback(SettingsAppliedCallback cb) {
         [this](const Settings& s) {
             if (m_settingsAppliedCallback) m_settingsAppliedCallback(s);
         });
+    // Wire the OCIO config browse button to our HWND-aware native dialog.
+    // Settings modal can't open IFileOpenDialog itself — it doesn't know the
+    // owner HWND.
+    m_settingsWindow.setBrowseOcioCallback(
+        [this]() { return openOcioConfigFileDialog(); });
 }
 
 void WindowManager::registerWindow(std::unique_ptr<EditorWindow> window) {
@@ -580,6 +585,20 @@ std::string WindowManager::openOBJFileDialog() {
     if (path.empty()) return "";
     std::string utf8 = pathToUtf8(path);
     std::cout << "Selected OBJ file: " << utf8 << std::endl;
+    return utf8;
+}
+
+std::string WindowManager::openOcioConfigFileDialog() {
+    auto path = ui::openFileDialog(
+        m_ownerWindow,
+        L"Choose OCIO Config",
+        {
+            {L"OCIO Config Files", L"*.ocio"},
+            {L"All Files",         L"*.*"},
+        });
+    if (path.empty()) return "";
+    std::string utf8 = pathToUtf8(path);
+    std::cout << "Selected OCIO config: " << utf8 << std::endl;
     return utf8;
 }
 

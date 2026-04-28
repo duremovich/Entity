@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
+#include <mutex>
 
 #ifdef _WIN32
 #include <cstring>
@@ -88,6 +89,18 @@ Settings loadSettings(const std::filesystem::path& path) {
         settings.frameCacheBytes = j["frameCacheBytes"].get<uint64_t>();
     }
 
+    // Phase C.12 #7 — OCIO color management. Strings, all optional.
+    auto readString = [&](const char* key, std::string& dst) {
+        if (j.contains(key) && j[key].is_string()) {
+            dst = j[key].get<std::string>();
+        }
+    };
+    readString("ocioConfigPath",      settings.ocioConfigPath);
+    readString("defaultVideoInputCs", settings.defaultVideoInputCs);
+    readString("defaultPngInputCs",   settings.defaultPngInputCs);
+    readString("defaultDisplay",      settings.defaultDisplay);
+    readString("defaultView",         settings.defaultView);
+
     return settings;
 }
 
@@ -108,7 +121,12 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
 
     json j;
     j["version"] = kSettingsVersion;
-    j["frameCacheBytes"] = settings.frameCacheBytes;
+    j["frameCacheBytes"]      = settings.frameCacheBytes;
+    j["ocioConfigPath"]       = settings.ocioConfigPath;
+    j["defaultVideoInputCs"]  = settings.defaultVideoInputCs;
+    j["defaultPngInputCs"]    = settings.defaultPngInputCs;
+    j["defaultDisplay"]       = settings.defaultDisplay;
+    j["defaultView"]          = settings.defaultView;
 
     // Write to a temp file then rename — atomic on POSIX, near-atomic on
     // Windows (rename-over-existing requires MoveFileEx, but
@@ -136,6 +154,25 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
         return false;
     }
     return true;
+}
+
+namespace {
+// Process-wide snapshot. Worker threads (decoders) read this; Engine writes
+// it once at startup and again on Preferences "OK". Mutex-guarded copy is
+// fine — read frequency is at most decode-rate, write frequency is at most
+// once per user-visible config change.
+std::mutex g_activeSettingsMutex;
+Settings   g_activeSettings;
+}
+
+Settings activeSettings() {
+    std::lock_guard<std::mutex> lock(g_activeSettingsMutex);
+    return g_activeSettings;
+}
+
+void publishActiveSettings(const Settings& s) {
+    std::lock_guard<std::mutex> lock(g_activeSettingsMutex);
+    g_activeSettings = s;
 }
 
 } // namespace entity

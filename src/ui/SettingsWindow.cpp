@@ -1,8 +1,12 @@
 #include "entity/ui/SettingsWindow.hpp"
+#include "entity/color/OcioManager.hpp"
 
 #include <imgui.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 
 namespace entity {
 
@@ -40,6 +44,116 @@ void renderFrameCacheRow(uint64_t& bytes) {
     }
 }
 
+// Render an editable string as an ImGui InputText backed by a fixed buffer.
+// Writes back into `value` if changed. Width is the full available region.
+void renderStringField(const char* label, std::string& value, ImGuiInputTextFlags flags = 0) {
+    char buf[1024];
+    const size_t n = std::min(value.size(), sizeof(buf) - 1);
+    std::memcpy(buf, value.data(), n);
+    buf[n] = '\0';
+    if (ImGui::InputText(label, buf, sizeof(buf), flags)) {
+        value.assign(buf);
+    }
+}
+
+// Pure dropdown with explicit "(config default)" first entry mapping to "".
+// Returns true if `value` changed.
+bool renderColorSpaceCombo(const char* label,
+                           const std::vector<std::string>& options,
+                           std::string& value,
+                           bool allowEmptyDefault) {
+    const char* preview = value.empty() ? (allowEmptyDefault ? "(config default)" : "(none)")
+                                        : value.c_str();
+    bool changed = false;
+    if (ImGui::BeginCombo(label, preview)) {
+        if (allowEmptyDefault) {
+            const bool selected = value.empty();
+            if (ImGui::Selectable("(config default)", selected)) {
+                if (!value.empty()) { value.clear(); changed = true; }
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        for (const auto& opt : options) {
+            const bool selected = (opt == value);
+            if (ImGui::Selectable(opt.c_str(), selected)) {
+                if (opt != value) { value = opt; changed = true; }
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+void renderColorSection(Settings& staged,
+                        OcioManager* ocio,
+                        const SettingsWindow::BrowseOcioCallback& browseOcio) {
+    // OCIO config path with optional Browse... button.
+    {
+        ImGui::PushItemWidth(-110.0f);
+        renderStringField("##ocioConfigPath", staged.ocioConfigPath);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...##ocio")) {
+            if (browseOcio) {
+                std::string chosen = browseOcio();
+                if (!chosen.empty()) {
+                    staged.ocioConfigPath = std::move(chosen);
+                }
+            }
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted("OCIO config");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(
+                "Path to a custom OpenColorIO config file (.ocio).\n"
+                "Leave blank to use the bundled ACES Studio Config 1.3.\n"
+                "Switching configs requires an app restart in C.12.");
+            ImGui::EndTooltip();
+        }
+    }
+
+    // Default video / PNG color spaces.
+    if (ocio && ocio->getConfig()) {
+        const auto colorSpaces = ocio->listColorSpaces();
+        renderColorSpaceCombo("Default video color space",
+                              colorSpaces, staged.defaultVideoInputCs,
+                              /*allowEmptyDefault=*/false);
+        renderColorSpaceCombo("Default PNG color space",
+                              colorSpaces, staged.defaultPngInputCs,
+                              /*allowEmptyDefault=*/false);
+
+        const auto displays = ocio->listDisplays();
+        renderColorSpaceCombo("Default output display",
+                              displays, staged.defaultDisplay,
+                              /*allowEmptyDefault=*/true);
+
+        // View dropdown filtered by the selected display (or the config's
+        // default display if the user hasn't picked one).
+        std::string displayForViews = staged.defaultDisplay.empty()
+                                          ? ocio->getDefaultDisplay()
+                                          : staged.defaultDisplay;
+        const auto views = ocio->listViews(displayForViews);
+        renderColorSpaceCombo("Default output view",
+                              views, staged.defaultView,
+                              /*allowEmptyDefault=*/true);
+    } else {
+        // OcioManager not bound (or config failed to load). Fall back to
+        // free-form text entry so the user can still set defaults that will
+        // take effect on next launch with a working config.
+        renderStringField("Default video color space##cs",   staged.defaultVideoInputCs);
+        renderStringField("Default PNG color space##cs",     staged.defaultPngInputCs);
+        renderStringField("Default output display##disp",    staged.defaultDisplay);
+        renderStringField("Default output view##view",       staged.defaultView);
+        ImGui::TextDisabled("OCIO config not loaded — dropdowns disabled.");
+    }
+
+    ImGui::TextDisabled("OCIO config switches require app restart in C.12.");
+}
+
 } // namespace
 
 void SettingsWindow::open(const Settings& current) {
@@ -57,7 +171,7 @@ void SettingsWindow::render() {
     // Center on the viewport so the modal doesn't end up in the corner.
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Appearing);
 
     if (!ImGui::BeginPopupModal(kPopupId, &m_open,
                                 ImGuiWindowFlags_NoSavedSettings |
@@ -75,6 +189,11 @@ void SettingsWindow::render() {
     // ----- Playback / Cache -------------------------------------------------
     if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderFrameCacheRow(m_staged.frameCacheBytes);
+    }
+
+    // ----- Color (Phase C.12 #7) -------------------------------------------
+    if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+        renderColorSection(m_staged, m_ocioManager, m_browseOcio);
     }
 
     ImGui::Separator();

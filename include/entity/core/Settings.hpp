@@ -37,7 +37,48 @@ struct Settings {
     // workstation, drop on a laptop. Not yet wired to a cache (the cache
     // lands in C.10); persisted now so the value survives across that work.
     uint64_t frameCacheBytes{512ull * 1024ull * 1024ull};
+
+    // -----------------------------------------------------------------
+    // Phase C.12 #7 — OCIO color management.
+    //
+    // Empty `ocioConfigPath` = use the bundled ACES Studio Config 1.3 (OCIO
+    // 2.4+ ships it as a built-in resource — no on-disk file needed). A
+    // non-empty path loads the user's custom .ocio config via
+    // CreateFromFile. C.12 ships restart-required hot-swap; the editor
+    // notices the new path on next launch.
+    //
+    // The default-* fields are *fallback* values consulted when a decoder
+    // can't determine the source color space from the codec. Always
+    // overridden by explicit metadata: ProRes' AVCOL_SPC_*, HAP variant
+    // tags, etc. PNG always consults defaultPngInputCs because the PNG
+    // spec doesn't carry an OCIO color-space name — only an EOTF.
+    //
+    // The two "default*" output fields are *initial* values for the next
+    // OutputDisplay the user creates; per-output overrides land in C.12 #8
+    // (project-persistent display+view per OutputDisplay). Empty = OCIO
+    // config's own default display/view.
+    // -----------------------------------------------------------------
+    std::string ocioConfigPath;
+    std::string defaultVideoInputCs{"Linear Rec.709 (sRGB)"};
+    std::string defaultPngInputCs{"sRGB - Display"};
+    std::string defaultDisplay;
+    std::string defaultView;
 };
+
+/**
+ * Process-wide Settings snapshot accessor.
+ *
+ * Decoders consult this from worker threads to read user defaults like
+ * `defaultPngInputCs` without having a live Settings reference plumbed
+ * through every constructor / factory call. Thread-safe; returns a copy
+ * (the strings are short and the call is rare — once per decoded frame at
+ * worst).
+ *
+ * Engine calls `publishActiveSettings()` once at startup after loadSettings()
+ * and again whenever the Preferences modal applies a change.
+ */
+Settings activeSettings();
+void publishActiveSettings(const Settings& s);
 
 /**
  * Resolve the absolute path to `settings.json` for the current platform/user.

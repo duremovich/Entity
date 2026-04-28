@@ -1,4 +1,5 @@
 #include "entity/media/PNGSequenceDecoder.hpp"
+#include "entity/core/Settings.hpp"
 #include <filesystem>
 #include <algorithm>
 #include <iostream>
@@ -228,7 +229,12 @@ Result PNGSequenceDecoder::loadPNG(const std::string& filepath, DecodedFrame& ou
     // linearizing, so the post-decode color space is "sRGB - Display" in
     // the OCIO Studio Config (the display-referred sRGB encoding). The
     // OCIO input transform linearizes + promotes to ACEScg.
-    outFrame.ocioColorSpace = "sRGB - Display";
+    //
+    // C.12 #7 — user can override via Settings::defaultPngInputCs (e.g.
+    // "Linear Rec.709 (sRGB)" if their pipeline pre-linearizes PNGs).
+    // PNG has no per-file color-space metadata, so this default is the
+    // only signal we have.
+    outFrame.ocioColorSpace = activeSettings().defaultPngInputCs;
 
     // Mark frame as valid
     outFrame.valid.store(true, std::memory_order_release);
