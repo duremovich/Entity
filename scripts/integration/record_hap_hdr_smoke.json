@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "description": "Record-pass for hap_hdr_smoke. Same flow but no goldenFilepath (emits hash without comparison) and a CaptureScreenshot for visual verification. Use this to seed tests/goldens/hap_hdr_smoke/frame_0.hash on initial bake, and to eyeball the captured PNG — ACES tone-mapped highlight on a constant ~4.0 HDR input should produce a uniform near-white frame (rolled-off, NOT pure white-clipped). Pure white (255) means the ACES ODT didn't engage (FP16 path broken or PSO mismatched). Any value in the 240-252 ballpark across all pixels is healthy.",
+    "commands": [
+        {"type": "AddScreen", "name": "HapHdrScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/hap_hdr/test.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureScreenshot", "filepath": "test_output/hap_hdr_smoke/frame_0.png", "region": "composeTarget"},
+        {"type": "CaptureHash", "hashFilepath": "test_output/hap_hdr_smoke/frame_0.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}

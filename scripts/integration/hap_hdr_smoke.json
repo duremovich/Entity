@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "description": "Phase C.12 #10 — HAP HDR (BC6H_UF16) FP16-survival smoke test. Loads a synthetic HapH fixture (every 4×4 block encodes a constant ~half-float 4.0 RGB) and hashes the compose target after one frame of decode + composite + ACES ODT. Verifies the full HDR-amplitude-input path end-to-end: HAPDecoder routes the SEC_HAPHU_RAW (0xA2) section to TextureFormat::BC6H_UF16, TextureUploader maps it to DXGI_FORMAT_BC6H_UF16, the compose target is FP16 (would have clipped at 1.0 on the pre-Phase-C.12 UNORM8 pipeline), and the capture-pass sRGB ODT rolls the high-amplitude pixel off as a non-clipped highlight. The fixture's container codec_tag is 'Hap1' (FFmpeg's MOV muxer doesn't accept 'HapH' in ff_codec_movvideo_tags); the per-frame texture format comes from the HAP packet's section type, not the codec_tag — see tests/tools/generate_hap_fixture.cpp.",
+    "commands": [
+        {"type": "AddScreen", "name": "HapHdrScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/hap_hdr/test.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/hap_hdr_smoke/frame_0.hash", "goldenFilepath": "tests/goldens/hap_hdr_smoke/frame_0.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}

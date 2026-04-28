@@ -66,6 +66,7 @@ entity_add_integration_test(blend_difference   blend_difference.json)
 entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
 entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
 entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)
+entity_add_integration_test(hap_hdr_smoke        hap_hdr_smoke.json)
 entity_add_integration_test(cache_hit_after_seek cache_hit_after_seek.json)
 entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
 

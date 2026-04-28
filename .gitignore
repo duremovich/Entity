@@ -101,6 +101,7 @@ test_media/*
 !test_media/hap_gradient/
 !test_media/hap_gradient_basic/
 !test_media/hap_gradient_q/
+!test_media/hap_hdr/
 *.mov
 *.mp4
 *.avi
@@ -110,6 +111,7 @@ test_media/*
 !test_media/hap_gradient/test.mov
 !test_media/hap_gradient_basic/test.mov
 !test_media/hap_gradient_q/test.mov
+!test_media/hap_hdr/test.mov
 
 # Screenshots output
 screenshots/
