@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace entity {
@@ -29,6 +30,13 @@ struct DecodedFrame {
     Timestamp            pts{0};                     // Presentation timestamp (microseconds)
     TextureFormat        format{TextureFormat::RGBA8_UNORM};
     TextureColorSpace    colorSpace{TextureColorSpace::Linear}; // HAP Q → YCoCg_scaled
+    // Phase C.12 #6 — OCIO color-space name for the input transform pipeline.
+    // Populated by per-codec decoders (HAP RGB → "Linear Rec.709 (sRGB)",
+    // ProRes via AVColorSpace lookup, PNG → "sRGB", HAP Q post-YCoCg →
+    // "Linear Rec.709 (sRGB)", HAP Alpha-only → "Raw"). Renderer hands this
+    // to OcioManager::buildInputProcessor at draw time. Empty = "no
+    // transform" (rendered as-is, identity OCIO path).
+    std::string          ocioColorSpace;
     std::atomic<bool>    valid{false};               // Holds-meaningful-data flag
 
     DecodedFrame() = default;
@@ -41,6 +49,7 @@ struct DecodedFrame {
         , pts(other.pts)
         , format(other.format)
         , colorSpace(other.colorSpace)
+        , ocioColorSpace(other.ocioColorSpace)
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
@@ -53,6 +62,7 @@ struct DecodedFrame {
             pts = other.pts;
             format = other.format;
             colorSpace = other.colorSpace;
+            ocioColorSpace = other.ocioColorSpace;
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -66,6 +76,7 @@ struct DecodedFrame {
         , pts(other.pts)
         , format(other.format)
         , colorSpace(other.colorSpace)
+        , ocioColorSpace(other.ocioColorSpace)
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
@@ -78,6 +89,7 @@ struct DecodedFrame {
             pts = other.pts;
             format = other.format;
             colorSpace = other.colorSpace;
+            ocioColorSpace = other.ocioColorSpace;
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -124,6 +136,7 @@ struct DecodedFrame {
         pts = 0;
         format = TextureFormat::RGBA8_UNORM;
         colorSpace = TextureColorSpace::Linear;
+        ocioColorSpace.clear();
         valid.store(false, std::memory_order_release);
     }
 };

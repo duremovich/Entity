@@ -73,6 +73,25 @@ TextureColorSpace textureColorSpaceFor(HapColorSpace cs) {
     }
 }
 
+// Phase C.12 #6 — OCIO color-space name for the HAP variant. The HAP spec
+// pins RGB content to Rec.709 primaries with sRGB-like piecewise EOTF, so
+// "Linear Rec.709 (sRGB)" is the right OCIO source space for both Hap1 /
+// Hap5 / Hap7 RGB *and* HapY post-YCoCg-decode (the in-shader YCoCg
+// unscale produces linear Rec.709 RGB the OCIO input transform then
+// promotes to ACEScg). HapA is a single-channel matte → tag "Raw" so the
+// OCIO input transform is identity. HapH (BC6H_UF16) is HDR float;
+// "Linear Rec.709 (sRGB)" is the closest sane default until C.12 #10
+// validates the HDR FP16 path.
+const char* ocioColorSpaceFor(HapColorSpace cs) {
+    switch (cs) {
+        case HapColorSpace::Alpha:        return "Raw";
+        case HapColorSpace::YCoCg_scaled:
+        case HapColorSpace::RGB:
+        case HapColorSpace::HDR_float:
+        default:                          return "Linear Rec.709 (sRGB)";
+    }
+}
+
 #endif // HAVE_FFMPEG
 
 } // anonymous namespace
@@ -312,6 +331,7 @@ Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
     outFrame.pts = m_packet->pts;
     outFrame.format = textureFormatFor(hap.format);
     outFrame.colorSpace = textureColorSpaceFor(hap.colorSpace);
+    outFrame.ocioColorSpace = ocioColorSpaceFor(hap.colorSpace);
     outFrame.valid.store(true, std::memory_order_release);
     return Result::Success;
 #else

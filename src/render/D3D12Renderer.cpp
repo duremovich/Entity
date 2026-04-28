@@ -1929,10 +1929,21 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                      const DirectX::XMMATRIX& transform,
                                      float opacity,
                                      BlendMode blendMode,
-                                     TextureColorSpace colorSpace) {
+                                     TextureColorSpace colorSpace,
+                                     const std::string& ocioColorSpace) {
     if (!m_initialized || textureSrv.ptr == 0) {
         return;
     }
+
+    // Phase C.12 #6 — per-call OCIO input processor selection. The renderer
+    // looks up an input transform from the per-clip OCIO color-space name
+    // and lazy-builds the matching PSO set. Empty name + no global default
+    // fall back to the offline-compiled PSOs (no input transform).
+    std::shared_ptr<const OcioGpuProcessor> activeInput;
+    if (m_ocioManager && !ocioColorSpace.empty()) {
+        activeInput = m_ocioManager->buildInputProcessor(ocioColorSpace, "ACEScg");
+    }
+    if (!activeInput) activeInput = m_activeInputProcessor;
 
     // Build constants structure with white color (texture provides the color)
     LayerConstants constants;
@@ -1997,11 +2008,12 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         post[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         m_commandList->ResourceBarrier(2, post);
 
-        // Phase C.12 #5: pick OCIO-spliced shader-blend PSO if available.
+        // Phase C.12 #5/#6: pick OCIO-spliced shader-blend PSO if available
+        // (uses the per-call OCIO color space resolved above).
         ID3D12PipelineState* blendPso = m_texturedPipelineStateBlend.Get();
-        if (m_activeInputProcessor) {
+        if (activeInput) {
             const OcioCompositePsoSet* set =
-                getOrBuildOcioCompositePsoSet(*m_activeInputProcessor);
+                getOrBuildOcioCompositePsoSet(*activeInput);
             if (set && set->psoBlend) blendPso = set->psoBlend.Get();
         }
         m_commandList->SetPipelineState(blendPso);
@@ -2022,8 +2034,8 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     // PSO set takes precedence over the offline-compiled PSOs.
     // ------------------------------------------------------------------------
     const OcioCompositePsoSet* ocioSet = nullptr;
-    if (m_activeInputProcessor) {
-        ocioSet = getOrBuildOcioCompositePsoSet(*m_activeInputProcessor);
+    if (activeInput) {
+        ocioSet = getOrBuildOcioCompositePsoSet(*activeInput);
     }
 
     ID3D12PipelineState* pipelineState = nullptr;
@@ -3319,10 +3331,11 @@ void D3D12Renderer::drawTexturedQuad(TextureRef texture,
                                       const glm::mat4& transform,
                                       float opacity,
                                       BlendMode blendMode,
-                                      TextureColorSpace colorSpace) {
+                                      TextureColorSpace colorSpace,
+                                      const std::string& ocioColorSpace) {
     const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveTextureHandle(texture);
     if (srv.ptr == 0) return;  // Invalid or unready texture — drop silently
-    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode, colorSpace);
+    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode, colorSpace, ocioColorSpace);
 }
 
 void D3D12Renderer::drawMappingSurface(TextureRef texture,
@@ -3616,7 +3629,13 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     dst.PlacedFootprint.Footprint.Depth        = 1;
     dst.PlacedFootprint.Footprint.RowPitch     = static_cast<UINT>(m_screenshotStagingRowPitch);
 
-    m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    // m_captureResource is reused across compose sizes (sized to the LARGEST
+    // requested), so we need an explicit srcBox bounded to the current
+    // compose target — passing nullptr would imply the full capture
+    // resource subresource and trigger E_INVALIDARG on the second screen
+    // when sizes differ.
+    D3D12_BOX srcBox = { 0, 0, 0, target.width, target.height, 1 };
+    m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
 
     D3D12_RESOURCE_BARRIER restore = {};
     restore.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

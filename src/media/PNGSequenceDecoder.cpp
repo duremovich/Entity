@@ -223,6 +223,13 @@ Result PNGSequenceDecoder::loadPNG(const std::string& filepath, DecodedFrame& ou
     // Free stb_image memory
     stbi_image_free(imageData);
 
+    // Phase C.12 #6 — PNG payload is sRGB-encoded byte values per the PNG
+    // spec; stb_image's stbi_load returns the raw bytes without
+    // linearizing, so the post-decode color space is "sRGB - Display" in
+    // the OCIO Studio Config (the display-referred sRGB encoding). The
+    // OCIO input transform linearizes + promotes to ACEScg.
+    outFrame.ocioColorSpace = "sRGB - Display";
+
     // Mark frame as valid
     outFrame.valid.store(true, std::memory_order_release);
 

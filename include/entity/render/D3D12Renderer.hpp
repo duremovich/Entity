@@ -89,7 +89,8 @@ public:
                            const glm::mat4& transform,
                            float opacity,
                            BlendMode blendMode = BlendMode::Normal,
-                           TextureColorSpace colorSpace = TextureColorSpace::Linear) override;
+                           TextureColorSpace colorSpace = TextureColorSpace::Linear,
+                           const std::string& ocioColorSpace = std::string()) override;
 
     void drawMappingSurface(TextureRef texture,
                              const glm::vec2 corners[4],
@@ -181,7 +182,8 @@ public:
                           const DirectX::XMMATRIX& transform,
                           float opacity,
                           BlendMode blendMode = BlendMode::Normal,
-                          TextureColorSpace colorSpace = TextureColorSpace::Linear);
+                          TextureColorSpace colorSpace = TextureColorSpace::Linear,
+                          const std::string& ocioColorSpace = std::string());
 
     /** Draw a mapping surface with D3D12 SRV + XMFLOAT args. Legacy. */
     void drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,

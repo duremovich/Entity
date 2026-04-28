@@ -2,6 +2,7 @@
 
 #include "../core/Types.hpp"
 #include <cstdint>
+#include <string>
 
 // Forward declaration for FFmpeg
 struct AVFrame;
@@ -31,6 +32,12 @@ struct VideoTexture {
     // but PlaybackController stamps it on every upload so a clip swap (e.g.
     // re-import as a different variant) is picked up without extra wiring.
     TextureColorSpace colorSpace{TextureColorSpace::Linear};
+
+    // Phase C.12 #6 — OCIO color-space name for the input transform. Mirrors
+    // the per-frame DecodedFrame.ocioColorSpace; PlaybackController stamps
+    // this on every upload so the compositor can look up the right OCIO
+    // input processor at draw time. Empty = identity (no transform applied).
+    std::string ocioColorSpace;
 
     // Frame data to upload (owned by decode system, not this component)
     bool needsUpload{false};                // True if new frame ready for upload

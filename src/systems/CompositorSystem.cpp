@@ -112,7 +112,8 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
                 TextureRef tex = m_renderer->getVideoTexture(videoTex->descriptorSlot);
                 if (tex.valid()) {
                     m_renderer->drawTexturedQuad(tex, transformMatrix, layer.opacity,
-                                                 layer.blendMode, videoTex->colorSpace);
+                                                 layer.blendMode, videoTex->colorSpace,
+                                                 videoTex->ocioColorSpace);
                     continue;
                 }
                 // Fall through to colored-quad fallback if the slot isn't ready yet.

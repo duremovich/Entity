@@ -148,6 +148,7 @@ void PlaybackController::updateClipVideos() {
                 videoTex.width = f.width;
                 videoTex.height = f.height;
                 videoTex.colorSpace = f.colorSpace;
+                videoTex.ocioColorSpace = f.ocioColorSpace;
                 if (state) state->lastDecodedFrame = mediaFrame;
             }
             cacheHits++;

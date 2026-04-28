@@ -390,6 +390,21 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
     // Fill frame metadata
     outFrame.frameNumber = m_currentFrame;
     outFrame.pts = srcFrame->pts;
+    // Phase C.12 #6 — OCIO color-space tag from the AVColorSpace metadata.
+    // Most ProRes / generic FFmpeg content carries Rec.709; Rec.2020 shows
+    // up in newer HDR sources. UNSPECIFIED falls back to the safe default
+    // — Settings::defaultVideoInputCs override comes in C.12 #7.
+    switch (srcFrame->colorspace) {
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:
+            outFrame.ocioColorSpace = "Linear Rec.2020";
+            break;
+        case AVCOL_SPC_BT709:
+        case AVCOL_SPC_UNSPECIFIED:
+        default:
+            outFrame.ocioColorSpace = "Linear Rec.709 (sRGB)";
+            break;
+    }
     outFrame.valid.store(true, std::memory_order_release);
 
     return Result::Success;
