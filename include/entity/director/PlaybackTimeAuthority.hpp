@@ -1,5 +1,6 @@
 #pragma once
 
+#include "entity/bus/Message.hpp"
 #include "entity/core/Types.hpp"
 #include <entt/entt.hpp>
 
@@ -73,6 +74,19 @@ public:
     // `out` (clears + appends) so a long-lived caller can avoid reallocs.
     // No-op when timeline is unbound.
     void buildActiveSet(std::vector<ActiveClip>& out) const;
+
+    // Per-tick Director->Renderer state snapshot. Fills the bus message
+    // body in place (clears its activeClips/wantedFrames vectors first
+    // so a long-lived caller can avoid reallocs). Stamps frameNumber,
+    // deltaTime, playState, then walks the registry to produce one
+    // ClipRenderState per allocated + active clip with `slot`,
+    // `mediaFrame`, `ocioOverride`, plus the optional render fields
+    // (transform / opacity / blendMode / targetScreen) when their
+    // components exist. wantedFrames is left empty for now -- DecodeSystem
+    // still drives itself off the registry until a later subtask
+    // collapses that path through the bus too. No-op when timeline is
+    // unbound (RenderFrame is reset to defaults).
+    void buildRenderFrame(bus::RenderFrame& out) const;
 
     // Read-only Timeline accessor for callers that want to consult time
     // state alongside the math (PlaybackPresenter::getCurrentVideoFrame).

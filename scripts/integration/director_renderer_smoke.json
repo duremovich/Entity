@@ -1,0 +1,39 @@
+{
+    "version": 1,
+    "description": "Phase D entry, subtask 8 -- end-to-end gate that the Director-Renderer bus loop carries the per-tick state-snapshot correctly. Loads the gradient PNG seq (same fixture integration_png_sequence_seek uses), seeks to frame 0, captures the compose target hash. Every tick exercises buildRenderFrame -> serialize -> InMemoryMessageTransport -> deserialize -> PlaybackPresenter, so any drift in the wire format / message body / presenter consumption fails this test. The hash matches png_sequence_seek/frame_0.hash since no math changed -- subtask 8 is a boundary refactor.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "DirectorRendererSmokeScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "test_media/gradient_seq/frame_000.png",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "CaptureHash",
+            "hashFilepath":   "test_output/director_renderer_smoke/frame_0.hash",
+            "goldenFilepath": "tests/goldens/png_sequence_seek/frame_0.hash",
+            "composeSlot": 0
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -19,6 +19,7 @@ add_executable(EntityMediaTests
     unit/InMemoryTransportTests.cpp
     unit/SceneStateTests.cpp
     unit/PlaybackTimeAuthorityTests.cpp
+    unit/DirectorRendererRoundtripTests.cpp
     test_Decoder.cpp
 )
 
@@ -75,6 +76,8 @@ entity_add_integration_test(hap_hdr_smoke        hap_hdr_smoke.json)
 entity_add_integration_test(aces_smoke           aces_smoke.json)
 entity_add_integration_test(cache_hit_after_seek cache_hit_after_seek.json)
 entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
+# Phase D entry, subtask 8 -- per-tick Director->Renderer bus loop end-to-end.
+entity_add_integration_test(director_renderer_smoke director_renderer_smoke.json)
 
 # Screen-persistence round-trip: save runs first (FIXTURES_SETUP), produces
 # test_output/screen_persistence/test.entity; load consumes it and asserts.

@@ -24,7 +24,7 @@ PlaybackPresenter::PlaybackPresenter(entt::registry& registry, IRenderer* render
 
 PlaybackPresenter::~PlaybackPresenter() = default;
 
-void PlaybackPresenter::present(const std::vector<ActiveClip>& active) {
+void PlaybackPresenter::present(const bus::RenderFrame& rf) {
     if (!m_renderer || !m_frameCache) return;
 
     auto funcStart = std::chrono::high_resolution_clock::now();
@@ -32,33 +32,32 @@ void PlaybackPresenter::present(const std::vector<ActiveClip>& active) {
     int cacheMisses = 0;
     int nearestFallbacks = 0;
 
-    // Snapshot playback state once per call. The nearest-fallback gate
-    // wants a consistent value across the loop (HIGH-02 in
-    // CODE_ISSUES.md flagged the prior "re-read mid-tick" pattern; the
-    // active-set comes from Director which already saw the same value
-    // during its tick, so this is the single source of truth for the
-    // current Renderer pass).
-    PlaybackState playState = m_timeline ? m_timeline->getPlaybackState() : PlaybackState::Stopped;
+    // playState arrives stamped on the message by the Director-side
+    // PlaybackTimeAuthority. Subtask 8 closed the prior HIGH-02 read
+    // pattern by making this a const field on the immutable per-tick
+    // payload -- there's no "re-read mid-tick" path to even reach for.
+    const TransportState playState = rf.playState;
 
-    for (const ActiveClip& ac : active) {
-        auto* videoTex = m_registry.try_get<VideoTexture>(ac.entity);
+    for (const bus::ClipRenderState& ac : rf.activeClips) {
+        const auto entity = static_cast<entt::entity>(ac.entity);
+        auto* videoTex = m_registry.try_get<VideoTexture>(entity);
         if (!videoTex) continue;
 
         // Skip if the frame number hasn't changed since last upload --
         // the GPU texture is rendered every tick but only needs re-upload
         // on change.
-        auto* state = m_registry.try_get<ClipDecodeState>(ac.entity);
+        auto* state = m_registry.try_get<ClipDecodeState>(entity);
         FrameNumber lastFrame = state ? state->lastDecodedFrame : UINT32_MAX;
         if (ac.mediaFrame == lastFrame) continue;
 
         // Decoder is mid-seek -- its in-flight frames are stale. Hold
         // the current texture until the seek completes.
-        const DecodeWorker* worker = m_decodeSystem ? m_decodeSystem->getWorker(ac.entity) : nullptr;
+        const DecodeWorker* worker = m_decodeSystem ? m_decodeSystem->getWorker(entity) : nullptr;
         if (worker && worker->seekPending.load()) continue;
 
         // Exact cache hit -- the common path on steady-state playback
         // and on click-to-recently-viewed-frame.
-        if (auto lease = m_frameCache->get(ac.entity, ac.mediaFrame)) {
+        if (auto lease = m_frameCache->get(entity, ac.mediaFrame)) {
             const DecodedFrame& f = *lease;
             bool ok = m_renderer->uploadVideoFrameToSlot(
                 videoTex->descriptorSlot, f.data.data(), f.width, f.height, f.format);
@@ -68,7 +67,7 @@ void PlaybackPresenter::present(const std::vector<ActiveClip>& active) {
                 videoTex->colorSpace = f.colorSpace;
                 // Per-clip MediaBin OCIO override wins over the decoder
                 // tag when set (Phase C.12 #9). Director side already
-                // resolved the override string in the active-set tuple.
+                // resolved the override string in the message body.
                 videoTex->ocioColorSpace = ac.ocioOverride.empty()
                     ? f.ocioColorSpace
                     : ac.ocioOverride;
@@ -91,10 +90,10 @@ void PlaybackPresenter::present(const std::vector<ActiveClip>& active) {
         // prior progress while the user waits for the actually-clicked
         // frame. Leave the texture as-is and let the next tick try
         // again.
-        if (playState != PlaybackState::Playing) continue;
+        if (playState != TransportState::Playing) continue;
 
-        if (auto nearestN = m_frameCache->nearestTo(ac.entity, ac.mediaFrame)) {
-            if (auto nearestLease = m_frameCache->get(ac.entity, *nearestN)) {
+        if (auto nearestN = m_frameCache->nearestTo(entity, ac.mediaFrame)) {
+            if (auto nearestLease = m_frameCache->get(entity, *nearestN)) {
                 const DecodedFrame& f = *nearestLease;
                 bool ok = m_renderer->uploadVideoFrameToSlot(
                     videoTex->descriptorSlot, f.data.data(), f.width, f.height, f.format);
@@ -118,7 +117,7 @@ void PlaybackPresenter::present(const std::vector<ActiveClip>& active) {
         std::chrono::high_resolution_clock::now() - funcStart).count();
     if (funcMs > 100) {
         std::cout << "[CLIP UPDATE] Total=" << funcMs << "ms"
-                  << " active=" << active.size()
+                  << " active=" << rf.activeClips.size()
                   << " hits=" << cacheHits
                   << " misses=" << cacheMisses
                   << " nearest=" << nearestFallbacks

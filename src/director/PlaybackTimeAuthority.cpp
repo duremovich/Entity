@@ -1,14 +1,32 @@
 #include "entity/director/PlaybackTimeAuthority.hpp"
 
 #include "entity/components/Clip.hpp"
+#include "entity/components/MediaLayer.hpp"
+#include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/timeline/Timeline.hpp"
 
+#include <glm/gtc/type_ptr.hpp>
+
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace entity {
+
+namespace {
+
+constexpr TransportState toTransportState(PlaybackState s) {
+    switch (s) {
+        case PlaybackState::Stopped: return TransportState::Stopped;
+        case PlaybackState::Playing: return TransportState::Playing;
+        case PlaybackState::Paused:  return TransportState::Paused;
+    }
+    return TransportState::Stopped;
+}
+
+} // namespace
 
 PlaybackTimeAuthority::PlaybackTimeAuthority(entt::registry& registry, Timeline* timeline)
     : m_registry(registry)
@@ -94,6 +112,55 @@ void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
         ac.mediaFrame     = mapToMediaFrame(clip, currentFrame);
         ac.ocioOverride   = lookupInputColorSpaceOverride(clip);
         out.push_back(std::move(ac));
+    }
+}
+
+void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {
+    out.activeClips.clear();
+    out.wantedFrames.clear();
+    out.frameNumber = 0;
+    out.deltaTime   = m_deltaTime;
+    out.playState   = TransportState::Stopped;
+    if (!m_timeline) return;
+
+    FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    out.frameNumber = currentFrame;
+    out.playState   = toTransportState(m_timeline->getPlaybackState());
+
+    auto view = m_registry.view<Clip, VideoTexture>();
+    for (auto [entity, clip, videoTex] : view.each()) {
+        if (!videoTex.isAllocated()) continue;
+        if (!isClipActiveAtFrame(clip, currentFrame)) continue;
+
+        bus::ClipRenderState c;
+        c.entity       = static_cast<std::uint64_t>(entity);
+        c.slot         = static_cast<int>(videoTex.descriptorSlot);
+        c.mediaFrame   = mapToMediaFrame(clip, currentFrame);
+        c.ocioOverride = lookupInputColorSpaceOverride(clip);
+
+        // Optional render-side fields. These exist so the wire format
+        // already carries everything Phase E will need; the compositor
+        // still reads from the registry today, so leaving them at
+        // defaults would compile too -- filling them just keeps the
+        // message a faithful snapshot of what the compositor would draw.
+        if (auto* t = m_registry.try_get<Transform>(entity)) {
+            // Transform::updateMatrix maintains a dirty-flag cache; mutate
+            // through a non-const ref so the cached matrix is current.
+            auto* tm = const_cast<Transform*>(t);
+            tm->updateMatrix();
+            std::memcpy(c.transformMatrix.data(),
+                        glm::value_ptr(tm->matrix),
+                        sizeof(c.transformMatrix));
+        }
+        if (auto* layer = m_registry.try_get<MediaLayer>(entity)) {
+            c.opacity   = layer->getOpacity();
+            c.blendMode = layer->blendMode;
+        }
+        c.targetScreen = (clip.targetScreen == entt::null)
+            ? UINT64_MAX
+            : static_cast<std::uint64_t>(clip.targetScreen);
+
+        out.activeClips.push_back(std::move(c));
     }
 }
 

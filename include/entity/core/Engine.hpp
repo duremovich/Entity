@@ -37,6 +37,9 @@ class Renderer;       // Phase D entry — owns D3D12Renderer, OutputManager,
                       // FrameCache, OcioManager, CompositorSystem,
                       // DecodeSystem (subtask 5).
 struct DecodedFrame;
+namespace bus {
+class IMessageTransport;
+}
 // class Transport;
 
 /**
@@ -453,6 +456,13 @@ private:
     // shortcuts here let Engine glue keep its existing call sites short.
     PlaybackTimeAuthority* m_timeAuthority{nullptr};
     PlaybackPresenter*     m_playbackPresenter{nullptr};
+
+    // Phase D entry, subtask 8: Director->Renderer per-tick state-snapshot
+    // travels through this transport. In-process today (no threads, no
+    // UDP); Phase E swaps the implementation without touching the message
+    // format. Engine builds the message Director-side, drains it
+    // Renderer-side inside render() right after beginFrame().
+    std::unique_ptr<bus::IMessageTransport> m_transport;
 
     // FPS display tracking (window title only)
     double m_fpsAccumulator{0.0};

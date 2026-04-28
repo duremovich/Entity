@@ -1,4 +1,7 @@
 #include "entity/core/Engine.hpp"
+#include "entity/bus/InMemoryMessageTransport.hpp"
+#include "entity/bus/Message.hpp"
+#include "entity/bus/Serialization.hpp"
 #include "entity/director/Director.hpp"
 #include "entity/renderer/Renderer.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
@@ -191,14 +194,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         m_decodeSystem->setTimeline(m_timeline);
     }
 
-    // PlaybackPresenter (Renderer side, owned by Renderer service) needs
-    // a read-only Timeline pointer for the nearest-frame-fallback gate.
-    // Subtask 8 replaces this with a playState field on the per-tick
-    // RenderFrame bus message.
+    // PlaybackPresenter (Renderer side, owned by Renderer service)
+    // consumes a `bus::RenderFrame` per tick -- playState arrives on the
+    // message body, so no Timeline pointer is wired here.
     m_playbackPresenter = m_rendererService->getPlaybackPresenter();
-    if (m_playbackPresenter) {
-        m_playbackPresenter->setTimeline(m_timeline);
-    }
+
+    // Phase D entry, subtask 8: Director->Renderer per-tick state-snapshot
+    // travels through this transport. In-process today; Phase E swaps the
+    // implementation without touching the wire format.
+    m_transport = std::make_unique<bus::InMemoryMessageTransport>();
 
     // Background HAP transcoder cache dir gets set lazily via
     // updateTranscodeCacheDir() when a project path is established.
@@ -730,17 +734,26 @@ void Engine::render() {
         m_renderer->beginFrame();
         auto t1 = std::chrono::high_resolution_clock::now();
 
-        // Upload video textures to GPU - MUST be after beginFrame() or
-        // commands get discarded! Phase D entry, subtask 6: this is the
-        // hand-off seam between Director (active-set computation) and
-        // Renderer (cache fetch + GPU upload). Subtask 8 turns the
-        // hand-off into a serialized RenderFrame bus message; for now
-        // it's a direct in-process call with a stack-local active-set
-        // vector.
-        if (m_timeAuthority && m_playbackPresenter) {
-            std::vector<ActiveClip> active;
-            m_timeAuthority->buildActiveSet(active);
-            m_playbackPresenter->present(active);
+        // Phase D entry, subtask 8: Director publishes a per-tick
+        // RenderFrame to the bus; Renderer drains it and applies it via
+        // PlaybackPresenter. Sequential ticks on the main thread make
+        // this a single send + drain pair per frame -- the in-memory
+        // transport is just a serialization point. Phase E swaps the
+        // transport for UDP without touching either endpoint.
+        //
+        // Must run after beginFrame() so the GPU upload calls land on a
+        // recording command list.
+        if (m_timeAuthority && m_playbackPresenter && m_transport) {
+            bus::RenderFrame rf;
+            m_timeAuthority->buildRenderFrame(rf);
+            m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{rf}));
+            m_transport->drain(bus::Direction::D2R, [this](std::vector<std::uint8_t>&& bytes) {
+                auto msg = bus::deserialize(bytes);
+                if (!msg) return;
+                if (auto* drained = std::get_if<bus::RenderFrame>(&*msg)) {
+                    m_playbackPresenter->present(*drained);
+                }
+            });
         }
         auto t2 = std::chrono::high_resolution_clock::now();
 
