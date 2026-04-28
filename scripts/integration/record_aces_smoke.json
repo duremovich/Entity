@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "description": "Record-pass for integration_aces_smoke. Same script as aces_smoke.json minus the goldenFilepath comparison - emits the captured hash into test_output/aces_smoke/ for promotion into tests/goldens/aces_smoke/. Run when the OCIO config bumps, the test pattern changes, or any subtask of C.12 needs to re-bake the smoke baseline.",
+    "commands": [
+        {"type": "AddScreen", "name": "AcesSmokeScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/aces_test_pattern/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/aces_smoke/frame_0.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}

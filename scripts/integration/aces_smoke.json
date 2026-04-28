@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "description": "Phase C.12 #11 - ACES end-to-end smoke test. Loads a fixed sRGB test pattern (mid-gray, primaries, secondaries, gradient) onto a 64x64 screen and hashes the compose target after the ACES ODT capture pass. Regression sentinel for the full OCIO pipeline: PNG decoder tags 'sRGB', input transform converts to ACEScg working space, ACEScg sits in the FP16 compose target, capture pass applies the ACES sRGB ODT, hash compares against the golden frozen at subtask #11. Any drift in OCIO config version, decoder tagging, OcioGpuProcessor emission, or capture-pass shader code surfaces as a hash mismatch here. Math is also pinned (display-independent) by tests/unit/OcioOdtTests.cpp via OCIO's CPU processor. To regenerate the golden: scripts/integration/record_aces_smoke.json then move test_output/aces_smoke/frame_0.hash into tests/goldens/aces_smoke/.",
+    "commands": [
+        {"type": "AddScreen", "name": "AcesSmokeScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/aces_test_pattern/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "CaptureHash", "hashFilepath": "test_output/aces_smoke/frame_0.hash", "goldenFilepath": "tests/goldens/aces_smoke/frame_0.hash", "composeSlot": 0},
+        {"type": "Exit"}
+    ]
+}

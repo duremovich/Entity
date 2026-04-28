@@ -102,6 +102,7 @@ test_media/*
 !test_media/hap_gradient_basic/
 !test_media/hap_gradient_q/
 !test_media/hap_hdr/
+!test_media/aces_test_pattern/
 *.mov
 *.mp4
 *.avi
