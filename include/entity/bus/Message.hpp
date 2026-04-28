@@ -52,10 +52,17 @@ struct RenderFrame {
 
 // Director → Renderer. Triggers the existing capture-pass pipeline; reply
 // is `CaptureCompleted` keyed by `correlationId`.
+//
+// `hashOnly=true`  reads compose target `slot`, computes FNV-1a, returns
+//                  the hex digest.
+// `hashOnly=false` writes a PNG to `pngPath`. When `fullWindow=true` the
+//                  source is the back buffer (entire window with UI);
+//                  otherwise compose target `slot` (video output only).
 struct RequestComposeCapture {
     std::uint64_t correlationId{0};
     int slot{0};
     bool hashOnly{true};
+    bool fullWindow{false};
     std::string pngPath;
     std::string goldenHashPath;
 };

@@ -41,6 +41,8 @@ namespace bus {
 class IMessageTransport;
 struct SetOutputEnabled;
 struct ApplySettings;
+struct RequestComposeCapture;
+struct CaptureCompleted;
 }
 // class Transport;
 
@@ -292,35 +294,6 @@ public:
     bool importVideo(const std::string& filepath, int trackIndex = 0, Timecode position = 0);
 
     /**
-     * Capture a screenshot of the compose target.
-     * @param filepath Output path for PNG file
-     * @return true if capture was successful
-     */
-    bool captureScreenshot(const std::string& filepath);
-
-    /**
-     * Capture a screenshot of the entire window.
-     * @param filepath Output path for PNG file
-     * @return true if capture was successful
-     */
-    bool captureWindowScreenshot(const std::string& filepath);
-
-    /**
-     * Hash the compose target's pixel output (integration test harness).
-     * Computes FNV-1a 64-bit hash of raw RGBA bytes, writes the hex hash
-     * and dimensions to `hashFilepath`. If `goldenFilepath` is non-empty,
-     * reads expected hash from that file and fails on mismatch.
-     *
-     * @param hashFilepath Where to write the computed hash (created/overwritten)
-     * @param goldenFilepath Optional golden hash file to compare against; empty = record-only
-     * @param composeSlot Compose target slot to read (default 0)
-     * @return true if capture succeeded and (if golden given) hash matched
-     */
-    bool captureHash(const std::string& hashFilepath,
-                     const std::string& goldenFilepath,
-                     uint32_t composeSlot = 0);
-
-    /**
      * Load and execute a script file.
      * @param filepath Path to JSON script file
      * @return true if script was loaded successfully
@@ -334,6 +307,23 @@ public:
     // initialize() or after shutdown()). Defined in Engine.cpp.
     void publishSetOutputEnabled(const bus::SetOutputEnabled& msg);
     void publishApplySettings(const bus::ApplySettings& msg);
+
+private:
+    // Subtask 7. Pre-beginFrame drain (Renderer side): pulls
+    // RequestComposeCapture out of D2R and runs the existing capture
+    // pass while the GPU is in the settled state captureBackBufferToPNG
+    // and tonemapAndReadbackComposeTarget both require. Other D2R
+    // messages stash and replay after beginFrame.
+    void drainCaptureRequestsPreFrame();
+
+    // Subtask 7. Post-render drain (Director side): consumes
+    // CaptureCompleted replies and routes them to the broker for
+    // script-result resolution.
+    void drainRendererToDirector();
+
+    // Subtask 7. Single-message Renderer-side handler for
+    // RequestComposeCapture; published reply lives on R2D.
+    void handleCaptureRequest(const bus::RequestComposeCapture& req);
 
 private:
     /**

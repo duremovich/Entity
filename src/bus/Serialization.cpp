@@ -176,6 +176,7 @@ ojson encode(const RequestComposeCapture& m) {
     j["correlationId"] = m.correlationId;
     j["slot"] = m.slot;
     j["hashOnly"] = m.hashOnly;
+    j["fullWindow"] = m.fullWindow;
     j["pngPath"] = m.pngPath;
     j["goldenHashPath"] = m.goldenHashPath;
     return j;
@@ -186,6 +187,7 @@ RequestComposeCapture decodeRequestComposeCapture(const json& j) {
     m.correlationId = j.at("correlationId").get<std::uint64_t>();
     m.slot = j.at("slot").get<int>();
     m.hashOnly = j.at("hashOnly").get<bool>();
+    m.fullWindow = j.at("fullWindow").get<bool>();
     m.pngPath = j.at("pngPath").get<std::string>();
     m.goldenHashPath = j.at("goldenHashPath").get<std::string>();
     return m;

@@ -14,6 +14,7 @@ class CommandDispatcher;
 class AnimationSystem;
 class SceneState;
 class PlaybackTimeAuthority;
+class CaptureBroker;
 
 // Director owns Phase D's "logical-side" subsystems -- the half of the engine
 // that decides *what* to render this tick (timeline state, project state,
@@ -47,6 +48,7 @@ public:
     CommandDispatcher* getCommandDispatcher() noexcept { return m_commandDispatcher.get(); }
     AnimationSystem* getAnimationSystem()   noexcept { return m_animationSystem.get(); }
     PlaybackTimeAuthority* getTimeAuthority() noexcept { return m_timeAuthority.get(); }
+    CaptureBroker* getCaptureBroker()       noexcept { return m_captureBroker.get(); }
 
     const Timeline* getTimeline()                 const noexcept { return m_timeline.get(); }
     const ProjectManager* getProjectManager()     const noexcept { return m_projectManager.get(); }
@@ -54,6 +56,7 @@ public:
     const CommandDispatcher* getCommandDispatcher() const noexcept { return m_commandDispatcher.get(); }
     const AnimationSystem* getAnimationSystem()   const noexcept { return m_animationSystem.get(); }
     const PlaybackTimeAuthority* getTimeAuthority() const noexcept { return m_timeAuthority.get(); }
+    const CaptureBroker* getCaptureBroker()       const noexcept { return m_captureBroker.get(); }
 
     // SceneState seam. Director writes the registry during its tick (clip
     // creation, keyframe evaluation, ProjectManager load). Subtask 8's
@@ -75,6 +78,10 @@ private:
     // half of the old PlaybackController). Declared after Timeline +
     // ProjectManager so its construction can reference both.
     std::unique_ptr<PlaybackTimeAuthority> m_timeAuthority;
+    // Phase D entry, subtask 7. Director-side park/resolve for the async
+    // capture-command request/reply pattern. Engine wires its transport +
+    // dispatcher pointers post-construction.
+    std::unique_ptr<CaptureBroker>     m_captureBroker;
 };
 
 } // namespace entity

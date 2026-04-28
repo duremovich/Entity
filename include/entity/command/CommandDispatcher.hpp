@@ -138,6 +138,15 @@ public:
     }
 
     /**
+     * True if a script is loaded, the queue has drained, and no
+     * `WaitFrames` is in progress. The Engine main loop calls this after
+     * the bus resolves any outstanding capture replies and only then
+     * calls `finishScript()` -- so the written `script_result.json`
+     * reflects the final state of all asynchronous work.
+     */
+    bool scriptReadyToFinish() const;
+
+    /**
      * Mark script as complete (called when queue empties after script load).
      */
     void finishScript();

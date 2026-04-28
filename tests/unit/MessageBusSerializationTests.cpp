@@ -120,12 +120,14 @@ TEST(MessageBusSerialization, RequestComposeCaptureRoundTrip) {
     m.correlationId = 0xDEADBEEFCAFEBABEull;
     m.slot = 2;
     m.hashOnly = false;
+    m.fullWindow = true;
     m.pngPath = "tests/output/foo.png";
     m.goldenHashPath = "tests/goldens/foo/frame_0.hash";
     auto out = roundTripExpect(m);
     EXPECT_EQ(out.correlationId, m.correlationId);
     EXPECT_EQ(out.slot, m.slot);
     EXPECT_EQ(out.hashOnly, m.hashOnly);
+    EXPECT_EQ(out.fullWindow, m.fullWindow);
     EXPECT_EQ(out.pngPath, m.pngPath);
     EXPECT_EQ(out.goldenHashPath, m.goldenHashPath);
     expectByteStable(m);

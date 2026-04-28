@@ -110,12 +110,16 @@ size_t CommandDispatcher::processQueue(Engine& engine) {
         }
     }
 
-    // Check if script finished
-    if (m_scriptRunning && m_commandQueue.empty() && m_waitFramesRemaining == 0) {
-        finishScript();
-    }
-
+    // Subtask 7. The queue might be empty here, but we don't write
+    // script_result.json yet -- pending capture replies still need to
+    // resolve. Engine::run() polls scriptReadyToFinish() after draining
+    // R2D and calls finishScript() once the bus has settled.
     return executed;
+}
+
+bool CommandDispatcher::scriptReadyToFinish() const {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    return m_scriptRunning && m_commandQueue.empty() && m_waitFramesRemaining == 0;
 }
 
 void CommandDispatcher::registerFactory(const std::string& typeName, CommandFactory factory) {

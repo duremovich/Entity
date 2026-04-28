@@ -2,6 +2,7 @@
 #include "entity/bus/InMemoryMessageTransport.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/bus/Serialization.hpp"
+#include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
 #include "entity/renderer/Renderer.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
@@ -203,6 +204,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // travels through this transport. In-process today; Phase E swaps the
     // implementation without touching the wire format.
     m_transport = std::make_unique<bus::InMemoryMessageTransport>();
+
+    // Phase D entry, subtask 7: capture-command request/reply broker on
+    // the Director side needs both the transport (to publish requests)
+    // and the dispatcher (to resolve script-results). Dispatcher is wired
+    // inside Director's ctor; transport is wired here, after the
+    // transport instance exists.
+    if (auto* broker = m_director->getCaptureBroker()) {
+        broker->setTransport(m_transport.get());
+    }
 
     // Background HAP transcoder cache dir gets set lazily via
     // updateTranscodeCacheDir() when a project path is established.
@@ -473,6 +483,24 @@ void Engine::run() {
         // Render
         render();
 
+        // Subtask 7: drain Renderer->Director replies (CaptureCompleted)
+        // so capture-broker resolutions land on the script-results object
+        // before this iteration's finishScript check below. Same-tick
+        // resolution keeps the existing ctest semantics where Exit can
+        // immediately follow CaptureHash without losing the result.
+        drainRendererToDirector();
+
+        // Defer-finishScript pump: processQueue no longer auto-finishes
+        // the script. We do it here, after the bus has resolved any
+        // outstanding capture replies, so the written script_result.json
+        // reflects the final state.
+        if (m_commandDispatcher && m_commandDispatcher->scriptReadyToFinish()) {
+            auto* broker = m_director ? m_director->getCaptureBroker() : nullptr;
+            if (!broker || !broker->hasPending()) {
+                m_commandDispatcher->finishScript();
+            }
+        }
+
         // Bail on GPU device-lost. Keep rendering into a dead device and you
         // get silent hangs, not useful for a live show. Shut down cleanly so
         // the operator knows they need to restart.
@@ -733,6 +761,14 @@ void Engine::render() {
 
     if (m_renderer && m_renderer->isInitialized()) {
         auto t0 = std::chrono::high_resolution_clock::now();
+
+        // Subtask 7: capture-request drain runs *before* beginFrame.
+        // tonemapAndReadbackComposeTarget and captureBackBufferToPNG
+        // both reset the command list themselves and assume the GPU is
+        // settled (no in-flight beginFrame work). Anything else on D2R
+        // (RenderFrame, SetOutputEnabled, ApplySettings) gets stashed
+        // here and replayed after beginFrame.
+        drainCaptureRequestsPreFrame();
 
         m_renderer->beginFrame();
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -2050,93 +2086,6 @@ bool Engine::importVideo(const std::string& filepath, int trackIndex, Timecode p
     return true;
 }
 
-bool Engine::captureHash(const std::string& hashFilepath,
-                          const std::string& goldenFilepath,
-                          uint32_t composeSlot) {
-    if (!m_renderer) {
-        std::cerr << "[Engine] captureHash failed: renderer not initialized" << std::endl;
-        return false;
-    }
-
-    uint32_t width = 0;
-    uint32_t height = 0;
-    std::vector<uint8_t> pixels;
-    if (!m_renderer->readComposeTargetPixels(composeSlot, width, height, pixels)) {
-        return false;
-    }
-
-    // FNV-1a 64-bit — deterministic, dependency-free, good enough for exact-match
-    // pixel comparisons in tests. Not cryptographic.
-    constexpr uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
-    constexpr uint64_t FNV_PRIME  = 0x00000100000001b3ULL;
-    uint64_t hash = FNV_OFFSET;
-    for (uint8_t b : pixels) {
-        hash ^= static_cast<uint64_t>(b);
-        hash *= FNV_PRIME;
-    }
-
-    // Format: "<16-hex-digits> <width>x<height>\n"
-    char buf[64];
-    int n = std::snprintf(buf, sizeof(buf), "%016llx %ux%u\n",
-                          static_cast<unsigned long long>(hash), width, height);
-    if (n <= 0) {
-        return false;
-    }
-    std::string line(buf, static_cast<size_t>(n));
-
-    // Write hash file
-    std::filesystem::path outPath(hashFilepath);
-    if (outPath.has_parent_path()) {
-        std::filesystem::create_directories(outPath.parent_path());
-    }
-    std::ofstream out(outPath, std::ios::binary);
-    if (!out) {
-        std::cerr << "[Engine] captureHash: failed to open for write: " << hashFilepath << std::endl;
-        return false;
-    }
-    out.write(line.data(), static_cast<std::streamsize>(line.size()));
-    out.close();
-
-    std::cout << "[CaptureHash] " << hashFilepath << " -> " << line;
-
-    // Compare to golden if provided
-    if (!goldenFilepath.empty()) {
-        std::ifstream gf(goldenFilepath, std::ios::binary);
-        if (!gf) {
-            std::cerr << "[CaptureHash] MISS: golden not found: " << goldenFilepath << std::endl;
-            return false;
-        }
-        std::string golden((std::istreambuf_iterator<char>(gf)),
-                            std::istreambuf_iterator<char>());
-        if (golden != line) {
-            std::cerr << "[CaptureHash] FAIL: mismatch\n  got:    " << line
-                      << "  golden: " << golden << std::endl;
-            return false;
-        }
-        std::cout << "[CaptureHash] PASS against " << goldenFilepath << std::endl;
-    }
-
-    return true;
-}
-
-bool Engine::captureScreenshot(const std::string& filepath) {
-    if (!m_renderer) {
-        std::cerr << "[Engine] Screenshot failed: renderer not initialized" << std::endl;
-        return false;
-    }
-
-    return m_renderer->captureComposeTargetToPNG(filepath);
-}
-
-bool Engine::captureWindowScreenshot(const std::string& filepath) {
-    if (!m_renderer) {
-        std::cerr << "[Engine] Screenshot failed: renderer not initialized" << std::endl;
-        return false;
-    }
-
-    return m_renderer->captureBackBufferToPNG(filepath);
-}
-
 bool Engine::runScript(const std::string& filepath) {
     if (!m_commandDispatcher) {
         std::cerr << "[Engine] Script failed: command dispatcher not initialized" << std::endl;
@@ -2154,6 +2103,110 @@ void Engine::publishSetOutputEnabled(const bus::SetOutputEnabled& msg) {
 void Engine::publishApplySettings(const bus::ApplySettings& msg) {
     if (!m_transport) return;
     m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
+}
+
+void Engine::drainCaptureRequestsPreFrame() {
+    if (!m_transport) return;
+    // Skim D2R for capture requests; everything else gets re-published so
+    // the post-beginFrame drain below picks it up in the original order.
+    std::vector<std::vector<std::uint8_t>> deferred;
+    m_transport->drain(bus::Direction::D2R, [&](std::vector<std::uint8_t>&& bytes) {
+        auto msg = bus::deserialize(bytes);
+        if (!msg) return;
+        if (auto* req = std::get_if<bus::RequestComposeCapture>(&*msg)) {
+            handleCaptureRequest(*req);
+        } else {
+            deferred.push_back(std::move(bytes));
+        }
+    });
+    for (auto& bytes : deferred) {
+        m_transport->send(bus::Direction::D2R, std::move(bytes));
+    }
+}
+
+void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
+    bus::CaptureCompleted reply{};
+    reply.correlationId = req.correlationId;
+    reply.ok = false;
+
+    auto sendReply = [&]() {
+        if (m_transport) {
+            m_transport->send(bus::Direction::R2D,
+                              bus::serialize(bus::Message{reply}));
+        }
+    };
+
+    if (!m_renderer || !m_renderer->isInitialized()) {
+        reply.errorMessage = "renderer not initialized";
+        sendReply();
+        return;
+    }
+
+    if (req.hashOnly) {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::vector<uint8_t> pixels;
+        if (!m_renderer->readComposeTargetPixels(static_cast<uint32_t>(req.slot),
+                                                  width, height, pixels)) {
+            reply.errorMessage = "readComposeTargetPixels failed";
+            sendReply();
+            return;
+        }
+
+        // FNV-1a 64 -- deterministic, dependency-free, good enough for
+        // exact-match pixel comparisons. Same constants and emit format as
+        // the pre-bus path so existing goldens stay valid.
+        constexpr std::uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
+        constexpr std::uint64_t FNV_PRIME  = 0x00000100000001b3ULL;
+        std::uint64_t hash = FNV_OFFSET;
+        for (uint8_t b : pixels) {
+            hash ^= static_cast<std::uint64_t>(b);
+            hash *= FNV_PRIME;
+        }
+
+        char buf[64];
+        int n = std::snprintf(buf, sizeof(buf), "%016llx %ux%u\n",
+                              static_cast<unsigned long long>(hash), width, height);
+        if (n <= 0) {
+            reply.errorMessage = "snprintf failed";
+            sendReply();
+            return;
+        }
+        reply.hexHash.assign(buf, static_cast<size_t>(n));
+        reply.ok = true;
+        sendReply();
+        return;
+    }
+
+    // Screenshot path -- write a PNG from compose target or back buffer.
+    bool ok = req.fullWindow
+        ? m_renderer->captureBackBufferToPNG(req.pngPath)
+        : m_renderer->captureComposeTargetToPNG(req.pngPath);
+    if (!ok) {
+        reply.errorMessage = req.fullWindow
+            ? "captureBackBufferToPNG failed"
+            : "captureComposeTargetToPNG failed";
+    } else {
+        reply.ok = true;
+    }
+    sendReply();
+}
+
+void Engine::drainRendererToDirector() {
+    if (!m_transport) return;
+    auto* broker = m_director ? m_director->getCaptureBroker() : nullptr;
+    m_transport->drain(bus::Direction::R2D, [&](std::vector<std::uint8_t>&& bytes) {
+        auto msg = bus::deserialize(bytes);
+        if (!msg) return;
+        std::visit([&](auto& body) {
+            using T = std::decay_t<decltype(body)>;
+            if constexpr (std::is_same_v<T, bus::CaptureCompleted>) {
+                if (broker) broker->handleCaptureCompleted(body);
+            }
+            // Other R2D event types (DeviceLost, FrameDropped) arrive on
+            // future subtasks. Ignored for now.
+        }, *msg);
+    });
 }
 
 } // namespace entity

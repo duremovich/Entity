@@ -2,6 +2,7 @@
 
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/SceneState.hpp"
+#include "entity/director/CaptureBroker.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -21,6 +22,7 @@ Director::Director(entt::registry& registry,
     , m_commandDispatcher(std::make_unique<CommandDispatcher>())
     , m_animationSystem(std::make_unique<AnimationSystem>())
     , m_timeAuthority(std::make_unique<PlaybackTimeAuthority>(registry, m_timeline.get()))
+    , m_captureBroker(std::make_unique<CaptureBroker>())
 {
     // ProjectManager needs the Timeline + registry + renderer to honour
     // load/save calls (it allocates render-target slots for Screens at load
@@ -38,6 +40,11 @@ Director::Director(entt::registry& registry,
     // (Phase C.12 #9). Done after ProjectManager::initialize so the
     // entry table is ready by the time the authority looks anything up.
     m_timeAuthority->setProjectManager(m_projectManager.get());
+
+    // Capture broker resolves script-results via the dispatcher. Wire
+    // the dispatcher now; the transport is wired by Engine post-init
+    // (transport is owned by Engine and constructed after Director).
+    m_captureBroker->setCommandDispatcher(m_commandDispatcher.get());
 }
 
 Director::~Director() {

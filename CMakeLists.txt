@@ -188,11 +188,13 @@ target_sources(EntityMediaCore
 
         # Director (Phase D entry — owns Timeline, ProjectManager,
         # TranscodeManager, CommandDispatcher, AnimationSystem,
-        # PlaybackTimeAuthority). Will move into a dedicated
-        # entity-director static lib once the dependency graph allows
-        # (subtasks 7-11 untangle the cycle through EntityMediaCore).
+        # PlaybackTimeAuthority, CaptureBroker). Will move into a
+        # dedicated entity-director static lib once the dependency graph
+        # allows (subtasks 7-11 untangle the cycle through
+        # EntityMediaCore).
         src/director/Director.cpp
         src/director/PlaybackTimeAuthority.cpp
+        src/director/CaptureBroker.cpp
 
         # Renderer service (Phase D entry — owns D3D12Renderer,
         # OutputManager, FrameCache, OcioManager, CompositorSystem,

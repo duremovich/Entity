@@ -1,6 +1,8 @@
 #include "entity/command/Commands.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/director/CaptureBroker.hpp"
+#include "entity/director/Director.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
@@ -532,23 +534,16 @@ CommandPtr WaitFramesCommand::fromJson(const nlohmann::json& j) {
 }
 
 bool CaptureScreenshotCommand::execute(Engine& engine) {
-    std::cout << "[CaptureScreenshot] Capturing to: " << m_filepath << std::endl;
+    std::cout << "[CaptureScreenshot] Queuing capture to: " << m_filepath << std::endl;
 
-    bool success = false;
-    if (m_region == Region::FullWindow) {
-        success = engine.captureWindowScreenshot(m_filepath);
-    } else {
-        success = engine.captureScreenshot(m_filepath);
+    auto* director = engine.getDirector();
+    auto* broker = director ? director->getCaptureBroker() : nullptr;
+    if (!broker) {
+        std::cerr << "[CaptureScreenshot] No capture broker available" << std::endl;
+        return false;
     }
-
-    // Add to script results if dispatcher is tracking
-    if (success) {
-        if (auto* dispatcher = engine.getCommandDispatcher()) {
-            dispatcher->addScreenshotToResults(m_filepath);
-        }
-    }
-
-    return success;
+    return broker->requestScreenshotCapture(/*slot*/0, m_filepath,
+                                            m_region == Region::FullWindow);
 }
 
 nlohmann::json CaptureScreenshotCommand::toJson() const {
@@ -575,9 +570,17 @@ CommandPtr CaptureScreenshotCommand::fromJson(const nlohmann::json& j) {
 }
 
 bool CaptureHashCommand::execute(Engine& engine) {
-    std::cout << "[CaptureHash] Hashing compose target " << m_composeSlot
+    std::cout << "[CaptureHash] Queuing hash of compose target " << m_composeSlot
               << " -> " << m_hashFilepath << std::endl;
-    return engine.captureHash(m_hashFilepath, m_goldenFilepath, m_composeSlot);
+    auto* director = engine.getDirector();
+    auto* broker = director ? director->getCaptureBroker() : nullptr;
+    if (!broker) {
+        std::cerr << "[CaptureHash] No capture broker available" << std::endl;
+        return false;
+    }
+    return broker->requestHashCapture(static_cast<int>(m_composeSlot),
+                                      m_hashFilepath,
+                                      m_goldenFilepath);
 }
 
 nlohmann::json CaptureHashCommand::toJson() const {
