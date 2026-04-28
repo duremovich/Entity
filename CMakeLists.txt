@@ -96,6 +96,7 @@ endif()
 # ----------------------------------------------------------------------------
 add_library(entity-bus STATIC
     src/bus/Serialization.cpp
+    src/bus/InMemoryMessageTransport.cpp
 )
 
 target_include_directories(entity-bus

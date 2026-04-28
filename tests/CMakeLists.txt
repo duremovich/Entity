@@ -16,6 +16,7 @@ add_executable(EntityMediaTests
     unit/ProjectSerializerTests.cpp
     unit/OcioOdtTests.cpp
     unit/MessageBusSerializationTests.cpp
+    unit/InMemoryTransportTests.cpp
     test_Decoder.cpp
 )
 
