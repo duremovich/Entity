@@ -13,6 +13,7 @@ add_executable(EntityMediaTests
     unit/OcioGpuProcessorTests.cpp
     unit/RuntimeShaderCompilerTests.cpp
     unit/DecoderColorSpaceTests.cpp
+    unit/ProjectSerializerTests.cpp
     test_Decoder.cpp
 )
 

@@ -121,8 +121,14 @@ struct OutputDisplay {
     int32_t windowHeight{720};
 
     // Color/gamma per output (for display calibration)
+    // Pipeline ordering after Phase C.12: brightness → OCIO display+view ODT → gamma trim.
     float brightness{1.0f};
     float gamma{1.0f};
+
+    // OCIO display + view used by mapping_surface_ps as the per-output ODT.
+    // Empty = fall back to the active config's default display/view at draw time.
+    std::string ocioDisplay;
+    std::string ocioView;
 
     // Renderer slot for the physical output window/swap chain.
     // UINT32_MAX = not created yet (disabled, no display assigned, or virtual).

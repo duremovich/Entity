@@ -1,4 +1,5 @@
 #include "entity/ui/MappingWindow.hpp"
+#include "entity/color/OcioManager.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/render/D3D12Renderer.hpp"
@@ -6,6 +7,7 @@
 #include <cstdio>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace entity {
 
@@ -786,11 +788,91 @@ void MappingWindow::renderOutputsPanel() {
                 }
             }
 
-            // Color/gamma calibration
+            // Color/gamma calibration. Pipeline order: brightness → OCIO
+            // display+view ODT → gamma trim. Brightness is a pre-ODT scale,
+            // gamma is a post-ODT calibration trim (kept for legacy projector
+            // tuning workflows; not a colorimetric knob).
             ImGui::Separator();
             ImGui::Text("Calibration");
             ImGui::SliderFloat("Brightness##out", &output->brightness, 0.0f, 2.0f);
-            ImGui::SliderFloat("Gamma##out", &output->gamma, 0.5f, 2.5f);
+
+            // OCIO display + view dropdowns. Empty string = use the active
+            // config's default at draw time. When OcioManager isn't bound
+            // (config failed to load) we fall back to free-form text input
+            // so the user can still set values that take effect on next
+            // launch with a working config.
+            auto* ocio = m_engine->getOcioManager();
+            if (ocio && ocio->getConfig()) {
+                const auto displays = ocio->listDisplays();
+                const char* displayPreview = output->ocioDisplay.empty()
+                    ? "(config default)"
+                    : output->ocioDisplay.c_str();
+                if (ImGui::BeginCombo("Display##out", displayPreview)) {
+                    {
+                        bool selected = output->ocioDisplay.empty();
+                        if (ImGui::Selectable("(config default)", selected)) {
+                            output->ocioDisplay.clear();
+                            // Clearing the display invalidates the view choice
+                            // (views are display-scoped). Drop the view too so
+                            // the user doesn't end up with a stale pair.
+                            output->ocioView.clear();
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    for (const auto& d : displays) {
+                        bool selected = (d == output->ocioDisplay);
+                        if (ImGui::Selectable(d.c_str(), selected)) {
+                            if (d != output->ocioDisplay) {
+                                output->ocioDisplay = d;
+                                output->ocioView.clear();
+                            }
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+
+                std::string displayForViews = output->ocioDisplay.empty()
+                    ? ocio->getDefaultDisplay()
+                    : output->ocioDisplay;
+                const auto views = ocio->listViews(displayForViews);
+                const char* viewPreview = output->ocioView.empty()
+                    ? "(config default)"
+                    : output->ocioView.c_str();
+                if (ImGui::BeginCombo("View##out", viewPreview)) {
+                    {
+                        bool selected = output->ocioView.empty();
+                        if (ImGui::Selectable("(config default)", selected)) {
+                            output->ocioView.clear();
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    for (const auto& v : views) {
+                        bool selected = (v == output->ocioView);
+                        if (ImGui::Selectable(v.c_str(), selected)) {
+                            output->ocioView = v;
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            } else {
+                char dispBuf[128];
+                strncpy(dispBuf, output->ocioDisplay.c_str(), sizeof(dispBuf) - 1);
+                dispBuf[sizeof(dispBuf) - 1] = '\0';
+                if (ImGui::InputText("Display##out", dispBuf, sizeof(dispBuf))) {
+                    output->ocioDisplay = dispBuf;
+                }
+                char viewBuf[128];
+                strncpy(viewBuf, output->ocioView.c_str(), sizeof(viewBuf) - 1);
+                viewBuf[sizeof(viewBuf) - 1] = '\0';
+                if (ImGui::InputText("View##out", viewBuf, sizeof(viewBuf))) {
+                    output->ocioView = viewBuf;
+                }
+                ImGui::TextDisabled("OCIO config not loaded — dropdowns disabled.");
+            }
+
+            ImGui::SliderFloat("Gamma trim##out", &output->gamma, 0.5f, 2.5f);
         }
     } else {
         ImGui::TextDisabled("Select an output to edit");

@@ -20,14 +20,16 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v6 (2026-04-28) — adds OutputDisplay.ocioDisplay + ocioView (Phase C.12 #8).
     //   v5 (2026-04-24) — replaces autoTranscodeOnImport with nonHapImportPolicy.
     //   v4 — adds mediaLibrary array + autoTranscodeOnImport.
     //   v3 — adds Timeline::Section array.
     //   v2 — adds OutputDisplay + Models + Screens.
     //   v1 — original.
     // Loader is forward-compatible with older files: missing arrays no-op;
-    // v4 autoTranscodeOnImport is translated to AlwaysTranscode/NeverTranscode.
-    static constexpr int PROJECT_VERSION = 5;
+    // v4 autoTranscodeOnImport is translated to AlwaysTranscode/NeverTranscode;
+    // v5 outputs load with empty OCIO display/view (= config default at draw time).
+    static constexpr int PROJECT_VERSION = 6;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

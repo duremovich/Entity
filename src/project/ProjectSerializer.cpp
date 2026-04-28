@@ -306,6 +306,8 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             oj["displayName"] = out.displayName;
             oj["brightness"] = out.brightness;
             oj["gamma"] = out.gamma;
+            oj["ocioDisplay"] = out.ocioDisplay;
+            oj["ocioView"] = out.ocioView;
             oj["fullscreen"] = out.fullscreen;
             oj["windowX"] = out.windowX;
             oj["windowY"] = out.windowY;
@@ -772,6 +774,8 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 out.displayName = oj.value("displayName", "");
                 out.brightness = oj.value("brightness", 1.0f);
                 out.gamma = oj.value("gamma", 1.0f);
+                out.ocioDisplay = oj.value("ocioDisplay", std::string{});
+                out.ocioView = oj.value("ocioView", std::string{});
                 out.fullscreen = oj.value("fullscreen", false);
                 out.windowX = oj.value("windowX", 100);
                 out.windowY = oj.value("windowY", 100);
