@@ -465,6 +465,50 @@ void WindowManager::renderMenuBar() {
                     "Original source files at their previous paths are NOT deleted.");
             }
 
+            // ADR-0009 — orphan-showfile recovery actions. Available when a
+            // project is loaded; useful when an .entity was opened at a
+            // location that doesn't have its content/ tree (e.g. a bare
+            // Save-As copy moved between machines).
+            if (ImGui::MenuItem("Rebuild Project Structure",
+                                nullptr, false,
+                                m_rebuildStructureCallback != nullptr)) {
+                if (m_rebuildStructureCallback) {
+                    int n = m_rebuildStructureCallback();
+                    std::cout << "[WindowManager] Rebuilt " << n
+                              << " missing project directories." << std::endl;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Creates any missing canonical project subdirectories\n"
+                    "(content/unsorted/, presets/, objects/, exports/,\n"
+                    " snapshots/, .cache/thumbnails/). Idempotent — safe\n"
+                    "to run on a fully-formed project.");
+            }
+
+            if (ImGui::MenuItem("Find Missing Media...",
+                                nullptr, false,
+                                m_findMissingMediaCallback != nullptr)) {
+                std::filesystem::path picked = ui::pickFolderDialog(
+                    m_ownerWindow,
+                    L"Choose a folder to search for missing media",
+                    {});
+                if (!picked.empty() && m_findMissingMediaCallback) {
+                    int n = m_findMissingMediaCallback(pathToUtf8(picked));
+                    std::cout << "[WindowManager] Restored " << n
+                              << " missing media files from " << picked.string()
+                              << std::endl;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Recursively searches a folder for media files whose\n"
+                    "filenames match Managed entries that are currently\n"
+                    "missing from the project's content/ tree. Matches are\n"
+                    "copied into the expected canonical paths. Source files\n"
+                    "in the search folder are NOT moved.");
+            }
+
             ImGui::Separator();
 
             if (ImGui::MenuItem("Run Script...", nullptr)) {

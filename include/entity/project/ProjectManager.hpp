@@ -277,6 +277,49 @@ public:
      */
     std::string decoderPathFor(const std::string& originalPath) const;
 
+    // --- Orphan-showfile recovery (ADR-0009) ----------------------------------
+
+    /**
+     * Idempotent mkdir of every canonical subdirectory `createNew()`
+     * would have produced: `content/unsorted/`, `presets/`, `objects/`,
+     * `exports/`, `snapshots/`, `.cache/thumbnails/`. Useful when the
+     * user opens a "naked" .entity file (e.g. saved with
+     * `Save Project As...` rather than `Save Project As Bundle...`)
+     * and wants to bring the tree back to a usable shape.
+     *
+     * Returns the number of directories that were actually created
+     * (zero on a fully-formed project).
+     */
+    int rebuildStructure();
+
+    /**
+     * Outcome of one `findMissingManagedMedia` pass. The caller (Engine)
+     * uses this to surface a summary log line and to decide whether to
+     * reload the project so freshly-restored files get attached to clips.
+     */
+    struct FindMediaResult {
+        int missingBefore{0};   // Count of Managed entries with missing files at start.
+        int matched{0};         // Filenames found in the search dir.
+        int copied{0};          // Successfully copied into the canonical path.
+        int stillMissing{0};    // missingBefore - copied (no match or copy failed).
+    };
+
+    /**
+     * Recursively walks `searchDir`, builds an index of media filenames
+     * found there, then for each Managed mediaLibrary entry whose
+     * canonical path doesn't currently exist on disk, looks up the
+     * entry's filename in the index. Matches are copied into the
+     * canonical content path (parent dirs created as needed). The
+     * source files in `searchDir` are NOT moved or deleted.
+     *
+     * Multiple files in `searchDir` with the same name resolve to the
+     * first one encountered during the walk. Linked entries are
+     * untouched; the operation is scoped to Managed entries because
+     * those have a deterministic canonical path the caller can
+     * restore. Linked files are by design at user-controlled paths.
+     */
+    FindMediaResult findMissingManagedMedia(const std::filesystem::path& searchDir);
+
     // --- Collect Linked → Managed (ADR-0009) ---------------------------------
 
     /**

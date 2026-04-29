@@ -14,6 +14,8 @@
 #include "entity/media/DecodedFrame.hpp"
 #include <algorithm>
 #include <iostream>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -427,6 +429,154 @@ std::string ProjectManager::resolveMediaPath(const std::string& storedPath) cons
     if (m_projectPath.empty()) return storedPath;
     return (m_projectPath.parent_path() /
             std::filesystem::path(storedPath)).string();
+}
+
+int ProjectManager::rebuildStructure() {
+    namespace fs = std::filesystem;
+    if (m_projectPath.empty()) {
+        std::cerr << "[ProjectManager] rebuildStructure: no project loaded." << std::endl;
+        return 0;
+    }
+    const fs::path root = m_projectPath.parent_path();
+
+    // Same set createNew() builds. Order-independent — each call just
+    // creates its own missing parents via create_directories.
+    const std::vector<fs::path> targets = {
+        root / kContentDir / kUnsortedDir,
+        root / kPresetsDir,
+        root / kObjectsDir,
+        root / kExportsDir,
+        root / kSnapshotsDir,
+        root / kCacheDir / kThumbnailsDir,
+    };
+
+    int created = 0;
+    for (const auto& p : targets) {
+        std::error_code ec;
+        if (fs::exists(p, ec)) continue;
+        fs::create_directories(p, ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] rebuildStructure: failed to create "
+                      << p.string() << ": " << ec.message() << std::endl;
+            continue;
+        }
+        ++created;
+    }
+
+    std::cout << "[ProjectManager] rebuildStructure: created "
+              << created << " directories under " << root.string() << std::endl;
+    return created;
+}
+
+ProjectManager::FindMediaResult
+ProjectManager::findMissingManagedMedia(const std::filesystem::path& searchDir) {
+    namespace fs = std::filesystem;
+    FindMediaResult result;
+
+    if (m_projectPath.empty()) {
+        std::cerr << "[ProjectManager] findMissingMedia: no project loaded." << std::endl;
+        return result;
+    }
+    std::error_code ec;
+    if (!fs::exists(searchDir, ec) || !fs::is_directory(searchDir, ec)) {
+        std::cerr << "[ProjectManager] findMissingMedia: search dir not found: "
+                  << searchDir.string() << std::endl;
+        return result;
+    }
+
+    const fs::path projectRoot = m_projectPath.parent_path();
+
+    // 1. Identify Managed entries whose canonical paths are missing.
+    struct Missing {
+        std::string canonical;   // project-relative path
+        std::string filename;    // basename for lookup
+    };
+    std::vector<Missing> missing;
+    for (const auto& e : m_loadedMediaFiles) {
+        if (e.pathKind != PathKind::Managed) continue;
+        const fs::path canonicalAbs = projectRoot / fs::path(e.originalPath);
+        if (fs::exists(canonicalAbs, ec)) continue;
+        Missing m;
+        m.canonical = e.originalPath;
+        m.filename  = fs::path(e.originalPath).filename().string();
+        missing.push_back(std::move(m));
+    }
+    result.missingBefore = static_cast<int>(missing.size());
+    if (missing.empty()) {
+        std::cout << "[ProjectManager] findMissingMedia: nothing missing."
+                  << std::endl;
+        return result;
+    }
+
+    // 2. Build a filename → first-found-path index over `searchDir`.
+    //    We accept any extension that appears in the missing set so the
+    //    walk doesn't bother indexing unrelated files. Filenames with the
+    //    same basename are deduped by first-encounter (stable across
+    //    invocations isn't guaranteed, but matches typical "I have a
+    //    backup folder" recovery flows).
+    std::unordered_set<std::string> wantedFilenames;
+    for (const auto& m : missing) wantedFilenames.insert(m.filename);
+
+    std::unordered_map<std::string, fs::path> found;
+    fs::recursive_directory_iterator it(searchDir,
+                                         fs::directory_options::skip_permission_denied,
+                                         ec);
+    if (ec) {
+        std::cerr << "[ProjectManager] findMissingMedia: failed to iterate "
+                  << searchDir.string() << ": " << ec.message() << std::endl;
+        return result;
+    }
+    for (; it != fs::recursive_directory_iterator{}; it.increment(ec)) {
+        if (ec) { ec.clear(); continue; }
+        if (!it->is_regular_file(ec)) continue;
+        const std::string fname = it->path().filename().string();
+        if (wantedFilenames.find(fname) == wantedFilenames.end()) continue;
+        // First-encounter wins.
+        found.emplace(fname, it->path());
+    }
+
+    // 3. Copy each match into its canonical location.
+    for (const auto& m : missing) {
+        auto hit = found.find(m.filename);
+        if (hit == found.end()) {
+            ++result.stillMissing;
+            continue;
+        }
+        ++result.matched;
+
+        const fs::path target = projectRoot / fs::path(m.canonical);
+        if (target.has_parent_path()) {
+            fs::create_directories(target.parent_path(), ec);
+            if (ec) {
+                std::cerr << "[ProjectManager] findMissingMedia: failed to create "
+                          << target.parent_path().string() << ": " << ec.message()
+                          << std::endl;
+                ++result.stillMissing;
+                continue;
+            }
+        }
+        fs::copy_file(hit->second, target,
+                      fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] findMissingMedia: copy failed "
+                      << hit->second.string() << " -> " << target.string()
+                      << ": " << ec.message() << std::endl;
+            ++result.stillMissing;
+            continue;
+        }
+        std::cout << "[ProjectManager] findMissingMedia: restored "
+                  << m.canonical << " from "
+                  << hit->second.string() << std::endl;
+        ++result.copied;
+    }
+
+    std::cout << "[ProjectManager] findMissingMedia: "
+              << "missing=" << result.missingBefore
+              << " matched=" << result.matched
+              << " copied="  << result.copied
+              << " stillMissing=" << result.stillMissing
+              << std::endl;
+    return result;
 }
 
 ProjectManager::CollectResult

@@ -167,6 +167,25 @@ public:
     }
 
     /**
+     * ADR-0009 — orphan-showfile recovery hooks.
+     *
+     * `RebuildStructureCallback` — File > "Rebuild Project Structure".
+     * Engine: idempotent mkdir of canonical subdirs.
+     *
+     * `FindMissingMediaCallback` — File > "Find Missing Media...".
+     * Engine: recursive search of the user-picked folder, copies
+     * matches into canonical content paths, reloads on success.
+     */
+    using RebuildStructureCallback = std::function<int()>;
+    using FindMissingMediaCallback = std::function<int(const std::string& searchDir)>;
+    void setRebuildStructureCallback(RebuildStructureCallback cb) {
+        m_rebuildStructureCallback = std::move(cb);
+    }
+    void setFindMissingMediaCallback(FindMissingMediaCallback cb) {
+        m_findMissingMediaCallback = std::move(cb);
+    }
+
+    /**
      * Edit menu — ripple insert / delete time on the active range selection.
      * Engine wires these to read TimelineWidget's range and dispatch the
      * Ripple{Insert,Delete}TimeCommand through CommandDispatcher (so they
@@ -281,6 +300,8 @@ private:
     CanCollectMediaCallback m_canCollectMediaCallback;
     SaveBundleCallback         m_saveBundleCallback;
     CurrentProjectInfoCallback m_currentProjectInfoCallback;
+    RebuildStructureCallback   m_rebuildStructureCallback;
+    FindMissingMediaCallback   m_findMissingMediaCallback;
 
     // Save-As-Bundle modal (ADR-0009). Open state + form fields persist
     // across frames while the popup is up; reset when the user clicks

@@ -314,6 +314,14 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             return true;
         });
 
+    // ADR-0009 — File > Rebuild Project Structure / Find Missing Media...
+    m_windowManager->setRebuildStructureCallback([this]() {
+        return rebuildProjectStructure();
+    });
+    m_windowManager->setFindMissingMediaCallback([this](const std::string& dir) {
+        return findMissingMedia(dir);
+    });
+
     // Register windows with window manager
     m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
 
@@ -1690,6 +1698,30 @@ void Engine::createTestEntities() {
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Entities Created! ✓" << std::endl;
     std::cout << "========================================\n" << std::endl;
+}
+
+int Engine::rebuildProjectStructure() {
+    if (!m_projectManager) return 0;
+    return m_projectManager->rebuildStructure();
+}
+
+int Engine::findMissingMedia(const std::filesystem::path& searchDir) {
+    if (!m_projectManager) return 0;
+    auto result = m_projectManager->findMissingManagedMedia(searchDir);
+
+    // If we restored at least one file, reload the project so the per-clip
+    // decode state attaches to the now-resolvable media. Without this,
+    // ClipDecodeState was never emplaced (loadProject's media callback
+    // returns early when the file doesn't exist), so the freshly-restored
+    // file wouldn't actually decode until a manual reload.
+    if (result.copied > 0 && !m_projectManager->projectPath().empty()) {
+        const auto path = m_projectManager->projectPath();
+        std::cout << "[Engine] Reloading project after restoring "
+                  << result.copied << " files." << std::endl;
+        loadProject(path);
+    }
+
+    return result.copied;
 }
 
 int Engine::countLinkedEntries() const {

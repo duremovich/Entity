@@ -230,6 +230,26 @@ public:
     int countLinkedEntries() const;
 
     /**
+     * ADR-0009 — orphan-showfile recovery actions.
+     *
+     * `rebuildProjectStructure()` — idempotent mkdir of canonical
+     * subdirectories under the loaded project. Call after opening an
+     * .entity file produced by the bare "Save Project As..." path
+     * (no bundle) at a location that doesn't have content/, presets/,
+     * etc. Returns the number of dirs actually created.
+     *
+     * `findMissingMedia(searchDir)` — recursively walks `searchDir`,
+     * matches by filename against Managed mediaLibrary entries whose
+     * canonical path is missing on disk, and copies the matches into
+     * their canonical content paths. After a successful run that
+     * restored at least one file, the project is reloaded so clip
+     * decode state attaches to the freshly-restored media. Returns
+     * the number of entries successfully restored.
+     */
+    int rebuildProjectStructure();
+    int findMissingMedia(const std::filesystem::path& searchDir);
+
+    /**
      * ADR-0009 — orchestrate a HAP transcode for a registered media
      * library entry. Branches on `pathKind`:
      *
