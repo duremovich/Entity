@@ -211,6 +211,247 @@ TEST(ProjectSerializer, MediaLibraryWithoutOverrideKeyLoadsAsEmpty) {
     EXPECT_TRUE(loaded->inputColorSpaceOverride.empty());
 }
 
+// --- ADR-0009 / v7 — structured projects: pathKind + archive fields ----
+
+TEST(ProjectSerializer, MediaLibraryPathKindAndArchiveRoundTrip) {
+    // A managed entry with archive metadata must survive a full save+load.
+    // This is the live-path test for the structured-project model:
+    // path_kind=managed, archived_original points at a per-folder
+    // .archive/ entry, original_codec records what was archived.
+    TempFile tf("v7_managed_with_archive");
+    const std::string kPath = "content/act1/intro.mov";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        auto& entry = pm.addMediaFile(kPath);
+        entry.pathKind         = entity::ProjectManager::PathKind::Managed;
+        entry.archivedOriginal = "content/act1/.archive/intro.mov";
+        entry.originalCodec    = "prores4444";
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+            << entity::ProjectSerializer::getLastError();
+
+        const auto* loaded = pm.findEntry(kPath);
+        ASSERT_NE(loaded, nullptr);
+        EXPECT_EQ(loaded->pathKind, entity::ProjectManager::PathKind::Managed);
+        EXPECT_EQ(loaded->archivedOriginal, "content/act1/.archive/intro.mov");
+        EXPECT_EQ(loaded->originalCodec,    "prores4444");
+    }
+}
+
+TEST(ProjectSerializer, MediaLibraryDefaultPathKindIsLinked) {
+    // Default-constructed entry round-trips as Linked. This matches pre-v7
+    // behavior — addMediaFile with no further setup means "absolute path,
+    // QLab-style reference."
+    TempFile tf("v7_default_linked");
+    const std::string kPath = "C:/some/abs/path.mov";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        pm.addMediaFile(kPath);  // no overrides — leaves pathKind=Linked
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm));
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm));
+
+        const auto* loaded = pm.findEntry(kPath);
+        ASSERT_NE(loaded, nullptr);
+        EXPECT_EQ(loaded->pathKind, entity::ProjectManager::PathKind::Linked);
+        EXPECT_TRUE(loaded->archivedOriginal.empty());
+        EXPECT_TRUE(loaded->originalCodec.empty());
+    }
+}
+
+TEST(ProjectSerializer, V6ProjectLoadsWithLinkedPathKind) {
+    // Forward-compatibility gate: a v6 project file pre-dates pathKind /
+    // archivedOriginal / originalCodec entirely. The loader must accept the
+    // missing keys and default to Linked (matches pre-v7 absolute-path
+    // semantics) with empty archive fields.
+    TempFile tf("v6_no_pathkind");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 6,
+  "frameRate": 30,
+  "duration": 0,
+  "currentFrame": 0,
+  "tracks": [],
+  "mediaLibrary": [
+    { "originalPath": "C:/legacy/clip.mov", "transcodedPath": "", "variant": "" }
+  ]
+})";
+    }
+    ASSERT_TRUE(fs::exists(tf.path));
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    entity::ProjectManager pm;
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+        << entity::ProjectSerializer::getLastError();
+
+    const auto* loaded = pm.findEntry("C:/legacy/clip.mov");
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->pathKind, entity::ProjectManager::PathKind::Linked);
+    EXPECT_TRUE(loaded->archivedOriginal.empty());
+    EXPECT_TRUE(loaded->originalCodec.empty());
+}
+
+TEST(ProjectSerializer, EmptyArchiveFieldsAreNotSerialized) {
+    // Save-side intentionally omits archivedOriginal / originalCodec when
+    // they're empty. Older parsers and projects without the keys stay
+    // byte-identical for the common (no-archive) case. pathKind is always
+    // emitted because it's a load-bearing semantic.
+    TempFile tf("v7_empty_archive_omit");
+    const std::string kPath = "C:/some/source.mov";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        pm.addMediaFile(kPath);  // empty archive fields
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm));
+    }
+
+    // Read raw JSON and assert keys are absent.
+    std::ifstream in(tf.path);
+    std::string contents((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    EXPECT_EQ(contents.find("archivedOriginal"), std::string::npos)
+        << "Empty archivedOriginal must not be emitted";
+    EXPECT_EQ(contents.find("originalCodec"), std::string::npos)
+        << "Empty originalCodec must not be emitted";
+    EXPECT_NE(contents.find("\"pathKind\""), std::string::npos)
+        << "pathKind is always emitted (load-bearing semantic)";
+}
+
+// --- ADR-0009 / v7 — ProjectManager::createNew() folder tree -----------
+
+namespace {
+
+// Per-test scratch directory under the system temp dir; nuked at scope
+// exit. Used as the parent dir for createNew() so we don't pollute the
+// repo or the actual %TEMP%/recently-used trees.
+struct TempDir {
+    fs::path path;
+    explicit TempDir(const char* tag) {
+        auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        path = fs::temp_directory_path()
+             / ("entity_createnew_test_" + std::string(tag) + "_" + std::to_string(stamp));
+        fs::create_directories(path);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+    }
+};
+
+} // namespace
+
+TEST(ProjectManagerCreateNew, BuildsExpectedFolderTree) {
+    TempDir parent("tree");
+    entity::ProjectManager pm;
+
+    ASSERT_TRUE(pm.createNew(parent.path, "MyShow"));
+
+    // Top-level project file at <parent>/MyShow/MyShow.entity.
+    const fs::path projectRoot = parent.path / "MyShow";
+    EXPECT_TRUE(fs::exists(projectRoot / "MyShow.entity"));
+
+    // Canonical subdirectory layout per ADR-0009.
+    EXPECT_TRUE(fs::is_directory(projectRoot / "content" / "unsorted"));
+    EXPECT_TRUE(fs::is_directory(projectRoot / "presets"));
+    EXPECT_TRUE(fs::is_directory(projectRoot / "objects"));
+    EXPECT_TRUE(fs::is_directory(projectRoot / "exports"));
+    EXPECT_TRUE(fs::is_directory(projectRoot / "snapshots"));
+    EXPECT_TRUE(fs::is_directory(projectRoot / ".cache" / "thumbnails"));
+
+    // m_projectPath points at the new file.
+    EXPECT_EQ(pm.projectPath(), projectRoot / "MyShow.entity");
+}
+
+TEST(ProjectManagerCreateNew, EmptyProjectLoadsAsValidV7) {
+    // The .entity file createNew writes must round-trip through
+    // ProjectSerializer::load — i.e. it's a real v7 project, not just
+    // a stub the loader will reject later.
+    TempDir parent("loadback");
+    entity::ProjectManager pm;
+    ASSERT_TRUE(pm.createNew(parent.path, "MyShow"));
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    entity::ProjectManager loadPm;
+    ASSERT_TRUE(entity::ProjectSerializer::load(
+        timeline, pm.projectPath(), nullptr, &loadPm))
+        << entity::ProjectSerializer::getLastError();
+
+    // Empty project: no media library entries, default policy.
+    EXPECT_TRUE(loadPm.loadedMediaFiles().empty());
+}
+
+TEST(ProjectManagerCreateNew, FailsIfTargetExists) {
+    TempDir parent("collision");
+    entity::ProjectManager pm;
+    ASSERT_TRUE(pm.createNew(parent.path, "MyShow"));
+
+    // Second attempt with the same name must refuse rather than
+    // clobber an existing project.
+    entity::ProjectManager pm2;
+    EXPECT_FALSE(pm2.createNew(parent.path, "MyShow"));
+    EXPECT_TRUE(pm2.projectPath().empty())
+        << "Failed createNew must leave projectPath unset";
+}
+
+TEST(ProjectManagerCreateNew, RejectsEmptyOrPathSeparatorNames) {
+    TempDir parent("badnames");
+    entity::ProjectManager pm;
+
+    EXPECT_FALSE(pm.createNew(parent.path, ""));
+    EXPECT_FALSE(pm.createNew(parent.path, "act1/scene2"));
+    EXPECT_FALSE(pm.createNew(parent.path, "evil\\name"));
+
+    // None of the rejected names should have left anything on disk
+    // beyond the empty parent dir we created.
+    int childCount = 0;
+    for (const auto& _entry : fs::directory_iterator(parent.path)) {
+        (void)_entry;
+        ++childCount;
+    }
+    EXPECT_EQ(childCount, 0);
+}
+
+TEST(ProjectManagerCreateNew, ClearsLeftoverMediaLibrary) {
+    // createNew is "start fresh." Any media-library state held over from
+    // a previous project on the same ProjectManager instance must be
+    // cleared before the empty .entity is written; otherwise the new
+    // project's first save would mysteriously contain entries from the
+    // old one.
+    TempDir parent("clear_lib");
+    entity::ProjectManager pm;
+    pm.addMediaFile("C:/leftover/clip.mov");
+    ASSERT_FALSE(pm.loadedMediaFiles().empty());
+
+    ASSERT_TRUE(pm.createNew(parent.path, "FreshShow"));
+    EXPECT_TRUE(pm.loadedMediaFiles().empty());
+}
+
 TEST(ProjectSerializer, V5ProjectLoadsWithEmptyOcioFields) {
     // Forward-compatibility gate: a v5 project file (pre-Phase C.12 #8) has
     // no ocioDisplay / ocioView keys on its outputs. The loader must accept

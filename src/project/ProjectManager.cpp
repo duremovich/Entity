@@ -54,6 +54,82 @@ void ProjectManager::initialize(Timeline* timeline, entt::registry* registry, IR
     m_renderer = renderer;
 }
 
+bool ProjectManager::createNew(const std::filesystem::path& parentDir,
+                                const std::string& projectName) {
+    if (projectName.empty()) {
+        std::cerr << "[ProjectManager] createNew: projectName is empty" << std::endl;
+        return false;
+    }
+    // Reject path separators here — std::filesystem would otherwise quietly
+    // create nested directories from "act1/scene2" or similar, which is not
+    // what the launcher's "Project name" field means.
+    if (projectName.find('/')  != std::string::npos ||
+        projectName.find('\\') != std::string::npos) {
+        std::cerr << "[ProjectManager] createNew: projectName must not contain "
+                  << "path separators ('" << projectName << "')" << std::endl;
+        return false;
+    }
+
+    const std::filesystem::path projectRoot = parentDir / projectName;
+
+    std::error_code existsEc;
+    if (std::filesystem::exists(projectRoot, existsEc)) {
+        std::cerr << "[ProjectManager] createNew: target already exists: "
+                  << projectRoot.string() << std::endl;
+        return false;
+    }
+
+    auto mkdir = [](const std::filesystem::path& dir) -> bool {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] createNew: failed to create "
+                      << dir.string() << ": " << ec.message() << std::endl;
+            return false;
+        }
+        return true;
+    };
+
+    // Build the subdirectory tree. create_directories cascades, so
+    // content/unsorted creates content/ on the way; .cache/thumbnails
+    // creates .cache/ on the way.
+    if (!mkdir(projectRoot / kContentDir / kUnsortedDir)) return false;
+    if (!mkdir(projectRoot / kPresetsDir))                return false;
+    if (!mkdir(projectRoot / kObjectsDir))                return false;
+    if (!mkdir(projectRoot / kExportsDir))                return false;
+    if (!mkdir(projectRoot / kSnapshotsDir))              return false;
+    if (!mkdir(projectRoot / kCacheDir / kThumbnailsDir)) return false;
+
+    // Write a minimal v7 .entity at the root by routing through
+    // ProjectSerializer with a temporary Timeline+registry. This keeps the
+    // schema version in lockstep with PROJECT_VERSION automatically rather
+    // than hand-rolling JSON that would silently rot when v8 lands.
+    const std::filesystem::path projectFile =
+        projectRoot / (projectName + ProjectSerializer::FILE_EXTENSION);
+
+    // New project starts with no media. Clear any leftover library state
+    // from a prior project so the empty save reflects "new project."
+    m_loadedMediaFiles.clear();
+    m_projectPath.clear();
+
+    entt::registry tmpRegistry;
+    Timeline tmpTimeline(tmpRegistry);
+    if (!ProjectSerializer::save(tmpTimeline, projectFile, this)) {
+        std::cerr << "[ProjectManager] createNew: failed to write empty project file: "
+                  << ProjectSerializer::getLastError() << std::endl;
+        // Best-effort cleanup of the half-built tree so the next attempt at
+        // the same name doesn't trip the "already exists" guard.
+        std::error_code rmEc;
+        std::filesystem::remove_all(projectRoot, rmEc);
+        return false;
+    }
+
+    m_projectPath = projectFile;
+    std::cout << "[ProjectManager] Created new project at "
+              << projectFile.string() << std::endl;
+    return true;
+}
+
 bool ProjectManager::save(const std::filesystem::path& filepath) {
     if (!m_timeline) {
         std::cerr << "[ProjectManager] Cannot save: timeline not set" << std::endl;

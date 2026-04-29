@@ -20,6 +20,13 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v7 (2026-04-29) — ADR-0009 structured projects. Adds per-
+    //                     mediaLibrary-entry `pathKind` ("managed" |
+    //                     "linked") plus optional `archivedOriginal`
+    //                     and `originalCodec` for the archive-on-
+    //                     transcode flow. v6 entries load with
+    //                     pathKind="linked" (matches pre-v7 behavior:
+    //                     absolute paths everywhere) and no archive.
     //   v6 (2026-04-28) — adds OutputDisplay.ocioDisplay + ocioView (Phase C.12 #8)
     //                     and (in #9) the optional MediaLibraryEntry
     //                     `inputColorSpaceOverride` field. The override is
@@ -33,8 +40,9 @@ public:
     //   v1 — original.
     // Loader is forward-compatible with older files: missing arrays no-op;
     // v4 autoTranscodeOnImport is translated to AlwaysTranscode/NeverTranscode;
-    // v5 outputs load with empty OCIO display/view (= config default at draw time).
-    static constexpr int PROJECT_VERSION = 6;
+    // v5 outputs load with empty OCIO display/view (= config default at draw time);
+    // v6 mediaLibrary entries load with pathKind="linked".
+    static constexpr int PROJECT_VERSION = 7;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

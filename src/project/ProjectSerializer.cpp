@@ -70,6 +70,22 @@ static std::string blendModeToJson(BlendMode mode) {
     }
 }
 
+// Helper: PathKind to string for JSON. Strings instead of ints to keep
+// .entity files diff-friendly. v7 always emits this; v6 loaders default
+// to "linked" for missing entries.
+static std::string pathKindToJson(ProjectManager::PathKind k) {
+    switch (k) {
+        case ProjectManager::PathKind::Managed: return "managed";
+        case ProjectManager::PathKind::Linked:  return "linked";
+    }
+    return "linked";
+}
+
+static ProjectManager::PathKind jsonToPathKind(const std::string& s) {
+    if (s == "managed") return ProjectManager::PathKind::Managed;
+    return ProjectManager::PathKind::Linked;
+}
+
 // Helper: String to BlendMode from JSON
 static BlendMode jsonToBlendMode(const std::string& str) {
     if (str == "normal") return BlendMode::Normal;
@@ -203,6 +219,15 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 // don't know the key keep working unchanged.
                 if (!entry.inputColorSpaceOverride.empty()) {
                     ej["inputColorSpaceOverride"] = entry.inputColorSpaceOverride;
+                }
+                // ADR-0009 / v7. pathKind is always emitted; archive
+                // fields are optional and only present when populated.
+                ej["pathKind"] = pathKindToJson(entry.pathKind);
+                if (!entry.archivedOriginal.empty()) {
+                    ej["archivedOriginal"] = entry.archivedOriginal;
+                }
+                if (!entry.originalCodec.empty()) {
+                    ej["originalCodec"] = entry.originalCodec;
                 }
                 libJson.push_back(ej);
             }
@@ -581,11 +606,19 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     const std::string transcoded = ej.value("transcodedPath", "");
                     const std::string variant    = ej.value("variant",        "");
                     const std::string inputCsOverride = ej.value("inputColorSpaceOverride", "");
+                    // ADR-0009 / v7. Missing pathKind = pre-v7 entry =
+                    // Linked (absolute path; matches legacy behavior).
+                    const std::string pathKindStr = ej.value("pathKind", "linked");
+                    const std::string archived   = ej.value("archivedOriginal", "");
+                    const std::string origCodec  = ej.value("originalCodec",    "");
                     if (original.empty()) continue;
                     auto& entry = projectMgr->addMediaFile(original);
                     entry.transcodedPath = transcoded;
                     entry.variant        = variant;
                     entry.inputColorSpaceOverride = inputCsOverride;
+                    entry.pathKind         = jsonToPathKind(pathKindStr);
+                    entry.archivedOriginal = archived;
+                    entry.originalCodec    = origCodec;
                 }
             }
             // Prefer v5 field. Fall back to v4 autoTranscodeOnImport if present
