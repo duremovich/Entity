@@ -1,6 +1,9 @@
 # Current Status
 
-**Phase**: Phase C — Single-machine MVP. Physical output + surface-driven warp + project persistence are all in. Timeline UX overhaul, undo/redo for property + ripple commands, named sections, HAP decode pipeline + transcoder, playback-perf overhaul, Settings UI, **engine-global FrameCache** (replacing per-clip FrameRingBuffer), and **async D3D12 COPY queue** for texture uploads have all landed. **Phase C.12 OCIO-native color pipeline is COMPLETE** (pivoted 2026-04-27 from hand-rolled ACES to match Disguise's direction; subtasks #1-#11 all shipped). OcioManager + runtime DXC + FP16 compose + GPU processor cache + rendering integration + per-decoder tagging + golden rebake + Settings/Preferences "Color" section + per-output OCIO display+view UI + project persistence (PROJECT_VERSION 5→6) + MediaBin per-clip OCIO input color-space override + HAP HDR (BC6H_UF16) FP16 survival smoke test + **OCIO ODT correctness CPU-side unit tests + ACES end-to-end smoke integration test**. **CI green at 143/143** (135 + 7 new `OcioOdtTests` + new `integration_aces_smoke`). After C.12, the Director/Renderer split is the only remaining Phase D entry condition.
+**Phase**: Phase D entry — Director/Renderer split is **9/11 subtasks landed locally** (10 doc-only edits + 11 final cleanup are the remaining work). Bus + transport + SceneState wrapper + Director / Renderer service classes + PlaybackController split + RenderFrame per-tick state-snapshot + all four Renderer-touching command routings (SetOutputEnabled, ApplySettings, capture commands via CaptureBroker, ProvisionClipResources/ResourcesProvisioned slot allocation) + AssetId strong typedef on the bus's `ProvisionClipResources` are all in. Local master is 7 commits ahead of origin/master. **CI green at 203/203** (193 pre-AssetId + 10 new AssetIdTests). Subtasks 10 and 11 are docs / minor cleanup; the heavy lift is done.
+
+**Phase C** still describes the runtime feature set (Phase C.12 OCIO-native color pipeline is closed at 143/143 + integrated). Below is the Phase D entry progress; everything else stays unchanged from the prior CURRENT.md snapshot.
+
 **Last Updated**: 2026-04-28
 
 ---
@@ -17,6 +20,30 @@ See `~/.claude/plans/so-even-with-hap-cosmic-glacier.md` for the **playback/rend
 ---
 
 ## Where We Are
+
+### Phase D entry — Director/Renderer split (9/11 subtasks landed locally, 7 commits ahead of origin)
+
+Active driver: `~/.claude/plans/yeah-1-lets-plan-zazzy-hartmanis.md`. The split lets Phase D feature work (timecode, OSC, audio, NDI, preview/program) attach to the right layer from the start, instead of bolting onto a god-class Engine. The bus is already network-serializable -- Phase E swaps `IMessageTransport` for UDP without touching message shape or endpoint code.
+
+| # | Task | Commit |
+|---|------|--------|
+| 1 | `entity-bus` static lib + Message variant + JSON serialization | `1743f23` |
+| 2 | `IMessageTransport` + `InMemoryMessageTransport` + concurrent-hammer test | `34ad877` |
+| 3 | `SceneState` wraps `entt::registry&` w/ debug Read/Write handles | `056c827` |
+| 4 | `Director` extracted; Space/J/K/L route through CommandDispatcher | `df645e4` |
+| 5 | `Renderer` service extracted; `m_systems` vector deleted | `6b1eefe` |
+| 6 | `PlaybackController` -> `PlaybackTimeAuthority` + `PlaybackPresenter` | `fc1ab72` |
+| 8 | `RenderFrame` per-tick bus message; Director/Renderer roundtrip test | `36441dc` |
+| 7a | Bus-route `SetOutputEnabled` + `ApplySettings` | `327304d` |
+| 7b | Bus-route capture commands via `CaptureBroker` (correlation-ID parking) | `9cfb94b` |
+| 7c | Bus-route clip-create paths (`ProvisionClipResources`/`ResourcesProvisioned`) | `ce0221e` |
+| 9 | `AssetId` strong typedef threaded through `ProvisionClipResources` | `9c1f45b` |
+
+**Tests:** 143 → 203 green over the milestone. New: 5 `MessageBusSerializationTests` + 6 `InMemoryTransportTests` + 4 `SceneStateTests` + `PlaybackTimeAuthorityTests` + 5 `DirectorRendererRoundtripTests` + 10 `AssetIdTests` + 1 new `integration_director_renderer_smoke` (reuses `png_sequence_seek/frame_0.hash` golden -- byte-equivalence proof through the bus loop). All 22 existing compose goldens unchanged.
+
+**Remaining (subtasks 10 + 11, doc-heavy):**
+- 10. UI side-channel rule -- explicit in `include/entity/director/CLAUDE.md` (read-only Director* + writes via CommandDispatcher).
+- 11. Final docs sweep -- `include/entity/bus/CLAUDE.md` + this file + master roadmap progress log; the "slim Engine to <150 lines" cleanup is its own focused follow-up.
 
 ### Phase A — Stabilization ✅ Complete
 
