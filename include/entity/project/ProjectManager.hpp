@@ -250,6 +250,47 @@ public:
      */
     std::string decoderPathFor(const std::string& originalPath) const;
 
+    // --- Collect Linked → Managed (ADR-0009) ---------------------------------
+
+    /**
+     * Outcome of a single entry's collect step. `oldOriginalPath` matched
+     * what the entry had on entry to the operation; `newOriginalPath` is
+     * the new project-relative `originalPath` after the flip. Engine's
+     * registry walk uses this map to rewrite `clip.filepath`.
+     */
+    struct CollectResult {
+        // Per-entry mapping. Keys = old absolute originalPath, values =
+        // new project-relative originalPath. Engine walks the clip
+        // registry and rewrites `clip.filepath` using this map.
+        std::vector<std::pair<std::string, std::string>> rewrites;
+        int  collected{0};       // Entries successfully flipped to Managed.
+        int  missing{0};         // Linked entries whose source no longer resolves.
+        int  alreadyManaged{0};  // Skipped (no work needed).
+    };
+
+    /**
+     * One-shot v6 → v7 conversion: walks the media library, copies every
+     * `Linked` entry whose source resolves into
+     * `<projectRoot>/content/<subfolder>/<filename>` (collision-suffixed),
+     * archives the original under `.archive/<filename>` if a cache-dir
+     * transcode exists (and moves the transcode to the canonical content
+     * path), then flips the entry to `Managed`. Linked entries whose
+     * source doesn't resolve are left alone (logged via `result.missing`)
+     * so the operator can decide whether to relink or remove.
+     *
+     * Original source files at their pre-collect paths are NOT deleted —
+     * the operation is non-destructive on the user's disk outside the
+     * project folder.
+     *
+     * Caller is responsible for rewriting any external references to the
+     * old `originalPath` (e.g. `clip.filepath` on Engine's registry) using
+     * `result.rewrites`.
+     *
+     * Returns an empty result with `collected == 0` if no project is
+     * loaded or the project root isn't writable.
+     */
+    CollectResult collectLinkedIntoProject(const std::string& subfolder = "unsorted");
+
     const std::vector<MediaLibraryEntry>& loadedMediaFiles() const { return m_loadedMediaFiles; }
 
     // --- Import preferences -------------------------------------------------

@@ -134,6 +134,17 @@ public:
     void setRunScriptCallback(RunScriptCallback callback) { m_runScriptCallback = callback; }
 
     /**
+     * ADR-0009 — "Collect Linked Media into Project Folder" menu action.
+     * The bool callback returns whether the menu item should be enabled
+     * (Engine: count of Linked entries > 0). The void callback fires
+     * when the user clicks; Engine runs collectLinkedIntoProject().
+     */
+    using CollectMediaCallback   = std::function<void()>;
+    using CanCollectMediaCallback = std::function<bool()>;
+    void setCollectMediaCallback(CollectMediaCallback cb)       { m_collectMediaCallback   = std::move(cb); }
+    void setCanCollectMediaCallback(CanCollectMediaCallback cb) { m_canCollectMediaCallback = std::move(cb); }
+
+    /**
      * Edit menu — ripple insert / delete time on the active range selection.
      * Engine wires these to read TimelineWidget's range and dispatch the
      * Ripple{Insert,Delete}TimeCommand through CommandDispatcher (so they
@@ -244,6 +255,8 @@ private:
     OpenProjectCallback m_openProjectCallback;
     ExitCallback m_exitCallback;
     RunScriptCallback m_runScriptCallback;
+    CollectMediaCallback   m_collectMediaCallback;
+    CanCollectMediaCallback m_canCollectMediaCallback;
 
     HasRangeSelectionCallback m_hasRangeSelectionCallback;
     RippleInsertCallback m_rippleInsertCallback;

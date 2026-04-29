@@ -305,6 +305,23 @@ void WindowManager::renderMenuBar() {
                 }
             }
 
+            // ADR-0009 — one-shot "make this v6 / mixed-mode project
+            // portable" action. Disabled when there's nothing to do.
+            const bool canCollect = m_canCollectMediaCallback
+                                       ? m_canCollectMediaCallback()
+                                       : false;
+            if (ImGui::MenuItem("Collect Linked Media into Project Folder...",
+                                nullptr, false, canCollect)) {
+                if (m_collectMediaCallback) m_collectMediaCallback();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Copies every \"linked\" media reference into the project's\n"
+                    "content/unsorted/ folder and flips its entry to \"managed\".\n"
+                    "Use this to make a legacy project portable across machines.\n"
+                    "Original source files at their previous paths are NOT deleted.");
+            }
+
             ImGui::Separator();
 
             if (ImGui::MenuItem("Run Script...", nullptr)) {

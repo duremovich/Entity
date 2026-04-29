@@ -191,6 +191,45 @@ public:
     const std::string& importSubfolder() const { return m_importSubfolder; }
 
     /**
+     * ADR-0009 — one-shot "Collect Linked media into the project folder"
+     * action. For every `Linked` entry in the media library whose source
+     * file resolves on disk:
+     *
+     *   1. Copy the source into
+     *      `<projectRoot>/content/<subfolder>/<filename>`,
+     *      with collision-suffixed names if needed.
+     *   2. If a cache-dir transcode exists for the entry, treat the
+     *      collected source as the pre-transcode original: copy the
+     *      source into `content/<subfolder>/.archive/<filename>` and
+     *      move the cache-dir HAP to the canonical content path. Set
+     *      `archivedOriginal` + `originalCodec` accordingly. Otherwise
+     *      no archive is created.
+     *   3. Flip the entry to `Managed` with the new project-relative
+     *      `originalPath`; clear `transcodedPath` (Managed convention:
+     *      the canonical path IS the playable file, regardless of
+     *      whether a transcode was collected).
+     *   4. Walk the registry and rewrite `clip.filepath` for every clip
+     *      that referenced the old absolute `originalPath`.
+     *
+     * `Managed` entries and `Linked` entries whose source no longer
+     * resolves are left untouched; the latter is logged so the operator
+     * can decide whether to relink or remove them. The original Linked
+     * source files at their pre-collect paths are NOT deleted — the
+     * operation is non-destructive on the user's disk outside the
+     * project folder.
+     *
+     * Returns the number of entries successfully collected.
+     */
+    int collectLinkedIntoProject(const std::string& subfolder = "unsorted");
+
+    /**
+     * Number of `Linked` entries in the loaded media library. Used by
+     * the File menu to disable "Collect Linked Media..." when there's
+     * nothing to do.
+     */
+    int countLinkedEntries() const;
+
+    /**
      * ADR-0009 — orchestrate a HAP transcode for a registered media
      * library entry. Branches on `pathKind`:
      *

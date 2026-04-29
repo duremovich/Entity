@@ -339,6 +339,161 @@ std::string ProjectManager::resolveMediaPath(const std::string& storedPath) cons
             std::filesystem::path(storedPath)).string();
 }
 
+ProjectManager::CollectResult
+ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
+    namespace fs = std::filesystem;
+
+    CollectResult result;
+    if (m_projectPath.empty()) {
+        std::cerr << "[ProjectManager] collect: no project loaded." << std::endl;
+        return result;
+    }
+
+    const fs::path projectRoot = m_projectPath.parent_path();
+    const std::string sub = subfolder.empty()
+                                ? std::string(kUnsortedDir)
+                                : subfolder;
+    const fs::path targetDirAbs = projectRoot / kContentDir / sub;
+    const fs::path archiveDirAbs = targetDirAbs / kArchiveDir;
+
+    std::error_code ec;
+    fs::create_directories(targetDirAbs, ec);
+    if (ec) {
+        std::cerr << "[ProjectManager] collect: failed to create target dir "
+                  << targetDirAbs.string() << ": " << ec.message() << std::endl;
+        return result;
+    }
+
+    // Snapshot the canonical paths to process — the loop below mutates
+    // entries (remove + re-add) which would invalidate iterators.
+    struct Pending {
+        std::string oldOriginalPath;
+        std::string transcodedPath;
+        std::string variant;
+        std::string inputColorSpaceOverride;
+        MediaType   detectedMediaType{MediaType::Unknown};
+    };
+    std::vector<Pending> pending;
+    for (const auto& e : m_loadedMediaFiles) {
+        if (e.pathKind != PathKind::Linked) {
+            ++result.alreadyManaged;
+            continue;
+        }
+        Pending p;
+        p.oldOriginalPath         = e.originalPath;
+        p.transcodedPath          = e.transcodedPath;
+        p.variant                 = e.variant;
+        p.inputColorSpaceOverride = e.inputColorSpaceOverride;
+        p.detectedMediaType       = detectMediaType(e.originalPath);
+        pending.push_back(std::move(p));
+    }
+
+    for (const auto& p : pending) {
+        const fs::path src(p.oldOriginalPath);
+        if (!fs::exists(src, ec)) {
+            std::cerr << "[ProjectManager] collect: source missing, "
+                         "leaving Linked: " << p.oldOriginalPath << std::endl;
+            ++result.missing;
+            continue;
+        }
+
+        // Choose target filename, collision-suffixed.
+        fs::path target = targetDirAbs / src.filename();
+        if (fs::exists(target, ec)) {
+            const std::string stem = src.stem().string();
+            const std::string ext  = src.extension().string();
+            for (int i = 1; i < 1000; ++i) {
+                fs::path candidate = targetDirAbs /
+                    (stem + " (" + std::to_string(i) + ")" + ext);
+                if (!fs::exists(candidate, ec)) {
+                    target = candidate;
+                    break;
+                }
+            }
+        }
+
+        const bool hasTranscode = !p.transcodedPath.empty()
+                                  && fs::exists(fs::path(p.transcodedPath), ec);
+
+        std::string newArchivedOriginalRel;
+        std::string newOriginalCodec;
+
+        if (hasTranscode) {
+            fs::create_directories(archiveDirAbs, ec);
+            if (ec) {
+                std::cerr << "[ProjectManager] collect: failed to create archive dir "
+                          << archiveDirAbs.string() << ": " << ec.message() << std::endl;
+                continue;
+            }
+            const fs::path archiveTarget = archiveDirAbs / target.filename();
+            fs::copy_file(src, archiveTarget,
+                          fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[ProjectManager] collect: failed to archive "
+                          << src.string() << " -> " << archiveTarget.string()
+                          << ": " << ec.message() << std::endl;
+                continue;
+            }
+            // Move cache-dir transcode → canonical path. rename() is atomic
+            // when same volume; cross-volume falls back to copy + remove.
+            const fs::path transSrc(p.transcodedPath);
+            std::error_code renameEc;
+            fs::rename(transSrc, target, renameEc);
+            if (renameEc) {
+                fs::copy_file(transSrc, target,
+                              fs::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    std::cerr << "[ProjectManager] collect: failed to relocate transcode "
+                              << transSrc.string() << " -> " << target.string()
+                              << ": " << ec.message() << std::endl;
+                    continue;
+                }
+                fs::remove(transSrc, ec);  // best-effort cleanup
+            }
+            fs::path archiveRel = fs::relative(archiveTarget, projectRoot, ec);
+            newArchivedOriginalRel =
+                ec ? archiveTarget.generic_string() : archiveRel.generic_string();
+            newOriginalCodec = MediaTypeToString(p.detectedMediaType);
+        } else {
+            fs::copy_file(src, target,
+                          fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[ProjectManager] collect: failed to copy "
+                          << src.string() << " -> " << target.string()
+                          << ": " << ec.message() << std::endl;
+                continue;
+            }
+        }
+
+        const fs::path canonicalRelPath = fs::relative(target, projectRoot, ec);
+        const std::string canonical =
+            ec ? target.generic_string() : canonicalRelPath.generic_string();
+
+        // Rebuild the entry as Managed. removeMediaFile + addMediaFile
+        // is the cleanest way given the library is keyed by originalPath.
+        removeMediaFile(p.oldOriginalPath);
+        auto& fresh = addMediaFile(canonical, PathKind::Managed);
+        fresh.transcodedPath          = "";
+        fresh.variant                 = "";
+        fresh.archivedOriginal        = newArchivedOriginalRel;
+        fresh.originalCodec           = newOriginalCodec;
+        fresh.inputColorSpaceOverride = p.inputColorSpaceOverride;
+
+        result.rewrites.emplace_back(p.oldOriginalPath, canonical);
+        ++result.collected;
+    }
+
+    if (result.collected > 0) {
+        std::cout << "[ProjectManager] Collect: " << result.collected
+                  << " entries moved into content/" << sub << "/";
+        if (result.missing > 0) {
+            std::cout << " (" << result.missing << " missing, left as Linked)";
+        }
+        std::cout << std::endl;
+    }
+    return result;
+}
+
 std::string ProjectManager::decoderPathFor(const std::string& originalPath) const {
     if (auto* e = findEntry(originalPath); e && !e->transcodedPath.empty()) {
         // Transcoded paths follow the same Managed-vs-Linked semantics as

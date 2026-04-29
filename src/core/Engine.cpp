@@ -272,6 +272,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         this->runScript(filePath);
     });
 
+    // ADR-0009 — File > Collect Linked Media...
+    m_windowManager->setCanCollectMediaCallback([this]() {
+        return countLinkedEntries() > 0;
+    });
+    m_windowManager->setCollectMediaCallback([this]() {
+        const int n = collectLinkedIntoProject();
+        std::cout << "[Engine] Collect ran: " << n << " entries collected." << std::endl;
+    });
+
     // Register windows with window manager
     m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
 
@@ -1648,6 +1657,41 @@ void Engine::createTestEntities() {
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Entities Created! ✓" << std::endl;
     std::cout << "========================================\n" << std::endl;
+}
+
+int Engine::countLinkedEntries() const {
+    if (!m_projectManager) return 0;
+    int n = 0;
+    for (const auto& e : m_projectManager->loadedMediaFiles()) {
+        if (e.pathKind == ProjectManager::PathKind::Linked) ++n;
+    }
+    return n;
+}
+
+int Engine::collectLinkedIntoProject(const std::string& subfolder) {
+    if (!m_projectManager) return 0;
+
+    auto result = m_projectManager->collectLinkedIntoProject(subfolder);
+
+    // Walk the clip registry once to rewrite every reference that the
+    // collect step displaced. Doing this here (Engine-side) keeps
+    // ProjectManager free of EnTT coupling — it sticks to project state.
+    if (!result.rewrites.empty()) {
+        auto view = m_registry.view<Clip>();
+        for (auto [entity, clip] : view.each()) {
+            for (const auto& [oldPath, newPath] : result.rewrites) {
+                if (clip.filepath == oldPath) {
+                    clip.filepath = newPath;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (result.collected == 0 && result.missing == 0) {
+        std::cout << "[Engine] Collect: nothing to do." << std::endl;
+    }
+    return result.collected;
 }
 
 bool Engine::scheduleTranscode(const std::string& canonicalPath,
