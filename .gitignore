@@ -139,6 +139,8 @@ scripts/perf_diag_*.json
 
 # Claude Code runtime state
 .claude/
+.claude-agents/
+.claude-sessions/
 
 # CTest runtime artifacts
 /Testing/
