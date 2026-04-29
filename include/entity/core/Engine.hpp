@@ -43,6 +43,8 @@ struct SetOutputEnabled;
 struct ApplySettings;
 struct RequestComposeCapture;
 struct CaptureCompleted;
+struct ProvisionClipResources;
+struct ResourcesProvisioned;
 }
 // class Transport;
 
@@ -307,6 +309,7 @@ public:
     // initialize() or after shutdown()). Defined in Engine.cpp.
     void publishSetOutputEnabled(const bus::SetOutputEnabled& msg);
     void publishApplySettings(const bus::ApplySettings& msg);
+    void publishProvisionClipResources(const bus::ProvisionClipResources& msg);
 
 private:
     // Subtask 7. Pre-beginFrame drain (Renderer side): pulls

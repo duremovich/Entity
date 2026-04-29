@@ -809,6 +809,35 @@ void Engine::render() {
                         // here so a future hot-reload subtask only touches
                         // Renderer-side code.
                         (void)body.ocioConfigPath;
+                    } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
+                        // Renderer-side: allocate the GPU descriptor slot.
+                        // ClipDecodeState already carries the decoder
+                        // (Director opened it to read metadata before
+                        // publishing); spawning the actual DecodeWorker
+                        // happens lazily via DecodeSystem. Reply on R2D so
+                        // Director writes the slot back to the VideoTexture
+                        // component this same tick.
+                        bus::ResourcesProvisioned reply{};
+                        reply.entity = body.entity;
+                        if (m_renderer) {
+                            const uint32_t slot = m_renderer->allocateVideoTextureSlot();
+                            if (slot == UINT32_MAX) {
+                                reply.descriptorSlot = -1;
+                                reply.ok = false;
+                                reply.errorMessage = "no available video texture slots";
+                            } else {
+                                reply.descriptorSlot = static_cast<int>(slot);
+                                reply.ok = true;
+                            }
+                        } else {
+                            reply.descriptorSlot = -1;
+                            reply.ok = false;
+                            reply.errorMessage = "renderer not initialized";
+                        }
+                        if (m_transport) {
+                            m_transport->send(bus::Direction::R2D,
+                                              bus::serialize(bus::Message{reply}));
+                        }
                     }
                     // Other variant alternatives are R2D-only or arrive on
                     // future subtasks; ignore them here.
@@ -1602,14 +1631,17 @@ void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
     layer.blendMode = BlendMode::Normal;
     // zOrder will be set based on track (done below)
 
-    // Add VideoTexture component and allocate texture slot
+    // Add VideoTexture component; the GPU descriptor slot is allocated
+    // Renderer-side via the bus (subtask 7). The slot stays UINT32_MAX
+    // for one tick after publish; CompositorSystem's isAllocated() guard
+    // skips the clip during that window.
     auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
-    videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
-    if (videoTex.descriptorSlot == UINT32_MAX) {
-        std::cerr << "ERROR: Failed to allocate video texture slot!" << std::endl;
-    } else {
-        std::cout << "Allocated video texture slot: " << videoTex.descriptorSlot << std::endl;
-    }
+    publishProvisionClipResources(bus::ProvisionClipResources{
+        static_cast<std::uint64_t>(clipEntity),
+        filePath,
+        mediaType,
+        clip.framerate,
+        clip.totalMediaFrames});
 
     // Marker tag for DecodeSystem's view query — frames go through the
     // engine-global FrameCache now, not a per-clip ring buffer.
@@ -1846,12 +1878,17 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     // Track 0 (top of timeline UI) should render on top = highest z-order
     layer.zOrder = 1000 - static_cast<uint32_t>(finalTrackIndex);
 
-    // Add VideoTexture component and allocate texture slot
+    // Add VideoTexture component; slot allocation flows through the bus
+    // (subtask 7). UINT32_MAX for one tick is fine -- isAllocated()
+    // guards downstream.
     auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
-    videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
-    if (videoTex.descriptorSlot == UINT32_MAX) {
-        std::cerr << "ERROR: Failed to allocate video texture slot!" << std::endl;
-    }
+    (void)videoTex;
+    publishProvisionClipResources(bus::ProvisionClipResources{
+        static_cast<std::uint64_t>(clipEntity),
+        filePath,
+        mediaType,
+        clip.framerate,
+        clip.totalMediaFrames});
 
     // Marker tag for DecodeSystem (decoded frames live in the engine cache).
     m_registry.emplace<FrameBuffer>(clipEntity);
@@ -2016,15 +2053,20 @@ void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath)
     // Update clip's loaded state
     clip->loaded = true;
 
-    // Allocate video texture slot if VideoTexture component exists
-    auto* videoTex = m_registry.try_get<VideoTexture>(clipEntity);
-    if (videoTex && videoTex->descriptorSlot == 0) {
-        videoTex->descriptorSlot = m_renderer->allocateVideoTextureSlot();
-        if (videoTex->descriptorSlot == UINT32_MAX) {
-            std::cerr << "[Engine] Failed to allocate video texture slot!" << std::endl;
-        } else {
-            std::cout << "[Engine] Allocated video texture slot: " << videoTex->descriptorSlot << std::endl;
-        }
+    // Slot allocation flows through the bus (subtask 7). Mirrors the
+    // pre-bus condition: only request a slot if the existing
+    // VideoTexture's slot looks unset (descriptorSlot == 0 was the
+    // sentinel duplicateClip() left behind; new VideoTexture's default
+    // is UINT32_MAX, also treated as unset).
+    if (auto* videoTex = m_registry.try_get<VideoTexture>(clipEntity);
+        videoTex && (videoTex->descriptorSlot == 0 ||
+                     videoTex->descriptorSlot == UINT32_MAX)) {
+        publishProvisionClipResources(bus::ProvisionClipResources{
+            static_cast<std::uint64_t>(clipEntity),
+            filepath,
+            mediaType,
+            clip->framerate,
+            clip->totalMediaFrames});
     }
 
     // Store decoder and create frame buffer
@@ -2101,6 +2143,11 @@ void Engine::publishSetOutputEnabled(const bus::SetOutputEnabled& msg) {
 }
 
 void Engine::publishApplySettings(const bus::ApplySettings& msg) {
+    if (!m_transport) return;
+    m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
+}
+
+void Engine::publishProvisionClipResources(const bus::ProvisionClipResources& msg) {
     if (!m_transport) return;
     m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
 }
@@ -2202,6 +2249,24 @@ void Engine::drainRendererToDirector() {
             using T = std::decay_t<decltype(body)>;
             if constexpr (std::is_same_v<T, bus::CaptureCompleted>) {
                 if (broker) broker->handleCaptureCompleted(body);
+            } else if constexpr (std::is_same_v<T, bus::ResourcesProvisioned>) {
+                // Director side: write the Renderer-allocated slot back
+                // onto the VideoTexture component. The clip is stamped
+                // with descriptorSlot=UINT32_MAX between
+                // ProvisionClipResources publish and this reply -- the
+                // compositor's isAllocated() guard skips the clip during
+                // that window (one tick under sequential ticking).
+                const auto entity = static_cast<entt::entity>(body.entity);
+                if (auto* videoTex = m_registry.try_get<VideoTexture>(entity)) {
+                    if (body.ok && body.descriptorSlot >= 0) {
+                        videoTex->descriptorSlot =
+                            static_cast<uint32_t>(body.descriptorSlot);
+                    } else {
+                        std::cerr << "[Engine] ResourcesProvisioned failed for entity="
+                                  << static_cast<uint32_t>(entity)
+                                  << ": " << body.errorMessage << std::endl;
+                    }
+                }
             }
             // Other R2D event types (DeviceLost, FrameDropped) arrive on
             // future subtasks. Ignored for now.
