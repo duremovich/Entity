@@ -154,6 +154,63 @@ void MediaBinWindow::renderPendingImportModal() {
     }
 }
 
+void MediaBinWindow::renderImportTargetToolbar() {
+    // ADR-0009: when the user is in an interactive session (MediaBin is
+    // visible), the import default is Copy into content/unsorted/. We
+    // seed this once on first render so script-driven flows (which
+    // never instantiate MediaBin) keep the Link default, and so an
+    // operator who explicitly changed the toggle in a previous session
+    // doesn't get reverted. After the seed, the toolbar is the source
+    // of truth; Engine just stores whatever it last received.
+    if (!m_importDefaultsSeeded) {
+        m_engine->setImportMode(Engine::ImportMode::Copy, "unsorted");
+        std::snprintf(m_importSubfolderBuf, sizeof(m_importSubfolderBuf),
+                      "%s", m_engine->importSubfolder().c_str());
+        m_importDefaultsSeeded = true;
+    }
+
+    Engine::ImportMode mode = m_engine->importMode();
+    int modeIdx = static_cast<int>(mode);
+    const char* modeLabels[] = {
+        "Link in place",     // Engine::ImportMode::Link
+        "Copy into project", // Engine::ImportMode::Copy
+    };
+
+    ImGui::Text("Imports:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::Combo("##import-mode", &modeIdx, modeLabels, IM_ARRAYSIZE(modeLabels))) {
+        m_engine->setImportMode(static_cast<Engine::ImportMode>(modeIdx),
+                                m_engine->importSubfolder());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Where new imports land:\n"
+            "  Copy into project — file is copied into content/<subfolder>/.\n"
+            "    Travels with the project; portable across machines.\n"
+            "  Link in place — file stays at its absolute path.\n"
+            "    QLab/Watchout-style; not portable without relinking.");
+    }
+
+    // Subfolder field is only meaningful in Copy mode.
+    ImGui::SameLine();
+    ImGui::TextDisabled("content/");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::BeginDisabled(mode != Engine::ImportMode::Copy);
+    if (ImGui::InputText("##import-subfolder", m_importSubfolderBuf,
+                         sizeof(m_importSubfolderBuf))) {
+        m_engine->setImportMode(mode, m_importSubfolderBuf);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered() && mode == Engine::ImportMode::Copy) {
+        ImGui::SetTooltip(
+            "Target subfolder under content/ for new imports.\n"
+            "Created on demand if it doesn't exist.\n"
+            "Default: \"unsorted\".");
+    }
+}
+
 void MediaBinWindow::render() {
     const auto& mediaFiles = m_engine->getLoadedMediaFiles();
     TranscodeManager* tmgr = m_engine->getTranscodeManager();
@@ -184,6 +241,10 @@ void MediaBinWindow::render() {
 
     ImGui::SameLine();
     ImGui::Text("  |  Loaded: %zu", mediaFiles.size());
+
+    // --- ADR-0009 — Copy/Link import target toolbar -----------------------
+    renderImportTargetToolbar();
+
     ImGui::Separator();
 
     // --- First-import modal ------------------------------------------------

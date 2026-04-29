@@ -189,8 +189,15 @@ public:
     /**
      * Register `originalPath`. Idempotent — if an entry exists it is not
      * touched. Returns a reference to the (possibly-existing) entry.
+     *
+     * `kind` defaults to `Linked` to match the pre-v7 behavior; the
+     * structured-import flow passes `Managed` when copying the file
+     * into `content/`. The kind is set only on first registration —
+     * re-calling `addMediaFile` for an existing entry leaves the
+     * kind unchanged.
      */
-    MediaLibraryEntry& addMediaFile(const std::string& originalPath);
+    MediaLibraryEntry& addMediaFile(const std::string& originalPath,
+                                    PathKind kind = PathKind::Linked);
 
     /**
      * Update (or create) the transcoded side of the entry. Used by Engine
@@ -213,9 +220,33 @@ public:
     void removeMediaFile(const std::string& originalPath);
 
     /**
+     * Resolve a stored media path to an absolute filesystem path the
+     * decoder / transcoder / FFmpeg can open. Routes by `pathKind`:
+     *
+     *   - `Managed` entries store project-relative paths
+     *     (e.g. `content/act1/intro.mov`); the helper joins them with
+     *     the current project root.
+     *   - `Linked` entries store absolute paths and are returned
+     *     unchanged.
+     *
+     * Lookup is via `findEntry`, so `storedPath` must match the same
+     * string used to register the entry. A path that isn't in the
+     * library (or empty) is returned as-is — useful for code paths
+     * that haven't gone through `addMediaFile` yet (e.g. fresh
+     * imports during ingestion).
+     *
+     * If no project root is set yet, Managed paths fall back to
+     * being returned as-is. The caller is responsible for treating
+     * that as "can't open until project loaded."
+     */
+    std::string resolveMediaPath(const std::string& storedPath) const;
+
+    /**
      * Resolve which file path the decoder should actually open for a clip
      * whose stored `filepath` is `originalPath`. Returns the transcoded
-     * path when available and on-disk, else the original.
+     * path when available and on-disk, else the original — both routed
+     * through `resolveMediaPath` so Managed entries resolve against the
+     * project root.
      */
     std::string decoderPathFor(const std::string& originalPath) const;
 

@@ -278,9 +278,13 @@ void ProjectManager::tickAutosave(double deltaTime) {
     }
 }
 
-ProjectManager::MediaLibraryEntry& ProjectManager::addMediaFile(const std::string& originalPath) {
+ProjectManager::MediaLibraryEntry&
+ProjectManager::addMediaFile(const std::string& originalPath, PathKind kind) {
     if (auto* existing = findEntry(originalPath)) return *existing;
-    m_loadedMediaFiles.push_back(MediaLibraryEntry{originalPath, {}, {}, {}});
+    MediaLibraryEntry entry;
+    entry.originalPath = originalPath;
+    entry.pathKind = kind;
+    m_loadedMediaFiles.push_back(std::move(entry));
     return m_loadedMediaFiles.back();
 }
 
@@ -313,15 +317,46 @@ void ProjectManager::removeMediaFile(const std::string& originalPath) {
         m_loadedMediaFiles.end());
 }
 
+std::string ProjectManager::resolveMediaPath(const std::string& storedPath) const {
+    if (storedPath.empty()) return storedPath;
+
+    const auto* entry = findEntry(storedPath);
+    if (!entry) {
+        // Not in the library — return as-is. Callers that hit this path
+        // are typically pre-registration (importMedia copying a fresh
+        // file in) and already have an absolute path.
+        return storedPath;
+    }
+    if (entry->pathKind == PathKind::Linked) {
+        return storedPath;
+    }
+    // Managed: resolve against project root. If no project is loaded yet
+    // (m_projectPath empty), there's no root to resolve against — fall
+    // back to the relative string. Caller must treat that as "can't
+    // open until a project is loaded."
+    if (m_projectPath.empty()) return storedPath;
+    return (m_projectPath.parent_path() /
+            std::filesystem::path(storedPath)).string();
+}
+
 std::string ProjectManager::decoderPathFor(const std::string& originalPath) const {
     if (auto* e = findEntry(originalPath); e && !e->transcodedPath.empty()) {
+        // Transcoded paths follow the same Managed-vs-Linked semantics as
+        // originals: route through resolveMediaPath-equivalent logic so a
+        // Managed transcode (relative path under content/) resolves
+        // against the project root.
+        std::string transcodeAbs = e->transcodedPath;
+        if (e->pathKind == PathKind::Managed && !m_projectPath.empty()) {
+            transcodeAbs = (m_projectPath.parent_path() /
+                            std::filesystem::path(e->transcodedPath)).string();
+        }
         // Verify the transcoded file still exists on disk — a stale project
         // might reference a cache that was deleted since save.
-        if (std::filesystem::exists(utf8ToPath(e->transcodedPath))) {
-            return e->transcodedPath;
+        if (std::filesystem::exists(utf8ToPath(transcodeAbs))) {
+            return transcodeAbs;
         }
     }
-    return originalPath;
+    return resolveMediaPath(originalPath);
 }
 
 } // namespace entity

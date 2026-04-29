@@ -167,6 +167,51 @@ public:
      */
     GLFWwindow* getWindow() { return m_window; }
 
+    // --- Structured imports (ADR-0009) --------------------------------------
+
+    /**
+     * What an import does with the source file. Default is `Link` to
+     * keep legacy behavior (script-driven imports of pre-existing test
+     * media). Interactive imports flip the default to `Copy` via the
+     * MediaBin toolbar.
+     */
+    enum class ImportMode {
+        Link = 0,  // Store absolute path; pathKind = Linked
+        Copy = 1,  // Copy into content/<sub>/<filename>; pathKind = Managed
+    };
+
+    /**
+     * Set the import mode + target subfolder used by subsequent
+     * File > Open Video imports. Called by the MediaBin toolbar when
+     * the user changes either setting; persists for the rest of the
+     * session.
+     */
+    void setImportMode(ImportMode mode, const std::string& subfolder);
+    ImportMode  importMode()      const { return m_importMode; }
+    const std::string& importSubfolder() const { return m_importSubfolder; }
+
+    /**
+     * Apply the current import mode to a source file and return the
+     * canonical originalPath that should be used as the clip / media
+     * library identity. For `Copy`, this physically copies the file
+     * into `<projectRoot>/content/<subfolder>/<filename>` and returns
+     * the project-relative path (Managed). For `Link`, returns the
+     * input absolute path unchanged (Linked).
+     *
+     * Falls back to Link in two cases: no project loaded, or
+     * `<projectRoot>/content/` doesn't exist (legacy v6 project).
+     * Both surface a console warning.
+     *
+     * `outKind` receives the resolved kind so callers can register
+     * the entry correctly.
+     *
+     * Returns empty string on copy failure.
+     */
+    std::string applyImportMode(const std::string& sourceAbsolutePath,
+                                ImportMode mode,
+                                const std::string& subfolder,
+                                ProjectManager::PathKind* outKind);
+
     // --- Project Launcher (ADR-0009) ----------------------------------------
 
     /**
@@ -397,8 +442,14 @@ private:
      * FrameBuffer + ClipDecodeState, place it on the timeline. Shared by
      * `onVideoFileSelected`'s NeverTranscode branch and
      * `resolvePendingImport`'s Skip branch.
+     *
+     * `canonicalPath` is the lookup key — relative for Managed, absolute
+     * for Linked. The decoder is opened against `decoderPathFor(canonicalPath)`
+     * so the same code path works regardless of pathKind. The caller is
+     * responsible for having already registered the entry via
+     * `addMediaFile(canonicalPath, kind)`.
      */
-    void ingestVideoClip(const std::string& filePath, MediaType mediaType);
+    void ingestVideoClip(const std::string& canonicalPath, MediaType mediaType);
 
     /**
      * Handle media dropped onto timeline track.
@@ -472,6 +523,12 @@ private:
     std::unique_ptr<ProjectLauncher> m_launcher;
     std::unique_ptr<RecentProjects>  m_recentProjects;
     bool m_showLauncher{false};
+
+    // ADR-0009 — current import mode + target subfolder. Default is Link
+    // so legacy / script-driven flows keep their pre-launcher behavior;
+    // MediaBin's toolbar flips it to Copy + "unsorted" on first render.
+    ImportMode  m_importMode{ImportMode::Link};
+    std::string m_importSubfolder{"unsorted"};
 
     // Raw shortcut into m_director->getCommandDispatcher().
     CommandDispatcher* m_commandDispatcher{nullptr};

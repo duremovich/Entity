@@ -702,14 +702,42 @@ void Engine::resolvePendingImport(bool transcode, bool dontAskAgain) {
                       : ProjectManager::NonHapImportPolicy::NeverTranscode);
     }
 
+    // p.filepath is the canonical path stashed by onVideoFileSelected (post
+    // applyImportMode). Resolve to absolute for the transcoder; addMediaFile
+    // and clip identity stay on the canonical (relative-for-Managed) string.
     if (transcode) {
-        if (m_projectManager) m_projectManager->addMediaFile(p.filepath);
-        if (m_transcodeManager) m_transcodeManager->enqueue(p.filepath, "hap_alpha", 0.0);
+        if (m_projectManager) {
+            // Kind is preserved from the original import — applyImportMode
+            // already moved the file to the canonical location, so a Managed
+            // entry's storedPath is project-relative; addMediaFile is
+            // idempotent so re-registering keeps the existing kind. To
+            // pick the right kind on first registration when the entry
+            // doesn't yet exist, infer from path shape: absolute => Linked,
+            // relative => Managed.
+            const ProjectManager::PathKind kind =
+                std::filesystem::path(p.filepath).is_absolute()
+                    ? ProjectManager::PathKind::Linked
+                    : ProjectManager::PathKind::Managed;
+            m_projectManager->addMediaFile(p.filepath, kind);
+        }
+        if (m_transcodeManager) {
+            const std::string openPath = m_projectManager
+                ? m_projectManager->resolveMediaPath(p.filepath)
+                : p.filepath;
+            m_transcodeManager->enqueue(openPath, "hap_alpha", 0.0);
+        }
         std::cout << "[Engine] Queued transcode for " << p.filepath << std::endl;
         return;
     }
 
     // User chose Skip — create the clip on the source directly.
+    if (m_projectManager) {
+        const ProjectManager::PathKind kind =
+            std::filesystem::path(p.filepath).is_absolute()
+                ? ProjectManager::PathKind::Linked
+                : ProjectManager::PathKind::Managed;
+        m_projectManager->addMediaFile(p.filepath, kind);
+    }
     ingestVideoClip(p.filepath, p.mediaType);
 }
 
@@ -1606,6 +1634,105 @@ void Engine::createTestEntities() {
     std::cout << "========================================\n" << std::endl;
 }
 
+void Engine::setImportMode(ImportMode mode, const std::string& subfolder) {
+    m_importMode = mode;
+    if (!subfolder.empty()) m_importSubfolder = subfolder;
+}
+
+std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
+                                     ImportMode mode,
+                                     const std::string& subfolder,
+                                     ProjectManager::PathKind* outKind) {
+    namespace fs = std::filesystem;
+
+    auto setKind = [&](ProjectManager::PathKind k) {
+        if (outKind) *outKind = k;
+    };
+
+    // Link mode (and the no-project / no-content-dir fallbacks) preserve
+    // pre-v7 behavior exactly: absolute path stored as-is, pathKind = Linked.
+    if (mode == ImportMode::Link) {
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    // Copy mode but no project loaded -> fall back to Link. We could refuse
+    // the import instead, but that would break script-driven flows that
+    // never call OpenProject. A console line keeps the choice visible.
+    if (!m_projectManager || m_projectManager->projectPath().empty()) {
+        std::cerr << "[Engine] Copy import requested but no project is "
+                     "loaded; falling back to Link." << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    const fs::path projectRoot = m_projectManager->projectPath().parent_path();
+    const fs::path contentDir  = projectRoot / ProjectManager::kContentDir;
+
+    std::error_code ec;
+    if (!fs::exists(contentDir, ec)) {
+        // Legacy v6 project: no content/ tree on disk. Falling back to
+        // Link is safe; the user can run "Collect into project folder"
+        // later to upgrade.
+        std::cerr << "[Engine] Project has no content/ directory (legacy v6?); "
+                     "falling back to Link import for " << sourceAbsolutePath
+                  << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    const std::string sub = subfolder.empty()
+                                ? std::string(ProjectManager::kUnsortedDir)
+                                : subfolder;
+    const fs::path targetDir = contentDir / sub;
+    fs::create_directories(targetDir, ec);
+    if (ec) {
+        std::cerr << "[Engine] Failed to create import subfolder "
+                  << targetDir.string() << ": " << ec.message()
+                  << "; falling back to Link." << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    const fs::path source(sourceAbsolutePath);
+    fs::path target = targetDir / source.filename();
+
+    // If target already exists with the same name, suffix to avoid silent
+    // overwrite. "intro.mov" -> "intro (1).mov", "intro (2).mov", ...
+    if (fs::exists(target, ec)) {
+        const std::string stem = source.stem().string();
+        const std::string ext  = source.extension().string();
+        for (int i = 1; i < 1000; ++i) {
+            fs::path candidate = targetDir /
+                (stem + " (" + std::to_string(i) + ")" + ext);
+            if (!fs::exists(candidate, ec)) {
+                target = candidate;
+                break;
+            }
+        }
+    }
+
+    fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[Engine] Failed to copy " << source.string() << " -> "
+                  << target.string() << ": " << ec.message()
+                  << "; falling back to Link." << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    // Stored path is project-relative (forward slashes for portability —
+    // Windows native filesystem APIs accept either, JSON readers see a
+    // stable representation).
+    fs::path relative = fs::relative(target, projectRoot, ec);
+    std::string canonical = ec ? target.string() : relative.generic_string();
+
+    std::cout << "[Engine] Imported (Copy) " << source.filename().string()
+              << " -> " << canonical << std::endl;
+    setKind(ProjectManager::PathKind::Managed);
+    return canonical;
+}
+
 void Engine::onVideoFileSelected(const std::string& filePath) {
     std::cout << "\n========================================" << std::endl;
     std::cout << "Video File Selected" << std::endl;
@@ -1621,6 +1748,18 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
 
     std::cout << "Detected media type: " << MediaTypeToString(mediaType) << std::endl;
 
+    // ADR-0009 — apply the active import mode (Copy/Link) before any
+    // policy logic so downstream code keys off the canonical
+    // originalPath the project will actually persist.
+    ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    const std::string canonicalPath = applyImportMode(
+        filePath, m_importMode, m_importSubfolder, &importedKind);
+    if (canonicalPath.empty()) {
+        std::cerr << "ERROR: Import failed for " << filePath << std::endl;
+        std::cerr << "========================================\n" << std::endl;
+        return;
+    }
+
     // Only ProRes / H264 / HEVC containers are transcode-eligible — vcpkg
     // FFmpeg lacks a PNG decoder so image sequences stay on the CPU path,
     // and HAP files obviously need no work.
@@ -1632,22 +1771,30 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     if (transcodeEligible) {
         const auto policy = m_projectManager->nonHapImportPolicy();
         switch (policy) {
-            case ProjectManager::NonHapImportPolicy::AlwaysTranscode:
-                m_projectManager->addMediaFile(filePath);
-                m_transcodeManager->enqueue(filePath, "hap_alpha", 0.0);
-                std::cout << "[Engine] Queued transcode for " << filePath << std::endl;
+            case ProjectManager::NonHapImportPolicy::AlwaysTranscode: {
+                m_projectManager->addMediaFile(canonicalPath, importedKind);
+                const std::string openPath =
+                    m_projectManager->resolveMediaPath(canonicalPath);
+                m_transcodeManager->enqueue(openPath, "hap_alpha", 0.0);
+                std::cout << "[Engine] Queued transcode for " << canonicalPath << std::endl;
                 std::cout << "========================================\n" << std::endl;
                 return;
+            }
             case ProjectManager::NonHapImportPolicy::Ask:
                 if (m_pendingImport) {
                     std::cerr << "[Engine] Import already awaiting user decision ("
                               << m_pendingImport->filepath
-                              << "); dropping " << filePath << std::endl;
+                              << "); dropping " << canonicalPath << std::endl;
                     return;
                 }
-                m_pendingImport = PendingImport{filePath, mediaType};
+                // Stash the canonical (post-import) path so the modal's
+                // resolve path operates on the same identity as everything
+                // else. importedKind is implicit: by the time the user
+                // clicks a modal button the file is already at the
+                // canonical location, so addMediaFile uses the same kind.
+                m_pendingImport = PendingImport{canonicalPath, mediaType};
                 std::cout << "[Engine] Awaiting user decision on non-HAP import: "
-                          << filePath << std::endl;
+                          << canonicalPath << std::endl;
                 std::cout << "========================================\n" << std::endl;
                 return;
             case ProjectManager::NonHapImportPolicy::NeverTranscode:
@@ -1655,10 +1802,13 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
         }
     }
 
-    ingestVideoClip(filePath, mediaType);
+    if (m_projectManager) {
+        m_projectManager->addMediaFile(canonicalPath, importedKind);
+    }
+    ingestVideoClip(canonicalPath, mediaType);
 }
 
-void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
+void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaType) {
     // Create decoder for the media type
     m_decoder = createDecoder(mediaType);
     if (!m_decoder) {
@@ -1670,10 +1820,18 @@ void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
 
     std::cout << "Created decoder: " << MediaTypeToString(mediaType) << std::endl;
 
+    // Resolve canonicalPath to an absolute filesystem path for the decoder.
+    // Managed entries are project-relative; Linked entries pass through
+    // unchanged. Caller is expected to have already registered the entry
+    // with addMediaFile so the lookup succeeds.
+    const std::string openPath = m_projectManager
+        ? m_projectManager->resolveMediaPath(canonicalPath)
+        : canonicalPath;
+
     // Open the media file
-    Result result = m_decoder->open(filePath);
+    Result result = m_decoder->open(openPath);
     if (result != Result::Success) {
-        std::cerr << "ERROR: Failed to open media file: " << filePath << std::endl;
+        std::cerr << "ERROR: Failed to open media file: " << openPath << std::endl;
         m_decoder.reset();
         std::cerr << "========================================\n" << std::endl;
         return;
@@ -1685,15 +1843,14 @@ void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
     std::cout << "  Frame rate: " << m_decoder->getFrameRate() << " fps" << std::endl;
     std::cout << "  Has alpha: " << (m_decoder->hasAlpha() ? "yes" : "no") << std::endl;
 
-    // Add to loaded media files list
-    if (m_projectManager) m_projectManager->addMediaFile(filePath);
-
     // Create clip entity with all required components for rendering
     entt::entity clipEntity = m_registry.create();
 
-    // Add Clip component with metadata
+    // Add Clip component with metadata. clip.filepath is the canonical
+    // identity (matches mediaLibrary entry's originalPath) — relative
+    // for Managed, absolute for Linked.
     auto& clip = m_registry.emplace<Clip>(clipEntity);
-    clip.filepath = filePath;
+    clip.filepath = canonicalPath;
     clip.mediaType = mediaType;
     clip.width = m_decoder->getWidth();
     clip.height = m_decoder->getHeight();
@@ -1729,7 +1886,7 @@ void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
     auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
     publishProvisionClipResources(bus::ProvisionClipResources{
         static_cast<std::uint64_t>(clipEntity),
-        AssetId{filePath},
+        AssetId{canonicalPath},
         mediaType,
         clip.framerate,
         clip.totalMediaFrames});
@@ -1873,8 +2030,16 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     std::cout << "  Duration: " << decoder->getDuration() << " frames" << std::endl;
     std::cout << "  Frame rate: " << decoder->getFrameRate() << " fps" << std::endl;
 
-    // Add to loaded media files list (idempotent)
-    if (m_projectManager) m_projectManager->addMediaFile(filePath);
+    // Add to loaded media files list (idempotent — no kind change if entry
+    // already exists). Path-shape inference handles the unusual case where
+    // a drop fires for a path that wasn't registered via the import flow.
+    if (m_projectManager) {
+        const ProjectManager::PathKind kind =
+            std::filesystem::path(filePath).is_absolute()
+                ? ProjectManager::PathKind::Linked
+                : ProjectManager::PathKind::Managed;
+        m_projectManager->addMediaFile(filePath, kind);
+    }
 
     // Create clip entity with all required components
     entt::entity clipEntity = m_registry.create();

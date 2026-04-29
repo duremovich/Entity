@@ -27,6 +27,7 @@ public:
 
 private:
     void renderPendingImportModal();
+    void renderImportTargetToolbar();
 
     Engine* m_engine{nullptr};
 
@@ -36,6 +37,14 @@ private:
     // Track the filepath the modal was opened for so we can reset the
     // checkbox when a new import triggers a new modal instance.
     std::string m_modalLastFilepath;
+
+    // ADR-0009 — first-render seed flag. The MediaBin's import-target row
+    // is the canonical source of truth for the active import mode in
+    // interactive sessions, so we flip Engine's default from Link (which
+    // matches script-driven flows) to Copy + "unsorted" the first time
+    // the bin renders. Subsequent edits update Engine via setImportMode.
+    bool m_importDefaultsSeeded{false};
+    char m_importSubfolderBuf[128]{0};
 
     // Cache of "is the source already HAP?" results keyed by filepath. The
     // underlying probe (avformat_open_input + find_stream_info on a .mov)
