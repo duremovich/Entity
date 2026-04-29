@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Dylan Uremovich
 #pragma once
 
 #include "../core/AssetId.hpp"

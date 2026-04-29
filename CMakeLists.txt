@@ -30,6 +30,12 @@ option(ENABLE_D3D12_DEBUG "Enable D3D12 debug layer" ON)
 # Add CMake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# Plugin scaffolding: provides entity_register_plugin(),
+# entity_discover_plugins(), entity_emit_static_registry(). Must be
+# included before any plugin subdirectory is added so the function is in
+# scope when plugin CMakeLists run.
+include(EntityPlugins)
+
 # Platform-specific settings
 if(WIN32)
     add_definitions(-DNOMINMAX)  # Prevent Windows.h from defining min/max macros
@@ -118,6 +124,15 @@ else()
     target_compile_options(entity-bus PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# ----------------------------------------------------------------------------
+# entity-plugin-api (open-core plugin boundary, Apache 2.0)
+#
+# Header-only INTERFACE library that closed-source plugins compile against.
+# Declared before EntityMediaCore so EntityMediaCore can link it PUBLIC --
+# the EnginePluginContext implementation needs the IPluginContext header.
+# ----------------------------------------------------------------------------
+add_subdirectory(plugin-api)
+
 # Core library target
 add_library(EntityMediaCore STATIC)
 
@@ -127,6 +142,7 @@ target_sources(EntityMediaCore
         src/core/Engine.cpp
         src/core/Application.cpp
         src/core/Settings.cpp
+        src/core/EnginePluginContext.cpp
 
         # Color (Phase C.12 — OCIO color management)
         src/color/OcioManager.cpp
@@ -229,6 +245,7 @@ target_link_libraries(EntityMediaCore
         EnTT::EnTT
         glm::glm
         entity-bus
+        entity-plugin-api
     PRIVATE
         glfw
         imgui::imgui
@@ -260,6 +277,35 @@ endif()
 # shaders offline via DXC (see apps/CMakeLists.txt). The shaders/ directory
 # holds source .hlsl / .hlsli files only; it has no CMakeLists.txt of its own.
 add_subdirectory(apps)
+
+# ----------------------------------------------------------------------------
+# Plugin discovery + static-registry emission
+#
+# Runs *after* add_subdirectory(apps) so EntityMediaEditor exists as a
+# target -- we attach the generated StaticRegistry.cpp source and the
+# discovered plugin libraries to it via target_sources / target_link_libraries.
+#
+# `EXTRA_PLUGIN_DIRS` is the cross-repo seam: pass the path to a sibling
+# private repo's `plugins/` dir to fold its plugins into this build without
+# any code or config inside this repository referencing it.
+#
+#   cmake -B build -DEXTRA_PLUGIN_DIRS=C:/Entity/Entity-Pro/plugins
+#
+# The public CI build leaves EXTRA_PLUGIN_DIRS unset and is unaffected.
+# ----------------------------------------------------------------------------
+set(EXTRA_PLUGIN_DIRS "" CACHE STRING
+    "Semicolon-separated list of external plugin parent directories (e.g. an Entity-Pro plugins/ dir)")
+
+entity_discover_plugins("${CMAKE_SOURCE_DIR}/plugins")
+foreach(_extra IN LISTS EXTRA_PLUGIN_DIRS)
+    entity_discover_plugins("${_extra}")
+endforeach()
+
+entity_emit_static_registry(_entity_plugin_targets _entity_plugin_registry_src)
+target_sources(EntityMediaEditor PRIVATE "${_entity_plugin_registry_src}")
+if(_entity_plugin_targets)
+    target_link_libraries(EntityMediaEditor PRIVATE ${_entity_plugin_targets})
+endif()
 
 if(BUILD_TESTS)
     enable_testing()

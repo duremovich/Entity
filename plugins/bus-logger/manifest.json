@@ -1,0 +1,8 @@
+{
+  "name":               "bus-logger",
+  "version":            "0.1.0",
+  "license":            "Apache-2.0",
+  "requiredApiVersion": 0,
+  "description":        "Reference plugin. Logs its registration so you can confirm the plugin pipeline is working. Copy from this when starting a new plugin.",
+  "kind":               "control-plane"
+}

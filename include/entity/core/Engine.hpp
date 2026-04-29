@@ -152,6 +152,13 @@ public:
     // Transport* getTransport() { return m_transport.get(); }
 
     /**
+     * Get the bus message transport. Used by the plugin scaffold
+     * (EnginePluginContext) to expose the bus to plugins. Returns null
+     * before initialize() and after shutdown().
+     */
+    bus::IMessageTransport* getBusTransport() { return m_transport.get(); }
+
+    /**
      * Get the GLFW window.
      */
     GLFWwindow* getWindow() { return m_window; }
