@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../core/AssetId.hpp"
 #include "../core/Types.hpp"
 
 #include <array>
@@ -78,10 +79,12 @@ struct CaptureCompleted {
 
 // Director → Renderer. Renderer allocates a VideoTexture descriptor slot
 // and spawns the decode worker. Reply is `ResourcesProvisioned`.
-// `assetPath` becomes a strong-typed AssetId in subtask 9.
+//
+// `assetId` is a strong-typed wrapper around the underlying string -- a
+// path today; the seam where a future content-hash migration lands first.
 struct ProvisionClipResources {
     std::uint64_t entity{0};
-    std::string assetPath;
+    AssetId assetId;
     MediaType mediaType{MediaType::Unknown};
     double framerate{30.0};
     FrameNumber totalMediaFrames{0};

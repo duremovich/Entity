@@ -1638,7 +1638,7 @@ void Engine::ingestVideoClip(const std::string& filePath, MediaType mediaType) {
     auto& videoTex = m_registry.emplace<VideoTexture>(clipEntity);
     publishProvisionClipResources(bus::ProvisionClipResources{
         static_cast<std::uint64_t>(clipEntity),
-        filePath,
+        AssetId{filePath},
         mediaType,
         clip.framerate,
         clip.totalMediaFrames});
@@ -1885,7 +1885,7 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     (void)videoTex;
     publishProvisionClipResources(bus::ProvisionClipResources{
         static_cast<std::uint64_t>(clipEntity),
-        filePath,
+        AssetId{filePath},
         mediaType,
         clip.framerate,
         clip.totalMediaFrames});
@@ -2063,7 +2063,7 @@ void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath)
                      videoTex->descriptorSlot == UINT32_MAX)) {
         publishProvisionClipResources(bus::ProvisionClipResources{
             static_cast<std::uint64_t>(clipEntity),
-            filepath,
+            AssetId{filepath},
             mediaType,
             clip->framerate,
             clip->totalMediaFrames});

@@ -163,13 +163,13 @@ TEST(MessageBusSerialization, ProvisionClipResourcesAllMediaTypes) {
     for (auto mt : all) {
         ProvisionClipResources m{};
         m.entity = 5ull;
-        m.assetPath = "C:/media/test.mov";
+        m.assetId = entity::AssetId{"C:/media/test.mov"};
         m.mediaType = mt;
         m.framerate = 23.976;
         m.totalMediaFrames = 1024;
         auto out = roundTripExpect(m);
         EXPECT_EQ(out.entity, m.entity);
-        EXPECT_EQ(out.assetPath, m.assetPath);
+        EXPECT_EQ(out.assetId, m.assetId);
         EXPECT_EQ(out.mediaType, mt);
         EXPECT_DOUBLE_EQ(out.framerate, m.framerate);
         EXPECT_EQ(out.totalMediaFrames, m.totalMediaFrames);

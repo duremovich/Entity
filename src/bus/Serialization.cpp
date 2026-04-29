@@ -214,7 +214,10 @@ CaptureCompleted decodeCaptureCompleted(const json& j) {
 ojson encode(const ProvisionClipResources& m) {
     ojson j = ojson::object();
     j["entity"] = m.entity;
-    j["assetPath"] = m.assetPath;
+    // Wire key stays "assetPath" -- the field went strong-typed in
+    // subtask 9 but the on-the-wire shape didn't. A future hash
+    // migration is what actually changes the wire.
+    j["assetPath"] = m.assetId.value();
     j["mediaType"] = mediaTypeName(m.mediaType);
     j["framerate"] = m.framerate;
     j["totalMediaFrames"] = m.totalMediaFrames;
@@ -224,7 +227,7 @@ ojson encode(const ProvisionClipResources& m) {
 ProvisionClipResources decodeProvisionClipResources(const json& j) {
     ProvisionClipResources m;
     m.entity = j.at("entity").get<std::uint64_t>();
-    m.assetPath = j.at("assetPath").get<std::string>();
+    m.assetId = AssetId{j.at("assetPath").get<std::string>()};
     m.mediaType = mediaTypeFromString(j.at("mediaType").get<std::string>());
     m.framerate = j.at("framerate").get<double>();
     m.totalMediaFrames = j.at("totalMediaFrames").get<FrameNumber>();
