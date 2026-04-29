@@ -191,6 +191,29 @@ public:
     const std::string& importSubfolder() const { return m_importSubfolder; }
 
     /**
+     * ADR-0009 — orchestrate a HAP transcode for a registered media
+     * library entry. Branches on `pathKind`:
+     *
+     *  - Managed: copy `<root>/<canonicalPath>` to
+     *    `<root>/content/<sub>/.archive/<filename>`, then enqueue the
+     *    transcode reading from the (about-to-be-overwritten) source
+     *    and writing to the canonical content path. The original lives
+     *    in `.archive/` after success; archivedOriginal + originalCodec
+     *    are written when the worker reports Done (in pollTranscodes).
+     *  - Linked: legacy behavior — enqueue with the cache dir as
+     *    output. Fields stay on `transcodedPath`.
+     *
+     * No-op (returns false) if no entry is registered for canonicalPath
+     * or if any filesystem step fails. Already-transcoded entries
+     * (Managed: archivedOriginal set; Linked: transcodedPath set) are
+     * also no-ops.
+     */
+    bool scheduleTranscode(const std::string& canonicalPath,
+                           MediaType sourceMediaType,
+                           const std::string& variant = "hap_alpha",
+                           double srcFps = 0.0);
+
+    /**
      * Apply the current import mode to a source file and return the
      * canonical originalPath that should be used as the clip / media
      * library identity. For `Copy`, this physically copies the file

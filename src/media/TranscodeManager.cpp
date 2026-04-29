@@ -73,27 +73,47 @@ std::filesystem::path TranscodeManager::deriveDstPath(const std::string& absSrcP
 
 std::string TranscodeManager::enqueue(const std::string& absSrcPath,
                                        const std::string& variant,
-                                       double srcFps) {
+                                       double srcFps,
+                                       const std::string& explicitDstPath,
+                                       const std::string& explicitKey) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    if (auto it = m_workers.find(absSrcPath); it != m_workers.end()) {
+    const std::string key = explicitKey.empty() ? absSrcPath : explicitKey;
+    if (auto it = m_workers.find(key); it != m_workers.end()) {
         return it->second->dstPath();
     }
 
-    // Ensure cache dir exists.
-    const std::filesystem::path dir = m_cacheDir.empty() ? defaultCacheDir() : m_cacheDir;
+    std::filesystem::path dst;
     std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    if (ec) {
-        std::cerr << "TranscodeManager: failed to create cache dir " << dir
-                  << ": " << ec.message() << std::endl;
+    if (explicitDstPath.empty()) {
+        // Legacy: write into the cache dir (used for Linked imports per
+        // ADR-0009, where we can't safely co-locate output with the
+        // user-arbitrary source path).
+        const std::filesystem::path cacheDir =
+            m_cacheDir.empty() ? defaultCacheDir() : m_cacheDir;
+        std::filesystem::create_directories(cacheDir, ec);
+        if (ec) {
+            std::cerr << "TranscodeManager: failed to create cache dir " << cacheDir
+                      << ": " << ec.message() << std::endl;
+        }
+        dst = deriveDstPath(absSrcPath, variant);
+    } else {
+        // Caller-controlled destination: ensure parent directory exists
+        // before the worker starts writing into it.
+        dst = std::filesystem::path(explicitDstPath);
+        if (dst.has_parent_path()) {
+            std::filesystem::create_directories(dst.parent_path(), ec);
+            if (ec) {
+                std::cerr << "TranscodeManager: failed to create dst dir "
+                          << dst.parent_path() << ": " << ec.message() << std::endl;
+            }
+        }
     }
 
-    const std::filesystem::path dst = deriveDstPath(absSrcPath, variant);
     auto worker = std::make_unique<TranscodeWorker>(
         absSrcPath, dst.string(), variant, srcFps);
     std::string dstStr = worker->dstPath();
-    m_workers.emplace(absSrcPath, std::move(worker));
+    m_workers.emplace(key, std::move(worker));
     return dstStr;
 }
 

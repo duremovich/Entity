@@ -604,20 +604,42 @@ void Engine::updateTranscodeCacheDir() {
 void Engine::pollTranscodes() {
     if (!m_transcodeManager || !m_projectManager) return;
 
-    // Snapshot the library so we don't hold a mutable reference across
-    // setTranscodedPath calls (which could in principle grow the vector).
-    std::vector<std::string> originals;
-    originals.reserve(m_projectManager->loadedMediaFiles().size());
+    // Snapshot the canonical paths whose Linked-style transcode hasn't
+    // been recorded yet. We re-fetch the entry inside the loop so updates
+    // land on the live entry; the snapshot just avoids iterator
+    // invalidation if setTranscodedPath grows the vector. Managed entries
+    // stay in the snapshot regardless of archivedOriginal — we still want
+    // to observe Done transitions for logging + worker reap.
+    std::vector<std::string> pendingCanonical;
+    pendingCanonical.reserve(m_projectManager->loadedMediaFiles().size());
     for (const auto& e : m_projectManager->loadedMediaFiles()) {
-        if (e.transcodedPath.empty()) originals.push_back(e.originalPath);
+        const bool linkedDone = (e.pathKind == ProjectManager::PathKind::Linked
+                                 && !e.transcodedPath.empty());
+        if (linkedDone) continue;
+        pendingCanonical.push_back(e.originalPath);
     }
 
-    for (const auto& src : originals) {
-        auto st = m_transcodeManager->statusOf(src);
+    for (const auto& canonical : pendingCanonical) {
+        auto st = m_transcodeManager->statusOf(canonical);
         if (!st) continue;
-        if (st->state == TranscodeState::Done) {
-            m_projectManager->setTranscodedPath(src, st->outputPath, st->variant);
-            std::cout << "[Engine] Transcode done: " << src
+        if (st->state != TranscodeState::Done) continue;
+
+        auto* entry = m_projectManager->findEntry(canonical);
+        if (!entry) continue;
+
+        if (entry->pathKind == ProjectManager::PathKind::Managed) {
+            // Source at canonical content path is now HAP. archivedOriginal
+            // + originalCodec were set in scheduleTranscode pre-flight.
+            // transcodedPath stays empty — for Managed the canonical
+            // path IS the playable file. Just log + reap.
+            std::cout << "[Engine] Transcode done (Managed): " << canonical
+                      << "  archive=" << entry->archivedOriginal << std::endl;
+        } else {
+            // Linked: cache-dir output recorded on the entry the way the
+            // legacy code expects.
+            m_projectManager->setTranscodedPath(canonical, st->outputPath,
+                                                st->variant);
+            std::cout << "[Engine] Transcode done (Linked): " << canonical
                       << " -> " << st->outputPath << std::endl;
         }
     }
@@ -720,13 +742,7 @@ void Engine::resolvePendingImport(bool transcode, bool dontAskAgain) {
                     : ProjectManager::PathKind::Managed;
             m_projectManager->addMediaFile(p.filepath, kind);
         }
-        if (m_transcodeManager) {
-            const std::string openPath = m_projectManager
-                ? m_projectManager->resolveMediaPath(p.filepath)
-                : p.filepath;
-            m_transcodeManager->enqueue(openPath, "hap_alpha", 0.0);
-        }
-        std::cout << "[Engine] Queued transcode for " << p.filepath << std::endl;
+        scheduleTranscode(p.filepath, p.mediaType);
         return;
     }
 
@@ -1634,6 +1650,95 @@ void Engine::createTestEntities() {
     std::cout << "========================================\n" << std::endl;
 }
 
+bool Engine::scheduleTranscode(const std::string& canonicalPath,
+                                MediaType sourceMediaType,
+                                const std::string& variant,
+                                double srcFps) {
+    namespace fs = std::filesystem;
+
+    if (!m_projectManager || !m_transcodeManager) return false;
+    auto* entry = m_projectManager->findEntry(canonicalPath);
+    if (!entry) {
+        std::cerr << "[Engine] scheduleTranscode: " << canonicalPath
+                  << " is not in the media library" << std::endl;
+        return false;
+    }
+
+    // Skip if already transcoded. Two indicators per pathKind:
+    if (entry->pathKind == ProjectManager::PathKind::Managed &&
+        !entry->archivedOriginal.empty()) {
+        return false;  // Managed: source replaced; archive present.
+    }
+    if (entry->pathKind == ProjectManager::PathKind::Linked &&
+        !entry->transcodedPath.empty()) {
+        return false;  // Linked: cache-dir transcode recorded.
+    }
+
+    const std::string srcAbs = m_projectManager->resolveMediaPath(canonicalPath);
+    if (srcAbs.empty()) return false;
+
+    if (entry->pathKind == ProjectManager::PathKind::Linked) {
+        // Legacy path — output goes into the project (or temp) cache dir.
+        // Worker reads source, writes hashed-name HAP file. setTranscodedPath
+        // fires from pollTranscodes when the worker finishes.
+        m_transcodeManager->enqueue(srcAbs, variant, srcFps);
+        std::cout << "[Engine] Queued Linked transcode for " << canonicalPath
+                  << " (cache dir output)" << std::endl;
+        return true;
+    }
+
+    // Managed: archive original, transcode replaces source at canonical path.
+    const fs::path projectRoot = m_projectManager->projectPath().parent_path();
+    const fs::path canonicalRel(canonicalPath);
+    const fs::path srcAbsPath(srcAbs);
+
+    const fs::path archiveDirRel =
+        canonicalRel.parent_path() / ProjectManager::kArchiveDir;
+    const fs::path archiveDirAbs = projectRoot / archiveDirRel;
+    const fs::path archiveAbs = archiveDirAbs / canonicalRel.filename();
+
+    std::error_code ec;
+    fs::create_directories(archiveDirAbs, ec);
+    if (ec) {
+        std::cerr << "[Engine] scheduleTranscode: failed to create archive dir "
+                  << archiveDirAbs.string() << ": " << ec.message() << std::endl;
+        return false;
+    }
+
+    // Copy (don't move) so a transcode failure leaves both source and archive
+    // intact. The transcode then overwrites the source at the canonical path.
+    // overwrite_existing covers the rare case of a re-import or retry.
+    fs::copy_file(srcAbsPath, archiveAbs, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[Engine] scheduleTranscode: failed to archive "
+                  << srcAbsPath.string() << " -> " << archiveAbs.string()
+                  << ": " << ec.message() << std::endl;
+        return false;
+    }
+
+    // Stash the archive metadata on the entry now (relative to project root)
+    // so a crash mid-transcode leaves a project file that still knows where
+    // the original is. originalCodec records the pre-transcode media type.
+    fs::path archiveRel = fs::relative(archiveAbs, projectRoot, ec);
+    entry->archivedOriginal =
+        ec ? archiveAbs.generic_string() : archiveRel.generic_string();
+    entry->originalCodec = MediaTypeToString(sourceMediaType);
+
+    // Worker reads from the archive copy and writes to the canonical
+    // content path, overwriting the source. The TranscodeManager is
+    // keyed by canonicalPath (the user-meaningful identity) rather
+    // than archiveAbs — that keeps statusOf / remove / pollTranscodes
+    // calls in MediaBin and Engine working off entry.originalPath the
+    // same way they do for Linked entries.
+    m_transcodeManager->enqueue(archiveAbs.string(), variant, srcFps,
+                                /*explicitDstPath=*/srcAbs,
+                                /*explicitKey=*/canonicalPath);
+    std::cout << "[Engine] Queued Managed transcode for " << canonicalPath
+              << " (archived original to " << entry->archivedOriginal << ")"
+              << std::endl;
+    return true;
+}
+
 void Engine::setImportMode(ImportMode mode, const std::string& subfolder) {
     m_importMode = mode;
     if (!subfolder.empty()) m_importSubfolder = subfolder;
@@ -1773,10 +1878,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
         switch (policy) {
             case ProjectManager::NonHapImportPolicy::AlwaysTranscode: {
                 m_projectManager->addMediaFile(canonicalPath, importedKind);
-                const std::string openPath =
-                    m_projectManager->resolveMediaPath(canonicalPath);
-                m_transcodeManager->enqueue(openPath, "hap_alpha", 0.0);
-                std::cout << "[Engine] Queued transcode for " << canonicalPath << std::endl;
+                scheduleTranscode(canonicalPath, mediaType);
                 std::cout << "========================================\n" << std::endl;
                 return;
             }
@@ -2211,18 +2313,28 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // Re-queue library entries whose transcoded side is missing, IFF the
     // project's policy is AlwaysTranscode. Ask/NeverTranscode projects
     // don't get silent re-transcode kicks on load — respect the user's
-    // earlier decision.
+    // earlier decision. ADR-0009: skip Managed entries with archivedOriginal
+    // set (the source has already been transcode-replaced) AND probe
+    // through resolveMediaPath so detectMediaType reads the right file
+    // for Managed entries.
     if (m_transcodeManager &&
         m_projectManager->nonHapImportPolicy() ==
             ProjectManager::NonHapImportPolicy::AlwaysTranscode) {
+        // Iterate by canonical path; scheduleTranscode does the rest of
+        // the policy work (skip-if-already-transcoded for both kinds).
+        std::vector<std::string> candidates;
         for (const auto& entry : m_projectManager->loadedMediaFiles()) {
-            if (!entry.transcodedPath.empty()) continue;
-            const MediaType mt = detectMediaType(entry.originalPath);
-            if (isHapMediaType(mt)) continue;
+            candidates.push_back(entry.originalPath);
+        }
+        for (const auto& canonical : candidates) {
+            const std::string srcAbs = m_projectManager->resolveMediaPath(canonical);
+            const MediaType mt = detectMediaType(srcAbs);
             if (mt == MediaType::Unknown) continue;
+            if (isHapMediaType(mt)) continue;
             const double srcFps = (mt == MediaType::PNGSequence) ? 30.0 : 0.0;
-            m_transcodeManager->enqueue(entry.originalPath, "hap_alpha", srcFps);
-            std::cout << "[Engine] Re-enqueued transcode for " << entry.originalPath << std::endl;
+            if (scheduleTranscode(canonical, mt, "hap_alpha", srcFps)) {
+                std::cout << "[Engine] Re-enqueued transcode for " << canonical << std::endl;
+            }
         }
     }
 

@@ -168,6 +168,69 @@ TEST(TranscodeManagerRoundTrip, NonExistentSourceFailsCleanly) {
     EXPECT_NE(snap->result, Result::Success);
 }
 
+// ADR-0009: explicit dst + key parameters let Engine route Managed
+// transcodes to the canonical content path while keeping the manager
+// keyed by the canonical (UI-meaningful) identity. Verifies both
+// overrides land where expected.
+TEST(TranscodeManagerRoundTrip, ExplicitDstWritesToTargetPathAndKeyOverridesLookup) {
+    const fs::path repo = findRepoRoot();
+    const fs::path srcFile = repo / "test_media" / "hap_gradient" / "test.mov";
+    ASSERT_TRUE(fs::exists(srcFile));
+
+    TempCacheDir tmp;
+    TranscodeManager mgr;
+    mgr.setCacheDir(tmp.path);
+
+    // Caller picks a canonical-path-style destination. Mimics the
+    // <projectRoot>/content/<sub>/<filename> case from Engine::scheduleTranscode.
+    const fs::path explicitDst = tmp.path / "managed_target.mov";
+    const std::string srcAbs   = srcFile.string();
+    const std::string canonical = "content/act1/managed_target.mov";
+
+    const std::string returnedDst = mgr.enqueue(srcAbs, "hap_alpha", 0.0,
+                                                 /*explicitDstPath=*/explicitDst.string(),
+                                                 /*explicitKey=*/canonical);
+    EXPECT_EQ(returnedDst, explicitDst.string());
+
+    // Worker must be discoverable under the canonical key, not under srcAbs.
+    EXPECT_TRUE(mgr.has(canonical));
+    EXPECT_FALSE(mgr.has(srcAbs));
+
+    EXPECT_EQ(waitForTerminal(mgr, canonical), TranscodeState::Done);
+    auto snap = mgr.statusOf(canonical);
+    ASSERT_TRUE(snap.has_value());
+    EXPECT_EQ(snap->result, Result::Success);
+    EXPECT_EQ(snap->outputPath, explicitDst.string());
+    ASSERT_TRUE(fs::exists(explicitDst));
+    EXPECT_GT(fs::file_size(explicitDst), 256u);
+}
+
+TEST(TranscodeManagerRoundTrip, ExplicitDstParentDirCreatedOnDemand) {
+    const fs::path repo = findRepoRoot();
+    const fs::path srcFile = repo / "test_media" / "hap_gradient" / "test.mov";
+    ASSERT_TRUE(fs::exists(srcFile));
+
+    TempCacheDir tmp;
+    TranscodeManager mgr;
+    mgr.setCacheDir(tmp.path);
+
+    // Pick a destination whose parent directory doesn't exist yet — the
+    // manager should mkdir it before the worker starts writing. Matches
+    // the first-import case where content/<newSubfolder>/ has only
+    // existed since applyImportMode created it earlier this frame.
+    const fs::path nestedDir = tmp.path / "deep" / "nested" / "subfolder";
+    const fs::path explicitDst = nestedDir / "out.mov";
+
+    const std::string returnedDst = mgr.enqueue(srcFile.string(), "hap_alpha", 0.0,
+                                                 explicitDst.string());
+    EXPECT_EQ(returnedDst, explicitDst.string());
+    EXPECT_TRUE(fs::exists(nestedDir))
+        << "explicit-dst parent dir must be created";
+
+    EXPECT_EQ(waitForTerminal(mgr, srcFile.string()), TranscodeState::Done);
+    EXPECT_TRUE(fs::exists(explicitDst));
+}
+
 // Regression: failing workers must survive clearDone() so the MediaBin
 // can keep showing the "Failed" state + Retry menu item. Previously
 // clearFinished() reaped them immediately, causing a one-frame-flash

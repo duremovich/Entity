@@ -67,10 +67,28 @@ public:
      *
      * @param srcFps > 0 for image-sequence sources (e.g. "x/frame_%03d.png");
      *               0 for regular containers.
+     * @param explicitDstPath Override the destination. Empty string means
+     *                        "use the cache-dir-derived hashed path" (the
+     *                        legacy behavior). Non-empty is used verbatim
+     *                        — callers (Engine for Managed entries under
+     *                        ADR-0009) point this at
+     *                        `<projectRoot>/content/<sub>/<filename>`
+     *                        so the transcode lands at the canonical
+     *                        path that travels with the project.
+     * @param explicitKey     Override the worker map key (which the UI
+     *                        and pollTranscodes look up by). Empty
+     *                        means "use absSrcPath" (legacy). For
+     *                        Managed transcodes the source-read path
+     *                        is the archived original, but UI status
+     *                        is keyed by the canonical content path
+     *                        — set explicitKey to the canonical path
+     *                        in that case.
      */
     std::string enqueue(const std::string& absSrcPath,
                         const std::string& variant = "hap_alpha",
-                        double srcFps = 0.0);
+                        double srcFps = 0.0,
+                        const std::string& explicitDstPath = {},
+                        const std::string& explicitKey = {});
 
     /// Returns true if a worker exists for this source (any state).
     bool has(const std::string& absSrcPath) const;
