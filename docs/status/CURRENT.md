@@ -30,10 +30,11 @@ work progresses. The project board does — that's the whole point.
 ## Quick `gh` commands
 
 ```bash
-# What's queued and not yet started
+# What's queued and not yet started (gh returns lowercase plain-string fields)
 gh project item-list 2 --owner duremovich --format json \
   | python -c "import sys,json; d=json.load(sys.stdin); \
-    [print(i['title']) for i in d['items'] if i.get('status') in (None,'Todo')]"
+    [print(f\"[{i.get('phase','-')}] [{i.get('priority','-')}] {i['title']}\") \
+     for i in d['items'] if i.get('status') in (None,'Todo')]"
 
 # Open epics
 gh issue list --repo duremovich/Entity --label epic --state open
