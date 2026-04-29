@@ -2,6 +2,7 @@
 
 #include "entity/color/OcioManager.hpp"
 #include "entity/core/SceneState.hpp"
+#include "entity/media/DecodeBufferPool.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/render/IRenderer.hpp"
@@ -54,10 +55,18 @@ Result Renderer::initialize(GLFWwindow* window,
         return r;
     }
 
+    // Engine-global decode-buffer pool. Recycles 30+ MB pixel buffers
+    // between worker decode iterations so the per-frame malloc churn
+    // stops manifesting as 4K ProRes playback stutter. Constructed before
+    // the FrameCache so it outlives the cache during shutdown -- the
+    // cache's eviction deleters call back into the pool via weak_ptr.
+    m_decodeBufferPool = std::make_shared<DecodeBufferPool>();
+
     // Engine-global frame cache. Decode workers (spawned later by
     // DecodeSystem as clips are imported) push into it; PlaybackController
     // / PlaybackPresenter (subtask 6) reads via FrameLease.
     m_frameCache = std::make_unique<FrameCache>(frameCacheBytes);
+    m_frameCache->setBufferPool(m_decodeBufferPool);
 
     // OCIO config + processor cache. Empty path = bundled ACES Studio
     // Config 1.3 via Config::CreateFromBuiltinConfig (Phase C.12 #1).
@@ -85,6 +94,7 @@ Result Renderer::initialize(GLFWwindow* window,
     // the engine-global cache.
     m_decodeSystem = std::make_unique<DecodeSystem>();
     m_decodeSystem->setFrameCache(m_frameCache.get());
+    m_decodeSystem->setBufferPool(m_decodeBufferPool.get());
     m_decodeSystem->initialize(m_registry);
 
     // Renderer-side half of the old PlaybackController (Phase D entry,
@@ -127,6 +137,10 @@ void Renderer::shutdown() {
     // workers) are already gone.
     m_ocioManager.reset();
     m_frameCache.reset();
+    // Pool destructed AFTER FrameCache so the cache's eviction deleters
+    // (fired during m_frameCache.reset() above) can still resolve their
+    // weak_ptrs and recycle their buffers into the pool.
+    m_decodeBufferPool.reset();
 
     // Backend last.
     m_d3d12Renderer.reset();

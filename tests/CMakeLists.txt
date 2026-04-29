@@ -21,6 +21,7 @@ add_executable(EntityMediaTests
     unit/PlaybackTimeAuthorityTests.cpp
     unit/DirectorRendererRoundtripTests.cpp
     unit/AssetIdTests.cpp
+    unit/DecodeBufferPoolTests.cpp
     test_Decoder.cpp
 )
 

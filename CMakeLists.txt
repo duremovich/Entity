@@ -132,6 +132,7 @@ target_sources(EntityMediaCore
         src/color/OcioManager.cpp
 
         # Media
+        src/media/DecodeBufferPool.cpp
         src/media/FrameCache.cpp
         src/media/Decoder.cpp
         src/media/PNGSequenceDecoder.cpp

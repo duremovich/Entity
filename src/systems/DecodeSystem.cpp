@@ -12,6 +12,7 @@
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/media/Decoder.hpp"
+#include "entity/media/DecodeBufferPool.hpp"
 #include "entity/media/FrameCache.hpp"
 #include <iostream>
 #include <chrono>
@@ -291,6 +292,7 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     auto workerCreateStart = std::chrono::high_resolution_clock::now();
     auto worker = std::make_shared<DecodeWorker>();
     worker->cache  = m_frameCache;
+    worker->pool   = m_bufferPool;  // may be nullptr; worker falls back to per-frame malloc
     worker->entity = entity;
     worker->running.store(true);
     worker->currentFrame.store(initialFrame);
@@ -454,15 +456,28 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
             continue;
         }
 
-        // Re-size frame.data if move-into-cache emptied it last iteration.
-        // For RGBA8 this is the obvious w*h*4; HAP's BC* paths set the right
-        // size internally during decode. Conservative re-size here is fine —
-        // BC payloads are smaller than RGBA8 of the same w*h, so the buffer
-        // is always at-or-larger than what HAP needs.
+        // Acquire a pixel buffer for this iteration. The std::move into
+        // the cache at the bottom of this loop empties frame.data; rather
+        // than reallocating ~37.7 MB per 4K-ProRes frame from the OS heap
+        // (the path that produced visible playback stutter), we pull from
+        // a buffer pool that recycles buffers freed by cache eviction.
+        // Cold start: pool is empty, acquire mallocs fresh; once the
+        // cache fills and starts evicting, the deleters in FrameCache
+        // route those buffers back to the pool, and steady-state acquire
+        // is a free-list pop.
+        //
+        // For RGBA8 this is the obvious w*h*4; HAP's BC* paths set the
+        // right size internally during decode. Conservative size here is
+        // fine -- BC payloads are smaller than RGBA8 of the same w*h.
         const size_t expectedBytes = static_cast<size_t>(
             worker->decoder->getWidth()) * worker->decoder->getHeight() * 4;
-        if (frame.data.size() < expectedBytes) {
-            frame.data.resize(expectedBytes);
+        if (frame.data.size() != expectedBytes) {
+            if (worker->pool) {
+                frame.data = worker->pool->acquire(expectedBytes);
+            } else {
+                // Fallback path when no pool wired (e.g. unit tests).
+                frame.data.resize(expectedBytes);
+            }
         }
 
         Result result = worker->decoder->decodeFrame(nextFrame, frame);

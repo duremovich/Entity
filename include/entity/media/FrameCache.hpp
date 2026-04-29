@@ -14,6 +14,8 @@
 
 namespace entity {
 
+class DecodeBufferPool;
+
 /**
  * FrameCache — sparse LRU cache of decoded frames keyed by (clip entity,
  * source frame number). Replaces the per-clip FrameRingBuffer.
@@ -108,6 +110,16 @@ public:
      */
     void setMaxBytes(size_t maxBytes);
 
+    /**
+     * Wire in a DecodeBufferPool so cache evictions return the freed
+     * pixel-buffer vectors to the pool instead of releasing them. Held as
+     * `weak_ptr` so the cache can outlive the pool safely (lease deleters
+     * fall through to plain `delete` when the weak_ptr's lock fails).
+     * Optional -- the cache works without a pool, just with the original
+     * per-frame malloc behavior.
+     */
+    void setBufferPool(std::shared_ptr<DecodeBufferPool> pool);
+
     // Diagnostics — for the perf overlay + tests.
     size_t maxBytes() const;
     size_t bytesUsed() const;
@@ -150,6 +162,11 @@ private:
     Index              m_index;
     size_t             m_maxBytes;
     size_t             m_bytesUsed{0};
+    // Subtask perf-fix 2026-04-28: cache evictions recycle the pixel
+    // buffer to this pool instead of freeing it. weak_ptr so the cache
+    // can outlive the pool safely (lease drop after pool destruction is
+    // a clean fall-through to plain delete).
+    std::weak_ptr<DecodeBufferPool> m_pool;
 
     friend class FrameLease;
 };

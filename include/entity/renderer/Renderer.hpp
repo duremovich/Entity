@@ -15,6 +15,7 @@ class IRenderer;
 class D3D12Renderer;
 class OutputManager;
 class FrameCache;
+class DecodeBufferPool;
 class OcioManager;
 class CompositorSystem;
 class DecodeSystem;
@@ -83,6 +84,7 @@ public:
     D3D12Renderer*     getD3D12Renderer() const noexcept    { return m_d3d12Renderer.get(); }
     OutputManager*     getOutputManager() const noexcept    { return m_outputManager.get(); }
     FrameCache*        getFrameCache() const noexcept       { return m_frameCache.get(); }
+    DecodeBufferPool*  getDecodeBufferPool() const noexcept { return m_decodeBufferPool.get(); }
     OcioManager*       getOcioManager() const noexcept      { return m_ocioManager.get(); }
     CompositorSystem*  getCompositorSystem() const noexcept { return m_compositorSystem.get(); }
     DecodeSystem*      getDecodeSystem() const noexcept     { return m_decodeSystem.get(); }
@@ -106,6 +108,12 @@ private:
     // the declaration order here IS the construction order.
     std::unique_ptr<D3D12Renderer>     m_d3d12Renderer;
     std::unique_ptr<OutputManager>     m_outputManager;
+    // Pool sits BEFORE FrameCache in declaration order so it constructs
+    // first and destructs LAST -- FrameCache's eviction deleters need the
+    // pool alive on tear-down (they do `weak_ptr.lock()` to recycle the
+    // freed pixel buffer; if the pool is gone they fall through to `delete`,
+    // safe but loses the recycle on the final shutdown wave).
+    std::shared_ptr<DecodeBufferPool>  m_decodeBufferPool;
     std::unique_ptr<FrameCache>        m_frameCache;
     std::unique_ptr<OcioManager>       m_ocioManager;
     std::unique_ptr<CompositorSystem>  m_compositorSystem;

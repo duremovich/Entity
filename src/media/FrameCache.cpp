@@ -1,5 +1,7 @@
 #include "entity/media/FrameCache.hpp"
 
+#include "entity/media/DecodeBufferPool.hpp"
+
 namespace entity {
 
 FrameCache::FrameCache(size_t maxBytes)
@@ -20,11 +22,26 @@ void FrameCache::put(entt::entity clip, FrameNumber frame, DecodedFrame&& data) 
     // upload empty buffers.
     if (bytes == 0) return;
 
-    // Move into a heap allocation so the cache can hand out shared_ptr<const>
-    // aliases without copying the pixel buffer.
-    auto framePtr = std::make_shared<DecodedFrame>(std::move(data));
-
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Move into a heap allocation so the cache can hand out shared_ptr<const>
+    // aliases without copying the pixel buffer. Custom deleter recycles the
+    // pixel buffer to the DecodeBufferPool when the last lease drops --
+    // eliminates the per-frame ~37.7 MB malloc that produced visible
+    // stuttering on 4K ProRes 4444. The deleter captures m_pool by value
+    // (a weak_ptr copy) so it survives FrameCache destruction; if the pool
+    // dies first, weak_ptr.lock() returns null and the buffer falls through
+    // to plain delete.
+    auto framePtr = std::shared_ptr<DecodedFrame>(
+        new DecodedFrame(std::move(data)),
+        [poolWeak = m_pool](DecodedFrame* p) {
+            if (auto pool = poolWeak.lock()) {
+                if (!p->data.empty()) {
+                    pool->release(std::move(p->data));
+                }
+            }
+            delete p;
+        });
 
     const Key key{clip, frame};
 
@@ -103,6 +120,11 @@ void FrameCache::setMaxBytes(size_t maxBytes) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_maxBytes = maxBytes;
     evictUntilUnderBudget();
+}
+
+void FrameCache::setBufferPool(std::shared_ptr<DecodeBufferPool> pool) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_pool = pool;
 }
 
 size_t FrameCache::maxBytes() const {

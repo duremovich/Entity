@@ -18,6 +18,7 @@ namespace entity {
 // Forward declarations
 class Timeline;
 class FrameCache;
+class DecodeBufferPool;
 
 /**
  * DecodeWorker - per-clip decode thread state.
@@ -31,6 +32,7 @@ class FrameCache;
 struct DecodeWorker {
     std::unique_ptr<Decoder> decoder;            // Owned decoder (FFmpeg / PNGSeq / HAP)
     FrameCache*              cache{nullptr};     // Engine-global cache (non-owning)
+    DecodeBufferPool*        pool{nullptr};      // Engine-global decode-buffer pool (non-owning)
     entt::entity             entity{entt::null}; // Clip entity used as cache key
     std::thread              thread;
 
@@ -86,6 +88,15 @@ public:
     void setTimeline(Timeline* timeline) { m_timeline = timeline; }
     void setFrameCache(FrameCache* cache) { m_frameCache = cache; }
 
+    /**
+     * Wire in the engine-global decode-buffer pool. Workers acquire pixel
+     * buffers from it instead of resizing-from-empty after every
+     * cache.put(std::move(...)). Optional -- DecodeSystem works without it
+     * (workers fall back to per-frame malloc), but smooth high-bitrate
+     * playback (especially 4K ProRes 4444) requires it.
+     */
+    void setBufferPool(DecodeBufferPool* pool) { m_bufferPool = pool; }
+
     void initialize(entt::registry& registry) override;
     void update(entt::registry& registry, float deltaTime) override;
     void shutdown(entt::registry& registry) override;
@@ -103,8 +114,9 @@ private:
     void destroyWorker(entt::entity entity);
     static void decodeThreadFunc(std::shared_ptr<DecodeWorker> worker);
 
-    Timeline*   m_timeline{nullptr};
-    FrameCache* m_frameCache{nullptr};
+    Timeline*         m_timeline{nullptr};
+    FrameCache*       m_frameCache{nullptr};
+    DecodeBufferPool* m_bufferPool{nullptr};
 
     std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> m_workers;
 
