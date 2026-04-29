@@ -95,6 +95,33 @@ public:
     bool save(const std::filesystem::path& filepath = "");
 
     /**
+     * Save-As-Bundle (ADR-0009). Creates a fully-structured project folder
+     * at `<parentDir>/<projectName>/`, recursively copies the current
+     * project's content/ + presets/ + objects/ + exports/ + snapshots/
+     * trees alongside, then writes the .entity file at the new root.
+     * `.cache/` is deliberately excluded — it's machine-local and
+     * regenerable, not part of the portable bundle.
+     *
+     * On success, `m_projectPath` is updated to the new file (the
+     * caller is now working in the bundle copy) and Managed paths
+     * resolve against the new root.
+     *
+     * Refuses (returns false) if:
+     *   - `projectName` is empty or contains a path separator
+     *   - `<parentDir>/<projectName>` already exists on disk
+     *   - the current project hasn't been saved at least once
+     *     (no source content tree to copy from)
+     *   - the destination filesystem rejects directory creation /
+     *     copy / write
+     *
+     * Linked entries are unaffected — their absolute paths still point
+     * at the user's existing media. Bundle portability only applies to
+     * Managed entries.
+     */
+    bool saveAsBundle(const std::filesystem::path& parentDir,
+                      const std::string& projectName);
+
+    /**
      * Load a project file, clearing and re-populating clip decode state via
      * the renderer. Updates the current project path on success.
      */

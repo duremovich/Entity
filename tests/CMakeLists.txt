@@ -16,6 +16,7 @@ add_executable(EntityMediaTests
     unit/ProjectSerializerTests.cpp
     unit/ProjectManagerPathTests.cpp
     unit/ProjectManagerCollectTests.cpp
+    unit/ProjectManagerBundleTests.cpp
     unit/RecentProjectsTests.cpp
     unit/OcioOdtTests.cpp
     unit/MessageBusSerializationTests.cpp

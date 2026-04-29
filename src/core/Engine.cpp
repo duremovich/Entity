@@ -281,6 +281,39 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         std::cout << "[Engine] Collect ran: " << n << " entries collected." << std::endl;
     });
 
+    // ADR-0009 — File > Save Project As Bundle... (modal in WindowManager).
+    m_windowManager->setCurrentProjectInfoCallback([this]() {
+        std::string parent, name;
+        if (m_projectManager && !m_projectManager->projectPath().empty()) {
+            const auto& p = m_projectManager->projectPath();
+            parent = p.parent_path().parent_path().string();  // grandparent (the bundle's typical parentDir)
+            name   = p.parent_path().filename().string();     // current root dir name
+        }
+        return std::make_pair(parent, name);
+    });
+    m_windowManager->setSaveBundleCallback(
+        [this](const std::string& parentDir, const std::string& name,
+               std::string* errorOut) -> bool {
+            if (!m_projectManager) {
+                if (errorOut) *errorOut = "Project subsystem not initialized.";
+                return false;
+            }
+            if (!m_projectManager->saveAsBundle(parentDir, name)) {
+                if (errorOut) {
+                    *errorOut = "Bundle save failed (see console for details).";
+                }
+                return false;
+            }
+            // Touch Recent so the bundled copy shows up in the launcher's
+            // Recent panel — it's the new "current project" the editor is
+            // working in.
+            if (m_recentProjects) {
+                m_recentProjects->touch(m_projectManager->projectPath().string());
+                m_recentProjects->save();
+            }
+            return true;
+        });
+
     // Register windows with window manager
     m_windowManager->registerWindow(std::make_unique<MediaBinWindow>(this));
 

@@ -408,7 +408,11 @@ public:
 
     /**
      * Save flow bound to Ctrl+Shift+S / "File > Save Project As...". Always
-     * prompts the user via Save-As dialog.
+     * prompts the user via Save-As dialog. Writes only the .entity file —
+     * for Managed projects the result is an "orphan" showfile whose
+     * Managed paths only resolve at the original project root. Use the
+     * "Save Project As Bundle..." menu item (handled by the WindowManager
+     * modal + ProjectManager::saveAsBundle) for a portable copy.
      */
     bool saveProjectAsInteractive();
 

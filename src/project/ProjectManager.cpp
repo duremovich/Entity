@@ -130,6 +130,96 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
     return true;
 }
 
+bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
+                                   const std::string& projectName) {
+    namespace fs = std::filesystem;
+
+    if (projectName.empty()) {
+        std::cerr << "[ProjectManager] saveAsBundle: projectName is empty" << std::endl;
+        return false;
+    }
+    if (projectName.find('/')  != std::string::npos ||
+        projectName.find('\\') != std::string::npos) {
+        std::cerr << "[ProjectManager] saveAsBundle: projectName must not contain "
+                  << "path separators ('" << projectName << "')" << std::endl;
+        return false;
+    }
+    if (m_projectPath.empty()) {
+        // No source root to copy from. The caller can use createNew() +
+        // save() instead if they want a fresh structured project.
+        std::cerr << "[ProjectManager] saveAsBundle: no current project to bundle from "
+                     "(save the project once at its current location first)" << std::endl;
+        return false;
+    }
+
+    const fs::path srcRoot     = m_projectPath.parent_path();
+    const fs::path newRoot     = parentDir / projectName;
+    const fs::path newFile     = newRoot / (projectName + ProjectSerializer::FILE_EXTENSION);
+
+    std::error_code ec;
+    if (fs::exists(newRoot, ec)) {
+        std::cerr << "[ProjectManager] saveAsBundle: target already exists: "
+                  << newRoot.string() << std::endl;
+        return false;
+    }
+
+    // Build the destination subdirectory tree. create_directories cascades
+    // so missing intermediate parents on the parentDir side are created.
+    fs::create_directories(newRoot, ec);
+    if (ec) {
+        std::cerr << "[ProjectManager] saveAsBundle: failed to create root "
+                  << newRoot.string() << ": " << ec.message() << std::endl;
+        return false;
+    }
+
+    // Sub-directories that participate in the bundle. .cache/ is excluded;
+    // it's machine-local and regenerable. Each entry is copied recursively
+    // when it exists in the source; absent ones are silently skipped.
+    const std::array<const char*, 5> bundleDirs = {
+        kContentDir, kPresetsDir, kObjectsDir, kExportsDir, kSnapshotsDir,
+    };
+
+    auto copyOptions = fs::copy_options::recursive
+                     | fs::copy_options::skip_symlinks
+                     | fs::copy_options::overwrite_existing;
+
+    for (const char* dirName : bundleDirs) {
+        const fs::path srcDir = srcRoot / dirName;
+        if (!fs::exists(srcDir, ec)) continue;
+
+        const fs::path dstDir = newRoot / dirName;
+        fs::create_directories(dstDir, ec);
+        fs::copy(srcDir, dstDir, copyOptions, ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] saveAsBundle: failed to copy "
+                      << srcDir.string() << " -> " << dstDir.string()
+                      << ": " << ec.message() << std::endl;
+            // Best-effort cleanup of the half-written destination so a
+            // retry isn't blocked by the "target exists" guard.
+            std::error_code rmEc;
+            fs::remove_all(newRoot, rmEc);
+            return false;
+        }
+    }
+
+    // Write the .entity at the new root. We reuse the existing save() path
+    // by temporarily pointing m_projectPath at the new file; on failure
+    // restore the old path + tear down the partial bundle.
+    const fs::path oldProjectPath = m_projectPath;
+    m_projectPath = newFile;
+    if (!save(newFile)) {
+        m_projectPath = oldProjectPath;
+        std::error_code rmEc;
+        fs::remove_all(newRoot, rmEc);
+        std::cerr << "[ProjectManager] saveAsBundle: project file write failed; "
+                     "rolled back partial bundle" << std::endl;
+        return false;
+    }
+
+    std::cout << "[ProjectManager] Saved bundle to " << newFile.string() << std::endl;
+    return true;
+}
+
 bool ProjectManager::save(const std::filesystem::path& filepath) {
     if (!m_timeline) {
         std::cerr << "[ProjectManager] Cannot save: timeline not set" << std::endl;

@@ -1,6 +1,7 @@
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/FileDialog.hpp"
 #include <imgui_internal.h>  // For DockBuilder API
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 
@@ -215,6 +216,126 @@ void WindowManager::render() {
     // Preferences modal — rendered last so it draws over the dockspace + windows.
     // No-op when not open; cheap to call every frame.
     m_settingsWindow.render();
+
+    // ADR-0009 — Save-As-Bundle modal. No-op when m_saveBundleModalOpen is false.
+    if (m_saveBundleModalOpen) {
+        renderSaveBundleModal();
+    }
+}
+
+void WindowManager::renderSaveBundleModal() {
+    namespace fs = std::filesystem;
+
+    // Seed defaults the first frame after opening: project name from current
+    // project's stem; parent dir from current project's parent (or the OS
+    // user-documents fallback).
+    if (m_saveBundleModalSeed) {
+        std::string seedName, seedParent;
+        if (m_currentProjectInfoCallback) {
+            auto info = m_currentProjectInfoCallback();
+            seedParent = info.first;
+            seedName   = info.second;
+        }
+        if (seedParent.empty()) {
+#ifdef _WIN32
+            if (const char* userprofile = std::getenv("USERPROFILE")) {
+                seedParent = (fs::path(userprofile) / "Documents" / "Entity").string();
+            }
+#else
+            if (const char* home = std::getenv("HOME")) {
+                seedParent = (fs::path(home) / "Entity").string();
+            }
+#endif
+        }
+        m_saveBundleParentDir = seedParent;
+        m_saveBundleName      = seedName;
+        m_saveBundleModalSeed = false;
+    }
+
+    ImGui::OpenPopup("Save Project As Bundle");
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImVec2 center = ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                           viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(560, 0));
+
+    if (ImGui::BeginPopupModal("Save Project As Bundle", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Creates a new project folder containing a copy of the .entity file, "
+            "content/, presets/, objects/, exports/, and snapshots/. The current "
+            "project stays untouched until you save it again.");
+        ImGui::Spacing();
+
+        ImGui::Text("Project Name");
+        char nameBuf[256];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", m_saveBundleName.c_str());
+        if (ImGui::InputText("##bundle-name", nameBuf, sizeof(nameBuf))) {
+            m_saveBundleName = nameBuf;
+        }
+        ImGui::TextDisabled("Letters, numbers, dashes — no path separators.");
+        ImGui::Spacing();
+
+        ImGui::Text("Parent Directory");
+        char parentBuf[1024];
+        std::snprintf(parentBuf, sizeof(parentBuf), "%s", m_saveBundleParentDir.c_str());
+        if (ImGui::InputText("##bundle-parent", parentBuf, sizeof(parentBuf))) {
+            m_saveBundleParentDir = parentBuf;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...##bundle")) {
+            fs::path initial = m_saveBundleParentDir.empty()
+                                   ? fs::path{}
+                                   : fs::path(m_saveBundleParentDir);
+            fs::path picked = ui::pickFolderDialog(
+                m_ownerWindow, L"Choose parent directory for the bundle", initial);
+            if (!picked.empty()) {
+                m_saveBundleParentDir = pathToUtf8(picked);
+            }
+        }
+
+        if (!m_saveBundleName.empty() && !m_saveBundleParentDir.empty()) {
+            fs::path preview = fs::path(m_saveBundleParentDir) / m_saveBundleName;
+            ImGui::TextDisabled("Will create: %s", preview.string().c_str());
+        }
+
+        if (!m_saveBundleError.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+                               m_saveBundleError.c_str());
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const bool canSave = !m_saveBundleName.empty()
+                          && !m_saveBundleParentDir.empty()
+                          && m_saveBundleCallback;
+        ImGui::BeginDisabled(!canSave);
+        if (ImGui::Button("Save Bundle", ImVec2(140, 0))) {
+            std::string err;
+            if (m_saveBundleCallback(m_saveBundleParentDir, m_saveBundleName, &err)) {
+                m_saveBundleModalOpen = false;
+                m_saveBundleError.clear();
+                ImGui::CloseCurrentPopup();
+            } else {
+                m_saveBundleError = err.empty()
+                                        ? std::string("Save failed (see console)")
+                                        : err;
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            m_saveBundleModalOpen = false;
+            m_saveBundleError.clear();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
 }
 
 void WindowManager::setSettingsAppliedCallback(SettingsAppliedCallback cb) {
@@ -294,6 +415,28 @@ void WindowManager::renderMenuBar() {
                 if (m_saveProjectAsCallback) {
                     m_saveProjectAsCallback();
                 }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Writes only the .entity file to the chosen location.\n"
+                    "For Managed projects the resulting file is an \"orphan\":\n"
+                    "Managed paths are project-relative and won't resolve until\n"
+                    "the original project's content/ tree is alongside it.\n"
+                    "Use Save As Bundle... to copy the content tree too.");
+            }
+
+            if (ImGui::MenuItem("Save Project As Bundle...", nullptr)) {
+                m_saveBundleModalOpen = true;
+                m_saveBundleModalSeed = true;  // re-seed defaults on next render
+                m_saveBundleError.clear();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Creates a portable copy of the project at <parentDir>/<projectName>/:\n"
+                    "  - .entity file at the new root\n"
+                    "  - content/ + .archive/ + presets/ + objects/ + exports/ + snapshots/\n"
+                    ".cache/ is excluded (machine-local, regenerable).\n"
+                    "Use this to share a project or move it to external storage.");
             }
 
             ImGui::Separator();

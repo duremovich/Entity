@@ -145,6 +145,28 @@ public:
     void setCanCollectMediaCallback(CanCollectMediaCallback cb) { m_canCollectMediaCallback = std::move(cb); }
 
     /**
+     * ADR-0009 — "Save Project As Bundle..." menu action.
+     * Returns true on success (modal closes), false to keep the modal
+     * open with a displayed error. Engine runs `saveAsBundle` and
+     * `recentProjects->touch` on the new file.
+     */
+    using SaveBundleCallback = std::function<bool(const std::string& parentDir,
+                                                   const std::string& projectName,
+                                                   std::string* errorOut)>;
+    void setSaveBundleCallback(SaveBundleCallback cb) { m_saveBundleCallback = std::move(cb); }
+
+    /**
+     * Engine calls this to seed the bundle modal's defaults: the parent
+     * dir is pre-populated from the suggested path; project name from
+     * the current project's stem.
+     */
+    using CurrentProjectInfoCallback =
+        std::function<std::pair<std::string, std::string>()>;  // (parentDir, name)
+    void setCurrentProjectInfoCallback(CurrentProjectInfoCallback cb) {
+        m_currentProjectInfoCallback = std::move(cb);
+    }
+
+    /**
      * Edit menu — ripple insert / delete time on the active range selection.
      * Engine wires these to read TimelineWidget's range and dispatch the
      * Ripple{Insert,Delete}TimeCommand through CommandDispatcher (so they
@@ -257,6 +279,18 @@ private:
     RunScriptCallback m_runScriptCallback;
     CollectMediaCallback   m_collectMediaCallback;
     CanCollectMediaCallback m_canCollectMediaCallback;
+    SaveBundleCallback         m_saveBundleCallback;
+    CurrentProjectInfoCallback m_currentProjectInfoCallback;
+
+    // Save-As-Bundle modal (ADR-0009). Open state + form fields persist
+    // across frames while the popup is up; reset when the user clicks
+    // Save or Cancel.
+    bool        m_saveBundleModalOpen{false};
+    bool        m_saveBundleModalSeed{false};
+    std::string m_saveBundleParentDir;
+    std::string m_saveBundleName;
+    std::string m_saveBundleError;
+    void renderSaveBundleModal();
 
     HasRangeSelectionCallback m_hasRangeSelectionCallback;
     RippleInsertCallback m_rippleInsertCallback;
