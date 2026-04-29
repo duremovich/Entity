@@ -1,10 +1,10 @@
 # Current Status
 
-**Phase**: Phase D entry — Director/Renderer split is **9/11 subtasks landed locally** (10 doc-only edits + 11 final cleanup are the remaining work). Bus + transport + SceneState wrapper + Director / Renderer service classes + PlaybackController split + RenderFrame per-tick state-snapshot + all four Renderer-touching command routings (SetOutputEnabled, ApplySettings, capture commands via CaptureBroker, ProvisionClipResources/ResourcesProvisioned slot allocation) + AssetId strong typedef on the bus's `ProvisionClipResources` are all in. Local master is 7 commits ahead of origin/master. **CI green at 203/203** (193 pre-AssetId + 10 new AssetIdTests). Subtasks 10 and 11 are docs / minor cleanup; the heavy lift is done.
+**Phase**: Phase D entry **closed** (all 11 subtasks landed at `e946316` on origin/master) **+ open-core dual-license scaffold landed** at `dbeaf29` (pushed to origin/master 2026-04-29). Public Entity repo (this one) and sibling private `Entity-Pro` repo both live on GitHub as private. **213/213 ctests green.** Phase D feature work (timecode, OSC, audio, NDI) can now attach to the right side of the public/private boundary from day one — see `~/.claude/projects/.../memory/architecture_open_core_plugins.md` and `~/.claude/projects/.../memory/project_phase_d_queue.md` for the classification.
 
 **Phase C** still describes the runtime feature set (Phase C.12 OCIO-native color pipeline is closed at 143/143 + integrated). Below is the Phase D entry progress; everything else stays unchanged from the prior CURRENT.md snapshot.
 
-**Last Updated**: 2026-04-28
+**Last Updated**: 2026-04-29
 
 ---
 
