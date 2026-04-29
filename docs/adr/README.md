@@ -16,6 +16,8 @@ that have moved on.
 | 0004 | [OCIO over hand-rolled ACES for the color pipeline](0004-ocio-over-handrolled-aces.md) | Accepted | 2026-04-26 |
 | 0005 | [Open-core dual-license + plugin scaffold](0005-open-core-dual-license.md) | Accepted | 2026-04-29 |
 | 0006 | [Cluster-ready plumbing from day one](0006-cluster-ready-plumbing-day-one.md) | Accepted | 2026-04-25 |
+| 0007 | [Open-core feature tiering & monetization model](0007-open-core-feature-tiering.md) | Accepted | 2026-04-29 |
+| 0008 | [Cluster topology nomenclature — Conductor / Performer / Standby](0008-cluster-topology-nomenclature.md) | Accepted | 2026-04-29 |
 
 ## Format
 
