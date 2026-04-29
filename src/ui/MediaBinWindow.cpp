@@ -121,8 +121,10 @@ void MediaBinWindow::renderPendingImportModal() {
         ImGui::Spacing();
         ImGui::TextWrapped(
             "HAP is a GPU-friendly codec — transcoding this file will let you "
-            "play it smoothly on a multi-layer timeline. The source stays "
-            "untouched; the HAP version is cached in <project>/.cache/hap/.");
+            "play it smoothly on a multi-layer timeline. Your original is "
+            "preserved: managed imports archive it alongside the new HAP "
+            "file (in <subfolder>/.archive/); linked imports leave the "
+            "source where it is and cache the HAP in <project>/.cache/hap/.");
         ImGui::Spacing();
         ImGui::Checkbox("Don't ask again for this project", &m_modalDontAskAgain);
         if (ImGui::IsItemHovered()) {
@@ -234,7 +236,10 @@ void MediaBinWindow::render() {
         ImGui::SetTooltip(
             "What to do when you import a non-HAP file:\n"
             "  Ask each time — prompt with Transcode / Skip per import\n"
-            "  Auto-transcode — silently re-encode to HAP in <project>/.cache/hap\n"
+            "  Auto-transcode — silently re-encode to HAP. Managed imports\n"
+            "    replace source at content/<sub>/ and archive the original\n"
+            "    to content/<sub>/.archive/; linked imports cache the HAP\n"
+            "    at <project>/.cache/hap/.\n"
             "  Use source as-is — keep the slow source (ProRes / H264 / ...)"
             );
     }

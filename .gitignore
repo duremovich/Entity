@@ -137,6 +137,12 @@ scripts/perf_diag_*.json
 *.autosave.entity
 /project.entity
 
+# Entity project caches — machine-local, regenerable. ADR-0009: any
+# project folder accidentally committed alongside the source tree
+# (e.g. a small demo project) shouldn't drag the cache. See
+# docs/reference/PROJECT_LAYOUT.md for the project layout reference.
+.cache/
+
 # Claude Code runtime state — kept local only, not for source control.
 # CLAUDE.md (root + sub-dirs) covers architectural docs auto-loaded by
 # Claude Code; local copies live alongside the codebase but aren't tracked.
