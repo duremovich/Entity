@@ -259,6 +259,13 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
     return true;
 }
 
+void ProjectManager::closeProject() {
+    m_loadedMediaFiles.clear();
+    m_projectPath.clear();
+    m_nonHapImportPolicy = NonHapImportPolicy::Ask;
+    m_autosaveAccumulator = 0.0;
+}
+
 bool ProjectManager::load(const std::filesystem::path& filepath) {
     if (!m_timeline || !m_registry || !m_renderer) {
         std::cerr << "[ProjectManager] Cannot load: dependencies not initialized" << std::endl;

@@ -262,6 +262,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         this->loadProject(filePath);
     });
 
+    // ADR-0009 — File > Close Project. Disabled when no project is open
+    // (PM has no path) so the menu item is honest about what it does.
+    m_windowManager->setCanCloseProjectCallback([this]() {
+        return m_projectManager && !m_projectManager->projectPath().empty();
+    });
+    m_windowManager->setCloseProjectCallback([this]() {
+        this->closeProject();
+    });
+
     // Set up exit callback
     m_windowManager->setExitCallback([this]() {
         this->requestExit();
@@ -2501,6 +2510,78 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         m_recentProjects->save();
     }
     return true;
+}
+
+void Engine::closeProject() {
+    // Idempotent: each step below tolerates an already-clear state, so
+    // calling closeProject() with nothing open just lands the user in
+    // the launcher.
+
+    // 1. Disable physical output windows. Same prelude as loadProject —
+    //    OutputDisplay components hold renderer slot IDs; clearing the
+    //    components without first releasing the slots would leak them
+    //    for the rest of the session.
+    if (m_outputManager) {
+        auto view = m_registry.view<OutputDisplay>();
+        std::vector<entt::entity> toDisable;
+        for (auto [entity, out] : view.each()) {
+            if (out.outputWindowSlot != UINT32_MAX) {
+                toDisable.push_back(entity);
+            }
+        }
+        for (auto e : toDisable) {
+            m_outputManager->setOutputEnabled(e, false);
+        }
+    }
+
+    // 2. Join any in-flight transcode workers. requestCancel() + join
+    //    via destructors. Partial outputs on disk are harmless — the
+    //    worker writes to a deterministic path and a future re-import
+    //    will overwrite or skip via the existing dedupe.
+    if (m_transcodeManager) {
+        m_transcodeManager->joinAll();
+    }
+
+    // 3. Wipe the timeline (clips + tracks + sections + selection +
+    //    play/stop state).
+    if (m_timeline) {
+        m_timeline->clear();
+    }
+
+    // 4. Destroy the project-scoped entity types ProjectSerializer::load
+    //    would otherwise wipe on its way to loading new state.
+    {
+        std::vector<entt::entity> toDestroy;
+        auto mappingView = m_registry.view<MappingSurface>();
+        for (auto e : mappingView) toDestroy.push_back(e);
+        auto outputView  = m_registry.view<OutputDisplay>();
+        for (auto e : outputView)  toDestroy.push_back(e);
+        auto modelView   = m_registry.view<Model>();
+        for (auto [e, m] : modelView.each()) toDestroy.push_back(e);
+        for (auto e : toDestroy) {
+            if (m_registry.valid(e)) m_registry.destroy(e);
+        }
+    }
+    m_registry.clear<ClipDecodeState>();
+
+    // 5. Drop undo/redo history — the entities those commands reference
+    //    are gone. Without this, a Ctrl+Z after re-opening a different
+    //    project would replay an op against a stale entity ID.
+    if (m_commandDispatcher) {
+        m_commandDispatcher->clearHistory();
+    }
+
+    // 6. Clear PM state (m_projectPath, mediaLibrary, policy).
+    if (m_projectManager) {
+        m_projectManager->closeProject();
+    }
+
+    // 7. Re-show the launcher. The run loop already gates editor render
+    //    + simulation work on m_showLauncher (see Engine::run /
+    //    Engine::render), so this is the only flag flip required.
+    showLauncher();
+
+    std::cout << "[Engine] Project closed; launcher re-shown." << std::endl;
 }
 
 bool Engine::saveProjectInteractive() {

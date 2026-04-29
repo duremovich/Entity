@@ -405,6 +405,23 @@ void WindowManager::renderMenuBar() {
                 }
             }
 
+            // ADR-0009 — File > Close Project. Returns to the Project
+            // Launcher rather than leaving an empty editor open.
+            const bool canClose = m_canCloseProjectCallback
+                                      ? m_canCloseProjectCallback()
+                                      : false;
+            if (ImGui::MenuItem("Close Project", nullptr, false, canClose)) {
+                if (m_closeProjectCallback) m_closeProjectCallback();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip(
+                    "Closes the current project and returns to the\n"
+                    "Project Launcher (Recent / New / Open). Unsaved\n"
+                    "changes are lost — save first if you want to keep them.");
+            }
+
+            ImGui::Separator();
+
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
                 if (m_saveProjectCallback) {
                     m_saveProjectCallback();

@@ -128,6 +128,15 @@ public:
     bool load(const std::filesystem::path& filepath);
 
     /**
+     * ADR-0009 — drop all project-scoped state owned by ProjectManager:
+     * the project path, the media library, and the non-HAP-import policy
+     * (which is persisted with the project). Used by `Engine::closeProject`
+     * when returning to the launcher; the editor entity-side teardown is
+     * Engine's responsibility.
+     */
+    void closeProject();
+
+    /**
      * Periodic autosave. Accumulates deltaTime and, once it crosses the
      * configured interval, writes the current timeline to
      *   <projectPath>.autosave   (or autosave.entity if no project is set).

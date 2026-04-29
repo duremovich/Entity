@@ -121,6 +121,16 @@ public:
     void setOpenProjectCallback(OpenProjectCallback callback) { m_openProjectCallback = callback; }
 
     /**
+     * ADR-0009 — File > Close Project. Engine tears down the editor's
+     * project-scoped state and re-shows the Project Launcher. The bool
+     * callback gates the menu item (disabled when no project is loaded).
+     */
+    using CloseProjectCallback   = std::function<void()>;
+    using CanCloseProjectCallback = std::function<bool()>;
+    void setCloseProjectCallback(CloseProjectCallback cb)       { m_closeProjectCallback   = std::move(cb); }
+    void setCanCloseProjectCallback(CanCloseProjectCallback cb) { m_canCloseProjectCallback = std::move(cb); }
+
+    /**
      * Set callback for exit action.
      */
     using ExitCallback = std::function<void()>;
@@ -294,6 +304,8 @@ private:
     SaveProjectCallback m_saveProjectCallback;
     SaveProjectAsCallback m_saveProjectAsCallback;
     OpenProjectCallback m_openProjectCallback;
+    CloseProjectCallback    m_closeProjectCallback;
+    CanCloseProjectCallback m_canCloseProjectCallback;
     ExitCallback m_exitCallback;
     RunScriptCallback m_runScriptCallback;
     CollectMediaCallback   m_collectMediaCallback;

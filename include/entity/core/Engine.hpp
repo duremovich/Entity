@@ -432,6 +432,17 @@ public:
     bool loadProject(const std::filesystem::path& filepath);
 
     /**
+     * ADR-0009 — close the current project and return to the launcher.
+     * Tears down physical output windows, joins in-flight transcodes,
+     * clears the timeline (clips + tracks + sections + selection),
+     * destroys project-scoped entities (MappingSurface, OutputDisplay,
+     * Model, ClipDecodeState), drops undo/redo history, and clears
+     * ProjectManager state. Then `showLauncher()` so the next render
+     * shows Recent / New / Open. Safe to call when no project is open.
+     */
+    void closeProject();
+
+    /**
      * Save flow bound to Ctrl+S / "File > Save Project". Writes to the
      * current project path if one is set; otherwise prompts the user via
      * Save-As dialog.
