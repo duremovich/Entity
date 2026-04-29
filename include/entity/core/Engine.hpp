@@ -250,6 +250,18 @@ public:
     int findMissingMedia(const std::filesystem::path& searchDir);
 
     /**
+     * ADR-0009 — Restore the pre-transcode original for a Managed
+     * mediaLibrary entry that has an archive on disk. Wraps
+     * ProjectManager::restoreOriginal: cancels any in-flight
+     * TranscodeManager worker keyed by canonicalPath, runs the
+     * archive→canonical swap, reloads the project so the decoder
+     * picks up the new codec.
+     *
+     * Returns true on success.
+     */
+    bool restoreOriginalMedia(const std::string& canonicalPath);
+
+    /**
      * ADR-0009 — orchestrate a HAP transcode for a registered media
      * library entry. Branches on `pathKind`:
      *

@@ -431,6 +431,82 @@ std::string ProjectManager::resolveMediaPath(const std::string& storedPath) cons
             std::filesystem::path(storedPath)).string();
 }
 
+bool ProjectManager::restoreOriginal(const std::string& canonicalPath) {
+    namespace fs = std::filesystem;
+
+    if (m_projectPath.empty()) {
+        std::cerr << "[ProjectManager] restoreOriginal: no project loaded." << std::endl;
+        return false;
+    }
+    auto* entry = findEntry(canonicalPath);
+    if (!entry) {
+        std::cerr << "[ProjectManager] restoreOriginal: entry not found: "
+                  << canonicalPath << std::endl;
+        return false;
+    }
+    if (entry->pathKind != PathKind::Managed) {
+        std::cerr << "[ProjectManager] restoreOriginal: entry is not Managed: "
+                  << canonicalPath << std::endl;
+        return false;
+    }
+    if (entry->archivedOriginal.empty()) {
+        std::cerr << "[ProjectManager] restoreOriginal: no archive recorded for "
+                  << canonicalPath << std::endl;
+        return false;
+    }
+
+    const fs::path projectRoot = m_projectPath.parent_path();
+    const fs::path archiveAbs  = projectRoot / fs::path(entry->archivedOriginal);
+    const fs::path canonicalAbs = projectRoot / fs::path(canonicalPath);
+
+    std::error_code ec;
+    if (!fs::exists(archiveAbs, ec)) {
+        std::cerr << "[ProjectManager] restoreOriginal: archive file missing on disk: "
+                  << archiveAbs.string() << std::endl;
+        return false;
+    }
+
+    // Drop the HAP at the canonical path. The archive (the original) is
+    // about to take its place; HAP is regenerable via re-transcode.
+    if (fs::exists(canonicalAbs, ec)) {
+        fs::remove(canonicalAbs, ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] restoreOriginal: failed to remove "
+                      << canonicalAbs.string() << ": " << ec.message() << std::endl;
+            return false;
+        }
+    }
+
+    // Move the archive into the canonical location. Same-volume rename is
+    // atomic; cross-volume falls back to copy + remove. (Per-folder
+    // .archive/ is always a sibling under the same root so cross-volume
+    // shouldn't happen in practice — the fallback is paranoia.)
+    std::error_code renameEc;
+    fs::rename(archiveAbs, canonicalAbs, renameEc);
+    if (renameEc) {
+        fs::copy_file(archiveAbs, canonicalAbs,
+                      fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[ProjectManager] restoreOriginal: failed to relocate archive "
+                      << archiveAbs.string() << " -> " << canonicalAbs.string()
+                      << ": " << ec.message() << std::endl;
+            return false;
+        }
+        fs::remove(archiveAbs, ec);  // best-effort
+    }
+
+    // Reset the entry. transcodedPath / variant are Linked-side fields but
+    // clearing them is harmless if we ever come through this path twice.
+    entry->archivedOriginal.clear();
+    entry->originalCodec.clear();
+    entry->transcodedPath.clear();
+    entry->variant.clear();
+
+    std::cout << "[ProjectManager] Restored original at " << canonicalPath
+              << " from archive" << std::endl;
+    return true;
+}
+
 int ProjectManager::rebuildStructure() {
     namespace fs = std::filesystem;
     if (m_projectPath.empty()) {

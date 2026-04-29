@@ -305,6 +305,28 @@ public:
     };
 
     /**
+     * Roll a Managed entry back to its pre-transcode state. Only valid
+     * when the entry has an `archivedOriginal` file on disk:
+     *   1. Delete the HAP file at the canonical content path.
+     *   2. Rename `<root>/<archivedOriginal>` -> the canonical content path.
+     *   3. Clear `archivedOriginal`, `originalCodec`, `transcodedPath`,
+     *      and `variant` on the entry.
+     *
+     * After a successful restore the entry looks the same as a freshly
+     * Copy-imported never-transcoded clip. If the user wants HAP back
+     * they re-trigger transcode (which will archive again).
+     *
+     * Returns false (state unchanged) if:
+     *   - entry not in library / not Managed / no archive set
+     *   - archive file or canonical path can't be found / written
+     *
+     * Caller (Engine) is responsible for removing any in-flight
+     * TranscodeManager worker for this canonical path and for
+     * reloading the project so the decoder picks up the new codec.
+     */
+    bool restoreOriginal(const std::string& canonicalPath);
+
+    /**
      * Recursively walks `searchDir`, builds an index of media filenames
      * found there, then for each Managed mediaLibrary entry whose
      * canonical path doesn't currently exist on disk, looks up the

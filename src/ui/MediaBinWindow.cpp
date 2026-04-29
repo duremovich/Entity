@@ -379,6 +379,38 @@ void MediaBinWindow::render() {
                     }
                 }
 
+                // ADR-0009 — Restore Original. Available only for Managed
+                // entries whose pre-transcode source is sitting in
+                // .archive/ on disk. The action swaps the archive back
+                // into the canonical content path; user gets the
+                // original codec back, can re-trigger transcode later.
+                {
+                    const bool hasArchive =
+                        entry.pathKind == ProjectManager::PathKind::Managed
+                        && !entry.archivedOriginal.empty();
+                    if (hasArchive) {
+                        ImGui::Separator();
+                        std::string label = "Restore Original";
+                        if (!entry.originalCodec.empty()) {
+                            label += " (";
+                            label += entry.originalCodec;
+                            label += ")";
+                        }
+                        if (ImGui::MenuItem(label.c_str())) {
+                            m_engine->restoreOriginalMedia(filepath);
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip(
+                                "Replaces the HAP transcode at the canonical\n"
+                                "content path with the pre-transcode source from\n"
+                                "%s.\n"
+                                "The HAP version is discarded; re-transcode if you\n"
+                                "want it back.",
+                                entry.archivedOriginal.c_str());
+                        }
+                    }
+                }
+
                 ImGui::Separator();
                 if (ImGui::MenuItem("Remove from library")) {
                     m_engine->removeMediaFromLibrary(filepath);

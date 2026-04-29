@@ -1705,6 +1705,31 @@ int Engine::rebuildProjectStructure() {
     return m_projectManager->rebuildStructure();
 }
 
+bool Engine::restoreOriginalMedia(const std::string& canonicalPath) {
+    if (!m_projectManager) return false;
+
+    // Wipe any TranscodeManager bookkeeping for this canonical path —
+    // a Done worker still in the map would otherwise have its outputPath
+    // (the now-deleted HAP) treated as fresh on the next pollTranscodes.
+    if (m_transcodeManager) {
+        m_transcodeManager->remove(canonicalPath);
+    }
+
+    if (!m_projectManager->restoreOriginal(canonicalPath)) {
+        return false;
+    }
+
+    // Reload the project so DecodeSystem opens the now-original-codec
+    // file with the right decoder. Same pattern as findMissingMedia.
+    if (!m_projectManager->projectPath().empty()) {
+        const auto path = m_projectManager->projectPath();
+        std::cout << "[Engine] Reloading project after restoring " << canonicalPath
+                  << std::endl;
+        loadProject(path);
+    }
+    return true;
+}
+
 int Engine::findMissingMedia(const std::filesystem::path& searchDir) {
     if (!m_projectManager) return 0;
     auto result = m_projectManager->findMissingManagedMedia(searchDir);
