@@ -137,10 +137,13 @@ scripts/perf_diag_*.json
 *.autosave.entity
 /project.entity
 
-# Claude Code runtime state
+# Claude Code runtime state — kept local only, not for source control.
+# CLAUDE.md (root + sub-dirs) covers architectural docs auto-loaded by
+# Claude Code; local copies live alongside the codebase but aren't tracked.
 .claude/
 .claude-agents/
 .claude-sessions/
+CLAUDE.md
 
 # CTest runtime artifacts
 /Testing/
