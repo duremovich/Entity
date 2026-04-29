@@ -33,10 +33,11 @@ struct StatusDisplay {
 };
 
 StatusDisplay computeStatus(const ProjectManager::MediaLibraryEntry& entry,
-                             const TranscodeManager* tmgr) {
+                             const TranscodeManager* tmgr,
+                             bool isSourceAlreadyHap) {
     StatusDisplay d;
     d.hasTranscode = !entry.transcodedPath.empty();
-    d.isSourceAlreadyHap = isHapMediaType(detectMediaType(entry.originalPath));
+    d.isSourceAlreadyHap = isSourceAlreadyHap;
 
     if (tmgr) {
         if (auto s = tmgr->statusOf(entry.originalPath)) {
@@ -230,7 +231,21 @@ void MediaBinWindow::render() {
         for (size_t i = 0; i < mediaFiles.size(); i++) {
             const auto& entry = mediaFiles[i];
             const std::string& filepath = entry.originalPath;
-            const StatusDisplay status = computeStatus(entry, tmgr);
+
+            // Cache the "is HAP?" check. The underlying probe
+            // (avformat_open_input + find_stream_info on a .mov) costs
+            // 30-40ms per call on a 4K ProRes file; calling it every
+            // render frame produced sustained ~17fps render during
+            // playback. Codec doesn't change at runtime, so write-once
+            // is enough.
+            bool isHap;
+            if (auto it = m_isHapCache.find(filepath); it != m_isHapCache.end()) {
+                isHap = it->second;
+            } else {
+                isHap = isHapMediaType(detectMediaType(filepath));
+                m_isHapCache.emplace(filepath, isHap);
+            }
+            const StatusDisplay status = computeStatus(entry, tmgr, isHap);
 
             ImGui::TableNextRow();
 

@@ -226,20 +226,43 @@ Result ProResDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFram
         frameNumber = m_duration - 1;
     }
 
-    // If not sequential, seek to the target frame
-    if (frameNumber != m_currentFrame + 1) {
+    // For sequential reads (target == currentFrame + 1) and small forward
+    // jumps (gap <= SKIP_THRESHOLD), avoid the heavy seek path. Backward
+    // jumps OR large forward jumps fall through to seek() so we use
+    // container-level seeking instead of streaming through MB of packets.
+    //
+    // SKIP_THRESHOLD rationale: each av_read_frame on cached I/O is ~1-5 ms;
+    // 16 packets ≈ 80 ms, roughly the breakeven against av_seek_frame +
+    // avcodec_flush_buffers. Beyond that, container seek is faster.
+    constexpr FrameNumber SKIP_THRESHOLD = 16;
+    const FrameNumber gap = (frameNumber > m_currentFrame)
+                                ? (frameNumber - m_currentFrame)
+                                : 0;
+    const bool needsSeek = (frameNumber < m_currentFrame) ||
+                           (gap > SKIP_THRESHOLD);
+    if (needsSeek) {
         Result seekResult = seek(frameNumber);
         if (seekResult != Result::Success) {
             return seekResult;
         }
+        // seek() leaves m_currentFrame at frameNumber - 1; the loop below
+        // decodes exactly one frame to reach the target.
     }
 
-    // Decode frames until we reach the target frame
-    while (m_currentFrame < frameNumber) {
-        Result decodeResult = decodeNextPacket();
-        if (decodeResult != Result::Success) {
-            return decodeResult;
-        }
+    // Skip intermediates without decoding (cheap), then full-decode the
+    // target. Safe because ProRes is intra-only -- each packet is
+    // self-contained, so the codec context's state isn't disturbed by
+    // packets we dropped without sending. This is the win: jumping
+    // forward N frames costs ~N×(av_read_frame I/O) + 1×(decode + sws)
+    // instead of N×(decode + sws). For the realtime "decoder behind
+    // playhead, drop frames cleanly" case this turns a 76 ms freeze into
+    // a single decode at natural cadence.
+    while (m_currentFrame + 1 < frameNumber) {
+        Result r = decodeNextPacket(/*actuallyDecode=*/false);
+        if (r != Result::Success) return r;
+    }
+    if (Result r = decodeNextPacket(/*actuallyDecode=*/true); r != Result::Success) {
+        return r;
     }
 
     // Convert decoded frame to RGBA
@@ -420,11 +443,15 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
 #endif
 }
 
-Result ProResDecoder::decodeNextPacket() {
+Result ProResDecoder::decodeNextPacket(bool actuallyDecode) {
 #ifdef HAVE_FFMPEG
     int ret;
 
-    // Try to receive a frame first (there might be buffered frames)
+    // Try to receive a frame first (there might be buffered frames). Even
+    // on the skip path we drain any pre-buffered codec output so the
+    // skip-mode counter advances and we don't desync against the codec's
+    // internal state. This is safe because ProRes is intra-only -- any
+    // buffered frame is fully decoded and self-contained.
     ret = avcodec_receive_frame(m_codecContext, m_frame);
     if (ret == 0) {
         // Got a frame from buffer
@@ -460,10 +487,18 @@ Result ProResDecoder::decodeNextPacket() {
             return Result::DecoderError;
         }
 
-        // Skip non-video packets
+        // Skip non-video packets unconditionally (e.g. timecode tracks).
         if (m_packet->stream_index != m_videoStreamIndex) {
             av_packet_unref(m_packet);
             continue;
+        }
+
+        // Skip-mode: discard the packet without sending to avcodec. Just
+        // advance the frame counter. Safe for intra-only ProRes.
+        if (!actuallyDecode) {
+            av_packet_unref(m_packet);
+            m_currentFrame++;
+            return Result::Success;
         }
 
         // Send packet to decoder
@@ -494,6 +529,7 @@ Result ProResDecoder::decodeNextPacket() {
         }
     }
 #else
+    (void)actuallyDecode;
     std::cerr << "ProResDecoder: decodeNextPacket - FFmpeg not available" << std::endl;
     return Result::NotImplemented;
 #endif

@@ -165,19 +165,19 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 } else {
                     constexpr int SEEK_HYSTERESIS = 8;
                     if (frameDelta < -SEEK_HYSTERESIS) {
-                        needsSeek = true;
+                        needsSeek = true;  // backward scrub
                     } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
-                        needsSeek = true;
-                    } else {
-                        // CPU-bound case: decoder fell behind. Forward-seek
-                        // to the playhead so we drop frames instead of
-                        // playing in slow-mo.
-                        FrameNumber currentDecoded = worker->currentFrame.load();
-                        if (mediaFrame > currentDecoded &&
-                            (mediaFrame - currentDecoded) > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
-                            needsSeek = true;
-                        }
+                        needsSeek = true;  // user-driven big forward jump
                     }
+                    // CPU-bound lag: NO force-seek. The worker self-paces by
+                    // jumping `nextFrame` to the current playhead each
+                    // iteration (see decodeThreadFunc); ProResDecoder's
+                    // decodeFrame uses cheap packet-skipping for those
+                    // small forward jumps. User preference: smooth realtime
+                    // > getting all source frames. Force-seek with
+                    // avcodec_flush_buffers produced 76 ms freezes every
+                    // ~300 ms; adaptive pacing produces a steady frame-drop
+                    // pattern instead.
                 }
             }
 
@@ -440,6 +440,28 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
             continue;
         }
 
+        // Adaptive realtime pacing. `target` = playhead + DECODE_AHEAD_FRAMES;
+        // recover the playhead. If we've fallen behind it, jump nextFrame
+        // forward so the next decoded frame matches "now," not a stale
+        // sequential position. ProResDecoder::decodeFrame uses cheap
+        // packet-skipping for these small forward jumps, so this stride
+        // cost is bounded.
+        //
+        // User preference: smooth realtime > getting all source frames. At
+        // 4K ProRes 4444 60fps, decoder caps at ~30fps; this pattern
+        // produces evenly-spaced 30fps output instead of bursty 76 ms
+        // freeze + 5-frame jump every ~300 ms.
+        //
+        // When decoder keeps up (HAP, smaller content), nextFrame is
+        // already >= playhead and this is a no-op.
+        const FrameNumber playhead =
+            (target > DECODE_AHEAD_FRAMES) ? (target - DECODE_AHEAD_FRAMES) : 0;
+        FrameNumber skipped = 0;
+        if (nextFrame < playhead) {
+            skipped = playhead - nextFrame;
+            nextFrame = playhead;
+        }
+
         // Don't decode past media duration. Loop / ping-pong wrap-around is
         // driven by DecodeSystem::update issuing seeks; the worker just
         // parks until that arrives.
@@ -480,7 +502,20 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
             }
         }
 
+        // [DECODE PACE] only fires when adaptive pacing kicked in (nextFrame
+        // jumped forward to match the playhead, dropping `skipped` source
+        // frames). Confirms the new realtime path is exercised under load
+        // and shows the steady-state stride. Quiet for HAP / fast content.
+        auto decodeStart = std::chrono::high_resolution_clock::now();
         Result result = worker->decoder->decodeFrame(nextFrame, frame);
+        if (skipped > 0) {
+            auto decodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - decodeStart).count();
+            std::cout << "[DECODE PACE] entity=" << static_cast<uint32_t>(worker->entity)
+                      << " frame=" << nextFrame
+                      << " skipped=" << skipped
+                      << " ms=" << decodeMs << std::endl;
+        }
 
         if (result == Result::Success && frame.valid.load(std::memory_order_acquire)) {
             frame.frameNumber = nextFrame;

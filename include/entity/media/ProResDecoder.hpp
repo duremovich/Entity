@@ -66,12 +66,24 @@ private:
     Result convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame);
 
     /**
-     * Read and decode the next packet.
-     * Continues decoding until a complete frame is available.
+     * Read the next packet, optionally decoding it.
      *
-     * @return Result::Success when frame decoded, error code otherwise
+     * When `actuallyDecode == true` (the default, sequential path), reads
+     * the next video packet, sends it through avcodec, receives a decoded
+     * AVFrame, and increments m_currentFrame on success.
+     *
+     * When `actuallyDecode == false`, reads + unrefs the next video packet
+     * WITHOUT sending it to avcodec, and increments m_currentFrame anyway.
+     * Used by `decodeFrame()` to cheaply skip intermediate frames when
+     * jumping forward to a target. **Safe only because ProRes is intra-
+     * only**: each packet is a complete keyframe, no inter-frame
+     * references, so the decoder context's state isn't disturbed by
+     * skipping packets.
+     *
+     * @return Result::Success when packet processed (decoded or skipped),
+     *         error code otherwise. EndOfStream propagates as today.
      */
-    Result decodeNextPacket();
+    Result decodeNextPacket(bool actuallyDecode = true);
 
     /**
      * Cleanup FFmpeg resources.
