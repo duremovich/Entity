@@ -10,6 +10,8 @@
 #include "entity/render/IRenderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/ui/WindowManager.hpp"
+#include "entity/ui/ProjectLauncher.hpp"
+#include "entity/project/RecentProjects.hpp"
 #include "entity/ui/TimelineWindow.hpp"
 #include "entity/ui/StageWindow.hpp"
 #include "entity/ui/MediaBinWindow.hpp"
@@ -363,6 +365,17 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // forwards startTiming + the per-tick updateTiming/incrementFrameCount.
     m_timeAuthority->startTiming();
 
+    // ADR-0009 — Project Launcher subsystem. Constructed unconditionally so
+    // both the no-arg launch (which calls showLauncher()) and the legacy
+    // script path (which doesn't) share the same wiring. The recent-
+    // projects file is loaded eagerly so the launcher's first render has
+    // populated content; missing/corrupt files load as empty (see
+    // RecentProjects).
+    m_recentProjects = std::make_unique<RecentProjects>();
+    m_recentProjects->load();
+    m_launcher = std::make_unique<ProjectLauncher>();
+    m_launcher->initialize(m_projectManager, m_recentProjects.get(), m_window);
+
     m_initialized = true;
 
     // Run component tests (Phase 3)
@@ -406,6 +419,12 @@ void Engine::shutdown() {
     m_renderer      = nullptr;
     m_rendererService.reset();
 
+    // ADR-0009 — Launcher reads ProjectManager + RecentProjects, so it
+    // must be torn down before the Director (which owns ProjectManager).
+    m_launcher.reset();
+    m_recentProjects.reset();
+    m_showLauncher = false;
+
     // Tear down Director-owned subsystems (Timeline, ProjectManager,
     // TranscodeManager, CommandDispatcher, AnimationSystem,
     // PlaybackTimeAuthority) explicitly so the raw shortcut pointers
@@ -431,6 +450,36 @@ void Engine::shutdown() {
 
     m_initialized = false;
     std::cout << "Engine shutdown complete." << std::endl;
+}
+
+void Engine::showLauncher() {
+    if (!m_initialized) {
+        std::cerr << "[Engine] showLauncher() before initialize() — ignored." << std::endl;
+        return;
+    }
+    if (!m_launcher) return;  // Should never happen; defensive.
+    m_launcher->reset();
+    m_showLauncher = true;
+}
+
+void Engine::onLauncherOpenProject(const std::filesystem::path& path) {
+    if (path.empty()) return;
+
+    if (loadProject(path)) {
+        // loadProject() already bumped the Recent list — see the touch at
+        // the bottom of that method. Just leave launcher mode.
+        m_showLauncher = false;
+    } else {
+        std::cerr << "[Engine] Project failed to load from launcher: "
+                  << path.string() << std::endl;
+        // Treat a failed load as a stale Recent entry: drop it so the user
+        // doesn't keep clicking a broken row. They can re-open via "Open
+        // Project..." if the file recovers. Stay in launcher mode.
+        if (m_recentProjects) {
+            m_recentProjects->remove(path.string());
+            m_recentProjects->save();
+        }
+    }
 }
 
 void Engine::run() {
@@ -471,6 +520,15 @@ void Engine::run() {
 
         // Process events
         processEvents();
+
+        // ADR-0009 — Launcher mode: editor UI is suppressed and the per-
+        // tick simulation work is skipped entirely. Render still runs;
+        // the launcher renders inside it.
+        if (m_showLauncher) {
+            render();
+            m_timeAuthority->incrementFrameCount();
+            continue;
+        }
 
         // Process command queue
         if (m_commandDispatcher) {
@@ -760,6 +818,39 @@ void Engine::render() {
     }
 
     if (m_renderer && m_renderer->isInitialized()) {
+        // ADR-0009 — Launcher mode: skip the compositor + outputs pass
+        // entirely; just clear, run an ImGui frame containing the
+        // launcher, and present. Avoids touching scene-state-dependent
+        // systems (CompositorSystem, OutputManager) before a project
+        // exists.
+        if (m_showLauncher) {
+            m_renderer->beginFrame();
+            m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
+            m_renderer->beginImGuiFrame();
+            if (m_launcher) {
+                auto result = m_launcher->render();
+                switch (result.action) {
+                    case ProjectLauncher::Action::Open:
+                        // Defer the actual project load until *after*
+                        // endFrame() — loadProject() touches GPU resources
+                        // (allocateVideoTextureSlot etc.) and we don't want
+                        // to mix that with an in-flight ImGui draw.
+                        m_renderer->endImGuiFrame();
+                        m_renderer->endFrame();
+                        onLauncherOpenProject(result.path);
+                        return;
+                    case ProjectLauncher::Action::Quit:
+                        requestExit();
+                        break;
+                    case ProjectLauncher::Action::None:
+                        break;
+                }
+            }
+            m_renderer->endImGuiFrame();
+            m_renderer->endFrame();
+            return;
+        }
+
         auto t0 = std::chrono::high_resolution_clock::now();
 
         // Subtask 7: capture-request drain runs *before* beginFrame.
@@ -1988,6 +2079,15 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
             // allocates the swap chain + back buffers for the display.
             m_outputManager->setOutputEnabled(e, true);
         }
+    }
+
+    // ADR-0009 — bump Recent on every successful project load, not just
+    // launcher-driven ones. File > Open inside the editor and script
+    // OpenProject commands flow through here too, so this is the right
+    // place to centralize the touch.
+    if (m_recentProjects) {
+        m_recentProjects->touch(filepath.string());
+        m_recentProjects->save();
     }
     return true;
 }

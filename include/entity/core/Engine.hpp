@@ -36,6 +36,10 @@ class Director;       // Phase D entry — owns Timeline, ProjectManager,
 class Renderer;       // Phase D entry — owns D3D12Renderer, OutputManager,
                       // FrameCache, OcioManager, CompositorSystem,
                       // DecodeSystem (subtask 5).
+class ProjectLauncher;  // ADR-0009 — Recent/New/Open dialog rendered when
+                        // no project is loaded. Defined in entity/ui/.
+class RecentProjects;   // ADR-0009 — persisted recent-projects list backing
+                        // the launcher's Recent panel.
 struct DecodedFrame;
 namespace bus {
 class IMessageTransport;
@@ -162,6 +166,25 @@ public:
      * Get the GLFW window.
      */
     GLFWwindow* getWindow() { return m_window; }
+
+    // --- Project Launcher (ADR-0009) ----------------------------------------
+
+    /**
+     * Enable launcher mode: the editor UI is hidden and the Project
+     * Launcher (Recent / New / Open) renders fullscreen until the user
+     * picks a project. Call after `initialize()` and before `run()`.
+     *
+     * `--script` runs bypass this (the script drives state via
+     * OpenProject commands). main.cpp decides whether to call this.
+     */
+    void showLauncher();
+
+    /**
+     * Whether the engine is currently in launcher mode. While true,
+     * `update()` skips per-tick simulation work and `render()` draws
+     * only the launcher.
+     */
+    bool isLauncherActive() const { return m_showLauncher; }
 
     /**
      * Get delta time for current frame (in seconds). Forwards to PlaybackTimeAuthority.
@@ -394,6 +417,14 @@ private:
      */
     void createDefaultScreen();
 
+    /**
+     * Resolve a launcher Action::Open: load the project, refresh the
+     * recent-projects list, leave launcher mode. On load failure the
+     * stale entry is removed from Recent and we stay in launcher mode
+     * so the user can pick something else.
+     */
+    void onLauncherOpenProject(const std::filesystem::path& path);
+
 private:
     // ECS registry
     entt::registry m_registry;
@@ -433,6 +464,14 @@ private:
     Timeline* m_timeline{nullptr};
 
     std::unique_ptr<WindowManager> m_windowManager;
+
+    // ADR-0009: Project Launcher state. The launcher and its recent-
+    // projects backing store outlive a single project (the user can
+    // close one project and re-enter the launcher). Both are
+    // unique_ptr so the forward declarations above stay sufficient.
+    std::unique_ptr<ProjectLauncher> m_launcher;
+    std::unique_ptr<RecentProjects>  m_recentProjects;
+    bool m_showLauncher{false};
 
     // Raw shortcut into m_director->getCommandDispatcher().
     CommandDispatcher* m_commandDispatcher{nullptr};

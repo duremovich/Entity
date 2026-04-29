@@ -97,6 +97,13 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to load script: " << scriptPath << std::endl;
             // Continue running anyway - don't exit on script failure
         }
+    } else {
+        // ADR-0009 — interactive launches enter the Project Launcher
+        // first; the editor only opens once a project root exists.
+        // Script-driven runs (--script) skip the launcher because the
+        // script is expected to OpenProject explicitly. Headless +
+        // script combinations on CI continue to work unchanged.
+        engine.showLauncher();
     }
 
     // Run main loop

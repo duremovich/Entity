@@ -32,4 +32,12 @@ std::filesystem::path saveFileDialog(
     const std::wstring& defaultExtension,
     const std::filesystem::path& suggestedPath = {});
 
+// Folder-picker dialog (IFileOpenDialog + FOS_PICKFOLDERS). Returns an empty
+// path on cancel or error. Used by the Project Launcher to pick the parent
+// directory for "New Project".
+std::filesystem::path pickFolderDialog(
+    void* parentHwnd,
+    const std::wstring& title,
+    const std::filesystem::path& initialFolder = {});
+
 }  // namespace entity::ui

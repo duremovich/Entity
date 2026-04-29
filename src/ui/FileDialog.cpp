@@ -150,6 +150,40 @@ std::filesystem::path saveFileDialog(
     return runDialog(dialog.Get(), parentHwnd);
 }
 
+std::filesystem::path pickFolderDialog(
+    void* parentHwnd,
+    const std::wstring& title,
+    const std::filesystem::path& initialFolder)
+{
+    ComGuard com;
+    if (!com.ok()) {
+        std::cerr << "[FileDialog] CoInitializeEx failed" << std::endl;
+        return {};
+    }
+
+    ComPtr<IFileOpenDialog> dialog;
+    HRESULT hr = CoCreateInstance(
+        CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&dialog));
+    if (FAILED(hr)) return {};
+
+    dialog->SetTitle(title.c_str());
+
+    FILEOPENDIALOGOPTIONS opts = 0;
+    dialog->GetOptions(&opts);
+    dialog->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+
+    if (!initialFolder.empty()) {
+        ComPtr<IShellItem> folderItem;
+        if (SUCCEEDED(SHCreateItemFromParsingName(
+                initialFolder.wstring().c_str(), nullptr, IID_PPV_ARGS(&folderItem)))) {
+            dialog->SetFolder(folderItem.Get());
+        }
+    }
+
+    return runDialog(dialog.Get(), parentHwnd);
+}
+
 }  // namespace entity::ui
 
 #else  // !_WIN32
@@ -164,6 +198,11 @@ std::filesystem::path openFileDialog(
 std::filesystem::path saveFileDialog(
     void*, const std::wstring&, const std::vector<FileDialogFilter>&,
     const std::wstring&, const std::filesystem::path&) {
+    return {};
+}
+
+std::filesystem::path pickFolderDialog(
+    void*, const std::wstring&, const std::filesystem::path&) {
     return {};
 }
 

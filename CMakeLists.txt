@@ -179,6 +179,7 @@ target_sources(EntityMediaCore
         # UI
         src/ui/WindowManager.cpp
         src/ui/FileDialog.cpp
+        src/ui/ProjectLauncher.cpp
         src/ui/TimelineWindow.cpp
         src/ui/StageWindow.cpp
         src/ui/MediaBinWindow.cpp
@@ -198,6 +199,7 @@ target_sources(EntityMediaCore
         # Project
         src/project/ProjectSerializer.cpp
         src/project/ProjectManager.cpp
+        src/project/RecentProjects.cpp
 
         # Command System
         src/command/CommandDispatcher.cpp
