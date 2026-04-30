@@ -28,7 +28,11 @@
  * use void* to avoid pulling in <GLFW/glfw3native.h> from the header.
  */
 
+#include "entity/ui/FileDialog.hpp"
+
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
 
 namespace entity {
@@ -51,8 +55,9 @@ public:
 
     /**
      * Wire the launcher to the project subsystems it needs. Safe to call
-     * once. `glfwWindow` is forwarded to the native file dialog as the
-     * parent HWND so the OS dialog doesn't appear behind the editor.
+     * once. `glfwWindow` is used to refocus the editor window after a
+     * floating native dialog dismisses itself (the dialog itself runs
+     * unparented; see Issue #21).
      */
     void initialize(ProjectManager* projectManager,
                     RecentProjects* recentProjects,
@@ -77,6 +82,13 @@ private:
 
     bool tryCreateProject(std::string* errorOut);
 
+    // Async dialog plumbing (Issue #21). Only one dialog can be in flight
+    // at a time; UI gates duplicate launches via BeginDisabled while
+    // m_pendingDialog != nullptr.
+    void pumpPendingDialog();
+    void startDialog(std::unique_ptr<ui::FileDialogTask> task,
+                     std::function<void(std::filesystem::path)> onComplete);
+
     ProjectManager* m_projectManager{nullptr};
     RecentProjects* m_recentProjects{nullptr};
     void*           m_glfwWindow{nullptr};
@@ -95,6 +107,9 @@ private:
     // affordance later — currently unused but reserved so right-click
     // context menus in v2 don't churn the API).
     int m_hoveredRecent{-1};
+
+    std::unique_ptr<ui::FileDialogTask>            m_pendingDialog;
+    std::function<void(std::filesystem::path)>     m_pendingDialogCallback;
 };
 
 }  // namespace entity

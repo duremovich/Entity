@@ -1,12 +1,13 @@
 #include "entity/ui/FileDialog.hpp"
 
+#include <iostream>
+
 #ifdef _WIN32
 
 #include <Windows.h>
 #include <shobjidl.h>
 #include <wrl/client.h>
 
-#include <iostream>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -14,9 +15,8 @@ using Microsoft::WRL::ComPtr;
 namespace entity::ui {
 namespace {
 
-// RAII wrapper around CoInitializeEx. Calls CoUninitialize on scope exit
-// regardless of whether our init returned S_OK (new init) or S_FALSE
-// (already init on this thread — decrement matches our increment).
+// RAII wrapper around CoInitializeEx. Each worker thread initializes its
+// own STA apartment (required for IFileOpenDialog).
 class ComGuard {
 public:
     ComGuard() {
@@ -27,7 +27,7 @@ public:
     }
     bool ok() const { return SUCCEEDED(m_hr); }
 
-    ComGuard(const ComGuard&) = delete;
+    ComGuard(const ComGuard&)            = delete;
     ComGuard& operator=(const ComGuard&) = delete;
 
 private:
@@ -44,14 +44,14 @@ std::vector<COMDLG_FILTERSPEC> toComFilters(const std::vector<FileDialogFilter>&
 }
 
 template <typename DialogT>
-std::filesystem::path runDialog(
-    DialogT* dialog,
-    void* parentHwnd)
-{
-    HRESULT hr = dialog->Show(reinterpret_cast<HWND>(parentHwnd));
+std::filesystem::path runDialog(DialogT* dialog) {
+    // No parent HWND — see FileDialog.hpp + Issue #21. The dialog floats as
+    // a top-level window so a wedged shell extension can never pin the main
+    // app into an unkillable state.
+    HRESULT hr = dialog->Show(nullptr);
     if (FAILED(hr)) {
-        // HRESULT_FROM_WIN32(ERROR_CANCELLED) is the normal cancel path — not
-        // an error worth logging.
+        // HRESULT_FROM_WIN32(ERROR_CANCELLED) is the normal cancel path —
+        // not an error worth logging.
         return {};
     }
 
@@ -68,16 +68,13 @@ std::filesystem::path runDialog(
     return result;
 }
 
-}  // namespace
-
-std::filesystem::path openFileDialog(
-    void* parentHwnd,
-    const std::wstring& title,
-    const std::vector<FileDialogFilter>& filters)
+std::filesystem::path runOpenFileDialog(
+    std::wstring title,
+    std::vector<FileDialogFilter> filters)
 {
     ComGuard com;
     if (!com.ok()) {
-        std::cerr << "[FileDialog] CoInitializeEx failed" << std::endl;
+        std::cerr << "[FileDialog] CoInitializeEx failed (open)" << std::endl;
         return {};
     }
 
@@ -98,19 +95,18 @@ std::filesystem::path openFileDialog(
     dialog->GetOptions(&opts);
     dialog->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST);
 
-    return runDialog(dialog.Get(), parentHwnd);
+    return runDialog(dialog.Get());
 }
 
-std::filesystem::path saveFileDialog(
-    void* parentHwnd,
-    const std::wstring& title,
-    const std::vector<FileDialogFilter>& filters,
-    const std::wstring& defaultExtension,
-    const std::filesystem::path& suggestedPath)
+std::filesystem::path runSaveFileDialog(
+    std::wstring title,
+    std::vector<FileDialogFilter> filters,
+    std::wstring defaultExtension,
+    std::filesystem::path suggestedPath)
 {
     ComGuard com;
     if (!com.ok()) {
-        std::cerr << "[FileDialog] CoInitializeEx failed" << std::endl;
+        std::cerr << "[FileDialog] CoInitializeEx failed (save)" << std::endl;
         return {};
     }
 
@@ -147,17 +143,16 @@ std::filesystem::path saveFileDialog(
     dialog->GetOptions(&opts);
     dialog->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT);
 
-    return runDialog(dialog.Get(), parentHwnd);
+    return runDialog(dialog.Get());
 }
 
-std::filesystem::path pickFolderDialog(
-    void* parentHwnd,
-    const std::wstring& title,
-    const std::filesystem::path& initialFolder)
+std::filesystem::path runPickFolderDialog(
+    std::wstring title,
+    std::filesystem::path initialFolder)
 {
     ComGuard com;
     if (!com.ok()) {
-        std::cerr << "[FileDialog] CoInitializeEx failed" << std::endl;
+        std::cerr << "[FileDialog] CoInitializeEx failed (folder)" << std::endl;
         return {};
     }
 
@@ -181,7 +176,60 @@ std::filesystem::path pickFolderDialog(
         }
     }
 
-    return runDialog(dialog.Get(), parentHwnd);
+    return runDialog(dialog.Get());
+}
+
+}  // namespace
+
+FileDialogTask::~FileDialogTask() {
+    if (m_thread.joinable()) {
+        if (!m_done.load(std::memory_order_acquire)) {
+            // Worker is still inside IFileOpenDialog::Show(); we cannot
+            // safely interrupt it. Detach so the destructor doesn't
+            // std::terminate, and let the OS reclaim the thread on
+            // process exit.
+            std::cerr << "[FileDialog] Worker thread still running at task "
+                         "shutdown — detaching" << std::endl;
+            m_thread.detach();
+        } else {
+            m_thread.join();
+        }
+    }
+}
+
+std::unique_ptr<FileDialogTask> openFileDialogAsync(
+    const std::wstring& title,
+    const std::vector<FileDialogFilter>& filters)
+{
+    auto task = std::make_unique<FileDialogTask>();
+    task->launch([title, filters]() {
+        return runOpenFileDialog(title, filters);
+    });
+    return task;
+}
+
+std::unique_ptr<FileDialogTask> saveFileDialogAsync(
+    const std::wstring& title,
+    const std::vector<FileDialogFilter>& filters,
+    const std::wstring& defaultExtension,
+    const std::filesystem::path& suggestedPath)
+{
+    auto task = std::make_unique<FileDialogTask>();
+    task->launch([title, filters, defaultExtension, suggestedPath]() {
+        return runSaveFileDialog(title, filters, defaultExtension, suggestedPath);
+    });
+    return task;
+}
+
+std::unique_ptr<FileDialogTask> pickFolderDialogAsync(
+    const std::wstring& title,
+    const std::filesystem::path& initialFolder)
+{
+    auto task = std::make_unique<FileDialogTask>();
+    task->launch([title, initialFolder]() {
+        return runPickFolderDialog(title, initialFolder);
+    });
+    return task;
 }
 
 }  // namespace entity::ui
@@ -190,20 +238,30 @@ std::filesystem::path pickFolderDialog(
 
 namespace entity::ui {
 
-std::filesystem::path openFileDialog(
-    void*, const std::wstring&, const std::vector<FileDialogFilter>&) {
-    return {};
+FileDialogTask::~FileDialogTask() {
+    if (m_thread.joinable()) m_thread.join();
 }
 
-std::filesystem::path saveFileDialog(
-    void*, const std::wstring&, const std::vector<FileDialogFilter>&,
+std::unique_ptr<FileDialogTask> openFileDialogAsync(
+    const std::wstring&, const std::vector<FileDialogFilter>&) {
+    auto task = std::make_unique<FileDialogTask>();
+    task->launch([]() { return std::filesystem::path{}; });
+    return task;
+}
+
+std::unique_ptr<FileDialogTask> saveFileDialogAsync(
+    const std::wstring&, const std::vector<FileDialogFilter>&,
     const std::wstring&, const std::filesystem::path&) {
-    return {};
+    auto task = std::make_unique<FileDialogTask>();
+    task->launch([]() { return std::filesystem::path{}; });
+    return task;
 }
 
-std::filesystem::path pickFolderDialog(
-    void*, const std::wstring&, const std::filesystem::path&) {
-    return {};
+std::unique_ptr<FileDialogTask> pickFolderDialogAsync(
+    const std::wstring&, const std::filesystem::path&) {
+    auto task = std::make_unique<FileDialogTask>();
+    task->launch([]() { return std::filesystem::path{}; });
+    return task;
 }
 
 }  // namespace entity::ui

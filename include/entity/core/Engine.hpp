@@ -447,7 +447,7 @@ public:
      * current project path if one is set; otherwise prompts the user via
      * Save-As dialog.
      */
-    bool saveProjectInteractive();
+    void saveProjectInteractive();
 
     /**
      * Save flow bound to Ctrl+Shift+S / "File > Save Project As...". Always
@@ -456,14 +456,18 @@ public:
      * Managed paths only resolve at the original project root. Use the
      * "Save Project As Bundle..." menu item (handled by the WindowManager
      * modal + ProjectManager::saveAsBundle) for a portable copy.
+     *
+     * Dialog is async (Issue #21); returns immediately after launching it.
+     * The actual save lands on a subsequent frame when the picker completes.
      */
-    bool saveProjectAsInteractive();
+    void saveProjectAsInteractive();
 
     /**
      * Open flow bound to Ctrl+O / "File > Open Project...". Prompts the
-     * user via Open dialog and loads the chosen project.
+     * user via Open dialog and loads the chosen project. Async — returns
+     * after launching the dialog.
      */
-    bool openProjectInteractive();
+    void openProjectInteractive();
 
     /**
      * Get the current project file path.

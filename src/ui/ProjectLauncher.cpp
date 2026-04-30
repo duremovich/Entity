@@ -10,35 +10,20 @@
 
 #include <imgui.h>
 
+#include <GLFW/glfw3.h>
+
 #include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <string>
-
-#ifdef _WIN32
-#include <Windows.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
-#endif
+#include <utility>
 
 namespace fs = std::filesystem;
 
 namespace entity {
 
 namespace {
-
-void* nativeHwndFor(void* glfwWindow) {
-#ifdef _WIN32
-    return glfwWindow ? reinterpret_cast<void*>(
-                            glfwGetWin32Window(static_cast<GLFWwindow*>(glfwWindow)))
-                      : nullptr;
-#else
-    (void)glfwWindow;
-    return nullptr;
-#endif
-}
 
 std::string formatTimestamp(std::int64_t unixSeconds) {
     if (unixSeconds <= 0) return "—";
@@ -68,6 +53,30 @@ void ProjectLauncher::reset() {
     m_newProjectName.clear();
     m_newProjectParentDir.clear();
     m_newProjectError.clear();
+    // Note: do NOT reset m_pendingDialog — its destructor would have to
+    // join/detach a worker that might still be inside IFileOpenDialog::Show().
+    // Letting any in-flight dialog finish naturally and consume on next
+    // pumpPendingDialog() is cheaper and safer.
+}
+
+void ProjectLauncher::pumpPendingDialog() {
+    if (!m_pendingDialog || !m_pendingDialog->isDone()) return;
+
+    fs::path picked = m_pendingDialog->result();
+    m_pendingDialog.reset();
+    auto cb = std::move(m_pendingDialogCallback);
+    m_pendingDialogCallback = nullptr;
+    if (cb) cb(std::move(picked));
+
+    if (m_glfwWindow) {
+        glfwFocusWindow(static_cast<GLFWwindow*>(m_glfwWindow));
+    }
+}
+
+void ProjectLauncher::startDialog(std::unique_ptr<ui::FileDialogTask> task,
+                                   std::function<void(fs::path)> onComplete) {
+    m_pendingDialog         = std::move(task);
+    m_pendingDialogCallback = std::move(onComplete);
 }
 
 ProjectLauncher::Result ProjectLauncher::render() {
@@ -87,6 +96,10 @@ ProjectLauncher::Result ProjectLauncher::render() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(40.0f, 32.0f));
     ImGui::Begin("##ProjectLauncherBg", nullptr, kBgFlags);
     ImGui::PopStyleVar();
+
+    // Drain any in-flight dialog before drawing buttons so completed
+    // results are visible to this frame's UI.
+    pumpPendingDialog();
 
     ImGui::PushFont(nullptr);  // Use default font; could swap to a heading font later.
     ImGui::Text("Entity Media Server");
@@ -115,18 +128,23 @@ ProjectLauncher::Result ProjectLauncher::render() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Open Project...", ImVec2(160, 0))) {
+    ImGui::BeginDisabled(m_pendingDialog != nullptr);
+    if (ImGui::Button(m_pendingDialog ? "Opening..." : "Open Project...",
+                      ImVec2(160, 0))) {
         std::vector<ui::FileDialogFilter> filters = {
             {L"Entity Project (*.entity)", L"*.entity"},
             {L"All Files (*.*)",            L"*.*"},
         };
-        fs::path picked = ui::openFileDialog(
-            nativeHwndFor(m_glfwWindow), L"Open Entity Project", filters);
-        if (!picked.empty()) {
-            m_pending.action = Action::Open;
-            m_pending.path   = picked;
-        }
+        startDialog(
+            ui::openFileDialogAsync(L"Open Entity Project", filters),
+            [this](fs::path picked) {
+                if (!picked.empty()) {
+                    m_pending.action = Action::Open;
+                    m_pending.path   = std::move(picked);
+                }
+            });
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(80, 0))) {
         m_pending.action = Action::Quit;
@@ -241,18 +259,21 @@ void ProjectLauncher::renderNewProjectModal() {
             m_newProjectParentDir = parentBuf;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Browse...")) {
+        ImGui::BeginDisabled(m_pendingDialog != nullptr);
+        if (ImGui::Button(m_pendingDialog ? "Browsing..." : "Browse...")) {
             fs::path initial = m_newProjectParentDir.empty()
                                    ? fs::path{}
                                    : fs::path(m_newProjectParentDir);
-            fs::path picked = ui::pickFolderDialog(
-                nativeHwndFor(m_glfwWindow),
-                L"Choose parent directory for the new project",
-                initial);
-            if (!picked.empty()) {
-                m_newProjectParentDir = picked.string();
-            }
+            startDialog(
+                ui::pickFolderDialogAsync(
+                    L"Choose parent directory for the new project", initial),
+                [this](fs::path picked) {
+                    if (!picked.empty()) {
+                        m_newProjectParentDir = picked.string();
+                    }
+                });
         }
+        ImGui::EndDisabled();
 
         if (!m_newProjectName.empty() && !m_newProjectParentDir.empty()) {
             fs::path preview = fs::path(m_newProjectParentDir) / m_newProjectName;

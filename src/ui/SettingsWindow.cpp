@@ -96,10 +96,13 @@ void renderColorSection(Settings& staged,
         ImGui::SameLine();
         if (ImGui::Button("Browse...##ocio")) {
             if (browseOcio) {
-                std::string chosen = browseOcio();
-                if (!chosen.empty()) {
-                    staged.ocioConfigPath = std::move(chosen);
-                }
+                // staged is &m_staged inside SettingsWindow, which lives
+                // for the app's lifetime — safe to capture across frames.
+                browseOcio([&staged](std::string chosen) {
+                    if (!chosen.empty()) {
+                        staged.ocioConfigPath = std::move(chosen);
+                    }
+                });
             }
         }
         ImGui::SameLine();

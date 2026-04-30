@@ -24,9 +24,12 @@ class SettingsWindow {
 public:
     using ApplyCallback = std::function<void(const Settings&)>;
 
-    // Returns the chosen .ocio file path, or empty on cancel. Wired to
-    // WindowManager's HWND-aware native dialog by Engine.
-    using BrowseOcioCallback = std::function<std::string()>;
+    // Open a native file dialog for the OCIO config path. The dialog runs
+    // asynchronously on a worker thread (Issue #21); the caller invokes
+    // `onPicked` from the main thread when the user selects a file (empty
+    // string on cancel). Wired to WindowManager's async picker by Engine.
+    using BrowseOcioCallback =
+        std::function<void(std::function<void(std::string)> onPicked)>;
 
     SettingsWindow() = default;
 

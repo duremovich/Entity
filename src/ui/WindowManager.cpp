@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
+#include <utility>
 
 namespace {
 
@@ -42,6 +43,10 @@ void WindowManager::shutdown() {
 }
 
 void WindowManager::render() {
+    // Drain any in-flight async file dialog so menu items + button
+    // disabled-states see the result this frame.
+    pumpPendingDialog();
+
     // Create fullscreen dockspace over the main viewport
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -284,16 +289,23 @@ void WindowManager::renderSaveBundleModal() {
             m_saveBundleParentDir = parentBuf;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Browse...##bundle")) {
+        ImGui::BeginDisabled(isFileDialogPending());
+        if (ImGui::Button(isFileDialogPending()
+                              ? "Browsing...##bundle"
+                              : "Browse...##bundle")) {
             fs::path initial = m_saveBundleParentDir.empty()
                                    ? fs::path{}
                                    : fs::path(m_saveBundleParentDir);
-            fs::path picked = ui::pickFolderDialog(
-                m_ownerWindow, L"Choose parent directory for the bundle", initial);
-            if (!picked.empty()) {
-                m_saveBundleParentDir = pathToUtf8(picked);
-            }
+            startDialog(
+                ui::pickFolderDialogAsync(
+                    L"Choose parent directory for the bundle", initial),
+                [this](fs::path picked) {
+                    if (!picked.empty()) {
+                        m_saveBundleParentDir = pathToUtf8(picked);
+                    }
+                });
         }
+        ImGui::EndDisabled();
 
         if (!m_saveBundleName.empty() && !m_saveBundleParentDir.empty()) {
             fs::path preview = fs::path(m_saveBundleParentDir) / m_saveBundleName;
@@ -346,11 +358,16 @@ void WindowManager::setSettingsAppliedCallback(SettingsAppliedCallback cb) {
         [this](const Settings& s) {
             if (m_settingsAppliedCallback) m_settingsAppliedCallback(s);
         });
-    // Wire the OCIO config browse button to our HWND-aware native dialog.
-    // Settings modal can't open IFileOpenDialog itself — it doesn't know the
-    // owner HWND.
+    // Wire the OCIO config browse button to our async native dialog.
+    // The Settings modal hands us a continuation to invoke when the user
+    // picks a file.
     m_settingsWindow.setBrowseOcioCallback(
-        [this]() { return openOcioConfigFileDialog(); });
+        [this](std::function<void(std::string)> onPicked) {
+            openOcioConfigFileDialog(
+                [onPicked = std::move(onPicked)](const std::string& chosen) {
+                    if (onPicked) onPicked(chosen);
+                });
+        });
 }
 
 void WindowManager::registerWindow(std::unique_ptr<EditorWindow> window) {
@@ -394,15 +411,36 @@ bool WindowManager::isWindowFloating(const char* name) const {
     return m_floatingWindows.count(std::string(name)) > 0;
 }
 
+void WindowManager::pumpPendingDialog() {
+    if (!m_pendingDialog || !m_pendingDialog->isDone()) return;
+
+    std::filesystem::path picked = m_pendingDialog->result();
+    m_pendingDialog.reset();
+    auto cb = std::move(m_pendingDialogCallback);
+    m_pendingDialogCallback = nullptr;
+    if (cb) cb(std::move(picked));
+}
+
+void WindowManager::startDialog(
+    std::unique_ptr<ui::FileDialogTask> task,
+    std::function<void(std::filesystem::path)> onComplete)
+{
+    if (m_pendingDialog) return;  // gated; caller's UI should disable launch
+    m_pendingDialog         = std::move(task);
+    m_pendingDialogCallback = std::move(onComplete);
+}
+
 void WindowManager::renderMenuBar() {
     if (ImGui::BeginMenuBar()) {
         // File menu
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Project...", nullptr)) {
-                std::string filePath = openProjectFileDialog();
-                if (!filePath.empty() && m_openProjectCallback) {
-                    m_openProjectCallback(filePath);
-                }
+            if (ImGui::MenuItem("Open Project...", nullptr, false,
+                                !isFileDialogPending())) {
+                openProjectFileDialog([this](const std::string& filePath) {
+                    if (!filePath.empty() && m_openProjectCallback) {
+                        m_openProjectCallback(filePath);
+                    }
+                });
             }
 
             // ADR-0009 — File > Close Project. Returns to the Project
@@ -458,11 +496,13 @@ void WindowManager::renderMenuBar() {
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Import Video...", nullptr)) {
-                std::string filePath = openVideoFileDialog();
-                if (!filePath.empty() && m_videoFileCallback) {
-                    m_videoFileCallback(filePath);
-                }
+            if (ImGui::MenuItem("Import Video...", nullptr, false,
+                                !isFileDialogPending())) {
+                openVideoFileDialog([this](const std::string& filePath) {
+                    if (!filePath.empty() && m_videoFileCallback) {
+                        m_videoFileCallback(filePath);
+                    }
+                });
             }
 
             // ADR-0009 — one-shot "make this v6 / mixed-mode project
@@ -505,17 +545,18 @@ void WindowManager::renderMenuBar() {
 
             if (ImGui::MenuItem("Find Missing Media...",
                                 nullptr, false,
-                                m_findMissingMediaCallback != nullptr)) {
-                std::filesystem::path picked = ui::pickFolderDialog(
-                    m_ownerWindow,
-                    L"Choose a folder to search for missing media",
-                    {});
-                if (!picked.empty() && m_findMissingMediaCallback) {
-                    int n = m_findMissingMediaCallback(pathToUtf8(picked));
-                    std::cout << "[WindowManager] Restored " << n
-                              << " missing media files from " << picked.string()
-                              << std::endl;
-                }
+                                m_findMissingMediaCallback != nullptr
+                                    && !isFileDialogPending())) {
+                startDialog(
+                    ui::pickFolderDialogAsync(
+                        L"Choose a folder to search for missing media", {}),
+                    [this](std::filesystem::path picked) {
+                        if (picked.empty() || !m_findMissingMediaCallback) return;
+                        int n = m_findMissingMediaCallback(pathToUtf8(picked));
+                        std::cout << "[WindowManager] Restored " << n
+                                  << " missing media files from "
+                                  << picked.string() << std::endl;
+                    });
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
@@ -528,11 +569,13 @@ void WindowManager::renderMenuBar() {
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Run Script...", nullptr)) {
-                std::string filePath = openScriptFileDialog();
-                if (!filePath.empty() && m_runScriptCallback) {
-                    m_runScriptCallback(filePath);
-                }
+            if (ImGui::MenuItem("Run Script...", nullptr, false,
+                                !isFileDialogPending())) {
+                openScriptFileDialog([this](const std::string& filePath) {
+                    if (!filePath.empty() && m_runScriptCallback) {
+                        m_runScriptCallback(filePath);
+                    }
+                });
             }
 
             ImGui::Separator();
@@ -733,94 +776,96 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     std::cout << "Default layout created: Timeline (bottom), Media Bin/Model Bin/Screens (left tabs), Stage/Mapping (center tabs), Properties (right)" << std::endl;
 }
 
-std::string WindowManager::openVideoFileDialog() {
-    auto path = ui::openFileDialog(
-        m_ownerWindow,
-        L"Import Video",
-        {
-            {L"Video Files",   L"*.mov;*.mp4;*.avi;*.mkv;*.webm"},
-            {L"PNG Sequence",  L"*.png"},
-            {L"All Files",     L"*.*"},
-        });
-    if (path.empty()) return "";
-    std::string utf8 = pathToUtf8(path);
-    std::cout << "Selected file: " << utf8 << std::endl;
-    return utf8;
+namespace {
+
+// Adapt an async-task completion (filesystem::path) into a UTF-8
+// std::string callback, with a short stderr breadcrumb so logs match
+// the previous sync-dialog behavior.
+auto utf8Adapter(const char* logTag, WindowManager::PathCallback onPicked) {
+    return [logTag, onPicked = std::move(onPicked)](std::filesystem::path picked) {
+        if (picked.empty()) {
+            if (onPicked) onPicked({});
+            return;
+        }
+        std::string utf8 = pathToUtf8(picked);
+        std::cout << logTag << ": " << utf8 << std::endl;
+        if (onPicked) onPicked(utf8);
+    };
 }
 
-std::string WindowManager::openProjectFileDialog() {
-    auto path = ui::openFileDialog(
-        m_ownerWindow,
-        L"Open Project",
-        {
-            {L"Entity Project Files", L"*.entity"},
-            {L"All Files",            L"*.*"},
-        });
-    if (path.empty()) return "";
-    std::string utf8 = pathToUtf8(path);
-    std::cout << "Selected project file: " << utf8 << std::endl;
-    return utf8;
+}  // namespace
+
+void WindowManager::openVideoFileDialog(PathCallback onPicked) {
+    startDialog(
+        ui::openFileDialogAsync(
+            L"Import Video",
+            {
+                {L"Video Files",   L"*.mov;*.mp4;*.avi;*.mkv;*.webm"},
+                {L"PNG Sequence",  L"*.png"},
+                {L"All Files",     L"*.*"},
+            }),
+        utf8Adapter("Selected file", std::move(onPicked)));
 }
 
-std::string WindowManager::saveProjectFileDialog(const std::string& suggestedPath) {
+void WindowManager::openProjectFileDialog(PathCallback onPicked) {
+    startDialog(
+        ui::openFileDialogAsync(
+            L"Open Project",
+            {
+                {L"Entity Project Files", L"*.entity"},
+                {L"All Files",            L"*.*"},
+            }),
+        utf8Adapter("Selected project file", std::move(onPicked)));
+}
+
+void WindowManager::saveProjectFileDialog(const std::string& suggestedPath,
+                                           PathCallback onPicked) {
     std::filesystem::path suggestion = suggestedPath.empty()
                                            ? std::filesystem::path{}
                                            : std::filesystem::path(suggestedPath);
-    auto path = ui::saveFileDialog(
-        m_ownerWindow,
-        L"Save Project As",
-        {
-            {L"Entity Project Files", L"*.entity"},
-            {L"All Files",            L"*.*"},
-        },
-        L"entity",
-        suggestion);
-    if (path.empty()) return "";
-    std::string utf8 = pathToUtf8(path);
-    std::cout << "Saving project to: " << utf8 << std::endl;
-    return utf8;
+    startDialog(
+        ui::saveFileDialogAsync(
+            L"Save Project As",
+            {
+                {L"Entity Project Files", L"*.entity"},
+                {L"All Files",            L"*.*"},
+            },
+            L"entity",
+            suggestion),
+        utf8Adapter("Saving project to", std::move(onPicked)));
 }
 
-std::string WindowManager::openScriptFileDialog() {
-    auto path = ui::openFileDialog(
-        m_ownerWindow,
-        L"Run Script",
-        {
-            {L"JSON Script Files", L"*.json"},
-            {L"All Files",         L"*.*"},
-        });
-    if (path.empty()) return "";
-    std::string utf8 = pathToUtf8(path);
-    std::cout << "Selected script file: " << utf8 << std::endl;
-    return utf8;
+void WindowManager::openScriptFileDialog(PathCallback onPicked) {
+    startDialog(
+        ui::openFileDialogAsync(
+            L"Run Script",
+            {
+                {L"JSON Script Files", L"*.json"},
+                {L"All Files",         L"*.*"},
+            }),
+        utf8Adapter("Selected script file", std::move(onPicked)));
 }
 
-std::string WindowManager::openOBJFileDialog() {
-    auto path = ui::openFileDialog(
-        m_ownerWindow,
-        L"Import OBJ Model",
-        {
-            {L"OBJ Model Files", L"*.obj"},
-            {L"All Files",       L"*.*"},
-        });
-    if (path.empty()) return "";
-    std::string utf8 = pathToUtf8(path);
-    std::cout << "Selected OBJ file: " << utf8 << std::endl;
-    return utf8;
+void WindowManager::openOBJFileDialog(PathCallback onPicked) {
+    startDialog(
+        ui::openFileDialogAsync(
+            L"Import OBJ Model",
+            {
+                {L"OBJ Model Files", L"*.obj"},
+                {L"All Files",       L"*.*"},
+            }),
+        utf8Adapter("Selected OBJ file", std::move(onPicked)));
 }
 
-std::string WindowManager::openOcioConfigFileDialog() {
-    auto path = ui::openFileDialog(
-        m_ownerWindow,
-        L"Choose OCIO Config",
-        {
-            {L"OCIO Config Files", L"*.ocio"},
-            {L"All Files",         L"*.*"},
-        });
-    if (path.empty()) return "";
-    std::string utf8 = pathToUtf8(path);
-    std::cout << "Selected OCIO config: " << utf8 << std::endl;
-    return utf8;
+void WindowManager::openOcioConfigFileDialog(PathCallback onPicked) {
+    startDialog(
+        ui::openFileDialogAsync(
+            L"Choose OCIO Config",
+            {
+                {L"OCIO Config Files", L"*.ocio"},
+                {L"All Files",         L"*.*"},
+            }),
+        utf8Adapter("Selected OCIO config", std::move(onPicked)));
 }
 
 } // namespace entity

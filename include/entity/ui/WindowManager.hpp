@@ -3,7 +3,9 @@
 #include "EditorWindow.hpp"
 #include "SettingsWindow.hpp"
 #include "entity/core/Settings.hpp"
+#include "entity/ui/FileDialog.hpp"
 #include <imgui.h>
+#include <filesystem>
 #include <memory>
 #include <vector>
 #include <functional>
@@ -84,13 +86,6 @@ public:
      * Check if a window is currently floating (undocked).
      */
     bool isWindowFloating(const char* name) const;
-
-    /**
-     * Owner window for native modal dialogs. Engine passes the HWND here
-     * (via glfwGetWin32Window) so Save/Open prompts are properly parented.
-     * Stored as void* to keep <windows.h> out of this header.
-     */
-    void setOwnerWindow(void* hwnd) { m_ownerWindow = hwnd; }
 
     /**
      * Set callback for when a video file is selected.
@@ -238,41 +233,27 @@ public:
     void setOcioManager(OcioManager* mgr) { m_settingsWindow.setOcioManager(mgr); }
 
     /**
-     * Open Windows native file dialog for video selection.
-     * Returns the selected file path, or empty string if cancelled.
+     * Native file dialogs (Issue #21). The dialog runs on a worker thread
+     * and the result is delivered to `onPicked` from the main thread on a
+     * subsequent frame. `chosenPath` is empty if the user cancelled or the
+     * dialog errored.
+     *
+     * Only one dialog can be in flight at a time; calls made while another
+     * dialog is pending are silently ignored. Callers should gate UI
+     * (e.g. `ImGui::BeginDisabled(isFileDialogPending())`) to avoid
+     * double-fires.
      */
-    std::string openVideoFileDialog();
+    using PathCallback = std::function<void(const std::string& chosenPath)>;
+    void openVideoFileDialog(PathCallback onPicked);
+    void openProjectFileDialog(PathCallback onPicked);
+    void saveProjectFileDialog(const std::string& suggestedPath,
+                                PathCallback onPicked);
+    void openScriptFileDialog(PathCallback onPicked);
+    void openOBJFileDialog(PathCallback onPicked);
+    void openOcioConfigFileDialog(PathCallback onPicked);
 
-    /**
-     * Open Windows native file dialog for project selection.
-     * Returns the selected file path, or empty string if cancelled.
-     */
-    std::string openProjectFileDialog();
-
-    /**
-     * Open Windows native Save-As dialog for .entity project files.
-     * Returns the chosen file path (with .entity extension applied if
-     * missing), or empty string if cancelled.
-     */
-    std::string saveProjectFileDialog(const std::string& suggestedPath = "");
-
-    /**
-     * Open Windows native file dialog for script selection.
-     * Returns the selected file path, or empty string if cancelled.
-     */
-    std::string openScriptFileDialog();
-
-    /**
-     * Open Windows native file dialog for OBJ model selection.
-     * Returns the selected file path, or empty string if cancelled.
-     */
-    std::string openOBJFileDialog();
-
-    /**
-     * Open Windows native file dialog for OCIO config selection (.ocio).
-     * Used by the Preferences > Color > Browse... button.
-     */
-    std::string openOcioConfigFileDialog();
+    /** True while a native file dialog is open. UI should disable buttons that would launch another. */
+    bool isFileDialogPending() const { return m_pendingDialog != nullptr; }
 
 private:
     /**
@@ -297,8 +278,6 @@ private:
     std::unordered_set<std::string> m_floatingWindows;      // Currently floating windows
     std::unordered_set<std::string> m_pendingUndock;        // Windows to undock next frame
     std::unordered_set<std::string> m_pendingDock;          // Windows to dock next frame
-
-    void* m_ownerWindow{nullptr};  // HWND for modal dialogs
 
     VideoFileCallback m_videoFileCallback;
     SaveProjectCallback m_saveProjectCallback;
@@ -338,6 +317,16 @@ private:
     SettingsWindow            m_settingsWindow;
     CurrentSettingsCallback   m_currentSettingsCallback;
     SettingsAppliedCallback   m_settingsAppliedCallback;
+
+    // Async file-dialog plumbing (Issue #21). Single slot — one dialog at
+    // a time. pumpPendingDialog() drains a completed task at the top of
+    // render(); startDialog() registers a new one.
+    std::unique_ptr<ui::FileDialogTask>            m_pendingDialog;
+    std::function<void(std::filesystem::path)>     m_pendingDialogCallback;
+
+    void pumpPendingDialog();
+    void startDialog(std::unique_ptr<ui::FileDialogTask> task,
+                     std::function<void(std::filesystem::path)> onComplete);
 };
 
 } // namespace entity

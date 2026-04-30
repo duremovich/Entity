@@ -19,14 +19,16 @@ void ModelBinWindow::render() {
     auto& registry = m_engine->getRegistry();
 
     // Toolbar
-    if (ImGui::Button("Import OBJ")) {
+    const bool importBusy = m_windowManager && m_windowManager->isFileDialogPending();
+    ImGui::BeginDisabled(importBusy);
+    if (ImGui::Button(importBusy ? "Importing..." : "Import OBJ")) {
         if (m_windowManager) {
-            std::string filePath = m_windowManager->openOBJFileDialog();
-            if (!filePath.empty()) {
-                importModel(filePath);
-            }
+            m_windowManager->openOBJFileDialog([this](const std::string& filePath) {
+                if (!filePath.empty()) importModel(filePath);
+            });
         }
     }
+    ImGui::EndDisabled();
 
     ImGui::SameLine();
     if (ImGui::Button("Create Default")) {

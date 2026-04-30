@@ -47,11 +47,6 @@
 #include <GLFW/glfw3.h>
 #include <cmath>
 
-#ifdef _WIN32
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
-#endif
-
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -236,15 +231,6 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     if (m_ocioManager) {
         m_windowManager->setOcioManager(m_ocioManager);
     }
-
-    // Parent native modal dialogs (Save/Open) to our GLFW window. Must run
-    // in --headless too: glfwGetWin32Window on the hidden window is fine,
-    // and dialogs are only opened via UI paths that never fire in headless.
-#ifdef _WIN32
-    if (m_window) {
-        m_windowManager->setOwnerWindow(glfwGetWin32Window(m_window));
-    }
-#endif
 
     // Set up video file callback
     m_windowManager->setVideoFileCallback([this](const std::string& filePath) {
@@ -2591,30 +2577,36 @@ void Engine::closeProject() {
     std::cout << "[Engine] Project closed; launcher re-shown." << std::endl;
 }
 
-bool Engine::saveProjectInteractive() {
-    if (!m_projectManager) return false;
+void Engine::saveProjectInteractive() {
+    if (!m_projectManager) return;
     const auto& currentPath = m_projectManager->projectPath();
     if (currentPath.empty()) {
-        return saveProjectAsInteractive();
+        saveProjectAsInteractive();
+        return;
     }
-    return saveProject(currentPath);
+    saveProject(currentPath);
 }
 
-bool Engine::saveProjectAsInteractive() {
-    if (!m_windowManager || !m_projectManager) return false;
+void Engine::saveProjectAsInteractive() {
+    if (!m_windowManager || !m_projectManager) return;
     std::string suggested = m_projectManager->projectPath().empty()
                                 ? std::string{}
                                 : m_projectManager->projectPath().string();
-    std::string chosen = m_windowManager->saveProjectFileDialog(suggested);
-    if (chosen.empty()) return false;  // Cancelled
-    return saveProject(chosen);
+    m_windowManager->saveProjectFileDialog(
+        suggested,
+        [this](const std::string& chosen) {
+            if (chosen.empty()) return;  // Cancelled
+            saveProject(chosen);
+        });
 }
 
-bool Engine::openProjectInteractive() {
-    if (!m_windowManager) return false;
-    std::string chosen = m_windowManager->openProjectFileDialog();
-    if (chosen.empty()) return false;  // Cancelled
-    return loadProject(chosen);
+void Engine::openProjectInteractive() {
+    if (!m_windowManager) return;
+    m_windowManager->openProjectFileDialog(
+        [this](const std::string& chosen) {
+            if (chosen.empty()) return;  // Cancelled
+            loadProject(chosen);
+        });
 }
 
 void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath) {
