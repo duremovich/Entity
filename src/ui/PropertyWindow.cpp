@@ -892,8 +892,15 @@ void PropertyWindow::renderScreenProperties() {
     if (ImGui::CollapsingHeader("Resolution", ImGuiTreeNodeFlags_DefaultOpen)) {
         int resolution[2] = {static_cast<int>(screen->width), static_cast<int>(screen->height)};
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputInt2("Size", resolution)) {
-            screen->width = static_cast<uint32_t>(std::max(1, resolution[0]));
+        // Defer commit until Enter or focus-loss (#31). Default InputInt2
+        // commits on every keystroke, which churns the compositor's
+        // resize path for every digit typed; with the in-place resize
+        // landing in this same fix that's no longer corrupting state but
+        // it is still wasteful (waitForGpu + texture realloc per
+        // keystroke).
+        ImGui::InputInt2("Size", resolution, ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            screen->width  = static_cast<uint32_t>(std::max(1, resolution[0]));
             screen->height = static_cast<uint32_t>(std::max(1, resolution[1]));
         }
 

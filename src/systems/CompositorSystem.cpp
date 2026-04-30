@@ -151,15 +151,22 @@ bool CompositorSystem::ensureScreenRenderTarget(entt::registry& registry, entt::
     bool needsCreate = !screen->renderTargetValid ||
                        screen->renderTargetSlot == UINT32_MAX;
 
-    // Check if dimensions changed (stored in ComposeTarget vs Screen component)
+    // If we already own a slot but the dimensions drifted, resize in
+    // place — DON'T allocate a new slot. Allocating fresh slots on
+    // every resize leaks descriptor heap entries and after
+    // MAX_COMPOSE_TARGETS resizes corrupts the heap (#31).
     if (screen->renderTargetValid && screen->renderTargetSlot != UINT32_MAX) {
-        uint32_t currentWidth = m_renderer->getComposeTargetWidth(screen->renderTargetSlot);
+        uint32_t currentWidth  = m_renderer->getComposeTargetWidth(screen->renderTargetSlot);
         uint32_t currentHeight = m_renderer->getComposeTargetHeight(screen->renderTargetSlot);
         if (currentWidth != screen->width || currentHeight != screen->height) {
-            // Dimensions changed, need new target
-            // Note: Old target slot becomes a "gap" - acceptable for typical screen counts
-            needsCreate = true;
+            if (m_renderer->resizeComposeTarget(screen->renderTargetSlot,
+                                                 screen->width, screen->height)) {
+                return true;  // slot ID and descriptor heap entries unchanged
+            }
+            // Resize failed (e.g. OOM). Fall back to a fresh allocation
+            // attempt — better than rendering to a stale-sized target.
             screen->renderTargetValid = false;
+            needsCreate = true;
         }
     }
 

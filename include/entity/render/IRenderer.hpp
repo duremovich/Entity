@@ -98,6 +98,22 @@ public:
     // Compose targets (offscreen per-screen composition)
     // ------------------------------------------------------------------------
     virtual uint32_t   createComposeTarget(uint32_t width, uint32_t height) = 0;
+
+    /**
+     * Resize an existing compose target in place. Frees the underlying GPU
+     * texture at `slot` and creates a new one with the new dimensions,
+     * reusing the same RTV + SRV descriptor heap entries so cached
+     * `TextureRef`s remain valid. Returns false if the slot is invalid
+     * or the new dimensions are zero.
+     *
+     * Use this instead of allocating a new slot when a screen's resolution
+     * changes (#31). Allocating new slots on every resize leaks descriptor
+     * heap entries and eventually collides with adjacent slot ranges.
+     */
+    virtual bool       resizeComposeTarget(uint32_t slot,
+                                            uint32_t width,
+                                            uint32_t height) = 0;
+
     virtual void       beginComposeTarget(uint32_t slot = 0) = 0;
     virtual void       endComposeTarget() = 0;
     virtual TextureRef getComposeTargetTexture(uint32_t slot = 0) const = 0;

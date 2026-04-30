@@ -73,6 +73,7 @@ public:
     TextureRef getVideoTexture(uint32_t slot) const override;
 
     uint32_t   createComposeTarget(uint32_t width, uint32_t height) override;
+    bool       resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t height) override;
     void       beginComposeTarget(uint32_t slot = 0) override;
     void       endComposeTarget() override;
     TextureRef getComposeTargetTexture(uint32_t slot = 0) const override;

@@ -2472,6 +2472,17 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
         return UINT32_MAX;
     }
 
+    // Hard-cap (#31). Beyond MAX_COMPOSE_TARGETS the descriptor-heap math
+    // collides with VIDEO_TEXTURE_BASE — silent corruption that's almost
+    // impossible to debug after the fact. Always reuse via resizeComposeTarget
+    // instead of allocating fresh slots on dimension changes.
+    if (m_composeTargets.size() >= IRenderer::MAX_COMPOSE_TARGETS) {
+        std::cerr << "[D3D12] createComposeTarget: MAX_COMPOSE_TARGETS ("
+                  << IRenderer::MAX_COMPOSE_TARGETS
+                  << ") exhausted; resize an existing slot instead." << std::endl;
+        return UINT32_MAX;
+    }
+
     // Wait for GPU before modifying resources
     waitForGpu();
 
@@ -2582,6 +2593,109 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     std::cout << "  Heap start ptr: " << m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart().ptr << std::endl;
 
     return slot;
+}
+
+bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t height) {
+    if (!m_initialized || !m_gpu) {
+        std::cerr << "Cannot resize compose target: renderer not initialized" << std::endl;
+        return false;
+    }
+    if (slot >= m_composeTargets.size()) {
+        std::cerr << "[D3D12] resizeComposeTarget: invalid slot " << slot << std::endl;
+        return false;
+    }
+    if (width == 0 || height == 0) {
+        std::cerr << "[D3D12] resizeComposeTarget: invalid dimensions "
+                  << width << "x" << height << std::endl;
+        return false;
+    }
+
+    ComposeTarget& target = m_composeTargets[slot];
+
+    // Same-size? No-op. Saves a wait + reallocation when CompositorSystem
+    // calls us redundantly.
+    if (target.ready && target.width == width && target.height == height) {
+        return true;
+    }
+
+    waitForGpu();
+
+    // Mark not-ready so any concurrent render path (there shouldn't be one
+    // post-waitForGpu, but be defensive) skips this slot until we're done.
+    target.ready = false;
+
+    // Drop the old GPU resource. The RTV heap (target.rtvHeap) and the
+    // SRV slot in m_imguiSrvHeap stay allocated — we re-bind them to the
+    // new resource below. The snapshot is sized to the texture, so it
+    // also has to go; ensureSnapshotResource recreates it lazily on the
+    // next shader-blend draw.
+    target.resource.Reset();
+    target.snapshotResource.Reset();
+
+    // Recreate the texture at the new dimensions (same desc as
+    // createComposeTarget — keep these in sync).
+    D3D12_RESOURCE_DESC textureDesc = {};
+    textureDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    textureDesc.Width              = width;
+    textureDesc.Height             = height;
+    textureDesc.DepthOrArraySize   = 1;
+    textureDesc.MipLevels          = 1;
+    textureDesc.Format             = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    textureDesc.SampleDesc.Count   = 1;
+    textureDesc.SampleDesc.Quality = 0;
+    textureDesc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    textureDesc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format    = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    clearValue.Color[0]  = 0.0f;
+    clearValue.Color[1]  = 0.0f;
+    clearValue.Color[2]  = 0.0f;
+    clearValue.Color[3]  = 1.0f;
+
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &textureDesc,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        &clearValue, IID_PPV_ARGS(&target.resource));
+    if (FAILED(hr)) {
+        std::cerr << "[D3D12] resizeComposeTarget: CreateCommittedResource failed hr=0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    // Re-bind the existing RTV (same heap, same start handle).
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format               = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    rtvDesc.ViewDimension        = D3D12_RTV_DIMENSION_TEXTURE2D;
+    rtvDesc.Texture2D.MipSlice   = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+        target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_gpu->device()->CreateRenderTargetView(target.resource.Get(), &rtvDesc, rtvHandle);
+
+    // Re-bind the SRV at the SAME slot in the shared ImGui heap — the
+    // GPU handle (target.srvHandle) is unchanged so any cached
+    // TextureRefs the compositor or ImGui hold remain valid.
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format                          = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srvDesc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping         = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels             = 1;
+    srvDesc.Texture2D.MostDetailedMip       = 0;
+    const uint32_t heapSlot = DescriptorHeapLayout::composeTargetSlot(slot);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
+        m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+    m_gpu->device()->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
+
+    target.width  = width;
+    target.height = height;
+    target.ready  = true;
+
+    std::cout << "Resizing compose target " << slot << " to "
+              << width << "x" << height << std::endl;
+    return true;
 }
 
 void D3D12Renderer::beginComposeTarget(uint32_t slot) {

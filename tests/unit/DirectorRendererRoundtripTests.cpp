@@ -89,6 +89,7 @@ public:
     }
 
     uint32_t   createComposeTarget(uint32_t, uint32_t) override { return 0; }
+    bool       resizeComposeTarget(uint32_t, uint32_t, uint32_t) override { return true; }
     void       beginComposeTarget(uint32_t) override {}
     void       endComposeTarget() override {}
     TextureRef getComposeTargetTexture(uint32_t slot) const override {
