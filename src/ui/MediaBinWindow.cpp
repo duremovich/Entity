@@ -6,8 +6,10 @@
 #include "entity/components/Clip.hpp"
 #include "entity/project/MediaVersioning.hpp"
 #include <imgui.h>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <unordered_map>
 #include <tuple>
@@ -71,6 +73,27 @@ ImVec4 colorForTier(MediaBinWindow::CodecTier tier) {
     }
 }
 
+// Case-insensitive ASCII substring search. File paths in this project are
+// ASCII; no Unicode pretense. Returns true on empty needle so callers can
+// skip the branch when the filter is inactive.
+bool containsCi(std::string_view hay, std::string_view ndl) {
+    if (ndl.empty()) return true;
+    if (ndl.size() > hay.size()) return false;
+    auto up = [](unsigned char c) -> unsigned char {
+        return (c >= 'a' && c <= 'z') ? static_cast<unsigned char>(c - 32) : c;
+    };
+    const std::size_t end = hay.size() - ndl.size();
+    for (std::size_t i = 0; i <= end; ++i) {
+        std::size_t j = 0;
+        for (; j < ndl.size(); ++j) {
+            if (up(static_cast<unsigned char>(hay[i + j])) !=
+                up(static_cast<unsigned char>(ndl[j]))) break;
+        }
+        if (j == ndl.size()) return true;
+    }
+    return false;
+}
+
 // Group of MediaLibraryEntry pointers sharing a logical name (#27). The
 // "primary" is the latest-version member; tooltip shows all members.
 struct VersionGroup {
@@ -127,6 +150,66 @@ std::vector<VersionGroup> buildGroups(
             std::filesystem::path(g.primary->originalPath).stem().string()).tag;
     }
     return out;
+}
+
+// Folder tree built from the bin's flat group list. Mirrors the on-disk
+// `content/<sub>/...` shape so the user sees the same hierarchy they
+// organized. The leading `content/` segment is dropped (it's implicit).
+// Linked entries (absolute paths from outside the project) all bucket
+// under a synthetic "(Linked media)" root — rendering an absolute
+// `C:\Users\...` path as a tree would be useless.
+struct FolderNode {
+    std::string                       name;        // segment, not full path
+    std::vector<FolderNode>           subfolders;  // kept sorted by name
+    std::vector<const VersionGroup*>  groups;      // insertion-order from buildGroups
+};
+
+// Get-or-create a child folder by name, keeping `subfolders` sorted so
+// renders are deterministic.
+FolderNode& folderChild(FolderNode& parent, const std::string& name) {
+    auto it = std::lower_bound(parent.subfolders.begin(), parent.subfolders.end(), name,
+        [](const FolderNode& n, const std::string& s) { return n.name < s; });
+    if (it != parent.subfolders.end() && it->name == name) return *it;
+    FolderNode child;
+    child.name = name;
+    return *parent.subfolders.insert(it, std::move(child));
+}
+
+// Split a project-relative path on `/` or `\` into segments, dropping
+// empty pieces (handles trailing/double slashes defensively).
+std::vector<std::string> splitPath(const std::string& path) {
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= path.size(); ++i) {
+        if (i == path.size() || path[i] == '/' || path[i] == '\\') {
+            if (i > start) out.emplace_back(path.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    return out;
+}
+
+FolderNode buildFolderTree(const std::vector<VersionGroup>& groups) {
+    FolderNode root;
+    for (const auto& g : groups) {
+        if (g.primary->pathKind == ProjectManager::PathKind::Linked) {
+            FolderNode& linked = folderChild(root, "(Linked media)");
+            linked.groups.push_back(&g);
+            continue;
+        }
+        // Managed: split, drop leading "content" if present, walk to the
+        // file's parent folder.
+        const std::vector<std::string> segs = splitPath(g.primary->originalPath);
+        if (segs.empty()) continue;
+        const std::size_t first = (segs.front() == "content") ? 1 : 0;
+        FolderNode* node = &root;
+        // Walk all segments except the last (which is the filename).
+        for (std::size_t i = first; i + 1 < segs.size(); ++i) {
+            node = &folderChild(*node, segs[i]);
+        }
+        node->groups.push_back(&g);
+    }
+    return root;
 }
 
 // Rendered in the Status column per entry. Returns true if the entry is
@@ -375,6 +458,17 @@ void MediaBinWindow::render() {
     ImGui::SameLine();
     ImGui::Text("  |  Loaded: %zu", mediaFiles.size());
 
+    // --- Search filter ----------------------------------------------------
+    ImGui::SetNextItemWidth(260.0f);
+    ImGui::InputTextWithHint("##bin_filter", "Search media...",
+                              m_filterBuf, sizeof(m_filterBuf));
+    if (m_filterBuf[0] != '\0') {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##bin_filter")) {
+            m_filterBuf[0] = '\0';
+        }
+    }
+
     ImGui::Separator();
 
     // --- Unified per-import modal (#32) -----------------------------------
@@ -410,10 +504,14 @@ void MediaBinWindow::render() {
     // #27 — collapse versioned files into one row per logical name.
     const std::vector<VersionGroup> groups = buildGroups(mediaFiles);
 
+    const ImVec2 fp = ImGui::GetStyle().FramePadding;
+    ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, fp.y));
     if (ImGui::BeginTable("MediaBinTable", 8,
                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
-        ImGui::TableSetupColumn("Filename",    ImGuiTableColumnFlags_WidthStretch);
+                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+                           ImGuiTableFlags_Resizable)) {
+        ImGui::TableSetupColumn("Filename",    ImGuiTableColumnFlags_WidthFixed, 320.0f);
         ImGui::TableSetupColumn("Version",     ImGuiTableColumnFlags_WidthFixed, 80.0f);
         ImGui::TableSetupColumn("Codec",       ImGuiTableColumnFlags_WidthFixed, 180.0f);
         ImGui::TableSetupColumn("Resolution",  ImGuiTableColumnFlags_WidthFixed, 100.0f);
@@ -424,8 +522,14 @@ void MediaBinWindow::render() {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
-        for (size_t i = 0; i < groups.size(); i++) {
-            const VersionGroup& group = groups[i];
+        const std::string_view filter{m_filterBuf};
+
+        // Render one VersionGroup as a table row. The Filename column
+        // always shows just the leaf filename — folder context comes from
+        // the tree node it sits under, not from the row label. The leaf
+        // hit target is a TreeNodeEx with Leaf | NoTreePushOnOpen so it
+        // indents correctly under its parent folder.
+        auto renderGroupRow = [&](const VersionGroup& group) {
             const auto& entry = *group.primary;          // latest member
             const std::string& filepath = entry.originalPath;
             const std::string& logicalPath = group.logicalPath;
@@ -472,14 +576,19 @@ void MediaBinWindow::render() {
 
             ImGui::TableNextRow();
 
-            // --- Filename (display unversioned form) ---
+            // --- Filename (just the leaf — folder context comes from the parent tree node) ---
             ImGui::TableSetColumnIndex(0);
             const size_t lastSlash = logicalPath.find_last_of("/\\");
             const std::string displayName = (lastSlash != std::string::npos)
                 ? logicalPath.substr(lastSlash + 1) : logicalPath;
 
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::Selectable(displayName.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+            // Filepath is unique per entry, so it's a stable ID across
+            // filter-toggle. ImGui hashes the C-string.
+            ImGui::PushID(filepath.c_str());
+            ImGui::TreeNodeEx(displayName.c_str(),
+                ImGuiTreeNodeFlags_Leaf
+                | ImGuiTreeNodeFlags_NoTreePushOnOpen
+                | ImGuiTreeNodeFlags_SpanAvailWidth);
 
             // Tooltip lists the resolved version + every member of the
             // group so users can confirm what's on disk.
@@ -713,7 +822,8 @@ void MediaBinWindow::render() {
 
             // --- Color space override (Phase C.12 #9) ---
             ImGui::TableSetColumnIndex(7);
-            ImGui::PushID(static_cast<int>(i) ^ 0x6359);  // distinct from row PushID
+            ImGui::PushID(filepath.c_str());
+            ImGui::PushID("cs");  // nested so we don't collide with the leaf PushID block above
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ocio && ocio->getConfig()) {
                 const char* preview = entry.inputColorSpaceOverride.empty()
@@ -754,11 +864,60 @@ void MediaBinWindow::render() {
                     m_engine->setInputColorSpaceOverride(filepath, buf);
                 }
             }
-            ImGui::PopID();
-        }
+            ImGui::PopID();  // "cs"
+            ImGui::PopID();  // filepath
+        };  // renderGroupRow lambda
+
+        // True if this folder (or any descendant) has at least one group
+        // whose logical path matches `f`. Used to prune empty branches
+        // out of the tree while a search is active.
+        std::function<bool(const FolderNode&, std::string_view)> subtreeMatches =
+            [&](const FolderNode& node, std::string_view f) -> bool {
+                if (f.empty()) return true;
+                for (const auto* g : node.groups) {
+                    if (containsCi(g->logicalPath, f)) return true;
+                }
+                for (const auto& sub : node.subfolders) {
+                    if (subtreeMatches(sub, f)) return true;
+                }
+                return false;
+            };
+
+        // Recursive folder walker. Subfolders render as TreeNodeEx; leaves
+        // call into renderGroupRow. While searching, branches with no
+        // matching descendant are skipped entirely and folders are forced
+        // open so matches are visible without manual expansion.
+        std::function<void(const FolderNode&)> renderFolder =
+            [&](const FolderNode& f) {
+                for (const auto& sub : f.subfolders) {
+                    if (!subtreeMatches(sub, filter)) continue;
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (!filter.empty()) {
+                        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+                    }
+                    bool open = ImGui::TreeNodeEx(sub.name.c_str(),
+                        ImGuiTreeNodeFlags_SpanAvailWidth
+                        | ImGuiTreeNodeFlags_DefaultOpen);
+                    if (open) {
+                        renderFolder(sub);
+                        ImGui::TreePop();
+                    }
+                }
+                for (const auto* g : f.groups) {
+                    if (!filter.empty() && !containsCi(g->logicalPath, filter)) {
+                        continue;
+                    }
+                    renderGroupRow(*g);
+                }
+            };
+
+        const FolderNode root = buildFolderTree(groups);
+        renderFolder(root);
 
         ImGui::EndTable();
     }
+    ImGui::PopStyleVar(2);  // FramePadding, IndentSpacing
 }
 
 } // namespace entity

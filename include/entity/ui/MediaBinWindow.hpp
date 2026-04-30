@@ -51,6 +51,9 @@ private:
     bool        m_modalDontAskStorage{false};
     bool        m_modalDontAskTranscode{false};
 
+    // Substring filter applied to the bin's logical path. Empty = show all.
+    char        m_filterBuf[128]{0};
+
     // Cache of probe results keyed by the entry's stored filepath.
     // First-row-render opens the file with FFmpeg to extract codec
     // (HAP vs. ProRes vs. PNG seq), resolution, framerate, duration,

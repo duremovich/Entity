@@ -618,6 +618,12 @@ private:
      */
     void onLauncherOpenProject(const std::filesystem::path& path);
 
+    // Centered "Loading project... / <name>" ImGui overlay painted on
+    // the launcher's frame and again on the dedicated handshake frame
+    // before the blocking load runs. See Engine::render() launcher
+    // branch for the two-frame handshake.
+    void paintLauncherLoadingOverlay(const std::filesystem::path& path);
+
 private:
     // ECS registry
     entt::registry m_registry;
@@ -666,6 +672,13 @@ private:
     std::unique_ptr<RecentProjects>  m_recentProjects;
     std::unique_ptr<ContentScanner>  m_contentScanner;
     bool m_showLauncher{false};
+
+    // Two-frame handshake for project open from the launcher: when the
+    // user picks Open, frame N stores the path here and paints the
+    // overlay on top of the launcher. Frame N+1 detects the pending
+    // path, paints the overlay alone, presents, then runs the blocking
+    // load. Empty == no pending load.
+    std::filesystem::path m_pendingLauncherLoad{};
 
     // #27 — drain ContentScanner deltas, dedupe against existing
     // library, call addMediaFile / mark-missing on the main thread.

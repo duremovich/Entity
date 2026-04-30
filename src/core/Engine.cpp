@@ -513,6 +513,26 @@ void Engine::showLauncher() {
     m_showLauncher = true;
 }
 
+void Engine::paintLauncherLoadingOverlay(const std::filesystem::path& path) {
+    const std::string projectName = path.filename().string();
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(),
+        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowFocus();
+    ImGui::SetNextWindowBgAlpha(0.95f);
+    ImGui::Begin("##launcher_loading", nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoNav);
+    ImGui::TextUnformatted("Loading project...");
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", projectName.c_str());
+    ImGui::End();
+}
+
 void Engine::onLauncherOpenProject(const std::filesystem::path& path) {
     if (path.empty()) return;
 
@@ -933,17 +953,37 @@ void Engine::render() {
             m_renderer->beginFrame();
             m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
             m_renderer->beginImGuiFrame();
+
+            // Frame N+1 of the open handshake: a pending load was
+            // staged last frame. Paint the overlay alone (no launcher
+            // UI — the user already chose), present, *then* run the
+            // blocking load. The just-presented frame stays on the
+            // swap chain's front buffer for the entire freeze, so the
+            // user keeps seeing "Loading..." while the main thread is
+            // stalled in loadProject().
+            if (!m_pendingLauncherLoad.empty()) {
+                paintLauncherLoadingOverlay(m_pendingLauncherLoad);
+                m_renderer->endImGuiFrame();
+                m_renderer->endFrame();
+                auto path = std::move(m_pendingLauncherLoad);
+                m_pendingLauncherLoad.clear();
+                onLauncherOpenProject(path);
+                return;
+            }
+
             if (m_launcher) {
                 auto result = m_launcher->render();
                 switch (result.action) {
                     case ProjectLauncher::Action::Open:
-                        // Defer the actual project load until *after*
-                        // endFrame() — loadProject() touches GPU resources
-                        // (allocateVideoTextureSlot etc.) and we don't want
-                        // to mix that with an in-flight ImGui draw.
+                        // Frame N: stage the load and paint the overlay
+                        // on top of the launcher. The actual load runs
+                        // on frame N+1 (above) so the user gets a full
+                        // dedicated frame of "Loading..." before the
+                        // freeze begins.
+                        m_pendingLauncherLoad = result.path;
+                        paintLauncherLoadingOverlay(result.path);
                         m_renderer->endImGuiFrame();
                         m_renderer->endFrame();
-                        onLauncherOpenProject(result.path);
                         return;
                     case ProjectLauncher::Action::Quit:
                         requestExit();
