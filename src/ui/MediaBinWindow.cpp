@@ -184,119 +184,160 @@ void MediaBinWindow::renderPendingImportModal() {
     // Open the popup exactly once per new pending import. Popup state is
     // keyed by string ID — if it's already open ImGui ignores repeat opens.
     if (pending) {
-        if (pending->filepath != m_modalLastFilepath) {
-            m_modalLastFilepath = pending->filepath;
-            m_modalDontAskAgain = false;   // fresh import, reset checkbox
-            ImGui::OpenPopup("Transcode to HAP?");
+        if (pending->sourceFilePath != m_modalLastFilepath) {
+            m_modalLastFilepath = pending->sourceFilePath;
+            // Seed defaults from whatever was pre-decided.
+            m_modalChosenMode      = pending->storageDecided
+                ? static_cast<int>(pending->resolvedMode)
+                : 1;  // Copy default — matches the muscle memory of the old toolbar
+            m_modalSubfolderBuf[0] = '\0';
+            m_modalChosenTranscode = pending->transcodeDecided
+                ? (pending->resolvedTranscode ? 1 : 0)
+                : 1;  // transcode-by-default for non-HAP — best UX
+            m_modalDontAskStorage   = false;
+            m_modalDontAskTranscode = false;
+            ImGui::OpenPopup("Import Media");
         }
     }
 
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(560, 0));
 
-    if (ImGui::BeginPopupModal("Transcode to HAP?", nullptr,
+    if (ImGui::BeginPopupModal("Import Media", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) {
-        // Popup survives a single frame where pendingImport() returns null
-        // (after resolve, before the next render). Use the stashed path for
-        // display + close if the engine's pending state has truly cleared.
-        const std::string& path = pending ? pending->filepath : m_modalLastFilepath;
+        // Pending may go null for one frame between resolve and the next
+        // render; cache the source path for display in that gap.
+        const std::string& path =
+            pending ? pending->sourceFilePath : m_modalLastFilepath;
         const size_t lastSlash = path.find_last_of("/\\");
         const std::string stem = (lastSlash != std::string::npos)
             ? path.substr(lastSlash + 1) : path;
 
-        ImGui::Text("\"%s\" isn't HAP.", stem.c_str());
+        ImGui::TextDisabled("Importing:");
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(stem.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::TextDisabled("%s", path.c_str());
         ImGui::Spacing();
-        ImGui::TextWrapped(
-            "HAP is a GPU-friendly codec — transcoding this file will let you "
-            "play it smoothly on a multi-layer timeline. Your original is "
-            "preserved: managed imports archive it alongside the new HAP "
-            "file (in <subfolder>/.archive/); linked imports leave the "
-            "source where it is and cache the HAP in <project>/.cache/hap/.");
-        ImGui::Spacing();
-        ImGui::Checkbox("Don't ask again for this project", &m_modalDontAskAgain);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip(
-                "Saves your choice as the project default. You can change it\n"
-                "later via the \"Non-HAP imports\" dropdown above.");
-        }
+        ImGui::Separator();
         ImGui::Spacing();
 
-        const float btnWidth = 140.0f;
-        if (ImGui::Button("Transcode to HAP", ImVec2(btnWidth, 0))) {
-            m_engine->resolvePendingImport(/*transcode*/ true, m_modalDontAskAgain);
+        const bool askStorage  = pending && !pending->storageDecided;
+        const bool askTranscode = pending && !pending->transcodeDecided;
+
+        // --- Storage question ---
+        if (askStorage) {
+            ImGui::TextUnformatted("Storage");
+            ImGui::RadioButton("Copy into project##store", &m_modalChosenMode, 1);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Copy the file into <project>/content/. Travels with the\n"
+                    "project; portable across machines.");
+            }
+            ImGui::RadioButton("Link to original location##store", &m_modalChosenMode, 0);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Reference the file at its current absolute path.\n"
+                    "QLab/Watchout-style; not portable without relinking.");
+            }
+
+            // Subfolder input — only meaningful in Copy mode.
+            ImGui::BeginDisabled(m_modalChosenMode != 1);
+            ImGui::TextDisabled("content/");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::InputTextWithHint("##subfolder", "(optional subfolder)",
+                                      m_modalSubfolderBuf,
+                                      sizeof(m_modalSubfolderBuf));
+            if (ImGui::IsItemHovered() && m_modalChosenMode == 1) {
+                ImGui::SetTooltip(
+                    "Optional subfolder under content/ for this import.\n"
+                    "Created on demand if it doesn't exist. Leave blank to\n"
+                    "land in content/ root.");
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Checkbox("Don't ask Storage again##store", &m_modalDontAskStorage);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Persist this Storage choice (Copy or Link) as the default\n"
+                    "for all future imports on this machine. Edit settings.json\n"
+                    "to reset.");
+            }
+            ImGui::Spacing();
+        }
+
+        // --- Transcode question ---
+        if (askTranscode) {
+            if (askStorage) {
+                ImGui::Separator();
+                ImGui::Spacing();
+            }
+            ImGui::TextUnformatted("Transcode");
+            ImGui::RadioButton("Transcode to HAP (recommended)##tx",
+                                &m_modalChosenTranscode, 1);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "HAP is a GPU-friendly codec — transcoding this file\n"
+                    "lets it play smoothly on a multi-layer timeline.\n"
+                    "Source is preserved (archived for managed imports).");
+            }
+            ImGui::RadioButton("Use source as-is (slow path)##tx",
+                                &m_modalChosenTranscode, 0);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Play the source codec directly. Heavier on CPU/GPU\n"
+                    "but no transcoding wait. You can transcode later from\n"
+                    "the MediaBin row's right-click menu.");
+            }
+            ImGui::Checkbox("Don't ask Transcode again##tx", &m_modalDontAskTranscode);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Persist this Transcode choice as the project default\n"
+                    "(Always Transcode / Never Transcode).");
+            }
+            ImGui::Spacing();
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float btnWidth = 120.0f;
+        if (ImGui::Button("Import", ImVec2(btnWidth, 0))) {
+            // Resolve into Engine. Pre-decided fields are passed verbatim
+            // (the radio reflected the resolved value); newly-asked
+            // fields use the radio's chosen value.
+            const auto mode = static_cast<Engine::ImportMode>(m_modalChosenMode);
+            const std::string subfolder = m_modalSubfolderBuf;
+            const bool transcode = (m_modalChosenTranscode != 0);
+            m_engine->resolvePendingImport(
+                mode, subfolder, transcode,
+                /*rememberStorage*/   askStorage   && m_modalDontAskStorage,
+                /*rememberTranscode*/ askTranscode && m_modalDontAskTranscode);
             m_modalLastFilepath.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Skip (use source)", ImVec2(btnWidth, 0))) {
-            m_engine->resolvePendingImport(/*transcode*/ false, m_modalDontAskAgain);
+        if (ImGui::Button("Cancel", ImVec2(btnWidth, 0))) {
+            // Cancel = behave as "Use source as-is + Link" with no
+            // remember. Nothing gets copied or transcoded; if the source
+            // is reachable the clip still lands on the timeline. If the
+            // user wanted to truly cancel we'd need to drop the import
+            // entirely — leave that as a follow-up.
+            m_engine->resolvePendingImport(
+                Engine::ImportMode::Link, /*subfolder*/ "",
+                /*transcode*/ false,
+                /*rememberStorage*/ false, /*rememberTranscode*/ false);
             m_modalLastFilepath.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
-    } else if (pending && m_modalLastFilepath == pending->filepath) {
-        // Popup got dismissed by some other means (e.g. ESC — though we
-        // didn't set ImGuiWindowFlags_Popup to allow it). Default = Skip
-        // without don't-ask-again, same as the button.
-        m_engine->resolvePendingImport(false, false);
+    } else if (pending && m_modalLastFilepath == pending->sourceFilePath) {
+        // Popup dismissed externally (e.g. ESC). Match Cancel behavior.
+        m_engine->resolvePendingImport(
+            Engine::ImportMode::Link, "", false, false, false);
         m_modalLastFilepath.clear();
-    }
-}
-
-void MediaBinWindow::renderImportTargetToolbar() {
-    // ADR-0009: when the user is in an interactive session (MediaBin is
-    // visible), the import default is Copy into content/unsorted/. We
-    // seed this once on first render so script-driven flows (which
-    // never instantiate MediaBin) keep the Link default, and so an
-    // operator who explicitly changed the toggle in a previous session
-    // doesn't get reverted. After the seed, the toolbar is the source
-    // of truth; Engine just stores whatever it last received.
-    if (!m_importDefaultsSeeded) {
-        m_engine->setImportMode(Engine::ImportMode::Copy, "unsorted");
-        std::snprintf(m_importSubfolderBuf, sizeof(m_importSubfolderBuf),
-                      "%s", m_engine->importSubfolder().c_str());
-        m_importDefaultsSeeded = true;
-    }
-
-    Engine::ImportMode mode = m_engine->importMode();
-    int modeIdx = static_cast<int>(mode);
-    const char* modeLabels[] = {
-        "Link in place",     // Engine::ImportMode::Link
-        "Copy into project", // Engine::ImportMode::Copy
-    };
-
-    ImGui::Text("Imports:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::Combo("##import-mode", &modeIdx, modeLabels, IM_ARRAYSIZE(modeLabels))) {
-        m_engine->setImportMode(static_cast<Engine::ImportMode>(modeIdx),
-                                m_engine->importSubfolder());
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-            "Where new imports land:\n"
-            "  Copy into project — file is copied into content/<subfolder>/.\n"
-            "    Travels with the project; portable across machines.\n"
-            "  Link in place — file stays at its absolute path.\n"
-            "    QLab/Watchout-style; not portable without relinking.");
-    }
-
-    // Subfolder field is only meaningful in Copy mode.
-    ImGui::SameLine();
-    ImGui::TextDisabled("content/");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::BeginDisabled(mode != Engine::ImportMode::Copy);
-    if (ImGui::InputText("##import-subfolder", m_importSubfolderBuf,
-                         sizeof(m_importSubfolderBuf))) {
-        m_engine->setImportMode(mode, m_importSubfolderBuf);
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered() && mode == Engine::ImportMode::Copy) {
-        ImGui::SetTooltip(
-            "Target subfolder under content/ for new imports.\n"
-            "Created on demand if it doesn't exist.\n"
-            "Default: \"unsorted\".");
     }
 }
 
@@ -334,12 +375,9 @@ void MediaBinWindow::render() {
     ImGui::SameLine();
     ImGui::Text("  |  Loaded: %zu", mediaFiles.size());
 
-    // --- ADR-0009 — Copy/Link import target toolbar -----------------------
-    renderImportTargetToolbar();
-
     ImGui::Separator();
 
-    // --- First-import modal ------------------------------------------------
+    // --- Unified per-import modal (#32) -----------------------------------
     renderPendingImportModal();
 
     if (mediaFiles.empty()) {

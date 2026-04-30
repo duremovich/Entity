@@ -183,16 +183,6 @@ public:
     };
 
     /**
-     * Set the import mode + target subfolder used by subsequent
-     * File > Open Video imports. Called by the MediaBin toolbar when
-     * the user changes either setting; persists for the rest of the
-     * session.
-     */
-    void setImportMode(ImportMode mode, const std::string& subfolder);
-    ImportMode  importMode()      const { return m_importMode; }
-    const std::string& importSubfolder() const { return m_importSubfolder; }
-
-    /**
      * ADR-0009 — one-shot "Collect Linked media into the project folder"
      * action. For every `Linked` entry in the media library whose source
      * file resolves on disk:
@@ -388,26 +378,54 @@ public:
 
     // --- Pending transcode decision (first-import modal) ------------------
     //
-    // When policy == Ask and the user imports a non-HAP file, we stash the
-    // decision here and let MediaBinWindow render a modal to resolve it.
-    // Only one decision can be pending at a time — a second import while
-    // one is queued gets dropped with a warning.
+    // #32 — when either Settings.importStoragePolicy or
+    // ProjectManager.nonHapImportPolicy is "Ask", `onVideoFileSelected`
+    // stashes a PendingImport here and MediaBinWindow renders the unified
+    // modal. The modal asks only the questions that aren't already
+    // pre-decided.
+    //
+    // Critically, storage decision must precede `applyImportMode` (the
+    // file copy hasn't happened yet at this point), so PendingImport
+    // carries the *source* path, not a canonicalized one.
     struct PendingImport {
-        std::string filepath;
+        std::string sourceFilePath;  // user-picked source, pre-copy
         MediaType   mediaType;
+
+        // Whether this file is eligible for HAP transcode (non-HAP
+        // container + transcode infra available). When false, the modal
+        // hides the transcode question entirely.
+        bool transcodeEligible{false};
+
+        // True if storage was already decided by the persisted policy
+        // (AlwaysCopy / AlwaysLink). The modal hides storage in that case.
+        bool storageDecided{false};
+        ImportMode  resolvedMode{ImportMode::Link};
+
+        // True if transcode was already decided (AlwaysTranscode /
+        // NeverTranscode). Modal hides transcode in that case.
+        bool transcodeDecided{false};
+        bool resolvedTranscode{false};
     };
     const PendingImport* pendingImport() const;
 
     /**
-     * Called by the modal when the user picks a choice.
+     * Called by the unified modal when the user picks a choice (#32).
      *
-     * @param transcode     true = enqueue the transcode worker;
-     *                      false = create a clip on the source as-is
-     * @param dontAskAgain  if true, save the choice to the project policy
-     *                      (AlwaysTranscode / NeverTranscode) so future
-     *                      imports don't prompt again
+     * @param mode             chosen storage mode
+     * @param subfolder        target subfolder under content/ (Copy mode only,
+     *                         empty = root)
+     * @param transcode        true = enqueue HAP transcode (eligible imports
+     *                         only)
+     * @param rememberStorage  persist storage choice to Settings as
+     *                         AlwaysCopy / AlwaysLink
+     * @param rememberTranscode persist transcode choice to project's
+     *                         NonHapImportPolicy
      */
-    void resolvePendingImport(bool transcode, bool dontAskAgain);
+    void resolvePendingImport(ImportMode mode,
+                               const std::string& subfolder,
+                               bool transcode,
+                               bool rememberStorage,
+                               bool rememberTranscode);
 
     /**
      * Get the current decoder (for metadata access).
@@ -656,8 +674,9 @@ private:
     // ADR-0009 — current import mode + target subfolder. Default is Link
     // so legacy / script-driven flows keep their pre-launcher behavior;
     // MediaBin's toolbar flips it to Copy + "unsorted" on first render.
-    ImportMode  m_importMode{ImportMode::Link};
-    std::string m_importSubfolder{"unsorted"};
+    // #32 — per-import storage mode is now decided per-file via the unified
+    // modal (or via Settings.importStoragePolicy when the user has clicked
+    // "don't ask again"). No persistent toolbar state on Engine anymore.
 
     // Raw shortcut into m_director->getCommandDispatcher().
     CommandDispatcher* m_commandDispatcher{nullptr};

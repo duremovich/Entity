@@ -375,8 +375,11 @@ TEST(ProjectManagerCreateNew, BuildsExpectedFolderTree) {
     const fs::path projectRoot = parent.path / "MyShow";
     EXPECT_TRUE(fs::exists(projectRoot / "MyShow.entity"));
 
-    // Canonical subdirectory layout per ADR-0009.
-    EXPECT_TRUE(fs::is_directory(projectRoot / "content" / "unsorted"));
+    // Canonical subdirectory layout. content/ used to seed an unsorted/
+    // child but #32 dropped that — content/ itself is the default
+    // landing zone now.
+    EXPECT_TRUE(fs::is_directory(projectRoot / "content"));
+    EXPECT_FALSE(fs::is_directory(projectRoot / "content" / "unsorted"));
     EXPECT_TRUE(fs::is_directory(projectRoot / "presets"));
     EXPECT_TRUE(fs::is_directory(projectRoot / "objects"));
     EXPECT_TRUE(fs::is_directory(projectRoot / "exports"));

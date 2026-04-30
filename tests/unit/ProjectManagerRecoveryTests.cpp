@@ -63,9 +63,10 @@ TEST(ProjectManagerRebuild, CreatesAllCanonicalSubdirsFromEmpty) {
     pm.setProjectPath(projectFile);
 
     int created = pm.rebuildStructure();
-    EXPECT_EQ(created, 6);  // content/unsorted, presets, objects, exports, snapshots, .cache/thumbnails
+    EXPECT_EQ(created, 6);  // content, presets, objects, exports, snapshots, .cache/thumbnails
 
-    EXPECT_TRUE(fs::exists(scratch.root / "content"   / "unsorted"));
+    EXPECT_TRUE(fs::exists(scratch.root / "content"));
+    EXPECT_FALSE(fs::exists(scratch.root / "content"   / "unsorted"));  // dropped in #32
     EXPECT_TRUE(fs::exists(scratch.root / "presets"));
     EXPECT_TRUE(fs::exists(scratch.root / "objects"));
     EXPECT_TRUE(fs::exists(scratch.root / "exports"));

@@ -103,9 +103,10 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
     };
 
     // Build the subdirectory tree. create_directories cascades, so
-    // content/unsorted creates content/ on the way; .cache/thumbnails
-    // creates .cache/ on the way.
-    if (!mkdir(projectRoot / kContentDir / kUnsortedDir)) return false;
+    // .cache/thumbnails creates .cache/ on the way. The legacy
+    // content/unsorted/ subdir is no longer created (#32) — imports
+    // land in content/ root unless the user picks a subfolder.
+    if (!mkdir(projectRoot / kContentDir))                return false;
     if (!mkdir(projectRoot / kPresetsDir))                return false;
     if (!mkdir(projectRoot / kObjectsDir))                return false;
     if (!mkdir(projectRoot / kExportsDir))                return false;
@@ -286,6 +287,18 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
 
     std::cout << "[ProjectManager] Loading project from " << filepath.string() << "..." << std::endl;
 
+    // #34 — m_projectPath must be set BEFORE the serializer fires the
+    // per-clip media-load callback. The callback resolves clip.filepath
+    // through decoderPathFor → resolveMediaPath, which joins Managed
+    // (project-relative) paths against m_projectPath.parent_path(). With
+    // m_projectPath empty during the callback, every Managed clip would
+    // get a relative path back, fail the existence check, and never get
+    // a ClipDecodeState — symptom: black screen on reload. Save the prior
+    // value so a failed load doesn't leave the field pinned to a broken
+    // file.
+    const std::filesystem::path previousProjectPath = m_projectPath;
+    m_projectPath = filepath;
+
     // Clear existing clip decode state (destructors release decoders + frames).
     m_registry->clear<ClipDecodeState>();
     m_loadedMediaFiles.clear();
@@ -361,10 +374,10 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
 
     if (!ProjectSerializer::load(*m_timeline, filepath, loadCallback, this)) {
         std::cerr << "[ProjectManager] Load failed: " << ProjectSerializer::getLastError() << std::endl;
+        m_projectPath = previousProjectPath;  // restore (#34)
         return false;
     }
 
-    m_projectPath = filepath;
     std::cout << "[ProjectManager] Project loaded successfully" << std::endl;
     return true;
 }
@@ -588,9 +601,11 @@ int ProjectManager::rebuildStructure() {
     const fs::path root = m_projectPath.parent_path();
 
     // Same set createNew() builds. Order-independent — each call just
-    // creates its own missing parents via create_directories.
+    // creates its own missing parents via create_directories. The
+    // legacy content/unsorted/ subdir is no longer auto-created (#32);
+    // imports default to content/ root.
     const std::vector<fs::path> targets = {
-        root / kContentDir / kUnsortedDir,
+        root / kContentDir,
         root / kPresetsDir,
         root / kObjectsDir,
         root / kExportsDir,

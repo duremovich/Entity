@@ -101,6 +101,14 @@ Settings loadSettings(const std::filesystem::path& path) {
     readString("defaultDisplay",      settings.defaultDisplay);
     readString("defaultView",         settings.defaultView);
 
+    if (j.contains("importStoragePolicy") && j["importStoragePolicy"].is_number_integer()) {
+        const int raw = j["importStoragePolicy"].get<int>();
+        if (raw >= 0 && raw <= 2) {
+            settings.importStoragePolicy =
+                static_cast<Settings::ImportStoragePolicy>(raw);
+        }
+    }
+
     return settings;
 }
 
@@ -127,6 +135,7 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     j["defaultPngInputCs"]    = settings.defaultPngInputCs;
     j["defaultDisplay"]       = settings.defaultDisplay;
     j["defaultView"]          = settings.defaultView;
+    j["importStoragePolicy"]  = static_cast<int>(settings.importStoragePolicy);
 
     // Write to a temp file then rename — atomic on POSIX, near-atomic on
     // Windows (rename-over-existing requires MoveFileEx, but

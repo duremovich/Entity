@@ -63,6 +63,21 @@ struct Settings {
     std::string defaultPngInputCs{"sRGB - Display"};
     std::string defaultDisplay;
     std::string defaultView;
+
+    // -----------------------------------------------------------------
+    // #32 — per-import storage decision (Copy into project vs. Link to
+    // original). Default Ask: the unified import modal pops on every
+    // import and offers "Don't ask again" toggles that flip this to
+    // AlwaysCopy / AlwaysLink. Per-machine, not per-project — different
+    // workstations may want different defaults (touring rig vs. authoring
+    // box).
+    // -----------------------------------------------------------------
+    enum class ImportStoragePolicy : uint8_t {
+        Ask         = 0,
+        AlwaysCopy  = 1,
+        AlwaysLink  = 2,
+    };
+    ImportStoragePolicy importStoragePolicy{ImportStoragePolicy::Ask};
 };
 
 /**

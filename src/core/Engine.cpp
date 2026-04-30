@@ -769,48 +769,51 @@ const Engine::PendingImport* Engine::pendingImport() const {
     return m_pendingImport ? &*m_pendingImport : nullptr;
 }
 
-void Engine::resolvePendingImport(bool transcode, bool dontAskAgain) {
+void Engine::resolvePendingImport(ImportMode mode,
+                                   const std::string& subfolder,
+                                   bool transcode,
+                                   bool rememberStorage,
+                                   bool rememberTranscode) {
     if (!m_pendingImport) return;
     PendingImport p = *m_pendingImport;   // copy before clearing
     m_pendingImport.reset();
 
-    if (dontAskAgain && m_projectManager) {
+    // Persist user preferences before doing the work — even if the
+    // import itself fails, the "don't ask again" choice should stick.
+    if (rememberStorage) {
+        m_settings.importStoragePolicy =
+            (mode == ImportMode::Copy)
+                ? Settings::ImportStoragePolicy::AlwaysCopy
+                : Settings::ImportStoragePolicy::AlwaysLink;
+        publishActiveSettings(m_settings);
+        saveSettings(m_settings);  // best-effort; failure already logs
+    }
+    if (rememberTranscode && p.transcodeEligible && m_projectManager) {
         m_projectManager->setNonHapImportPolicy(
             transcode ? ProjectManager::NonHapImportPolicy::AlwaysTranscode
                       : ProjectManager::NonHapImportPolicy::NeverTranscode);
     }
 
-    // p.filepath is the canonical path stashed by onVideoFileSelected (post
-    // applyImportMode). Resolve to absolute for the transcoder; addMediaFile
-    // and clip identity stay on the canonical (relative-for-Managed) string.
-    if (transcode) {
-        if (m_projectManager) {
-            // Kind is preserved from the original import — applyImportMode
-            // already moved the file to the canonical location, so a Managed
-            // entry's storedPath is project-relative; addMediaFile is
-            // idempotent so re-registering keeps the existing kind. To
-            // pick the right kind on first registration when the entry
-            // doesn't yet exist, infer from path shape: absolute => Linked,
-            // relative => Managed.
-            const ProjectManager::PathKind kind =
-                std::filesystem::path(p.filepath).is_absolute()
-                    ? ProjectManager::PathKind::Linked
-                    : ProjectManager::PathKind::Managed;
-            m_projectManager->addMediaFile(p.filepath, kind);
-        }
-        scheduleTranscode(p.filepath, p.mediaType);
+    // Now that storage is resolved, actually copy/link the file. Up to
+    // this point p.sourceFilePath is still the user-picked source.
+    ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    const std::string canonicalPath =
+        applyImportMode(p.sourceFilePath, mode, subfolder, &importedKind);
+    if (canonicalPath.empty()) {
+        std::cerr << "[Engine] resolvePendingImport: import failed for "
+                  << p.sourceFilePath << std::endl;
         return;
     }
 
-    // User chose Skip — create the clip on the source directly.
     if (m_projectManager) {
-        const ProjectManager::PathKind kind =
-            std::filesystem::path(p.filepath).is_absolute()
-                ? ProjectManager::PathKind::Linked
-                : ProjectManager::PathKind::Managed;
-        m_projectManager->addMediaFile(p.filepath, kind);
+        m_projectManager->addMediaFile(canonicalPath, importedKind);
     }
-    ingestVideoClip(p.filepath, p.mediaType);
+
+    if (p.transcodeEligible && transcode) {
+        scheduleTranscode(canonicalPath, p.mediaType);
+    } else {
+        ingestVideoClip(canonicalPath, p.mediaType);
+    }
 }
 
 const std::filesystem::path& Engine::getProjectPath() const {
@@ -1882,11 +1885,6 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
     return true;
 }
 
-void Engine::setImportMode(ImportMode mode, const std::string& subfolder) {
-    m_importMode = mode;
-    if (!subfolder.empty()) m_importSubfolder = subfolder;
-}
-
 std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
                                      ImportMode mode,
                                      const std::string& subfolder,
@@ -1929,10 +1927,12 @@ std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
         return sourceAbsolutePath;
     }
 
-    const std::string sub = subfolder.empty()
-                                ? std::string(ProjectManager::kUnsortedDir)
-                                : subfolder;
-    const fs::path targetDir = contentDir / sub;
+    // #32 — empty subfolder means "drop into content/ root". The legacy
+    // unsorted/ default is gone; users organize via the modal's subfolder
+    // field (or after-the-fact via Explorer / drag — both pick up via
+    // ContentScanner).
+    const fs::path targetDir = subfolder.empty() ? contentDir
+                                                  : (contentDir / subfolder);
     fs::create_directories(targetDir, ec);
     if (ec) {
         std::cerr << "[Engine] Failed to create import subfolder "
@@ -1993,64 +1993,82 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
         std::cerr << "========================================\n" << std::endl;
         return;
     }
-
     std::cout << "Detected media type: " << MediaTypeToString(mediaType) << std::endl;
 
-    // ADR-0009 — apply the active import mode (Copy/Link) before any
-    // policy logic so downstream code keys off the canonical
-    // originalPath the project will actually persist.
+    // #32 — collect both policies and decide whether to ask the user.
+    // Storage policy lives on Settings (per-machine). Transcode policy
+    // lives on ProjectManager (per-project). The unified modal asks
+    // whichever decisions aren't already pinned.
+
+    // Storage decision.
+    const auto storagePolicy = m_settings.importStoragePolicy;
+    bool storageDecided = (storagePolicy != Settings::ImportStoragePolicy::Ask);
+    ImportMode resolvedMode = ImportMode::Link;
+    if (storagePolicy == Settings::ImportStoragePolicy::AlwaysCopy) {
+        resolvedMode = ImportMode::Copy;
+    }
+
+    // Transcode decision (only meaningful for non-HAP video that we have
+    // a transcoder for; PNG sequences stay on the CPU path).
+    const bool transcodeEligible =
+        !isHapMediaType(mediaType) &&
+        mediaType == MediaType::VideoProRes4444 &&
+        m_projectManager && m_transcodeManager;
+    bool transcodeDecided = !transcodeEligible;
+    bool resolvedTranscode = false;
+    if (transcodeEligible && m_projectManager) {
+        const auto txPolicy = m_projectManager->nonHapImportPolicy();
+        if (txPolicy == ProjectManager::NonHapImportPolicy::AlwaysTranscode) {
+            transcodeDecided = true;
+            resolvedTranscode = true;
+        } else if (txPolicy == ProjectManager::NonHapImportPolicy::NeverTranscode) {
+            transcodeDecided = true;
+            resolvedTranscode = false;
+        }
+    }
+
+    // If anything is undecided, defer to the unified modal.
+    if (!storageDecided || !transcodeDecided) {
+        if (m_pendingImport) {
+            std::cerr << "[Engine] Import already awaiting user decision ("
+                      << m_pendingImport->sourceFilePath
+                      << "); dropping " << filePath << std::endl;
+            return;
+        }
+        PendingImport p;
+        p.sourceFilePath    = filePath;
+        p.mediaType         = mediaType;
+        p.transcodeEligible = transcodeEligible;
+        p.storageDecided    = storageDecided;
+        p.resolvedMode      = resolvedMode;
+        p.transcodeDecided  = transcodeDecided;
+        p.resolvedTranscode = resolvedTranscode;
+        m_pendingImport = std::move(p);
+        std::cout << "[Engine] Awaiting user decision on import: " << filePath << std::endl;
+        std::cout << "========================================\n" << std::endl;
+        return;
+    }
+
+    // Both decisions are pinned — apply silently.
     ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    // Subfolder defaults to "" (root). The modal is the only path that
+    // can specify a subfolder; AlwaysCopy without a modal lands at root
+    // by design (user organizes via Explorer / drag, scanner picks up).
     const std::string canonicalPath = applyImportMode(
-        filePath, m_importMode, m_importSubfolder, &importedKind);
+        filePath, resolvedMode, /*subfolder*/ "", &importedKind);
     if (canonicalPath.empty()) {
         std::cerr << "ERROR: Import failed for " << filePath << std::endl;
         std::cerr << "========================================\n" << std::endl;
         return;
     }
-
-    // Only ProRes / H264 / HEVC containers are transcode-eligible — vcpkg
-    // FFmpeg lacks a PNG decoder so image sequences stay on the CPU path,
-    // and HAP files obviously need no work.
-    const bool transcodeEligible =
-        !isHapMediaType(mediaType) &&
-        mediaType == MediaType::VideoProRes4444 &&
-        m_projectManager && m_transcodeManager;
-
-    if (transcodeEligible) {
-        const auto policy = m_projectManager->nonHapImportPolicy();
-        switch (policy) {
-            case ProjectManager::NonHapImportPolicy::AlwaysTranscode: {
-                m_projectManager->addMediaFile(canonicalPath, importedKind);
-                scheduleTranscode(canonicalPath, mediaType);
-                std::cout << "========================================\n" << std::endl;
-                return;
-            }
-            case ProjectManager::NonHapImportPolicy::Ask:
-                if (m_pendingImport) {
-                    std::cerr << "[Engine] Import already awaiting user decision ("
-                              << m_pendingImport->filepath
-                              << "); dropping " << canonicalPath << std::endl;
-                    return;
-                }
-                // Stash the canonical (post-import) path so the modal's
-                // resolve path operates on the same identity as everything
-                // else. importedKind is implicit: by the time the user
-                // clicks a modal button the file is already at the
-                // canonical location, so addMediaFile uses the same kind.
-                m_pendingImport = PendingImport{canonicalPath, mediaType};
-                std::cout << "[Engine] Awaiting user decision on non-HAP import: "
-                          << canonicalPath << std::endl;
-                std::cout << "========================================\n" << std::endl;
-                return;
-            case ProjectManager::NonHapImportPolicy::NeverTranscode:
-                break;  // fall through to ingest
-        }
-    }
-
     if (m_projectManager) {
         m_projectManager->addMediaFile(canonicalPath, importedKind);
     }
-    ingestVideoClip(canonicalPath, mediaType);
+    if (transcodeEligible && resolvedTranscode) {
+        scheduleTranscode(canonicalPath, mediaType);
+    } else {
+        ingestVideoClip(canonicalPath, mediaType);
+    }
 }
 
 void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaType) {
