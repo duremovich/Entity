@@ -79,13 +79,18 @@ public:
      *   - `<parentDir>/<projectName>` already exists on disk
      *   - the filesystem rejects directory creation or file write
      *
+     * If `errorOut` is non-null, a UI-friendly description of the failure
+     * is written to it. Permission-denied errors are detected and produce
+     * an admin-aware hint (Issue #22).
+     *
      * Note: callable before Engine attaches a Timeline. The empty
      * project is written by routing through ProjectSerializer with a
      * temporary Timeline, so the schema version automatically tracks
      * `ProjectSerializer::PROJECT_VERSION` rather than hand-rolled JSON.
      */
     bool createNew(const std::filesystem::path& parentDir,
-                   const std::string& projectName);
+                   const std::string& projectName,
+                   std::string* errorOut = nullptr);
 
     /**
      * Save the current timeline to `filepath`. Empty path uses the currently
@@ -218,8 +223,15 @@ public:
         // ADR-0009 — the codec the source carried before transcode
         // (e.g. "prores4444", "h264"). Used by the MediaBin "Restore
         // Original" UX to label the archived entry. Empty when no
-        // archive exists. Persisted only when non-empty.
+        // archive exists. Persisted only when no archive exists.
         std::string originalCodec;
+
+        // Transient — set by ContentScanner when the file's no longer on
+        // disk (#27). NOT serialized; reset to false on every load. UI
+        // greys missing rows; the entry stays in the library so brief
+        // unlink-then-rename windows during external sync don't nuke
+        // user state.
+        bool missingOnDisk{false};
     };
 
     /**
@@ -248,6 +260,20 @@ public:
      */
     const MediaLibraryEntry* findEntry(const std::string& originalPath) const;
     MediaLibraryEntry*       findEntry(const std::string& originalPath);
+
+    /**
+     * Find the latest version of any media in the same group as
+     * `storedPath`, scoped to the same `pathKind` (Linked and Managed
+     * never cross-group). Returns nullptr if the group has no members.
+     *
+     * The "latest" is the entry whose version tag sorts highest under
+     * `compareVersionTags` (smart numeric-or-lexicographic). Empty tags
+     * sort first (i.e. an unversioned `intro.mov` is the earliest member
+     * of the `intro` group).
+     *
+     * Issue #27 (filename-based versioning).
+     */
+    const MediaLibraryEntry* findLatestInGroup(const std::string& storedPath) const;
 
     /**
      * Remove the entry. Caller is responsible for any in-flight transcode

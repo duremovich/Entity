@@ -3,6 +3,7 @@
  */
 
 #include "entity/project/ProjectManager.hpp"
+#include "entity/project/MediaVersioning.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/render/IRenderer.hpp"
@@ -57,39 +58,48 @@ void ProjectManager::initialize(Timeline* timeline, entt::registry* registry, IR
 }
 
 bool ProjectManager::createNew(const std::filesystem::path& parentDir,
-                                const std::string& projectName) {
-    if (projectName.empty()) {
-        std::cerr << "[ProjectManager] createNew: projectName is empty" << std::endl;
+                                const std::string& projectName,
+                                std::string* errorOut) {
+    auto fail = [errorOut](std::string msg) -> bool {
+        std::cerr << "[ProjectManager] createNew: " << msg << std::endl;
+        if (errorOut) *errorOut = std::move(msg);
         return false;
+    };
+
+    if (projectName.empty()) {
+        return fail("Project name is empty.");
     }
     // Reject path separators here — std::filesystem would otherwise quietly
     // create nested directories from "act1/scene2" or similar, which is not
     // what the launcher's "Project name" field means.
     if (projectName.find('/')  != std::string::npos ||
         projectName.find('\\') != std::string::npos) {
-        std::cerr << "[ProjectManager] createNew: projectName must not contain "
-                  << "path separators ('" << projectName << "')" << std::endl;
-        return false;
+        return fail("Project name must not contain path separators ('" +
+                    projectName + "').");
     }
 
     const std::filesystem::path projectRoot = parentDir / projectName;
 
     std::error_code existsEc;
     if (std::filesystem::exists(projectRoot, existsEc)) {
-        std::cerr << "[ProjectManager] createNew: target already exists: "
-                  << projectRoot.string() << std::endl;
-        return false;
+        return fail("A folder named '" + projectName +
+                    "' already exists at this location. "
+                    "Pick a different name or delete the existing one.");
     }
 
-    auto mkdir = [](const std::filesystem::path& dir) -> bool {
+    auto mkdir = [&fail](const std::filesystem::path& dir) -> bool {
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
-        if (ec) {
-            std::cerr << "[ProjectManager] createNew: failed to create "
-                      << dir.string() << ": " << ec.message() << std::endl;
-            return false;
+        if (!ec) return true;
+        // permission_denied wraps Win32 ERROR_ACCESS_DENIED; surface a
+        // hint so the user knows it's not a name/path problem.
+        if (ec == std::errc::permission_denied) {
+            return fail("This location requires administrator rights to "
+                        "write to (cannot create '" + dir.string() +
+                        "'). Pick a different folder, or relaunch Entity "
+                        "as administrator.");
         }
-        return true;
+        return fail("Failed to create '" + dir.string() + "': " + ec.message());
     };
 
     // Build the subdirectory tree. create_directories cascades, so
@@ -117,13 +127,15 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
     entt::registry tmpRegistry;
     Timeline tmpTimeline(tmpRegistry);
     if (!ProjectSerializer::save(tmpTimeline, projectFile, this)) {
-        std::cerr << "[ProjectManager] createNew: failed to write empty project file: "
-                  << ProjectSerializer::getLastError() << std::endl;
+        std::string serializerErr = ProjectSerializer::getLastError();
         // Best-effort cleanup of the half-built tree so the next attempt at
         // the same name doesn't trip the "already exists" guard.
         std::error_code rmEc;
         std::filesystem::remove_all(projectRoot, rmEc);
-        return false;
+        return fail("Failed to write project file '" + projectFile.string() +
+                    "': " +
+                    (serializerErr.empty() ? std::string("unknown error")
+                                           : serializerErr));
     }
 
     m_projectPath = projectFile;
@@ -407,6 +419,59 @@ ProjectManager::findEntry(const std::string& originalPath) {
     auto it = std::find_if(m_loadedMediaFiles.begin(), m_loadedMediaFiles.end(),
         [&](const MediaLibraryEntry& e) { return e.originalPath == originalPath; });
     return (it != m_loadedMediaFiles.end()) ? &(*it) : nullptr;
+}
+
+const ProjectManager::MediaLibraryEntry*
+ProjectManager::findLatestInGroup(const std::string& storedPath) const {
+    if (storedPath.empty()) return nullptr;
+
+    const std::string targetGroup = groupKeyOf(storedPath);
+    // Determine the pathKind we're scoping to: prefer the kind of an
+    // exact-match entry if one exists; else fall back to any entry in
+    // the group (which all share kind by construction — Linked and
+    // Managed paths would have different group keys).
+    PathKind scopeKind = PathKind::Linked;
+    bool kindKnown = false;
+    if (auto* exact = findEntry(storedPath); exact) {
+        scopeKind = exact->pathKind;
+        kindKnown = true;
+    }
+
+    const MediaLibraryEntry* best = nullptr;
+    std::string bestTag;
+    for (const auto& e : m_loadedMediaFiles) {
+        if (groupKeyOf(e.originalPath) != targetGroup) continue;
+        if (kindKnown && e.pathKind != scopeKind) continue;
+        // Skip entries whose file isn't on disk — pin to a present file
+        // when one exists; only fall back to missing if the entire group
+        // is missing.
+        if (e.missingOnDisk) continue;
+
+        // Re-derive tag (cheap; group is small).
+        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string tag  = parseVersion(stem).tag;
+        if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
+            best    = &e;
+            bestTag = tag;
+        }
+    }
+
+    if (best) return best;
+
+    // If everything is missing, fall back to highest-tag regardless of
+    // missingOnDisk so the decoder still gets *some* path to surface as
+    // "missing" downstream rather than nullptr.
+    for (const auto& e : m_loadedMediaFiles) {
+        if (groupKeyOf(e.originalPath) != targetGroup) continue;
+        if (kindKnown && e.pathKind != scopeKind) continue;
+        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string tag  = parseVersion(stem).tag;
+        if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
+            best    = &e;
+            bestTag = tag;
+        }
+    }
+    return best;
 }
 
 void ProjectManager::removeMediaFile(const std::string& originalPath) {
@@ -818,22 +883,47 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
 }
 
 std::string ProjectManager::decoderPathFor(const std::string& originalPath) const {
-    if (auto* e = findEntry(originalPath); e && !e->transcodedPath.empty()) {
-        // Transcoded paths follow the same Managed-vs-Linked semantics as
-        // originals: route through resolveMediaPath-equivalent logic so a
-        // Managed transcode (relative path under content/) resolves
-        // against the project root.
-        std::string transcodeAbs = e->transcodedPath;
-        if (e->pathKind == PathKind::Managed && !m_projectPath.empty()) {
-            transcodeAbs = (m_projectPath.parent_path() /
-                            std::filesystem::path(e->transcodedPath)).string();
+    if (originalPath.empty()) return originalPath;
+
+    // Issue #27: clip.filepath is a logical reference. If it carries no
+    // `_v<tag>` suffix the resolver auto-rolls to the latest version in
+    // the group. If it does carry a tag, we treat the path as pinned and
+    // require an exact-match library entry.
+    const std::string stem = std::filesystem::path(originalPath).stem().string();
+    const ParsedVersion pv = parseVersion(stem);
+
+    auto resolveEntry = [this](const MediaLibraryEntry& e) -> std::string {
+        if (!e.transcodedPath.empty()) {
+            std::string transcodeAbs = e.transcodedPath;
+            if (e.pathKind == PathKind::Managed && !m_projectPath.empty()) {
+                transcodeAbs = (m_projectPath.parent_path() /
+                                std::filesystem::path(e.transcodedPath)).string();
+            }
+            if (std::filesystem::exists(utf8ToPath(transcodeAbs))) {
+                return transcodeAbs;
+            }
         }
-        // Verify the transcoded file still exists on disk — a stale project
-        // might reference a cache that was deleted since save.
-        if (std::filesystem::exists(utf8ToPath(transcodeAbs))) {
-            return transcodeAbs;
+        return resolveMediaPath(e.originalPath);
+    };
+
+    if (pv.tag.empty()) {
+        // Auto-roll mode. Pick the latest member of the group; fall back
+        // to the path as-given if the group is empty (file may exist on
+        // disk but not yet in the library — pre-scanner code paths hit
+        // this).
+        if (auto* latest = findLatestInGroup(originalPath); latest) {
+            return resolveEntry(*latest);
         }
+        return resolveMediaPath(originalPath);
     }
+
+    // Pinned mode — exact match required.
+    if (auto* e = findEntry(originalPath); e) {
+        return resolveEntry(*e);
+    }
+    // Pinned-but-missing: return the resolved path so downstream sees
+    // "this file should exist here but doesn't" rather than silently
+    // rolling to a different version.
     return resolveMediaPath(originalPath);
 }
 

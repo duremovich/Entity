@@ -19,6 +19,7 @@ that have moved on.
 | 0007 | [Open-core feature tiering & monetization model](0007-open-core-feature-tiering.md) | Accepted | 2026-04-29 |
 | 0008 | [Cluster topology nomenclature — Conductor / Performer / Standby](0008-cluster-topology-nomenclature.md) | Accepted | 2026-04-29 |
 | 0009 | [Structured projects (folder-as-project) with reference-mode escape hatch](0009-structured-projects-with-reference-mode.md) | Accepted | 2026-04-29 |
+| 0010 | [`content/` is the source of truth; filename-based versioning](0010-content-as-source-of-truth.md) | Accepted | 2026-04-29 |
 
 ## Format
 

@@ -20,6 +20,8 @@ add_executable(EntityMediaTests
     unit/ProjectManagerRecoveryTests.cpp
     unit/ProjectManagerCloseTests.cpp
     unit/RecentProjectsTests.cpp
+    unit/MediaVersioningTests.cpp
+    unit/ContentScannerTests.cpp
     unit/OcioOdtTests.cpp
     unit/MessageBusSerializationTests.cpp
     unit/InMemoryTransportTests.cpp

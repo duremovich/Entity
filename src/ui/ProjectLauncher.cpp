@@ -182,11 +182,21 @@ void ProjectLauncher::renderRecentList() {
 
     if (ImGui::BeginTable("##RecentTable", 3,
             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
-            ImGuiTableFlags_ScrollY,
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
             ImVec2(0.0f, 320.0f))) {
-        ImGui::TableSetupColumn("Project",      ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Last Opened",  ImGuiTableColumnFlags_WidthFixed, 140.0f);
-        ImGui::TableSetupColumn("",             ImGuiTableColumnFlags_WidthFixed, 80.0f);
+        // Project column stretches but stays no smaller than ~200px so
+        // the action buttons always have room. Action column is sized
+        // to fit "Open" + "Forget" comfortably (~70px each + spacing).
+        ImGui::TableSetupColumn("Project",
+                                ImGuiTableColumnFlags_WidthStretch |
+                                ImGuiTableColumnFlags_NoHide,
+                                0.0f);
+        ImGui::TableSetupColumn("Last Opened",
+                                ImGuiTableColumnFlags_WidthFixed, 140.0f);
+        ImGui::TableSetupColumn("Actions",
+                                ImGuiTableColumnFlags_WidthFixed |
+                                ImGuiTableColumnFlags_NoResize,
+                                160.0f);
         ImGui::TableHeadersRow();
 
         const auto& entries = m_recentProjects->entries();
@@ -205,6 +215,14 @@ void ProjectLauncher::renderRecentList() {
                 ImGui::TextDisabled("(missing) %s", e.path.c_str());
             } else {
                 ImGui::TextUnformatted(e.path.c_str());
+            }
+            // Long paths are clipped by the table cell — surface the full
+            // string in a tooltip so the user can still see where each
+            // entry actually lives.
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) &&
+                ImGui::BeginTooltip()) {
+                ImGui::TextUnformatted(e.path.c_str());
+                ImGui::EndTooltip();
             }
 
             ImGui::TableSetColumnIndex(1);
@@ -282,8 +300,11 @@ void ProjectLauncher::renderNewProjectModal() {
 
         if (!m_newProjectError.empty()) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
-                               m_newProjectError.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+            ImGui::PushTextWrapPos(0.0f);  // wrap at the popup's right edge
+            ImGui::TextUnformatted(m_newProjectError.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
         }
 
         ImGui::Spacing();
@@ -332,7 +353,14 @@ bool ProjectLauncher::tryCreateProject(std::string* errorOut) {
         fs::create_directories(parent, ec);
         if (ec) {
             if (errorOut) {
-                *errorOut = "Cannot create parent directory: " + ec.message();
+                if (ec == std::errc::permission_denied) {
+                    *errorOut = "This location requires administrator rights "
+                                "to write to. Pick a different folder, or "
+                                "relaunch Entity as administrator.";
+                } else {
+                    *errorOut = "Cannot create parent directory '" +
+                                parent.string() + "': " + ec.message();
+                }
             }
             return false;
         }
@@ -341,13 +369,7 @@ bool ProjectLauncher::tryCreateProject(std::string* errorOut) {
         return false;
     }
 
-    if (!m_projectManager->createNew(parent, m_newProjectName)) {
-        if (errorOut) {
-            *errorOut = "Failed to create project (see console for details).";
-        }
-        return false;
-    }
-    return true;
+    return m_projectManager->createNew(parent, m_newProjectName, errorOut);
 }
 
 }  // namespace entity

@@ -40,6 +40,8 @@ class ProjectLauncher;  // ADR-0009 — Recent/New/Open dialog rendered when
                         // no project is loaded. Defined in entity/ui/.
 class RecentProjects;   // ADR-0009 — persisted recent-projects list backing
                         // the launcher's Recent panel.
+class ContentScanner;   // #27 — periodic poll of project's content/ folder
+                        // for files added or removed by external tools.
 struct DecodedFrame;
 namespace bus {
 class IMessageTransport;
@@ -353,6 +355,15 @@ public:
     const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
 
     /**
+     * Resolve a stored media path (Managed = relative under content/,
+     * Linked = absolute) to a path the OS / decoder / FFmpeg can open.
+     * Pass-through to ProjectManager::decoderPathFor — picks the right
+     * version (auto-roll vs pinned, #27) and routes Managed paths
+     * through the project root. Empty path in → empty path out.
+     */
+    std::string resolveMediaPath(const std::string& storedPath) const;
+
+    /**
      * Remove a media library entry: cancel any in-flight transcode worker,
      * delete the cached HAP file from disk if present, drop the library
      * entry. Clips on the timeline that referenced this media keep playing
@@ -635,7 +646,12 @@ private:
     // unique_ptr so the forward declarations above stay sufficient.
     std::unique_ptr<ProjectLauncher> m_launcher;
     std::unique_ptr<RecentProjects>  m_recentProjects;
+    std::unique_ptr<ContentScanner>  m_contentScanner;
     bool m_showLauncher{false};
+
+    // #27 — drain ContentScanner deltas, dedupe against existing
+    // library, call addMediaFile / mark-missing on the main thread.
+    void drainContentScannerDeltas();
 
     // ADR-0009 — current import mode + target subfolder. Default is Link
     // so legacy / script-driven flows keep their pre-launcher behavior;

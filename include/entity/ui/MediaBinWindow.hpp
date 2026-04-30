@@ -1,8 +1,10 @@
 #pragma once
 
 #include "EditorWindow.hpp"
+#include "entity/core/Types.hpp"
 #include <imgui.h>
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -25,6 +27,15 @@ public:
     void render() override;
     const char* getName() const override { return "Media Bin"; }
 
+    // Public so free helpers in the .cpp's anonymous namespace can name
+    // the enum without going through `MediaBinWindow::` everywhere.
+    enum class CodecTier {
+        Unknown,
+        Good,  // HAP* — designed for realtime, green
+        OK,    // ProRes / DNxHD / image sequences — intra-frame, yellow
+        Bad,   // H.264 / H.265 / VP9 / AV1 — interframe, seek-hostile, red
+    };
+
 private:
     void renderPendingImportModal();
     void renderImportTargetToolbar();
@@ -46,12 +57,28 @@ private:
     bool m_importDefaultsSeeded{false};
     char m_importSubfolderBuf[128]{0};
 
-    // Cache of "is the source already HAP?" results keyed by filepath. The
-    // underlying probe (avformat_open_input + find_stream_info on a .mov)
-    // costs 30-40ms per call on a 4K ProRes file -- catastrophic when
-    // called every render frame during playback. The codec of a file
-    // doesn't change at runtime, so a write-once cache is enough.
-    mutable std::unordered_map<std::string, bool> m_isHapCache;
+    // Cache of probe results keyed by the entry's stored filepath.
+    // First-row-render opens the file with FFmpeg to extract codec
+    // (HAP vs. ProRes vs. PNG seq), resolution, framerate, duration,
+    // and alpha-channel presence. Each probe costs 30-40 ms on a 4K
+    // ProRes file -- catastrophic to run every frame -- so cache is
+    // write-once. Entries are populated lazily; ScrollY in the table
+    // means we only pay for visible rows (#27 — auto-discovered files
+    // need this so MediaBin shows resolution etc. before any clip
+    // is created on the timeline).
+    struct ProbeInfo {
+        bool        valid{false};
+        bool        isHap{false};
+        std::uint32_t width{0};
+        std::uint32_t height{0};
+        double      framerate{0.0};
+        FrameNumber totalFrames{0};
+        bool        hasAlpha{false};
+        std::string sourceCodecName;   // "hap", "prores", "h264", ...
+        std::string displayCodecName;  // pretty form: "HAP", "ProRes", "H.264"
+        CodecTier   tier{CodecTier::Unknown};
+    };
+    mutable std::unordered_map<std::string, ProbeInfo> m_probeCache;
 };
 
 } // namespace entity

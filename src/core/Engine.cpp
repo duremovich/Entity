@@ -29,6 +29,7 @@
 #include "entity/media/FrameCache.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/project/ContentScanner.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
 #include "entity/render/OutputManager.hpp"
@@ -421,6 +422,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_launcher = std::make_unique<ProjectLauncher>();
     m_launcher->initialize(m_projectManager, m_recentProjects.get(), m_window);
 
+    // #27 — content scanner is constructed once and reused across projects.
+    // Started in loadProject(), stopped in closeProject(). The launcher
+    // path doesn't need it.
+    m_contentScanner = std::make_unique<ContentScanner>();
+
     m_initialized = true;
 
     // Run component tests (Phase 3)
@@ -701,6 +707,11 @@ const std::vector<ProjectManager::MediaLibraryEntry>& Engine::getLoadedMediaFile
     return m_projectManager ? m_projectManager->loadedMediaFiles() : kEmpty;
 }
 
+std::string Engine::resolveMediaPath(const std::string& storedPath) const {
+    if (!m_projectManager) return storedPath;
+    return m_projectManager->decoderPathFor(storedPath);
+}
+
 void Engine::removeMediaFromLibrary(const std::string& originalPath) {
     if (!m_projectManager) return;
 
@@ -846,6 +857,9 @@ void Engine::update() {
     if (m_animationSystem) {
         m_animationSystem->update(m_registry, static_cast<float>(deltaTime));
     }
+    // #27 — drain ContentScanner deltas just before DecodeSystem so any
+    // freshly-discovered file is decoder-ready this same frame.
+    drainContentScannerDeltas();
     if (m_decodeSystem) {
         m_decodeSystem->update(m_registry, static_cast<float>(deltaTime));
     }
@@ -2502,6 +2516,14 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         m_recentProjects->touch(filepath.string());
         m_recentProjects->save();
     }
+
+    // #27 — kick off the content/ poller now that we know the project
+    // root. Files that already exist in content/ but aren't in the
+    // library (because the user copied them in via Explorer / sync
+    // tools while the app was closed) will appear within a few ticks.
+    if (m_contentScanner && !filepath.empty()) {
+        m_contentScanner->start(filepath.parent_path());
+    }
     return true;
 }
 
@@ -2564,17 +2586,65 @@ void Engine::closeProject() {
         m_commandDispatcher->clearHistory();
     }
 
-    // 6. Clear PM state (m_projectPath, mediaLibrary, policy).
+    // 6. Stop the content scanner BEFORE clearing PM state — its worker
+    //    thread reads m_contentDir which won't be valid post-close.
+    if (m_contentScanner) {
+        m_contentScanner->stop();
+    }
+
+    // 7. Clear PM state (m_projectPath, mediaLibrary, policy).
     if (m_projectManager) {
         m_projectManager->closeProject();
     }
 
-    // 7. Re-show the launcher. The run loop already gates editor render
+    // 8. Re-show the launcher. The run loop already gates editor render
     //    + simulation work on m_showLauncher (see Engine::run /
     //    Engine::render), so this is the only flag flip required.
     showLauncher();
 
     std::cout << "[Engine] Project closed; launcher re-shown." << std::endl;
+}
+
+void Engine::drainContentScannerDeltas() {
+    if (!m_contentScanner || !m_projectManager) return;
+    auto deltas = m_contentScanner->drain();
+    if (deltas.empty()) return;
+
+    for (const auto& d : deltas) {
+        switch (d.kind) {
+            case ContentScanner::DeltaKind::Added: {
+                // Discovered files are Managed by definition (they live
+                // under the project's content/ tree). addMediaFile is
+                // idempotent so it's safe even if a Linked entry happens
+                // to point at the same file — the dedupe is via
+                // findEntry by string equality of `originalPath`.
+                if (m_projectManager->findEntry(d.relativePath) != nullptr) {
+                    // Already known (manual import got here first, or
+                    // we're seeing a file already in the loaded library).
+                    // Re-clear missingOnDisk in case the file came back.
+                    if (auto* e = m_projectManager->findEntry(d.relativePath); e) {
+                        e->missingOnDisk = false;
+                    }
+                    continue;
+                }
+                auto& entry = m_projectManager->addMediaFile(
+                    d.relativePath, ProjectManager::PathKind::Managed);
+                entry.missingOnDisk = false;
+                std::cout << "[ContentScanner] discovered " << d.relativePath << std::endl;
+                break;
+            }
+            case ContentScanner::DeltaKind::Removed: {
+                // Soft-mark missing — never erase. Brief unlink-then-rename
+                // windows during external sync would otherwise nuke user
+                // state.
+                if (auto* e = m_projectManager->findEntry(d.relativePath); e) {
+                    e->missingOnDisk = true;
+                    std::cout << "[ContentScanner] missing " << d.relativePath << std::endl;
+                }
+                break;
+            }
+        }
+    }
 }
 
 void Engine::saveProjectInteractive() {

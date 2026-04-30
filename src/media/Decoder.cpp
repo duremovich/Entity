@@ -81,6 +81,39 @@ static MediaType probeContainer(const std::string& filepath) {
 
 #endif
 
+std::string probeSourceCodecName(const std::string& filepath) {
+    std::filesystem::path path(filepath);
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    // Image sequences are detected by extension only — no FFmpeg probe.
+    if (ext == ".png") return "png";
+    if (ext == ".dpx") return "dpx";
+
+#ifdef HAVE_FFMPEG
+    if (ext == ".mov" || ext == ".mp4" || ext == ".m4v" ||
+        ext == ".avi" || ext == ".mkv" || ext == ".webm" || ext == ".hap") {
+        AVFormatContext* ctx = nullptr;
+        if (avformat_open_input(&ctx, filepath.c_str(), nullptr, nullptr) < 0) {
+            return {};
+        }
+        std::string name;
+        if (avformat_find_stream_info(ctx, nullptr) >= 0) {
+            for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+                AVCodecParameters* cp = ctx->streams[i]->codecpar;
+                if (cp->codec_type != AVMEDIA_TYPE_VIDEO) continue;
+                const char* n = avcodec_get_name(cp->codec_id);
+                if (n) name = n;
+                break;
+            }
+        }
+        avformat_close_input(&ctx);
+        return name;
+    }
+#endif
+    return {};
+}
+
 MediaType detectMediaType(const std::string& filepath) {
     std::filesystem::path path(filepath);
     std::string ext = path.extension().string();

@@ -4,11 +4,14 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/project/MediaVersioning.hpp"
 #include <imgui.h>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <unordered_map>
 #include <tuple>
+#include <vector>
 
 namespace entity {
 
@@ -17,6 +20,114 @@ MediaBinWindow::MediaBinWindow(Engine* engine)
 }
 
 namespace {
+
+// Classify an FFmpeg codec short name into the playback tier we use to
+// color-code the Codec column (#27). Unknowns fall through to OK so we
+// don't paint legitimate codecs red just because we forgot to list them.
+MediaBinWindow::CodecTier classifyCodec(std::string_view ffmpegName) {
+    if (ffmpegName.empty()) return MediaBinWindow::CodecTier::Unknown;
+    // HAP family — designed for realtime media servers.
+    if (ffmpegName == "hap")    return MediaBinWindow::CodecTier::Good;
+    // Intra-frame / image sequences — heavy but predictable.
+    if (ffmpegName == "prores") return MediaBinWindow::CodecTier::OK;
+    if (ffmpegName == "dnxhd")  return MediaBinWindow::CodecTier::OK;
+    if (ffmpegName == "cfhd")   return MediaBinWindow::CodecTier::OK;  // CineForm
+    if (ffmpegName == "png")    return MediaBinWindow::CodecTier::OK;
+    if (ffmpegName == "dpx")    return MediaBinWindow::CodecTier::OK;
+    if (ffmpegName == "tiff")   return MediaBinWindow::CodecTier::OK;
+    // Interframe / GOP codecs — seek-hostile, slow random-access.
+    if (ffmpegName == "h264")   return MediaBinWindow::CodecTier::Bad;
+    if (ffmpegName == "hevc")   return MediaBinWindow::CodecTier::Bad;
+    if (ffmpegName == "vp9")    return MediaBinWindow::CodecTier::Bad;
+    if (ffmpegName == "av1")    return MediaBinWindow::CodecTier::Bad;
+    if (ffmpegName == "mpeg4")  return MediaBinWindow::CodecTier::Bad;
+    return MediaBinWindow::CodecTier::OK;  // unknowns default to "playable but unverified"
+}
+
+// Pretty-print an FFmpeg codec name for the user-facing cell.
+std::string prettyCodec(std::string_view ffmpegName) {
+    if (ffmpegName == "hap")    return "HAP";
+    if (ffmpegName == "prores") return "ProRes";
+    if (ffmpegName == "dnxhd")  return "DNxHD";
+    if (ffmpegName == "cfhd")   return "CineForm";
+    if (ffmpegName == "h264")   return "H.264";
+    if (ffmpegName == "hevc")   return "H.265";
+    if (ffmpegName == "vp9")    return "VP9";
+    if (ffmpegName == "av1")    return "AV1";
+    if (ffmpegName == "mpeg4")  return "MPEG-4";
+    if (ffmpegName == "png")    return "PNG sequence";
+    if (ffmpegName == "dpx")    return "DPX sequence";
+    if (ffmpegName == "tiff")   return "TIFF sequence";
+    if (ffmpegName.empty())     return "(unknown)";
+    return std::string(ffmpegName);
+}
+
+ImVec4 colorForTier(MediaBinWindow::CodecTier tier) {
+    switch (tier) {
+        case MediaBinWindow::CodecTier::Good: return ImVec4(0.50f, 0.85f, 0.50f, 1.0f);
+        case MediaBinWindow::CodecTier::OK:   return ImVec4(0.90f, 0.78f, 0.45f, 1.0f);
+        case MediaBinWindow::CodecTier::Bad:  return ImVec4(0.95f, 0.45f, 0.45f, 1.0f);
+        default:                              return ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
+    }
+}
+
+// Group of MediaLibraryEntry pointers sharing a logical name (#27). The
+// "primary" is the latest-version member; tooltip shows all members.
+struct VersionGroup {
+    std::string groupKey;                                          // e.g. "act1/intro"
+    std::string logicalPath;                                       // e.g. "act1/intro.mov"
+    std::vector<const ProjectManager::MediaLibraryEntry*> members; // sorted ascending by version tag
+    const ProjectManager::MediaLibraryEntry* primary{nullptr};     // latest member (== members.back())
+    std::string latestTag;                                         // empty if group has only unversioned
+};
+
+// Build groups from the flat library. Order of groups in the output matches
+// the order their first entry appeared in the library (stable per-frame
+// across re-renders so rows don't jitter).
+std::vector<VersionGroup> buildGroups(
+    const std::vector<ProjectManager::MediaLibraryEntry>& entries) {
+    std::vector<VersionGroup> out;
+    std::unordered_map<std::string, std::size_t> indexByKey;
+    for (const auto& e : entries) {
+        std::string key = groupKeyOf(e.originalPath);
+        // Linked + Managed never cross-group: differentiate the key by
+        // pathKind tag.
+        if (e.pathKind == ProjectManager::PathKind::Linked) {
+            key.push_back('\x01');
+            key.append("linked");
+        } else {
+            key.push_back('\x01');
+            key.append("managed");
+        }
+
+        auto [it, inserted] = indexByKey.try_emplace(key, out.size());
+        if (inserted) {
+            VersionGroup g;
+            g.groupKey    = groupKeyOf(e.originalPath);
+            g.logicalPath = toLogicalPath(e.originalPath);
+            g.members.push_back(&e);
+            out.push_back(std::move(g));
+        } else {
+            out[it->second].members.push_back(&e);
+        }
+    }
+    // Sort each group's members by version tag and pick the highest as
+    // primary. Pure stable_sort keeps deterministic order for ties.
+    for (auto& g : out) {
+        std::stable_sort(g.members.begin(), g.members.end(),
+            [](const auto* a, const auto* b) {
+                const std::string aTag = parseVersion(
+                    std::filesystem::path(a->originalPath).stem().string()).tag;
+                const std::string bTag = parseVersion(
+                    std::filesystem::path(b->originalPath).stem().string()).tag;
+                return compareVersionTags(aTag, bTag) < 0;
+            });
+        g.primary = g.members.back();
+        g.latestTag = parseVersion(
+            std::filesystem::path(g.primary->originalPath).stem().string()).tag;
+    }
+    return out;
+}
 
 // Rendered in the Status column per entry. Returns true if the entry is
 // in a state where dragging to the timeline is legal.
@@ -50,44 +161,20 @@ StatusDisplay computeStatus(const ProjectManager::MediaLibraryEntry& entry,
         }
     }
 
-    // Drag is allowed whenever we have something playable: either the
-    // source is already HAP, or there's a transcode on disk. While a
-    // worker is running we block drag — the clip we'd create would use
-    // the non-HAP original (slow path) and the user probably just wants
-    // to wait.
+    // Drag is allowed for anything that isn't actively being transcoded
+    // (the worker may hold the source open exclusively). Non-HAP files
+    // with no transcode play via the slow path — acceptable now that
+    // pro-sync workflows (#27) put files in the bin without ever going
+    // through Import / auto-transcode.
     const bool running = d.hasActiveWorker &&
                          (d.transState == TranscodeState::Queued ||
                           d.transState == TranscodeState::Running);
-    d.dragAllowed = (d.isSourceAlreadyHap || d.hasTranscode) && !running;
+    d.dragAllowed = !running;
     return d;
 }
 
-// One-line label shown under the progress bar, or in place of it.
-void renderStatusCell(const StatusDisplay& d) {
-    if (d.hasActiveWorker && d.transState == TranscodeState::Running) {
-        char label[64];
-        if (d.framesTotal > 0) {
-            std::snprintf(label, sizeof(label), "%lld / %lld",
-                          static_cast<long long>(d.framesDone),
-                          static_cast<long long>(d.framesTotal));
-        } else {
-            std::snprintf(label, sizeof(label), "%lld frames",
-                          static_cast<long long>(d.framesDone));
-        }
-        ImGui::ProgressBar(d.progress01, ImVec2(-FLT_MIN, 0), label);
-    } else if (d.hasActiveWorker && d.transState == TranscodeState::Queued) {
-        ImGui::TextDisabled("Queued");
-    } else if (d.hasActiveWorker && d.transState == TranscodeState::Failed) {
-        ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f),
-                           "Failed: %s", ResultToString(d.failureResult));
-    } else if (d.hasTranscode) {
-        ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.5f, 1.0f), "HAP (transcoded)");
-    } else if (d.isSourceAlreadyHap) {
-        ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.5f, 1.0f), "HAP");
-    } else {
-        ImGui::TextDisabled("Source");  // non-HAP, not transcoded
-    }
-}
+// (renderStatusCell removed in #27 — Codec column now renders its own
+// cell inline so it can mix codec name + transcode lifecycle states.)
 
 } // namespace
 
@@ -282,10 +369,15 @@ void MediaBinWindow::render() {
     const std::vector<std::string> colorSpaces =
         (ocio && ocio->getConfig()) ? ocio->listColorSpaces() : std::vector<std::string>{};
 
-    if (ImGui::BeginTable("MediaBinTable", 7,
-                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+    // #27 — collapse versioned files into one row per logical name.
+    const std::vector<VersionGroup> groups = buildGroups(mediaFiles);
+
+    if (ImGui::BeginTable("MediaBinTable", 8,
+                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
         ImGui::TableSetupColumn("Filename",    ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Status",      ImGuiTableColumnFlags_WidthFixed, 160.0f);
+        ImGui::TableSetupColumn("Version",     ImGuiTableColumnFlags_WidthFixed, 80.0f);
+        ImGui::TableSetupColumn("Codec",       ImGuiTableColumnFlags_WidthFixed, 180.0f);
         ImGui::TableSetupColumn("Resolution",  ImGuiTableColumnFlags_WidthFixed, 100.0f);
         ImGui::TableSetupColumn("Duration",    ImGuiTableColumnFlags_WidthFixed, 80.0f);
         ImGui::TableSetupColumn("FPS",         ImGuiTableColumnFlags_WidthFixed, 60.0f);
@@ -294,9 +386,11 @@ void MediaBinWindow::render() {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
-        for (size_t i = 0; i < mediaFiles.size(); i++) {
-            const auto& entry = mediaFiles[i];
+        for (size_t i = 0; i < groups.size(); i++) {
+            const VersionGroup& group = groups[i];
+            const auto& entry = *group.primary;          // latest member
             const std::string& filepath = entry.originalPath;
+            const std::string& logicalPath = group.logicalPath;
 
             // Cache the "is HAP?" check. The underlying probe
             // (avformat_open_input + find_stream_info on a .mov) costs
@@ -304,31 +398,70 @@ void MediaBinWindow::render() {
             // render frame produced sustained ~17fps render during
             // playback. Codec doesn't change at runtime, so write-once
             // is enough.
-            bool isHap;
-            if (auto it = m_isHapCache.find(filepath); it != m_isHapCache.end()) {
-                isHap = it->second;
+            // Lazy probe of codec + metadata. Cached per filepath because
+            // each probe opens the file with FFmpeg (avformat + decoder
+            // open), which is 30-40ms on a 4K ProRes. Managed entries
+            // store project-relative paths, so resolve through the engine
+            // first to give FFmpeg an absolute path it can actually open.
+            const ProbeInfo* probe = nullptr;
+            if (auto it = m_probeCache.find(filepath); it != m_probeCache.end()) {
+                probe = &it->second;
             } else {
-                isHap = isHapMediaType(detectMediaType(filepath));
-                m_isHapCache.emplace(filepath, isHap);
+                ProbeInfo info;
+                const std::string absForProbe = m_engine->resolveMediaPath(filepath);
+                const MediaType mt = detectMediaType(absForProbe);
+                info.isHap = isHapMediaType(mt);
+                if (mt != MediaType::Unknown) {
+                    if (auto dec = createDecoder(mt); dec) {
+                        if (dec->open(absForProbe) == Result::Success) {
+                            info.width       = dec->getWidth();
+                            info.height      = dec->getHeight();
+                            info.framerate   = dec->getFrameRate();
+                            info.totalFrames = dec->getDuration();
+                            info.hasAlpha    = dec->hasAlpha();
+                            info.valid       = true;
+                        }
+                    }
+                }
+                info.sourceCodecName  = probeSourceCodecName(absForProbe);
+                info.tier             = classifyCodec(info.sourceCodecName);
+                info.displayCodecName = prettyCodec(info.sourceCodecName);
+                auto [it2, _] = m_probeCache.emplace(filepath, info);
+                probe = &it2->second;
             }
+            const bool isHap = probe->isHap;
             const StatusDisplay status = computeStatus(entry, tmgr, isHap);
 
             ImGui::TableNextRow();
 
-            // --- Filename ---
+            // --- Filename (display unversioned form) ---
             ImGui::TableSetColumnIndex(0);
-            const size_t lastSlash = filepath.find_last_of("/\\");
-            const std::string filename = (lastSlash != std::string::npos)
-                ? filepath.substr(lastSlash + 1) : filepath;
+            const size_t lastSlash = logicalPath.find_last_of("/\\");
+            const std::string displayName = (lastSlash != std::string::npos)
+                ? logicalPath.substr(lastSlash + 1) : logicalPath;
 
             ImGui::PushID(static_cast<int>(i));
-            ImGui::Selectable(filename.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+            ImGui::Selectable(displayName.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
 
-            // Tooltip with the full original path + where the transcode landed.
+            // Tooltip lists the resolved version + every member of the
+            // group so users can confirm what's on disk.
             if (ImGui::IsItemHovered()) {
                 ImGui::BeginTooltip();
-                ImGui::Text("Source: %s", filepath.c_str());
+                ImGui::Text("Logical: %s", logicalPath.c_str());
+                if (!group.latestTag.empty()) {
+                    ImGui::Text("Latest version: v%s", group.latestTag.c_str());
+                }
+                if (group.members.size() > 1) {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("%zu versions on disk:", group.members.size());
+                    for (auto it = group.members.rbegin(); it != group.members.rend(); ++it) {
+                        ImGui::BulletText("%s", (*it)->originalPath.c_str());
+                    }
+                } else {
+                    ImGui::Text("Source: %s", filepath.c_str());
+                }
                 if (!entry.transcodedPath.empty()) {
+                    ImGui::Separator();
                     ImGui::Text("Transcoded: %s", entry.transcodedPath.c_str());
                     ImGui::Text("Variant: %s", entry.variant.c_str());
                 }
@@ -344,14 +477,19 @@ void MediaBinWindow::render() {
                 ImGui::EndTooltip();
             }
 
-            // Drag source — gated to entries that have something playable
-            // and no in-flight worker. Payload stays the original path;
-            // onMediaDroppedOnTimeline resolves via decoderPathFor.
+            // Drag source — payload is the LOGICAL path (no _v tag) so
+            // dropped clips reference the group; the resolver auto-rolls
+            // to the latest version at decode-open. Per-clip pin/rollback
+            // UI lands in #29.
             if (status.dragAllowed) {
                 if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-                    ImGui::SetDragDropPayload("MEDIA_FILE", filepath.c_str(), filepath.size() + 1);
+                    ImGui::SetDragDropPayload("MEDIA_FILE", logicalPath.c_str(),
+                                              logicalPath.size() + 1);
                     ImGui::Text("Drag to Timeline:");
-                    ImGui::Text("%s", filename.c_str());
+                    ImGui::Text("%s", displayName.c_str());
+                    if (!group.latestTag.empty()) {
+                        ImGui::TextDisabled("(plays v%s — latest)", group.latestTag.c_str());
+                    }
                     ImGui::EndDragDropSource();
                 }
             }
@@ -424,11 +562,77 @@ void MediaBinWindow::render() {
             }
             ImGui::PopID();
 
-            // --- Status ---
+            // --- Version ---
             ImGui::TableSetColumnIndex(1);
-            renderStatusCell(status);
+            if (group.latestTag.empty()) {
+                ImGui::TextDisabled(group.members.size() > 1 ? "(multi)" : "—");
+            } else {
+                ImGui::Text("v%s", group.latestTag.c_str());
+                if (group.members.size() > 1 && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%zu versions; auto-rolls to v%s",
+                                      group.members.size(), group.latestTag.c_str());
+                }
+            }
 
-            // Metadata cache lookup — only populated once a clip exists.
+            // --- Codec (with color tier + transcode lifecycle overlay) ---
+            ImGui::TableSetColumnIndex(2);
+            if (status.hasActiveWorker &&
+                status.transState == TranscodeState::Running) {
+                // Active transcode: overlay progress on the cell.
+                char label[64];
+                if (status.framesTotal > 0) {
+                    std::snprintf(label, sizeof(label), "%lld / %lld",
+                                  static_cast<long long>(status.framesDone),
+                                  static_cast<long long>(status.framesTotal));
+                } else {
+                    std::snprintf(label, sizeof(label), "%lld frames",
+                                  static_cast<long long>(status.framesDone));
+                }
+                ImGui::ProgressBar(status.progress01, ImVec2(-FLT_MIN, 0), label);
+            } else if (status.hasActiveWorker &&
+                       status.transState == TranscodeState::Queued) {
+                ImGui::TextDisabled("Queued");
+            } else if (status.hasActiveWorker &&
+                       status.transState == TranscodeState::Failed) {
+                ImGui::TextColored(colorForTier(CodecTier::Bad),
+                                   "Failed: %s",
+                                   ResultToString(status.failureResult));
+            } else {
+                // Idle: codec name with playback-tier color. If a HAP
+                // transcode exists we'll be decoding HAP regardless of
+                // the source codec, so show "HAP" (green) rather than
+                // the source codec.
+                if (status.hasTranscode) {
+                    ImGui::TextColored(colorForTier(CodecTier::Good),
+                                       "HAP (transcoded)");
+                    if (probe && !probe->displayCodecName.empty() &&
+                        ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Source codec: %s",
+                                          probe->displayCodecName.c_str());
+                    }
+                } else {
+                    const char* name = (probe && !probe->displayCodecName.empty())
+                        ? probe->displayCodecName.c_str()
+                        : "(probing)";
+                    const CodecTier tier = probe ? probe->tier : CodecTier::Unknown;
+                    ImGui::TextColored(colorForTier(tier), "%s", name);
+                    if (tier == CodecTier::Bad && ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "Long-GOP codec — slow seeking and heavy CPU "
+                            "during playback. Right-click → Transcode to HAP "
+                            "for realtime performance.");
+                    } else if (tier == CodecTier::OK && ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "Intra-frame codec — playable but heavy. "
+                            "Transcoding to HAP gives the best playback.");
+                    }
+                }
+            }
+
+            // Metadata: prefer clip-derived (most accurate, includes any
+            // timeline-side adjustments); fall back to the probe cache so
+            // scanner-discovered files (no clip yet) still display
+            // resolution / duration / fps / alpha.
             bool hasMetadata = false;
             uint32_t width = 0, height = 0;
             FrameNumber duration = 0;
@@ -437,13 +641,20 @@ void MediaBinWindow::render() {
             if (auto it = metadataCache.find(filepath); it != metadataCache.end()) {
                 hasMetadata = true;
                 std::tie(width, height, framerate, duration, hasAlpha) = it->second;
+            } else if (probe && probe->valid) {
+                hasMetadata = true;
+                width     = probe->width;
+                height    = probe->height;
+                framerate = probe->framerate;
+                duration  = probe->totalFrames;
+                hasAlpha  = probe->hasAlpha;
             }
 
-            ImGui::TableSetColumnIndex(2);
+            ImGui::TableSetColumnIndex(3);
             if (hasMetadata) ImGui::Text("%ux%u", width, height);
             else             ImGui::TextDisabled("--");
 
-            ImGui::TableSetColumnIndex(3);
+            ImGui::TableSetColumnIndex(4);
             if (hasMetadata && framerate > 0) {
                 const double durationSec = static_cast<double>(duration) / framerate;
                 const int minutes = static_cast<int>(durationSec) / 60;
@@ -454,16 +665,16 @@ void MediaBinWindow::render() {
                 ImGui::TextDisabled("--");
             }
 
-            ImGui::TableSetColumnIndex(4);
+            ImGui::TableSetColumnIndex(5);
             if (hasMetadata) ImGui::Text("%.2f", framerate);
             else             ImGui::TextDisabled("--");
 
-            ImGui::TableSetColumnIndex(5);
+            ImGui::TableSetColumnIndex(6);
             if (hasMetadata) ImGui::Text("%s", hasAlpha ? "Yes" : "No");
             else             ImGui::TextDisabled("--");
 
             // --- Color space override (Phase C.12 #9) ---
-            ImGui::TableSetColumnIndex(6);
+            ImGui::TableSetColumnIndex(7);
             ImGui::PushID(static_cast<int>(i) ^ 0x6359);  // distinct from row PushID
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ocio && ocio->getConfig()) {

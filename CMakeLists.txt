@@ -199,6 +199,8 @@ target_sources(EntityMediaCore
         # Project
         src/project/ProjectSerializer.cpp
         src/project/ProjectManager.cpp
+        src/project/MediaVersioning.cpp
+        src/project/ContentScanner.cpp
         src/project/RecentProjects.cpp
 
         # Command System
