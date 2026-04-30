@@ -45,11 +45,19 @@ include(GoogleTest)
 gtest_discover_tests(EntityMediaTests)
 
 # Dev-time fixture regeneration tool (not wired into CTest).
-add_executable(generate_hap_fixture tools/generate_hap_fixture.cpp)
-target_link_libraries(generate_hap_fixture PRIVATE EntityMediaCore)
+# Pure FFmpeg consumers — gate on HAVE_FFMPEG and attach FFmpeg explicitly.
+# EntityMediaCore exposes FFmpeg as PRIVATE so its includes don't propagate;
+# locally vcpkg's global include path masks this, but CI uses FFMPEG_ROOT
+# (gyan.dev shared build) which lives outside any global search path.
+if(HAVE_FFMPEG)
+    add_executable(generate_hap_fixture tools/generate_hap_fixture.cpp)
+    target_link_libraries(generate_hap_fixture PRIVATE EntityMediaCore ${FFMPEG_LIBRARIES})
+    target_include_directories(generate_hap_fixture PRIVATE ${FFMPEG_INCLUDE_DIRS})
 
-add_executable(probe_codecs tools/probe_codecs.cpp)
-target_link_libraries(probe_codecs PRIVATE EntityMediaCore)
+    add_executable(probe_codecs tools/probe_codecs.cpp)
+    target_link_libraries(probe_codecs PRIVATE EntityMediaCore ${FFMPEG_LIBRARIES})
+    target_include_directories(probe_codecs PRIVATE ${FFMPEG_INCLUDE_DIRS})
+endif()
 
 # ============================================================================
 # Integration Tests (headless scripts driving the full app)
