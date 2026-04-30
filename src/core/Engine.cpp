@@ -2449,6 +2449,13 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     bool ok = m_projectManager->load(filepath);
     if (!ok) return false;
 
+    // Drop undo/redo history — the previous project's commands point at
+    // entities that the load just replaced. Without this, a Ctrl+Z
+    // post-load would replay against a stale entity ID.
+    if (m_commandDispatcher) {
+        m_commandDispatcher->clearHistory();
+    }
+
     // Point the transcode cache at <projectDir>/.cache/hap so subsequent
     // enqueue() writes land next to the project, not in %TEMP%.
     updateTranscodeCacheDir();

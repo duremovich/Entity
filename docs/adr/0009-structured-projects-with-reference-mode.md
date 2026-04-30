@@ -5,10 +5,19 @@
 - **Context source:** strategic discussion comparing Disguise's rigid
   per-show folder structure vs. QLab/Watchout's free-floating show file.
   Working plan: `~/.claude/plans/i-have-a-question-async-ripple.md`.
-- **Implemented by:** *forward-looking* — landed across the structured-
-  projects Phase D epic (filed alongside this ADR). Schema v7 +
-  `ProjectManager::createNew()` ship first; Project Launcher, import-
-  flow rewrite, and archive-on-transcode come next.
+- **Implemented by:** GitHub epic
+  [#20](https://github.com/duremovich/Entity/issues/20). Shipped
+  across ten commits on `master`:
+  - `a7b64f7` — schema v7 + `ProjectManager::createNew()`
+  - `03f9fde` — Project Launcher + Recent Projects
+  - `2c496e2` — Copy/Link import flow + Managed path resolution
+  - `7d0b399` — TranscodeManager repoint + archive-on-transcode
+  - `1bc0909` — Collect Linked → Managed
+  - `4e340b0` — Save Project As Bundle
+  - `eb00083` — Orphan-showfile recovery (Rebuild + Find Missing)
+  - `ef0bdfc` — Restore Original from archive
+  - `95b851b` — `.cache/` discipline + `docs/reference/PROJECT_LAYOUT.md`
+  - `0451d56` — File > Close Project returns to launcher
 
 ## Context
 
