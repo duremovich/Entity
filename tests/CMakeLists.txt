@@ -73,9 +73,14 @@ function(entity_add_integration_test name script)
         COMMAND $<TARGET_FILE:EntityMediaEditor> --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/${script}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
+    # ENTITY_FORCE_WARP locks D3D12 to the software rasterizer so golden hashes
+    # match across machines (hardware GPUs produce different bit patterns for
+    # the same draw calls). Goldens under tests/goldens/ are recorded against
+    # WARP — running these tests on a hardware adapter will mismatch.
     set_tests_properties(integration_${name} PROPERTIES
         LABELS "integration"
         TIMEOUT 60
+        ENVIRONMENT "ENTITY_FORCE_WARP=1"
     )
 endfunction()
 

@@ -149,6 +149,12 @@ jobs:
       - name: Run all tests (unit + integration)
         shell: bash
         working-directory: build
+        # ENTITY_FORCE_WARP locks D3D12 to the software rasterizer for
+        # cross-machine determinism on golden-hash integration tests. CI runners
+        # have no GPU and would default to WARP anyway; setting it explicitly
+        # makes local repros (`ENTITY_FORCE_WARP=1 ctest ...`) match.
+        env:
+          ENTITY_FORCE_WARP: 1
         run: ctest -C Release --output-on-failure
 
       - name: Upload test output on failure

@@ -222,13 +222,14 @@ void D3D12Renderer::shutdown() {
 
     std::cout << "Shutting down D3D12 renderer..." << std::endl;
 
-    // Shutdown ImGui
-    shutdownImGui();
-
-    // Wait for GPU to finish all work
+    // Drain the GPU before releasing any resources. This must happen before
+    // shutdownImGui(), which releases ImGui's D3D12 descriptors — releasing
+    // them with frames still in flight intermittently hung the shutdown
+    // fence wait on WARP.
     waitForGpu();
 
-    // Unmap constant buffers
+    shutdownImGui();
+
     if (m_constantBuffer && m_constantBufferData) {
         m_constantBuffer->Unmap(0, nullptr);
         m_constantBufferData = nullptr;
@@ -239,30 +240,24 @@ void D3D12Renderer::shutdown() {
         m_mappingSurfaceConstantRingMapped = nullptr;
     }
 
-    // Close fence event
     if (m_fenceEvent) {
         CloseHandle(m_fenceEvent);
         m_fenceEvent = nullptr;
     }
 
-    // Release the video texture pool (must happen before the device below).
     if (m_textureUploader) {
         m_textureUploader->shutdown();
         m_textureUploader.reset();
     }
 
-    // Release legacy video upload buffer
     m_videoUploadBuffer.Reset();
 
-    // Release compose target resources
     for (auto& target : m_composeTargets) {
         target.resource.Reset();
         target.rtvHeap.Reset();
     }
     m_composeTargets.clear();
 
-    // Release output windows (swap chains + GLFW windows) — Phase C #1.
-    // GPU has already been waited on above, so back buffers are free.
     for (auto& ow : m_outputWindows) {
         if (!ow.active) continue;
         for (uint32_t i = 0; i < FRAME_COUNT; ++i) {

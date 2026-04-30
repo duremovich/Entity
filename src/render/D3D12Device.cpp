@@ -3,6 +3,8 @@
  */
 
 #include "entity/render/D3D12Device.hpp"
+#include <cstdlib>
+#include <dxgi1_4.h>
 #include <iostream>
 
 namespace entity {
@@ -27,8 +29,29 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
     (void)enableDebugLayer;
 #endif
 
+    // ENTITY_FORCE_WARP=1 selects the Windows Advanced Rasterization Platform
+    // (software adapter). Used by integration tests on CI for cross-machine
+    // determinism — hardware GPUs produce different bit patterns for the same
+    // draw calls (filtering, blend rounding), which breaks pixel-exact golden
+    // hashes. WARP is byte-deterministic across machines.
+    ComPtr<IDXGIAdapter> adapter;
+    const char* forceWarp = std::getenv("ENTITY_FORCE_WARP");
+    if (forceWarp && forceWarp[0] != '0' && forceWarp[0] != '\0') {
+        ComPtr<IDXGIFactory4> factory;
+        if (SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) {
+            if (SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) {
+                std::cout << "D3D12 adapter: WARP (ENTITY_FORCE_WARP=" << forceWarp << ")" << std::endl;
+            } else {
+                std::cerr << "ENTITY_FORCE_WARP set but EnumWarpAdapter failed; using default adapter" << std::endl;
+                adapter.Reset();
+            }
+        } else {
+            std::cerr << "ENTITY_FORCE_WARP set but CreateDXGIFactory2 failed; using default adapter" << std::endl;
+        }
+    }
+
     HRESULT hr = D3D12CreateDevice(
-        nullptr,                    // Use default adapter
+        adapter.Get(),              // null = default adapter; non-null = WARP
         D3D_FEATURE_LEVEL_11_0,     // Minimum feature level
         IID_PPV_ARGS(&m_device)
     );
