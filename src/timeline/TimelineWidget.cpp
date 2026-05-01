@@ -81,14 +81,6 @@ void TimelineWidget::render() {
     // Clean up stale entity references in expansion state
     {
         auto& reg = m_timeline->getRegistry();
-        for (auto it = m_expandedClips.begin(); it != m_expandedClips.end(); ) {
-            entt::entity entity = static_cast<entt::entity>(*it);
-            if (!reg.valid(entity)) {
-                it = m_expandedClips.erase(it);
-            } else {
-                ++it;
-            }
-        }
         for (auto it = m_expandedTracks.begin(); it != m_expandedTracks.end(); ) {
             entt::entity entity = static_cast<entt::entity>(*it);
             if (!reg.valid(entity)) {
@@ -122,21 +114,14 @@ void TimelineWidget::render() {
         bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
         tracksContentHeight += TRACK_HEIGHT + TRACK_PADDING;
 
-        if (trackExpanded) {
-            const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
-            if (track) {
-                for (entt::entity clipEntity : track->clips) {
-                    tracksContentHeight += HEADER_ROW_HEIGHT;  // Clip row
-
-                    uint32_t clipId = static_cast<uint32_t>(clipEntity);
-                    bool clipExpanded = m_expandedClips.count(clipId) > 0 || m_timeline->isClipExpanded(clipEntity);
-                    if (clipExpanded) {
-                        tracksContentHeight += 6 * PROPERTY_ROW_HEIGHT;  // 6 property rows
-                    }
-                }
-            }
+        // Expanded track adds room for the playhead clip's property panel
+        // (6 rows × PROPERTY_ROW_HEIGHT). When no clip overlaps the playhead
+        // on this track, no extra height — expansion is empty.
+        if (trackExpanded && findClipAtPlayhead(tracks[i]) != entt::null) {
+            tracksContentHeight += 6 * PROPERTY_ROW_HEIGHT;
         }
     }
+    (void)registry;
 
     // Reserve space for controls at bottom (approximately 40 pixels)
     float controlsHeight = 40.0f;
@@ -159,10 +144,14 @@ void TimelineWidget::render() {
 
     // === STICKY RULER (Fixed at top, right side) ===
     // NoNav: arrow keys are owned by Engine::handleKey(). NoScrollWithMouse so
-    // the wheel scrolls the tracks child (below), not the ruler independently;
-    // the ruler's scroll is mirrored from the tracks child via m_syncScrollX.
+    // the wheel scrolls the tracks child (below), not the ruler independently.
+    // NoScrollbar hides the user-facing scrollbar widget — internal SetScrollX
+    // below still mirrors from the tracks child via m_syncScrollX. Without
+    // NoScrollbar, dragging the ruler's scrollbar desyncs from the tracks
+    // scroll and the playhead renders as a diagonal line (top end uses ruler
+    // scroll, bottom end uses tracks scroll).
     ImGui::BeginChild("TimelineRuler", ImVec2(timelineContentWidth, RULER_HEIGHT), false,
-                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
     ImGui::SetScrollX(m_syncScrollX);
 
     // Save ruler position for playhead rendering
@@ -312,6 +301,24 @@ float TimelineWidget::timeToPixel(Timecode time) const {
 Timecode TimelineWidget::pixelToTime(float pixel) const {
     float seconds = pixel / m_pixelsPerSecond;
     return static_cast<Timecode>(seconds * 1000000.0f);  // Timecode is in microseconds
+}
+
+entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const {
+    if (!m_timeline) return entt::null;
+    auto& registry = m_timeline->getRegistry();
+    const auto* track = registry.try_get<TimelineTrack>(trackEntity);
+    if (!track) return entt::null;
+
+    FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    for (entt::entity clipEntity : track->clips) {
+        const auto* clip = registry.try_get<Clip>(clipEntity);
+        if (!clip) continue;
+        if (currentFrame >= clip->startFrame &&
+            currentFrame <  clip->startFrame + clip->duration) {
+            return clipEntity;
+        }
+    }
+    return entt::null;
 }
 
 void TimelineWidget::ensurePlayheadVisible() {

@@ -8,6 +8,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <shellscalingapi.h>
+#pragma comment(lib, "shcore.lib")
+#endif
+
 /**
  * Entity Media Server - Editor Application
  *
@@ -32,6 +38,17 @@ void printHelp() {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Declare per-monitor DPI awareness BEFORE GLFW creates a window. Without
+    // this, Windows silently virtualizes the app at display-scale != 100%
+    // (e.g. 150% scaling), which causes a multiplicative drift between mouse
+    // input and rendering — visible as buttons whose hit-test rects move
+    // away from their visual position the further down the window you go.
+    // Per-monitor V2 lets the OS keep ImGui's mouse coords and render coords
+    // in lock-step at any scale and across multi-monitor setups.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+#endif
+
     std::cout << "========================================" << std::endl;
     std::cout << "Entity Media Server - Editor" << std::endl;
     std::cout << "Version 0.1.0" << std::endl;

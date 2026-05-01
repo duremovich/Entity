@@ -135,17 +135,14 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
         // Calculate track Y position including offset from previous expanded tracks
         float trackY = windowPos.y + cumulativeY;
 
-        // Calculate this track's height (including expanded clips)
+        // Calculate this track's height. Track expansion now adds the
+        // property panel under the track (driven by the playhead clip), not
+        // a per-clip panel — see findClipAtPlayhead().
         float trackHeight = TRACK_HEIGHT;
-        for (entt::entity clipEntity : track->clips) {
-            bool isExpanded = m_expandedClips.count(static_cast<uint32_t>(clipEntity)) > 0 ||
-                              m_timeline->isClipExpanded(clipEntity);
-            bool isSelected = (clipEntity == m_selectedClip) ||
-                              (clipEntity == m_timeline->getSelectedClip());
-            if (isExpanded && isSelected) {
-                trackHeight = TRACK_HEIGHT + 6 * PROPERTY_ROW_HEIGHT;
-                break;
-            }
+        bool trackExpanded = m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
+                             m_timeline->isTrackExpanded(trackEntity);
+        if (trackExpanded && findClipAtPlayhead(trackEntity) != entt::null) {
+            trackHeight = TRACK_HEIGHT + 6 * PROPERTY_ROW_HEIGHT;
         }
 
         // Check if mouse Y is within this track (including expanded area)
@@ -165,15 +162,9 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
                 float clipX = windowPos.x + timeToPixel(startTime);
                 float clipWidth = timeToPixel(endTime - startTime);
 
-                // Calculate this clip's height (including expanded property tracks)
-                float clipHeight = TRACK_HEIGHT;
-                bool isExpanded = m_expandedClips.count(static_cast<uint32_t>(clipEntity)) > 0 ||
-                                  m_timeline->isClipExpanded(clipEntity);
-                bool isSelected = (clipEntity == m_selectedClip) ||
-                                  (clipEntity == m_timeline->getSelectedClip());
-                if (isExpanded && isSelected) {
-                    clipHeight = TRACK_HEIGHT + 6 * PROPERTY_ROW_HEIGHT;
-                }
+                // Clips report their full height (the track's expanded
+                // property panel area is shared, not per-clip).
+                float clipHeight = trackHeight;
 
                 // Check if mouse is within clip bounds (including expanded area)
                 if (mousePos.x >= clipX && mousePos.x <= clipX + clipWidth &&

@@ -133,6 +133,20 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Set keyboard input callback
     glfwSetKeyCallback(m_window, keyCallback);
 
+    // Nudge the window size to force GLFW to fire its size/framebuffer
+    // callbacks once before ImGui starts rendering. On Windows with display
+    // scaling != 100%, the very first frame after window creation can land
+    // with stale sizes — ImGui's DisplaySize hasn't yet caught up to the
+    // DPI-scaled framebuffer, so mouse coords and rendering disagree until
+    // the user manually resizes the window. The nudge below fires the
+    // necessary callbacks immediately.
+    if (!headless) {
+        int nw, nh;
+        glfwGetWindowSize(m_window, &nw, &nh);
+        glfwSetWindowSize(m_window, nw + 1, nh);
+        glfwSetWindowSize(m_window, nw, nh);
+    }
+
     // Load machine-global settings up front -- the Renderer service sizes
     // its FrameCache from m_settings.frameCacheBytes, and the Preferences
     // dialog (wired below) reads the loaded values to populate its initial
@@ -1191,11 +1205,11 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     bool ctrlPressed = (mods & GLFW_MOD_CONTROL) != 0;
     bool shiftPressed = (mods & GLFW_MOD_SHIFT) != 0;
 
-    // Handle ESC — live-performance safety. If any Physical output is
-    // currently driving a display, the first ESC disables them all so the
-    // editor becomes visible again. Only if no outputs are live does ESC
-    // exit the app. Avoids the "accidental ESC during a show kills the
-    // whole program" footgun.
+    // ESC = panic stop for live performances. If any Physical output is
+    // currently driving a display, ESC disables them all so the editor
+    // becomes visible again. Otherwise ESC is a no-op — closing the app
+    // is reserved for the OS close button / File menu / Alt+F4 so an
+    // accidental ESC mid-show can't kill the whole program.
     if (key == GLFW_KEY_ESCAPE) {
         bool killedAny = false;
         if (m_outputManager) {
@@ -1210,9 +1224,6 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
         }
         if (killedAny) {
             std::cout << "ESC pressed: disabled active physical outputs." << std::endl;
-        } else {
-            std::cout << "ESC pressed, requesting exit..." << std::endl;
-            requestExit();
         }
         return;
     }

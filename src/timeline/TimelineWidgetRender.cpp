@@ -186,10 +186,9 @@ void TimelineWidget::renderTracks() {
         }
     }
 
-    // Calculate cumulative Y offset for tracks to account for expanded tracks/clips
+    // Calculate cumulative Y offset for tracks (incl. expanded property panels)
     float cumulativeY = 0.0f;
     const auto& tracks = m_timeline->getTracks();
-    auto& registry = m_timeline->getRegistry();
 
     for (size_t i = 0; i < tracks.size(); ++i) {
         // Calculate track Y position including offset from previous expanded tracks
@@ -201,32 +200,21 @@ void TimelineWidget::renderTracks() {
         uint32_t trackId = static_cast<uint32_t>(tracks[i]);
         bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
 
-        const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
-
         renderTrack(tracks[i], static_cast<int>(i), trackBasePos, trackHeight);
 
-        // Render expanded clip content (property tracks with keyframe diamonds)
-        // This must match the Y positions used in the header panel
-        if (trackExpanded && track) {
-            // Clip rows start right after track (no padding between track and first clip)
-            float clipContentY = cumulativeY + trackHeight;
-
-            for (entt::entity clipEntity : track->clips) {
-                // Space for clip header row (no visual on timeline, just spacing)
-                clipContentY += HEADER_ROW_HEIGHT;
-
-                uint32_t clipId = static_cast<uint32_t>(clipEntity);
-                bool clipExpanded = m_expandedClips.count(clipId) > 0 || m_timeline->isClipExpanded(clipEntity);
-                if (clipExpanded) {
-                    // Render property tracks (keyframe diamonds) at this Y position
-                    float propY = baseWindowPos.y + clipContentY;
-                    renderPropertyTracks(clipEntity, static_cast<int>(i), baseWindowPos, propY);
-                    clipContentY += 6 * PROPERTY_ROW_HEIGHT;
-                }
+        // Track expansion: render the property panel (keyframe diamonds in
+        // the body; the header panel side renders property names + nav arrows)
+        // for the clip currently at the playhead on this track. If no clip
+        // overlaps the playhead, the expanded area is empty.
+        if (trackExpanded) {
+            entt::entity clipAtPlayhead = findClipAtPlayhead(tracks[i]);
+            if (clipAtPlayhead != entt::null) {
+                float propY = baseWindowPos.y + cumulativeY + trackHeight;
+                renderPropertyTracks(clipAtPlayhead, static_cast<int>(i), baseWindowPos, propY);
+                cumulativeY += trackHeight + 6 * PROPERTY_ROW_HEIGHT + TRACK_PADDING;
+            } else {
+                cumulativeY += trackHeight + TRACK_PADDING;
             }
-
-            // Update cumulative Y to account for all expanded content + padding
-            cumulativeY = clipContentY + TRACK_PADDING;
         } else {
             cumulativeY += trackHeight + TRACK_PADDING;
         }
@@ -385,10 +373,6 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) return TRACK_HEIGHT;
 
-    // Check if this clip is expanded (check both local and Timeline state)
-    uint32_t entityId = static_cast<uint32_t>(clipEntity);
-    bool isExpanded = m_expandedClips.count(entityId) > 0 || m_timeline->isClipExpanded(clipEntity);
-
     // Use baseWindowPos.y directly - it already includes cumulative offset from renderTracks
     float trackY = baseWindowPos.y;
 
@@ -416,60 +400,37 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     drawList->AddRectFilled(clipMin, clipMax, clipColor, 3.0f);
     drawList->AddRect(clipMin, clipMax, IM_COL32(120, 160, 220, 255), 3.0f, 0, 2.0f);
 
-    // Draw twirl-down triangle for expansion (only when selected)
-    if (isSelected && clipWidth > 30) {
-        float triSize = 6.0f;
-        float triX = clipMin.x + 8.0f;
-        float triY = clipMin.y + 8.0f;
-
-        ImVec2 triPoints[3];
-        if (isExpanded) {
-            // Down-pointing triangle (expanded)
-            triPoints[0] = ImVec2(triX - triSize, triY - triSize/2);
-            triPoints[1] = ImVec2(triX + triSize, triY - triSize/2);
-            triPoints[2] = ImVec2(triX, triY + triSize/2);
-        } else {
-            // Right-pointing triangle (collapsed)
-            triPoints[0] = ImVec2(triX - triSize/2, triY - triSize);
-            triPoints[1] = ImVec2(triX + triSize/2, triY);
-            triPoints[2] = ImVec2(triX - triSize/2, triY + triSize);
-        }
-        drawList->AddTriangleFilled(triPoints[0], triPoints[1], triPoints[2], IM_COL32(255, 255, 255, 200));
-
-        // Handle click on twirl-down
-        ImVec2 triHitMin(triX - triSize - 4, triY - triSize - 4);
-        ImVec2 triHitMax(triX + triSize + 4, triY + triSize + 4);
-        if (ImGui::IsMouseClicked(0)) {
-            ImVec2 mousePos = ImGui::GetMousePos();
-            if (mousePos.x >= triHitMin.x && mousePos.x <= triHitMax.x &&
-                mousePos.y >= triHitMin.y && mousePos.y <= triHitMax.y) {
-                if (isExpanded) {
-                    m_expandedClips.erase(entityId);
-                } else {
-                    m_expandedClips.insert(entityId);
-                }
-            }
-        }
-    }
-
-    // Draw clip label (filename without path)
+    // Draw clip label — full basename, truncated with ellipsis only when the
+    // current zoom × clip width can't fit it. The previous implementation
+    // hard-capped at 20 chars regardless of available space.
     size_t lastSlash = clip->filepath.find_last_of("/\\");
     std::string filename = (lastSlash != std::string::npos)
         ? clip->filepath.substr(lastSlash + 1)
         : clip->filepath;
 
-    // Truncate filename if too long
-    if (filename.length() > 20) {
-        filename = filename.substr(0, 17) + "...";
+    constexpr float kLabelPaddingPx = 5.0f;
+    constexpr float kLabelRightPadPx = 4.0f;
+    float availableWidth = (clipMax.x - clipMin.x) - kLabelPaddingPx - kLabelRightPadPx;
+    if (availableWidth > 0.0f) {
+        ImVec2 fullSize = ImGui::CalcTextSize(filename.c_str());
+        if (fullSize.x > availableWidth) {
+            // Trim chars off the end until "<trimmed>..." fits, then commit.
+            std::string trimmed = filename;
+            const char* ell = "...";
+            while (!trimmed.empty() &&
+                   ImGui::CalcTextSize((trimmed + ell).c_str()).x > availableWidth) {
+                trimmed.pop_back();
+            }
+            filename = trimmed.empty() ? std::string() : trimmed + ell;
+        }
+        if (!filename.empty()) {
+            drawList->AddText(
+                ImVec2(clipMin.x + kLabelPaddingPx, clipMin.y + 4.0f),
+                IM_COL32(255, 255, 255, 255),
+                filename.c_str()
+            );
+        }
     }
-
-    // Offset label if twirl-down is visible
-    float labelOffsetX = isSelected ? 20.0f : 5.0f;
-    drawList->AddText(
-        ImVec2(clipMin.x + labelOffsetX, clipMin.y + 4.0f),
-        IM_COL32(255, 255, 255, 255),
-        filename.c_str()
-    );
 
     // Per-clip buffer-fill bar removed in Phase C.10 — frames now live in
     // an engine-global FrameCache, so per-clip fill % is no longer a
@@ -799,7 +760,6 @@ void TimelineWidget::renderTrackHeaderPanel(float panelHeight, float verticalScr
     drawList->AddRectFilled(panelMin, panelMax, IM_COL32(40, 42, 48, 255));
 
     const auto& tracks = m_timeline->getTracks();
-    auto& registry = m_timeline->getRegistry();
 
     float currentY = windowPos.y;
 
@@ -889,110 +849,35 @@ float TimelineWidget::renderTrackHeaderRow(entt::entity trackEntity, int trackIn
 
     float totalHeight = TRACK_HEIGHT + TRACK_PADDING;
 
-    // Render expanded clip rows
+    // Track-expanded: render the property panel (per-property name + nav
+    // arrows + keyframe diamond + value) for the clip at the playhead. The
+    // body side draws the keyframe-diamond rows with matching Y positions.
     if (isExpanded) {
-        float clipY = rowY + TRACK_HEIGHT;
-        for (entt::entity clipEntity : track->clips) {
-            float clipHeight = renderClipHeaderRow(clipEntity, clipY);
-            clipY += clipHeight;
-            totalHeight += clipHeight;
+        entt::entity clipAtPlayhead = findClipAtPlayhead(trackEntity);
+        if (clipAtPlayhead != entt::null) {
+            float propsHeight = renderClipPropertyPanel(clipAtPlayhead, rowY + TRACK_HEIGHT);
+            totalHeight += propsHeight;
         }
     }
 
     return totalHeight;
 }
 
-float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
-    if (!m_timeline) return HEADER_ROW_HEIGHT;
+float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float rowY) {
+    if (!m_timeline) return 0.0f;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetWindowPos();
     auto& registry = m_timeline->getRegistry();
 
     const auto* clip = registry.try_get<Clip>(clipEntity);
-    if (!clip) return HEADER_ROW_HEIGHT;
+    if (!clip) return 0.0f;
 
-    uint32_t clipId = static_cast<uint32_t>(clipEntity);
-    bool isExpanded = m_expandedClips.count(clipId) > 0 || m_timeline->isClipExpanded(clipEntity);
-    bool isSelected = (clipEntity == m_selectedClip) || (clipEntity == m_timeline->getSelectedClip());
-
-    // Clip row background (indented)
-    float headerX = windowPos.x + 2 + INDENT_WIDTH;
-    ImVec2 headerMin(headerX, rowY);
-    ImVec2 headerMax(headerX + TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH, rowY + HEADER_ROW_HEIGHT);
-
-    ImU32 bgColor = isSelected
-        ? IM_COL32(60, 80, 120, 255)
-        : IM_COL32(48, 50, 56, 255);
-    drawList->AddRectFilled(headerMin, headerMax, bgColor);
-
-    // Twirl-down triangle
-    float triX = headerX + 10.0f;
-    float triY = rowY + HEADER_ROW_HEIGHT / 2.0f;
-    float triSize = 4.0f;
-
-    ImVec2 triPoints[3];
-    if (isExpanded) {
-        // Down-pointing triangle (expanded)
-        triPoints[0] = ImVec2(triX - triSize, triY - triSize / 2);
-        triPoints[1] = ImVec2(triX + triSize, triY - triSize / 2);
-        triPoints[2] = ImVec2(triX, triY + triSize / 2);
-    } else {
-        // Right-pointing triangle (collapsed)
-        triPoints[0] = ImVec2(triX - triSize / 2, triY - triSize);
-        triPoints[1] = ImVec2(triX + triSize / 2, triY);
-        triPoints[2] = ImVec2(triX - triSize / 2, triY + triSize);
-    }
-    drawList->AddTriangleFilled(triPoints[0], triPoints[1], triPoints[2], IM_COL32(150, 150, 150, 255));
-
-    // Clip name (filename without path)
-    size_t lastSlash = clip->filepath.find_last_of("/\\");
-    std::string filename = (lastSlash != std::string::npos)
-        ? clip->filepath.substr(lastSlash + 1)
-        : clip->filepath;
-
-    // Truncate if too long
-    if (filename.length() > 16) {
-        filename = filename.substr(0, 13) + "...";
-    }
-
-    drawList->AddText(ImVec2(headerX + 22, rowY + 4),
-                      IM_COL32(200, 200, 200, 255), filename.c_str());
-
-    // Handle click on twirl-down triangle
-    if (ImGui::IsMouseClicked(0)) {
-        ImVec2 mousePos = ImGui::GetMousePos();
-        ImVec2 triHitMin(triX - triSize - 6, triY - triSize - 6);
-        ImVec2 triHitMax(triX + triSize + 6, triY + triSize + 6);
-
-        if (mousePos.x >= triHitMin.x && mousePos.x <= triHitMax.x &&
-            mousePos.y >= triHitMin.y && mousePos.y <= triHitMax.y) {
-            if (isExpanded) {
-                m_expandedClips.erase(clipId);
-            } else {
-                m_expandedClips.insert(clipId);
-            }
-        }
-    }
-
-    // Handle click on clip row to select
-    if (ImGui::IsMouseClicked(0)) {
-        ImVec2 mousePos = ImGui::GetMousePos();
-        if (mousePos.x >= headerMin.x && mousePos.x <= headerMax.x &&
-            mousePos.y >= headerMin.y && mousePos.y <= headerMax.y) {
-            m_selectedClip = clipEntity;
-            m_timeline->setSelectedClip(clipEntity);
-            m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
-        }
-    }
-
-    float totalHeight = HEADER_ROW_HEIGHT;
-
-    // Render expanded property rows
-    if (isExpanded) {
-        float propY = rowY + HEADER_ROW_HEIGHT;
-        float propX = headerX + INDENT_WIDTH;
-        float propWidth = TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH * 2;
+    // Render property rows directly under the track, one INDENT_WIDTH in.
+    {
+        float propY = rowY;
+        float propX = windowPos.x + 2 + INDENT_WIDTH;
+        float propWidth = TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH;
 
         // Get animation data
         auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
@@ -1146,11 +1031,10 @@ float TimelineWidget::renderClipHeaderRow(entt::entity clipEntity, float rowY) {
             }
 
             propY += PROPERTY_ROW_HEIGHT;
-            totalHeight += PROPERTY_ROW_HEIGHT;
         }
     }
 
-    return totalHeight;
+    return 6 * PROPERTY_ROW_HEIGHT;
 }
 
 } // namespace entity

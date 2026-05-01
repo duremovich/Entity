@@ -145,13 +145,18 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
             }
 
-            // Seek-on-discontinuity. Skip during scrubbing — seeks fire on
-            // scrub-release instead, to avoid thrashing the cache while the
-            // user is dragging.
+            // Seek-on-discontinuity. Same thresholds during scrubbing as
+            // outside it — seekPending already prevents piling up seeks, so
+            // running this path during a drag doesn't thrash. The previous
+            // "skip seeks while scrubbing" rule produced multi-second display
+            // freezes when scrubbing across big gaps because the worker had
+            // to packet-skip every frame in between (ProRes ~10ms each →
+            // scrub from 0 to 1000 = ~10 s of frozen display). Small forward
+            // jumps still hit the packet-skip path below the threshold.
             FrameNumber lastRequested = worker->lastRequestedFrame.load();
             bool needsSeek = false;
 
-            if (!m_timeline->isScrubbing() && !worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
+            if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
                 int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
 
                 if (clip.playbackMode == PlaybackMode::PingPong) {

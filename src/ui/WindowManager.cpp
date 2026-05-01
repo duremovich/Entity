@@ -773,6 +773,11 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
 
     ImGui::DockBuilderFinish(dockspaceId);
 
+    // Force Stage to be the active tab in its dock node. Last-docked-wins
+    // sets it on a clean run, but imgui.ini persists the user's last-clicked
+    // tab and overrides that on subsequent launches; SetWindowFocus wins.
+    ImGui::SetWindowFocus("Stage");
+
     std::cout << "Default layout created: Timeline (bottom), Media Bin/Model Bin/Screens (left tabs), Stage/Mapping (center tabs), Properties (right)" << std::endl;
 }
 

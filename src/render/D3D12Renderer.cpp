@@ -1122,7 +1122,11 @@ Result D3D12Renderer::initializeImGui(GLFWwindow* window) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Keep ImGui keyboard nav OFF — the app drives arrow keys directly via
+    // GLFW for timeline scrubbing/frame-step. With nav on, ImGui captures
+    // arrows to navigate widgets (e.g. focuses a button in StageWindow's
+    // toolbar and auto-scrolls the window to it, making the 3D view appear
+    // "disappeared" or cropped). Docking stays on.
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     // Use default docking behavior (ConfigDockingWithShift = false)

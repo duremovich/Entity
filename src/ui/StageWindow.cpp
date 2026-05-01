@@ -20,28 +20,24 @@ StageWindow::StageWindow(Engine* engine)
 }
 
 void StageWindow::render() {
-    // Get the available content region
-    ImVec2 contentSize = ImGui::GetContentRegionAvail();
-
-    // Reserve space for toolbar (if needed)
-    float toolbarHeight = 25.0f;
-    ImVec2 viewSize(contentSize.x, contentSize.y - toolbarHeight);
-
-    // Render the view based on current mode
     if (m_viewMode == StageViewMode::View3D) {
         render3DView();
     } else {
         render2DView();
     }
 
-    // Render toolbar at bottom
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + viewSize.y);
+    // Anchor the toolbar at the bottom of the content region.
+    const float toolbarHeight = ImGui::GetFrameHeightWithSpacing()
+                              + ImGui::GetStyle().ItemSpacing.y
+                              + 6.0f;
+    ImGui::SetCursorPos(ImVec2(0.0f, ImGui::GetContentRegionMax().y - toolbarHeight));
     renderToolbar();
 }
 
 void StageWindow::render2DView() {
+    // Caller (StageWindow::render) has already carved a child window sized
+    // to exclude the toolbar, so the available region here is the view area.
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
-    contentSize.y -= 25.0f;  // Reserve toolbar space
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
@@ -151,8 +147,9 @@ void StageWindow::render2DView() {
 }
 
 void StageWindow::render3DView() {
+    // Caller (StageWindow::render) has already carved a child window sized
+    // to exclude the toolbar, so the available region here is the view area.
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
-    contentSize.y -= 25.0f;  // Reserve toolbar space
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
@@ -250,8 +247,9 @@ void StageWindow::render3DView() {
         // For now, users can select screens from the Screens window
     }
 
-    // Advance cursor past the 3D view area
-    ImGui::Dummy(contentSize);
+    // No need to advance the cursor — the surrounding BeginChild manages
+    // the view's reserved space; control returns to render() which then
+    // calls renderToolbar() outside the child.
 }
 
 void StageWindow::renderToolbar() {

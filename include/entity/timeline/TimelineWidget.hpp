@@ -201,12 +201,12 @@ private:
     float renderTrackHeaderRow(entt::entity trackEntity, int trackIndex, float rowY);
 
     /**
-     * Render a clip row in the header panel (indented under track).
-     * @param clipEntity The clip entity
-     * @param rowY Y position for this row
-     * @return Height consumed by this clip (including expanded properties)
+     * Render the property panel (per-property name + nav arrows + keyframe
+     * diamond + value) for the given clip directly under an expanded track.
+     * Called once per expanded track with the clip currently at the playhead.
+     * @return Height consumed (always 6 * PROPERTY_ROW_HEIGHT).
      */
-    float renderClipHeaderRow(entt::entity clipEntity, float rowY);
+    float renderClipPropertyPanel(entt::entity clipEntity, float rowY);
 
     /**
      * Handle right-click context menus.
@@ -251,7 +251,7 @@ private:
 
     // Layout constants
     static constexpr float RULER_HEIGHT = 30.0f;
-    static constexpr float TRACK_HEIGHT = 60.0f;
+    static constexpr float TRACK_HEIGHT = 28.0f;
     static constexpr float TRACK_PADDING = 4.0f;
     static constexpr float CLIP_PADDING = 2.0f;
 
@@ -317,14 +317,20 @@ private:
     // Callbacks
     MediaDropCallback m_mediaDropCallback;
 
-    // Track and clip expansion state (for showing hierarchy)
-    std::unordered_set<uint32_t> m_expandedTracks;  // Set of expanded track entity IDs
-    std::unordered_set<uint32_t> m_expandedClips;  // Set of expanded clip entity IDs
+    // Track expansion state. Track twirl now drives property-panel display
+    // for the clip currently under the playhead on that track — no separate
+    // per-clip twirl/expansion. findClipAtPlayhead() resolves the clip.
+    std::unordered_set<uint32_t> m_expandedTracks;
     static constexpr float PROPERTY_ROW_HEIGHT = 20.0f;  // Height of each property track row
     static constexpr float TRACK_HEADER_WIDTH = 200.0f;  // Width of track header panel
-    static constexpr float HEADER_ROW_HEIGHT = 24.0f;  // Height of track/clip header rows
-    static constexpr float INDENT_WIDTH = 16.0f;  // Indentation for hierarchy levels
+    static constexpr float HEADER_ROW_HEIGHT = 24.0f;    // Height of track/clip header rows (legacy; unused after track-only expansion)
+    static constexpr float INDENT_WIDTH = 16.0f;         // Indentation for hierarchy levels
     float m_syncScrollY{0.0f};  // Synchronized vertical scroll position
+
+    /** Find the clip on the given track whose timeline range contains the
+     *  current playhead frame. Returns entt::null if no clip overlaps. Used
+     *  to populate the property panel under an expanded track. */
+    entt::entity findClipAtPlayhead(entt::entity trackEntity) const;
 
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};
