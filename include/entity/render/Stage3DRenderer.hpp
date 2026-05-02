@@ -58,6 +58,28 @@ public:
                     ImTextureID textureID, bool isSelected = false);
 
     /**
+     * Per-screen transform input for content-aware framing.
+     * Mirrors the (position, rotation, scale) data drawScreen() consumes
+     * so frameScreens() can compute an AABB that exactly matches what's
+     * drawn.
+     */
+    struct ScreenFrameInput {
+        glm::vec3 position;
+        glm::vec3 rotation;  // Euler degrees (yaw=y, pitch=x, roll=z)
+        glm::vec3 scale;
+    };
+
+    /**
+     * Reposition the camera to frame all given screens in view.
+     * Computes a world-space AABB of every screen quad's 4 corners,
+     * sets orbitTarget to its center, and chooses orbitDistance so the
+     * bounding sphere fits inside both the vertical and horizontal FOV
+     * with a small margin. Preserves orbitYaw/orbitPitch.
+     * If `screens` is empty, falls back to the default Reset position.
+     */
+    void frameScreens(const std::vector<ScreenFrameInput>& screens);
+
+    /**
      * Handle mouse input for camera control.
      * @param mousePos Current mouse position
      * @param screenPos Top-left corner of the render area

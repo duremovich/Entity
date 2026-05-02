@@ -6,7 +6,8 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/media/DecodedFrame.hpp"
-#include <algorithm>  // For std::sort
+#include <algorithm>  // For std::sort, std::clamp
+#include <cmath>      // For std::exp
 #include <vector>
 
 namespace entity {
@@ -20,23 +21,33 @@ StageWindow::StageWindow(Engine* engine)
 }
 
 void StageWindow::render() {
-    if (m_viewMode == StageViewMode::View3D) {
-        render3DView();
-    } else {
-        render2DView();
-    }
-
-    // Anchor the toolbar at the bottom of the content region.
+    // Carve a child region for the view that excludes the bottom toolbar.
+    // Without this, render2DView() / render3DView() paint into the full
+    // content region and the toolbar overlays the bottom strip.
     const float toolbarHeight = ImGui::GetFrameHeightWithSpacing()
                               + ImGui::GetStyle().ItemSpacing.y
                               + 6.0f;
-    ImGui::SetCursorPos(ImVec2(0.0f, ImGui::GetContentRegionMax().y - toolbarHeight));
+
+    ImVec2 contentRegion = ImGui::GetContentRegionAvail();
+    ImVec2 viewSize(contentRegion.x, std::max(contentRegion.y - toolbarHeight, 1.0f));
+
+    // Auto-frame on view-mode change or first render with content.
+    applyAutoFrame(viewSize);
+
+    if (ImGui::BeginChild("##StageView", viewSize, false,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        if (m_viewMode == StageViewMode::View3D) {
+            render3DView();
+        } else {
+            render2DView();
+        }
+    }
+    ImGui::EndChild();
+
     renderToolbar();
 }
 
 void StageWindow::render2DView() {
-    // Caller (StageWindow::render) has already carved a child window sized
-    // to exclude the toolbar, so the available region here is the view area.
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -54,34 +65,33 @@ void StageWindow::render2DView() {
             uint32_t composeWidth = renderer->getComposeTargetWidth();
             uint32_t composeHeight = renderer->getComposeTargetHeight();
 
-            // Calculate aspect ratio fit
+            // Aspect-fit "natural" size, then apply m_2dZoom multiplier and pan offset.
             float composeAspect = static_cast<float>(composeWidth) / static_cast<float>(composeHeight);
             float windowAspect = contentSize.x / contentSize.y;
 
-            ImVec2 imageSize;
-            ImVec2 imageOffset(0.0f, 0.0f);
-
+            ImVec2 fitSize;
             if (composeAspect > windowAspect) {
-                // Compose target is wider than window - fit to width
-                imageSize.x = contentSize.x;
-                imageSize.y = contentSize.x / composeAspect;
-                imageOffset.y = (contentSize.y - imageSize.y) * 0.5f;
+                fitSize.x = contentSize.x;
+                fitSize.y = contentSize.x / composeAspect;
             } else {
-                // Compose target is taller than window - fit to height
-                imageSize.y = contentSize.y;
-                imageSize.x = contentSize.y * composeAspect;
-                imageOffset.x = (contentSize.x - imageSize.x) * 0.5f;
+                fitSize.y = contentSize.y;
+                fitSize.x = contentSize.y * composeAspect;
             }
 
-            // Draw black letterbox/pillarbox background
+            ImVec2 imageSize(fitSize.x * m_2dZoom, fitSize.y * m_2dZoom);
+            ImVec2 imagePos(
+                windowPos.x + (contentSize.x - imageSize.x) * 0.5f + m_2dPan.x,
+                windowPos.y + (contentSize.y - imageSize.y) * 0.5f + m_2dPan.y
+            );
+
+            // Gray background so the surface boundary is visible against black output
             drawList->AddRectFilled(
                 windowPos,
                 ImVec2(windowPos.x + contentSize.x, windowPos.y + contentSize.y),
-                IM_COL32(0, 0, 0, 255)
+                IM_COL32(60, 60, 65, 255)
             );
 
             // Display the composited texture (transforms already applied by CompositorSystem)
-            ImVec2 imagePos(windowPos.x + imageOffset.x, windowPos.y + imageOffset.y);
             ImGui::SetCursorScreenPos(imagePos);
             ImGui::Image(
                 textureID,
@@ -92,12 +102,66 @@ void StageWindow::render2DView() {
                 ImVec4(0.0f, 0.0f, 0.0f, 0.0f)   // Border (none)
             );
 
+            // Thin border over the image to mark the output surface edge
+            drawList->AddRect(
+                imagePos,
+                ImVec2(imagePos.x + imageSize.x, imagePos.y + imageSize.y),
+                IM_COL32(100, 100, 100, 200)
+            );
+
+            // Pan / zoom input. Only act when the view is hovered so we don't
+            // hijack scroll over toolbars or other windows.
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+                ImGuiIO& io = ImGui::GetIO();
+
+                // Cursor-anchored zoom on scroll wheel.
+                if (io.MouseWheel != 0.0f) {
+                    float oldZoom = m_2dZoom;
+                    float newZoom = std::clamp(oldZoom * std::exp(io.MouseWheel * 0.15f),
+                                               MIN_2D_ZOOM, MAX_2D_ZOOM);
+                    if (newZoom != oldZoom) {
+                        // Keep the world-space point under the cursor fixed.
+                        // imagePos = windowCenter - imageSize/2 + pan, so the
+                        // cursor's offset from the image center scales with zoom.
+                        ImVec2 windowCenter(windowPos.x + contentSize.x * 0.5f,
+                                            windowPos.y + contentSize.y * 0.5f);
+                        ImVec2 cursorRel(io.MousePos.x - windowCenter.x - m_2dPan.x,
+                                         io.MousePos.y - windowCenter.y - m_2dPan.y);
+                        float scale = newZoom / oldZoom;
+                        m_2dPan.x += cursorRel.x - cursorRel.x * scale;
+                        m_2dPan.y += cursorRel.y - cursorRel.y * scale;
+                        m_2dZoom = newZoom;
+                    }
+                }
+
+                // Pan: middle-drag, or shift+left-drag.
+                bool wantPan = ImGui::IsMouseDown(ImGuiMouseButton_Middle)
+                            || (ImGui::IsMouseDown(ImGuiMouseButton_Left) && io.KeyShift);
+                if (wantPan) {
+                    if (m_2dPanning) {
+                        m_2dPan.x += io.MouseDelta.x;
+                        m_2dPan.y += io.MouseDelta.y;
+                    } else {
+                        m_2dPanning = true;
+                    }
+                } else {
+                    m_2dPanning = false;
+                }
+
+                // Double-click to reset.
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    reset2DView();
+                }
+            } else {
+                m_2dPanning = false;
+            }
+
             // Overlay frame info in corner
             if (timeline) {
                 FrameNumber currentFrame = timeline->getCurrentFrame();
                 char frameInfo[64];
-                snprintf(frameInfo, sizeof(frameInfo), "Frame %u | %ux%u",
-                         currentFrame, composeWidth, composeHeight);
+                snprintf(frameInfo, sizeof(frameInfo), "Frame %lld | %ux%u | %.0f%%",
+                         static_cast<long long>(currentFrame), composeWidth, composeHeight, m_2dZoom * 100.0f);
 
                 ImVec2 infoPos(windowPos.x + 5.0f, windowPos.y + 5.0f);
                 drawList->AddText(infoPos, IM_COL32(255, 255, 255, 180), frameInfo);
@@ -147,8 +211,6 @@ void StageWindow::render2DView() {
 }
 
 void StageWindow::render3DView() {
-    // Caller (StageWindow::render) has already carved a child window sized
-    // to exclude the toolbar, so the available region here is the view area.
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -247,9 +309,6 @@ void StageWindow::render3DView() {
         // For now, users can select screens from the Screens window
     }
 
-    // No need to advance the cursor — the surrounding BeginChild manages
-    // the view's reserved space; control returns to render() which then
-    // calls renderToolbar() outside the child.
 }
 
 void StageWindow::renderToolbar() {
@@ -263,7 +322,7 @@ void StageWindow::renderToolbar() {
 
     if (is2D) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
     if (ImGui::SmallButton("2D")) {
-        m_viewMode = StageViewMode::View2D;
+        requestViewMode(StageViewMode::View2D);
     }
     if (is2D) ImGui::PopStyleColor();
 
@@ -271,19 +330,34 @@ void StageWindow::renderToolbar() {
 
     if (is3D) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
     if (ImGui::SmallButton("3D")) {
-        m_viewMode = StageViewMode::View3D;
+        requestViewMode(StageViewMode::View3D);
     }
     if (is3D) ImGui::PopStyleColor();
 
-    // Camera presets (only in 3D mode)
-    if (m_viewMode == StageViewMode::View3D && m_3dRenderer) {
+    if (m_viewMode == StageViewMode::View2D) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Fit")) {
+            reset2DView();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("| Wheel: Zoom  MMB/Shift+LMB: Pan  Dbl-click: Fit");
+    } else if (m_viewMode == StageViewMode::View3D && m_3dRenderer) {
         ImGui::SameLine();
         ImGui::TextDisabled("|");
         ImGui::SameLine();
 
+        if (ImGui::SmallButton("Frame")) {
+            // Manual content-aware reframe. Use the current view area
+            // size from the parent window's content region for aspect.
+            ImVec2 viewSize = ImGui::GetWindowSize();
+            frameAllScreens(viewSize);
+        }
+
+        ImGui::SameLine();
         if (ImGui::SmallButton("Reset")) {
             m_3dRenderer->getCamera().reset();
-            m_3dRenderer->getCamera().updateFromOrbit();
         }
 
         ImGui::SameLine();
@@ -306,6 +380,77 @@ void StageWindow::renderToolbar() {
     }
 
     ImGui::EndGroup();
+}
+
+void StageWindow::requestViewMode(StageViewMode mode) {
+    if (mode == m_viewMode) {
+        return;
+    }
+    m_viewMode = mode;
+    m_pendingAutoFrame = true;
+}
+
+void StageWindow::applyAutoFrame(ImVec2 viewSize) {
+    // First-render auto-frame: once the engine has any visible Screens,
+    // frame them so an opened project doesn't land on the default
+    // (0, 0.5, 0) Reset position.
+    if (!m_didInitialFrame && m_engine) {
+        auto& registry = m_engine->getRegistry();
+        bool hasAnyScreen = false;
+        for (auto [entity, screen] : registry.view<Screen>().each()) {
+            if (screen.visible) {
+                hasAnyScreen = true;
+                break;
+            }
+        }
+        if (hasAnyScreen) {
+            m_pendingAutoFrame = true;
+            m_didInitialFrame = true;
+        }
+    }
+
+    if (!m_pendingAutoFrame) {
+        return;
+    }
+
+    if (m_viewMode == StageViewMode::View2D) {
+        reset2DView();
+    } else if (m_viewMode == StageViewMode::View3D && m_3dRenderer) {
+        frameAllScreens(viewSize);
+    }
+
+    m_pendingAutoFrame = false;
+}
+
+void StageWindow::frameAllScreens(ImVec2 viewSize) {
+    if (!m_3dRenderer || !m_engine) {
+        return;
+    }
+
+    // Match aspect to the view we'll actually render into so the FOV
+    // calculation in frameScreens() picks the binding axis correctly.
+    if (viewSize.x > 0.0f && viewSize.y > 0.0f) {
+        m_3dRenderer->getCamera().aspectRatio = viewSize.x / viewSize.y;
+    }
+
+    std::vector<Stage3DRenderer::ScreenFrameInput> inputs;
+    auto& registry = m_engine->getRegistry();
+    for (auto [entity, screen] : registry.view<Screen>().each()) {
+        if (!screen.visible) continue;
+        inputs.push_back({
+            glm::vec3(screen.position[0], screen.position[1], screen.position[2]),
+            glm::vec3(screen.rotation[0], screen.rotation[1], screen.rotation[2]),
+            glm::vec3(screen.scale[0],    screen.scale[1],    screen.scale[2]),
+        });
+    }
+
+    m_3dRenderer->frameScreens(inputs);
+}
+
+void StageWindow::reset2DView() {
+    m_2dZoom = 1.0f;
+    m_2dPan = ImVec2(0.0f, 0.0f);
+    m_2dPanning = false;
 }
 
 } // namespace entity

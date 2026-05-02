@@ -48,10 +48,11 @@ public:
     }
 
     /**
-     * Get/set the current view mode.
+     * Get/set the current view mode. The setter routes through
+     * requestViewMode() so a mode change auto-frames the new view.
      */
     StageViewMode getViewMode() const { return m_viewMode; }
-    void setViewMode(StageViewMode mode) { m_viewMode = mode; }
+    void setViewMode(StageViewMode mode) { requestViewMode(mode); }
 
     /**
      * Get the 3D renderer for camera manipulation.
@@ -74,10 +75,51 @@ private:
      */
     void renderToolbar();
 
+    /**
+     * Request a view-mode transition. No-op if already in `mode`.
+     * Otherwise switches and flags an auto-frame for the next render.
+     */
+    void requestViewMode(StageViewMode mode);
+
+    /**
+     * If an auto-frame was requested (or this is first-render with
+     * content), reset 2D pan/zoom or call frameAllScreens() in 3D.
+     * Called from render() before dispatching to the view.
+     */
+    void applyAutoFrame(ImVec2 viewSize);
+
+    /**
+     * Collect every visible Screen entity's transform and call
+     * Stage3DRenderer::frameScreens(). Falls back to camera Reset on
+     * empty stage. Caller must have set the renderer's camera aspect
+     * ratio for `viewSize` first.
+     */
+    void frameAllScreens(ImVec2 viewSize);
+
+    /**
+     * Reset 2D pan/zoom to fit-to-window.
+     */
+    void reset2DView();
+
 private:
     Engine* m_engine{nullptr};  // Non-owning pointer to Engine
     StageViewMode m_viewMode{StageViewMode::View3D};  // Default to 3D view
     std::unique_ptr<Stage3DRenderer> m_3dRenderer;
+
+    // 2D view pan/zoom state. zoom is a multiplier on the
+    // aspect-fit-to-window size; pan is a pixel offset from centered.
+    float m_2dZoom{1.0f};
+    ImVec2 m_2dPan{0.0f, 0.0f};
+    bool m_2dPanning{false};
+
+    // Auto-frame triggers. Set when view mode changes; cleared after
+    // applyAutoFrame() runs in the next render(). m_didInitialFrame
+    // ensures we frame on first render once the engine has any Screens.
+    bool m_pendingAutoFrame{false};
+    bool m_didInitialFrame{false};
+
+    static constexpr float MIN_2D_ZOOM = 0.1f;
+    static constexpr float MAX_2D_ZOOM = 16.0f;
 };
 
 } // namespace entity

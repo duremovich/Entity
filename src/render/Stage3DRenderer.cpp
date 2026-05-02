@@ -1,6 +1,8 @@
 #include "entity/render/Stage3DRenderer.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace entity {
 
@@ -397,6 +399,60 @@ void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 
     drawList->AddLine(screenFrameCorners[1], screenFrameCorners[2], frameColor, frameThickness);
     drawList->AddLine(screenFrameCorners[2], screenFrameCorners[3], frameColor, frameThickness);
     drawList->AddLine(screenFrameCorners[3], screenFrameCorners[0], frameColor, frameThickness);
+}
+
+void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens) {
+    if (screens.empty()) {
+        m_camera.reset();
+        return;
+    }
+
+    // Accumulate world-space AABB of every screen quad's 4 corners using
+    // the same transform drawScreen() applies.
+    glm::vec3 minB(std::numeric_limits<float>::max());
+    glm::vec3 maxB(std::numeric_limits<float>::lowest());
+
+    for (const auto& s : screens) {
+        const float hw = screenWidth * 0.5f * s.scale.x;
+        const float hh = screenHeight * 0.5f * s.scale.y;
+
+        glm::mat4 transform = glm::mat4(1.0f);
+        transform = glm::translate(transform,
+            glm::vec3(s.position.x, s.position.y + screenElevation, s.position.z));
+        transform = glm::rotate(transform, glm::radians(s.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(s.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(s.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+
+        const glm::vec3 localCorners[4] = {
+            glm::vec3(-hw,  hh, 0.0f),
+            glm::vec3( hw,  hh, 0.0f),
+            glm::vec3( hw, -hh, 0.0f),
+            glm::vec3(-hw, -hh, 0.0f),
+        };
+        for (const auto& lc : localCorners) {
+            glm::vec3 wc = glm::vec3(transform * glm::vec4(lc, 1.0f));
+            minB = glm::min(minB, wc);
+            maxB = glm::max(maxB, wc);
+        }
+    }
+
+    const glm::vec3 center  = (minB + maxB) * 0.5f;
+    const glm::vec3 extents = (maxB - minB) * 0.5f;
+    const float radius = glm::length(extents);
+
+    // Compute distance so the bounding sphere fits inside the smaller of
+    // vertical and horizontal FOV. fov is the vertical FOV in degrees.
+    const float vFov = glm::radians(m_camera.fov);
+    const float hFov = 2.0f * std::atan(std::tan(vFov * 0.5f) * m_camera.aspectRatio);
+    const float halfFov = std::min(vFov, hFov) * 0.5f;
+
+    constexpr float kMargin = 1.4f;  // 40% breathing room
+    float distance = (radius / std::sin(halfFov)) * kMargin;
+    distance = glm::clamp(distance, Camera::MIN_DISTANCE, Camera::MAX_DISTANCE);
+
+    m_camera.orbitTarget = center;
+    m_camera.orbitDistance = distance;
+    m_camera.updateFromOrbit();
 }
 
 void Stage3DRenderer::render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
