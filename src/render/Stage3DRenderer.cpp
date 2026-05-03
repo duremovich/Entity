@@ -132,8 +132,8 @@ void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImV
 
     // Subdivide the quad for perspective-correct texture mapping
     // ImGui's AddImageQuad does linear interpolation in 2D which causes warping
-    const int subdivisionsX = 16;
-    const int subdivisionsY = 16;
+    const int subdivisionsX = 32;
+    const int subdivisionsY = 32;
 
     if (textureID) {
         // Draw subdivided textured quad
@@ -290,27 +290,182 @@ void Stage3DRenderer::endRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 s
 
 void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
                                   const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
-                                  ImTextureID textureID, bool isSelected) {
-    // Screen quad in world space
+                                  ImTextureID textureID, bool isSelected, const MeshData* mesh) {
+    const ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(100, 100, 100, 255);
+    const float frameThickness = isSelected ? 3.0f : 2.0f;
+
+    if (mesh && mesh->isValid()) {
+        // --- Mesh rendering path ---
+        glm::mat4 transform = glm::mat4(1.0f);
+        transform = glm::translate(transform, glm::vec3(position.x, position.y + screenElevation, position.z));
+        transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        transform = glm::scale(transform, scale);
+
+        struct ProjTri { ImVec2 p[3]; ImVec2 uv[3]; };
+        std::vector<ProjTri> tris;
+
+        // Subdivide each source triangle into a barycentric MESH_SUBDIV×MESH_SUBDIV grid so
+        // that each sub-tri is small in screen space.  This approximates perspective-correct
+        // UV mapping: affine error within a small sub-tri is negligible even at steep angles.
+        constexpr int MESH_SUBDIV = 8;
+        tris.reserve(mesh->indices.size() / 3 * MESH_SUBDIV * MESH_SUBDIV);
+
+        // Sort source triangles back-to-front (painter's algorithm).
+        // Concave meshes have triangles that overlap in depth; without sorting,
+        // farther triangles draw over closer ones in index order.
+        struct SrcTriOrder { size_t i; float depth; };
+        std::vector<SrcTriOrder> srcOrder;
+        srcOrder.reserve(mesh->indices.size() / 3);
+        const glm::vec3 camPos = m_camera.position;
+        for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
+            glm::vec3 cen(0.0f);
+            for (int j = 0; j < 3; ++j) {
+                const auto& v = mesh->vertices[mesh->indices[i + j]];
+                cen += glm::vec3(transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f));
+            }
+            srcOrder.push_back({i, glm::length(cen / 3.0f - camPos)});
+        }
+        std::sort(srcOrder.begin(), srcOrder.end(),
+            [](const SrcTriOrder& a, const SrcTriOrder& b){ return a.depth > b.depth; });
+
+        for (const auto& st : srcOrder) {
+            const size_t i = st.i;
+
+            // Source triangle in world space
+            glm::vec3 wp[3];
+            glm::vec2 wuv[3];
+            for (int j = 0; j < 3; ++j) {
+                const auto& v = mesh->vertices[mesh->indices[i + j]];
+                glm::vec4 world = transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f);
+                wp[j]  = glm::vec3(world);
+                wuv[j] = { v.texCoord[0], v.texCoord[1] };  // V already flipped by ObjLoader
+            }
+
+            // Backface cull: project source verts and test screen-space signed area.
+            // In screen coords (+Y down), CCW-in-3D (front-facing) triangles have area < 0.
+            // Back faces appear when looking into a concavity; their UVs render mirrored/wrong.
+            ImVec2 tp[3]; bool anyBehind = false;
+            for (int j = 0; j < 3; ++j) {
+                tp[j] = projectPoint(wp[j], screenPos, screenSize);
+                if (tp[j].x < 0.0f && tp[j].y < 0.0f) { anyBehind = true; break; }
+            }
+            if (anyBehind) continue;
+            const float area2 = (tp[1].x - tp[0].x) * (tp[2].y - tp[0].y)
+                               - (tp[1].y - tp[0].y) * (tp[2].x - tp[0].x);
+            if (area2 >= 0.0f) continue;  // back face — skip
+
+            // Walk the barycentric grid.  Each (row, col) cell produces up to 2 sub-tris.
+            // Barycentric coords: (bu, bv, bw=1-bu-bv); the valid domain is bu+bv<=1.
+            for (int row = 0; row < MESH_SUBDIV; ++row) {
+                for (int col = 0; col < MESH_SUBDIV - row; ++col) {
+                    const float u0 = float(col)   / MESH_SUBDIV;
+                    const float u1 = float(col+1) / MESH_SUBDIV;
+                    const float v0 = float(row)   / MESH_SUBDIV;
+                    const float v1 = float(row+1) / MESH_SUBDIV;
+
+                    auto baryPoint = [&](float bu, float bv) -> std::pair<ImVec2, ImVec2> {
+                        const float bw = 1.0f - bu - bv;
+                        const glm::vec3 p  = wp[0]*bw  + wp[1]*bu  + wp[2]*bv;
+                        const glm::vec2 uv = wuv[0]*bw + wuv[1]*bu + wuv[2]*bv;
+                        return { projectPoint(p, screenPos, screenSize), ImVec2(uv.x, uv.y) };
+                    };
+
+                    auto [sp00, uv00] = baryPoint(u0, v0);
+                    auto [sp10, uv10] = baryPoint(u1, v0);
+                    auto [sp01, uv01] = baryPoint(u0, v1);
+
+                    auto behind = [](ImVec2 p) { return p.x < 0.0f && p.y < 0.0f; };
+
+                    // Sub-tri A: (u0,v0)→(u1,v0)→(u0,v1)
+                    if (!behind(sp00) && !behind(sp10) && !behind(sp01))
+                        tris.push_back({{sp00, sp10, sp01}, {uv00, uv10, uv01}});
+
+                    // Sub-tri B: (u1,v0)→(u1,v1)→(u0,v1) — only inside the source triangle
+                    if (col + row + 1 < MESH_SUBDIV) {
+                        auto [sp11, uv11] = baryPoint(u1, v1);
+                        if (!behind(sp10) && !behind(sp11) && !behind(sp01))
+                            tris.push_back({{sp10, sp11, sp01}, {uv10, uv11, uv01}});
+                    }
+                }
+            }
+        }
+
+        if (!tris.empty()) {
+            if (textureID) {
+                drawList->PushTextureID(textureID);
+                drawList->PrimReserve((int)tris.size() * 3, (int)tris.size() * 3);
+                for (const auto& t : tris) {
+                    ImDrawIdx idx = (ImDrawIdx)drawList->_VtxCurrentIdx;
+                    drawList->_IdxWritePtr[0] = idx;
+                    drawList->_IdxWritePtr[1] = idx + 1;
+                    drawList->_IdxWritePtr[2] = idx + 2;
+                    drawList->_IdxWritePtr += 3;
+                    drawList->_VtxWritePtr[0].pos = t.p[0]; drawList->_VtxWritePtr[0].uv = t.uv[0]; drawList->_VtxWritePtr[0].col = IM_COL32_WHITE;
+                    drawList->_VtxWritePtr[1].pos = t.p[1]; drawList->_VtxWritePtr[1].uv = t.uv[1]; drawList->_VtxWritePtr[1].col = IM_COL32_WHITE;
+                    drawList->_VtxWritePtr[2].pos = t.p[2]; drawList->_VtxWritePtr[2].uv = t.uv[2]; drawList->_VtxWritePtr[2].col = IM_COL32_WHITE;
+                    drawList->_VtxWritePtr += 3;
+                    drawList->_VtxCurrentIdx += 3;
+                }
+                drawList->PopTextureID();
+            } else {
+                for (const auto& t : tris) {
+                    drawList->AddTriangleFilled(t.p[0], t.p[1], t.p[2], IM_COL32(40, 40, 45, 255));
+                }
+                // "No Video" label at mesh AABB center
+                glm::vec4 cw = transform * glm::vec4(
+                    (mesh->minBounds[0] + mesh->maxBounds[0]) * 0.5f,
+                    (mesh->minBounds[1] + mesh->maxBounds[1]) * 0.5f,
+                    (mesh->minBounds[2] + mesh->maxBounds[2]) * 0.5f, 1.0f);
+                ImVec2 center = projectPoint(glm::vec3(cw), screenPos, screenSize);
+                if (!(center.x < 0.0f && center.y < 0.0f)) {
+                    const char* txt = "No Video";
+                    ImVec2 ts = ImGui::CalcTextSize(txt);
+                    drawList->AddText(ImVec2(center.x - ts.x * 0.5f, center.y - ts.y * 0.5f),
+                                      IM_COL32(150, 150, 150, 255), txt);
+                }
+            }
+        }
+
+        // AABB wireframe border
+        const float bx0 = mesh->minBounds[0], bx1 = mesh->maxBounds[0];
+        const float by0 = mesh->minBounds[1], by1 = mesh->maxBounds[1];
+        const float bz0 = mesh->minBounds[2], bz1 = mesh->maxBounds[2];
+        const glm::vec3 bc[8] = {
+            {bx0,by0,bz0},{bx1,by0,bz0},{bx1,by1,bz0},{bx0,by1,bz0},
+            {bx0,by0,bz1},{bx1,by0,bz1},{bx1,by1,bz1},{bx0,by1,bz1},
+        };
+        const int edges[12][2] = {
+            {0,1},{1,2},{2,3},{3,0},
+            {4,5},{5,6},{6,7},{7,4},
+            {0,4},{1,5},{2,6},{3,7},
+        };
+        for (const auto& e : edges) {
+            drawLine3D(drawList,
+                glm::vec3(transform * glm::vec4(bc[e[0]], 1.0f)),
+                glm::vec3(transform * glm::vec4(bc[e[1]], 1.0f)),
+                screenPos, screenSize, frameColor, frameThickness);
+        }
+        return;
+    }
+
+    // --- Flat quad path (unchanged) ---
     float hw = screenWidth * 0.5f * scale.x;
     float hh = screenHeight * 0.5f * scale.y;
-    float baseY = screenElevation;
 
-    // Build transformation matrix
     glm::mat4 transform = glm::mat4(1.0f);
-    transform = glm::translate(transform, glm::vec3(position.x, position.y + baseY, position.z));
-    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));  // Yaw
-    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));  // Pitch
-    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));  // Roll
+    transform = glm::translate(transform, glm::vec3(position.x, position.y + screenElevation, position.z));
+    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
 
     auto transformPoint = [&transform](const glm::vec3& p) -> glm::vec3 {
-        glm::vec4 result = transform * glm::vec4(p, 1.0f);
-        return glm::vec3(result);
+        return glm::vec3(transform * glm::vec4(p, 1.0f));
     };
 
-    // Subdivide for perspective-correct texture mapping
-    const int subdivisionsX = 16;
-    const int subdivisionsY = 16;
+    const int subdivisionsX = 32;
+    const int subdivisionsY = 32;
 
     if (textureID) {
         for (int sy = 0; sy < subdivisionsY; ++sy) {
@@ -391,10 +546,6 @@ void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 
         screenFrameCorners[i] = projectPoint(frameCorners[i], screenPos, screenSize);
     }
 
-    // Use different color if selected
-    ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(100, 100, 100, 255);
-    float frameThickness = isSelected ? 3.0f : 2.0f;
-
     drawList->AddLine(screenFrameCorners[0], screenFrameCorners[1], frameColor, frameThickness);
     drawList->AddLine(screenFrameCorners[1], screenFrameCorners[2], frameColor, frameThickness);
     drawList->AddLine(screenFrameCorners[2], screenFrameCorners[3], frameColor, frameThickness);
@@ -413,9 +564,6 @@ void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens)
     glm::vec3 maxB(std::numeric_limits<float>::lowest());
 
     for (const auto& s : screens) {
-        const float hw = screenWidth * 0.5f * s.scale.x;
-        const float hh = screenHeight * 0.5f * s.scale.y;
-
         glm::mat4 transform = glm::mat4(1.0f);
         transform = glm::translate(transform,
             glm::vec3(s.position.x, s.position.y + screenElevation, s.position.z));
@@ -423,16 +571,27 @@ void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens)
         transform = glm::rotate(transform, glm::radians(s.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
         transform = glm::rotate(transform, glm::radians(s.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
 
-        const glm::vec3 localCorners[4] = {
-            glm::vec3(-hw,  hh, 0.0f),
-            glm::vec3( hw,  hh, 0.0f),
-            glm::vec3( hw, -hh, 0.0f),
-            glm::vec3(-hw, -hh, 0.0f),
-        };
-        for (const auto& lc : localCorners) {
-            glm::vec3 wc = glm::vec3(transform * glm::vec4(lc, 1.0f));
-            minB = glm::min(minB, wc);
-            maxB = glm::max(maxB, wc);
+        if (s.mesh && s.mesh->isValid()) {
+            glm::mat4 meshTransform = glm::scale(transform, s.scale);
+            for (const auto& v : s.mesh->vertices) {
+                glm::vec3 wc = glm::vec3(meshTransform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f));
+                minB = glm::min(minB, wc);
+                maxB = glm::max(maxB, wc);
+            }
+        } else {
+            const float hw = screenWidth * 0.5f * s.scale.x;
+            const float hh = screenHeight * 0.5f * s.scale.y;
+            const glm::vec3 localCorners[4] = {
+                glm::vec3(-hw,  hh, 0.0f),
+                glm::vec3( hw,  hh, 0.0f),
+                glm::vec3( hw, -hh, 0.0f),
+                glm::vec3(-hw, -hh, 0.0f),
+            };
+            for (const auto& lc : localCorners) {
+                glm::vec3 wc = glm::vec3(transform * glm::vec4(lc, 1.0f));
+                minB = glm::min(minB, wc);
+                maxB = glm::max(maxB, wc);
+            }
         }
     }
 
@@ -499,6 +658,125 @@ void Stage3DRenderer::handleInput(ImVec2 mousePos, ImVec2 screenPos, ImVec2 scre
         m_lastMousePos = mousePos;
     } else {
         m_isDragging = false;
+    }
+}
+
+bool Stage3DRenderer::hitTestScreen(ImVec2 mousePos, ImVec2 renderPos, ImVec2 renderSize,
+                                     const glm::vec3& position, const glm::vec3& rotation,
+                                     const glm::vec3& scale, const MeshData* mesh) const {
+    glm::mat4 transform = glm::mat4(1.0f);
+    transform = glm::translate(transform, glm::vec3(position.x, position.y + screenElevation, position.z));
+    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    auto cross2D = [](ImVec2 o, ImVec2 a, ImVec2 p) {
+        return (a.x - o.x) * (p.y - o.y) - (a.y - o.y) * (p.x - o.x);
+    };
+
+    if (mesh && mesh->isValid()) {
+        glm::mat4 meshTransform = glm::scale(transform, scale);
+        for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
+            ImVec2 pts[3];
+            bool valid = true;
+            for (int j = 0; j < 3; ++j) {
+                const auto& v = mesh->vertices[mesh->indices[i + j]];
+                glm::vec4 world = meshTransform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f);
+                pts[j] = projectPoint(glm::vec3(world), renderPos, renderSize);
+                if (pts[j].x < 0.0f && pts[j].y < 0.0f) { valid = false; break; }
+            }
+            if (!valid) continue;
+            float d0 = cross2D(pts[0], pts[1], mousePos);
+            float d1 = cross2D(pts[1], pts[2], mousePos);
+            float d2 = cross2D(pts[2], pts[0], mousePos);
+            if ((d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0))
+                return true;
+        }
+        return false;
+    }
+
+    // Flat quad path
+    float hw = screenWidth * 0.5f * scale.x;
+    float hh = screenHeight * 0.5f * scale.y;
+
+    auto tp = [&](const glm::vec3& p) {
+        return glm::vec3(transform * glm::vec4(p, 1.0f));
+    };
+
+    ImVec2 sc[4] = {
+        projectPoint(tp(glm::vec3(-hw,  hh, 0)), renderPos, renderSize),
+        projectPoint(tp(glm::vec3( hw,  hh, 0)), renderPos, renderSize),
+        projectPoint(tp(glm::vec3( hw, -hh, 0)), renderPos, renderSize),
+        projectPoint(tp(glm::vec3(-hw, -hh, 0)), renderPos, renderSize),
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        if (sc[i].x < 0 && sc[i].y < 0) return false;
+    }
+
+    float c0 = cross2D(sc[0], sc[1], mousePos);
+    float c1 = cross2D(sc[1], sc[2], mousePos);
+    float c2 = cross2D(sc[2], sc[3], mousePos);
+    float c3 = cross2D(sc[3], sc[0], mousePos);
+    return (c0 >= 0 && c1 >= 0 && c2 >= 0 && c3 >= 0) ||
+           (c0 <= 0 && c1 <= 0 && c2 <= 0 && c3 <= 0);
+}
+
+void Stage3DRenderer::drawProjector(ImDrawList* drawList, ImVec2 renderPos, ImVec2 renderSize,
+                                     const glm::vec3& position, const glm::vec3& rotation,
+                                     float fovDegrees, bool enabled, bool isSelected,
+                                     const char* label) {
+    // Build rotation matrix (same Y→X→Z convention as screens)
+    glm::mat4 rotMat = glm::mat4(1.0f);
+    rotMat = glm::rotate(rotMat, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    rotMat = glm::rotate(rotMat, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    rotMat = glm::rotate(rotMat, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    glm::vec3 forward = glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+    glm::vec3 right   = glm::vec3(rotMat * glm::vec4(1.0f, 0.0f,  0.0f, 0.0f));
+    glm::vec3 up      = glm::vec3(rotMat * glm::vec4(0.0f, 1.0f,  0.0f, 0.0f));
+
+    // Near plane at a fixed visual distance for the gizmo (independent of nearClip)
+    const float vizDist = 0.6f;
+    float halfH = vizDist * std::tan(glm::radians(fovDegrees * 0.5f));
+    float halfW = halfH * (16.0f / 9.0f);
+
+    glm::vec3 nearCenter = position + forward * vizDist;
+    glm::vec3 nearTL = nearCenter + up * halfH - right * halfW;
+    glm::vec3 nearTR = nearCenter + up * halfH + right * halfW;
+    glm::vec3 nearBR = nearCenter - up * halfH + right * halfW;
+    glm::vec3 nearBL = nearCenter - up * halfH - right * halfW;
+
+    ImU32 color;
+    if (isSelected)
+        color = IM_COL32(255, 200, 80, 255);
+    else if (!enabled)
+        color = IM_COL32(200, 160, 60, 80);
+    else
+        color = IM_COL32(200, 160, 60, 200);
+    float thickness = isSelected ? 2.0f : 1.5f;
+
+    // Apex to near corners
+    drawLine3D(drawList, position, nearTL, renderPos, renderSize, color, thickness);
+    drawLine3D(drawList, position, nearTR, renderPos, renderSize, color, thickness);
+    drawLine3D(drawList, position, nearBR, renderPos, renderSize, color, thickness);
+    drawLine3D(drawList, position, nearBL, renderPos, renderSize, color, thickness);
+
+    // Near plane rectangle
+    drawLine3D(drawList, nearTL, nearTR, renderPos, renderSize, color, thickness);
+    drawLine3D(drawList, nearTR, nearBR, renderPos, renderSize, color, thickness);
+    drawLine3D(drawList, nearBR, nearBL, renderPos, renderSize, color, thickness);
+    drawLine3D(drawList, nearBL, nearTL, renderPos, renderSize, color, thickness);
+
+    // Small forward indicator from apex
+    drawLine3D(drawList, position, position + forward * 0.2f, renderPos, renderSize, color, thickness);
+
+    // Label at apex
+    if (label) {
+        ImVec2 apex2D = projectPoint(position, renderPos, renderSize);
+        if (!(apex2D.x < 0.0f && apex2D.y < 0.0f)) {
+            drawList->AddText(ImVec2(apex2D.x + 6.0f, apex2D.y - 8.0f), color, label);
+        }
     }
 }
 

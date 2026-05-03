@@ -5,7 +5,10 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/Screen.hpp"
+#include "entity/components/Model.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/media/DecodedFrame.hpp"
+#include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>  // For std::sort, std::clamp
 #include <cmath>      // For std::exp
 #include <vector>
@@ -227,24 +230,24 @@ void StageWindow::render3DView() {
 
     // Collect visible screens and sort by distance from camera (painter's algorithm)
     // Draw farthest screens first so nearer screens are drawn on top
+    struct ScreenDrawData {
+        entt::entity entity;
+        glm::vec3 position;
+        glm::vec3 rotation;
+        glm::vec3 scale;
+        bool isSelected;
+        float distanceFromCamera;
+        ImTextureID textureID;
+        const MeshData* mesh{nullptr};
+    };
+    std::vector<ScreenDrawData> screensToDraw;
+
     if (m_engine) {
         auto& registry = m_engine->getRegistry();
         auto screenView = registry.view<Screen>();
 
         // Get camera position for depth sorting
         glm::vec3 cameraPos = m_3dRenderer->getCamera().position;
-
-        // Collect screen data for sorting
-        struct ScreenDrawData {
-            entt::entity entity;
-            glm::vec3 position;
-            glm::vec3 rotation;
-            glm::vec3 scale;
-            bool isSelected;
-            float distanceFromCamera;
-            ImTextureID textureID;  // Per-screen compose target texture
-        };
-        std::vector<ScreenDrawData> screensToDraw;
 
         for (auto [entity, screen] : screenView.each()) {
             if (screen.visible) {
@@ -268,7 +271,14 @@ void StageWindow::render3DView() {
                         renderer->getComposeTargetTextureID(screen.renderTargetSlot));
                 }
 
-                screensToDraw.push_back({entity, position, rotation, scale, isSelected, dist, screenTextureID});
+                // Look up mesh from assigned model entity
+                const MeshData* mesh = nullptr;
+                if (screen.modelEntity != entt::null && registry.valid(screen.modelEntity)) {
+                    if (const auto* model = registry.try_get<Model>(screen.modelEntity))
+                        if (model->mesh.isValid()) mesh = &model->mesh;
+                }
+
+                screensToDraw.push_back({entity, position, rotation, scale, isSelected, dist, screenTextureID, mesh});
             }
         }
 
@@ -282,7 +292,19 @@ void StageWindow::render3DView() {
         for (const auto& screenData : screensToDraw) {
             m_3dRenderer->drawScreen(drawList, windowPos, contentSize,
                                      screenData.position, screenData.rotation, screenData.scale,
-                                     screenData.textureID, screenData.isSelected);
+                                     screenData.textureID, screenData.isSelected, screenData.mesh);
+        }
+
+        // Draw projector gizmos
+        entt::entity selectedProjector = timeline ? timeline->getSelectedProjector() : entt::null;
+        auto projView = registry.view<Projector>();
+        for (auto [projEntity, proj] : projView.each()) {
+            glm::vec3 projPos{proj.position[0], proj.position[1], proj.position[2]};
+            glm::vec3 projRot{proj.rotation[0], proj.rotation[1], proj.rotation[2]};
+            m_3dRenderer->drawProjector(drawList, windowPos, contentSize,
+                                        projPos, projRot, proj.fovDegrees,
+                                        proj.enabled, (projEntity == selectedProjector),
+                                        proj.name.c_str());
         }
     }
 
@@ -305,8 +327,58 @@ void StageWindow::render3DView() {
             io.MouseWheel
         );
 
-        // TODO: Implement proper click-to-select for screens using ray-screen intersection
-        // For now, users can select screens from the Screens window
+        // Click to select/deselect. GetMouseDragDelta stays valid on the release frame
+        // (unlike IsMouseDragging which requires the button to still be down).
+        // It returns (0,0) only when the mouse never moved past io.MouseDragThreshold.
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && timeline) {
+            ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+            if (drag.x == 0.0f && drag.y == 0.0f) {
+                // Test screens first (nearest to camera = drawn last = tested first)
+                entt::entity hitScreen = entt::null;
+                for (auto it = screensToDraw.rbegin(); it != screensToDraw.rend(); ++it) {
+                    if (m_3dRenderer->hitTestScreen(io.MousePos, windowPos, contentSize,
+                                                    it->position, it->rotation, it->scale, it->mesh)) {
+                        hitScreen = it->entity;
+                        break;
+                    }
+                }
+                if (hitScreen != entt::null) {
+                    timeline->setSelectedScreen(hitScreen);
+                    timeline->setSelectedClip(entt::null);
+                } else {
+                    // Test projector apex positions (within a small radius)
+                    entt::entity hitProjector = entt::null;
+                    if (m_engine) {
+                        const float kRadius = 8.0f;
+                        auto& reg = m_engine->getRegistry();
+                        Camera projCam = m_3dRenderer->getCamera();
+                        projCam.aspectRatio = contentSize.x / contentSize.y;
+                        glm::mat4 vp = projCam.getViewProjectionMatrix();
+
+                        for (auto [projEntity, proj] : reg.view<Projector>().each()) {
+                            glm::vec4 clip = vp * glm::vec4(proj.position[0], proj.position[1], proj.position[2], 1.0f);
+                            if (clip.w <= 0.001f) continue;
+                            glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                            float sx = windowPos.x + (ndc.x + 1.0f) * 0.5f * contentSize.x;
+                            float sy = windowPos.y + (1.0f - ndc.y) * 0.5f * contentSize.y;
+                            float dx = io.MousePos.x - sx;
+                            float dy = io.MousePos.y - sy;
+                            if (dx * dx + dy * dy <= kRadius * kRadius) {
+                                hitProjector = projEntity;
+                                break;
+                            }
+                        }
+                    }
+                    if (hitProjector != entt::null) {
+                        timeline->setSelectedProjector(hitProjector);
+                        timeline->setSelectedClip(entt::null);
+                    } else {
+                        timeline->setSelectedScreen(entt::null);
+                        timeline->setSelectedProjector(entt::null);
+                    }
+                }
+            }
+        }
     }
 
 }
@@ -437,10 +509,16 @@ void StageWindow::frameAllScreens(ImVec2 viewSize) {
     auto& registry = m_engine->getRegistry();
     for (auto [entity, screen] : registry.view<Screen>().each()) {
         if (!screen.visible) continue;
+        const MeshData* mesh = nullptr;
+        if (screen.modelEntity != entt::null && registry.valid(screen.modelEntity)) {
+            if (const auto* model = registry.try_get<Model>(screen.modelEntity))
+                if (model->mesh.isValid()) mesh = &model->mesh;
+        }
         inputs.push_back({
             glm::vec3(screen.position[0], screen.position[1], screen.position[2]),
             glm::vec3(screen.rotation[0], screen.rotation[1], screen.rotation[2]),
             glm::vec3(screen.scale[0],    screen.scale[1],    screen.scale[2]),
+            mesh,
         });
     }
 

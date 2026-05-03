@@ -220,11 +220,24 @@ public:
     void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
     entt::entity getSelectedClip() const { return m_selectedClip; }
 
-    void setSelectedScreen(entt::entity screen) { m_selectedScreen = screen; }
+    void setSelectedScreen(entt::entity screen) {
+        m_selectedScreen = screen;
+        m_selectedProjector = entt::null;
+    }
     entt::entity getSelectedScreen() const { return m_selectedScreen; }
 
-    // Clear all selection (deselect clip and screen)
-    void clearSelection() { m_selectedClip = entt::null; m_selectedScreen = entt::null; }
+    void setSelectedProjector(entt::entity projector) {
+        m_selectedProjector = projector;
+        m_selectedScreen = entt::null;
+    }
+    entt::entity getSelectedProjector() const { return m_selectedProjector; }
+
+    // Clear all selection (deselect clip, screen, and projector)
+    void clearSelection() {
+        m_selectedClip = entt::null;
+        m_selectedScreen = entt::null;
+        m_selectedProjector = entt::null;
+    }
 
     // Expansion state (for twirl-down property tracks)
     void setTrackExpanded(entt::entity track, bool expanded) {
@@ -273,6 +286,7 @@ private:
     // Selection state
     entt::entity m_selectedClip{entt::null};
     entt::entity m_selectedScreen{entt::null};
+    entt::entity m_selectedProjector{entt::null};
     std::unordered_set<uint32_t> m_expandedTracks;
     std::unordered_set<uint32_t> m_expandedClips;
 

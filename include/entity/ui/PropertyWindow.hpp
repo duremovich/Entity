@@ -73,6 +73,11 @@ private:
     void renderScreenProperties();
 
     /**
+     * Render projector properties (when a projector is selected).
+     */
+    void renderProjectorProperties();
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control

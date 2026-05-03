@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../components/Camera.hpp"
+#include "../media/ObjLoader.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <vector>
@@ -45,17 +46,29 @@ public:
     void endRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize);
 
     /**
-     * Draw a single screen quad with the given transform.
+     * Draw a single screen with the given transform.
      * Call between beginRender() and endRender().
      * @param position World position (x, y, z)
      * @param rotation Rotation in degrees (pitch, yaw, roll)
      * @param scale Scale factors (x, y, z)
      * @param textureID Texture to display on the screen
      * @param isSelected Whether this screen is selected (draws highlight)
+     * @param mesh If non-null, renders the mesh geometry instead of a flat quad.
+     *             Uses the mesh's OBJ UV coordinates; V is flipped (OBJ V=0 at bottom).
      */
     void drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
                     const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
-                    ImTextureID textureID, bool isSelected = false);
+                    ImTextureID textureID, bool isSelected = false,
+                    const MeshData* mesh = nullptr);
+
+    /**
+     * Draw a projector frustum gizmo.
+     * Call between beginRender() and endRender().
+     */
+    void drawProjector(ImDrawList* drawList, ImVec2 renderPos, ImVec2 renderSize,
+                       const glm::vec3& position, const glm::vec3& rotation,
+                       float fovDegrees, bool enabled, bool isSelected,
+                       const char* label = nullptr);
 
     /**
      * Per-screen transform input for content-aware framing.
@@ -67,6 +80,7 @@ public:
         glm::vec3 position;
         glm::vec3 rotation;  // Euler degrees (yaw=y, pitch=x, roll=z)
         glm::vec3 scale;
+        const MeshData* mesh{nullptr};  // if non-null, use mesh bounds for AABB
     };
 
     /**
@@ -93,6 +107,16 @@ public:
     void handleInput(ImVec2 mousePos, ImVec2 screenPos, ImVec2 screenSize,
                      bool leftDown, bool rightDown, bool middleDown,
                      bool shiftDown, float scrollDelta);
+
+    /**
+     * Test whether a 2D mouse position falls within a projected screen.
+     * Uses the same transform logic as drawScreen(); call after beginRender().
+     * @param mesh If non-null, tests against the projected mesh triangles.
+     */
+    bool hitTestScreen(ImVec2 mousePos, ImVec2 renderPos, ImVec2 renderSize,
+                       const glm::vec3& position, const glm::vec3& rotation,
+                       const glm::vec3& scale,
+                       const MeshData* mesh = nullptr) const;
 
     /**
      * Get the camera for external manipulation.

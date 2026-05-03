@@ -28,6 +28,11 @@ public:
      */
     entt::entity createScreen(const char* name = "New Screen");
 
+    /**
+     * Create a new projector with default settings
+     */
+    entt::entity createProjector();
+
 private:
     Engine* m_engine{nullptr};
 };

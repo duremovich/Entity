@@ -7,6 +7,11 @@
 
 namespace entity {
 
+enum class ScreenType : uint8_t {
+    LEDWall = 0,
+    ProjectionSurface = 1,
+};
+
 /**
  * Screen component - represents a projection surface in the 3D scene
  *
@@ -42,6 +47,9 @@ struct Screen {
     // GPU render target for this screen's content
     uint32_t renderTargetSlot{UINT32_MAX};
     bool renderTargetValid{false};
+
+    // Screen type — determines rendering/output path
+    ScreenType type{ScreenType::LEDWall};
 };
 
 /**

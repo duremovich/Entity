@@ -30,17 +30,6 @@ void ModelBinWindow::render() {
     }
     ImGui::EndDisabled();
 
-    ImGui::SameLine();
-    if (ImGui::Button("Create Default")) {
-        // Create a default 16:9 screen plane
-        entt::entity modelEntity = registry.create();
-        Model& model = registry.emplace<Model>(modelEntity);
-        model.name = "Default 16:9 Plane";
-        model.filepath = "";
-        model.mesh = createDefaultScreenMesh();
-        std::cout << "[ModelBin] Created default 16:9 plane" << std::endl;
-    }
-
     ImGui::Separator();
 
     // Model list
@@ -51,6 +40,8 @@ void ModelBinWindow::render() {
     ImGui::Separator();
 
     // Table of models
+    entt::entity toDelete = entt::null;
+
     if (ImGui::BeginTable("ModelsTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Vertices", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -66,7 +57,8 @@ void ModelBinWindow::render() {
             // Name
             ImGui::TableNextColumn();
             bool selected = false;
-            ImGui::Selectable(model.name.c_str(), &selected, ImGuiSelectableFlags_SpanAllColumns);
+            ImGui::Selectable(model.name.c_str(), &selected,
+                              ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
 
             // Make model draggable for assigning to screens
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
@@ -85,12 +77,10 @@ void ModelBinWindow::render() {
                 }
                 ImGui::Text("Vertices: %zu", model.mesh.vertices.size());
                 ImGui::Text("Triangles: %zu", model.mesh.indices.size() / 3);
-
-                // Bounds
-                const auto& min = model.mesh.minBounds;
-                const auto& max = model.mesh.maxBounds;
+                const auto& mn = model.mesh.minBounds;
+                const auto& mx = model.mesh.maxBounds;
                 ImGui::Text("Bounds: (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)",
-                           min[0], min[1], min[2], max[0], max[1], max[2]);
+                           mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
                 ImGui::EndTooltip();
             }
 
@@ -102,13 +92,11 @@ void ModelBinWindow::render() {
             ImGui::TableNextColumn();
             ImGui::Text("%zu", model.mesh.indices.size() / 3);
 
-            // Actions
+            // Actions — defer destroy to after the loop (can't mutate view mid-iteration)
             ImGui::TableNextColumn();
             ImGui::PushID(static_cast<int>(entity));
-            if (ImGui::SmallButton("X")) {
-                // Delete model (will be processed after loop)
-                registry.destroy(entity);
-            }
+            if (ImGui::SmallButton("X"))
+                toDelete = entity;
             ImGui::PopID();
 
             modelCount++;
@@ -117,9 +105,12 @@ void ModelBinWindow::render() {
         ImGui::EndTable();
     }
 
+    if (toDelete != entt::null)
+        registry.destroy(toDelete);
+
     if (modelCount == 0) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No models imported.");
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Click 'Import OBJ' or 'Create Default' to add models.");
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Click 'Import OBJ' to add a model.");
     }
 
     // Handle OBJ file drops

@@ -117,49 +117,83 @@ Result PNGSequenceDecoder::seek(FrameNumber frameNumber) {
 }
 
 Result PNGSequenceDecoder::scanDirectory() {
-    try {
-        std::filesystem::path basePath(m_basePath);
-        std::filesystem::path directory;
+    // Numeric sort: compare the trailing number in each filename so that
+    // frame_2.png < frame_10.png (alphabetical order gets this wrong).
+    auto numericSort = [](const std::string& a, const std::string& b) {
+        auto trailingNum = [](const std::string& path) -> long long {
+            std::string stem = std::filesystem::path(path).stem().string();
+            size_t i = stem.size();
+            while (i > 0 && std::isdigit((unsigned char)stem[i - 1])) --i;
+            if (i == stem.size()) return 0LL;
+            try { return std::stoll(stem.substr(i)); } catch (...) { return 0LL; }
+        };
+        long long na = trailingNum(a), nb = trailingNum(b);
+        return na != nb ? na < nb : a < b;
+    };
 
-        // If basePath is a file, use its directory
-        if (std::filesystem::is_regular_file(basePath)) {
-            directory = basePath.parent_path();
-        } else if (std::filesystem::is_directory(basePath)) {
-            directory = basePath;
-        } else {
-            // Try to interpret as directory anyway
-            directory = basePath;
+    try {
+        std::filesystem::path inputPath(m_basePath);
+
+        // --- Directory input: include all PNGs (used when a folder is passed directly) ---
+        if (std::filesystem::is_directory(inputPath)) {
+            for (const auto& entry : std::filesystem::directory_iterator(inputPath)) {
+                if (!entry.is_regular_file()) continue;
+                std::string ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+                if (ext == ".png") m_fileList.push_back(entry.path().string());
+            }
+            std::sort(m_fileList.begin(), m_fileList.end(), numericSort);
+            return Result::Success;
         }
 
-        // Ensure directory is valid
-        if (directory.empty() || !std::filesystem::exists(directory)) {
-            std::cerr << "PNGSequenceDecoder: Directory not found: " << directory.string() << std::endl;
+        // --- File input ---
+        if (!std::filesystem::is_regular_file(inputPath)) {
+            std::cerr << "PNGSequenceDecoder: File not found: " << m_basePath << std::endl;
             return Result::FileNotFound;
         }
 
-        // Scan for PNG files
-        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
+        std::string stem = inputPath.stem().string();
 
-            std::string ext = entry.path().extension().string();
+        // Find the trailing digit run in the stem, if any.
+        size_t numStart = stem.size();
+        while (numStart > 0 && std::isdigit((unsigned char)stem[numStart - 1]))
+            --numStart;
 
-            // Convert extension to lowercase for case-insensitive comparison
-            std::transform(ext.begin(), ext.end(), ext.begin(),
-                         [](unsigned char c) { return std::tolower(c); });
-
-            // Check if PNG file
-            if (ext == ".png") {
-                m_fileList.push_back(entry.path().string());
-            }
+        if (numStart == stem.size()) {
+            // No trailing digits → standalone single-frame PNG.
+            m_fileList.push_back(inputPath.string());
+            return Result::Success;
         }
 
-        // Sort files alphabetically
-        // This assumes files are named in a way that alphabetical order matches sequence order
-        // e.g., frame_001.png, frame_002.png, ..., frame_010.png
-        std::sort(m_fileList.begin(), m_fileList.end());
+        // Has trailing digits: base prefix + numeric suffix.
+        // Collect all PNGs in the same directory that share the same prefix and
+        // have an all-digit suffix (e.g. "frame_" + "042" + ".png").
+        std::string base = stem.substr(0, numStart);
+        std::filesystem::path dir = inputPath.parent_path();
 
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) continue;
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (ext != ".png") continue;
+
+            std::string candidateStem = entry.path().stem().string();
+            if (candidateStem.size() <= base.size()) continue;
+            if (candidateStem.substr(0, base.size()) != base) continue;
+
+            // Everything after the base must be digits only
+            std::string suffix = candidateStem.substr(base.size());
+            if (suffix.empty()) continue;
+            bool allDigits = std::all_of(suffix.begin(), suffix.end(),
+                                         [](unsigned char c) { return std::isdigit(c); });
+            if (!allDigits) continue;
+
+            m_fileList.push_back(entry.path().string());
+        }
+
+        std::sort(m_fileList.begin(), m_fileList.end(), numericSort);
         return Result::Success;
     }
     catch (const std::exception& e) {

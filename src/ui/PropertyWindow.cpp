@@ -13,6 +13,7 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
@@ -80,7 +81,14 @@ void PropertyWindow::render() {
 
     auto& registry = m_timeline->getRegistry();
 
-    // Check for selected screen first
+    // Check for selected projector first (takes priority over screen/clip)
+    entt::entity selectedProjector = m_timeline->getSelectedProjector();
+    if (selectedProjector != entt::null && registry.valid(selectedProjector)) {
+        renderProjectorProperties();
+        return;
+    }
+
+    // Check for selected screen
     entt::entity selectedScreen = m_timeline->getSelectedScreen();
     if (selectedScreen != entt::null && registry.valid(selectedScreen)) {
         renderScreenProperties();
@@ -858,26 +866,56 @@ void PropertyWindow::renderScreenProperties() {
         }
     }
 
+    // Type
+    if (ImGui::CollapsingHeader("Type", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int typeInt = static_cast<int>(screen->type);
+        ImGui::RadioButton("LED Wall", &typeInt, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("Projection Surface", &typeInt, 1);
+        screen->type = static_cast<ScreenType>(typeInt);
+        if (screen->type == ScreenType::ProjectionSurface) {
+            ImGui::TextDisabled("Add projectors in the Screens panel.");
+        }
+    }
+
     // Geometry
     if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Model picker combo
+        {
+            std::string currentModelName = "None (flat quad)";
+            if (screen->modelEntity != entt::null && registry.valid(screen->modelEntity)) {
+                if (const Model* m = registry.try_get<Model>(screen->modelEntity))
+                    currentModelName = m->name;
+                else
+                    screen->modelEntity = entt::null;  // stale reference — clear it
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##model_picker", currentModelName.c_str())) {
+                if (ImGui::Selectable("None (flat quad)", screen->modelEntity == entt::null))
+                    screen->modelEntity = entt::null;
+                for (auto [e, model] : registry.view<Model>().each()) {
+                    bool sel = (screen->modelEntity == e);
+                    if (ImGui::Selectable(model.name.c_str(), sel))
+                        screen->modelEntity = e;
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Model");
+        }
+
+        // Show mesh stats for assigned model
         if (screen->modelEntity != entt::null && registry.valid(screen->modelEntity)) {
-            Model* model = registry.try_get<Model>(screen->modelEntity);
-            if (model) {
-                ImGui::Text("Model: %s", model->name.c_str());
-                ImGui::Text("Vertices: %zu", model->mesh.vertices.size());
-                ImGui::Text("Triangles: %zu", model->mesh.indices.size() / 3);
-                if (ImGui::SmallButton("Clear Model")) {
+            if (const Model* model = registry.try_get<Model>(screen->modelEntity)) {
+                ImGui::TextDisabled("%zu verts  %zu tris",
+                    model->mesh.vertices.size(), model->mesh.indices.size() / 3);
+                if (ImGui::SmallButton("Clear")) {
                     screen->modelEntity = entt::null;
                 }
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Invalid model reference");
-                screen->modelEntity = entt::null;
             }
         } else {
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No model assigned");
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Drag a model from Model Bin");
-
-            // Accept model drops
+            ImGui::TextDisabled("Drag a model from Model Bin, or pick above.");
+            // Accept drag-drop as well
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MODEL_ENTITY")) {
                     uint32_t modelEntityId = *static_cast<const uint32_t*>(payload->Data);
@@ -940,6 +978,113 @@ void PropertyWindow::renderScreenProperties() {
         ImGui::SliderFloat("Opacity", &screen->opacity, 0.0f, 1.0f);
         ImGui::SetNextItemWidth(-1);
         ImGui::DragInt("Z-Order", &screen->zOrder);
+    }
+
+    ImGui::PopID();
+}
+
+void PropertyWindow::renderProjectorProperties() {
+    entt::entity selectedProjector = m_timeline->getSelectedProjector();
+    if (selectedProjector == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    Projector* proj = registry.try_get<Projector>(selectedProjector);
+    if (!proj) {
+        ImGui::TextDisabled("Invalid projector");
+        return;
+    }
+
+    ImGui::PushID(static_cast<int>(selectedProjector));
+    ImGui::Text("Projector: %s", proj->name.c_str());
+    ImGui::Separator();
+
+    // Identity
+    if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char nameBuf[256];
+        strncpy(nameBuf, proj->name.c_str(), sizeof(nameBuf) - 1);
+        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+            proj->name = nameBuf;
+        ImGui::Checkbox("Enabled", &proj->enabled);
+    }
+
+    // Transform
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Position");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##ppos", proj->position.data(), 0.1f);
+
+        ImGui::Text("Rotation  (pitch X, yaw Y, roll Z)");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##prot", proj->rotation.data(), 1.0f, -180.0f, 180.0f);
+
+        if (ImGui::Button("Reset Transform")) {
+            proj->position = {0.f, 3.f, 5.f};
+            proj->rotation = {-20.f, 0.f, 0.f};
+        }
+    }
+
+    // Optics
+    if (ImGui::CollapsingHeader("Optics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SetNextItemWidth(-1);
+        ImGui::SliderFloat("FOV##fov", &proj->fovDegrees, 5.0f, 120.0f, "%.1f°");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat("Near Clip##near", &proj->nearClip, 0.01f, 0.01f, 10.0f, "%.2f");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat("Far Clip##far",  &proj->farClip,  1.0f,  1.0f,  500.0f, "%.1f");
+        if (ImGui::SmallButton("Reset Optics")) {
+            proj->fovDegrees = 50.f;
+            proj->nearClip   = 0.1f;
+            proj->farClip    = 50.f;
+        }
+    }
+
+    // Target Surfaces
+    if (ImGui::CollapsingHeader("Target Surfaces", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (proj->targetSurfaceCount == 0) {
+            ImGui::TextDisabled("All Projection Surfaces (default)");
+            if (ImGui::SmallButton("Override")) {
+                // Switch to explicit mode: start with all current projection surfaces checked
+                proj->targetSurfaceCount = 0;
+                for (auto [e, scr] : registry.view<Screen>().each()) {
+                    if (scr.type == ScreenType::ProjectionSurface &&
+                        proj->targetSurfaceCount < Projector::MAX_TARGETS) {
+                        proj->targetSurfaces[proj->targetSurfaceCount++] = e;
+                    }
+                }
+                if (proj->targetSurfaceCount == 0)
+                    proj->targetSurfaceCount = -1;  // explicit empty list
+            }
+        } else {
+            ImGui::TextDisabled("Explicit target list:");
+            // List all ProjectionSurface screens with checkboxes
+            for (auto [e, scr] : registry.view<Screen>().each()) {
+                if (scr.type != ScreenType::ProjectionSurface) continue;
+
+                bool inList = false;
+                int foundIdx = -1;
+                for (int i = 0; i < proj->targetSurfaceCount; ++i) {
+                    if (proj->targetSurfaces[i] == e) { inList = true; foundIdx = i; break; }
+                }
+
+                bool checked = inList;
+                if (ImGui::Checkbox(scr.name.c_str(), &checked)) {
+                    if (checked && !inList && proj->targetSurfaceCount < Projector::MAX_TARGETS) {
+                        proj->targetSurfaces[proj->targetSurfaceCount++] = e;
+                    } else if (!checked && inList && foundIdx >= 0) {
+                        // Remove by shifting
+                        for (int i = foundIdx; i < proj->targetSurfaceCount - 1; ++i)
+                            proj->targetSurfaces[i] = proj->targetSurfaces[i + 1];
+                        proj->targetSurfaceCount--;
+                        if (proj->targetSurfaceCount < 0) proj->targetSurfaceCount = 0;
+                    }
+                }
+            }
+            if (ImGui::SmallButton("Reset to All")) {
+                proj->targetSurfaceCount = 0;
+            }
+        }
     }
 
     ImGui::PopID();

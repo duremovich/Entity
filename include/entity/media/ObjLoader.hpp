@@ -54,9 +54,6 @@ public:
 
     /**
      * Load OBJ data from a string (for embedded models)
-     * @param objData OBJ format string data
-     * @param name Name to assign to the mesh
-     * @return MeshData containing the loaded geometry
      */
     static MeshData loadFromString(const std::string& objData, const std::string& name);
 

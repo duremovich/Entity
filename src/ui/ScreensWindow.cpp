@@ -3,6 +3,7 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/components/Projector.hpp"
 #include <iostream>
 
 namespace entity {
@@ -102,6 +103,75 @@ void ScreensWindow::render() {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No screens.");
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Click '+ Add Screen'");
     }
+
+    // ---- Projectors section ----
+    ImGui::Separator();
+
+    ImGui::Text("Projectors");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Add##proj")) {
+        entt::entity newProj = createProjector();
+        if (timeline) {
+            timeline->setSelectedProjector(newProj);
+            timeline->setSelectedClip(entt::null);
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Virtual cameras that map content onto\nProjection Surface screens.");
+    }
+
+    ImGui::Separator();
+
+    entt::entity selectedProjector = timeline ? timeline->getSelectedProjector() : entt::null;
+    auto projView = registry.view<Projector>();
+    int projIndex = 0;
+
+    for (auto projEntity : projView) {
+        Projector& proj = projView.get<Projector>(projEntity);
+
+        ImGui::PushID(static_cast<int>(projEntity) + 100000);
+
+        bool isSelProj = (projEntity == selectedProjector);
+
+        // Enabled checkbox inline
+        ImGui::Checkbox("##en", &proj.enabled);
+        ImGui::SameLine();
+
+        if (ImGui::Selectable(proj.name.c_str(), isSelProj)) {
+            if (timeline) {
+                timeline->setSelectedProjector(projEntity);
+                timeline->setSelectedClip(entt::null);
+            }
+        }
+
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Delete")) {
+                registry.destroy(projEntity);
+                if (timeline && selectedProjector == projEntity)
+                    timeline->setSelectedProjector(entt::null);
+            }
+            if (ImGui::MenuItem("Duplicate")) {
+                entt::entity newEntity = registry.create();
+                registry.emplace<Projector>(newEntity, proj);
+                Projector& newProj = registry.get<Projector>(newEntity);
+                newProj.name = proj.name + " Copy";
+                if (timeline) {
+                    timeline->setSelectedProjector(newEntity);
+                    timeline->setSelectedClip(entt::null);
+                }
+            }
+            ImGui::EndPopup();
+        }
+
+        ImGui::PopID();
+        projIndex++;
+    }
+
+    if (projIndex == 0) {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No projectors.");
+    }
 }
 
 entt::entity ScreensWindow::createScreen(const char* name) {
@@ -118,6 +188,23 @@ entt::entity ScreensWindow::createScreen(const char* name) {
     }
 
     std::cout << "[Screens] Created screen: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
+    return entity;
+}
+
+entt::entity ScreensWindow::createProjector() {
+    auto& registry = m_engine->getRegistry();
+    entt::entity entity = registry.create();
+    Projector& proj = registry.emplace<Projector>(entity);
+
+    // Auto-number: "Projector 1", "Projector 2", ...
+    int count = 1;
+    for (auto e : registry.view<Projector>()) {
+        (void)e;
+        count++;
+    }
+    proj.name = "Projector " + std::to_string(count);
+
+    std::cout << "[Screens] Created projector: " << proj.name << std::endl;
     return entity;
 }
 
