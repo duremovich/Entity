@@ -133,6 +133,12 @@ public:
     bool     createCalibrationOverlay(uint32_t width, uint32_t height);
     void     destroyCalibrationOverlay();
     void     updateCalibrationPoints(const std::vector<glm::vec2>& uvPositions, int activeIndex);
+    // Toggle Disguise-style precision cursor: when on, the calibration overlay
+    // fills the entire frame with a quadrant checkerboard (white/black/black/white)
+    // centered on the active crosshair. Lets the user position to sub-pixel
+    // accuracy by aligning the sharp quadrant intersection against a physical
+    // feature instead of a fuzzy 5-pixel cross.
+    void     setCalibrationCheckerboard(bool enabled);
     void     renderCalibrationOverlay();
     uint32_t getCalibrationOverlaySlot() const { return m_calibOverlaySlot; }
     bool     hasCalibrationOverlay() const { return m_calibOverlaySlot != UINT32_MAX; }
@@ -513,7 +519,10 @@ private:
         std::array<float, 32> pts; // packed float4[8]: pts[2i], pts[2i+1] → float4[i]
         int   numPts{0};
         int   activeIdx{-1};
-        float pad[2]{};
+        // 1 = full-frame quadrant checkerboard centered on the active crosshair
+        // (Disguise-style precision cursor). 0 = standard small crosshair markers.
+        int   checkerboard{0};
+        float pad{};
     };
     ComPtr<ID3D12RootSignature>  m_calibRootSignature;
     ComPtr<ID3D12PipelineState>  m_calibPipelineState;

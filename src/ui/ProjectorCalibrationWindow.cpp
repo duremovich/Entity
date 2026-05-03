@@ -322,6 +322,25 @@ void ProjectorCalibrationWindow::renderToolbar() {
     ImGui::SameLine();
     ImGui::Checkbox("Wireframe", &m_showWireframe);
 
+    ImGui::SameLine();
+    bool prevPrecision = m_precisionCursor;
+    ImGui::Checkbox("Precision Cursor (C)", &m_precisionCursor);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Full-frame quadrant checkerboard centered on the active\n"
+                          "crosshair. Align the sharp 4-quadrant intersection against\n"
+                          "the physical feature for sub-pixel placement.");
+    }
+    // Keyboard 'C' toggle (only when no text input is focused).
+    if (!ImGui::GetIO().WantCaptureKeyboard && ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+        m_precisionCursor = !m_precisionCursor;
+    }
+    if (m_precisionCursor != prevPrecision) {
+        // Force overlay re-render so the physical projector switches mode
+        // immediately (otherwise the new state only takes effect on the next
+        // crosshair edit that triggers syncOverlayPoints).
+        syncOverlayPoints();
+    }
+
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60.0f + ImGui::GetCursorPosX());
     if (ImGui::Button("Done")) close();
 }
@@ -522,6 +541,16 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
     rebuildProjectorCamera(viewSize);
     m_renderer.setCamera(m_projectorCamera);
 
+    // Simulate physical lens distortion in the right-pane preview so the
+    // rendered mesh matches what the user sees through the real projector.
+    // (Output rendering stays distortion-free — the hardware lens does it.)
+    if (m_engine && m_engine->getRegistry().valid(m_projectorEntity)) {
+        if (const auto* p = m_engine->getRegistry().try_get<Projector>(m_projectorEntity)) {
+            m_renderer.lensK1 = p->distortionK1;
+            m_renderer.lensK2 = p->distortionK2;
+        }
+    }
+
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     // Letterbox bars: fill the pane area outside the projector view rect
@@ -562,6 +591,36 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
         }
     }
     m_renderer.endRender(dl, viewPos, viewSize);
+
+    // Reset distortion so the next pane render (left scene pane on the next
+    // frame) doesn't pick it up.
+    m_renderer.lensK1 = 0.0f;
+    m_renderer.lensK2 = 0.0f;
+
+    // Precision cursor mode: cover the rendered mesh with the same quadrant
+    // checkerboard the physical projector is showing, so the right pane and
+    // physical output stay visually consistent.
+    if (m_precisionCursor && m_activePointIdx >= 0 &&
+        m_activePointIdx < static_cast<int>(m_points.size())) {
+        glm::vec2 c = m_points[m_activePointIdx].projectorUV;
+        ImVec2 split{viewPos.x + c.x * viewSize.x, viewPos.y + c.y * viewSize.y};
+        const ImU32 W = IM_COL32(255, 255, 255, 255);
+        const ImU32 K = IM_COL32(0, 0, 0, 255);
+        const ImU32 G = IM_COL32(128, 128, 128, 255);
+        // TL=white, TR=black, BL=black, BR=white
+        dl->AddRectFilled(viewPos, split, W);
+        dl->AddRectFilled(ImVec2(split.x, viewPos.y),
+                          ImVec2(viewPos.x + viewSize.x, split.y), K);
+        dl->AddRectFilled(ImVec2(viewPos.x, split.y),
+                          ImVec2(split.x, viewPos.y + viewSize.y), K);
+        dl->AddRectFilled(split,
+                          ImVec2(viewPos.x + viewSize.x, viewPos.y + viewSize.y), W);
+        // Thin gray reference lines through the cursor.
+        dl->AddLine(ImVec2(viewPos.x, split.y),
+                    ImVec2(viewPos.x + viewSize.x, split.y), G, 1.0f);
+        dl->AddLine(ImVec2(split.x, viewPos.y),
+                    ImVec2(split.x, viewPos.y + viewSize.y), G, 1.0f);
+    }
 
     // Draw crosshairs at projector-UV positions inside the view rect.
     for (int i = 0; i < static_cast<int>(m_points.size()); ++i) {
@@ -606,7 +665,11 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
         if (hovered || active || m_rightPaneDragging) {
             float pixelX = 1.0f / static_cast<float>(m_outputSize.x);
             float pixelY = 1.0f / static_cast<float>(m_outputSize.y);
-            float mult   = ImGui::GetIO().KeyShift ? 10.0f : 1.0f;
+            // Modifier scaling: Shift = 10px (coarse), Ctrl = 0.1px (sub-pixel
+            // for final precision tuning), default = 1px.
+            float mult = 1.0f;
+            if      (ImGui::GetIO().KeyShift) mult = 10.0f;
+            else if (ImGui::GetIO().KeyCtrl)  mult = 0.1f;
             if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))  pt.projectorUV.x -= pixelX * mult;
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) pt.projectorUV.x += pixelX * mult;
             if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))    pt.projectorUV.y -= pixelY * mult;
@@ -938,6 +1001,7 @@ void ProjectorCalibrationWindow::syncOverlayPoints() {
     uvs.reserve(m_points.size());
     for (auto& pt : m_points) uvs.push_back(pt.projectorUV);
     d3d->updateCalibrationPoints(uvs, m_activePointIdx);
+    d3d->setCalibrationCheckerboard(m_precisionCursor);
     d3d->renderCalibrationOverlay();
 }
 
@@ -1015,15 +1079,17 @@ void ProjectorCalibrationWindow::applyResult() {
     const auto& r = m_lastResult;
     if (!std::isfinite(r.position.x) || !std::isfinite(r.position.y) || !std::isfinite(r.position.z) ||
         !std::isfinite(r.rotationEuler.x) || !std::isfinite(r.rotationEuler.y) || !std::isfinite(r.rotationEuler.z) ||
-        !std::isfinite(r.fovDegrees)) {
+        !std::isfinite(r.fovDegrees) ||
+        !std::isfinite(r.distortionK1) || !std::isfinite(r.distortionK2)) {
         std::cout << "[Calibration] Apply REJECTED — solver returned non-finite values\n";
         return;
     }
 
-    // Snapshot pre-Apply pose so we can log the delta.
     const glm::vec3 oldPos(proj.position[0], proj.position[1], proj.position[2]);
     const glm::vec3 oldRot(proj.rotation[0], proj.rotation[1], proj.rotation[2]);
     const float     oldFov = proj.fovDegrees;
+    const float     oldK1  = proj.distortionK1;
+    const float     oldK2  = proj.distortionK2;
 
     proj.position[0] = r.position.x;
     proj.position[1] = r.position.y;
@@ -1032,12 +1098,15 @@ void ProjectorCalibrationWindow::applyResult() {
     proj.rotation[1] = r.rotationEuler.y;
     proj.rotation[2] = r.rotationEuler.z;
     proj.fovDegrees  = std::clamp(r.fovDegrees, 5.0f, 170.0f);
+    proj.distortionK1 = r.distortionK1;
+    proj.distortionK2 = r.distortionK2;
     proj.isCalibrated = true;
 
     std::cout << "[Calibration] Apply  pos="
               << "(" << r.position.x << ", " << r.position.y << ", " << r.position.z << ")"
               << "  rot=(" << r.rotationEuler.x << ", " << r.rotationEuler.y << ", " << r.rotationEuler.z << ")"
               << "  fov=" << proj.fovDegrees
+              << "  k1=" << r.distortionK1 << "  k2=" << r.distortionK2
               << "  | Δpos=(" << (r.position.x - oldPos.x)
               << ", " << (r.position.y - oldPos.y)
               << ", " << (r.position.z - oldPos.z) << ")"
@@ -1045,6 +1114,8 @@ void ProjectorCalibrationWindow::applyResult() {
               << ", " << (r.rotationEuler.y - oldRot.y)
               << ", " << (r.rotationEuler.z - oldRot.z) << ")"
               << "  Δfov=" << (proj.fovDegrees - oldFov)
+              << "  Δk1=" << (r.distortionK1 - oldK1)
+              << "  Δk2=" << (r.distortionK2 - oldK2)
               << "  RMS=" << r.rmsErrorPixels << "px\n";
 }
 

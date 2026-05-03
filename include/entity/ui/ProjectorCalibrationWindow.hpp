@@ -122,7 +122,9 @@ private:
     glm::uvec2        m_outputSize{1920, 1080};
 
     // Display options
-    bool              m_showWireframe{true};  // overlay mesh edges in scene pane
+    bool              m_showWireframe{true};       // overlay mesh edges in scene pane
+    bool              m_precisionCursor{false};    // Disguise-style full-frame quadrant
+                                                    // checkerboard for sub-pixel placement
 };
 
 } // namespace entity

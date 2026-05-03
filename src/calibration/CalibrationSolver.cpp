@@ -478,16 +478,17 @@ struct ProjectorRefineFunctor {
     float nearClip{0.1f};
     float farClip{100.0f};
 
-    int inputs() const { return 7; }
+    int inputs() const { return 9; }  // pos(3) + euler(3) + fov(1) + k1, k2(2)
     int values() const { return 2 * static_cast<int>(pairs.size()); }
 
     int operator()(const Eigen::VectorXd& x, Eigen::VectorXd& fvec) const {
         glm::vec3 pos(static_cast<float>(x(0)), static_cast<float>(x(1)), static_cast<float>(x(2)));
         float pitchRad = glm::radians(static_cast<float>(x(3)));
         float yawRad   = glm::radians(static_cast<float>(x(4)));
-        // roll handled via rotated up vector if non-zero
         float rollRad  = glm::radians(static_cast<float>(x(5)));
         float fov      = std::clamp(static_cast<float>(x(6)), 5.0f, 170.0f);
+        double k1      = x(7);
+        double k2      = x(8);
 
         // Forward direction matches Stage3DRenderer::buildProjectorCamera.
         glm::vec3 fwd(
@@ -497,7 +498,6 @@ struct ProjectorRefineFunctor {
         );
         glm::vec3 up(0.0f, 1.0f, 0.0f);
         if (std::abs(rollRad) > 1e-5f) {
-            // Rotate up around fwd by roll
             float c = std::cos(rollRad), s = std::sin(rollRad);
             glm::vec3 right = glm::normalize(glm::cross(fwd, up));
             up = glm::normalize(c * up + s * right);
@@ -509,15 +509,25 @@ struct ProjectorRefineFunctor {
         for (size_t i = 0; i < pairs.size(); ++i) {
             glm::vec4 clip = vp * glm::vec4(pairs[i].worldPos, 1.0f);
             if (clip.w < 1e-5f) {
-                // Behind camera → strong penalty to push the optimizer away.
                 fvec(2 * i)     = 1.0e4;
                 fvec(2 * i + 1) = 1.0e4;
                 continue;
             }
             double ndc_x = clip.x / clip.w;
             double ndc_y = clip.y / clip.w;
-            double u_pred = (ndc_x + 1.0) * 0.5;
-            double v_pred = (1.0 - ndc_y) * 0.5;
+
+            // Radial lens distortion (Brown-Conrady, 2-term):
+            //   x_d = x · (1 + k1·r² + k2·r⁴),   r² = x² + y²  in normalized coords
+            // The physical projector lens applies this; we model it here so the
+            // solver finds the *ideal pinhole* pose that, after lens distortion,
+            // maps world points to the user-measured UV positions.
+            double r2 = ndc_x * ndc_x + ndc_y * ndc_y;
+            double scale = 1.0 + k1 * r2 + k2 * r2 * r2;
+            double dist_x = ndc_x * scale;
+            double dist_y = ndc_y * scale;
+
+            double u_pred = (dist_x + 1.0) * 0.5;
+            double v_pred = (1.0 - dist_y) * 0.5;
             fvec(2 * i)     = (u_pred - pairs[i].projectorUV.x) * outputSize.x;
             fvec(2 * i + 1) = (v_pred - pairs[i].projectorUV.y) * outputSize.y;
         }
@@ -525,21 +535,15 @@ struct ProjectorRefineFunctor {
     }
 };
 
-// Single-pass LM refinement from one initial guess. Helper for solveRefine's
-// multi-start orchestration.
-//
-// Two important details for convergence:
-//   1. epsfcn=1e-6 forces NumericalDiff perturbation step h = sqrt(1e-6)*|x|
-//      ≈ 1e-3*|x|, large enough that angle-parameter Jacobians don't get
-//      lost to numerical noise (Eigen's default ~1.5e-8 perturbation is
-//      below the function's measurement floor for degree-scale angles).
-//   2. maxfev=2000 lets slow-converging seeds run to completion instead of
-//      stopping at the iteration limit with a poor result.
+// Single-pass LM refinement from one initial guess. 9-DOF: 6-DOF pose +
+// FOV + 2 radial-distortion coefficients (k1, k2).
 static CalibrationResult runLMOnce(const std::vector<CorrespondencePair>& pairs,
                                     glm::uvec2 outputSize,
                                     const glm::vec3& initialPos,
                                     const glm::vec3& initialRotEuler,
-                                    float initialFovDegrees)
+                                    float initialFovDegrees,
+                                    float initialK1 = 0.0f,
+                                    float initialK2 = 0.0f)
 {
     CalibrationResult result;
     result.method = SolveMethod::DLT;
@@ -551,19 +555,17 @@ static CalibrationResult runLMOnce(const std::vector<CorrespondencePair>& pairs,
                          ? static_cast<float>(outputSize.x) / static_cast<float>(outputSize.y)
                          : 16.0f / 9.0f;
 
-    // epsfcn = 1e-8 → perturbation step h ≈ sqrt(1e-8)*|x| = 1e-4*|x|, smaller
-    // than 1e-6's 1e-3*|x|. More accurate Jacobian → tighter LM convergence.
-    // Still well above noise floor for our parameter scales.
     Eigen::NumericalDiff<ProjectorRefineFunctor> numDiff(functor, 1e-8);
     Eigen::LevenbergMarquardt<Eigen::NumericalDiff<ProjectorRefineFunctor>> lm(numDiff);
     lm.parameters.maxfev = 2000;
     lm.parameters.xtol   = 1e-10;
     lm.parameters.ftol   = 1e-10;
 
-    Eigen::VectorXd x(7);
+    Eigen::VectorXd x(9);
     x << initialPos.x, initialPos.y, initialPos.z,
          initialRotEuler.x, initialRotEuler.y, initialRotEuler.z,
-         std::clamp(initialFovDegrees, 5.0f, 170.0f);
+         std::clamp(initialFovDegrees, 5.0f, 170.0f),
+         initialK1, initialK2;
 
     int info = lm.minimize(x);
     if (info <= 0) {
@@ -578,6 +580,8 @@ static CalibrationResult runLMOnce(const std::vector<CorrespondencePair>& pairs,
                                      static_cast<float>(x(4)),
                                      static_cast<float>(x(5)));
     result.fovDegrees    = std::clamp(static_cast<float>(x(6)), 5.0f, 170.0f);
+    result.distortionK1  = static_cast<float>(x(7));
+    result.distortionK2  = static_cast<float>(x(8));
 
     Eigen::VectorXd residuals(2 * pairs.size());
     functor(x, residuals);
@@ -585,13 +589,12 @@ static CalibrationResult runLMOnce(const std::vector<CorrespondencePair>& pairs,
     result.rmsErrorPixels = static_cast<float>(std::sqrt(sumSq / pairs.size()));
     result.success        = true;
 
-    // Defensive: NaN check on output (LM occasionally explodes to garbage
-    // near degenerate configurations).
     if (!std::isfinite(result.position.x) || !std::isfinite(result.position.y) ||
         !std::isfinite(result.position.z) ||
         !std::isfinite(result.rotationEuler.x) || !std::isfinite(result.rotationEuler.y) ||
         !std::isfinite(result.rotationEuler.z) ||
-        !std::isfinite(result.fovDegrees) || !std::isfinite(result.rmsErrorPixels)) {
+        !std::isfinite(result.fovDegrees) || !std::isfinite(result.rmsErrorPixels) ||
+        !std::isfinite(result.distortionK1) || !std::isfinite(result.distortionK2)) {
         result.success = false;
         result.errorMessage = "LM produced non-finite values";
     }
@@ -720,11 +723,24 @@ CalibrationResult CalibrationSolver::solveRefine(
     }
 
     // Run LM from each seed; collect ALL successful results so we can apply
-    // a roll-sanity filter before picking the winner.
+    // a roll-sanity filter before picking the winner. All deterministic seeds
+    // start with k1 = k2 = 0 (no distortion) — the LM will discover them.
+    // A handful of random k1/k2 seeds help escape if LM stalls at zero.
     std::vector<CalibrationResult> seedResults;
-    seedResults.reserve(seeds.size());
+    seedResults.reserve(seeds.size() + 4);
+
     for (const auto& [pos, rot, fov] : seeds) {
-        auto r = runLMOnce(pairs, outputSize, pos, rot, fov);
+        auto r = runLMOnce(pairs, outputSize, pos, rot, fov, 0.0f, 0.0f);
+        if (r.success) seedResults.push_back(r);
+    }
+
+    // 4 extra seeds with non-zero distortion priors so LM has somewhere to
+    // start if the zero-distortion optima are local minima for a real lens.
+    std::normal_distribution<float> k1J(0.0f, 0.08f);
+    std::normal_distribution<float> k2J(0.0f, 0.03f);
+    for (int i = 0; i < 4; ++i) {
+        auto r = runLMOnce(pairs, outputSize, initialPos, initialRotEuler, initialFovDegrees,
+                            k1J(rng), k2J(rng));
         if (r.success) seedResults.push_back(r);
     }
 
@@ -762,7 +778,8 @@ CalibrationResult CalibrationSolver::solveRefine(
     // better when restarted with reset internal state.
     for (int iter = 0; iter < 20; ++iter) {
         auto refined = runLMOnce(pairs, outputSize,
-                                  best.position, best.rotationEuler, best.fovDegrees);
+                                  best.position, best.rotationEuler, best.fovDegrees,
+                                  best.distortionK1, best.distortionK2);
         if (refined.success && refined.rmsErrorPixels < best.rmsErrorPixels - 0.001f) {
             best = refined;
         } else {
@@ -782,9 +799,10 @@ CalibrationResult CalibrationSolver::solveRefine(
         f.aspect     = outputSize.y > 0
                        ? static_cast<float>(outputSize.x) / static_cast<float>(outputSize.y)
                        : 16.0f / 9.0f;
-        Eigen::VectorXd x(7), residuals(2 * pp.size());
+        Eigen::VectorXd x(9), residuals(2 * pp.size());
         x << res.position.x, res.position.y, res.position.z,
-             res.rotationEuler.x, res.rotationEuler.y, res.rotationEuler.z, res.fovDegrees;
+             res.rotationEuler.x, res.rotationEuler.y, res.rotationEuler.z, res.fovDegrees,
+             res.distortionK1, res.distortionK2;
         f(x, residuals);
         std::vector<float> perPoint(pp.size(), 0.0f);
         for (size_t i = 0; i < pp.size(); ++i) {
@@ -819,12 +837,13 @@ CalibrationResult CalibrationSolver::solveRefine(
         trimmed.erase(trimmed.begin() + worstIdx);
 
         auto trimmedResult = runLMOnce(trimmed, outputSize,
-                                        best.position, best.rotationEuler, best.fovDegrees);
-        // Run multi-pass on trimmed too
+                                        best.position, best.rotationEuler, best.fovDegrees,
+                                        best.distortionK1, best.distortionK2);
         for (int it = 0; it < 10; ++it) {
             auto r = runLMOnce(trimmed, outputSize,
                                 trimmedResult.position, trimmedResult.rotationEuler,
-                                trimmedResult.fovDegrees);
+                                trimmedResult.fovDegrees,
+                                trimmedResult.distortionK1, trimmedResult.distortionK2);
             if (r.success && r.rmsErrorPixels < trimmedResult.rmsErrorPixels - 0.001f)
                 trimmedResult = r;
             else break;

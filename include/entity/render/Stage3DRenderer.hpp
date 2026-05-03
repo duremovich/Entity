@@ -161,6 +161,14 @@ public:
     glm::vec3 screenRotation{0.0f, 0.0f, 0.0f};   // Rotation in degrees (pitch, yaw, roll)
     glm::vec3 screenScale{1.0f, 1.0f, 1.0f};      // Scale factors
 
+    // Optional radial lens distortion applied in projectPoint after the
+    // perspective divide. 0 = ideal pinhole (default for the editor scene
+    // view). Set non-zero by ProjectorCalibrationWindow's right pane to
+    // simulate the physical projector lens, so the rendered preview matches
+    // what the user sees through the real projector.
+    float lensK1{0.0f};
+    float lensK2{0.0f};
+
 private:
     /**
      * Project a 3D world point to 2D screen coordinates.

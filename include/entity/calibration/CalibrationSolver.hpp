@@ -20,6 +20,10 @@ struct CalibrationResult {
     glm::vec3 position;        // recovered projector world position
     glm::vec3 rotationEuler;   // Euler degrees: pitch(X), yaw(Y), roll(Z)
     float     fovDegrees{50.f};
+    // Radial lens distortion (Brown-Conrady, 2-term). Applied to normalized
+    // image coords as (1 + k1·r² + k2·r⁴). 0 = ideal pinhole.
+    float     distortionK1{0.f};
+    float     distortionK2{0.f};
     float     rmsErrorPixels{0.f};
     SolveMethod method{SolveMethod::DLT};
     bool      success{false};

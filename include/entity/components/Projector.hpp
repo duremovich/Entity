@@ -54,6 +54,16 @@ struct Projector {
     // calibration window loads these on open and saves on every modification
     // so the user doesn't lose work across close/reopen cycles.
     std::vector<CalibrationPoint> calibrationPoints;
+
+    // Radial lens distortion coefficients (Brown-Conrady model, 2-term).
+    //   r² = x² + y² in normalized image coords (NDC)
+    //   distorted = (x, y) × (1 + k1·r² + k2·r⁴)
+    // Solved alongside pose+FOV by the calibration solver. The PHYSICAL
+    // projector lens applies distortion automatically, so output rendering
+    // uses the ideal pinhole pose (these coefficients matter only for the
+    // calibration math + the in-app preview that simulates the physical view).
+    float distortionK1{0.0f};
+    float distortionK2{0.0f};
 };
 
 } // namespace entity

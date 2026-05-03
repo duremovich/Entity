@@ -32,10 +32,16 @@ ImVec2 Stage3DRenderer::projectPoint(const glm::vec3& worldPos,
     // Perspective divide to NDC
     glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
 
-    // Check if outside frustum
-    if (ndc.x < -1.0f || ndc.x > 1.0f || ndc.y < -1.0f || ndc.y > 1.0f || ndc.z < 0.0f || ndc.z > 1.0f) {
-        // Allow some tolerance for grid lines that extend past viewport
-        // return ImVec2(-1, -1);
+    // Optional radial lens distortion (Brown-Conrady, 2-term).
+    // Applied in normalized-image-coords space (NDC). When both coefficients
+    // are 0 (the default), this is a no-op identity. The calibration window's
+    // right pane sets these from the calibrated Projector to simulate the
+    // physical projector lens for visual matching.
+    if (lensK1 != 0.0f || lensK2 != 0.0f) {
+        float r2 = ndc.x * ndc.x + ndc.y * ndc.y;
+        float scale = 1.0f + lensK1 * r2 + lensK2 * r2 * r2;
+        ndc.x *= scale;
+        ndc.y *= scale;
     }
 
     // Convert NDC to screen coordinates

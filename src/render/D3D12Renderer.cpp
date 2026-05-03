@@ -4448,6 +4448,10 @@ void D3D12Renderer::updateCalibrationPoints(const std::vector<glm::vec2>& uvPosi
     }
 }
 
+void D3D12Renderer::setCalibrationCheckerboard(bool enabled) {
+    m_calibConstants.checkerboard = enabled ? 1 : 0;
+}
+
 void D3D12Renderer::renderCalibrationOverlay() {
     if (m_calibOverlaySlot == UINT32_MAX || !m_calibPipelineState) return;
 
