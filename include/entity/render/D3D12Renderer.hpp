@@ -14,6 +14,7 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <DirectXMath.h>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -120,6 +121,36 @@ public:
                                   uint32_t& outWidth,
                                   uint32_t& outHeight,
                                   std::vector<uint8_t>& outPixels) override;
+
+    // -----------------------------------------------------------------------
+    // Projector calibration overlay
+    //
+    // Creates a dedicated compose target that shows a black field with
+    // crosshair markers at the given projector-UV positions. Route the
+    // slot returned by getCalibrationOverlaySlot() to an OutputDisplay to
+    // show calibration crosshairs on the physical projector output.
+    // -----------------------------------------------------------------------
+    bool     createCalibrationOverlay(uint32_t width, uint32_t height);
+    void     destroyCalibrationOverlay();
+    void     updateCalibrationPoints(const std::vector<glm::vec2>& uvPositions, int activeIndex);
+    void     renderCalibrationOverlay();
+    uint32_t getCalibrationOverlaySlot() const { return m_calibOverlaySlot; }
+    bool     hasCalibrationOverlay() const { return m_calibOverlaySlot != UINT32_MAX; }
+
+    // -----------------------------------------------------------------------
+    // Mesh-triangle rendering for projector output. Renders one triangle
+    // (3 NDC verts + 3 UVs) of a textured mesh with proper hardware
+    // barycentric UV interpolation — no bilinear approximation artifacts.
+    // Must be called between beginOutputFrame / endOutputFrame.
+    // -----------------------------------------------------------------------
+    // TextureRef variant — IRenderer override.
+    void     drawMeshTriangle(TextureRef texture,
+                              const glm::vec2 verts[3],
+                              const glm::vec2 uvs[3]) override;
+    // D3D12-native variant.
+    void     drawMeshTriangle(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
+                              const glm::vec2 verts[3],
+                              const glm::vec2 uvs[3]);
 
     /**
      * Phase C.12 #5 — bind the OcioManager that drives input + display
@@ -390,7 +421,7 @@ private:
     // One slot per drawMappingSurface call. Reset each frame at beginFrame().
     // Fence sync (moveToNextFrame) ensures the GPU has finished reading the
     // previous use of the current frame's region before we overwrite.
-    static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 64;
+    static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 8192;
     ComPtr<ID3D12Resource> m_mappingSurfaceConstantRing;
     uint8_t* m_mappingSurfaceConstantRingMapped{nullptr};
     uint32_t m_mappingSurfaceSlotSize{0};          // 256-aligned sizeof(MappingSurfaceConstants)
@@ -476,6 +507,24 @@ private:
 
     bool createCaptureRootSignatureAndPSO();
     bool ensureCaptureResource(uint32_t width, uint32_t height);
+
+    // Calibration overlay PSO (calibration_overlay_vs/ps.hlsl)
+    struct alignas(16) CalibrationConstants {
+        std::array<float, 32> pts; // packed float4[8]: pts[2i], pts[2i+1] → float4[i]
+        int   numPts{0};
+        int   activeIdx{-1};
+        float pad[2]{};
+    };
+    ComPtr<ID3D12RootSignature>  m_calibRootSignature;
+    ComPtr<ID3D12PipelineState>  m_calibPipelineState;
+
+    // Mesh-triangle PSO (proper barycentric UV for projector output mesh rendering).
+    ComPtr<ID3D12RootSignature>  m_meshTriRootSignature;
+    ComPtr<ID3D12PipelineState>  m_meshTriPipelineState;
+    bool createMeshTrianglePSO();
+    uint32_t                     m_calibOverlaySlot{UINT32_MAX};
+    CalibrationConstants         m_calibConstants{};
+    bool createCalibrationOverlayPSO();
     bool tonemapAndReadbackComposeTarget(uint32_t slot,
                                           uint32_t& outWidth,
                                           uint32_t& outHeight,

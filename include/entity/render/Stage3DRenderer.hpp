@@ -124,6 +124,24 @@ public:
     Camera& getCamera() { return m_camera; }
     const Camera& getCamera() const { return m_camera; }
 
+    /**
+     * Override the internal camera for one or more draw calls, then restore.
+     * Used by ProjectorCalibrationWindow to render from the projector's viewpoint.
+     */
+    void setCamera(const Camera& cam) { m_camera = cam; }
+
+    /**
+     * Build a Camera from projector parameters (position, Euler degrees, fov, aspect).
+     * Convention: rotation[0]=pitch(X), rotation[1]=yaw(Y), rotation[2]=roll(Z).
+     * The resulting camera can be passed to setCamera() to render from the projector's POV.
+     */
+    static Camera buildProjectorCamera(const glm::vec3& position,
+                                       const glm::vec3& eulerDeg,
+                                       float fovDeg,
+                                       float aspect,
+                                       float nearClip = 0.1f,
+                                       float farClip = 50.0f);
+
     // Grid settings
     float gridSize{20.0f};          // Total grid size (e.g., 20x20 units)
     float gridSpacing{1.0f};        // Distance between major grid lines

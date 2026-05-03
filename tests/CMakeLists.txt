@@ -30,6 +30,7 @@ add_executable(EntityMediaTests
     unit/DirectorRendererRoundtripTests.cpp
     unit/AssetIdTests.cpp
     unit/DecodeBufferPoolTests.cpp
+    unit/CalibrationSolverTests.cpp
     test_Decoder.cpp
 )
 
@@ -39,6 +40,7 @@ target_link_libraries(EntityMediaTests
         GTest::gtest
         GTest::gtest_main
         Snappy::snappy
+        Eigen3::Eigen
 )
 
 include(GoogleTest)

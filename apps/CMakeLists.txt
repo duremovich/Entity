@@ -103,8 +103,13 @@ entity_compile_shader(mapping_surface_ps.hlsl   ps PSMain 6_0)
 # subtask 5 swaps the PS for an OCIO-emitted display transform).
 entity_compile_shader(aces_capture_vs.hlsl      vs VSMain 6_0)
 entity_compile_shader(aces_capture_ps.hlsl      ps PSMain 6_0)
+entity_compile_shader(calibration_overlay_vs.hlsl vs VSMain 6_0)
+entity_compile_shader(calibration_overlay_ps.hlsl ps PSMain 6_0)
+# Mesh triangle PSO — proper barycentric UV interpolation for projector output.
+entity_compile_shader(mesh_triangle_vs.hlsl       vs VSMain 6_0)
+entity_compile_shader(mesh_triangle_ps.hlsl       ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 8 shaders")
+message(STATUS "Configured offline HLSL compilation for 12 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler

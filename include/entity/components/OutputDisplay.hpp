@@ -140,6 +140,16 @@ struct OutputDisplay {
     // only one). Explicit routing comes later — Phase C #1 is single-raster.
     entt::entity sourceScreen{entt::null};
 
+    // When set, this output is driven by a Projector: the projector's target
+    // screen content is rendered fullscreen to this output. Takes priority over
+    // sourceScreen. entt::null = not projector-driven.
+    entt::entity sourceProjector{entt::null};
+
+    // Compose target slot for the calibration crosshair overlay. UINT32_MAX = no
+    // overlay. Set by ProjectorCalibrationWindow when routing to this output;
+    // OutputManager composites it on top of the projector view.
+    uint32_t calibrationOverlaySlot{UINT32_MAX};
+
     /**
      * Get the aspect ratio of the output.
      */

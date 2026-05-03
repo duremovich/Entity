@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EditorWindow.hpp"
+#include "ProjectorCalibrationWindow.hpp"
 #include "../render/Stage3DRenderer.hpp"
 #include <imgui.h>
 #include <memory>
@@ -105,6 +106,7 @@ private:
     Engine* m_engine{nullptr};  // Non-owning pointer to Engine
     StageViewMode m_viewMode{StageViewMode::View3D};  // Default to 3D view
     std::unique_ptr<Stage3DRenderer> m_3dRenderer;
+    std::unique_ptr<ProjectorCalibrationWindow> m_calibWindow;
 
     // 2D view pan/zoom state. zoom is a multiplier on the
     // aspect-fit-to-window size; pan is a pixel offset from centered.

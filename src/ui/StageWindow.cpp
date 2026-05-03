@@ -17,7 +17,8 @@ namespace entity {
 
 StageWindow::StageWindow(Engine* engine)
     : m_engine(engine)
-    , m_3dRenderer(std::make_unique<Stage3DRenderer>()) {
+    , m_3dRenderer(std::make_unique<Stage3DRenderer>())
+    , m_calibWindow(std::make_unique<ProjectorCalibrationWindow>(engine)) {
     // Initialize camera to default position
     m_3dRenderer->getCamera().reset();
     m_3dRenderer->getCamera().updateFromOrbit();
@@ -48,6 +49,11 @@ void StageWindow::render() {
     ImGui::EndChild();
 
     renderToolbar();
+
+    // Calibration window is a separate floating ImGui window; render it every frame while open.
+    if (m_calibWindow) {
+        m_calibWindow->render();
+    }
 }
 
 void StageWindow::render2DView() {
@@ -449,6 +455,28 @@ void StageWindow::renderToolbar() {
 
         ImGui::SameLine();
         ImGui::TextDisabled("| LMB: Orbit  MMB: Pan  Scroll: Zoom");
+
+        // Calibrate button — only shown when a Projector is selected
+        Timeline* tl = m_engine ? m_engine->getTimeline() : nullptr;
+        entt::entity selProj = tl ? tl->getSelectedProjector() : entt::null;
+        if (selProj != entt::null) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+
+            bool calibOpen = m_calibWindow && m_calibWindow->isOpen();
+            if (calibOpen)
+                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::SmallButton("Calibrate")) {
+                if (calibOpen) {
+                    m_calibWindow->close();
+                } else if (m_calibWindow) {
+                    m_calibWindow->open(selProj);
+                }
+            }
+            if (calibOpen)
+                ImGui::PopStyleColor();
+        }
     }
 
     ImGui::EndGroup();

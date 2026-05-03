@@ -4207,4 +4207,276 @@ D3D12Renderer::buildOcioCapturePso(const OcioGpuProcessor& display) {
     return pso;
 }
 
+// =============================================================================
+// Projector calibration overlay
+// =============================================================================
+
+bool D3D12Renderer::createCalibrationOverlayPSO() {
+    // Root signature: one root CBV (b0) for the CalibrationConstants struct.
+    // No SRV, no sampler — the PS draws crosshairs procedurally.
+    D3D12_ROOT_PARAMETER rootParam = {};
+    rootParam.ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParam.Constants.ShaderRegister  = 0;
+    rootParam.Constants.RegisterSpace   = 0;
+    rootParam.Constants.Num32BitValues  = sizeof(CalibrationConstants) / 4;
+    rootParam.ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters   = &rootParam;
+    rsDesc.Flags         = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS  |
+                           D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS    |
+                           D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS  |
+                           D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) {
+        if (err) std::cerr << "[CalibOverlay] root sig: "
+                           << static_cast<const char*>(err->GetBufferPointer()) << "\n";
+        return false;
+    }
+    hr = m_gpu->device()->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+                                              IID_PPV_ARGS(&m_calibRootSignature));
+    if (FAILED(hr)) { std::cerr << "[CalibOverlay] CreateRootSignature hr=0x" << std::hex << hr << "\n"; return false; }
+
+    ComPtr<ID3DBlob> vs, ps;
+    if (loadCompiledShader(L"shaders/calibration_overlay_vs.cso", &vs) != Result::Success) {
+        std::cerr << "[CalibOverlay] missing calibration_overlay_vs.cso\n"; return false;
+    }
+    if (loadCompiledShader(L"shaders/calibration_overlay_ps.cso", &ps) != Result::Success) {
+        std::cerr << "[CalibOverlay] missing calibration_overlay_ps.cso\n"; return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature  = m_calibRootSignature.Get();
+    psoDesc.VS              = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS              = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    psoDesc.RasterizerState.FillMode              = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode              = D3D12_CULL_MODE_NONE;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthClipEnable       = TRUE;
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    psoDesc.DepthStencilState.DepthEnable         = FALSE;
+    psoDesc.DepthStencilState.StencilEnable       = FALSE;
+    psoDesc.SampleMask                            = UINT_MAX;
+    psoDesc.PrimitiveTopologyType                 = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets                      = 1;
+    psoDesc.RTVFormats[0]                         = DXGI_FORMAT_R16G16B16A16_FLOAT; // compose target format
+    psoDesc.SampleDesc.Count                      = 1;
+    // No InputLayout — the VS uses SV_VertexID (no vertex buffer)
+
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_calibPipelineState));
+    if (FAILED(hr)) {
+        std::cerr << "[CalibOverlay] CreateGraphicsPipelineState hr=0x" << std::hex << hr << "\n";
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Mesh-triangle PSO — proper barycentric UV interpolation for projector output.
+// ---------------------------------------------------------------------------
+
+bool D3D12Renderer::createMeshTrianglePSO() {
+    // Root signature:
+    //  [0] 32-bit constants (b0): 6 × float4 = 24 DWORDs (3 verts + 3 UVs)
+    //  [1] descriptor table for texture SRV (t0)
+    //  static sampler s0
+    D3D12_ROOT_PARAMETER rootParams[2] = {};
+    rootParams[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParams[0].Constants.ShaderRegister = 0;
+    rootParams[0].Constants.RegisterSpace  = 0;
+    rootParams[0].Constants.Num32BitValues = 24;  // 3*4 verts + 3*4 uvs
+    rootParams[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors                    = 1;
+    srvRange.BaseShaderRegister                = 0;
+    srvRange.RegisterSpace                     = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    rootParams[1].ParameterType                          = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[1].DescriptorTable.NumDescriptorRanges    = 1;
+    rootParams[1].DescriptorTable.pDescriptorRanges      = &srvRange;
+    rootParams[1].ShaderVisibility                       = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MaxLOD           = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister   = 0;
+    sampler.RegisterSpace    = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters     = 2;
+    rsDesc.pParameters       = rootParams;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers   = &sampler;
+    rsDesc.Flags             = D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS    |
+                               D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS  |
+                               D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) {
+        if (err) std::cerr << "[MeshTri] root sig: "
+                           << static_cast<const char*>(err->GetBufferPointer()) << "\n";
+        return false;
+    }
+    hr = m_gpu->device()->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+                                              IID_PPV_ARGS(&m_meshTriRootSignature));
+    if (FAILED(hr)) { std::cerr << "[MeshTri] CreateRootSignature hr=0x" << std::hex << hr << "\n"; return false; }
+
+    ComPtr<ID3DBlob> vs, ps;
+    if (loadCompiledShader(L"shaders/mesh_triangle_vs.cso", &vs) != Result::Success) {
+        std::cerr << "[MeshTri] missing mesh_triangle_vs.cso\n"; return false;
+    }
+    if (loadCompiledShader(L"shaders/mesh_triangle_ps.cso", &ps) != Result::Success) {
+        std::cerr << "[MeshTri] missing mesh_triangle_ps.cso\n"; return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature  = m_meshTriRootSignature.Get();
+    psoDesc.VS              = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS              = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    psoDesc.RasterizerState.FillMode              = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode              = D3D12_CULL_MODE_NONE; // CPU does backface check
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthClipEnable       = TRUE;
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    psoDesc.DepthStencilState.DepthEnable         = FALSE;
+    psoDesc.DepthStencilState.StencilEnable       = FALSE;
+    psoDesc.SampleMask                            = UINT_MAX;
+    psoDesc.PrimitiveTopologyType                 = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets                      = 1;
+    psoDesc.RTVFormats[0]                         = DXGI_FORMAT_R8G8B8A8_UNORM; // output-frame format
+    psoDesc.SampleDesc.Count                      = 1;
+
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_meshTriPipelineState));
+    if (FAILED(hr)) {
+        std::cerr << "[MeshTri] CreateGraphicsPipelineState hr=0x" << std::hex << hr << "\n";
+        return false;
+    }
+    std::cout << "Mesh-triangle PSO created\n";
+    return true;
+}
+
+void D3D12Renderer::drawMeshTriangle(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
+                                      const glm::vec2 verts[3],
+                                      const glm::vec2 uvs[3]) {
+    if (!m_initialized || textureSrv.ptr == 0) return;
+    if (!m_meshTriRootSignature || !m_meshTriPipelineState) {
+        if (!createMeshTrianglePSO()) return;
+    }
+
+    // Pack constants: 6 × float4 = 24 DWORDs
+    float constants[24];
+    for (int i = 0; i < 3; ++i) {
+        constants[i * 4 + 0] = verts[i].x;
+        constants[i * 4 + 1] = verts[i].y;
+        constants[i * 4 + 2] = 0.0f;
+        constants[i * 4 + 3] = 0.0f;
+    }
+    for (int i = 0; i < 3; ++i) {
+        constants[12 + i * 4 + 0] = uvs[i].x;
+        constants[12 + i * 4 + 1] = uvs[i].y;
+        constants[12 + i * 4 + 2] = 0.0f;
+        constants[12 + i * 4 + 3] = 0.0f;
+    }
+
+    m_commandList->SetPipelineState(m_meshTriPipelineState.Get());
+    m_commandList->SetGraphicsRootSignature(m_meshTriRootSignature.Get());
+    m_commandList->SetGraphicsRoot32BitConstants(0, 24, constants, 0);
+
+    ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+    m_commandList->SetDescriptorHeaps(1, heaps);
+    m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
+
+    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_commandList->DrawInstanced(3, 1, 0, 0);
+}
+
+void D3D12Renderer::drawMeshTriangle(TextureRef texture,
+                                      const glm::vec2 verts[3],
+                                      const glm::vec2 uvs[3]) {
+    const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveTextureHandle(texture);
+    if (srv.ptr == 0) return;
+    drawMeshTriangle(srv, verts, uvs);
+}
+
+bool D3D12Renderer::createCalibrationOverlay(uint32_t width, uint32_t height) {
+    destroyCalibrationOverlay();
+
+    if (!m_calibRootSignature || !m_calibPipelineState) {
+        if (!createCalibrationOverlayPSO()) return false;
+    }
+
+    m_calibOverlaySlot = createComposeTarget(width, height);
+    if (m_calibOverlaySlot == UINT32_MAX) {
+        std::cerr << "[CalibOverlay] createComposeTarget failed\n";
+        return false;
+    }
+    m_calibConstants = CalibrationConstants{};
+    return true;
+}
+
+void D3D12Renderer::destroyCalibrationOverlay() {
+    // The compose target slot is not freed here (no removeComposeTarget API yet),
+    // but we mark it invalid so renderCalibrationOverlay() becomes a no-op.
+    m_calibOverlaySlot = UINT32_MAX;
+    m_calibConstants   = CalibrationConstants{};
+}
+
+void D3D12Renderer::updateCalibrationPoints(const std::vector<glm::vec2>& uvPositions,
+                                             int activeIndex) {
+    m_calibConstants.numPts   = static_cast<int>(std::min(uvPositions.size(), size_t{16}));
+    m_calibConstants.activeIdx = activeIndex;
+
+    // Pack pairs into float4 layout expected by the PS:
+    //   pts_packed[i].xy = point 2i,  pts_packed[i].zw = point 2i+1
+    m_calibConstants.pts.fill(0.0f);
+    for (int i = 0; i < m_calibConstants.numPts; ++i) {
+        int slot = i * 2;  // offset into the float32 array
+        m_calibConstants.pts[slot]     = uvPositions[i].x;
+        m_calibConstants.pts[slot + 1] = uvPositions[i].y;
+    }
+}
+
+void D3D12Renderer::renderCalibrationOverlay() {
+    if (m_calibOverlaySlot == UINT32_MAX || !m_calibPipelineState) return;
+
+    beginComposeTarget(m_calibOverlaySlot);
+
+    // Clear to black
+    float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    // The compose target RTV was set in beginComposeTarget; clear it now.
+    // We need the RTV handle — reach through the compose target array.
+    // Use the command list ClearRenderTargetView via the known handle.
+    // beginComposeTarget already set the RTV and viewport; clear is the first draw.
+    // We use a draw-based "clear" by relying on the black background the PS returns.
+
+    // Set calibration PSO
+    m_commandList->SetPipelineState(m_calibPipelineState.Get());
+    m_commandList->SetGraphicsRootSignature(m_calibRootSignature.Get());
+
+    // Upload calibration constants as root 32-bit constants (slot 0)
+    m_commandList->SetGraphicsRoot32BitConstants(
+        0,
+        sizeof(CalibrationConstants) / 4,
+        &m_calibConstants,
+        0);
+
+    // Draw fullscreen triangle (3 vertices, no VB)
+    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_commandList->DrawInstanced(3, 1, 0, 0);
+
+    endComposeTarget();
+}
+
 } // namespace entity

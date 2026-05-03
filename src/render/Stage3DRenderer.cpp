@@ -780,4 +780,37 @@ void Stage3DRenderer::drawProjector(ImDrawList* drawList, ImVec2 renderPos, ImVe
     }
 }
 
+Camera Stage3DRenderer::buildProjectorCamera(const glm::vec3& position,
+                                             const glm::vec3& eulerDeg,
+                                             float fovDeg,
+                                             float aspect,
+                                             float nearClip,
+                                             float farClip) {
+    // Convention: rotation[0]=pitch(X), rotation[1]=yaw(Y), rotation[2]=roll(Z)
+    // Rotation order: Ry * Rx * Rz (yaw applied first in world space)
+    // forward = Ry*Rx*Rz * (0, 0, -1)
+    // With roll=0: forward = (-sin(yaw)*cos(pitch), sin(pitch), -cos(yaw)*cos(pitch))
+    float pitchRad = glm::radians(eulerDeg.x);
+    float yawRad   = glm::radians(eulerDeg.y);
+    float rollRad  = glm::radians(eulerDeg.z);
+
+    // Apply full Ry*Rx*Rz to the default forward direction (0, 0, -1)
+    glm::mat4 rot(1.0f);
+    rot = glm::rotate(rot, yawRad,   glm::vec3(0.0f, 1.0f, 0.0f));
+    rot = glm::rotate(rot, pitchRad, glm::vec3(1.0f, 0.0f, 0.0f));
+    rot = glm::rotate(rot, rollRad,  glm::vec3(0.0f, 0.0f, 1.0f));
+    glm::vec3 forward = glm::vec3(rot * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+    glm::vec3 up      = glm::vec3(rot * glm::vec4(0.0f, 1.0f,  0.0f, 0.0f));
+
+    Camera cam;
+    cam.position    = position;
+    cam.target      = position + forward;
+    cam.up          = up;
+    cam.fov         = fovDeg;
+    cam.aspectRatio = aspect;
+    cam.nearPlane   = nearClip;
+    cam.farPlane    = farClip;
+    return cam;
+}
+
 } // namespace entity

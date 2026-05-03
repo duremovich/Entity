@@ -9,6 +9,8 @@
 
 #include "entity/render/OutputManager.hpp"
 #include "entity/components/MappingSurface.hpp"
+#include "entity/components/Model.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
 
 #ifdef _WIN32
@@ -16,8 +18,10 @@
 #endif
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 
 namespace entity {
 
@@ -418,7 +422,119 @@ void OutputManager::ensureOutputWindow(entt::entity outputEntity) {
               << "' (slot " << slot << ")" << std::endl;
 }
 
+// ---------------------------------------------------------------------------
+// Projector view helpers
+// ---------------------------------------------------------------------------
+
+// Build a projector VP matrix from Projector params and output aspect ratio.
+// Convention: rotation[0]=pitch(X), rotation[1]=yaw(Y), rotation[2]=roll(Z).
+// Forward vector matches Stage3DRenderer::buildProjectorCamera(); roll is
+// applied by rotating the up vector around the forward axis.
+static glm::mat4 buildProjectorVP(const Projector& proj, float aspect) {
+    float pitch = glm::radians(proj.rotation[0]);
+    float yaw   = glm::radians(proj.rotation[1]);
+    float roll  = glm::radians(proj.rotation[2]);
+    glm::vec3 pos(proj.position[0], proj.position[1], proj.position[2]);
+    glm::vec3 fwd(
+        -std::sin(yaw) * std::cos(pitch),
+         std::sin(pitch),
+        -std::cos(yaw) * std::cos(pitch)
+    );
+    glm::vec3 up(0.0f, 1.0f, 0.0f);
+    if (std::abs(roll) > 1e-5f) {
+        glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+        up = glm::normalize(std::cos(roll) * up + std::sin(roll) * right);
+    }
+    glm::mat4 view = glm::lookAt(pos, pos + fwd, up);
+    glm::mat4 projM = glm::perspective(glm::radians(proj.fovDegrees), aspect,
+                                       proj.nearClip, proj.farClip);
+    return projM * view;
+}
+
+// Compute the 4 world-space corners of a Screen's projection surface.
+// When the screen has a mesh, uses the mesh's local-space XY bounds; otherwise
+// falls back to Stage3DRenderer's default 16:9 × 1 quad. This matches what the
+// user actually sees in the calibration window's right pane.
+// Order: [0]=TL, [1]=TR, [2]=BR, [3]=BL (drawMappingSurface convention).
+static void computeScreenWorldCorners(const Screen& screen,
+                                      const MeshData* mesh,
+                                      glm::vec3 corners[4]) {
+    static constexpr float kScreenElevation = 0.5f; // matches Stage3DRenderer
+
+    // Local-space rectangle to project. Default = 16:9 × 1 (Stage3DRenderer flat quad).
+    float minX, maxX, minY, maxY, midZ;
+    if (mesh && mesh->isValid()) {
+        minX = mesh->minBounds[0]; maxX = mesh->maxBounds[0];
+        minY = mesh->minBounds[1]; maxY = mesh->maxBounds[1];
+        midZ = 0.5f * (mesh->minBounds[2] + mesh->maxBounds[2]);
+    } else {
+        const float kHW = (16.0f / 9.0f) * 0.5f;
+        const float kHH = 0.5f;
+        minX = -kHW; maxX = kHW;
+        minY = -kHH; maxY = kHH;
+        midZ = 0.0f;
+    }
+
+    glm::mat4 T = glm::mat4(1.0f);
+    T = glm::translate(T, glm::vec3(screen.position[0],
+                                    screen.position[1] + kScreenElevation,
+                                    screen.position[2]));
+    T = glm::rotate(T, glm::radians(screen.rotation[1]), glm::vec3(0.0f, 1.0f, 0.0f)); // Yaw
+    T = glm::rotate(T, glm::radians(screen.rotation[0]), glm::vec3(1.0f, 0.0f, 0.0f)); // Pitch
+    T = glm::rotate(T, glm::radians(screen.rotation[2]), glm::vec3(0.0f, 0.0f, 1.0f)); // Roll
+    T = glm::scale(T, glm::vec3(screen.scale[0], screen.scale[1], screen.scale[2]));
+
+    auto tp = [&T, midZ](float x, float y) {
+        return glm::vec3(T * glm::vec4(x, y, midZ, 1.0f));
+    };
+    corners[0] = tp(minX, maxY);  // TL
+    corners[1] = tp(maxX, maxY);  // TR
+    corners[2] = tp(maxX, minY);  // BR
+    corners[3] = tp(minX, minY);  // BL
+}
+
+// Draw a thin colored line between two NDC points using drawColoredQuad.
+// Currently unused (the per-triangle mesh render replaced the wireframe diagnostic),
+// kept here in case future code wants a colored-line primitive in the output frame.
+[[maybe_unused]] static void drawNdcLine(IRenderer* renderer,
+                                          const glm::vec2& a, const glm::vec2& b,
+                                          const glm::vec4& color, float thicknessNdc = 0.005f) {
+    glm::vec2 mid  = (a + b) * 0.5f;
+    glm::vec2 diff = b - a;
+    float len = glm::length(diff);
+    if (len < 1e-5f) return;
+    float angle = std::atan2(diff.y, diff.x);
+
+    glm::mat4 T(1.0f);
+    T = glm::translate(T, glm::vec3(mid, 0.0f));
+    T = glm::rotate(T, angle, glm::vec3(0.0f, 0.0f, 1.0f));
+    T = glm::scale(T, glm::vec3(len * 0.5f, thicknessNdc * 0.5f, 1.0f));
+    renderer->drawColoredQuad(T, color, 1.0f);
+}
+
 TextureRef OutputManager::resolveSourceTexture(const OutputDisplay& output) const {
+    // Projector source: find the projector's target screen.
+    if (output.sourceProjector != entt::null &&
+        m_registry.valid(output.sourceProjector) &&
+        m_registry.all_of<Projector>(output.sourceProjector)) {
+        const auto& proj = m_registry.get<Projector>(output.sourceProjector);
+        entt::entity target = entt::null;
+        if (proj.targetSurfaceCount > 0 &&
+            m_registry.valid(proj.targetSurfaces[0]) &&
+            m_registry.all_of<Screen>(proj.targetSurfaces[0]))
+            target = proj.targetSurfaces[0];
+        if (target == entt::null) {
+            for (auto [e, s] : m_registry.view<Screen>().each())
+                if (s.visible && s.renderTargetValid && s.renderTargetSlot != UINT32_MAX) { target = e; break; }
+        }
+        if (target != entt::null) {
+            const auto& s = m_registry.get<Screen>(target);
+            if (s.renderTargetValid && s.renderTargetSlot != UINT32_MAX)
+                return m_renderer->getComposeTargetTexture(s.renderTargetSlot);
+        }
+        return TextureRef::invalid();
+    }
+
     // Explicit route: use the Screen the user assigned (if valid).
     if (output.sourceScreen != entt::null &&
         m_registry.valid(output.sourceScreen) &&
@@ -451,6 +567,129 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
 
     m_renderer->beginOutputFrame(output.outputWindowSlot);
     m_renderer->clearOutputFrame(output.outputWindowSlot, 0.0f, 0.0f, 0.0f, 1.0f);
+
+    // Projector-linked output: render the screen content as seen from the projector's
+    // camera. Project the screen's 3D corners through the projector VP to get NDC
+    // positions, then use drawMappingSurface for perspective-correct warping.
+    if (output.sourceProjector != entt::null &&
+        m_registry.valid(output.sourceProjector) &&
+        m_registry.all_of<Projector>(output.sourceProjector)) {
+        const auto& proj = m_registry.get<Projector>(output.sourceProjector);
+
+        // Find the target screen entity (same resolution logic as resolveSourceTexture).
+        entt::entity screenEntity = entt::null;
+        if (proj.targetSurfaceCount > 0 &&
+            m_registry.valid(proj.targetSurfaces[0]) &&
+            m_registry.all_of<Screen>(proj.targetSurfaces[0]))
+            screenEntity = proj.targetSurfaces[0];
+        if (screenEntity == entt::null) {
+            for (auto [e, s] : m_registry.view<Screen>().each())
+                if (s.visible) { screenEntity = e; break; }
+        }
+
+        if (screenEntity != entt::null) {
+            const auto& screen = m_registry.get<Screen>(screenEntity);
+
+            // Resolve mesh — when present, render per-triangle so the projector
+            // output matches what the calibration window's right pane shows.
+            const MeshData* mesh = nullptr;
+            if (m_registry.valid(screen.modelEntity) &&
+                m_registry.all_of<Model>(screen.modelEntity)) {
+                const auto& model = m_registry.get<Model>(screen.modelEntity);
+                if (model.mesh.isValid()) mesh = &model.mesh;
+            }
+
+            float aspect = output.height > 0 ? static_cast<float>(output.width) / output.height
+                                              : 16.0f / 9.0f;
+            glm::mat4 vp = buildProjectorVP(proj, aspect);
+
+            if (mesh) {
+                // Per-triangle rendering via the dedicated mesh-triangle PSO.
+                // Hardware barycentric UV interpolation per triangle — no
+                // bilinear-quad approximation, no subdivision needed. Matches
+                // Stage3DRenderer's right-pane visual quality on the actual
+                // projector output.
+                glm::mat4 model_mat(1.0f);
+                static constexpr float kScreenElevation = 0.5f;
+                model_mat = glm::translate(model_mat, glm::vec3(
+                    screen.position[0],
+                    screen.position[1] + kScreenElevation,
+                    screen.position[2]));
+                model_mat = glm::rotate(model_mat, glm::radians(screen.rotation[1]), glm::vec3(0,1,0));
+                model_mat = glm::rotate(model_mat, glm::radians(screen.rotation[0]), glm::vec3(1,0,0));
+                model_mat = glm::rotate(model_mat, glm::radians(screen.rotation[2]), glm::vec3(0,0,1));
+                model_mat = glm::scale(model_mat, glm::vec3(screen.scale[0], screen.scale[1], screen.scale[2]));
+
+                glm::mat4 mvp = vp * model_mat;
+
+                const auto& verts   = mesh->vertices;
+                const auto& indices = mesh->indices;
+
+                for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+                    const auto& v0 = verts[indices[t]];
+                    const auto& v1 = verts[indices[t + 1]];
+                    const auto& v2 = verts[indices[t + 2]];
+
+                    glm::vec4 c0 = mvp * glm::vec4(v0.position[0], v0.position[1], v0.position[2], 1.0f);
+                    glm::vec4 c1 = mvp * glm::vec4(v1.position[0], v1.position[1], v1.position[2], 1.0f);
+                    glm::vec4 c2 = mvp * glm::vec4(v2.position[0], v2.position[1], v2.position[2], 1.0f);
+
+                    if (c0.w < 1e-4f || c1.w < 1e-4f || c2.w < 1e-4f) continue;
+
+                    glm::vec2 ndc[3] = {
+                        glm::vec2(c0.x / c0.w, c0.y / c0.w),
+                        glm::vec2(c1.x / c1.w, c1.y / c1.w),
+                        glm::vec2(c2.x / c2.w, c2.y / c2.w),
+                    };
+
+                    // Backface cull in NDC (CCW front-face → positive area, +Y up).
+                    float area = (ndc[1].x - ndc[0].x) * (ndc[2].y - ndc[0].y)
+                               - (ndc[1].y - ndc[0].y) * (ndc[2].x - ndc[0].x);
+                    if (area <= 0.0f) continue;
+
+                    glm::vec2 uvs[3] = {
+                        glm::vec2(v0.texCoord[0], v0.texCoord[1]),
+                        glm::vec2(v1.texCoord[0], v1.texCoord[1]),
+                        glm::vec2(v2.texCoord[0], v2.texCoord[1]),
+                    };
+
+                    m_renderer->drawMeshTriangle(compositedTexture, ndc, uvs);
+                }
+            } else {
+                // No mesh: fall back to the default 16:9×1 quad warp (single draw).
+                glm::vec3 worldCorners[4];
+                computeScreenWorldCorners(screen, nullptr, worldCorners);
+
+                glm::vec2 ndcCorners[4]{};
+                bool allInFront = true;
+                for (int i = 0; i < 4; ++i) {
+                    glm::vec4 clip = vp * glm::vec4(worldCorners[i], 1.0f);
+                    if (clip.w < 1e-4f) { allInFront = false; break; }
+                    ndcCorners[i] = glm::vec2(clip.x / clip.w, clip.y / clip.w);
+                }
+                if (allInFront) {
+                    const glm::vec2 uvs[4] = {{0.0f,0.0f},{1.0f,0.0f},{1.0f,1.0f},{0.0f,1.0f}};
+                    const glm::vec4 noEdge(0.0f);
+                    m_renderer->drawMappingSurface(compositedTexture, ndcCorners, uvs, noEdge,
+                                                   output.brightness, output.gamma, 1.0f);
+                }
+            }
+        }
+
+        // Composite the calibration crosshair overlay on top, if active.
+        if (output.calibrationOverlaySlot != UINT32_MAX) {
+            TextureRef overlayTex = m_renderer->getComposeTargetTexture(output.calibrationOverlaySlot);
+            if (overlayTex.valid()) {
+                const glm::vec2 fsCorners[4] = {{-1.0f,1.0f},{1.0f,1.0f},{1.0f,-1.0f},{-1.0f,-1.0f}};
+                const glm::vec2 fsUVs[4]     = {{0.0f,0.0f},{1.0f,0.0f},{1.0f,1.0f},{0.0f,1.0f}};
+                m_renderer->drawMappingSurface(overlayTex, fsCorners, fsUVs, glm::vec4(0.0f),
+                                               1.0f, 1.0f, 1.0f);
+            }
+        }
+
+        m_renderer->endOutputFrame(output.outputWindowSlot);
+        return;
+    }
 
     // Projection-mapping render order (Disguise model):
     //   compose target -> InputRegion pre-crop -> per-surface warp + source UVs

@@ -18,6 +18,7 @@
       ]
     },
     "glm",
+    "eigen3",
     "opencolorio",
     "snappy",
     "stb"

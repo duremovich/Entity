@@ -2,9 +2,21 @@
 
 #include <array>
 #include <string>
+#include <vector>
 #include <entt/entt.hpp>
 
 namespace entity {
+
+/**
+ * Single (3D world point ↔ projector UV) correspondence used by the
+ * calibration system. Persisted on the Projector entity so points survive
+ * close/reopen of the calibration window.
+ */
+struct CalibrationPoint {
+    std::array<float, 3> worldPos{0.f, 0.f, 0.f};
+    std::array<float, 2> projectorUV{0.5f, 0.5f};
+    bool isAligned{false}; // user has positioned the crosshair for this point
+};
 
 /**
  * Projector component — a virtual camera that maps content onto ProjectionSurface screens.
@@ -33,6 +45,15 @@ struct Projector {
     static constexpr int MAX_TARGETS = 8;
     int targetSurfaceCount{0};
     std::array<entt::entity, MAX_TARGETS> targetSurfaces{};
+
+    // Calibration
+    entt::entity linkedOutput{entt::null};  // OutputDisplay entity driving this projector
+    bool isCalibrated{false};              // true after a successful solve + apply
+
+    // Persisted correspondence points for incremental calibration. The
+    // calibration window loads these on open and saves on every modification
+    // so the user doesn't lose work across close/reopen cycles.
+    std::vector<CalibrationPoint> calibrationPoints;
 };
 
 } // namespace entity

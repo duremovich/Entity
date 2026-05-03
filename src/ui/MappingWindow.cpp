@@ -2,6 +2,7 @@
 #include "entity/bus/Message.hpp"
 #include "entity/color/OcioManager.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/render/D3D12Renderer.hpp"
 #include "entity/render/OutputManager.hpp"
@@ -747,43 +748,70 @@ void MappingWindow::renderOutputsPanel() {
                 }
             }
 
-            // Source Screen routing — which Screen's compose target feeds
-            // this output. Unset (entt::null) falls back to first visible
-            // Screen in OutputManager::resolveSourceTexture().
+            // Source routing — which Screen or Projector feeds this output.
+            // Projector takes priority over Screen when both are set.
             if (output->type == OutputType::Physical || output->type == OutputType::Preview) {
                 ImGui::Separator();
-                ImGui::Text("Source Screen");
+                ImGui::Text("Source");
 
                 const char* sourcePreview = "(first visible screen)";
                 std::string sourceLabel;
-                if (output->sourceScreen != entt::null &&
-                    registry.valid(output->sourceScreen) &&
-                    registry.all_of<Screen>(output->sourceScreen)) {
+                if (output->sourceProjector != entt::null &&
+                    registry.valid(output->sourceProjector) &&
+                    registry.all_of<Projector>(output->sourceProjector)) {
+                    sourceLabel = "[Projector] " +
+                        registry.get<Projector>(output->sourceProjector).name;
+                    sourcePreview = sourceLabel.c_str();
+                } else if (output->sourceScreen != entt::null &&
+                           registry.valid(output->sourceScreen) &&
+                           registry.all_of<Screen>(output->sourceScreen)) {
                     const auto& s = registry.get<Screen>(output->sourceScreen);
                     sourceLabel = s.name + " (" +
                         std::to_string(s.width) + "x" + std::to_string(s.height) + ")";
                     sourcePreview = sourceLabel.c_str();
                 }
-                if (ImGui::BeginCombo("Screen##src", sourcePreview)) {
-                    bool autoSelected = (output->sourceScreen == entt::null);
+
+                if (ImGui::BeginCombo("##src", sourcePreview)) {
+                    bool autoSelected = (output->sourceScreen == entt::null &&
+                                        output->sourceProjector == entt::null);
                     if (ImGui::Selectable("(first visible screen)", autoSelected)) {
-                        output->sourceScreen = entt::null;
+                        output->sourceScreen    = entt::null;
+                        output->sourceProjector = entt::null;
                     }
                     if (autoSelected) ImGui::SetItemDefaultFocus();
 
-                    auto screenView = registry.view<Screen>();
-                    for (auto [screenEntity, screen] : screenView.each()) {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Screens");
+                    for (auto [se, screen] : registry.view<Screen>().each()) {
                         char label[256];
                         std::snprintf(label, sizeof(label), "%s (%ux%u)",
                                       screen.name.c_str(), screen.width, screen.height);
-                        bool sel = (output->sourceScreen == screenEntity);
-                        ImGui::PushID(static_cast<int>(screenEntity));
+                        bool sel = (output->sourceScreen == se && output->sourceProjector == entt::null);
+                        ImGui::PushID(static_cast<int>(se));
                         if (ImGui::Selectable(label, sel)) {
-                            output->sourceScreen = screenEntity;
+                            output->sourceScreen    = se;
+                            output->sourceProjector = entt::null;
                         }
                         if (sel) ImGui::SetItemDefaultFocus();
                         ImGui::PopID();
                     }
+
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Projectors");
+                    for (auto [pe, proj] : registry.view<Projector>().each()) {
+                        bool sel = (output->sourceProjector == pe);
+                        ImGui::PushID(static_cast<int>(pe));
+                        if (ImGui::Selectable(proj.name.c_str(), sel)) {
+                            output->sourceProjector = pe;
+                            output->sourceScreen    = entt::null;
+                            // Bidirectional link: lets the calibration window
+                            // auto-route to this output when opened later.
+                            proj.linkedOutput = m_selectedOutput;
+                        }
+                        if (sel) ImGui::SetItemDefaultFocus();
+                        ImGui::PopID();
+                    }
+
                     ImGui::EndCombo();
                 }
             }

@@ -58,6 +58,9 @@ message(STATUS "  ImGui: Found")
 find_package(glm CONFIG REQUIRED)
 message(STATUS "  GLM: Found")
 
+find_package(Eigen3 CONFIG REQUIRED)
+message(STATUS "  Eigen3: Found")
+
 find_package(nlohmann_json CONFIG REQUIRED)
 message(STATUS "  nlohmann_json: Found")
 
@@ -188,6 +191,10 @@ target_sources(EntityMediaCore
         src/ui/ModelBinWindow.cpp
         src/ui/ScreensWindow.cpp
         src/ui/SettingsWindow.cpp
+        src/ui/ProjectorCalibrationWindow.cpp
+
+        # Calibration
+        src/calibration/CalibrationSolver.cpp
 
         # Systems
         src/systems/DecodeSystem.cpp
@@ -256,6 +263,7 @@ target_link_libraries(EntityMediaCore
         nlohmann_json::nlohmann_json
         OpenColorIO::OpenColorIO
         Snappy::snappy
+        Eigen3::Eigen
 )
 
 # Windows-specific libraries

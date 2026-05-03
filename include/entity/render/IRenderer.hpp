@@ -48,7 +48,11 @@ public:
     // Limits callers need to know about. Must match backend implementation.
     static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS       = 16;
     static constexpr uint32_t MAX_COMPOSE_TARGETS           = 8;
-    static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 64;
+    // 8192 leaves room for projector-output mesh rendering with per-triangle
+    // barycentric subdivision in OutputManager (each mesh triangle becomes N×N
+    // sub-triangles, each a drawMappingSurface call). 256-byte aligned slots ×
+    // FRAME_COUNT ≈ 6 MB, negligible.
+    static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 8192;
 
     virtual ~IRenderer() = default;
 
@@ -143,6 +147,14 @@ public:
                                      float brightness,
                                      float gamma,
                                      float opacity) = 0;
+
+    // Draws one textured triangle (3 NDC verts + 3 UVs) with proper hardware
+    // barycentric UV interpolation. Use for mesh rendering where bilinear
+    // approximation in drawMappingSurface causes texture seams. Must be called
+    // between beginOutputFrame / endOutputFrame.
+    virtual void drawMeshTriangle(TextureRef texture,
+                                   const glm::vec2 verts[3],
+                                   const glm::vec2 uvs[3]) = 0;
 
     // ------------------------------------------------------------------------
     // Output windows (physical display outputs)
