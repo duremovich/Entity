@@ -20,6 +20,14 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v8 (2026-05-03) — adds Projector array + per-projector calibration
+    //                     state (pose, FOV, k1/k2 lens distortion,
+    //                     calibrationPoints vector, linkedOutput by
+    //                     OutputDisplay name, targetSurfaces by Screen
+    //                     name, useResidualWarp opt-in). See ADR-0011 for
+    //                     the calibration system. v7 files load with no
+    //                     projectors (missing array = none); the user
+    //                     re-creates them via ScreensWindow.
     //   v7 (2026-04-29) — ADR-0009 structured projects. Adds per-
     //                     mediaLibrary-entry `pathKind` ("managed" |
     //                     "linked") plus optional `archivedOriginal`
@@ -41,8 +49,9 @@ public:
     // Loader is forward-compatible with older files: missing arrays no-op;
     // v4 autoTranscodeOnImport is translated to AlwaysTranscode/NeverTranscode;
     // v5 outputs load with empty OCIO display/view (= config default at draw time);
-    // v6 mediaLibrary entries load with pathKind="linked".
-    static constexpr int PROJECT_VERSION = 7;
+    // v6 mediaLibrary entries load with pathKind="linked";
+    // v7 files load with no projectors (missing "projectors" key = empty).
+    static constexpr int PROJECT_VERSION = 8;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

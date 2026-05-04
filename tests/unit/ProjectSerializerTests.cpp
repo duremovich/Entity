@@ -12,6 +12,8 @@
 #include <gtest/gtest.h>
 
 #include "entity/components/OutputDisplay.hpp"
+#include "entity/components/Projector.hpp"
+#include "entity/components/Screen.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -510,4 +512,263 @@ TEST(ProjectSerializer, V5ProjectLoadsWithEmptyOcioFields) {
         << "v5 file had no ocioDisplay key; loader must default to empty";
     EXPECT_TRUE(loaded->ocioView.empty())
         << "v5 file had no ocioView key; loader must default to empty";
+}
+
+// --- v8 — Projector + CalibrationPoint persistence -----------------------
+// Bug we're guarding: before v8, calibration points lived only in memory
+// on the Projector component. Close-and-reopen erased every crosshair the
+// user had placed. Round-trip must preserve pose, lens distortion,
+// useResidualWarp opt-in, every cal point, and the linkedOutput→
+// OutputDisplay edge.
+
+namespace {
+
+entity::Projector* findProjectorByName(entt::registry& reg, const std::string& name) {
+    auto view = reg.view<entity::Projector>();
+    for (auto [e, p] : view.each()) {
+        if (p.name == name) return &p;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST(ProjectSerializer, ProjectorBasicRoundTrip) {
+    TempFile tf("projector_basic");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity pe = registry.create();
+        auto& p = registry.emplace<entity::Projector>(pe);
+        p.name            = "Stage Left";
+        p.position        = { 1.5f, 2.75f, -3.25f };
+        p.rotation        = { -15.0f, 30.0f, 5.5f };
+        p.fovDegrees      = 42.5f;
+        p.nearClip        = 0.25f;
+        p.farClip         = 75.0f;
+        p.enabled         = false;  // intentionally non-default
+        p.isCalibrated    = true;
+        p.distortionK1    = -0.07f;
+        p.distortionK2    = 0.013f;
+        p.useResidualWarp = true;
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        auto* loaded = findProjectorByName(registry, "Stage Left");
+        ASSERT_NE(loaded, nullptr) << "Projector 'Stage Left' missing after load";
+        EXPECT_FLOAT_EQ(loaded->position[0], 1.5f);
+        EXPECT_FLOAT_EQ(loaded->position[1], 2.75f);
+        EXPECT_FLOAT_EQ(loaded->position[2], -3.25f);
+        EXPECT_FLOAT_EQ(loaded->rotation[0], -15.0f);
+        EXPECT_FLOAT_EQ(loaded->rotation[1], 30.0f);
+        EXPECT_FLOAT_EQ(loaded->rotation[2], 5.5f);
+        EXPECT_FLOAT_EQ(loaded->fovDegrees, 42.5f);
+        EXPECT_FLOAT_EQ(loaded->nearClip, 0.25f);
+        EXPECT_FLOAT_EQ(loaded->farClip, 75.0f);
+        EXPECT_FALSE(loaded->enabled);
+        EXPECT_TRUE(loaded->isCalibrated);
+        EXPECT_FLOAT_EQ(loaded->distortionK1, -0.07f);
+        EXPECT_FLOAT_EQ(loaded->distortionK2, 0.013f);
+        EXPECT_TRUE(loaded->useResidualWarp);
+    }
+}
+
+TEST(ProjectSerializer, ProjectorCalibrationPointsRoundTrip) {
+    // The load-bearing case: every (worldPos, projectorUV, isAligned)
+    // tuple the user placed must come back identical.
+    TempFile tf("projector_cal_points");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity pe = registry.create();
+        auto& p = registry.emplace<entity::Projector>(pe);
+        p.name = "Calibrated";
+        p.calibrationPoints.push_back({
+            {{0.0f, 0.0f, 0.0f}}, {{0.5f, 0.5f}}, true});
+        p.calibrationPoints.push_back({
+            {{1.25f, -0.5f, 2.0f}}, {{0.123f, 0.876f}}, true});
+        p.calibrationPoints.push_back({
+            {{-2.5f, 1.0f, -0.75f}}, {{0.99f, 0.01f}}, false});  // unaligned
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        auto* loaded = findProjectorByName(registry, "Calibrated");
+        ASSERT_NE(loaded, nullptr);
+        ASSERT_EQ(loaded->calibrationPoints.size(), 3u);
+
+        const auto& cp1 = loaded->calibrationPoints[1];
+        EXPECT_FLOAT_EQ(cp1.worldPos[0], 1.25f);
+        EXPECT_FLOAT_EQ(cp1.worldPos[1], -0.5f);
+        EXPECT_FLOAT_EQ(cp1.worldPos[2], 2.0f);
+        EXPECT_FLOAT_EQ(cp1.projectorUV[0], 0.123f);
+        EXPECT_FLOAT_EQ(cp1.projectorUV[1], 0.876f);
+        EXPECT_TRUE(cp1.isAligned);
+
+        EXPECT_FALSE(loaded->calibrationPoints[2].isAligned);
+    }
+}
+
+TEST(ProjectSerializer, ProjectorLinkedOutputResolvesByName) {
+    // linkedOutput is an entt::entity which isn't stable across save/load.
+    // Persist by OutputDisplay.name, re-resolve on load.
+    TempFile tf("projector_linked_output");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity oe = registry.create();
+        auto& out = registry.emplace<entity::OutputDisplay>(oe);
+        out.name = "Beamer #2";
+
+        entt::entity pe = registry.create();
+        auto& p = registry.emplace<entity::Projector>(pe);
+        p.name = "Linked";
+        p.linkedOutput = oe;
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        auto* loaded = findProjectorByName(registry, "Linked");
+        ASSERT_NE(loaded, nullptr);
+        // Compare via registry.valid() to avoid gtest pretty-printing
+        // entt::null (which forces an entt_traits<__int64> instantiation
+        // that doesn't exist). Same idiom as RippleTimeTests.
+        ASSERT_TRUE(registry.valid(loaded->linkedOutput));
+        ASSERT_TRUE(registry.all_of<entity::OutputDisplay>(loaded->linkedOutput));
+        EXPECT_EQ(registry.get<entity::OutputDisplay>(loaded->linkedOutput).name,
+                  "Beamer #2");
+    }
+}
+
+TEST(ProjectSerializer, ProjectorMissingLinkedOutputFallsBackToNull) {
+    // If the named OutputDisplay no longer exists at load time (e.g. user
+    // deleted it between save and load), linkedOutput must end up null —
+    // not a stale invalid entity ID. Calibration window's UI flow handles
+    // re-linking.
+    TempFile tf("projector_missing_output");
+
+    // Hand-write a v8 project file referencing an output that doesn't
+    // exist in the saved "outputs" array.
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 8,
+  "outputs": [],
+  "projectors": [
+    {
+      "name": "Orphaned",
+      "linkedOutputName": "GhostOutput",
+      "calibrationPoints": []
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    auto* loaded = findProjectorByName(registry, "Orphaned");
+    ASSERT_NE(loaded, nullptr);
+    // valid() returns false for entt::null and for stale handles alike;
+    // either outcome means "linkedOutput points at nothing usable", which
+    // is what we want here. Avoids gtest pretty-printing entt::null.
+    EXPECT_FALSE(registry.valid(loaded->linkedOutput))
+        << "Stale named-output reference must not produce a usable entity ID";
+}
+
+TEST(ProjectSerializer, ProjectorTargetSurfacesResolveByScreenName) {
+    // targetSurfaces[] persists as an array of Screen names; on load each
+    // name resolves against the Screens loaded earlier in the same pass.
+    TempFile tf("projector_target_surfaces");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity s1 = registry.create();
+        registry.emplace<entity::Screen>(s1).name = "Front Wall";
+        entt::entity s2 = registry.create();
+        registry.emplace<entity::Screen>(s2).name = "Floor";
+
+        entt::entity pe = registry.create();
+        auto& p = registry.emplace<entity::Projector>(pe);
+        p.name = "MultiSurface";
+        p.targetSurfaceCount = 2;
+        p.targetSurfaces[0] = s1;
+        p.targetSurfaces[1] = s2;
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        auto* loaded = findProjectorByName(registry, "MultiSurface");
+        ASSERT_NE(loaded, nullptr);
+        ASSERT_EQ(loaded->targetSurfaceCount, 2);
+        ASSERT_TRUE(registry.valid(loaded->targetSurfaces[0]));
+        ASSERT_TRUE(registry.valid(loaded->targetSurfaces[1]));
+        EXPECT_EQ(registry.get<entity::Screen>(loaded->targetSurfaces[0]).name,
+                  "Front Wall");
+        EXPECT_EQ(registry.get<entity::Screen>(loaded->targetSurfaces[1]).name,
+                  "Floor");
+    }
+}
+
+TEST(ProjectSerializer, V7ProjectLoadsWithNoProjectors) {
+    // Forward-compatibility gate: a v7 file (no "projectors" key) must load
+    // cleanly with zero Projector entities, no errors. Mirrors how the
+    // loader handles missing Models / Screens / Outputs arrays.
+    TempFile tf("projector_v7_no_key");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 7,
+  "outputs": []
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    EXPECT_EQ(registry.view<entity::Projector>().size(), 0u);
 }

@@ -12,6 +12,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/MappingSurface.hpp"
 #include "entity/components/OutputDisplay.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/media/ObjLoader.hpp"
@@ -365,6 +366,65 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["outputs"] = outputsJson;
 
+        // Serialize Projectors (v8). Pose, FOV, lens distortion, calibration
+        // points, and warp opt-in all persist so the user's calibration work
+        // survives close-and-reopen — the whole point of the feature is the
+        // user spending time placing crosshairs against physical features.
+        // Entity refs (linkedOutput → OutputDisplay, targetSurfaces → Screens)
+        // persist by name string, same pattern as Clip→Screen + Output→Screen.
+        json projectorsJson = json::array();
+        auto projView = registry.view<Projector>();
+        for (auto [entity, proj] : projView.each()) {
+            json pj;
+            pj["name"]            = proj.name;
+            pj["position"]        = { proj.position[0], proj.position[1], proj.position[2] };
+            pj["rotation"]        = { proj.rotation[0], proj.rotation[1], proj.rotation[2] };
+            pj["fovDegrees"]      = proj.fovDegrees;
+            pj["nearClip"]        = proj.nearClip;
+            pj["farClip"]         = proj.farClip;
+            pj["enabled"]         = proj.enabled;
+            pj["isCalibrated"]    = proj.isCalibrated;
+            pj["distortionK1"]    = proj.distortionK1;
+            pj["distortionK2"]    = proj.distortionK2;
+            pj["useResidualWarp"] = proj.useResidualWarp;
+
+            // linkedOutput → OutputDisplay name. Empty string = unlinked.
+            std::string linkedOutputName;
+            if (proj.linkedOutput != entt::null &&
+                registry.valid(proj.linkedOutput) &&
+                registry.all_of<OutputDisplay>(proj.linkedOutput)) {
+                linkedOutputName = registry.get<OutputDisplay>(proj.linkedOutput).name;
+            }
+            pj["linkedOutputName"] = linkedOutputName;
+
+            // targetSurfaces → array of Screen names. Empty array (or missing
+            // key on load) = "project onto all visible Screens" — see
+            // Projector::targetSurfaceCount semantics.
+            json targetNames = json::array();
+            for (int i = 0; i < proj.targetSurfaceCount && i < Projector::MAX_TARGETS; ++i) {
+                entt::entity te = proj.targetSurfaces[i];
+                if (te != entt::null && registry.valid(te) && registry.all_of<Screen>(te)) {
+                    targetNames.push_back(registry.get<Screen>(te).name);
+                }
+            }
+            pj["targetSurfaceNames"] = targetNames;
+
+            // Calibration points — the load-bearing payload. Each entry
+            // carries enough to re-run the solver from scratch.
+            json cpsJson = json::array();
+            for (const auto& cp : proj.calibrationPoints) {
+                json cpj;
+                cpj["worldPos"]    = { cp.worldPos[0], cp.worldPos[1], cp.worldPos[2] };
+                cpj["projectorUV"] = { cp.projectorUV[0], cp.projectorUV[1] };
+                cpj["isAligned"]   = cp.isAligned;
+                cpsJson.push_back(cpj);
+            }
+            pj["calibrationPoints"] = cpsJson;
+
+            projectorsJson.push_back(pj);
+        }
+        project["projectors"] = projectorsJson;
+
         // Serialize timeline sections (Phase C #5). Bumps PROJECT_VERSION to 3,
         // but the loader treats a missing "sections" array as empty so v2
         // projects still load without modification.
@@ -450,6 +510,8 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             for (auto e : clearView) toDestroy.push_back(e);
             auto clearOutView = registry.view<OutputDisplay>();
             for (auto e : clearOutView) toDestroy.push_back(e);
+            auto clearProjView = registry.view<Projector>();
+            for (auto e : clearProjView) toDestroy.push_back(e);
             for (auto e : toDestroy) {
                 if (registry.valid(e)) registry.destroy(e);
             }
@@ -854,6 +916,102 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 std::cout << "[ProjectSerializer] Loaded output: " << out.name
                           << " (index " << out.outputIndex
                           << (out.enabled ? ", enabled" : ", disabled") << ")" << std::endl;
+            }
+        }
+
+        // Load Projectors (v8). Must run AFTER Screens + OutputDisplays since
+        // linkedOutput / targetSurfaces resolve by name against entities the
+        // earlier passes created. Missing "projectors" key (v7 and older) =
+        // no projectors loaded; user creates fresh ones via ScreensWindow.
+        if (project.contains("projectors")) {
+            for (const auto& pj : project["projectors"]) {
+                entt::entity projEntity = registry.create();
+                auto& proj = registry.emplace<Projector>(projEntity);
+
+                proj.name            = pj.value("name", std::string("Projector"));
+                proj.fovDegrees      = pj.value("fovDegrees", 50.0f);
+                proj.nearClip        = pj.value("nearClip", 0.1f);
+                proj.farClip         = pj.value("farClip", 50.0f);
+                proj.enabled         = pj.value("enabled", true);
+                proj.isCalibrated    = pj.value("isCalibrated", false);
+                proj.distortionK1    = pj.value("distortionK1", 0.0f);
+                proj.distortionK2    = pj.value("distortionK2", 0.0f);
+                proj.useResidualWarp = pj.value("useResidualWarp", false);
+
+                if (pj.contains("position") && pj["position"].is_array() && pj["position"].size() >= 3) {
+                    proj.position = { pj["position"][0].get<float>(),
+                                      pj["position"][1].get<float>(),
+                                      pj["position"][2].get<float>() };
+                }
+                if (pj.contains("rotation") && pj["rotation"].is_array() && pj["rotation"].size() >= 3) {
+                    proj.rotation = { pj["rotation"][0].get<float>(),
+                                      pj["rotation"][1].get<float>(),
+                                      pj["rotation"][2].get<float>() };
+                }
+
+                // Resolve linkedOutput by OutputDisplay name. Missing or stale
+                // (output deleted between save and load) leaves linkedOutput
+                // null — calibration window's UI flow handles re-linking.
+                std::string linkedOutputName = pj.value("linkedOutputName", std::string{});
+                proj.linkedOutput = entt::null;
+                if (!linkedOutputName.empty()) {
+                    auto outView = registry.view<OutputDisplay>();
+                    for (auto [oe, o] : outView.each()) {
+                        if (o.name == linkedOutputName) { proj.linkedOutput = oe; break; }
+                    }
+                }
+
+                // Resolve targetSurfaces by Screen name. Names that don't
+                // resolve (Screen renamed/deleted) drop silently; final
+                // targetSurfaceCount may be less than what was saved. Empty
+                // array = "project onto all visible Screens" (the default).
+                proj.targetSurfaceCount = 0;
+                if (pj.contains("targetSurfaceNames") && pj["targetSurfaceNames"].is_array()) {
+                    for (const auto& nameJson : pj["targetSurfaceNames"]) {
+                        if (proj.targetSurfaceCount >= Projector::MAX_TARGETS) break;
+                        if (!nameJson.is_string()) continue;
+                        const std::string name = nameJson.get<std::string>();
+                        if (name.empty()) continue;
+                        auto screenView = registry.view<Screen>();
+                        for (auto [se, s] : screenView.each()) {
+                            if (s.name == name) {
+                                proj.targetSurfaces[proj.targetSurfaceCount++] = se;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Calibration points. The user spent time placing each one;
+                // they're the load-bearing payload of this whole serializer
+                // change.
+                proj.calibrationPoints.clear();
+                if (pj.contains("calibrationPoints") && pj["calibrationPoints"].is_array()) {
+                    proj.calibrationPoints.reserve(pj["calibrationPoints"].size());
+                    for (const auto& cpJson : pj["calibrationPoints"]) {
+                        CalibrationPoint cp;
+                        if (cpJson.contains("worldPos") &&
+                            cpJson["worldPos"].is_array() &&
+                            cpJson["worldPos"].size() >= 3) {
+                            cp.worldPos = { cpJson["worldPos"][0].get<float>(),
+                                            cpJson["worldPos"][1].get<float>(),
+                                            cpJson["worldPos"][2].get<float>() };
+                        }
+                        if (cpJson.contains("projectorUV") &&
+                            cpJson["projectorUV"].is_array() &&
+                            cpJson["projectorUV"].size() >= 2) {
+                            cp.projectorUV = { cpJson["projectorUV"][0].get<float>(),
+                                               cpJson["projectorUV"][1].get<float>() };
+                        }
+                        cp.isAligned = cpJson.value("isAligned", false);
+                        proj.calibrationPoints.push_back(cp);
+                    }
+                }
+
+                std::cout << "[ProjectSerializer] Loaded projector: " << proj.name
+                          << " (" << proj.calibrationPoints.size() << " cal points"
+                          << (proj.isCalibrated ? ", calibrated" : ", uncalibrated")
+                          << (proj.useResidualWarp ? ", warp on" : "") << ")" << std::endl;
             }
         }
 
