@@ -478,6 +478,14 @@ struct ProjectorRefineFunctor {
     float nearClip{0.1f};
     float farClip{100.0f};
 
+    // Optional parameter locks. When set, the corresponding x[] values are
+    // overridden by the locked* fields inside operator() — LM still gets the
+    // parameter slots but can't affect residual through them, so they stay at
+    // their locked values.
+    bool  lockFov{false};
+    bool  lockDistortion{false};
+    float lockedFovValue{50.0f};
+
     int inputs() const { return 9; }  // pos(3) + euler(3) + fov(1) + k1, k2(2)
     int values() const { return 2 * static_cast<int>(pairs.size()); }
 
@@ -486,11 +494,12 @@ struct ProjectorRefineFunctor {
         float pitchRad = glm::radians(static_cast<float>(x(3)));
         float yawRad   = glm::radians(static_cast<float>(x(4)));
         float rollRad  = glm::radians(static_cast<float>(x(5)));
-        float fov      = std::clamp(static_cast<float>(x(6)), 5.0f, 170.0f);
-        double k1      = x(7);
-        double k2      = x(8);
+        float fov      = lockFov
+                         ? lockedFovValue
+                         : std::clamp(static_cast<float>(x(6)), 5.0f, 170.0f);
+        double k1      = lockDistortion ? 0.0 : x(7);
+        double k2      = lockDistortion ? 0.0 : x(8);
 
-        // Forward direction matches Stage3DRenderer::buildProjectorCamera.
         glm::vec3 fwd(
             -std::sin(yawRad) * std::cos(pitchRad),
              std::sin(pitchRad),
@@ -503,8 +512,16 @@ struct ProjectorRefineFunctor {
             up = glm::normalize(c * up + s * right);
         }
         glm::mat4 view = glm::lookAt(pos, pos + fwd, up);
-        glm::mat4 proj = glm::perspective(glm::radians(fov), aspect, nearClip, farClip);
-        glm::mat4 vp   = proj * view;
+        glm::mat4 projM = glm::perspective(glm::radians(fov), aspect, nearClip, farClip);
+        glm::mat4 vp   = projM * view;
+
+        // Aspect-aware distortion conversion factors. NDC has aspect baked in
+        // (clip.x is divided by aspect * tan(fov/2)); to compute distortion in
+        // the lens's actual radially-symmetric image-coord space we have to
+        // undo that scaling.
+        const double tanHalfFov = std::tan(glm::radians(static_cast<double>(fov)) * 0.5);
+        const double sx = static_cast<double>(aspect) * tanHalfFov;
+        const double sy = tanHalfFov;
 
         for (size_t i = 0; i < pairs.size(); ++i) {
             glm::vec4 clip = vp * glm::vec4(pairs[i].worldPos, 1.0f);
@@ -516,18 +533,23 @@ struct ProjectorRefineFunctor {
             double ndc_x = clip.x / clip.w;
             double ndc_y = clip.y / clip.w;
 
-            // Radial lens distortion (Brown-Conrady, 2-term):
-            //   x_d = x · (1 + k1·r² + k2·r⁴),   r² = x² + y²  in normalized coords
-            // The physical projector lens applies this; we model it here so the
-            // solver finds the *ideal pinhole* pose that, after lens distortion,
-            // maps world points to the user-measured UV positions.
-            double r2 = ndc_x * ndc_x + ndc_y * ndc_y;
-            double scale = 1.0 + k1 * r2 + k2 * r2 * r2;
-            double dist_x = ndc_x * scale;
-            double dist_y = ndc_y * scale;
+            // Convert to normalized image coords (the lens's actual coordinate
+            // system; radially symmetric here even when output is non-square).
+            double nx = ndc_x * sx;
+            double ny = ndc_y * sy;
 
-            double u_pred = (dist_x + 1.0) * 0.5;
-            double v_pred = (1.0 - dist_y) * 0.5;
+            // Brown-Conrady radial distortion in image space.
+            double r2 = nx * nx + ny * ny;
+            double scale = 1.0 + k1 * r2 + k2 * r2 * r2;
+            nx *= scale;
+            ny *= scale;
+
+            // Back to distorted NDC, then to UV.
+            double dist_ndc_x = nx / sx;
+            double dist_ndc_y = ny / sy;
+
+            double u_pred = (dist_ndc_x + 1.0) * 0.5;
+            double v_pred = (1.0 - dist_ndc_y) * 0.5;
             fvec(2 * i)     = (u_pred - pairs[i].projectorUV.x) * outputSize.x;
             fvec(2 * i + 1) = (v_pred - pairs[i].projectorUV.y) * outputSize.y;
         }
@@ -543,17 +565,22 @@ static CalibrationResult runLMOnce(const std::vector<CorrespondencePair>& pairs,
                                     const glm::vec3& initialRotEuler,
                                     float initialFovDegrees,
                                     float initialK1 = 0.0f,
-                                    float initialK2 = 0.0f)
+                                    float initialK2 = 0.0f,
+                                    bool lockFov = false,
+                                    bool lockDistortion = false)
 {
     CalibrationResult result;
     result.method = SolveMethod::DLT;
 
     ProjectorRefineFunctor functor;
-    functor.pairs      = pairs;
-    functor.outputSize = outputSize;
-    functor.aspect     = outputSize.y > 0
-                         ? static_cast<float>(outputSize.x) / static_cast<float>(outputSize.y)
-                         : 16.0f / 9.0f;
+    functor.pairs           = pairs;
+    functor.outputSize      = outputSize;
+    functor.aspect          = outputSize.y > 0
+                              ? static_cast<float>(outputSize.x) / static_cast<float>(outputSize.y)
+                              : 16.0f / 9.0f;
+    functor.lockFov         = lockFov;
+    functor.lockDistortion  = lockDistortion;
+    functor.lockedFovValue  = std::clamp(initialFovDegrees, 5.0f, 170.0f);
 
     Eigen::NumericalDiff<ProjectorRefineFunctor> numDiff(functor, 1e-8);
     Eigen::LevenbergMarquardt<Eigen::NumericalDiff<ProjectorRefineFunctor>> lm(numDiff);
@@ -579,9 +606,13 @@ static CalibrationResult runLMOnce(const std::vector<CorrespondencePair>& pairs,
     result.rotationEuler = glm::vec3(static_cast<float>(x(3)),
                                      static_cast<float>(x(4)),
                                      static_cast<float>(x(5)));
-    result.fovDegrees    = std::clamp(static_cast<float>(x(6)), 5.0f, 170.0f);
-    result.distortionK1  = static_cast<float>(x(7));
-    result.distortionK2  = static_cast<float>(x(8));
+    // Locked params: emit the locked value so the caller writes a clean number,
+    // not whatever LM ended up wandering to in the unconstrained slot.
+    result.fovDegrees    = lockFov
+                           ? functor.lockedFovValue
+                           : std::clamp(static_cast<float>(x(6)), 5.0f, 170.0f);
+    result.distortionK1  = lockDistortion ? 0.0f : static_cast<float>(x(7));
+    result.distortionK2  = lockDistortion ? 0.0f : static_cast<float>(x(8));
 
     Eigen::VectorXd residuals(2 * pairs.size());
     functor(x, residuals);
@@ -655,7 +686,9 @@ CalibrationResult CalibrationSolver::solveRefine(
     glm::uvec2 outputSize,
     const glm::vec3& initialPos,
     const glm::vec3& initialRotEuler,
-    float initialFovDegrees)
+    float initialFovDegrees,
+    bool lockFov,
+    bool lockDistortion)
 {
     CalibrationResult result;
     result.method = SolveMethod::DLT;
@@ -664,6 +697,12 @@ CalibrationResult CalibrationSolver::solveRefine(
         result.errorMessage = "Refine requires at least 4 correspondence points";
         return result;
     }
+
+    // Note: previously we auto-locked distortion at <8 points to prevent
+    // overfitting. In practice the LM benefits from the extra DOF even with
+    // 7 points (5 redundant residuals is enough), and the user can detect
+    // overfitting via the per-point error column + the k1/k2 values in the
+    // Apply console line. Auto-lock removed; user-controlled via checkbox.
 
     // ===========================================================================
     // Aggressive multi-start: try ~12 seeds covering the parameter space, then
@@ -730,18 +769,20 @@ CalibrationResult CalibrationSolver::solveRefine(
     seedResults.reserve(seeds.size() + 4);
 
     for (const auto& [pos, rot, fov] : seeds) {
-        auto r = runLMOnce(pairs, outputSize, pos, rot, fov, 0.0f, 0.0f);
+        auto r = runLMOnce(pairs, outputSize, pos, rot, fov, 0.0f, 0.0f,
+                           lockFov, lockDistortion);
         if (r.success) seedResults.push_back(r);
     }
 
-    // 4 extra seeds with non-zero distortion priors so LM has somewhere to
-    // start if the zero-distortion optima are local minima for a real lens.
-    std::normal_distribution<float> k1J(0.0f, 0.08f);
-    std::normal_distribution<float> k2J(0.0f, 0.03f);
-    for (int i = 0; i < 4; ++i) {
-        auto r = runLMOnce(pairs, outputSize, initialPos, initialRotEuler, initialFovDegrees,
-                            k1J(rng), k2J(rng));
-        if (r.success) seedResults.push_back(r);
+    // Distortion-prior seeds only when distortion isn't locked.
+    if (!lockDistortion) {
+        std::normal_distribution<float> k1J(0.0f, 0.08f);
+        std::normal_distribution<float> k2J(0.0f, 0.03f);
+        for (int i = 0; i < 4; ++i) {
+            auto r = runLMOnce(pairs, outputSize, initialPos, initialRotEuler, initialFovDegrees,
+                                k1J(rng), k2J(rng), lockFov, lockDistortion);
+            if (r.success) seedResults.push_back(r);
+        }
     }
 
     if (seedResults.empty()) {
@@ -779,7 +820,8 @@ CalibrationResult CalibrationSolver::solveRefine(
     for (int iter = 0; iter < 20; ++iter) {
         auto refined = runLMOnce(pairs, outputSize,
                                   best.position, best.rotationEuler, best.fovDegrees,
-                                  best.distortionK1, best.distortionK2);
+                                  best.distortionK1, best.distortionK2,
+                                  lockFov, lockDistortion);
         if (refined.success && refined.rmsErrorPixels < best.rmsErrorPixels - 0.001f) {
             best = refined;
         } else {
@@ -820,7 +862,9 @@ CalibrationResult CalibrationSolver::solveRefine(
         std::vector<float> sorted = perPoint;
         std::sort(sorted.begin(), sorted.end());
         float median = sorted[sorted.size() / 2];
-        float threshold = std::max(3.0f * median, 8.0f);
+        // Tightened threshold so a single ~3× outlier (e.g., median 5, worst
+        // 15) actually triggers trimming. Was max(3×median, 8); now max(2.5×, 5).
+        float threshold = std::max(2.5f * median, 5.0f);
 
         size_t worstIdx = 0;
         float  worstResidual = -1.0f;
@@ -838,12 +882,14 @@ CalibrationResult CalibrationSolver::solveRefine(
 
         auto trimmedResult = runLMOnce(trimmed, outputSize,
                                         best.position, best.rotationEuler, best.fovDegrees,
-                                        best.distortionK1, best.distortionK2);
+                                        best.distortionK1, best.distortionK2,
+                                        lockFov, lockDistortion);
         for (int it = 0; it < 10; ++it) {
             auto r = runLMOnce(trimmed, outputSize,
                                 trimmedResult.position, trimmedResult.rotationEuler,
                                 trimmedResult.fovDegrees,
-                                trimmedResult.distortionK1, trimmedResult.distortionK2);
+                                trimmedResult.distortionK1, trimmedResult.distortionK2,
+                                lockFov, lockDistortion);
             if (r.success && r.rmsErrorPixels < trimmedResult.rmsErrorPixels - 0.001f)
                 trimmedResult = r;
             else break;
@@ -858,6 +904,35 @@ CalibrationResult CalibrationSolver::solveRefine(
     }
 
     return best;
+}
+
+std::vector<float> CalibrationSolver::perPointResiduals(
+    const std::vector<CorrespondencePair>& pairs,
+    glm::uvec2 outputSize,
+    const CalibrationResult& result)
+{
+    std::vector<float> out(pairs.size(), 0.0f);
+    if (pairs.empty()) return out;
+
+    ProjectorRefineFunctor f;
+    f.pairs      = pairs;
+    f.outputSize = outputSize;
+    f.aspect     = outputSize.y > 0
+                   ? static_cast<float>(outputSize.x) / static_cast<float>(outputSize.y)
+                   : 16.0f / 9.0f;
+
+    Eigen::VectorXd x(9), residuals(2 * pairs.size());
+    x << result.position.x, result.position.y, result.position.z,
+         result.rotationEuler.x, result.rotationEuler.y, result.rotationEuler.z,
+         result.fovDegrees, result.distortionK1, result.distortionK2;
+    f(x, residuals);
+
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        float du = static_cast<float>(residuals(2 * i));
+        float dv = static_cast<float>(residuals(2 * i + 1));
+        out[i] = std::sqrt(du * du + dv * dv);
+    }
+    return out;
 }
 
 } // namespace entity

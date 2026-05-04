@@ -125,6 +125,11 @@ private:
     bool              m_showWireframe{true};       // overlay mesh edges in scene pane
     bool              m_precisionCursor{false};    // Disguise-style full-frame quadrant
                                                     // checkerboard for sub-pixel placement
+
+    // Solver constraint options. Lock parameters when the user has reliable
+    // priors (e.g., known projector FOV) to reduce DOF and improve stability.
+    bool              m_lockFov{false};
+    bool              m_lockDistortion{false};
 };
 
 } // namespace entity

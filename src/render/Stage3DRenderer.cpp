@@ -12,6 +12,12 @@ Stage3DRenderer::Stage3DRenderer() {
     m_camera.updateFromOrbit();
 }
 
+// Projection pipeline: pose → aspect-aware k1/k2 lens distortion →
+// optional IDW residual warp → screen pixel. The math here MUST match
+// what OutputManager applies when rendering to the physical projector;
+// the calibration window's right pane uses this function to simulate
+// the projector. See ADR-0011 for the framebuffer↔world chain and the
+// list of sites that must move together when the lens model changes.
 ImVec2 Stage3DRenderer::projectPoint(const glm::vec3& worldPos,
                                       ImVec2 screenPos, ImVec2 screenSize) const {
     // Update camera aspect ratio
@@ -32,16 +38,46 @@ ImVec2 Stage3DRenderer::projectPoint(const glm::vec3& worldPos,
     // Perspective divide to NDC
     glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
 
-    // Optional radial lens distortion (Brown-Conrady, 2-term).
-    // Applied in normalized-image-coords space (NDC). When both coefficients
-    // are 0 (the default), this is a no-op identity. The calibration window's
-    // right pane sets these from the calibrated Projector to simulate the
-    // physical projector lens for visual matching.
+    // Optional radial lens distortion (Brown-Conrady, 2-term). Applied in
+    // normalized image coords (the lens's actual radially-symmetric coordinate
+    // system), NOT directly in NDC — for non-square aspect ratios these
+    // differ. When both coefficients are 0 (the default), this is a no-op.
     if (lensK1 != 0.0f || lensK2 != 0.0f) {
-        float r2 = ndc.x * ndc.x + ndc.y * ndc.y;
+        const float aspect = screenSize.x / std::max(screenSize.y, 1.0f);
+        const float tanHalfFov = std::tan(glm::radians(tempCamera.fov) * 0.5f);
+        const float sx = aspect * tanHalfFov;
+        const float sy = tanHalfFov;
+        float nx = ndc.x * sx;
+        float ny = ndc.y * sy;
+        float r2 = nx * nx + ny * ny;
         float scale = 1.0f + lensK1 * r2 + lensK2 * r2 * r2;
-        ndc.x *= scale;
-        ndc.y *= scale;
+        nx *= scale;
+        ny *= scale;
+        ndc.x = nx / sx;
+        ndc.y = ny / sy;
+    }
+
+    // Optional post-fit residual warp via inverse-distance weighting. Mirrors
+    // OutputManager's warp so the right-pane preview matches the physical
+    // projection when "Warp to Points" is enabled.
+    if (!warpResiduals.empty()) {
+        glm::vec2 uv((ndc.x + 1.0f) * 0.5f, (1.0f - ndc.y) * 0.5f);
+        glm::vec2 weighted(0.0f);
+        float wSum = 0.0f;
+        bool exact = false;
+        glm::vec2 exactRes(0.0f);
+        for (const auto& [predUV, res] : warpResiduals) {
+            glm::vec2 d = uv - predUV;
+            float dist2 = d.x * d.x + d.y * d.y;
+            if (dist2 < 1e-8f) { exact = true; exactRes = res; break; }
+            float w = 1.0f / (dist2 + 1e-6f);
+            weighted += res * w;
+            wSum += w;
+        }
+        if (exact) uv += exactRes;
+        else if (wSum > 1e-6f) uv += weighted / wSum;
+        ndc.x = uv.x * 2.0f - 1.0f;
+        ndc.y = 1.0f - uv.y * 2.0f;
     }
 
     // Convert NDC to screen coordinates

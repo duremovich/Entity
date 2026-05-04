@@ -64,6 +64,15 @@ struct Projector {
     // calibration math + the in-app preview that simulates the physical view).
     float distortionK1{0.0f};
     float distortionK2{0.0f};
+
+    // Post-fit residual warp: when enabled, OutputManager treats every
+    // calibration point as ground truth and smoothly bends the rendered
+    // output (via inverse-distance weighting of per-point residual vectors)
+    // so each `worldPos` lands EXACTLY at its `projectorUV`. Closes the
+    // last-mile gap between the LM-fitted pose and pixel-perfect alignment.
+    // Off by default so behavior matches pre-warp; user opts in via the
+    // calibration window toolbar after they've placed enough points.
+    bool useResidualWarp{false};
 };
 
 } // namespace entity

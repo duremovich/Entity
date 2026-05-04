@@ -544,10 +544,39 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
     // Simulate physical lens distortion in the right-pane preview so the
     // rendered mesh matches what the user sees through the real projector.
     // (Output rendering stays distortion-free — the hardware lens does it.)
+    // Plus: mirror the post-fit residual warp so the preview tracks the
+    // physical output when "Warp to Points" is enabled.
     if (m_engine && m_engine->getRegistry().valid(m_projectorEntity)) {
         if (const auto* p = m_engine->getRegistry().try_get<Projector>(m_projectorEntity)) {
             m_renderer.lensK1 = p->distortionK1;
             m_renderer.lensK2 = p->distortionK2;
+
+            m_renderer.warpResiduals.clear();
+            if (p->useResidualWarp && p->isCalibrated && !p->calibrationPoints.empty()) {
+                const float aspect = paneSize.x / std::max(paneSize.y, 1.0f);
+                const float tanHalfFov = std::tan(glm::radians(p->fovDegrees) * 0.5f);
+                const float sx = aspect * tanHalfFov;
+                const float sy = tanHalfFov;
+                glm::mat4 vpMat = m_projectorCamera.getViewProjectionMatrix();
+                m_renderer.warpResiduals.reserve(p->calibrationPoints.size());
+                for (const auto& cp : p->calibrationPoints) {
+                    glm::vec3 wp(cp.worldPos[0], cp.worldPos[1], cp.worldPos[2]);
+                    glm::vec4 clip = vpMat * glm::vec4(wp, 1.0f);
+                    if (clip.w < 1e-5f) continue;
+                    float ndc_x = clip.x / clip.w;
+                    float ndc_y = clip.y / clip.w;
+                    float nx = ndc_x * sx;
+                    float ny = ndc_y * sy;
+                    float r2 = nx * nx + ny * ny;
+                    float scale = 1.0f + p->distortionK1 * r2 + p->distortionK2 * r2 * r2;
+                    nx *= scale; ny *= scale;
+                    ndc_x = nx / sx;
+                    ndc_y = ny / sy;
+                    glm::vec2 predUV((ndc_x + 1.0f) * 0.5f, (1.0f - ndc_y) * 0.5f);
+                    glm::vec2 measUV(cp.projectorUV[0], cp.projectorUV[1]);
+                    m_renderer.warpResiduals.emplace_back(predUV, measUV - predUV);
+                }
+            }
         }
     }
 
@@ -622,10 +651,36 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
                     ImVec2(split.x, viewPos.y + viewSize.y), G, 1.0f);
     }
 
-    // Draw crosshairs at projector-UV positions inside the view rect.
+    // Compute predicted UV per point using the calibrated projector's pose
+    // (Stage3DRenderer's projectPoint already applies our lens distortion in
+    // the right pane). Draw a residual line from the user's crosshair to the
+    // predicted point — direction + magnitude of the solver's miss.
+    auto worldToViewPx = [&](const glm::vec3& wp) -> ImVec2 {
+        return m_renderer.projectPoint(wp, viewPos, viewSize);
+    };
+
+    // Draw crosshairs at projector-UV positions + residual lines.
     for (int i = 0; i < static_cast<int>(m_points.size()); ++i) {
         glm::vec2 uv = m_points[i].projectorUV;
         ImVec2 cp{viewPos.x + uv.x * viewSize.x, viewPos.y + uv.y * viewSize.y};
+
+        // Residual line: from where the projector's camera says this 3D point
+        // projects → to where the user placed the crosshair. Color-coded by
+        // pixel magnitude (matches the points table traffic light).
+        if (m_hasSolution) {
+            ImVec2 pred = worldToViewPx(m_points[i].worldPos);
+            if (pred.x > -1e8f) {
+                float dx = cp.x - pred.x, dy = cp.y - pred.y;
+                float pxMag = std::sqrt(dx*dx + dy*dy)
+                            * (static_cast<float>(m_outputSize.x) / std::max(viewSize.x, 1.0f));
+                ImU32 lineCol = (pxMag < 1.5f) ? IM_COL32(80, 220, 80, 255)
+                              : (pxMag < 5.0f) ? IM_COL32(240, 200, 60, 255)
+                                                : IM_COL32(240, 90, 90, 255);
+                dl->AddLine(pred, cp, lineCol, 1.5f);
+                dl->AddCircleFilled(pred, 3.0f, lineCol);
+            }
+        }
+
         float armLen   = 20.0f;
         float armWidth = 1.5f;
         ImU32 col = (i == m_activePointIdx) ? IM_COL32(255,255,0,255) : IM_COL32(255,255,255,220);
@@ -717,13 +772,21 @@ void ProjectorCalibrationWindow::renderPointsTable() {
                  coplanar ? "planar" : "3D", m_points.size());
     ImGui::TextColored(need > 0 ? ImVec4(1,0.7f,0.3f,1) : ImVec4(0.4f,1,0.4f,1), "%s", statusBuf);
 
+    // Compute per-point reprojection residuals once for this frame, using the
+    // most recent solve. Empty when no solution yet — column shows '--'.
+    std::vector<float> perPtErr;
+    if (m_hasSolution) {
+        std::vector<CorrespondencePair> pairs(m_points.begin(), m_points.end());
+        perPtErr = CalibrationSolver::perPointResiduals(pairs, m_outputSize, m_lastResult);
+    }
+
     if (ImGui::BeginTable("##CalibPts", 5,
                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                            ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("#",       ImGuiTableColumnFlags_WidthFixed, 22);
         ImGui::TableSetupColumn("3D World (X, Y, Z)", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Proj UV (u, v)",     ImGuiTableColumnFlags_WidthFixed, 130);
-        ImGui::TableSetupColumn("Error",              ImGuiTableColumnFlags_WidthFixed, 55);
+        ImGui::TableSetupColumn("Error",              ImGuiTableColumnFlags_WidthFixed, 70);
         ImGui::TableSetupColumn("Actions",            ImGuiTableColumnFlags_WidthFixed, 110);
         ImGui::TableHeadersRow();
 
@@ -740,7 +803,17 @@ void ProjectorCalibrationWindow::renderPointsTable() {
             ImGui::Text("(%.3f, %.3f)", pt.projectorUV.x, pt.projectorUV.y);
 
             ImGui::TableSetColumnIndex(3);
-            ImGui::TextDisabled("--");
+            if (i < static_cast<int>(perPtErr.size())) {
+                float e = perPtErr[i];
+                // Disguise-style traffic light. Tight thresholds so the user
+                // can immediately see which points need re-dragging.
+                ImVec4 col = (e < 1.5f) ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
+                           : (e < 5.0f) ? ImVec4(1.0f, 0.85f, 0.2f, 1.0f)
+                                        : ImVec4(1.0f, 0.35f, 0.35f, 1.0f);
+                ImGui::TextColored(col, "%.2f px", e);
+            } else {
+                ImGui::TextDisabled("--");
+            }
 
             ImGui::TableSetColumnIndex(4);
             ImGui::PushID(i);
@@ -787,10 +860,46 @@ void ProjectorCalibrationWindow::renderSolveBar() {
     if (ImGui::Button("Solve & Preview")) {
         std::vector<CorrespondencePair> pairs(m_points.begin(), m_points.end());
         m_lastResult  = CalibrationSolver::solveRefine(pairs, m_outputSize,
-                                                        initialPos, initialRot, initialFov);
+                                                        initialPos, initialRot, initialFov,
+                                                        m_lockFov, m_lockDistortion);
         m_hasSolution = m_lastResult.success;
     }
     if (!canSolve) ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::Checkbox("Lock FOV", &m_lockFov);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Don't optimize the projector FOV — use the value\n"
+                          "currently set on the Projector component (set it from\n"
+                          "the manufacturer spec before solving).");
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Lock Distortion", &m_lockDistortion);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Don't fit lens distortion (k1, k2). Useful when the projector\n"
+                          "lens is a clean pinhole, or when you have few points (≤7) and\n"
+                          "the per-point error column shows distortion is fitting noise\n"
+                          "instead of real lens behavior.");
+    }
+
+    ImGui::SameLine();
+    {
+        auto* p = reg.try_get<Projector>(m_projectorEntity);
+        const bool warpAvailable = p && p->isCalibrated && !p->calibrationPoints.empty();
+        bool warp = p ? p->useResidualWarp : false;
+        if (!warpAvailable) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Warp to Points", &warp) && p) {
+            p->useResidualWarp = warp;
+        }
+        if (!warpAvailable) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Treat every calibration point as ground truth and bend the\n"
+                              "rendered output (inverse-distance-weighted residual warp) so\n"
+                              "each crosshair lands EXACTLY where you placed it. Closes the\n"
+                              "last-mile gap between the LM-fitted pose and pixel-perfect\n"
+                              "alignment. Apply a solve first.");
+        }
+    }
 
     ImGui::SameLine();
 

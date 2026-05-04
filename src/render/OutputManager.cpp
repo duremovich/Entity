@@ -590,6 +590,14 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
         if (screenEntity != entt::null) {
             const auto& screen = m_registry.get<Screen>(screenEntity);
 
+            // Projector mesh-render pipeline: pose → per-vertex k1/k2 lens
+            // distortion → optional IDW residual warp → triangle. The
+            // distortion step is load-bearing — see ADR-0011 for the
+            // framebuffer↔world chain. Skipping it here makes every
+            // vertex land off by the lens distortion amount even before
+            // the warp runs, which manifests as "warp doesn't quite hit
+            // the cal points".
+
             // Resolve mesh — when present, render per-triangle so the projector
             // output matches what the calibration window's right pane shows.
             const MeshData* mesh = nullptr;
@@ -604,11 +612,6 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
             glm::mat4 vp = buildProjectorVP(proj, aspect);
 
             if (mesh) {
-                // Per-triangle rendering via the dedicated mesh-triangle PSO.
-                // Hardware barycentric UV interpolation per triangle — no
-                // bilinear-quad approximation, no subdivision needed. Matches
-                // Stage3DRenderer's right-pane visual quality on the actual
-                // projector output.
                 glm::mat4 model_mat(1.0f);
                 static constexpr float kScreenElevation = 0.5f;
                 model_mat = glm::translate(model_mat, glm::vec3(
@@ -621,6 +624,90 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
                 model_mat = glm::scale(model_mat, glm::vec3(screen.scale[0], screen.scale[1], screen.scale[2]));
 
                 glm::mat4 mvp = vp * model_mat;
+
+                // ============================================================
+                // Optional: post-fit residual warp via inverse-distance
+                // weighting of calibration-point residuals.
+                //
+                // For each calibration point, compute (predicted UV via the
+                // calibrated pose+distortion, residual to user's measured UV).
+                // For every mesh-triangle vertex's projected UV, blend the
+                // residuals weighted by 1/distance². The result is a smooth
+                // 2D warp that lands every calibration point EXACTLY on its
+                // measured UV, with the surface in between flowing smoothly.
+                //
+                // This is the standard "pose calibration → residual warp"
+                // approach used by disguise/MadMapper for the last-mile gap.
+                // ============================================================
+                // Lens distortion is applied per-vertex below (matches the
+                // solver's pinhole+k1+k2 model). Pre-compute the projection
+                // scale factors so both the residual-computation pass and
+                // the per-triangle pass use identical math.
+                const float tanHalfFov = std::tan(glm::radians(proj.fovDegrees) * 0.5f);
+                const float sx = aspect * tanHalfFov;
+                const float sy = tanHalfFov;
+                const bool hasDistortion = (proj.distortionK1 != 0.0f ||
+                                            proj.distortionK2 != 0.0f);
+
+                auto applyDistortionNDC = [&](glm::vec2 ndc) -> glm::vec2 {
+                    if (!hasDistortion) return ndc;
+                    float nx = ndc.x * sx;
+                    float ny = ndc.y * sy;
+                    float r2 = nx * nx + ny * ny;
+                    float s  = 1.0f + proj.distortionK1 * r2
+                                    + proj.distortionK2 * r2 * r2;
+                    nx *= s; ny *= s;
+                    return glm::vec2(nx / sx, ny / sy);
+                };
+
+                struct ResidualSample {
+                    glm::vec2 predUV;
+                    glm::vec2 residual;
+                };
+                std::vector<ResidualSample> residuals;
+                const bool warpEnabled = proj.useResidualWarp &&
+                                         proj.isCalibrated &&
+                                         !proj.calibrationPoints.empty();
+                if (warpEnabled) {
+                    residuals.reserve(proj.calibrationPoints.size());
+                    for (const auto& cp : proj.calibrationPoints) {
+                        glm::vec3 wp(cp.worldPos[0], cp.worldPos[1], cp.worldPos[2]);
+                        glm::vec4 clip = vp * glm::vec4(wp, 1.0f);
+                        if (clip.w < 1e-5f) continue;
+
+                        // predUV must be in the SAME framebuffer space the
+                        // mesh vertices land in after rendering — i.e. with
+                        // distortion applied (matches the per-vertex distort
+                        // step below). Otherwise the warp leaves a residual
+                        // equal to the lens distortion at every cal point.
+                        glm::vec2 ndc = applyDistortionNDC(
+                            glm::vec2(clip.x / clip.w, clip.y / clip.w));
+
+                        glm::vec2 predUV((ndc.x + 1.0f) * 0.5f,
+                                         (1.0f - ndc.y) * 0.5f);
+                        glm::vec2 measUV(cp.projectorUV[0], cp.projectorUV[1]);
+                        residuals.push_back({predUV, measUV - predUV});
+                    }
+                }
+
+                auto applyWarp = [&](glm::vec2 uv) -> glm::vec2 {
+                    if (residuals.empty()) return uv;
+                    glm::vec2 weighted(0.0f);
+                    float wSum = 0.0f;
+                    for (const auto& r : residuals) {
+                        glm::vec2 d = uv - r.predUV;
+                        float dist2 = d.x * d.x + d.y * d.y;
+                        if (dist2 < 1e-8f) return uv + r.residual;
+                        // 1/dist² gives strong locality near control points,
+                        // smooth blend at distance. +epsilon prevents division
+                        // blowup right at a control point.
+                        float w = 1.0f / (dist2 + 1e-6f);
+                        weighted += r.residual * w;
+                        wSum += w;
+                    }
+                    if (wSum < 1e-6f) return uv;
+                    return uv + weighted / wSum;
+                };
 
                 const auto& verts   = mesh->vertices;
                 const auto& indices = mesh->indices;
@@ -641,6 +728,33 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
                         glm::vec2(c1.x / c1.w, c1.y / c1.w),
                         glm::vec2(c2.x / c2.w, c2.y / c2.w),
                     };
+
+                    // Apply lens distortion per-vertex so the framebuffer
+                    // pixel each mesh vertex occupies matches what the
+                    // projector lens (which physically distorts the output)
+                    // will then re-undistort to land at the world point.
+                    // Without this step every rendered vertex is offset by
+                    // the lens distortion, and the warp can't fully recover
+                    // it because its residuals are computed in distorted
+                    // space.
+                    if (hasDistortion) {
+                        for (int i = 0; i < 3; ++i)
+                            ndc[i] = applyDistortionNDC(ndc[i]);
+                    }
+
+                    // Apply residual warp by routing each vertex through UV
+                    // space, looking up its IDW-blended correction, and
+                    // converting back. Shared mesh vertices get the same
+                    // warp value so triangle edges stay watertight.
+                    if (warpEnabled) {
+                        for (int i = 0; i < 3; ++i) {
+                            glm::vec2 uv((ndc[i].x + 1.0f) * 0.5f,
+                                         (1.0f - ndc[i].y) * 0.5f);
+                            uv = applyWarp(uv);
+                            ndc[i].x = uv.x * 2.0f - 1.0f;
+                            ndc[i].y = 1.0f - uv.y * 2.0f;
+                        }
+                    }
 
                     // Backface cull in NDC (CCW front-face → positive area, +Y up).
                     float area = (ndc[1].x - ndc[0].x) * (ndc[2].y - ndc[0].y)

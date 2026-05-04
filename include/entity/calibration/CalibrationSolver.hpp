@@ -62,7 +62,18 @@ public:
                                           glm::uvec2 outputSize,
                                           const glm::vec3& initialPos,
                                           const glm::vec3& initialRotEuler,
-                                          float initialFovDegrees);
+                                          float initialFovDegrees,
+                                          bool lockFov = false,
+                                          bool lockDistortion = false);
+
+    // Per-point reprojection residual in pixels for diagnostic display. For
+    // each correspondence, project worldPos through the calibrated pose and
+    // distortion model, return distance from the predicted UV to the
+    // user-measured UV (in projector pixels). Returned vector size = pairs.size().
+    static std::vector<float> perPointResiduals(
+        const std::vector<CorrespondencePair>& pairs,
+        glm::uvec2 outputSize,
+        const CalibrationResult& result);
 
     // Return true if the 3D world points are approximately coplanar.
     // Uses SVD of the centered point cloud; coplanar when the smallest

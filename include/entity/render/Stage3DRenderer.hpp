@@ -169,15 +169,26 @@ public:
     float lensK1{0.0f};
     float lensK2{0.0f};
 
-private:
+    // Optional post-fit residual warp (matches OutputManager's warp). Each
+    // entry is (predicted UV, residual UV) — projectPoint blends residuals
+    // via inverse-distance weighting and applies the result. Empty = no warp.
+    // Cleared by default; the calibration window's right pane sets it from
+    // the projector's calibration points so the preview matches what hits
+    // the physical projector.
+    std::vector<std::pair<glm::vec2, glm::vec2>> warpResiduals;
+
     /**
-     * Project a 3D world point to 2D screen coordinates.
+     * Project a 3D world point to 2D screen coordinates using the renderer's
+     * current camera (and lensK1/K2 distortion if set). Public so the
+     * calibration window can compute predicted-vs-measured residual arrows.
      * @param worldPos Position in world space
      * @param screenPos Top-left corner of render area
      * @param screenSize Size of render area
      * @return Screen coordinates, or (-1,-1) if behind camera
      */
     ImVec2 projectPoint(const glm::vec3& worldPos, ImVec2 screenPos, ImVec2 screenSize) const;
+
+private:
 
     /**
      * Draw a line in 3D space.
