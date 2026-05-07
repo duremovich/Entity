@@ -78,6 +78,13 @@ private:
     void renderProjectorProperties();
 
     /**
+     * Render cue properties (when a cue is selected via Timeline::setSelectedCueNumber).
+     * Phase A — number, label, timestamp editable; each edit enqueues
+     * EditCueCommand with setPreviousState capturing the pre-edit cue.
+     */
+    void renderCueProperties();
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control

@@ -6,6 +6,7 @@
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
 #include "entity/timeline/Timeline.hpp"  // Ripple{Insert,Delete}Result
+#include "entity/timeline/CueTag.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
@@ -940,6 +941,155 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 private:
     std::string m_name;
+};
+
+// ============================================================================
+// Cue Tag Commands (Phase A — numbered timeline markers)
+// ============================================================================
+
+/**
+ * Fire a cue: seek the timeline to the cue's timestamp and start playback,
+ * regardless of current play state. Logs a warning and fails when no cue
+ * with the given number exists. Not undoable — playback transport changes
+ * stay outside the undo stack (matches Seek/Play).
+ *
+ * JSON: {"type":"FireCue","number":1.5}
+ */
+class FireCueCommand : public Command {
+public:
+    explicit FireCueCommand(double cueNumber) : m_number(cueNumber) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "FireCue"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    double m_number;
+};
+
+/**
+ * Add a cue tag at the given timestamp. Fails if a cue with the same
+ * number already exists. Undo removes the cue.
+ *
+ * JSON: {"type":"AddCueAt","number":1.5,"timestamp":1000000,"label":""}
+ */
+class AddCueAtCommand : public UndoableCommand {
+public:
+    AddCueAtCommand(double number, Timecode timestamp, std::string label)
+        : m_number(number), m_timestamp(timestamp), m_label(std::move(label)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "AddCueAt"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    double      m_number;
+    Timecode    m_timestamp;
+    std::string m_label;
+    bool        m_inserted{false};
+};
+
+/**
+ * Remove the cue with the given number. Captures the full pre-state so
+ * undo can re-insert with the original timestamp + label.
+ *
+ * JSON: {"type":"RemoveCue","number":1.5}
+ */
+class RemoveCueCommand : public UndoableCommand {
+public:
+    explicit RemoveCueCommand(double number) : m_number(number) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveCue"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    double  m_number;
+    bool    m_captured{false};
+    CueTag  m_previousState;
+};
+
+/**
+ * Edit an existing cue's number/timestamp/label. UI sets `setPreviousState`
+ * to the pre-edit snapshot so undo restores exactly that; scripts skip it
+ * and execute() auto-captures from live state on first run.
+ *
+ * Fails if `newNumber` collides with another cue (unless == oldNumber).
+ *
+ * JSON: {"type":"EditCue","oldNumber":1.0,"newNumber":1.5,
+ *        "newTimestamp":2000000,"newLabel":"Verse 1"}
+ */
+class EditCueCommand : public UndoableCommand {
+public:
+    EditCueCommand(double oldNumber, double newNumber,
+                   Timecode newTimestamp, std::string newLabel)
+        : m_oldNumber(oldNumber), m_newNumber(newNumber),
+          m_newTimestamp(newTimestamp), m_newLabel(std::move(newLabel)) {}
+
+    void setPreviousState(CueTag prev) {
+        m_previousState = std::move(prev);
+        m_hasPreviousState = true;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "EditCue"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    double      m_oldNumber;
+    double      m_newNumber;
+    Timecode    m_newTimestamp;
+    std::string m_newLabel;
+    bool        m_hasPreviousState{false};
+    CueTag      m_previousState;
+};
+
+/**
+ * Assert the timeline has exactly N cue tags. Used by integration tests.
+ *
+ * JSON: {"type":"AssertCueCount","count":3}
+ */
+class AssertCueCountCommand : public Command {
+public:
+    explicit AssertCueCountCommand(size_t count) : m_count(count) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertCueCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    size_t m_count;
+};
+
+/**
+ * Assert that a cue with the given number exists.
+ *
+ * JSON: {"type":"AssertCueExists","number":1.5}
+ */
+class AssertCueExistsCommand : public Command {
+public:
+    explicit AssertCueExistsCommand(double number) : m_number(number) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertCueExists"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    double m_number;
 };
 
 // ============================================================================

@@ -178,6 +178,14 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertSectionCount", AssertSectionCountCommand::fromJson);
     registerFactory("AssertSectionExists", AssertSectionExistsCommand::fromJson);
 
+    // Cue tag commands (Phase A — numbered timeline markers)
+    registerFactory("FireCue", FireCueCommand::fromJson);
+    registerFactory("AddCueAt", AddCueAtCommand::fromJson);
+    registerFactory("RemoveCue", RemoveCueCommand::fromJson);
+    registerFactory("EditCue", EditCueCommand::fromJson);
+    registerFactory("AssertCueCount", AssertCueCountCommand::fromJson);
+    registerFactory("AssertCueExists", AssertCueExistsCommand::fromJson);
+
     // Keyframe animation commands
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);

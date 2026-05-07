@@ -20,6 +20,10 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v9 (2026-05-06) — adds Timeline cue tags array (Phase A — numbered
+    //                     timeline markers fired by command). Each entry is
+    //                     {number, timestamp, label}. v8 files load with no
+    //                     cues (missing "cues" key = empty array).
     //   v8 (2026-05-03) — adds Projector array + per-projector calibration
     //                     state (pose, FOV, k1/k2 lens distortion,
     //                     calibrationPoints vector, linkedOutput by
@@ -50,8 +54,9 @@ public:
     // v4 autoTranscodeOnImport is translated to AlwaysTranscode/NeverTranscode;
     // v5 outputs load with empty OCIO display/view (= config default at draw time);
     // v6 mediaLibrary entries load with pathKind="linked";
-    // v7 files load with no projectors (missing "projectors" key = empty).
-    static constexpr int PROJECT_VERSION = 8;
+    // v7 files load with no projectors (missing "projectors" key = empty);
+    // v8 files load with no cues (missing "cues" key = empty).
+    static constexpr int PROJECT_VERSION = 9;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

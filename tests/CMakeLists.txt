@@ -6,6 +6,7 @@ add_executable(EntityMediaTests
     unit/FrameCacheTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
+    unit/CueTagTests.cpp
     unit/HapFormatTests.cpp
     unit/TranscodeManagerTests.cpp
     unit/SettingsTests.cpp
@@ -121,3 +122,12 @@ set_tests_properties(integration_sections_persistence_save PROPERTIES
     FIXTURES_SETUP sections_persistence_data)
 set_tests_properties(integration_sections_persistence_load PROPERTIES
     FIXTURES_REQUIRED sections_persistence_data)
+
+# Cue tag fire + persistence round-trip (Phase A — numbered timeline markers).
+entity_add_integration_test(cue_fire cue_fire.json)
+entity_add_integration_test(cues_persistence_save cues_persistence_save.json)
+entity_add_integration_test(cues_persistence_load cues_persistence_load.json)
+set_tests_properties(integration_cues_persistence_save PROPERTIES
+    FIXTURES_SETUP cues_persistence_data)
+set_tests_properties(integration_cues_persistence_load PROPERTIES
+    FIXTURES_REQUIRED cues_persistence_data)

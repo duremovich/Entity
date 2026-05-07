@@ -1863,6 +1863,233 @@ CommandPtr AssertSectionExistsCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// Cue tag commands (Phase A)
+// ============================================================================
+
+bool FireCueCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const CueTag* cue = timeline->findCueTag(m_number);
+    if (!cue) {
+        std::cerr << "[FireCue] WARN: no cue with number " << m_number << std::endl;
+        return false;
+    }
+    timeline->seek(cue->timestamp);
+    timeline->play();
+    std::cout << "[FireCue] OK number=" << m_number
+              << " timestamp=" << cue->timestamp << std::endl;
+    return true;
+}
+
+nlohmann::json FireCueCommand::toJson() const {
+    return {{"type", "FireCue"}, {"number", m_number}};
+}
+
+std::string FireCueCommand::getDescription() const {
+    return "Fire cue " + std::to_string(m_number);
+}
+
+CommandPtr FireCueCommand::fromJson(const nlohmann::json& j) {
+    double number = j.value("number", 0.0);
+    return std::make_unique<FireCueCommand>(number);
+}
+
+bool AddCueAtCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    CueTag tag;
+    tag.number = m_number;
+    tag.timestamp = m_timestamp;
+    tag.label = m_label;
+    m_inserted = timeline->addCueTag(std::move(tag));
+    if (!m_inserted) {
+        std::cerr << "[AddCueAt] FAIL: number " << m_number << " already exists" << std::endl;
+        return false;
+    }
+    std::cout << "[AddCueAt] OK number=" << m_number
+              << " timestamp=" << m_timestamp << std::endl;
+    return true;
+}
+
+bool AddCueAtCommand::undo(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline || !m_inserted) return false;
+    bool ok = timeline->removeCueTag(m_number);
+    if (ok) m_inserted = false;
+    return ok;
+}
+
+bool AddCueAtCommand::redo(Engine& engine) {
+    return execute(engine);
+}
+
+nlohmann::json AddCueAtCommand::toJson() const {
+    return {{"type", "AddCueAt"},
+            {"number", m_number},
+            {"timestamp", m_timestamp},
+            {"label", m_label}};
+}
+
+std::string AddCueAtCommand::getDescription() const {
+    return "Add cue " + std::to_string(m_number) +
+           " at " + std::to_string(m_timestamp);
+}
+
+CommandPtr AddCueAtCommand::fromJson(const nlohmann::json& j) {
+    double number = j.value("number", 0.0);
+    Timecode timestamp = j.value("timestamp", static_cast<Timecode>(0));
+    std::string label = j.value("label", std::string{});
+    return std::make_unique<AddCueAtCommand>(number, timestamp, std::move(label));
+}
+
+bool RemoveCueCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    if (!m_captured) {
+        const CueTag* live = timeline->findCueTag(m_number);
+        if (!live) {
+            std::cerr << "[RemoveCue] FAIL: no cue with number " << m_number << std::endl;
+            return false;
+        }
+        m_previousState = *live;
+        m_captured = true;
+    }
+    bool ok = timeline->removeCueTag(m_number);
+    if (!ok) {
+        std::cerr << "[RemoveCue] FAIL: removeCueTag returned false for "
+                  << m_number << std::endl;
+    }
+    return ok;
+}
+
+bool RemoveCueCommand::undo(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline || !m_captured) return false;
+    return timeline->addCueTag(m_previousState);
+}
+
+bool RemoveCueCommand::redo(Engine& engine) {
+    return execute(engine);
+}
+
+nlohmann::json RemoveCueCommand::toJson() const {
+    return {{"type", "RemoveCue"}, {"number", m_number}};
+}
+
+std::string RemoveCueCommand::getDescription() const {
+    return "Remove cue " + std::to_string(m_number);
+}
+
+CommandPtr RemoveCueCommand::fromJson(const nlohmann::json& j) {
+    double number = j.value("number", 0.0);
+    return std::make_unique<RemoveCueCommand>(number);
+}
+
+bool EditCueCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    if (!m_hasPreviousState) {
+        const CueTag* live = timeline->findCueTag(m_oldNumber);
+        if (!live) {
+            std::cerr << "[EditCue] FAIL: no cue with number " << m_oldNumber << std::endl;
+            return false;
+        }
+        m_previousState = *live;
+        m_hasPreviousState = true;
+    }
+    bool ok = timeline->editCueTag(m_oldNumber, m_newNumber, m_newTimestamp, m_newLabel);
+    if (!ok) {
+        std::cerr << "[EditCue] FAIL: editCueTag rejected (old=" << m_oldNumber
+                  << ", new=" << m_newNumber << ")" << std::endl;
+    }
+    return ok;
+}
+
+bool EditCueCommand::undo(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline || !m_hasPreviousState) return false;
+    // Restore by editing from the new state back to the captured pre-state.
+    return timeline->editCueTag(m_newNumber, m_previousState.number,
+                                m_previousState.timestamp, m_previousState.label);
+}
+
+bool EditCueCommand::redo(Engine& engine) {
+    return execute(engine);
+}
+
+nlohmann::json EditCueCommand::toJson() const {
+    return {{"type", "EditCue"},
+            {"oldNumber", m_oldNumber},
+            {"newNumber", m_newNumber},
+            {"newTimestamp", m_newTimestamp},
+            {"newLabel", m_newLabel}};
+}
+
+std::string EditCueCommand::getDescription() const {
+    return "Edit cue " + std::to_string(m_oldNumber) +
+           " -> " + std::to_string(m_newNumber);
+}
+
+CommandPtr EditCueCommand::fromJson(const nlohmann::json& j) {
+    double oldNumber = j.value("oldNumber", 0.0);
+    double newNumber = j.value("newNumber", oldNumber);
+    Timecode newTimestamp = j.value("newTimestamp", static_cast<Timecode>(0));
+    std::string newLabel = j.value("newLabel", std::string{});
+    return std::make_unique<EditCueCommand>(oldNumber, newNumber, newTimestamp,
+                                            std::move(newLabel));
+}
+
+bool AssertCueCountCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    size_t actual = timeline->getCueTags().size();
+    if (actual == m_count) {
+        std::cout << "[AssertCueCount] OK count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertCueCount] FAIL: expected " << m_count
+              << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertCueCountCommand::toJson() const {
+    return {{"type", "AssertCueCount"}, {"count", m_count}};
+}
+
+std::string AssertCueCountCommand::getDescription() const {
+    return "Assert cue count == " + std::to_string(m_count);
+}
+
+CommandPtr AssertCueCountCommand::fromJson(const nlohmann::json& j) {
+    size_t count = j.value("count", static_cast<size_t>(0));
+    return std::make_unique<AssertCueCountCommand>(count);
+}
+
+bool AssertCueExistsCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    if (timeline->findCueTag(m_number)) {
+        std::cout << "[AssertCueExists] OK number=" << m_number << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertCueExists] FAIL: no cue with number " << m_number << std::endl;
+    return false;
+}
+
+nlohmann::json AssertCueExistsCommand::toJson() const {
+    return {{"type", "AssertCueExists"}, {"number", m_number}};
+}
+
+std::string AssertCueExistsCommand::getDescription() const {
+    return "Assert cue exists: " + std::to_string(m_number);
+}
+
+CommandPtr AssertCueExistsCommand::fromJson(const nlohmann::json& j) {
+    double number = j.value("number", 0.0);
+    return std::make_unique<AssertCueExistsCommand>(number);
+}
+
+// ============================================================================
 // Ripple time edits
 // ============================================================================
 

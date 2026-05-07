@@ -19,6 +19,7 @@
 #include "entity/ui/MappingWindow.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
 #include "entity/ui/ScreensWindow.hpp"
+#include "entity/ui/CueListWindow.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
@@ -344,6 +345,8 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         timelineWidget->setMediaDropCallback([this](const std::string& filepath, int trackIndex, Timecode position) {
             this->onMediaDroppedOnTimeline(filepath, trackIndex, position);
         });
+        // Phase A — ruler-menu cue ops route through the dispatcher.
+        timelineWidget->setCommandDispatcher(m_commandDispatcher);
     }
     m_windowManager->registerWindow(std::move(timelineWindow));
 
@@ -408,6 +411,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));
     m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
+    m_windowManager->registerWindow(std::make_unique<CueListWindow>(this));
 
     // Create 5 empty tracks as default
     for (int i = 1; i <= 5; ++i) {

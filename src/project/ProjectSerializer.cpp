@@ -439,6 +439,18 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["sections"] = sectionsJson;
 
+        // Serialize cue tags (Phase A — numbered timeline markers, v9).
+        // Forward-compatible: v8 loaders ignore the unknown "cues" key.
+        json cuesJson = json::array();
+        for (const auto& cue : timeline.getCueTags()) {
+            json cj;
+            cj["number"]    = cue.number;
+            cj["timestamp"] = cue.timestamp;
+            cj["label"]     = cue.label;
+            cuesJson.push_back(cj);
+        }
+        project["cues"] = cuesJson;
+
         // Write to file with pretty formatting
         std::ofstream file(savePath);
         if (!file.is_open()) {
@@ -1029,6 +1041,20 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             }
             std::cout << "[ProjectSerializer] Loaded " << timeline.getSections().size()
                       << " sections" << std::endl;
+        }
+
+        // Load cue tags (added in v9). Missing array = empty (pre-v9 files).
+        timeline.clearCueTags();
+        if (project.contains("cues")) {
+            for (const auto& cj : project["cues"]) {
+                CueTag cue;
+                cue.number    = cj.value("number", 0.0);
+                cue.timestamp = cj.value("timestamp", static_cast<Timecode>(0));
+                cue.label     = cj.value("label", std::string{});
+                timeline.addCueTag(std::move(cue));
+            }
+            std::cout << "[ProjectSerializer] Loaded " << timeline.getCueTags().size()
+                      << " cues" << std::endl;
         }
 
         std::cout << "[ProjectSerializer] Loaded project from " << filepath.string() << std::endl;

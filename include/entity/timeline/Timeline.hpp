@@ -2,10 +2,12 @@
 
 #include "entity/core/Types.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/timeline/CueTag.hpp"
 #include <entt/entt.hpp>
 #include <vector>
 #include <string>
 #include <functional>
+#include <optional>
 #include <unordered_set>
 #include <cmath>
 #include <atomic>
@@ -216,27 +218,71 @@ public:
     }
     void clearSections() { m_sections.clear(); }
 
+    // ============================================================================
+    // Cue tags — numbered timeline markers fired by command to seek-and-play.
+    // Sorted ascending by `number`; uniqueness enforced on insert/edit.
+    // ============================================================================
+    const std::vector<CueTag>& getCueTags() const { return m_cueTags; }
+
+    /** Insert a cue. Returns false if a cue with the same `number` already
+     *  exists (no-op in that case). Sorted insert via lower_bound. */
+    bool addCueTag(CueTag tag);
+
+    /** Remove the cue with the given number. Returns true if a cue was
+     *  removed. */
+    bool removeCueTag(double number);
+
+    /** Look up a cue by number. Returns nullptr if absent. */
+    const CueTag* findCueTag(double number) const;
+
+    /** Edit an existing cue. If `newNumber != oldNumber`, fails when
+     *  another cue already uses `newNumber`. Re-sorts the vector if the
+     *  number changed. Returns true on success. */
+    bool editCueTag(double oldNumber, double newNumber,
+                    Timecode newTimestamp, std::string newLabel);
+
+    /** Drop every cue. Used by Timeline::clear() and the project loader. */
+    void clearCueTags() { m_cueTags.clear(); }
+
     // Selection management
-    void setSelectedClip(entt::entity clip) { m_selectedClip = clip; }
+    void setSelectedClip(entt::entity clip) {
+        m_selectedClip = clip;
+        if (clip != entt::null) m_selectedCueNumber.reset();
+    }
     entt::entity getSelectedClip() const { return m_selectedClip; }
 
     void setSelectedScreen(entt::entity screen) {
         m_selectedScreen = screen;
         m_selectedProjector = entt::null;
+        if (screen != entt::null) m_selectedCueNumber.reset();
     }
     entt::entity getSelectedScreen() const { return m_selectedScreen; }
 
     void setSelectedProjector(entt::entity projector) {
         m_selectedProjector = projector;
         m_selectedScreen = entt::null;
+        if (projector != entt::null) m_selectedCueNumber.reset();
     }
     entt::entity getSelectedProjector() const { return m_selectedProjector; }
 
-    // Clear all selection (deselect clip, screen, and projector)
+    // Cue selection — mutually exclusive with clip/screen/projector. Setting
+    // a cue clears the others; setting any of the others clears this.
+    void setSelectedCueNumber(std::optional<double> number) {
+        m_selectedCueNumber = number;
+        if (number.has_value()) {
+            m_selectedClip = entt::null;
+            m_selectedScreen = entt::null;
+            m_selectedProjector = entt::null;
+        }
+    }
+    std::optional<double> getSelectedCueNumber() const { return m_selectedCueNumber; }
+
+    // Clear all selection (deselect clip, screen, projector, and cue)
     void clearSelection() {
         m_selectedClip = entt::null;
         m_selectedScreen = entt::null;
         m_selectedProjector = entt::null;
+        m_selectedCueNumber.reset();
     }
 
     // Expansion state (for twirl-down property tracks)
@@ -283,10 +329,14 @@ private:
     // Named time-range sections, persisted in project files.
     std::vector<Section> m_sections;
 
+    // Numbered cue markers, sorted ascending by `number`. Persisted at v9.
+    std::vector<CueTag> m_cueTags;
+
     // Selection state
     entt::entity m_selectedClip{entt::null};
     entt::entity m_selectedScreen{entt::null};
     entt::entity m_selectedProjector{entt::null};
+    std::optional<double> m_selectedCueNumber;
     std::unordered_set<uint32_t> m_expandedTracks;
     std::unordered_set<uint32_t> m_expandedClips;
 

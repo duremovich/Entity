@@ -7,6 +7,9 @@
  */
 
 #include "entity/timeline/TimelineWidget.hpp"
+#include "entity/timeline/CueTag.hpp"
+#include "entity/command/CommandDispatcher.hpp"
+#include "entity/command/Commands.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/AnimatedProperties.hpp"
@@ -14,6 +17,7 @@
 #include <iomanip>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <set>
 #include <limits>
 
@@ -130,6 +134,11 @@ void TimelineWidget::renderTimeRuler() {
             }
         }
     }
+
+    // Cue flag markers above the ruler band. Drawn after sections but
+    // before the range-selection overlay so the overlay still wins on
+    // top, and selection tinting doesn't bury cue labels.
+    renderCueFlags(windowPos);
 
     // Range-selection overlay on the ruler — stronger tint than the tracks
     // band so the endpoints are obviously interactive. While the user is
@@ -1035,6 +1044,114 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
     }
 
     return 6 * PROPERTY_ROW_HEIGHT;
+}
+
+// ============================================================================
+// Cue tag rendering (Phase A)
+// ============================================================================
+
+void TimelineWidget::renderCueFlags(ImVec2 windowPos) {
+    if (!m_timeline) return;
+    const auto& cues = m_timeline->getCueTags();
+    if (cues.empty()) return;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    // Cue flag visual: a small filled triangle (point down toward ruler) +
+    // a horizontal flag rectangle holding the number. Drawn just above the
+    // ruler band, hit-testable by the input layer with m_pixelToleranceCue.
+    constexpr float kFlagH      = 14.0f;
+    constexpr float kTriH       =  6.0f;
+    constexpr float kFlagPadX   =  4.0f;
+    const ImU32 cueFill   = IM_COL32(240, 200,  80, 230);
+    const ImU32 cueOutline = IM_COL32(255, 240, 140, 255);
+    const ImU32 cueText   = IM_COL32( 30,  30,  30, 255);
+    const ImU32 selFill   = IM_COL32(255, 230, 120, 255);
+
+    auto selectedCueOpt = m_timeline->getSelectedCueNumber();
+
+    for (const auto& cue : cues) {
+        const float x = windowPos.x + timeToPixel(cue.timestamp);
+
+        char numBuf[24];
+        std::snprintf(numBuf, sizeof(numBuf), "%.2f", cue.number);
+        const float textW = ImGui::CalcTextSize(numBuf).x;
+        const float flagW = textW + 2.0f * kFlagPadX;
+
+        const float flagTop = windowPos.y;
+        const float flagBot = windowPos.y + kFlagH;
+
+        const ImU32 fill = (selectedCueOpt.has_value() && *selectedCueOpt == cue.number)
+                           ? selFill : cueFill;
+
+        // Flag rectangle hugging the marker line on its right side.
+        drawList->AddRectFilled(ImVec2(x, flagTop),
+                                ImVec2(x + flagW, flagBot), fill);
+        drawList->AddRect(ImVec2(x, flagTop),
+                          ImVec2(x + flagW, flagBot), cueOutline);
+        drawList->AddText(ImVec2(x + kFlagPadX, flagTop + 1.0f), cueText, numBuf);
+
+        // Small triangle pointing down to the timestamp tick.
+        ImVec2 tri[3] = {
+            ImVec2(x - 4.0f, flagBot),
+            ImVec2(x + 4.0f, flagBot),
+            ImVec2(x,        flagBot + kTriH)
+        };
+        drawList->AddTriangleFilled(tri[0], tri[1], tri[2], fill);
+        drawList->AddTriangle(tri[0], tri[1], tri[2], cueOutline);
+    }
+}
+
+void TimelineWidget::renderCueModal() {
+    if (!m_timeline) return;
+    if (m_cueModalOpenRequested) {
+        ImGui::OpenPopup("CueRulerModal");
+        m_cueModalOpenRequested = false;
+    }
+    if (!ImGui::BeginPopupModal("CueRulerModal", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::Text(m_cueModalMode == CueModalMode::Edit ? "Edit Cue" : "Add Cue");
+    ImGui::Separator();
+
+    ImGui::InputDouble("Number", &m_cueModalNumber, 0.1, 1.0, "%.2f");
+    ImGui::InputText("Label", m_cueModalLabelBuf, sizeof(m_cueModalLabelBuf));
+
+    FrameNumber frame = m_timeline->timeToFrame(m_cueModalTimestamp);
+    long long frameLL = static_cast<long long>(frame);
+    if (ImGui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
+        if (frameLL < 0) frameLL = 0;
+        m_cueModalTimestamp = m_timeline->frameToTime(static_cast<FrameNumber>(frameLL));
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::Button("OK", ImVec2(120, 0))) {
+        if (m_commandDispatcher) {
+            if (m_cueModalMode == CueModalMode::Edit) {
+                auto cmd = std::make_unique<EditCueCommand>(
+                    m_cueModalOldNumber, m_cueModalNumber, m_cueModalTimestamp,
+                    std::string(m_cueModalLabelBuf));
+                if (const CueTag* live = m_timeline->findCueTag(m_cueModalOldNumber)) {
+                    cmd->setPreviousState(*live);
+                }
+                m_commandDispatcher->enqueue(std::move(cmd));
+            } else {
+                m_commandDispatcher->enqueue(std::make_unique<AddCueAtCommand>(
+                    m_cueModalNumber, m_cueModalTimestamp, std::string(m_cueModalLabelBuf)));
+            }
+        }
+        m_cueModalMode = CueModalMode::None;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        m_cueModalMode = CueModalMode::None;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 } // namespace entity

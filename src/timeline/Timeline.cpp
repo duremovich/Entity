@@ -159,8 +159,12 @@ void Timeline::clear() {
     // Clear named sections too — they were tied to the project being unloaded.
     m_sections.clear();
 
+    // Cue tags belong to the project; drop them with the timeline.
+    m_cueTags.clear();
+
     // Reset selection
     m_selectedClip = entt::null;
+    m_selectedCueNumber.reset();
 
     // Reset timeline state
     m_currentTime = 0;
@@ -698,6 +702,76 @@ void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
     }
     record.shifted.clear();
     record.success = false;
+}
+
+// ============================================================================
+// Cue tags
+// ============================================================================
+
+bool Timeline::addCueTag(CueTag tag) {
+    auto it = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), tag.number,
+        [](const CueTag& c, double v) { return c.number < v; });
+    if (it != m_cueTags.end() && it->number == tag.number) {
+        std::cerr << "[Timeline] addCueTag: rejected duplicate cue number "
+                  << tag.number << std::endl;
+        return false;
+    }
+    m_cueTags.insert(it, std::move(tag));
+    return true;
+}
+
+bool Timeline::removeCueTag(double number) {
+    auto it = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), number,
+        [](const CueTag& c, double v) { return c.number < v; });
+    if (it == m_cueTags.end() || it->number != number) {
+        return false;
+    }
+    m_cueTags.erase(it);
+    if (m_selectedCueNumber == number) m_selectedCueNumber.reset();
+    return true;
+}
+
+const CueTag* Timeline::findCueTag(double number) const {
+    auto it = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), number,
+        [](const CueTag& c, double v) { return c.number < v; });
+    if (it == m_cueTags.end() || it->number != number) return nullptr;
+    return &(*it);
+}
+
+bool Timeline::editCueTag(double oldNumber, double newNumber,
+                          Timecode newTimestamp, std::string newLabel) {
+    auto oldIt = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), oldNumber,
+        [](const CueTag& c, double v) { return c.number < v; });
+    if (oldIt == m_cueTags.end() || oldIt->number != oldNumber) {
+        std::cerr << "[Timeline] editCueTag: no cue with number " << oldNumber << std::endl;
+        return false;
+    }
+
+    if (newNumber != oldNumber) {
+        // Reject collisions with other cues. Self-match is fine because we'll
+        // erase the old slot before inserting at the new one.
+        auto collide = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), newNumber,
+            [](const CueTag& c, double v) { return c.number < v; });
+        if (collide != m_cueTags.end() && collide->number == newNumber) {
+            std::cerr << "[Timeline] editCueTag: cue number " << newNumber
+                      << " already exists" << std::endl;
+            return false;
+        }
+    }
+
+    // Mutate in place when number didn't change; otherwise erase + sorted-insert.
+    if (newNumber == oldNumber) {
+        oldIt->timestamp = newTimestamp;
+        oldIt->label = std::move(newLabel);
+    } else {
+        CueTag updated{newNumber, newTimestamp, std::move(newLabel)};
+        m_cueTags.erase(oldIt);
+        auto insertIt = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), updated.number,
+            [](const CueTag& c, double v) { return c.number < v; });
+        m_cueTags.insert(insertIt, std::move(updated));
+        if (m_selectedCueNumber == oldNumber) m_selectedCueNumber = newNumber;
+    }
+    return true;
 }
 
 } // namespace entity

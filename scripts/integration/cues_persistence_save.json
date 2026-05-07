@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "description": "Phase A — Cue tags persistence (save half). Adds three cues to the timeline and saves the project. The load half (cues_persistence_load.json) round-trips the file and asserts all three cues survive serialization at PROJECT_VERSION 9.",
+    "commands": [
+        {"type": "AddCueAt",   "number": 1.0,   "timestamp": 1000000, "label": "Intro"},
+        {"type": "AddCueAt",   "number": 1.5,   "timestamp": 2500000, "label": "Verse"},
+        {"type": "AddCueAt",   "number": 100.25,"timestamp": 9000000, "label": "Outro"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "SaveProject","filepath": "test_output/cues_persistence/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}

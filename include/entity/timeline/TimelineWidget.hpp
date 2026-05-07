@@ -11,6 +11,10 @@
 
 namespace entity {
 
+// Forward declaration — TimelineWidget may enqueue ruler-context-menu
+// commands (Phase A cue ops) when wired by Engine::initializeWindowsAndCallbacks.
+class CommandDispatcher;
+
 // Callback for when a media file is dropped onto a track
 // Parameters: filepath, track index, timecode position
 using MediaDropCallback = std::function<void(const std::string&, int, Timecode)>;
@@ -95,6 +99,13 @@ public:
      * Set callback for when media is dropped onto a track.
      */
     void setMediaDropCallback(MediaDropCallback callback) { m_mediaDropCallback = std::move(callback); }
+
+    /**
+     * Optional — wire the CommandDispatcher so ruler-context-menu actions
+     * (Phase A cue ops) can enqueue undoable commands. Without it, those
+     * menu items are inert (the menu still draws).
+     */
+    void setCommandDispatcher(CommandDispatcher* dispatcher) { m_commandDispatcher = dispatcher; }
 
     /**
      * Adjust horizontal scroll so the playhead is within the visible range.
@@ -220,6 +231,20 @@ private:
     int findTrackAtY(float mouseY, float windowY) const;
 
     /**
+     * Render the per-cue flag overlays above the ruler band. Each cue
+     * draws as a small numbered triangle/flag, hit-testable by the
+     * ruler right-click handler via m_pixelToleranceCue.
+     * @param windowPos The ruler's CursorScreenPos at draw time.
+     */
+    void renderCueFlags(ImVec2 windowPos);
+
+    /**
+     * Modal popup for "Add Cue Here..." / "Edit Cue..." opened from the
+     * ruler context menus. Reads m_cueModal* state, enqueues commands on OK.
+     */
+    void renderCueModal();
+
+    /**
      * Get the selected clip entity.
      */
     entt::entity getSelectedClip() const { return m_selectedClip; }
@@ -313,6 +338,30 @@ private:
     // otherwise it's an index into Timeline::getSections().
     int m_rightClickedSection{-1};
     bool m_rangeContextMenuRequested{false};
+
+    // Cue context-menu state. -1 means "no cue right-clicked"; otherwise
+    // it's an index into Timeline::getCueTags(). Hit testing for cue flags
+    // uses a small pixel tolerance around the rendered marker.
+    int m_rightClickedCueIndex{-1};
+    static constexpr float m_pixelToleranceCue = 8.0f;
+
+    // Pending modal state for "Add Cue Here..." / "Edit Cue..." flows.
+    // Mode + form fields all live here so the popup can survive across frames.
+    enum class CueModalMode { None, Add, Edit };
+    CueModalMode m_cueModalMode{CueModalMode::None};
+    bool   m_cueModalOpenRequested{false};
+    double m_cueModalOldNumber{0.0};
+    double m_cueModalNumber{1.0};
+    Timecode m_cueModalTimestamp{0};
+    char   m_cueModalLabelBuf[256]{0};
+
+    // Time captured when the user opens the right-click ruler menu (used
+    // as the timestamp for "Add Cue Here..." when no cue/section/range
+    // is under the cursor).
+    Timecode m_rulerRightClickTime{0};
+
+    // Optional dispatcher for ruler-menu cue commands.
+    CommandDispatcher* m_commandDispatcher{nullptr};
 
     // Callbacks
     MediaDropCallback m_mediaDropCallback;

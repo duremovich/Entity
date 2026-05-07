@@ -6,6 +6,7 @@
 
 #include "entity/ui/PropertyWindow.hpp"
 #include "entity/timeline/Timeline.hpp"
+#include "entity/timeline/CueTag.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -21,6 +22,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <iostream>
 #include <optional>
@@ -80,6 +82,13 @@ void PropertyWindow::render() {
     }
 
     auto& registry = m_timeline->getRegistry();
+
+    // Cue selection wins when set — it's mutually exclusive with the
+    // entt-based selections, so no need to dance around projector/screen.
+    if (m_timeline->getSelectedCueNumber().has_value()) {
+        renderCueProperties();
+        return;
+    }
 
     // Check for selected projector first (takes priority over screen/clip)
     entt::entity selectedProjector = m_timeline->getSelectedProjector();
@@ -1085,6 +1094,111 @@ void PropertyWindow::renderProjectorProperties() {
                 proj->targetSurfaceCount = 0;
             }
         }
+    }
+
+    ImGui::PopID();
+}
+
+// Phase A — Cue properties panel. Shows up when Timeline::setSelectedCueNumber
+// is set (mutually exclusive with clip/screen/projector selection). Each edit
+// commits via EditCueCommand with the captured pre-state so undo restores the
+// original cue cleanly even when the cue's number changed.
+void PropertyWindow::renderCueProperties() {
+    auto selectedCueOpt = m_timeline->getSelectedCueNumber();
+    if (!selectedCueOpt.has_value()) {
+        ImGui::TextDisabled("No cue selected");
+        return;
+    }
+    const double selectedNumber = *selectedCueOpt;
+    const CueTag* live = m_timeline->findCueTag(selectedNumber);
+    if (!live) {
+        ImGui::TextDisabled("Cue %.2f no longer exists", selectedNumber);
+        m_timeline->setSelectedCueNumber(std::nullopt);
+        return;
+    }
+
+    ImGui::PushID(static_cast<int>(selectedNumber * 100.0));
+
+    ImGui::Text("Cue %.2f", selectedNumber);
+    ImGui::Separator();
+
+    // Editable values are kept in local UI state so we only enqueue an
+    // EditCueCommand on IsItemDeactivatedAfterEdit (mirrors the scalar
+    // command pattern elsewhere in this window).
+    static double editNumber = 0.0;
+    static char editLabel[256] = {0};
+    static long long editFrame = 0;
+    static double trackedNumber = 0.0;  // detect selection change for re-init
+    static CueTag preEditSnapshot{};
+    static bool snapshotValid = false;
+
+    if (trackedNumber != selectedNumber) {
+        trackedNumber = selectedNumber;
+        editNumber = live->number;
+        std::strncpy(editLabel, live->label.c_str(), sizeof(editLabel) - 1);
+        editLabel[sizeof(editLabel) - 1] = '\0';
+        editFrame = static_cast<long long>(m_timeline->timeToFrame(live->timestamp));
+        snapshotValid = false;
+    }
+
+    auto captureSnapshot = [&]() {
+        if (snapshotValid) return;
+        if (const CueTag* cur = m_timeline->findCueTag(selectedNumber)) {
+            preEditSnapshot = *cur;
+            snapshotValid = true;
+        }
+    };
+
+    auto commitEdit = [&]() {
+        if (!m_dispatcher) return;
+        Timecode newTs = m_timeline->frameToTime(static_cast<FrameNumber>(editFrame));
+        auto cmd = std::make_unique<EditCueCommand>(
+            selectedNumber, editNumber, newTs, std::string(editLabel));
+        if (snapshotValid) cmd->setPreviousState(preEditSnapshot);
+        m_dispatcher->enqueue(std::move(cmd));
+        snapshotValid = false;
+
+        // The cue's number may have changed; track the new key so the panel
+        // keeps showing the same cue after the dispatcher applies the edit.
+        if (editNumber != selectedNumber) {
+            m_timeline->setSelectedCueNumber(editNumber);
+            trackedNumber = editNumber;
+        }
+    };
+
+    ImGui::InputDouble("Number", &editNumber, 0.1, 1.0, "%.2f");
+    if (ImGui::IsItemActivated()) captureSnapshot();
+    if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
+
+    ImGui::InputText("Label", editLabel, sizeof(editLabel));
+    if (ImGui::IsItemActivated()) captureSnapshot();
+    if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
+
+    ImGui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
+    if (ImGui::IsItemActivated()) captureSnapshot();
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (editFrame < 0) editFrame = 0;
+        commitEdit();
+    }
+
+    Timecode previewTs = m_timeline->frameToTime(static_cast<FrameNumber>(editFrame));
+    double seconds = previewTs / 1000000.0;
+    int totalSeconds = static_cast<int>(seconds);
+    int hours = totalSeconds / 3600;
+    int minutes = (totalSeconds % 3600) / 60;
+    int secs = totalSeconds % 60;
+    int frames = static_cast<int>((seconds - totalSeconds) * m_timeline->getFrameRate());
+    ImGui::TextDisabled("%02d:%02d:%02d:%02d", hours, minutes, secs, frames);
+
+    ImGui::Separator();
+
+    if (ImGui::Button("Fire Cue") && m_dispatcher) {
+        m_dispatcher->enqueue(std::make_unique<FireCueCommand>(selectedNumber));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete Cue") && m_dispatcher) {
+        m_dispatcher->enqueue(std::make_unique<RemoveCueCommand>(selectedNumber));
+        m_timeline->setSelectedCueNumber(std::nullopt);
     }
 
     ImGui::PopID();

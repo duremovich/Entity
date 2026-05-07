@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "description": "Phase A — Cue tags persistence (load half). Loads the project saved by cues_persistence_save.json and asserts all three cues survived the JSON round-trip. CTest fixture cues_persistence_data ensures the save script ran first.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "test_output/cues_persistence/test.entity"},
+        {"type": "WaitFrames",  "count": 4},
+        {"type": "AssertCueCount",  "count": 3},
+        {"type": "AssertCueExists", "number": 1.0},
+        {"type": "AssertCueExists", "number": 1.5},
+        {"type": "AssertCueExists", "number": 100.25},
+        {"type": "Exit"}
+    ]
+}

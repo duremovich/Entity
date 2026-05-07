@@ -7,11 +7,16 @@
  */
 
 #include "entity/timeline/TimelineWidget.hpp"
+#include "entity/timeline/CueTag.hpp"
+#include "entity/command/CommandDispatcher.hpp"
+#include "entity/command/Commands.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include <sstream>
 #include <cmath>
+#include <cstring>
+#include <cstdio>
 #include <limits>
 
 namespace entity {
@@ -326,28 +331,51 @@ void TimelineWidget::handleRulerInteraction() {
         }
     }
 
-    // Right-click handling on the ruler — section ops. Hit-tests existing
-    // section bands first (delete/jump-to-start menu), then falls back to
-    // "create section from active range" when the user has a selection.
+    // Right-click handling on the ruler — cue + section ops. Cue flags get
+    // checked first (smaller hit target on top of the band), then sections,
+    // then range, then a generic ruler context for creating new markers.
     if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
         Timecode clickTime = pixelToTime(relativeX);
+        if (clickTime < 0) clickTime = 0;
+        m_rulerRightClickTime = clickTime;
 
-        m_rightClickedSection = -1;
-        const auto& sections = m_timeline->getSections();
-        for (size_t i = 0; i < sections.size(); ++i) {
-            if (clickTime >= sections[i].start && clickTime <= sections[i].end) {
-                m_rightClickedSection = static_cast<int>(i);
+        // Cue flag hit-test first. Flags render relative to ruler windowPos
+        // without scroll offset, so use the screen-space x of each cue and
+        // compare directly to mousePos.x.
+        m_rightClickedCueIndex = -1;
+        const auto& cues = m_timeline->getCueTags();
+        for (size_t i = 0; i < cues.size(); ++i) {
+            const float cueX = windowPos.x + timeToPixel(cues[i].timestamp);
+            if (std::abs(mousePos.x - cueX) <= m_pixelToleranceCue) {
+                m_rightClickedCueIndex = static_cast<int>(i);
                 break;
             }
         }
 
-        if (m_rightClickedSection >= 0) {
-            ImGui::OpenPopup("SectionContextMenu");
-        } else if (m_range.active && m_range.end > m_range.start) {
-            // No section under cursor but a range is active — offer to make one.
-            m_rangeContextMenuRequested = true;
-            ImGui::OpenPopup("RangeContextMenu");
+        if (m_rightClickedCueIndex >= 0) {
+            ImGui::OpenPopup("CueContextMenu");
+        } else {
+            m_rightClickedSection = -1;
+            const auto& sections = m_timeline->getSections();
+            for (size_t i = 0; i < sections.size(); ++i) {
+                if (clickTime >= sections[i].start && clickTime <= sections[i].end) {
+                    m_rightClickedSection = static_cast<int>(i);
+                    break;
+                }
+            }
+
+            if (m_rightClickedSection >= 0) {
+                ImGui::OpenPopup("SectionContextMenu");
+            } else if (m_range.active && m_range.end > m_range.start) {
+                // No section under cursor but a range is active — offer to make one.
+                m_rangeContextMenuRequested = true;
+                ImGui::OpenPopup("RangeContextMenu");
+            } else {
+                // Empty ruler — offer Add Cue Here. Phase B will add the
+                // section variant alongside it.
+                ImGui::OpenPopup("RulerContextMenu");
+            }
         }
     }
 
@@ -389,6 +417,60 @@ void TimelineWidget::handleRulerInteraction() {
         }
         ImGui::EndPopup();
     }
+
+    // Cue flag right-click: fire / edit / delete. Index captured at the
+    // click site stays valid for one popup lifetime (no concurrent mutation).
+    if (ImGui::BeginPopup("CueContextMenu")) {
+        const auto& cues = m_timeline->getCueTags();
+        if (m_rightClickedCueIndex >= 0 &&
+            m_rightClickedCueIndex < static_cast<int>(cues.size())) {
+            const auto& cue = cues[m_rightClickedCueIndex];
+            char hdr[48];
+            std::snprintf(hdr, sizeof(hdr), "Cue %.2f", cue.number);
+            ImGui::TextDisabled("%s", hdr);
+            if (!cue.label.empty()) {
+                ImGui::TextDisabled("%s", cue.label.c_str());
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Fire Cue") && m_commandDispatcher) {
+                m_commandDispatcher->enqueue(std::make_unique<FireCueCommand>(cue.number));
+            }
+            if (ImGui::MenuItem("Edit Cue...")) {
+                m_cueModalMode = CueModalMode::Edit;
+                m_cueModalOldNumber = cue.number;
+                m_cueModalNumber = cue.number;
+                m_cueModalTimestamp = cue.timestamp;
+                std::strncpy(m_cueModalLabelBuf, cue.label.c_str(),
+                             sizeof(m_cueModalLabelBuf) - 1);
+                m_cueModalLabelBuf[sizeof(m_cueModalLabelBuf) - 1] = '\0';
+                m_cueModalOpenRequested = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Delete Cue") && m_commandDispatcher) {
+                m_commandDispatcher->enqueue(std::make_unique<RemoveCueCommand>(cue.number));
+                m_rightClickedCueIndex = -1;
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // Empty-ruler right-click: offer "Add Cue Here..." (Phase A). Phase B
+    // will extend this with "Add Section Here".
+    if (ImGui::BeginPopup("RulerContextMenu")) {
+        if (ImGui::MenuItem("Add Cue Here...")) {
+            m_cueModalMode = CueModalMode::Add;
+            const auto& cues = m_timeline->getCueTags();
+            m_cueModalOldNumber = 0.0;
+            m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
+            m_cueModalTimestamp = m_rulerRightClickTime;
+            m_cueModalLabelBuf[0] = '\0';
+            m_cueModalOpenRequested = true;
+        }
+        ImGui::EndPopup();
+    }
+
+    // Render the cue add/edit modal (no-op when not open).
+    renderCueModal();
 }
 
 void TimelineWidget::handleTracksInteraction() {
