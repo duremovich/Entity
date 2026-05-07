@@ -148,6 +148,10 @@ entity_add_integration_test(section_manual_resume   section_manual_resume.json)
 entity_add_integration_test(section_loop_normal     section_loop_normal.json)
 entity_add_integration_test(section_pingpong_normal section_pingpong_normal.json)
 entity_add_integration_test(section_locked_clip     section_locked_clip.json)
+# Regression guard: flipping Normal -> Locked while parked at a break
+# must stop the continuation cycle (mapToMediaFrame re-checks
+# sectionBehavior on every call, not just at seed time).
+entity_add_integration_test(section_normal_to_locked_at_break section_normal_to_locked_at_break.json)
 
 # Phase D — section fade envelopes auto-applied at break boundaries.
 entity_add_integration_test(section_fade_in       section_fade_in.json)

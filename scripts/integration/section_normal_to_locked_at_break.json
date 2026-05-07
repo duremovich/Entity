@@ -1,0 +1,27 @@
+{
+    "version": 1,
+    "description": "Phase C fixup — flipping a continuing Normal-mode clip to Locked while the playhead is parked at a break must stop the cycling immediately. Same setup as section_loop_normal: 16-frame Loop clip, break at frame 8, sectionBehavior=Normal. Auto-pause fires; continuation phase advances. Then SetClipSectionBehavior=Locked while still at-break — mapToMediaFrame must stop consulting ClipPlaybackPhase and fall back to the timeline-derived path (frozen at source frame 8). Without the sectionBehavior re-check in the continuation branch, the clip would keep looping despite the toggle.",
+    "commands": [
+        {"type": "AddScreen", "name": "FlipScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 266666, "name": "FlipBreak"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 200},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
+
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "mode": "notEqual", "tolerance": 1},
+
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Locked"},
+        {"type": "WaitFrames", "count": 120},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 1},
+        {"type": "Exit"}
+    ]
+}

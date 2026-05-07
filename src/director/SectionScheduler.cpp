@@ -147,6 +147,10 @@ void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
 
         // Only Normal-mode clips that are active at the break get continuation.
         if (clip.sectionBehavior != SectionBehavior::Normal) continue;
+        // Symmetric with advanceContinuation's guard. A clip with framerate <= 0
+        // (uninitialized / corrupt project) would compute a zero phase and
+        // silently land at mediaStartFrame regardless of where the break sat.
+        if (clip.framerate <= 0.0) continue;
         if (breakTimelineFrame < clip.startFrame ||
             breakTimelineFrame >= clip.startFrame + clip.duration) {
             continue;

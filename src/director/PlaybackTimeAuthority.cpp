@@ -94,11 +94,15 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
                                                    const Clip& clip,
                                                    FrameNumber timelineFrame) const {
     // Continuation-phase override only applies when the component exists
-    // AND the scheduler has placed the clip in continuation. Otherwise
-    // fall through to the timeline-derived path so existing semantics
-    // (and unit-test expectations) are preserved.
+    // AND the scheduler has placed the clip in continuation AND the clip's
+    // current section behavior is still Normal. The behavior dropdown is
+    // live UI — flipping a continuing Normal clip to Locked while paused
+    // at a break must freeze it, not keep cycling. Falling through to the
+    // timeline-derived path while paused does that, since timelineFrame
+    // is frozen at the break frame.
     const ClipPlaybackPhase* phase = m_registry.try_get<ClipPlaybackPhase>(entity);
-    if (!phase || !phase->inContinuation) {
+    if (!phase || !phase->inContinuation
+            || clip.sectionBehavior != SectionBehavior::Normal) {
         return mapToMediaFrame(clip, timelineFrame);
     }
 
