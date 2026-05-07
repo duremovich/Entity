@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Phase A — Cue tags. Adds three cues at known timestamps, asserts cue lookup, fires one, then verifies the timeline didn't lose any cues. No media (no ImportVideo) — pure timeline-state integration test.",
+    "description": "Phase A — Cue tags. Adds three cues at known timestamps, asserts presence + lookup, then fires each cue and verifies the playhead landed on the cue's frame and the transport moved to Playing. Cues at 1s/2s/4s @ 30 fps timeline -> frames 30/60/120. AssertPlayheadAtFrame checked immediately after FireCue, before WaitFrames advances playback. No media (no ImportVideo) — pure timeline-state integration test.",
     "commands": [
         {"type": "AddCueAt",   "number": 1.0, "timestamp": 1000000, "label": "Intro"},
         {"type": "AddCueAt",   "number": 1.5, "timestamp": 2000000, "label": "Verse"},
@@ -12,12 +12,22 @@
         {"type": "AssertCueExists", "number": 1.5},
         {"type": "AssertCueExists", "number": 2.0},
 
-        {"type": "FireCue",    "number": 2.0},
+        {"type": "FireCue",            "number": 2.0},
+        {"type": "AssertPlayheadAtFrame", "frame": 120, "tolerance": 0},
+        {"type": "AssertPlaybackState",   "state": "Playing"},
+        {"type": "WaitFrames", "count": 4},
+        {"type": "Pause"},
+        {"type": "AssertPlaybackState",   "state": "Paused"},
+
+        {"type": "FireCue",            "number": 1.0},
+        {"type": "AssertPlayheadAtFrame", "frame": 30, "tolerance": 0},
+        {"type": "AssertPlaybackState",   "state": "Playing"},
         {"type": "WaitFrames", "count": 4},
         {"type": "Pause"},
 
-        {"type": "FireCue",    "number": 1.0},
-        {"type": "WaitFrames", "count": 4},
+        {"type": "FireCue",            "number": 1.5},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 0},
+        {"type": "AssertPlaybackState",   "state": "Playing"},
         {"type": "Pause"},
 
         {"type": "AssertCueCount", "count": 3},

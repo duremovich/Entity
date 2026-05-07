@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "description": "Phase B fixup — regression guard for the manual-resume unstick. After auto-pause at a section break, hitting Play (NOT SectionGo) resumes playback past the break. The next break-detection cycle MUST clear the at-break latch — otherwise a subsequent SectionGo would seek backward to the previous break. This test asserts the latch is gone after manual play by playing past the first break and crossing into a region where SectionGo would visibly misbehave if the latch were still set.",
+    "commands": [
+        {"type": "AddScreen", "name": "SectionScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 300},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "Break1"},
+        {"type": "AddSectionBreak", "breakFrame": 5000000, "name": "Break2"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

@@ -4,6 +4,7 @@
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/timeline/Timeline.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 
@@ -52,16 +53,35 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         return;
     }
 
+    // Manual-resume unstick: if the timeline transitioned to Playing while
+    // we still hold the at-break latch (user clicked the UI play button or
+    // a script fired Play / TogglePlayPause without going through GO), the
+    // latch is stale. Drop it before processing this tick — otherwise the
+    // next spacebar would fire SectionGo and yank the playhead back to the
+    // last break.
+    if (m_atBreak && currentTime > m_lastBreakHitFrame) {
+        m_atBreak = false;
+        m_timeline->setSectionAtBreak(false);
+        clearAllContinuation();
+    }
+
     const double frameRate = m_timeline->getFrameRate() > 0.0 ? m_timeline->getFrameRate() : 30.0;
     const Timecode oneFrame = static_cast<Timecode>(1000000.0 / frameRate);
 
     // Scrub jumps are not crossings — only continuous playback advances
-    // trigger break detection. A delta of more than two frames since last
-    // tick is treated as a discontinuity (user-driven seek).
+    // trigger break detection. The threshold is "more than 2 timeline
+    // frames OR more than 5× the per-tick advance, whichever is greater".
+    // Without the deltaTime floor, high-fps timelines (>120 fps) put 2×
+    // oneFrame below the per-render-tick advance (~16ms at 60Hz) and every
+    // normal advance reads as a scrub.
     const Timecode delta = currentTime > m_lastTickFrame
                          ? currentTime - m_lastTickFrame
                          : m_lastTickFrame - currentTime;
-    if (delta > oneFrame * 2) {
+    const Timecode tickAdvance = deltaTimeSeconds > 0.0
+        ? static_cast<Timecode>(deltaTimeSeconds * 1000000.0)
+        : static_cast<Timecode>(0);
+    const Timecode discontinuityThreshold = std::max(oneFrame * 2, tickAdvance * 5);
+    if (delta > discontinuityThreshold) {
         m_lastTickFrame = currentTime;
         return;
     }

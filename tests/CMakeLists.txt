@@ -138,6 +138,9 @@ set_tests_properties(integration_sections_legacy_migration_load PROPERTIES
 entity_add_integration_test(section_pause_locked    section_pause_locked.json)
 entity_add_integration_test(section_go_keyboard     section_go_keyboard.json)
 entity_add_integration_test(section_keyframe_freeze section_keyframe_freeze.json)
+# Manual-resume unstick — regression guard for the at-break latch
+# clearing when the user clicks Play instead of pressing GO.
+entity_add_integration_test(section_manual_resume   section_manual_resume.json)
 
 # Phase C — Normal continuation phase (Loop / PingPong cycling at-break)
 # plus Locked-overrides-PlaybackMode regression guard.
