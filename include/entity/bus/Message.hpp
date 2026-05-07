@@ -34,6 +34,13 @@ struct ClipRenderState {
     float opacity{1.0f};
     BlendMode blendMode{BlendMode::Normal};
     std::uint64_t targetScreen{UINT64_MAX};
+    // Section fade envelope (Phase D — auto-fade at section break boundaries).
+    // Computed by PlaybackTimeAuthority each tick based on the clip's
+    // start/end vs. surrounding Section break frames; 1.0 means no envelope.
+    // PlaybackPresenter multiplies it into the per-clip MediaLayer opacity
+    // so the CompositorSystem draw call (registry-side, until subtask 8
+    // collapses that path through the bus) reflects the fade.
+    float sectionFadeMultiplier{1.0f};
 };
 
 // One frame the Renderer should warm into the FrameCache this tick.

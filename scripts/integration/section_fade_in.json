@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "description": "Phase D — fade-in envelope. Clip starts at frame 0, section break at frame 0 with fadeSeconds=1.0 (30 frames at 30fps). At frame 0 the multiplier is 0/30=0, mid-fade at frame 15 it's 15/30=0.5, near the end at frame 29 it's 29/30~=0.967, and at frame 30 the fade window has closed -> 1.0. SeekToFrame is used (not Play) so SectionScheduler's break detection treats each step as a scrub and doesn't auto-pause -- we want to assert the math at specific frames.",
+    "commands": [
+        {"type": "AddScreen", "name": "FadeInScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "AddSectionBreak", "breakFrame": 0, "name": "FadeInBreak", "fadeSeconds": 1.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.0, "tolerance": 0.01},
+        {"type": "SeekToFrame", "frame": 15},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.5, "tolerance": 0.01},
+        {"type": "SeekToFrame", "frame": 29},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.9667, "tolerance": 0.02},
+        {"type": "SeekToFrame", "frame": 30},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "Exit"}
+    ]
+}

@@ -8,6 +8,7 @@ add_executable(EntityMediaTests
     unit/RippleTimeTests.cpp
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
+    unit/SectionFadeTests.cpp
     unit/ClipPlaybackPhaseTests.cpp
     unit/HapFormatTests.cpp
     unit/TranscodeManagerTests.cpp
@@ -147,6 +148,11 @@ entity_add_integration_test(section_manual_resume   section_manual_resume.json)
 entity_add_integration_test(section_loop_normal     section_loop_normal.json)
 entity_add_integration_test(section_pingpong_normal section_pingpong_normal.json)
 entity_add_integration_test(section_locked_clip     section_locked_clip.json)
+
+# Phase D — section fade envelopes auto-applied at break boundaries.
+entity_add_integration_test(section_fade_in       section_fade_in.json)
+entity_add_integration_test(section_fade_out      section_fade_out.json)
+entity_add_integration_test(section_fade_combined section_fade_combined.json)
 
 # Cue tag fire + persistence round-trip (Phase A — numbered timeline markers).
 entity_add_integration_test(cue_fire cue_fire.json)

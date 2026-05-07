@@ -144,6 +144,60 @@ std::string PlaybackTimeAuthority::lookupInputColorSpaceOverride(const Clip& cli
     return entry->inputColorSpaceOverride;
 }
 
+float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) const {
+    if (!m_timeline) return 1.0f;
+    const auto& sections = m_timeline->getSections();
+    if (sections.empty()) return 1.0f;
+
+    const FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    const FrameNumber clipStart    = clip.startFrame;
+    const FrameNumber clipEnd      = clip.startFrame + clip.duration;
+    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+    // ±1 timeline-frame snap tolerance — matches the boundary semantics
+    // documented in the Phase D plan; clips that merely cross a break
+    // (>1 frame off either end) get no envelope.
+    const FrameNumber snapTol = 1;
+
+    float multiplier = 1.0f;
+
+    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
+        return a >= b ? a - b : b - a;
+    };
+
+    for (const auto& sec : sections) {
+        if (sec.fadeSeconds <= 0.0) continue;
+        const FrameNumber breakFrame = static_cast<FrameNumber>(
+            (static_cast<double>(sec.breakFrame) * timelineFrameRate) / 1000000.0);
+        const FrameNumber fadeFrames = static_cast<FrameNumber>(
+            std::ceil(sec.fadeSeconds * timelineFrameRate));
+        if (fadeFrames <= 0) continue;
+
+        // Fade in: clip's start coincides with this break.
+        if (absDiff(breakFrame, clipStart) <= snapTol) {
+            if (currentFrame >= clipStart &&
+                currentFrame < clipStart + fadeFrames) {
+                const float t = static_cast<float>(currentFrame - clipStart)
+                              / static_cast<float>(fadeFrames);
+                // min-combine: a clip with both ends on breaks (shorter
+                // than fadeIn + fadeOut) takes the more restrictive ramp.
+                multiplier = std::min(multiplier, t);
+            }
+        }
+        // Fade out: clip's end coincides with this break.
+        if (absDiff(breakFrame, clipEnd) <= snapTol) {
+            if (clipEnd >= fadeFrames &&
+                currentFrame > clipEnd - fadeFrames &&
+                currentFrame <= clipEnd) {
+                const float t = static_cast<float>(clipEnd - currentFrame)
+                              / static_cast<float>(fadeFrames);
+                multiplier = std::min(multiplier, t);
+            }
+        }
+    }
+    return std::clamp(multiplier, 0.0f, 1.0f);
+}
+
 void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
     out.clear();
     if (!m_timeline) return;
@@ -207,6 +261,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {
         c.targetScreen = (clip.targetScreen == entt::null)
             ? UINT64_MAX
             : static_cast<std::uint64_t>(clip.targetScreen);
+        // Phase D — auto-fade envelope at section break boundaries.
+        // Stamped here on the bus payload; PlaybackPresenter applies
+        // it to MediaLayer.opacity so the registry-side compositor draw
+        // reflects the fade this same tick.
+        c.sectionFadeMultiplier = computeSectionFadeMultiplier(clip);
 
         out.activeClips.push_back(std::move(c));
     }

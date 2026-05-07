@@ -114,6 +114,7 @@ ojson encode(const ClipRenderState& c) {
     j["opacity"] = c.opacity;
     j["blendMode"] = blendModeName(c.blendMode);
     j["targetScreen"] = c.targetScreen;
+    j["sectionFadeMultiplier"] = c.sectionFadeMultiplier;
     return j;
 }
 
@@ -131,6 +132,11 @@ ClipRenderState decodeClipRenderState(const json& j) {
     c.opacity = j.at("opacity").get<float>();
     c.blendMode = blendModeFromString(j.at("blendMode").get<std::string>());
     c.targetScreen = j.at("targetScreen").get<std::uint64_t>();
+    // Phase D added sectionFadeMultiplier; older payloads (and the
+    // hand-rolled "TruncatedTransformMatrix" malformed-payload test in
+    // MessageBusSerializationTests) omit the key — default to 1.0 so a
+    // missing key is a no-op envelope rather than a parse failure.
+    c.sectionFadeMultiplier = j.value("sectionFadeMultiplier", 1.0f);
     return c;
 }
 

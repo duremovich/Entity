@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "description": "Phase D — fade-out envelope. Clip starts at frame 0, duration 60 (so clipEnd=60). Section break at frame 60 (microseconds 60/30*1_000_000=2_000_000) with fadeSeconds=0.5 (15 frames at 30fps). Fade-out window is (clipEnd-15, clipEnd] = (45, 60]. At frame 45 the window is open at the boundary but the half-open interval is strict -> 1.0. At frame 50 t = (60-50)/15 = 10/15 ~= 0.667. At frame 59 t = 1/15 ~= 0.067. At frame 60 t = 0/15 = 0.0. SeekToFrame avoids the section auto-pause path entirely (scrubs are treated as discontinuities by SectionScheduler).",
+    "commands": [
+        {"type": "AddScreen", "name": "FadeOutScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 60},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "FadeOutBreak", "fadeSeconds": 0.5},
+        {"type": "SeekToFrame", "frame": 45},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "SeekToFrame", "frame": 50},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.6667, "tolerance": 0.02},
+        {"type": "SeekToFrame", "frame": 59},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.0667, "tolerance": 0.02},
+        {"type": "SeekToFrame", "frame": 60},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.0, "tolerance": 0.01},
+        {"type": "Exit"}
+    ]
+}

@@ -2242,6 +2242,82 @@ CommandPtr AssertClipMediaFrameCommand::fromJson(const nlohmann::json& j) {
                                                           expected, tolerance, mode);
 }
 
+bool AssertClipFadeMultiplierCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    auto* director = engine.getDirector();
+    if (!timeline || !director) {
+        std::cerr << "[AssertClipFadeMultiplier] FAIL: timeline/director unavailable"
+                  << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertClipFadeMultiplier] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->clips.size()) {
+        std::cerr << "[AssertClipFadeMultiplier] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->clips[m_clipIndex];
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[AssertClipFadeMultiplier] FAIL: no Clip component" << std::endl;
+        return false;
+    }
+
+    auto* timeAuthority = director->getTimeAuthority();
+    if (!timeAuthority) {
+        std::cerr << "[AssertClipFadeMultiplier] FAIL: no PlaybackTimeAuthority"
+                  << std::endl;
+        return false;
+    }
+
+    const float actual = timeAuthority->computeSectionFadeMultiplier(*clip);
+    const float diff = std::fabs(actual - m_expected);
+    if (diff <= m_tolerance) {
+        std::cout << "[AssertClipFadeMultiplier] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " multiplier=" << actual
+                  << " (== " << m_expected << " +/-" << m_tolerance << ")"
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertClipFadeMultiplier] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex
+              << " expected " << m_expected << " (+/-" << m_tolerance
+              << "), got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertClipFadeMultiplierCommand::toJson() const {
+    return {{"type", "AssertClipFadeMultiplier"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance}};
+}
+
+std::string AssertClipFadeMultiplierCommand::getDescription() const {
+    return "Assert clip fade multiplier for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertClipFadeMultiplierCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex  = j.value("clipIndex", 0);
+    float expected  = j.value("expected", 1.0f);
+    float tolerance = j.value("tolerance", 0.01f);
+    return std::make_unique<AssertClipFadeMultiplierCommand>(trackIndex, clipIndex,
+                                                              expected, tolerance);
+}
+
 // ============================================================================
 // Cue tag commands (Phase A)
 // ============================================================================

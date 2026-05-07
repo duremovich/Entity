@@ -103,6 +103,20 @@ public:
     // state alongside the math (PlaybackPresenter::getCurrentVideoFrame).
     const Timeline* timeline() const { return m_timeline; }
 
+    // Phase D — section fade envelopes. Returns the auto-fade opacity
+    // multiplier (∈ [0, 1]) for `clip` at the timeline's current frame:
+    //   - 1.0 when the clip's start/end aren't aligned with any section
+    //     break that has fadeSeconds > 0.
+    //   - Ramps 0→1 across `fadeSeconds` from clip start when the start
+    //     coincides (±1 timeline-frame snap) with such a break.
+    //   - Ramps 1→0 across `fadeSeconds` ending at clip end when the end
+    //     coincides with such a break.
+    //   - Both ends aligned: the min of the two ramps applies (a clip
+    //     shorter than fadeIn + fadeOut would otherwise overshoot).
+    // Pure read of Timeline + Clip; no side effects. Public so the
+    // AssertClipFadeMultiplierCommand can poll it from script tests.
+    float computeSectionFadeMultiplier(const Clip& clip) const;
+
 private:
     std::string lookupInputColorSpaceOverride(const Clip& clip) const;
 

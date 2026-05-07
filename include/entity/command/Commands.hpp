@@ -1177,6 +1177,39 @@ private:
     Mode        m_mode;
 };
 
+/**
+ * Assert the clip at (trackIndex, clipIndex) currently has a section-fade
+ * envelope multiplier matching `expected` within `tolerance`. Reads
+ * `PlaybackTimeAuthority::computeSectionFadeMultiplier(clip)` against the
+ * timeline's current frame, so the value reflects the same envelope the
+ * Director stamps on the bus payload each tick.
+ *
+ * JSON: {"type":"AssertClipFadeMultiplier","trackIndex":0,"clipIndex":0,
+ *        "expected":0.5,"tolerance":0.05}
+ */
+class AssertClipFadeMultiplierCommand : public Command {
+public:
+    AssertClipFadeMultiplierCommand(int trackIndex, int clipIndex,
+                                    float expected,
+                                    float tolerance = 0.01f)
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_expected(expected)
+        , m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertClipFadeMultiplier"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int   m_trackIndex;
+    int   m_clipIndex;
+    float m_expected;
+    float m_tolerance;
+};
+
 // ============================================================================
 // Cue Tag Commands (Phase A — numbered timeline markers)
 // ============================================================================

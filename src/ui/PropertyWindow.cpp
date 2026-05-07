@@ -1329,11 +1329,14 @@ void PropertyWindow::renderSectionBreakProperties() {
     }
     if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
 
-    ImGui::BeginDisabled(true);
     ImGui::InputDouble("Fade (seconds)", &editFadeSeconds, 0.05, 0.5, "%.2f");
-    ImGui::EndDisabled();
+    if (ImGui::IsItemActivated()) captureSnapshot();
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (editFadeSeconds < 0.0) editFadeSeconds = 0.0;
+        commitEdit();
+    }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Activated in Phase D (auto-fade envelope at section boundaries).");
+        ImGui::SetTooltip("Auto-fade duration applied to clips that start or end at this break.");
     }
 
     ImGui::Separator();

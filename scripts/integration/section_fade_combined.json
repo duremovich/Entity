@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "Phase D — section fade combined: a single break boundary at frame 60 has clip A ending and clip B starting. fadeSeconds=0.5 (15 frames at 30fps). Track 0 holds clip A: starts at frame 0, duration=60, ends at 60 (fade-out). Track 1 holds clip B: starts at frame 60 (position=2_000_000us at 30fps), duration=60, ends at 120 (fade-in only -- no break at 120). At frame 50 clip A is mid fade-out (10/15~=0.667) and clip B is inactive (multiplier remains 1.0 at its identity default; it doesn't matter since clip B isn't in the active set at frame 50, but the helper computes it from the clip alone). At frame 60 clip A is at end-of-fade (0.0) and clip B is at start-of-fade-in (0.0). At frame 75 clip B is past its 15-frame fade-in window (1.0).",
+    "commands": [
+        {"type": "AddScreen", "name": "FadeCombinedScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 60},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 1, "position": 2000000},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 1, "clipIndex": 0, "duration": 60},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "Boundary", "fadeSeconds": 0.5},
+        {"type": "SeekToFrame", "frame": 50},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.6667, "tolerance": 0.02},
+        {"type": "SeekToFrame", "frame": 60},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.0, "tolerance": 0.01},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 1, "clipIndex": 0, "expected": 0.0, "tolerance": 0.01},
+        {"type": "SeekToFrame", "frame": 75},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 1, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "Exit"}
+    ]
+}

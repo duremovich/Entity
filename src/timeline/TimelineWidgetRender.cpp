@@ -1231,12 +1231,10 @@ void TimelineWidget::renderSectionBreakModal() {
         }
     }
 
-    // Phase D will use this; disabled in Phase B.
-    ImGui::BeginDisabled(true);
     ImGui::InputDouble("Fade (seconds)", &m_sectionBreakModalFadeSeconds, 0.05, 0.5, "%.2f");
-    ImGui::EndDisabled();
+    if (m_sectionBreakModalFadeSeconds < 0.0) m_sectionBreakModalFadeSeconds = 0.0;
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Activated in Phase D (auto-fade envelope at section boundaries).");
+        ImGui::SetTooltip("Auto-fade duration applied to clips that start or end at this break.");
     }
 
     ImGui::Separator();
