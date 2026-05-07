@@ -897,10 +897,156 @@ private:
  * }
  */
 // ============================================================================
-// Named-section commands (Phase C #5) — scriptable so save/load round-trip
-// can be regression-tested via integration scripts.
+// Section break-point commands (Phase B refactor of Phase C #5).
+// Sections live on the timeline as point markers; old `{start, end}` regional
+// `AddSection` is kept as a deprecated alias that emits two break points for
+// backwards compatibility with v8 project files / legacy scripts.
 // ============================================================================
 
+/**
+ * Add a section break at the given timeline frame. Undoable.
+ *
+ * JSON: {"type":"AddSectionBreak","breakFrame":<usec>,"name":"Verse 1",
+ *        "color":4286074559,"fadeSeconds":0.0}
+ */
+class AddSectionBreakCommand : public UndoableCommand {
+public:
+    AddSectionBreakCommand(Timecode breakFrame, std::string name = {},
+                           uint32_t color = 0xFF6090C8, double fadeSeconds = 0.0)
+        : m_breakFrame(breakFrame), m_name(std::move(name)),
+          m_color(color), m_fadeSeconds(fadeSeconds) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "AddSectionBreak"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    Timecode    m_breakFrame;
+    std::string m_name;
+    uint32_t    m_color;
+    double      m_fadeSeconds;
+    bool        m_inserted{false};
+};
+
+/**
+ * Remove a section break at the given timeline frame. Captures pre-state
+ * for undo. JSON: {"type":"RemoveSectionBreak","breakFrame":<usec>}
+ */
+class RemoveSectionBreakCommand : public UndoableCommand {
+public:
+    explicit RemoveSectionBreakCommand(Timecode breakFrame) : m_breakFrame(breakFrame) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveSectionBreak"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    Timecode m_breakFrame;
+    bool     m_captured{false};
+    Timeline::Section m_previousState;
+};
+
+/**
+ * Edit an existing section break. UI sets `setPreviousState` to the pre-edit
+ * snapshot so undo restores the original even when `breakFrame` changed.
+ *
+ * JSON: {"type":"EditSectionBreak","oldBreakFrame":...,"newBreakFrame":...,
+ *        "newName":"...","newColor":...,"newFadeSeconds":0.0}
+ */
+class EditSectionBreakCommand : public UndoableCommand {
+public:
+    EditSectionBreakCommand(Timecode oldBreakFrame, Timecode newBreakFrame,
+                            std::string newName, uint32_t newColor,
+                            double newFadeSeconds)
+        : m_oldBreakFrame(oldBreakFrame), m_newBreakFrame(newBreakFrame),
+          m_newName(std::move(newName)), m_newColor(newColor),
+          m_newFadeSeconds(newFadeSeconds) {}
+
+    void setPreviousState(Timeline::Section prev) {
+        m_previousState = std::move(prev);
+        m_hasPreviousState = true;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "EditSectionBreak"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    Timecode    m_oldBreakFrame;
+    Timecode    m_newBreakFrame;
+    std::string m_newName;
+    uint32_t    m_newColor;
+    double      m_newFadeSeconds;
+    bool        m_hasPreviousState{false};
+    Timeline::Section m_previousState;
+};
+
+/**
+ * Spacebar GO when the timeline is at a section break. Not undoable —
+ * playback transport changes stay outside the undo stack (matches the
+ * Play/Pause/Seek pattern).
+ *
+ * JSON: {"type":"SectionGo"}
+ */
+class SectionGoCommand : public Command {
+public:
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SectionGo"; }
+    nlohmann::json toJson() const override { return {{"type", "SectionGo"}}; }
+    std::string getDescription() const override { return "Section GO"; }
+    static CommandPtr fromJson(const nlohmann::json&) {
+        return std::make_unique<SectionGoCommand>();
+    }
+};
+
+/**
+ * Set a clip's section behavior policy (Normal | Locked). Phase B serializes
+ * the value but treats every clip as Locked at runtime; Phase C activates
+ * the Normal continuation path.
+ *
+ * JSON: {"type":"SetClipSectionBehavior","trackIndex":0,"clipIndex":0,
+ *        "behavior":"Locked"}
+ */
+class SetClipSectionBehaviorCommand : public UndoableCommand {
+public:
+    SetClipSectionBehaviorCommand(int trackIndex, int clipIndex, SectionBehavior behavior)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_behavior(behavior) {}
+
+    void setPreviousBehavior(SectionBehavior prev) { m_previousBehavior = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipSectionBehavior"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    SectionBehavior m_behavior;
+    std::optional<SectionBehavior> m_previousBehavior;
+};
+
+/**
+ * Deprecated: legacy region-style section command. Phase B keeps it as an
+ * alias that emits TWO break points (start + end) so v8 scripts and project
+ * files keep working without rewriting. Prefer AddSectionBreak for new code.
+ *
+ * JSON: {"type":"AddSection","name":"Verse 1","start":1000000,"end":5000000,"color":...}
+ */
 class AddSectionCommand : public Command {
 public:
     AddSectionCommand(std::string name, Timecode start, Timecode end, uint32_t color = 0xFF6090C8)
@@ -941,6 +1087,49 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 private:
     std::string m_name;
+};
+
+/**
+ * Assert the timeline's playhead currently sits at the given frame number.
+ * Used by section-pause integration tests to verify the SectionScheduler
+ * snapped the playhead at the expected break.
+ *
+ * JSON: {"type":"AssertPlayheadAtFrame","frame":60}
+ */
+class AssertPlayheadAtFrameCommand : public Command {
+public:
+    AssertPlayheadAtFrameCommand(FrameNumber frame, FrameNumber tolerance = 0)
+        : m_frame(frame), m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertPlayheadAtFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    FrameNumber m_frame;
+    FrameNumber m_tolerance;
+};
+
+/**
+ * Assert the timeline is currently in the requested playback state.
+ * State strings: "Stopped" | "Playing" | "Paused".
+ *
+ * JSON: {"type":"AssertPlaybackState","state":"Paused"}
+ */
+class AssertPlaybackStateCommand : public Command {
+public:
+    explicit AssertPlaybackStateCommand(PlaybackState state) : m_state(state) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertPlaybackState"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    PlaybackState m_state;
 };
 
 // ============================================================================

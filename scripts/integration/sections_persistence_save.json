@@ -1,9 +1,10 @@
 {
     "version": 1,
-    "description": "Phase C #5 — Sections persistence round-trip (save half). Adds two named timeline sections, then saves the project. The load half asserts both survive the JSON serializer.",
+    "description": "Phase B — Sections persistence round-trip (save half). Uses the new break-point AddSectionBreak commands. Three breaks at frames 30, 90, 150 (microsec @ 30fps) with names + colors + fadeSeconds. The load half asserts all three survive the JSON serializer round-trip.",
     "commands": [
-        {"type": "AddSection", "name": "Verse 1",  "start": 1000000,  "end": 5000000},
-        {"type": "AddSection", "name": "Chorus",   "start": 5000000,  "end": 9000000, "color": 4286074559},
+        {"type": "AddSectionBreak", "breakFrame": 1000000, "name": "Verse 1",  "color": 4286074559, "fadeSeconds": 0.0},
+        {"type": "AddSectionBreak", "breakFrame": 3000000, "name": "Chorus",   "color": 4286074559, "fadeSeconds": 0.5},
+        {"type": "AddSectionBreak", "breakFrame": 5000000, "name": "Bridge",   "color": 4286074559, "fadeSeconds": 1.0},
         {"type": "WaitFrames", "count": 2},
         {"type": "SaveProject", "filepath": "test_output/sections_persistence/test.entity"},
         {"type": "WaitFrames", "count": 2},

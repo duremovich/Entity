@@ -85,6 +85,13 @@ private:
     void renderCueProperties();
 
     /**
+     * Render section break properties (when a break is selected via
+     * Timeline::setSelectedSectionBreak). Phase B — name, color, frame
+     * editable; fadeSeconds shown disabled (Phase D activates it).
+     */
+    void renderSectionBreakProperties();
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control

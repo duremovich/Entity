@@ -200,23 +200,70 @@ public:
     const entt::registry& getRegistry() const { return m_registry; }
 
     // ============================================================================
-    // Named time-range sections (Phase C #5). User-named labelled spans on the
-    // timeline used for show structure ("Verse 1", "Chorus", "Drop"). Persists
-    // through ProjectSerializer at PROJECT_VERSION 3.
+    // Section break points (Phase B refactor of the original Phase C #5 region
+    // type). Sections are now point markers that split the timeline into
+    // contiguous spans -- span N is `[breaks[N].breakFrame, breaks[N+1].breakFrame)`
+    // (or to the end of the timeline after the last break). The vector is kept
+    // sorted ascending by `breakFrame`. `fadeSeconds` is serialized now;
+    // Phase D activates it as the auto-fade envelope around boundary clips.
     // ============================================================================
     struct Section {
-        std::string name;
-        Timecode start{0};
-        Timecode end{0};
-        uint32_t color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
+        Timecode    breakFrame{0};      // Single point on the timeline (microseconds)
+        std::string name;               // Optional label for the span starting here
+        uint32_t    color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
+        double      fadeSeconds{0.0};   // Phase D will use; serialized now
     };
+
     const std::vector<Section>& getSections() const { return m_sections; }
-    std::vector<Section>& getMutableSections() { return m_sections; }
-    void addSection(Section s) { m_sections.push_back(std::move(s)); }
-    void removeSection(size_t index) {
-        if (index < m_sections.size()) m_sections.erase(m_sections.begin() + index);
-    }
+
+    /** Insert a section break at the given frame. Returns false if a break
+     *  already exists at that exact frame. Sorted-insert; no snapping
+     *  (callers snap to the tick grid before invoking). */
+    bool addSectionBreak(Timecode breakFrame, std::string name = {},
+                         uint32_t color = 0xFF6090C8, double fadeSeconds = 0.0);
+
+    /** Remove the break at `breakFrame`. Returns true on success. */
+    bool removeSectionBreak(Timecode breakFrame);
+
+    /** Edit an existing break. If `newBreakFrame != oldBreakFrame`, fails when
+     *  another break already sits at `newBreakFrame`. Re-sorts on change. */
+    bool editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
+                          std::string newName, uint32_t newColor,
+                          double newFadeSeconds);
+
+    /** Look up the first break strictly after `time`. Binary search (hot path
+     *  called every tick by SectionScheduler). nullptr if none. */
+    const Section* findNextBreakAfter(Timecode time) const;
+
+    /** Find a break within ±tolerance microseconds of `time`. Used by the
+     *  ruler hit-test for right-click on a break line. nullptr if none. */
+    const Section* findSectionBreakNear(Timecode time, Timecode tolerance) const;
+
+    /** Drop every section. Used by Timeline::clear() and the project loader. */
     void clearSections() { m_sections.clear(); }
+
+    /** True when the SectionScheduler has parked the playhead at a break this
+     *  tick. UI uses this for spacebar dispatch + playhead visual feedback;
+     *  Engine reads it before enqueueing TogglePlayPause vs SectionGo. */
+    bool sectionAtBreak() const { return m_atSectionBreak.load(); }
+    void setSectionAtBreak(bool v) { m_atSectionBreak.store(v); }
+
+    // Section-break selection — mutually exclusive with clip/screen/projector/cue
+    // (mirrors the cue-selection slot from Phase A). Setting a break clears the
+    // others; setting any of the others clears this. Selection is stored by
+    // breakFrame because vector indices shift across edits.
+    void setSelectedSectionBreak(std::optional<Timecode> breakFrame) {
+        m_selectedSectionBreakFrame = breakFrame;
+        if (breakFrame.has_value()) {
+            m_selectedClip = entt::null;
+            m_selectedScreen = entt::null;
+            m_selectedProjector = entt::null;
+            m_selectedCueNumber.reset();
+        }
+    }
+    std::optional<Timecode> getSelectedSectionBreak() const {
+        return m_selectedSectionBreakFrame;
+    }
 
     // ============================================================================
     // Cue tags — numbered timeline markers fired by command to seek-and-play.
@@ -247,42 +294,53 @@ public:
     // Selection management
     void setSelectedClip(entt::entity clip) {
         m_selectedClip = clip;
-        if (clip != entt::null) m_selectedCueNumber.reset();
+        if (clip != entt::null) {
+            m_selectedCueNumber.reset();
+            m_selectedSectionBreakFrame.reset();
+        }
     }
     entt::entity getSelectedClip() const { return m_selectedClip; }
 
     void setSelectedScreen(entt::entity screen) {
         m_selectedScreen = screen;
         m_selectedProjector = entt::null;
-        if (screen != entt::null) m_selectedCueNumber.reset();
+        if (screen != entt::null) {
+            m_selectedCueNumber.reset();
+            m_selectedSectionBreakFrame.reset();
+        }
     }
     entt::entity getSelectedScreen() const { return m_selectedScreen; }
 
     void setSelectedProjector(entt::entity projector) {
         m_selectedProjector = projector;
         m_selectedScreen = entt::null;
-        if (projector != entt::null) m_selectedCueNumber.reset();
+        if (projector != entt::null) {
+            m_selectedCueNumber.reset();
+            m_selectedSectionBreakFrame.reset();
+        }
     }
     entt::entity getSelectedProjector() const { return m_selectedProjector; }
 
-    // Cue selection — mutually exclusive with clip/screen/projector. Setting
-    // a cue clears the others; setting any of the others clears this.
+    // Cue selection — mutually exclusive with clip/screen/projector/section.
+    // Setting a cue clears the others; setting any of the others clears this.
     void setSelectedCueNumber(std::optional<double> number) {
         m_selectedCueNumber = number;
         if (number.has_value()) {
             m_selectedClip = entt::null;
             m_selectedScreen = entt::null;
             m_selectedProjector = entt::null;
+            m_selectedSectionBreakFrame.reset();
         }
     }
     std::optional<double> getSelectedCueNumber() const { return m_selectedCueNumber; }
 
-    // Clear all selection (deselect clip, screen, projector, and cue)
+    // Clear all selection (deselect clip, screen, projector, cue, section break)
     void clearSelection() {
         m_selectedClip = entt::null;
         m_selectedScreen = entt::null;
         m_selectedProjector = entt::null;
         m_selectedCueNumber.reset();
+        m_selectedSectionBreakFrame.reset();
     }
 
     // Expansion state (for twirl-down property tracks)
@@ -337,8 +395,16 @@ private:
     entt::entity m_selectedScreen{entt::null};
     entt::entity m_selectedProjector{entt::null};
     std::optional<double> m_selectedCueNumber;
+    // Section breaks are identified by their breakFrame because vector
+    // indices shift across edits and break entries don't have a stable
+    // identifier other than their position in time.
+    std::optional<Timecode> m_selectedSectionBreakFrame;
     std::unordered_set<uint32_t> m_expandedTracks;
     std::unordered_set<uint32_t> m_expandedClips;
+
+    // Set by SectionScheduler when the playhead has just been parked at a
+    // break this tick. Atomic so UI/keyboard threads can read coherently.
+    std::atomic<bool> m_atSectionBreak{false};
 
     // Callback for clip creation
     ClipCreatedCallback m_clipCreatedCallback;

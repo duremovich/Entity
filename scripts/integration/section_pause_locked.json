@@ -1,0 +1,21 @@
+{
+    "version": 1,
+    "description": "Phase B — section break auto-pause + GO. Imports a 16-frame PNG sequence onto track 0, extends to 200 timeline frames, adds a section break at frame 60 (microsec @ 30 fps = 2_000_000), seeks to start, plays. After enough wait frames the SectionScheduler should park the playhead at frame 60 with state=Paused. SectionGo then advances one frame past the break and resumes playback.",
+    "commands": [
+        {"type": "AddScreen", "name": "SectionScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "Break1"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

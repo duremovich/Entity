@@ -90,6 +90,12 @@ void PropertyWindow::render() {
         return;
     }
 
+    // Section-break selection: same idea as cues, mutually exclusive.
+    if (m_timeline->getSelectedSectionBreak().has_value()) {
+        renderSectionBreakProperties();
+        return;
+    }
+
     // Check for selected projector first (takes priority over screen/clip)
     entt::entity selectedProjector = m_timeline->getSelectedProjector();
     if (selectedProjector != entt::null && registry.valid(selectedProjector)) {
@@ -507,6 +513,36 @@ void PropertyWindow::renderPlaybackSection() {
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Clip extended beyond source");
         FrameNumber extraFrames = clip->duration - clip->totalMediaFrames;
         ImGui::Text("Extra frames: %d", extraFrames);
+    }
+
+    // Section behavior policy (Phase B serializes; Phase C activates Normal).
+    ImGui::Spacing();
+    ImGui::Text("Section Behavior");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Behavior at section breaks.\n\n"
+                          "Locked: clip freezes with the playhead.\n"
+                          "Normal: clip keeps cycling per its Extend Mode (Phase C).");
+    }
+    static const char* sectionBehaviorNames[] = { "Normal", "Locked" };
+    int currentBehavior = static_cast<int>(clip->sectionBehavior);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::BeginDisabled(true);
+    if (ImGui::Combo("##sectionBehavior", &currentBehavior, sectionBehaviorNames, IM_ARRAYSIZE(sectionBehaviorNames))) {
+        SectionBehavior prev = clip->sectionBehavior;
+        SectionBehavior next = static_cast<SectionBehavior>(currentBehavior);
+        clip->sectionBehavior = next;
+        if (m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                auto cmd = std::make_unique<SetClipSectionBehaviorCommand>(
+                    idx->first, idx->second, next);
+                cmd->setPreviousBehavior(prev);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Activated in Phase C. Phase B treats every clip as Locked.");
     }
 }
 
@@ -1199,6 +1235,117 @@ void PropertyWindow::renderCueProperties() {
     if (ImGui::Button("Delete Cue") && m_dispatcher) {
         m_dispatcher->enqueue(std::make_unique<RemoveCueCommand>(selectedNumber));
         m_timeline->setSelectedCueNumber(std::nullopt);
+    }
+
+    ImGui::PopID();
+}
+
+// Phase B — Section break properties panel. Active when
+// Timeline::setSelectedSectionBreak is set. Frame / name / color edits commit
+// via EditSectionBreakCommand; fadeSeconds is shown disabled until Phase D.
+void PropertyWindow::renderSectionBreakProperties() {
+    auto sel = m_timeline->getSelectedSectionBreak();
+    if (!sel.has_value()) {
+        ImGui::TextDisabled("No section break selected");
+        return;
+    }
+    const Timecode selFrame = *sel;
+    const Timeline::Section* live = m_timeline->findSectionBreakNear(selFrame, 0);
+    if (!live) {
+        ImGui::TextDisabled("Section break at %lld no longer exists",
+                            static_cast<long long>(selFrame));
+        m_timeline->setSelectedSectionBreak(std::nullopt);
+        return;
+    }
+
+    ImGui::PushID(static_cast<int>(selFrame & 0x7fffffff));
+
+    ImGui::Text("Section Break");
+    ImGui::Separator();
+
+    static Timecode trackedFrame = -1;
+    static long long editFrame = 0;
+    static char editName[256] = {0};
+    static float editColor[4] = {0, 0, 0, 0};
+    static double editFadeSeconds = 0.0;
+    static Timeline::Section preEditSnapshot{};
+    static bool snapshotValid = false;
+
+    if (trackedFrame != selFrame) {
+        trackedFrame = selFrame;
+        editFrame = static_cast<long long>(m_timeline->timeToFrame(live->breakFrame));
+        std::strncpy(editName, live->name.c_str(), sizeof(editName) - 1);
+        editName[sizeof(editName) - 1] = '\0';
+        editColor[0] = ((live->color >> 0)  & 0xFFu) / 255.0f;
+        editColor[1] = ((live->color >> 8)  & 0xFFu) / 255.0f;
+        editColor[2] = ((live->color >> 16) & 0xFFu) / 255.0f;
+        editColor[3] = ((live->color >> 24) & 0xFFu) / 255.0f;
+        editFadeSeconds = live->fadeSeconds;
+        snapshotValid = false;
+    }
+
+    auto packColor = [&]() -> uint32_t {
+        ImU32 r = static_cast<ImU32>(editColor[0] * 255.0f) & 0xFFu;
+        ImU32 g = static_cast<ImU32>(editColor[1] * 255.0f) & 0xFFu;
+        ImU32 b = static_cast<ImU32>(editColor[2] * 255.0f) & 0xFFu;
+        ImU32 a = static_cast<ImU32>(editColor[3] * 255.0f) & 0xFFu;
+        return (a << 24) | (b << 16) | (g << 8) | r;
+    };
+
+    auto captureSnapshot = [&]() {
+        if (snapshotValid) return;
+        if (const Timeline::Section* cur = m_timeline->findSectionBreakNear(selFrame, 0)) {
+            preEditSnapshot = *cur;
+            snapshotValid = true;
+        }
+    };
+
+    auto commitEdit = [&]() {
+        if (!m_dispatcher) return;
+        Timecode newFrame = m_timeline->frameToTime(static_cast<FrameNumber>(editFrame));
+        auto cmd = std::make_unique<EditSectionBreakCommand>(
+            selFrame, newFrame, std::string(editName),
+            packColor(), editFadeSeconds);
+        if (snapshotValid) cmd->setPreviousState(preEditSnapshot);
+        m_dispatcher->enqueue(std::move(cmd));
+        snapshotValid = false;
+        if (newFrame != selFrame) {
+            m_timeline->setSelectedSectionBreak(newFrame);
+            trackedFrame = newFrame;
+        }
+    };
+
+    ImGui::InputText("Name", editName, sizeof(editName));
+    if (ImGui::IsItemActivated()) captureSnapshot();
+    if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
+
+    ImGui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
+    if (ImGui::IsItemActivated()) captureSnapshot();
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (editFrame < 0) editFrame = 0;
+        commitEdit();
+    }
+
+    if (ImGui::ColorEdit4("Color", editColor, ImGuiColorEditFlags_NoInputs)) {
+        captureSnapshot();
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
+
+    ImGui::BeginDisabled(true);
+    ImGui::InputDouble("Fade (seconds)", &editFadeSeconds, 0.05, 0.5, "%.2f");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Activated in Phase D (auto-fade envelope at section boundaries).");
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Jump to Break") && m_dispatcher) {
+        m_dispatcher->enqueue(std::make_unique<SeekCommand>(selFrame));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete Break") && m_dispatcher) {
+        m_dispatcher->enqueue(std::make_unique<RemoveSectionBreakCommand>(selFrame));
+        m_timeline->setSelectedSectionBreak(std::nullopt);
     }
 
     ImGui::PopID();

@@ -223,6 +223,7 @@ target_sources(EntityMediaCore
         # EntityMediaCore).
         src/director/Director.cpp
         src/director/PlaybackTimeAuthority.cpp
+        src/director/SectionScheduler.cpp
         src/director/CaptureBroker.cpp
 
         # Renderer service (Phase D entry — owns D3D12Renderer,

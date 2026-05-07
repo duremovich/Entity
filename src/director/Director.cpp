@@ -4,6 +4,7 @@
 #include "entity/core/SceneState.hpp"
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
+#include "entity/director/SectionScheduler.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/systems/AnimationSystem.hpp"
@@ -22,6 +23,7 @@ Director::Director(entt::registry& registry,
     , m_commandDispatcher(std::make_unique<CommandDispatcher>())
     , m_animationSystem(std::make_unique<AnimationSystem>())
     , m_timeAuthority(std::make_unique<PlaybackTimeAuthority>(registry, m_timeline.get()))
+    , m_sectionScheduler(std::make_unique<SectionScheduler>(m_timeline.get()))
     , m_captureBroker(std::make_unique<CaptureBroker>())
 {
     // ProjectManager needs the Timeline + registry + renderer to honour

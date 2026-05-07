@@ -29,6 +29,7 @@ class OutputManager;
 class FrameCache;
 class OcioManager;
 class PlaybackTimeAuthority;
+class SectionScheduler;
 class PlaybackPresenter;
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
                       // TranscodeManager, CommandDispatcher,
@@ -722,6 +723,7 @@ private:
     // (Renderer-side). Both live on their respective owners; the raw
     // shortcuts here let Engine glue keep its existing call sites short.
     PlaybackTimeAuthority* m_timeAuthority{nullptr};
+    SectionScheduler*      m_sectionScheduler{nullptr};
     PlaybackPresenter*     m_playbackPresenter{nullptr};
 
     // Phase D entry, subtask 8: Director->Renderer per-tick state-snapshot

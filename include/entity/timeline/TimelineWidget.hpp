@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
@@ -245,6 +246,13 @@ private:
     void renderCueModal();
 
     /**
+     * Modal popup for "Add Section Break Here..." / "Edit Break..." opened
+     * from the ruler context menus. Reads m_sectionBreakModal* state and
+     * enqueues AddSectionBreakCommand / EditSectionBreakCommand on OK.
+     */
+    void renderSectionBreakModal();
+
+    /**
      * Get the selected clip entity.
      */
     entt::entity getSelectedClip() const { return m_selectedClip; }
@@ -334,10 +342,21 @@ private:
      *  current zoom level. Used to keep range endpoints frame-aligned. */
     Timecode snapTimeToTickGrid(Timecode t) const;
 
-    // Section context-menu state. -1 means "no section right-clicked";
-    // otherwise it's an index into Timeline::getSections().
-    int m_rightClickedSection{-1};
+    // Section break context-menu state. nullopt = nothing right-clicked;
+    // otherwise the breakFrame of the right-clicked break (the vector
+    // index isn't stable across edits, but the breakFrame is).
+    std::optional<Timecode> m_rightClickedSectionBreakFrame;
     bool m_rangeContextMenuRequested{false};
+
+    // Pending modal state for "Add Section Break Here..." / "Edit Break..."
+    enum class SectionBreakModalMode { None, Add, Edit };
+    SectionBreakModalMode m_sectionBreakModalMode{SectionBreakModalMode::None};
+    bool      m_sectionBreakModalOpenRequested{false};
+    Timecode  m_sectionBreakModalOldFrame{0};
+    Timecode  m_sectionBreakModalFrame{0};
+    char      m_sectionBreakModalNameBuf[256]{0};
+    uint32_t  m_sectionBreakModalColor{0xFF6090C8u};
+    double    m_sectionBreakModalFadeSeconds{0.0};
 
     // Cue context-menu state. -1 means "no cue right-clicked"; otherwise
     // it's an index into Timeline::getCueTags(). Hit testing for cue flags

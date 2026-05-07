@@ -1,12 +1,13 @@
 {
     "version": 1,
-    "description": "Phase C #5 — Sections persistence round-trip (load half). Loads the project saved by sections_persistence_save.json and asserts both named sections survived. CTest fixture sections_persistence_data ensures the save script ran first.",
+    "description": "Phase B — Sections persistence round-trip (load half). Loads the project saved by sections_persistence_save.json and asserts all three break points survived the serializer. CTest fixture sections_persistence_data ensures the save script ran first.",
     "commands": [
         {"type": "LoadProject", "filepath": "test_output/sections_persistence/test.entity"},
         {"type": "WaitFrames", "count": 4},
-        {"type": "AssertSectionCount", "count": 2},
+        {"type": "AssertSectionCount", "count": 3},
         {"type": "AssertSectionExists", "name": "Verse 1"},
         {"type": "AssertSectionExists", "name": "Chorus"},
+        {"type": "AssertSectionExists", "name": "Bridge"},
         {"type": "Exit"}
     ]
 }

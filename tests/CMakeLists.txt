@@ -7,6 +7,7 @@ add_executable(EntityMediaTests
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
     unit/CueTagTests.cpp
+    unit/SectionBreakTests.cpp
     unit/HapFormatTests.cpp
     unit/TranscodeManagerTests.cpp
     unit/SettingsTests.cpp
@@ -115,13 +116,27 @@ set_tests_properties(integration_screen_persistence_save PROPERTIES
 set_tests_properties(integration_screen_persistence_load PROPERTIES
     FIXTURES_REQUIRED screen_persistence_data)
 
-# Sections persistence round-trip (Phase C #5).
+# Sections persistence round-trip (Phase B — break-points schema).
 entity_add_integration_test(sections_persistence_save sections_persistence_save.json)
 entity_add_integration_test(sections_persistence_load sections_persistence_load.json)
 set_tests_properties(integration_sections_persistence_save PROPERTIES
     FIXTURES_SETUP sections_persistence_data)
 set_tests_properties(integration_sections_persistence_load PROPERTIES
     FIXTURES_REQUIRED sections_persistence_data)
+
+# Sections legacy migration round-trip — covers the deprecated AddSection
+# alias path that emits two break-points per region (start + end).
+entity_add_integration_test(sections_legacy_migration_save sections_legacy_migration_save.json)
+entity_add_integration_test(sections_legacy_migration_load sections_legacy_migration_load.json)
+set_tests_properties(integration_sections_legacy_migration_save PROPERTIES
+    FIXTURES_SETUP sections_legacy_migration_data)
+set_tests_properties(integration_sections_legacy_migration_load PROPERTIES
+    FIXTURES_REQUIRED sections_legacy_migration_data)
+
+# Phase B — section break auto-pause + GO end-to-end.
+entity_add_integration_test(section_pause_locked    section_pause_locked.json)
+entity_add_integration_test(section_go_keyboard     section_go_keyboard.json)
+entity_add_integration_test(section_keyframe_freeze section_keyframe_freeze.json)
 
 # Cue tag fire + persistence round-trip (Phase A — numbered timeline markers).
 entity_add_integration_test(cue_fire cue_fire.json)

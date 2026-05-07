@@ -27,6 +27,21 @@ enum class PlaybackMode {
 };
 
 /**
+ * Per-clip behavior policy when the timeline pauses at a section break.
+ * Phase B serializes this field and exposes it through the UI but treats
+ * every clip as Locked (frozen with the playhead). Phase C activates the
+ * Normal continuation path so Loop/PingPong clips keep cycling past the
+ * break while the playhead is parked.
+ *
+ * Note: this is a per-clip behavior policy, NOT a section-membership
+ * reference. A clip's relationship to sections is always positional.
+ */
+enum class SectionBehavior : uint8_t {
+    Normal,
+    Locked
+};
+
+/**
  * Clip component for media source references.
  *
  * Stores information about a media clip including its file path,
@@ -52,6 +67,7 @@ struct Clip {
     FrameNumber totalMediaFrames{0};    // Total frames in source media
     double framerate{30.0};             // Frames per second
     PlaybackMode playbackMode{PlaybackMode::Freeze};  // Behavior when clip extends beyond source
+    SectionBehavior sectionBehavior{SectionBehavior::Normal};  // Inert in Phase B (every clip treated as Locked); activated by Phase C.
 
     // Media properties
     uint32_t width{0};
@@ -90,6 +106,7 @@ struct Clip {
         , totalMediaFrames(other.totalMediaFrames)
         , framerate(other.framerate)
         , playbackMode(other.playbackMode)
+        , sectionBehavior(other.sectionBehavior)
         , width(other.width)
         , height(other.height)
         , hasAlpha(other.hasAlpha)
@@ -128,6 +145,7 @@ struct Clip {
             totalMediaFrames = other.totalMediaFrames;
             framerate = other.framerate;
             playbackMode = other.playbackMode;
+            sectionBehavior = other.sectionBehavior;
             width = other.width;
             height = other.height;
             hasAlpha = other.hasAlpha;

@@ -6,6 +6,7 @@
 #include "entity/director/Director.hpp"
 #include "entity/renderer/Renderer.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
+#include "entity/director/SectionScheduler.hpp"
 #include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -193,6 +194,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_commandDispatcher = m_director->getCommandDispatcher();
     m_animationSystem   = m_director->getAnimationSystem();
     m_timeAuthority     = m_director->getTimeAuthority();
+    m_sectionScheduler  = m_director->getSectionScheduler();
     std::cout << "  Director initialized (Timeline + ProjectManager + "
                  "TranscodeManager + CommandDispatcher + AnimationSystem + "
                  "PlaybackTimeAuthority)" << std::endl;
@@ -873,6 +875,12 @@ void Engine::update() {
     if (m_timeline) {
         m_timeline->update(deltaTime);
     }
+    // Section break detection runs against the freshly-advanced timeline
+    // frame so AnimationSystem and DecodeSystem (below) see the snapped
+    // frame when the playhead just crossed a break.
+    if (m_sectionScheduler) {
+        m_sectionScheduler->tick();
+    }
     auto t1 = std::chrono::high_resolution_clock::now();
 
     // NOTE: updateClipVideos() moved to render() - must be called AFTER beginFrame()
@@ -1236,11 +1244,17 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
     if (m_timeline) {
         switch (key) {
             case GLFW_KEY_SPACE:
-                // Toggle play/pause -- routed through CommandDispatcher so the
-                // action is undoable + script-recordable (Phase D entry: this
-                // unblocks the bus-routing work in subtask 7).
+                // Hybrid GO / play-pause. When the SectionScheduler has parked
+                // the playhead at a break, spacebar is GO (advance one frame
+                // past the break and resume play). Otherwise it's the standard
+                // toggle. Both paths route through CommandDispatcher for
+                // recording / scriptability.
                 if (m_commandDispatcher) {
-                    m_commandDispatcher->enqueue(std::make_unique<TogglePlayPauseCommand>());
+                    if (m_timeline && m_timeline->sectionAtBreak()) {
+                        m_commandDispatcher->enqueue(std::make_unique<SectionGoCommand>());
+                    } else {
+                        m_commandDispatcher->enqueue(std::make_unique<TogglePlayPauseCommand>());
+                    }
                 }
                 break;
 

@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "description": "Phase B — Migration test (save half). Uses the deprecated region-style AddSection command, which now emits TWO break points per call (start + end). Two AddSection invocations with non-overlapping endpoints therefore produce FOUR break points total (2 sections * 2 endpoints).",
+    "commands": [
+        {"type": "AddSection", "name": "Verse 1",  "start": 1000000,  "end": 4000000},
+        {"type": "AddSection", "name": "Chorus",   "start": 5000000,  "end": 9000000, "color": 4286074559},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "SaveProject", "filepath": "test_output/sections_legacy_migration/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}

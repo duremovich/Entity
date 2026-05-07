@@ -14,6 +14,7 @@ class CommandDispatcher;
 class AnimationSystem;
 class SceneState;
 class PlaybackTimeAuthority;
+class SectionScheduler;
 class CaptureBroker;
 
 // Director owns Phase D's "logical-side" subsystems -- the half of the engine
@@ -48,6 +49,7 @@ public:
     CommandDispatcher* getCommandDispatcher() noexcept { return m_commandDispatcher.get(); }
     AnimationSystem* getAnimationSystem()   noexcept { return m_animationSystem.get(); }
     PlaybackTimeAuthority* getTimeAuthority() noexcept { return m_timeAuthority.get(); }
+    SectionScheduler* getSectionScheduler()   noexcept { return m_sectionScheduler.get(); }
     CaptureBroker* getCaptureBroker()       noexcept { return m_captureBroker.get(); }
 
     const Timeline* getTimeline()                 const noexcept { return m_timeline.get(); }
@@ -56,6 +58,7 @@ public:
     const CommandDispatcher* getCommandDispatcher() const noexcept { return m_commandDispatcher.get(); }
     const AnimationSystem* getAnimationSystem()   const noexcept { return m_animationSystem.get(); }
     const PlaybackTimeAuthority* getTimeAuthority() const noexcept { return m_timeAuthority.get(); }
+    const SectionScheduler* getSectionScheduler() const noexcept { return m_sectionScheduler.get(); }
     const CaptureBroker* getCaptureBroker()       const noexcept { return m_captureBroker.get(); }
 
     // SceneState seam. Director writes the registry during its tick (clip
@@ -78,6 +81,10 @@ private:
     // half of the old PlaybackController). Declared after Timeline +
     // ProjectManager so its construction can reference both.
     std::unique_ptr<PlaybackTimeAuthority> m_timeAuthority;
+    // Phase B (sections + cue tags). Watches Timeline playback for section
+    // break crossings and parks the playhead at each one. Engine ticks it
+    // each main-loop update right after Timeline::update.
+    std::unique_ptr<SectionScheduler>  m_sectionScheduler;
     // Phase D entry, subtask 7. Director-side park/resolve for the async
     // capture-command request/reply pattern. Engine wires its transport +
     // dispatcher pointers post-construction.

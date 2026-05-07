@@ -15,6 +15,8 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 
 namespace entity {
 
@@ -165,10 +167,12 @@ void Timeline::clear() {
     // Reset selection
     m_selectedClip = entt::null;
     m_selectedCueNumber.reset();
+    m_selectedSectionBreakFrame.reset();
 
     // Reset timeline state
     m_currentTime = 0;
     m_playbackState.store(PlaybackState::Stopped);
+    m_atSectionBreak.store(false);
 
     std::cout << "[Timeline] Cleared" << std::endl;
 }
@@ -702,6 +706,110 @@ void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
     }
     record.shifted.clear();
     record.success = false;
+}
+
+// ============================================================================
+// Section break points (Phase B refactor of the original region-style API).
+// Vector kept sorted ascending by `breakFrame`; lookups are binary-search.
+// ============================================================================
+
+bool Timeline::addSectionBreak(Timecode breakFrame, std::string name,
+                               uint32_t color, double fadeSeconds) {
+    auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
+        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+    if (it != m_sections.end() && it->breakFrame == breakFrame) {
+        std::cerr << "[Timeline] addSectionBreak: rejected duplicate break at "
+                  << breakFrame << std::endl;
+        return false;
+    }
+    Section sec;
+    sec.breakFrame  = breakFrame;
+    sec.name        = std::move(name);
+    sec.color       = color;
+    sec.fadeSeconds = fadeSeconds;
+    m_sections.insert(it, std::move(sec));
+    return true;
+}
+
+bool Timeline::removeSectionBreak(Timecode breakFrame) {
+    auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
+        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+    if (it == m_sections.end() || it->breakFrame != breakFrame) {
+        return false;
+    }
+    m_sections.erase(it);
+    if (m_selectedSectionBreakFrame == breakFrame) {
+        m_selectedSectionBreakFrame.reset();
+    }
+    return true;
+}
+
+bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
+                                std::string newName, uint32_t newColor,
+                                double newFadeSeconds) {
+    auto oldIt = std::lower_bound(m_sections.begin(), m_sections.end(), oldBreakFrame,
+        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+    if (oldIt == m_sections.end() || oldIt->breakFrame != oldBreakFrame) {
+        std::cerr << "[Timeline] editSectionBreak: no break at "
+                  << oldBreakFrame << std::endl;
+        return false;
+    }
+
+    if (newBreakFrame != oldBreakFrame) {
+        auto collide = std::lower_bound(m_sections.begin(), m_sections.end(), newBreakFrame,
+            [](const Section& s, Timecode v) { return s.breakFrame < v; });
+        if (collide != m_sections.end() && collide->breakFrame == newBreakFrame) {
+            std::cerr << "[Timeline] editSectionBreak: a break already exists at "
+                      << newBreakFrame << std::endl;
+            return false;
+        }
+    }
+
+    if (newBreakFrame == oldBreakFrame) {
+        oldIt->name        = std::move(newName);
+        oldIt->color       = newColor;
+        oldIt->fadeSeconds = newFadeSeconds;
+    } else {
+        Section updated;
+        updated.breakFrame  = newBreakFrame;
+        updated.name        = std::move(newName);
+        updated.color       = newColor;
+        updated.fadeSeconds = newFadeSeconds;
+        m_sections.erase(oldIt);
+        auto insertIt = std::lower_bound(m_sections.begin(), m_sections.end(), updated.breakFrame,
+            [](const Section& s, Timecode v) { return s.breakFrame < v; });
+        m_sections.insert(insertIt, std::move(updated));
+        if (m_selectedSectionBreakFrame == oldBreakFrame) {
+            m_selectedSectionBreakFrame = newBreakFrame;
+        }
+    }
+    return true;
+}
+
+const Timeline::Section* Timeline::findNextBreakAfter(Timecode time) const {
+    auto it = std::upper_bound(m_sections.begin(), m_sections.end(), time,
+        [](Timecode v, const Section& s) { return v < s.breakFrame; });
+    if (it == m_sections.end()) return nullptr;
+    return &(*it);
+}
+
+const Timeline::Section* Timeline::findSectionBreakNear(Timecode time, Timecode tolerance) const {
+    if (m_sections.empty()) return nullptr;
+    auto it = std::lower_bound(m_sections.begin(), m_sections.end(), time,
+        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+    const Section* best = nullptr;
+    Timecode bestDelta = std::numeric_limits<Timecode>::max();
+    auto consider = [&](std::vector<Section>::const_iterator candidate) {
+        if (candidate == m_sections.end()) return;
+        Timecode delta = std::llabs(static_cast<long long>(candidate->breakFrame - time));
+        if (delta <= tolerance && delta < bestDelta) {
+            bestDelta = delta;
+            best = &(*candidate);
+        }
+    };
+    consider(it);
+    if (it != m_sections.begin()) consider(std::prev(it));
+    return best;
 }
 
 // ============================================================================

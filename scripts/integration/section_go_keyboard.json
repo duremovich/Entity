@@ -1,0 +1,26 @@
+{
+    "version": 1,
+    "description": "Phase B — SectionGoCommand path coverage. Spacebar dispatches SectionGo when timeline is at a break, TogglePlayPause otherwise. The keyboard event itself can't be simulated from script, but SectionGo is the same target the keyboard maps to, so this exercises equivalent behavior.",
+    "commands": [
+        {"type": "AddScreen", "name": "SectionGoScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 400},
+        {"type": "AddSectionBreak", "breakFrame": 1000000, "name": "B"},
+        {"type": "AddSectionBreak", "breakFrame": 3000000, "name": "C"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 200},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 30, "tolerance": 2},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 90, "tolerance": 2},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

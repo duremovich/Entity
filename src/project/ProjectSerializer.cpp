@@ -152,6 +152,8 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 clipJson["mediaStartFrame"] = clip->mediaStartFrame;
                 clipJson["totalMediaFrames"] = clip->totalMediaFrames;
                 clipJson["playbackMode"] = static_cast<int>(clip->playbackMode);
+                clipJson["sectionBehavior"] =
+                    (clip->sectionBehavior == SectionBehavior::Locked) ? "Locked" : "Normal";
                 clipJson["framerate"] = clip->framerate;
                 clipJson["width"] = clip->width;
                 clipJson["height"] = clip->height;
@@ -425,16 +427,16 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["projectors"] = projectorsJson;
 
-        // Serialize timeline sections (Phase C #5). Bumps PROJECT_VERSION to 3,
-        // but the loader treats a missing "sections" array as empty so v2
-        // projects still load without modification.
+        // Serialize timeline sections. Phase B refactored from regions to
+        // break-points; the loader migrates pre-Phase-B `{start, end}` entries
+        // by emitting two break points with the same name/color.
         json sectionsJson = json::array();
         for (const auto& sec : timeline.getSections()) {
             json sj;
-            sj["name"] = sec.name;
-            sj["start"] = sec.start;
-            sj["end"] = sec.end;
-            sj["color"] = sec.color;
+            sj["breakFrame"]  = sec.breakFrame;
+            sj["name"]        = sec.name;
+            sj["color"]       = sec.color;
+            sj["fadeSeconds"] = sec.fadeSeconds;
             sectionsJson.push_back(sj);
         }
         project["sections"] = sectionsJson;
@@ -732,6 +734,10 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         clip.startFrame = clipJson.value("startFrame", 0);
                         clip.mediaStartFrame = clipJson.value("mediaStartFrame", 0);
                         clip.playbackMode = static_cast<PlaybackMode>(clipJson.value("playbackMode", 0));  // Default to Freeze
+                        {
+                            const auto sb = clipJson.value("sectionBehavior", std::string{"Normal"});
+                            clip.sectionBehavior = (sb == "Locked") ? SectionBehavior::Locked : SectionBehavior::Normal;
+                        }
                         clip.framerate = clipJson.value("framerate", 30.0);
                         clip.width = clipJson.value("width", 0);
                         clip.height = clipJson.value("height", 0);
@@ -1027,20 +1033,32 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             }
         }
 
-        // Load timeline sections (added in v3). Always clear first so a
-        // re-load doesn't accumulate. Missing array = empty (v1/v2 files).
+        // Load timeline sections. Phase B shape: each entry is a break-point
+        // marker `{breakFrame, name, color, fadeSeconds}`. Pre-Phase-B
+        // `{start, end}` entries migrate inline to TWO break points (start
+        // and end) with the same name + color and fadeSeconds=0.
         timeline.clearSections();
         if (project.contains("sections")) {
             for (const auto& sj : project["sections"]) {
-                Timeline::Section sec;
-                sec.name = sj.value("name", std::string{});
-                sec.start = sj.value("start", static_cast<Timecode>(0));
-                sec.end = sj.value("end", static_cast<Timecode>(0));
-                sec.color = sj.value("color", static_cast<uint32_t>(0xFF6090C8));
-                timeline.addSection(std::move(sec));
+                if (sj.contains("breakFrame")) {
+                    timeline.addSectionBreak(
+                        sj.value("breakFrame", static_cast<Timecode>(0)),
+                        sj.value("name", std::string{}),
+                        sj.value("color", static_cast<uint32_t>(0xFF6090C8)),
+                        sj.value("fadeSeconds", 0.0));
+                } else if (sj.contains("start") && sj.contains("end")) {
+                    const auto name  = sj.value("name", std::string{});
+                    const auto color = sj.value("color", static_cast<uint32_t>(0xFF6090C8));
+                    const auto start = sj.value("start", static_cast<Timecode>(0));
+                    const auto end   = sj.value("end", static_cast<Timecode>(0));
+                    timeline.addSectionBreak(start, name, color, 0.0);
+                    if (end > start) {
+                        timeline.addSectionBreak(end, name + " end", color, 0.0);
+                    }
+                }
             }
             std::cout << "[ProjectSerializer] Loaded " << timeline.getSections().size()
-                      << " sections" << std::endl;
+                      << " section breaks" << std::endl;
         }
 
         // Load cue tags (added in v9). Missing array = empty (pre-v9 files).

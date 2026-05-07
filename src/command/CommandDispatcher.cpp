@@ -173,10 +173,17 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("RippleInsertTime", RippleInsertTimeCommand::fromJson);
     registerFactory("RippleDeleteTime", RippleDeleteTimeCommand::fromJson);
 
-    // Section commands (Phase C #5)
-    registerFactory("AddSection", AddSectionCommand::fromJson);
+    // Section commands (Phase B refactor — break-points + Locked playback)
+    registerFactory("AddSectionBreak", AddSectionBreakCommand::fromJson);
+    registerFactory("RemoveSectionBreak", RemoveSectionBreakCommand::fromJson);
+    registerFactory("EditSectionBreak", EditSectionBreakCommand::fromJson);
+    registerFactory("SectionGo", SectionGoCommand::fromJson);
+    registerFactory("SetClipSectionBehavior", SetClipSectionBehaviorCommand::fromJson);
+    registerFactory("AddSection", AddSectionCommand::fromJson);  // legacy alias (emits 2 breaks)
     registerFactory("AssertSectionCount", AssertSectionCountCommand::fromJson);
     registerFactory("AssertSectionExists", AssertSectionExistsCommand::fromJson);
+    registerFactory("AssertPlayheadAtFrame", AssertPlayheadAtFrameCommand::fromJson);
+    registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
 
     // Cue tag commands (Phase A — numbered timeline markers)
     registerFactory("FireCue", FireCueCommand::fromJson);

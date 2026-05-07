@@ -17,9 +17,11 @@
 #include <iomanip>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 #include <limits>
+#include <algorithm>
 
 namespace entity {
 
@@ -107,30 +109,50 @@ void TimelineWidget::renderTimeRuler() {
         );
     }
 
-    // Named-section bands. Drawn before the range-selection overlay so the
-    // active selection always sits on top (the selection is what the next
-    // ripple/section op acts on, so it gets visual priority).
+    // Section break lines. Each break is a vertical marker; the implicit
+    // span from one break to the next gets a thin tinted bar at the top of
+    // the ruler using break[N].color (the band starts at break[N] so it
+    // inherits the break's color).
     {
-        const float bandH = 6.0f;
+        const auto& sections = m_timeline->getSections();
+        const float bandH = 4.0f;
         const float bandY = rulerMin.y + 1.0f;
-        for (const auto& sec : m_timeline->getSections()) {
-            if (sec.end <= sec.start) continue;
-            const float xs = windowPos.x + timeToPixel(sec.start);
-            const float xe = windowPos.x + timeToPixel(sec.end);
+        const Timecode currentT = m_timeline->getCurrentTime();
+        const bool atBreak = m_timeline->sectionAtBreak();
+
+        // Span tints first (under the lines).
+        for (size_t i = 0; i < sections.size(); ++i) {
+            const Timecode startT = sections[i].breakFrame;
+            const Timecode endT = (i + 1 < sections.size())
+                                  ? sections[i + 1].breakFrame
+                                  : m_timeline->getDuration();
+            const float xs = windowPos.x + timeToPixel(startT);
+            const float xe = windowPos.x + timeToPixel(endT);
             if (xe < windowPos.x || xs > rulerMax.x) continue;
-            drawList->AddRectFilled(ImVec2(xs, bandY), ImVec2(xe, bandY + bandH), sec.color);
-            // Section name centered, clamped to the band's pixel bounds so
-            // long names don't bleed past the boundary.
+            // Soft band using break[N].color at low alpha.
+            const ImU32 base = sections[i].color;
+            const ImU32 tint = (base & 0x00FFFFFFu) | (60u << 24);
+            drawList->AddRectFilled(ImVec2(xs, bandY), ImVec2(xe, bandY + bandH), tint);
+        }
+
+        // Break lines + labels.
+        for (const auto& sec : sections) {
+            const float x = windowPos.x + timeToPixel(sec.breakFrame);
+            if (x < windowPos.x - 4.0f || x > rulerMax.x + 4.0f) continue;
+
+            const bool playheadAtThisBreak = atBreak &&
+                std::llabs(static_cast<long long>(currentT - sec.breakFrame))
+                  < static_cast<long long>(1000000.0 / std::max(1.0, m_timeline->getFrameRate()));
+
+            const ImU32 lineColor = playheadAtThisBreak
+                ? IM_COL32(255, 240, 120, 255)
+                : sec.color;
+            drawList->AddLine(ImVec2(x, rulerMin.y), ImVec2(x, rulerMax.y),
+                              lineColor, 2.0f);
+
             if (!sec.name.empty()) {
-                const float textW = ImGui::CalcTextSize(sec.name.c_str()).x;
-                const float bandW = xe - xs;
-                if (bandW > 12.0f) {
-                    const float labelX = std::max(xs + 4.0f, xs + (bandW - textW) * 0.5f);
-                    drawList->PushClipRect(ImVec2(xs, bandY), ImVec2(xe, bandY + 18.0f), true);
-                    drawList->AddText(ImVec2(labelX, bandY + bandH + 1.0f),
-                        IM_COL32(240, 240, 240, 230), sec.name.c_str());
-                    drawList->PopClipRect();
-                }
+                drawList->AddText(ImVec2(x + 3.0f, bandY + bandH + 1.0f),
+                                  IM_COL32(240, 240, 240, 230), sec.name.c_str());
             }
         }
     }
@@ -1149,6 +1171,91 @@ void TimelineWidget::renderCueModal() {
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0))) {
         m_cueModalMode = CueModalMode::None;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ============================================================================
+// Section break modal (Phase B)
+// ============================================================================
+
+void TimelineWidget::renderSectionBreakModal() {
+    if (!m_timeline) return;
+    if (m_sectionBreakModalOpenRequested) {
+        ImGui::OpenPopup("SectionBreakRulerModal");
+        m_sectionBreakModalOpenRequested = false;
+    }
+    if (!ImGui::BeginPopupModal("SectionBreakRulerModal", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    const bool isEdit = (m_sectionBreakModalMode == SectionBreakModalMode::Edit);
+    ImGui::Text(isEdit ? "Edit Section Break" : "Add Section Break");
+    ImGui::Separator();
+
+    ImGui::InputText("Name", m_sectionBreakModalNameBuf, sizeof(m_sectionBreakModalNameBuf));
+
+    FrameNumber frame = m_timeline->timeToFrame(m_sectionBreakModalFrame);
+    long long frameLL = static_cast<long long>(frame);
+    if (ImGui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
+        if (frameLL < 0) frameLL = 0;
+        m_sectionBreakModalFrame = m_timeline->frameToTime(static_cast<FrameNumber>(frameLL));
+    }
+
+    // Color picker. Stored as ABGR ImU32; ImGui::ColorEdit4 wants float[4] RGBA.
+    {
+        ImU32 c = m_sectionBreakModalColor;
+        float rgba[4] = {
+            ((c >>  0) & 0xFFu) / 255.0f,
+            ((c >>  8) & 0xFFu) / 255.0f,
+            ((c >> 16) & 0xFFu) / 255.0f,
+            ((c >> 24) & 0xFFu) / 255.0f,
+        };
+        if (ImGui::ColorEdit4("Color", rgba, ImGuiColorEditFlags_NoInputs)) {
+            ImU32 nr = static_cast<ImU32>(rgba[0] * 255.0f) & 0xFFu;
+            ImU32 ng = static_cast<ImU32>(rgba[1] * 255.0f) & 0xFFu;
+            ImU32 nb = static_cast<ImU32>(rgba[2] * 255.0f) & 0xFFu;
+            ImU32 na = static_cast<ImU32>(rgba[3] * 255.0f) & 0xFFu;
+            m_sectionBreakModalColor = (na << 24) | (nb << 16) | (ng << 8) | nr;
+        }
+    }
+
+    // Phase D will use this; disabled in Phase B.
+    ImGui::BeginDisabled(true);
+    ImGui::InputDouble("Fade (seconds)", &m_sectionBreakModalFadeSeconds, 0.05, 0.5, "%.2f");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Activated in Phase D (auto-fade envelope at section boundaries).");
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::Button("OK", ImVec2(120, 0))) {
+        if (m_commandDispatcher) {
+            std::string name(m_sectionBreakModalNameBuf);
+            if (isEdit) {
+                auto cmd = std::make_unique<EditSectionBreakCommand>(
+                    m_sectionBreakModalOldFrame, m_sectionBreakModalFrame,
+                    name, m_sectionBreakModalColor, m_sectionBreakModalFadeSeconds);
+                if (const Timeline::Section* live =
+                        m_timeline->findSectionBreakNear(m_sectionBreakModalOldFrame, 0)) {
+                    cmd->setPreviousState(*live);
+                }
+                m_commandDispatcher->enqueue(std::move(cmd));
+            } else {
+                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
+                    m_sectionBreakModalFrame, name,
+                    m_sectionBreakModalColor, m_sectionBreakModalFadeSeconds));
+            }
+        }
+        m_sectionBreakModalMode = SectionBreakModalMode::None;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        m_sectionBreakModalMode = SectionBreakModalMode::None;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

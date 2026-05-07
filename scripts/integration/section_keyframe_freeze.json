@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "Phase B — keyframe freeze at section break. Confirms that AnimatedProperties keys on Timeline::getCurrentFrame, so when the playhead is parked at a break, animated properties hold the at-break interpolated value (no further evaluation). Setup adds an opacity ramp 0 -> 1 across 120 frames and a section break at frame 60 (microsec = 2_000_000). After the playhead pauses at the break the opacity should freeze at frame=60's evaluated value (~0.5). LogClipState dumps the value for visual evidence; assertions on playback state + playhead frame are what AnimationSystem reads through.",
+    "commands": [
+        {"type": "AddScreen", "name": "KFFreezeScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 120},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0.0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 120, "value": 1.0},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "Mid"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+        {"type": "LogClipState", "trackIndex": 0, "clipIndex": 0},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+        {"type": "LogClipState", "trackIndex": 0, "clipIndex": 0},
+        {"type": "Exit"}
+    ]
+}

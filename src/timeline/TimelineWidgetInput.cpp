@@ -356,38 +356,50 @@ void TimelineWidget::handleRulerInteraction() {
         if (m_rightClickedCueIndex >= 0) {
             ImGui::OpenPopup("CueContextMenu");
         } else {
-            m_rightClickedSection = -1;
+            // Section break hit-test (Phase B). Hit-tests against the rendered
+            // break line at ±6px. Selects the captured break frame for the
+            // popup; vector indices shift on edit, so we key by Timecode.
+            // TODO: drag-to-reposition deferred — right-click → Edit covers
+            // the use case for now. Implement when scrubbing-vs-dragging
+            // disambiguation is well-defined (the existing scrub gesture
+            // currently owns left-mouse-down on the ruler).
+            m_rightClickedSectionBreakFrame.reset();
+            const float kBreakHitPx = 6.0f;
             const auto& sections = m_timeline->getSections();
-            for (size_t i = 0; i < sections.size(); ++i) {
-                if (clickTime >= sections[i].start && clickTime <= sections[i].end) {
-                    m_rightClickedSection = static_cast<int>(i);
+            for (const auto& sec : sections) {
+                const float bx = windowPos.x + timeToPixel(sec.breakFrame);
+                if (std::abs(mousePos.x - bx) <= kBreakHitPx) {
+                    m_rightClickedSectionBreakFrame = sec.breakFrame;
                     break;
                 }
             }
 
-            if (m_rightClickedSection >= 0) {
-                ImGui::OpenPopup("SectionContextMenu");
+            if (m_rightClickedSectionBreakFrame.has_value()) {
+                ImGui::OpenPopup("SectionBreakContextMenu");
             } else if (m_range.active && m_range.end > m_range.start) {
-                // No section under cursor but a range is active — offer to make one.
+                // No break under cursor but a range is active — offer to make
+                // a pair of breaks at the range endpoints (mirrors the legacy
+                // "Create Section from Selection" intent under the new model).
                 m_rangeContextMenuRequested = true;
                 ImGui::OpenPopup("RangeContextMenu");
             } else {
-                // Empty ruler — offer Add Cue Here. Phase B will add the
-                // section variant alongside it.
+                // Empty ruler — offer Add Cue Here / Add Section Break Here.
                 ImGui::OpenPopup("RulerContextMenu");
             }
         }
     }
 
-    // "Create Section from Selection" popup.
+    // "Create Section Breaks from Range" popup. Emits two breaks (start + end)
+    // — the closest analogue of the old region-style "Create Section from
+    // Selection" under the break-point model.
     if (ImGui::BeginPopup("RangeContextMenu")) {
         if (m_range.active && m_range.end > m_range.start) {
-            if (ImGui::MenuItem("Create Section from Selection")) {
-                Timeline::Section sec;
-                sec.start = m_range.start;
-                sec.end = m_range.end;
-                sec.name = "Section " + std::to_string(m_timeline->getSections().size() + 1);
-                m_timeline->addSection(std::move(sec));
+            if (ImGui::MenuItem("Create Section Breaks at Range Endpoints") && m_commandDispatcher) {
+                std::string name = "Section " + std::to_string(m_timeline->getSections().size() + 1);
+                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
+                    m_range.start, name, 0xFF6090C8u, 0.0));
+                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
+                    m_range.end, name + " end", 0xFF6090C8u, 0.0));
             }
             ImGui::Separator();
             FrameNumber inF = m_timeline->timeToFrame(m_range.start);
@@ -400,19 +412,33 @@ void TimelineWidget::handleRulerInteraction() {
         ImGui::EndPopup();
     }
 
-    // Section band right-click: delete + jump-to-start.
-    if (ImGui::BeginPopup("SectionContextMenu")) {
-        const auto& sections = m_timeline->getSections();
-        if (m_rightClickedSection >= 0 && m_rightClickedSection < static_cast<int>(sections.size())) {
-            const auto& sec = sections[m_rightClickedSection];
-            ImGui::TextDisabled("%s", sec.name.c_str());
-            ImGui::Separator();
-            if (ImGui::MenuItem("Jump to Start")) {
-                m_timeline->seek(sec.start);
-            }
-            if (ImGui::MenuItem("Delete Section")) {
-                m_timeline->removeSection(static_cast<size_t>(m_rightClickedSection));
-                m_rightClickedSection = -1;
+    // Section break right-click: edit / delete / jump.
+    if (ImGui::BeginPopup("SectionBreakContextMenu")) {
+        if (m_rightClickedSectionBreakFrame.has_value()) {
+            const Timecode brkT = *m_rightClickedSectionBreakFrame;
+            const Timeline::Section* live = m_timeline->findSectionBreakNear(brkT, 0);
+            if (live) {
+                ImGui::TextDisabled("%s", live->name.empty() ? "(unnamed break)" : live->name.c_str());
+                ImGui::Separator();
+                if (ImGui::MenuItem("Jump to Break") && m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<SeekCommand>(brkT));
+                }
+                if (ImGui::MenuItem("Edit Break...")) {
+                    m_sectionBreakModalMode = SectionBreakModalMode::Edit;
+                    m_sectionBreakModalOldFrame = brkT;
+                    m_sectionBreakModalFrame = brkT;
+                    std::strncpy(m_sectionBreakModalNameBuf, live->name.c_str(),
+                                 sizeof(m_sectionBreakModalNameBuf) - 1);
+                    m_sectionBreakModalNameBuf[sizeof(m_sectionBreakModalNameBuf) - 1] = '\0';
+                    m_sectionBreakModalColor = live->color;
+                    m_sectionBreakModalFadeSeconds = live->fadeSeconds;
+                    m_sectionBreakModalOpenRequested = true;
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Delete Break") && m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<RemoveSectionBreakCommand>(brkT));
+                    m_rightClickedSectionBreakFrame.reset();
+                }
             }
         }
         ImGui::EndPopup();
@@ -454,8 +480,7 @@ void TimelineWidget::handleRulerInteraction() {
         ImGui::EndPopup();
     }
 
-    // Empty-ruler right-click: offer "Add Cue Here..." (Phase A). Phase B
-    // will extend this with "Add Section Here".
+    // Empty-ruler right-click: offer "Add Cue Here..." / "Add Section Break Here...".
     if (ImGui::BeginPopup("RulerContextMenu")) {
         if (ImGui::MenuItem("Add Cue Here...")) {
             m_cueModalMode = CueModalMode::Add;
@@ -466,11 +491,22 @@ void TimelineWidget::handleRulerInteraction() {
             m_cueModalLabelBuf[0] = '\0';
             m_cueModalOpenRequested = true;
         }
+        if (ImGui::MenuItem("Add Section Break Here...")) {
+            m_sectionBreakModalMode = SectionBreakModalMode::Add;
+            m_sectionBreakModalOldFrame = 0;
+            m_sectionBreakModalFrame = m_rulerRightClickTime;
+            std::snprintf(m_sectionBreakModalNameBuf, sizeof(m_sectionBreakModalNameBuf),
+                          "Section %zu", m_timeline->getSections().size() + 1);
+            m_sectionBreakModalColor = 0xFF6090C8u;
+            m_sectionBreakModalFadeSeconds = 0.0;
+            m_sectionBreakModalOpenRequested = true;
+        }
         ImGui::EndPopup();
     }
 
-    // Render the cue add/edit modal (no-op when not open).
+    // Render the cue + section-break modals (no-op when not open).
     renderCueModal();
+    renderSectionBreakModal();
 }
 
 void TimelineWidget::handleTracksInteraction() {
