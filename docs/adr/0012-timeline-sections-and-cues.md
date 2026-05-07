@@ -250,3 +250,554 @@ one creates a confusing first-tick where playback "starts" mid-cycle.
   contract that `SectionScheduler` and `PlaybackPresenter` respect)
 - Memory: `feedback_no_competitor_names.md` — mechanism described
   generically, no source-product names
+
+## Amendment 2026-05-07: hold + fade-after-break + name removal
+
+Three follow-up decisions landed together (working plan
+`~/.claude/plans/a-few-notes-on-calm-cascade.md`):
+
+- **(a) `Section::name` removed** (schema bumped 9 → 10). Operator
+  workflow showed the field was redundant against the cue-tag label
+  channel; one fewer text input in the section context menu, one
+  fewer string to migrate when the storage shape moves.
+
+- **(b) Zero-breaks renders as one implicit section** spanning
+  `[0, timelineEnd]` using a default tint. The model already permitted
+  the break vector to be empty; the UI now treats that case as a
+  single span instead of "no sections," eliminating a special
+  zero-break branch in the renderer.
+
+- **(c) Fade semantic changed: hold + fade *after* the break.**
+  Previously the fade-out window was the last `fadeFrames` *before*
+  `clipEnd` and the clip dropped from the active set at `clipEnd`. New
+  behavior: clip plays at full alpha through to `clipEnd`, then the
+  last decoded source frame is held and faded `1 → 0` over
+  `fadeSeconds` *starting at* the break. Motivates the user request
+  *"persist until the fade has completed"* — the outgoing image
+  shouldn't disappear at the same moment the playhead parks.
+
+  Mechanism:
+  - `PlaybackTimeAuthority::isClipActiveAtFrame` extends the clip's
+    active span by `sectionFadeTailFrames(endFrame)` when the clip's
+    end aligns (±1 frame snap) with a break carrying non-zero
+    `fadeSeconds`.
+  - `mapToMediaFrame(clip, ...)` short-circuits to the last decoded
+    source frame inside that tail window (no decoder seek triggered).
+  - `mapToMediaFrame(entity, clip, ...)` prefers
+    `ClipPlaybackPhase::tailHoldMediaFrame` if it was snapshotted —
+    `SectionScheduler::go()` records what the clip was actually
+    showing at the moment of GO so a Loop / PingPong clip that was
+    cycling at the break holds the user-visible frame, not whatever
+    the timeline-frozen path would have computed.
+  - `computeSectionFadeMultiplier` fade-out window is now
+    `[clipEnd, clipEnd + fadeFrames)` with `t = 1 - (current - end)
+    / fadeFrames`, which yields `1.0` at `currentFrame == clipEnd`
+    (matches the at-break held look) and ramps linearly to `0.0`.
+
+  Cross-fade across the break: outgoing clip held + ramping out,
+  incoming clip starting + ramping in, both over the same
+  `fadeSeconds`.
+
+  `fadeSeconds == 0` is unchanged — tail length 0, instant cut at the
+  break, identical to pre-amendment behavior for that case.
+
+## Amendment 2026-05-08: at-break visibility + post-break anchor
+
+Round-2 fixups landed after manual smoke (working plan
+`~/.claude/plans/calm-beaming-pebble.md`). Three orthogonal changes;
+the first two strengthen the at-break / GO state model, the third
+adjusts the snap-to-grid UI semantic.
+
+- **(a) At-break visibility gate.** Clips whose `startFrame` aligns
+  with the current break (±1 frame snap) stay at fade multiplier
+  `0.0` for the duration of the at-break pause, regardless of
+  `fadeSeconds`. The clip remains in the active set so its decoder
+  pre-rolls and the texture is fresh at GO; the compositor simply
+  draws at alpha 0. User requirement: "things after the break
+  shouldn't start yet until we resume." Implemented as an early
+  return at the top of
+  `PlaybackTimeAuthority::computeSectionFadeMultiplier`, gated on
+  `Timeline::sectionAtBreak()` so the suppression releases naturally
+  when GO flips that flag false. Authored fade-in (if any) resumes
+  on the next tick because the existing fade-in branch sees
+  `currentFrame == clipStart` post-resume.
+
+  Rejected alternative: dropping the clip from
+  `bus::RenderFrame::activeClips` during the pause. Tested first;
+  produced a stale-texture flash on the first post-GO frame because
+  the decoder hadn't pre-rolled.
+
+- **(b) Post-break media anchor.** Supplements (and does not replace)
+  the Phase D continuation-phase decoupling. At GO, for every
+  Normal-mode clip that was *spanning* the break (not ending at it
+  — those are already owned by the Phase 6 tail-hold snapshot),
+  `SectionScheduler::go()` calls `snapshotPostBreakAnchors`. That
+  snapshots, on the clip's `ClipPlaybackPhase`, the source-media
+  frame the clip was visibly mapping to at the moment of GO
+  (`postBreakMediaAnchor`) plus the timeline frame at which playback
+  resumes (`anchorTimelineFrame = breakFrame + 1`). User
+  requirement: "the end of the pause should pretty much act as if
+  nothing has happened from a playback standpoint."
+
+  Post-GO, both the 3-arg `PlaybackTimeAuthority::mapToMediaFrame`
+  and `DecodeSystem`'s per-clip update consult the anchor when
+  `postBreakMediaAnchor >= 0`, deriving the source frame as
+  `(anchor - mediaStartFrame) + (timelineFrame - anchorTimelineFrame)
+  * frameRateRatio` and applying the existing Freeze / Loop /
+  PingPong wrap. This avoids the rewind that the natural
+  `(timelineFrame - clipStart) * ratio` mapping would produce,
+  because the natural mapping discards the source-frame phase that
+  accumulated during the pause.
+
+  **Lifecycle**:
+  - Anchor is **set** by `go()` after `snapshotTailHoldFrames` and
+    before `clearAllContinuation`. Tail-hold owns clips ending at
+    the break; the anchor only stamps clips that span past it.
+  - Anchor **survives** `clearAllContinuation`. The clear zeros
+    only `inContinuation` and `sourcePhaseFrames`; the anchor and
+    `tailHoldMediaFrame` are intentionally preserved.
+  - On a subsequent break-B crossing, `seedContinuationAt`
+    consults `postBreakMediaAnchor` and seeds `sourcePhaseFrames`
+    from `(anchor - mediaStartFrame) + (breakB - anchorTimelineFrame)
+    * ratio` instead of `(breakB - clipStart) * ratio`. Without
+    this, the at-break-B pause would visibly jump backward for a
+    multi-break clip.
+  - Anchor is **invalidated** by `resetAnchorsAcrossScrub`, fired
+    from `tick()`'s discontinuity branch and from the Stopped
+    branch. Any anchor whose `anchorTimelineFrame > currentFrame`
+    clears (sentinel `postBreakMediaAnchor = -1`,
+    `anchorTimelineFrame = 0`). Backward scrubs past the setting
+    break thus clear; forward scrubs that skip the at-break pause
+    never accrued an anchor in the first place.
+
+  Priority order in 3-arg `mapToMediaFrame` after this amendment:
+  (1) tail-hold short-circuit when `timelineFrame >= clipEnd`,
+  (2) `inContinuation && Normal` continuation-phase mapping,
+  (3) post-break anchor mapping when set, (4) fall through to
+  the 2-arg natural-mapping overload.
+
+- **(c) Snap-to-grid floor.** UI semantic change in
+  `TimelineWidget::snapTimeToTickGrid`: a click resolves to the
+  start of the cell the cursor is in, not the closest tick.
+  Frame derivation is inlined (no longer routes through
+  `Timeline::timeToFrame`, which itself rounds), and the tick
+  alignment uses integer-division floor (no `+ tickEvery/2`
+  offset). Side effect: `snapTimeToBest`'s grid candidate is now
+  systematically the *previous* tick rather than the closest, so
+  drag operations (cue drag, clip trim via best-snap) lean left.
+  Tradeoff accepted for predictability — operators reported the
+  old round-to-nearest behavior felt "tacked on the back of the
+  frame" relative to where they clicked.
+
+  Cue-add and section-break-add modal seeds inherit the floor —
+  the right-click position resolves to the start of the clicked
+  frame so the modal pre-fills the same value the user perceives
+  the cursor is on.
+
+**Tests** (all green at the time of this amendment): existing
+`SectionFadeTests`, `SectionBreakTests`, `ClipPlaybackPhaseTests`
+unchanged; new `tests/unit/PostBreakAnchorTests.cpp` covers
+post-GO anchor mapping (Loop), PingPong cycle parity preservation,
+multi-break re-seed using a carry-forward anchor, and backward
+scrub clearing the anchor. New integration scripts:
+`scripts/integration/at_break_starting_clip_invisible.json` and
+`scripts/integration/post_break_no_rewind.json`.
+
+## Amendment 2026-05-07: at-break state ownership + section UX + drag snap
+
+Round-3 fixups landed after a second pass of manual smoke (working
+plan `~/.claude/plans/implement-plan-woolly-wilkes.md`).
+Six findings clustered into three buckets; the resolutions tighten
+state ownership for the at-break latch, polish section UX, and
+restore predictable grid-snap on clip drag/trim.
+
+- **(a) At-break state ownership.** `Timeline::sectionAtBreak()` is
+  the latch that gates the Phase 5 visibility suppression and the
+  spacebar GO dispatch. Round 2 amended-(a) introduced the gate
+  itself; round 3 specifies who owns the flag and pins down all
+  paths that clear it.
+
+  **Owner:** `SectionScheduler::tick()`'s park-at-break branch is
+  the *only* path that raises the flag. Anyone else (manual seek,
+  scrub, command playback) only ever clears it.
+
+  **Clearing paths** (any one of these returns the latch to false):
+  1. `Timeline::seek()` — every manual seek clears the latch
+     unconditionally as its last act, before logging. Catches UI
+     scrubs, script `SeekToFrame`, and command-playback seeks
+     dispatched through the Timeline directly.
+  2. `SectionScheduler::tick()` discontinuity branch — when the
+     per-tick `delta` exceeds the threshold, the scheduler also
+     clears `m_atBreak` + `m_timeline->setSectionAtBreak(false)`
+     and calls `clearAllContinuation()`. Belt-and-braces against
+     paths that mutate `currentTime` without going through
+     `Timeline::seek()`.
+  3. `SectionScheduler::tick()` manual-resume unstick — any
+     state-Playing tick where the flag is still set drops it
+     unconditionally. The previous `currentTime > m_lastBreakHitFrame`
+     guard failed when the user scrubbed BACKWARD before pressing
+     Play (the user's reported issue #3).
+  4. `SectionScheduler::go()` and the existing Stopped branch
+     (unchanged from prior amendments).
+
+  **Bug class fixed:** when `sectionAtBreak()` was stuck true after
+  one of paths (1–3) was missed, the Phase 5 visibility gate at
+  `PlaybackTimeAuthority::computeSectionFadeMultiplier` would hide
+  any clip with `startFrame ≈ currentFrame` — even when the user was
+  nowhere near a break. The user reported this as "first-section
+  clip won't play until you cross a break" (issue #3) and as
+  "clip placed at a break flashes and disappears" (issue #6).
+
+  **Tests:** new unit case `SectionBreakTest.ManualSeek_ClearsAtSectionBreakFlag`
+  pins the `Timeline::seek()` clearing semantic at the data-model
+  level (no scheduler involved). New integration script
+  `scripts/integration/scrub_clears_at_break.json` exercises the
+  full park → backward scrub → Play path. New integration script
+  `scripts/integration/first_section_plays.json` is the issue #3
+  regression guard for a clip entirely inside the first section.
+
+- **(b) Section color palette + dialog-less add.** Pre-round-3 the
+  add-section-break flow opened a modal that asked for color and
+  fade in addition to the frame; the implicit first segment had no
+  color (rendered neutral gray). User feedback: the modal added
+  friction the operator didn't want, and the gray first segment
+  read as "not a section" rather than "the first section."
+
+  **Resolutions:**
+  - 8-entry `entity::sectionPalette` ABGR palette (declared in
+    `include/entity/timeline/Timeline.hpp`). `pickColor(index)`
+    returns `palette[index % 8]`. Implicit first segment uses
+    `palette[0]` whenever the timeline has at least one clip;
+    truly-empty timelines (no breaks AND no clips) keep the old
+    gray fallback so the band reads as "no content yet" not
+    "this is section one."
+  - Ruler right-click → "Add Section Break Here" enqueues
+    `AddSectionBreakCommand` directly with auto-color
+    `pickColor(getSections().size() + 1)` (so palette[0] is
+    reserved for the implicit first segment, palette[1] for the
+    first user-added break). No modal, no trailing dots in the
+    menu label, fade defaults to 0.
+  - The section EDIT modal stays put as the override mechanism —
+    right-click an existing break line and the same dialog opens
+    with both color and fade editable. Add path is fast; edit
+    path retains full control.
+  - `addSectionBreak`'s `0xFF6090C8` default argument is
+    deliberately preserved for backward-compat with serialized
+    projects and scripted creation. `palette[0] == 0xFF6090C8`
+    too, so default-color creation lands on the same hue the UI
+    paints the implicit first segment with. This isn't load-bearing
+    but it keeps two surfaces visually consistent.
+
+  **Tests:** new unit file `tests/unit/SectionAutoColorTests.cpp`
+  covers palette size = 8, palette[0] match against `addSectionBreak`'s
+  default, distinct entries across the palette, and modulo wrap at
+  8/9/15/16/99 + a `1<<32` sanity case.
+
+- **(c) Cue-add reachable from the ruler menu.** Round-2 Phase 2
+  moved cue ops to a dedicated cue-lane right-click band (so the
+  ruler menu wasn't cluttered). Operator feedback after smoke was
+  that the cue lane is small and easy to miss when the cursor is
+  already on the ruler. Round 3 reverses that decision partially:
+  the ruler menu now has BOTH "Add Section Break Here" and "Add
+  Cue Here..." (cue add still trails a modal because the operator
+  needs to set the cue number + label). The cue-lane menu stays
+  as the faster shortcut for users who reach for the lane band.
+  Both surfaces yield the same `AddCueCommand` payload.
+
+- **(d) Drag snap honors tick grid.** Pre-round-3 the clip drag
+  handler ranked snap candidates (playhead, snapTimeToBest,
+  cross-clip edges) by raw distance against the cursor. When a
+  raw playhead/clip-edge candidate happened to sit closer than
+  the nearest tick, the raw 1-frame-aligned candidate won — even
+  at coarse zoom (5f, 10f tick) where the user expected
+  grid-aligned drops. User feedback: "I'm at 5f tick and clips
+  drop at 1f boundaries."
+
+  **Resolution:** unified `considerCandidate(raw, targetForStart)`
+  lambda inside `TimelineWidget::handleTracksInteraction`. A
+  `floorToGrid` helper pre-floors every candidate to the tick
+  grid when grid-snap is in effect. `gridSnap = !ImGui::GetIO().KeyShift`,
+  so:
+  - **Default (no shift):** every candidate (playhead, cue,
+    section break, cross-clip edge) competes at tick-grid
+    resolution. The playhead can no longer "win" with a 1-frame
+    pull when the user is dragging on a 5f tick zoom.
+  - **Shift held:** candidates compete at raw resolution.
+    Playhead/clip-edge snap continues to apply (these are
+    operator-meaningful targets, not grid-meaningful), but no
+    tick-grid floor is enforced. Frame-precise placement at any
+    zoom level.
+
+  Trim mirrors the same shape: the `mouseTime = snapTimeToBest(...)`
+  call is gated on `!io.KeyShift`. With shift held, trim lands at
+  the raw mouse frame; without it, the existing grid + cue +
+  section snap bundle applies.
+
+  Why not invert the modifier (shift = strict grid, default = mixed):
+  the user's report was that the default was unpredictable, not
+  that grid-snap was unwanted. The shift-bypass mirrors NLE
+  convention (Premiere, Resolve, Avid) where the modifier loosens
+  snap rather than tightening it.
+
+- **(e) Trim handle reachability at high zoom.** Distinct from
+  the snap fix above: at 1f / 2f tick zoom, clip trim handles were
+  visually unreachable for clips that extended past the visible
+  viewport. Diagnosis traced the bug to `findClipEdgeAtPosition`
+  computing `clipX = windowPos.x + timeToPixel(startTime) - m_syncScrollX`
+  while `findClipAtPosition` and `renderClip` both compute
+  `clipX = windowPos.x + timeToPixel(startTime)` (no scroll
+  subtraction). `windowPos == m_tracksScreenPos == GetCursorScreenPos()`
+  inside the scrolled child window already accounts for scroll;
+  the extra subtraction was a coordinate-space double-count that
+  shifted the trim hit-test away from the visible clip by
+  `m_syncScrollX` pixels. Worst at 1f/2f zoom because that's
+  where horizontal scroll matters most.
+
+  **Resolution:** dropped the spurious `- m_syncScrollX` from
+  `findClipEdgeAtPosition`, plus added a clamp on the half-hit-zone
+  width (`clamp(TRIM_EDGE_WIDTH/2, 3px, clipWidth * 0.4)`) so
+  sub-15px clips still distinguish left and right halves.
+  Wider clips keep the original 4px half so default-zoom muscle
+  memory is unchanged. No data-model or schema change.
+
+**Tests at this amendment** (all green at landing): existing
+`SectionFadeTests`, `SectionBreakTests`, `ClipPlaybackPhaseTests`,
+`PostBreakAnchorTests` unchanged; `SectionBreakTests` extended
+with the `ManualSeek_ClearsAtSectionBreakFlag` cases; new
+`SectionAutoColorTests` for the palette. New integration scripts
+`scripts/integration/scrub_clears_at_break.json` and
+`scripts/integration/first_section_plays.json`. Drag-snap and
+trim-handle changes are pure UI and have no automated coverage —
+manual smoke at 1f / 5f / 10f tick zoom is the verification path.
+
+## Amendment 2026-05-07: queued-at-break semantic + in/out points
+
+Round-4 fixups landed after the user reported that a clip aligned
+exactly with a section break was running at `mediaStartFrame + 1` on
+the first visible post-GO tick, not `mediaStartFrame` (working plan
+`~/.claude/plans/quizzical-waddling-mitten.md`). The diagnosis drew a
+distinction the prior amendments hadn't named explicitly: a clip
+*starting at* a break is structurally different from a clip *spanning*
+or *ending at* one. The amendments below pin that distinction in the
+data model and add user-editable in/out points so the operator can
+re-window a clip without rebuilding the timeline.
+
+- **(a) "Queued at break" semantic.** A clip whose `startFrame`
+  aligns (±1 timeline frame) with a section break is **queued** —
+  waiting for GO to begin playback — and not running through the
+  break. It is a distinct state from the "spanning" case
+  (`clipStart < breakFrame < clipEnd`) covered by the round-2
+  post-break anchor model. Queued clips do NOT participate in
+  continuation phase or post-break anchor stamping:
+  `SectionScheduler::seedContinuationAt` and
+  `snapshotPostBreakAnchors` both early-out for them. Without this
+  skip, the at-break advance would push `sourcePhaseFrames` past
+  zero before the clip has visibly started, and the post-GO
+  mapping would land on a non-zero source frame instead of the
+  user-authored in-point.
+
+- **(b) 1-tick pre-roll.** The at-break tick
+  (`currentTLFrame == clipStart == breakFrame`) is invisible by
+  design — the round-2 visibility gate holds the clip at fade
+  multiplier 0.0 while `Timeline::sectionAtBreak()` is true. The
+  first *visible* post-GO tick (`currentTLFrame == breakFrame + 1`)
+  must therefore map to `clip.mediaStartFrame`, not
+  `mediaStartFrame + 1`. The post-GO anchor for queued clips is
+  stamped at `(mediaStartFrame, clipStart + 1)`, threading the
+  queued case through the existing anchor branch. (Round-4 originally
+  landed this as a 1-frame shift in a separate priority-1 short-circuit
+  via `shiftedTimelineFrameForQueued`; the round-5 amendment below
+  reverted that design to anchor unification after a multi-break
+  drift regression.)
+
+- **(c) Distinct from spanning.** A clip running THROUGH a break
+  (`clipStart < breakFrame < clipStart + duration`) still uses
+  `postBreakMediaAnchor` and the existing continuation / anchor
+  path from the prior round-2 amendment. With the round-5
+  reversion (below), queued clips share that same anchor branch
+  rather than living in their own priority-1 short-circuit; what
+  separates them from spanning is solely the *value* stamped on
+  the anchor (`(mediaStartFrame, clipStart + 1)` for queued vs.
+  the at-GO source frame + `breakFrame + 1` for spanning), not a
+  different code path. The unit regression guard
+  `PostBreakAnchorTest.SpanningClipStillUsesAnchor` pins the
+  spanning anchor's stamped values so a future change to
+  `snapshotPostBreakAnchors` can't silently collapse the two
+  cases together.
+
+  Priority order in 3-arg `mapToMediaFrame` after the round-5
+  reversion below — same 4-step list as the round-2 amendment:
+  (1) tail-hold short-circuit when `timelineFrame >= clipEnd`,
+  (2) `inContinuation && Normal` continuation-phase mapping,
+  (3) post-break anchor mapping when set, (4) fall through to
+  the 2-arg natural-mapping overload. Round-4's separate
+  priority-1 queued branch is gone; the queued case is handled
+  by branch (3) once `snapshotPostBreakAnchors` stamps the
+  anchor at GO.
+
+- **(d) In/out points are user-editable.** PropertyWindow's clip
+  info section now exposes the in-point (`mediaStartFrame`) and a
+  derived out-point as `ImGui::DragInt` fields with
+  `ImGuiSliderFlags_AlwaysClamp`. Out-point edits translate to
+  `clip.duration` via the inverse mapping
+  `duration = ceil((outPoint - mediaStartFrame) / frameRateRatio)`,
+  so the timeline footprint adjusts to match. In-point edits are a
+  slip — duration unchanged, the source window slides.
+
+  **No data-model or schema change.** `mediaStartFrame` and
+  `duration` were already serialized; existing project files load
+  and save unchanged. The edits route through new
+  `SetClipMediaStartFrameCommand` and the existing
+  `SetClipDurationCommand` via `CommandDispatcher::enqueue` (per
+  the `include/entity/director/CLAUDE.md` boundary rule that UI
+  panels mutate state through commands, never direct field
+  writes), with pre-edit snapshots captured on
+  `IsItemActivated()` so undo restores the original values.
+  Clamping is symmetric on both sides: the UI uses
+  `AlwaysClamp` for live drag bounds, the command's `execute()`
+  re-validates on the dispatcher side so a malformed scripted
+  invocation is rejected.
+
+  **Known follow-up:** the project loader at
+  `ProjectSerializer.cpp` recomputes `clip.duration` from
+  `totalMediaFrames * (timelineFps / clipFps)` whenever
+  `totalMediaFrames > 0`, treating the saved JSON `duration` only
+  as a fallback for malformed clips. A user out-point trim
+  therefore does not survive a save+reload — the loaded duration
+  reverts to the natural full-length mapping. This is pre-existing
+  loader behavior shared with timeline-trim drags and scripted
+  `SetClipDurationCommand`, not introduced by this amendment, but
+  the new UI surfaces it more visibly. Tracked separately for a
+  serializer fix-up.
+
+**Tests** (all green at landing): `tests/unit/PostBreakAnchorTests.cpp`
+extended with four cases —
+`AtBreakAlignedClipDoesNotAccumulatePhase`,
+`AtBreakAlignedClipNoAnchorStamped`,
+`AtBreakAlignedPostGoMappingFirstVisibleEqualsInPoint` (covers
+both `mediaStartFrame == 0` and a non-zero offset), and
+`SpanningClipStillUsesAnchor` as the regression guard for (c).
+New integration scripts
+`scripts/integration/at_break_clip_starts_at_inpoint.json` and
+`scripts/integration/at_break_clip_starts_at_inpoint_offset.json`
+exercise the full park-then-GO end-to-end flow with
+`AssertClipMediaFrame` pinned to the in-point at `breakFrame + 1`.
+The in/out point UI is pure ImGui drag widget; no automated
+coverage — manual verification path is the standard PropertyWindow
+smoke (drag the In Point slider, verify the source window slides
+on the stage; drag the Out Point slider, verify the timeline
+footprint adjusts).
+
+## Amendment 2026-05-07: queued-clip multi-break drift fix (anchor unification)
+
+Round-5 fix-forward landed after smoke-testing the round-4 queued
+shift surfaced a multi-break drift regression (working plan
+`~/.claude/plans/quizzical-wad-merry-dongarra.md`).
+The shift solved the at-break tick correctly but introduced a
+structural presenter / decoder priority disagreement that broke
+playback at every *subsequent* break. The reversion below replaces
+the shift with **anchor unification** — queued clips reuse the
+existing post-break anchor branch instead of living in their own
+priority-1 short-circuit.
+
+- **(a) Regression observed.** With the round-4 design in place,
+  any clip whose `startFrame` aligned with a break was rendered
+  through a permanent `timelineFrame - 1` shift in the 3-arg
+  `mapToMediaFrame` (priority 1) for the entire clip duration. At
+  the same time, `DecodeSystem::update` applied the shift only as
+  a tentative starting point and then *overwrote* it with
+  `phase.sourcePhaseFrames` (continuation override) or the
+  anchor-derived frame whenever those fields were stamped on a
+  later break. Result: at break-A the presenter and decoder agreed
+  (queued semantic, both saw `mediaStartFrame`); past break-A the
+  decoder followed natural mapping (presenter stayed on shifted
+  mapping, off by 1); at break-B the decoder followed the
+  continuation phase walking forward at clip framerate (presenter
+  stayed frozen on the timeline-derived shift, drift accumulating
+  ~60 frames per second of park); at GO from break-B the anchor
+  was stamped from the advanced phase (decoder switched to the
+  anchor's source frame, presenter stayed on the shift) producing
+  a `frameDelta` large enough to exceed `SEEK_HYSTERESIS=8` and
+  trigger a backward seek. The visible symptom was the queued
+  clip playing through break-A correctly, then pausing for the
+  ring-buffer flush + decode-ahead window at every subsequent
+  break.
+
+- **(b) Fix — anchor unification.** Replace the queued shift with
+  a stamped anchor at `(mediaStartFrame, clipStart + 1)`:
+  - `SectionScheduler::seedContinuationAt` lifts
+    `get_or_emplace<ClipPlaybackPhase>` above the queued check so
+    the phase exists on both queued and spanning paths. Queued
+    clips set `inContinuation = false` and
+    `sourcePhaseFrames = 0.0`, then `continue` (no continuation
+    accumulation).
+  - `SectionScheduler::snapshotPostBreakAnchors` runs the queued
+    check **before** the existing `if (!phase.inContinuation)
+    continue;` guard (queued phase has `inContinuation == false`,
+    so a wrongly-ordered guard would skip the stamp). Queued
+    clips receive `phase.postBreakMediaAnchor = clip.mediaStartFrame`
+    and `phase.anchorTimelineFrame = clip.startFrame + 1`.
+  - The 3-arg `PlaybackTimeAuthority::mapToMediaFrame` queued
+    short-circuit is removed entirely. Control falls through to
+    the existing anchor branch, which at `timelineFrame ==
+    clipStart + 1` computes `timelineDelta = 0` and returns
+    `mediaStartFrame + 0` — the in-point.
+  - `DecodeSystem::update` similarly drops the queued shift in
+    both bootstrap and active paths. The existing anchor override
+    below it already steers the worker target by the same anchor
+    the presenter is using, so they stay in sync without a
+    parallel shift.
+  - `include/entity/director/QueuedClipMapping.hpp` is deleted.
+    No remaining consumers.
+
+  At every subsequent break (break-B, break-C, …) the queued
+  clip is now indistinguishable from a "freshly-anchored" clip:
+  `seedContinuationAt`'s carry-forward formula reads
+  `postBreakMediaAnchor` and seeds the new continuation phase
+  from there, just like a spanning clip. No new branch in the
+  hot path; the well-tested spanning code does the work.
+
+- **(c) Why this is structurally safer than the shift.** The
+  shift was a permanent priority-1 override that did not
+  cooperate with the continuation phase or with any later
+  anchor stamp — it kept returning `(timelineFrame - 1) -
+  clipStart` regardless of what the rest of the system had
+  computed about the clip's source position. Anchor unification
+  threads queued clips through the *same* anchor branch as
+  spanning clips, so anything that sets, advances, or
+  invalidates an anchor (multi-break carry-forward,
+  scrub-clear, GO-stamping) automatically does the right thing
+  for queued clips too. The presenter and decoder consult the
+  anchor through the same branch with the same wrap math; they
+  cannot disagree.
+
+- **(d) Test contract update.** `tests/unit/PostBreakAnchorTests.cpp`
+  three queued-related cases updated:
+  - `AtBreakAlignedClipDoesNotAccumulatePhase` — assertion
+    tightened from "phase null OR (`inContinuation==false` AND
+    `sourcePhaseFrames==0`)" to "phase exists AND
+    `inContinuation==false` AND `sourcePhaseFrames==0`". The
+    phase is now always emplaced.
+  - `AtBreakAlignedClipNoAnchorStamped` renamed to
+    `AtBreakAlignedClipAnchorIsStamped` and inverted: drives
+    `seedContinuationAt(60us)` then
+    `snapshotPostBreakAnchors(60us)`, asserts
+    `postBreakMediaAnchor == clip.mediaStartFrame` and
+    `anchorTimelineFrame == clip.startFrame + 1`.
+  - `AtBreakAlignedPostGoMappingFirstVisibleEqualsInPoint` —
+    assertion values unchanged; both sub-cases now also drive
+    `snapshotPostBreakAnchors(60us)` so the anchor branch fires.
+    `SpanningClipStillUsesAnchor` and the four pre-existing
+    spanning-anchor cases are untouched.
+
+  Integration scripts
+  `scripts/integration/at_break_clip_starts_at_inpoint{,_offset}.json`
+  pass unchanged — the structural property they assert
+  (`mediaFrame == mediaStartFrame` at `clipStart + 1`) is
+  preserved by the new anchor-based design.
+
+**Tests at this amendment:** 408/408 enabled green
+(137/138/254 skipped/disabled, pre-existing). `ctest -R
+PostBreakAnchor` 8/8 passing, including the renamed
+`AtBreakAlignedClipAnchorIsStamped` and the four spanning-anchor
+guards.

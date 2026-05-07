@@ -1,0 +1,31 @@
+{
+    "version": 1,
+    "description": "Phase 6 / queued-at-break — non-zero in-point variant of at_break_clip_starts_at_inpoint.json. Clip's startFrame aligns with a section break (queued) AND mediaStartFrame is non-zero (clip starts mid-source). At the first visible post-GO tick the clip's mediaFrame must equal clip.mediaStartFrame, NOT mediaStartFrame + 1. Locks the in-point semantic for T1+T2's queued-clip skip + 1-frame shift in QueuedClipMapping. Uses gradient_seq (16 source frames); mediaStartFrame=5 leaves room for post-GO playback within source bounds. Pre-fix: post-GO mediaFrame would be 6. Post-fix: mediaFrame == 5.",
+    "commands": [
+        {"type": "AddScreen", "name": "AtBreakInPointOffsetScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 2000000},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 60},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "SetClipMediaStartFrame", "trackIndex": 0, "clipIndex": 0, "mediaStartFrame": 5},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 0.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+
+        {"type": "WaitFrames", "count": 60},
+        {"type": "SectionGo"},
+        {"type": "Pause"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "SeekToFrame", "frame": 61},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertPlayheadAtFrame", "frame": 61, "tolerance": 0},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 5, "tolerance": 0},
+        {"type": "Exit"}
+    ]
+}

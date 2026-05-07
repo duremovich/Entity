@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "Round-3 Phase 1 — manual seek clears Timeline::sectionAtBreak(). Park playhead at section break (frame 60), then SeekToFrame backward to frame 0; the at-break latch must drop so the subsequent Play advances normally instead of staying stuck. Without the fix, SectionScheduler would still hold m_atBreak true after the backward scrub (its old `currentTime > m_lastBreakHitFrame` unstick guard fails on backward jumps), and the Phase 5 visibility gate could misfire on the new playhead position. Single clip on track 0 spans the break (0..120 timeline frames at 30fps), so the gate has a clip to act on.",
+    "commands": [
+        {"type": "AddScreen", "name": "ScrubClearsAtBreakScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 120},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 0.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertPlayheadAtFrame", "frame": 0, "tolerance": 0},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

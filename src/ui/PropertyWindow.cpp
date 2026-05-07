@@ -549,7 +549,7 @@ void PropertyWindow::renderClipInfo() {
     if (selectedClip == entt::null) return;
 
     auto& registry = m_timeline->getRegistry();
-    const auto* clip = registry.try_get<Clip>(selectedClip);
+    auto* clip = registry.try_get<Clip>(selectedClip);
 
     if (!clip) {
         ImGui::TextDisabled("No clip component");
@@ -562,11 +562,75 @@ void PropertyWindow::renderClipInfo() {
 
     ImGui::Separator();
 
-    // Timing info
-    ImGui::Text("Start Frame: %d", clip->startFrame);
-    ImGui::Text("Duration: %d frames", clip->duration);
-    ImGui::Text("Media Start: %d", clip->mediaStartFrame);
+    // Timing — read-only context lines (timeline footprint, source rate).
+    ImGui::Text("Timeline Start: %d", clip->startFrame);
     ImGui::Text("Frame Rate: %.2f fps", clip->framerate);
+
+    // In-point (mediaStartFrame) — slip edit. Leaves duration alone, so
+    // the timeline footprint stays put; the source-window slides. Capped
+    // at totalMediaFrames - 1 (>= 0). totalMediaFrames is in source frames.
+    const double timelineFrameRate = (m_timeline && m_timeline->getFrameRate() > 0.0)
+        ? m_timeline->getFrameRate() : 30.0;
+    const double frameRateRatio = (timelineFrameRate > 0.0)
+        ? clip->framerate / timelineFrameRate : 1.0;
+    const int totalMediaInt = static_cast<int>(clip->totalMediaFrames);
+    const int inPointMin = 0;
+    const int inPointMax = totalMediaInt > 0 ? totalMediaInt - 1 : 0;
+    int inPoint = static_cast<int>(clip->mediaStartFrame);
+    bool inPointChanged = ImGui::DragInt("In Point", &inPoint, 1.0f, inPointMin, inPointMax,
+                                         "%d frames", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemActivated()) {
+        m_preEditMediaStartFrame = clip->mediaStartFrame;
+    }
+    if (inPointChanged) {
+        clip->mediaStartFrame = static_cast<FrameNumber>(inPoint);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+        if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+            auto cmd = std::make_unique<SetClipMediaStartFrameCommand>(
+                idx->first, idx->second, clip->mediaStartFrame);
+            cmd->setPreviousMediaStartFrame(m_preEditMediaStartFrame);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+    }
+
+    // Out-point — derived from mediaStartFrame + duration*ratio (source
+    // frames). Editing it adjusts `duration` so the source window's far
+    // edge lands on the new out-point. Clamps so the resulting duration
+    // remains > 0 and the source window stays inside [0, totalMediaFrames].
+    const int outPointMin = static_cast<int>(clip->mediaStartFrame) + 1;
+    const int outPointMax = totalMediaInt > 0 ? totalMediaInt : outPointMin;
+    int outPoint = static_cast<int>(clip->mediaStartFrame +
+        static_cast<FrameNumber>(std::floor(clip->duration * frameRateRatio)));
+    if (outPoint < outPointMin) outPoint = outPointMin;
+    if (outPoint > outPointMax) outPoint = outPointMax;
+    bool outPointChanged = ImGui::DragInt("Out Point", &outPoint, 1.0f, outPointMin, outPointMax,
+                                          "%d frames", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemActivated()) {
+        m_preEditDuration = clip->duration;
+    }
+    if (outPointChanged) {
+        // Convert back: duration_timelineFrames = (outPoint - mediaStart) / ratio.
+        const double sourceWindow = static_cast<double>(outPoint) -
+                                    static_cast<double>(clip->mediaStartFrame);
+        const double ratioSafe = frameRateRatio > 0.0 ? frameRateRatio : 1.0;
+        FrameNumber newDuration = static_cast<FrameNumber>(
+            std::max<double>(1.0, std::ceil(sourceWindow / ratioSafe)));
+        clip->duration = newDuration;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+        if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+            auto cmd = std::make_unique<SetClipDurationCommand>(
+                idx->first, idx->second, clip->duration);
+            cmd->setPreviousDuration(m_preEditDuration);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+    }
+
+    // Duration — read-only mirror so the user sees the derived effect of
+    // an out-point edit. Same line shape as before to avoid breaking
+    // muscle memory.
+    ImGui::Text("Duration: %d frames", static_cast<int>(clip->duration));
 
     // Calculate duration in seconds
     float durationSec = static_cast<float>(clip->duration) / static_cast<float>(clip->framerate);
@@ -1239,7 +1303,7 @@ void PropertyWindow::renderCueProperties() {
 }
 
 // Phase B — Section break properties panel. Active when
-// Timeline::setSelectedSectionBreak is set. Frame / name / color edits commit
+// Timeline::setSelectedSectionBreak is set. Frame / color edits commit
 // via EditSectionBreakCommand; fadeSeconds is shown disabled until Phase D.
 void PropertyWindow::renderSectionBreakProperties() {
     auto sel = m_timeline->getSelectedSectionBreak();
@@ -1263,7 +1327,6 @@ void PropertyWindow::renderSectionBreakProperties() {
 
     static Timecode trackedFrame = -1;
     static long long editFrame = 0;
-    static char editName[256] = {0};
     static float editColor[4] = {0, 0, 0, 0};
     static double editFadeSeconds = 0.0;
     static Timeline::Section preEditSnapshot{};
@@ -1272,8 +1335,6 @@ void PropertyWindow::renderSectionBreakProperties() {
     if (trackedFrame != selFrame) {
         trackedFrame = selFrame;
         editFrame = static_cast<long long>(m_timeline->timeToFrame(live->breakFrame));
-        std::strncpy(editName, live->name.c_str(), sizeof(editName) - 1);
-        editName[sizeof(editName) - 1] = '\0';
         editColor[0] = ((live->color >> 0)  & 0xFFu) / 255.0f;
         editColor[1] = ((live->color >> 8)  & 0xFFu) / 255.0f;
         editColor[2] = ((live->color >> 16) & 0xFFu) / 255.0f;
@@ -1302,8 +1363,7 @@ void PropertyWindow::renderSectionBreakProperties() {
         if (!m_dispatcher) return;
         Timecode newFrame = m_timeline->frameToTime(static_cast<FrameNumber>(editFrame));
         auto cmd = std::make_unique<EditSectionBreakCommand>(
-            selFrame, newFrame, std::string(editName),
-            packColor(), editFadeSeconds);
+            selFrame, newFrame, packColor(), editFadeSeconds);
         if (snapshotValid) cmd->setPreviousState(preEditSnapshot);
         m_dispatcher->enqueue(std::move(cmd));
         snapshotValid = false;
@@ -1312,10 +1372,6 @@ void PropertyWindow::renderSectionBreakProperties() {
             trackedFrame = newFrame;
         }
     };
-
-    ImGui::InputText("Name", editName, sizeof(editName));
-    if (ImGui::IsItemActivated()) captureSnapshot();
-    if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
 
     ImGui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
     if (ImGui::IsItemActivated()) captureSnapshot();

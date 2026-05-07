@@ -15,8 +15,11 @@
 #include "entity/components/Clip.hpp"
 #include <sstream>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <limits>
+#include <vector>
+#include <algorithm>
 
 namespace entity {
 
@@ -123,19 +126,34 @@ void TimelineWidget::render() {
     }
     (void)registry;
 
+    // Compute cue-lane height *before* allocating the ruler child so the
+    // band can be reserved above the time ruler. Lane sits between any
+    // toolbar/menu rows above us and the time ruler below; child window
+    // height grows by m_cueLaneHeight to host both.
+    {
+        std::vector<CueLaneSlot> slots;
+        int rowsUsed = 0;
+        computeCueLaneLayout(slots, rowsUsed);
+        const float minLaneH = kCueRowH;  // one row tall, ~16px so right-click hit-test always engages
+        m_cueLaneHeight = std::max(minLaneH,
+            kCueRowH * static_cast<float>(rowsUsed) + kCueLanePad);
+    }
+    const float topBandHeight = RULER_HEIGHT + m_cueLaneHeight;
+
     // Reserve space for controls at bottom (approximately 40 pixels)
     float controlsHeight = 40.0f;
     float availableHeight = contentRegion.y - controlsHeight;
-    float tracksWindowHeight = availableHeight - RULER_HEIGHT;
+    float tracksWindowHeight = availableHeight - topBandHeight;
     float timelineContentWidth = m_lastVisibleWidth;
 
     // === TOP ROW: Header corner + Ruler ===
-    // Header corner (empty space above track headers, aligned with ruler)
-    ImGui::BeginChild("HeaderCorner", ImVec2(TRACK_HEADER_WIDTH, RULER_HEIGHT), false,
+    // Header corner (empty space above track headers, aligned with ruler).
+    // Spans the cue-lane band too so vertical alignment stays consistent.
+    ImGui::BeginChild("HeaderCorner", ImVec2(TRACK_HEADER_WIDTH, topBandHeight), false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImDrawList* cornerDrawList = ImGui::GetWindowDrawList();
     ImVec2 cornerMin = ImGui::GetWindowPos();
-    ImVec2 cornerMax(cornerMin.x + TRACK_HEADER_WIDTH, cornerMin.y + RULER_HEIGHT);
+    ImVec2 cornerMax(cornerMin.x + TRACK_HEADER_WIDTH, cornerMin.y + topBandHeight);
     cornerDrawList->AddRectFilled(cornerMin, cornerMax, IM_COL32(35, 35, 40, 255));
     cornerDrawList->AddText(ImVec2(cornerMin.x + 8, cornerMin.y + 8), IM_COL32(150, 150, 150, 255), "Tracks");
     ImGui::EndChild();
@@ -150,16 +168,29 @@ void TimelineWidget::render() {
     // NoScrollbar, dragging the ruler's scrollbar desyncs from the tracks
     // scroll and the playhead renders as a diagonal line (top end uses ruler
     // scroll, bottom end uses tracks scroll).
-    ImGui::BeginChild("TimelineRuler", ImVec2(timelineContentWidth, RULER_HEIGHT), false,
+    //
+    // Child height = cue lane band (top) + time ruler (bottom). The cue
+    // lane is drawn by renderCueLane() before the ruler so triangle pointers
+    // can drop down into the ruler band underneath.
+    ImGui::BeginChild("TimelineRuler", ImVec2(timelineContentWidth, topBandHeight), false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
     ImGui::SetScrollX(m_syncScrollX);
 
-    // Save ruler position for playhead rendering
+    ImVec2 childOrigin = ImGui::GetCursorScreenPos();
+
+    // Cue lane band (above the ruler). Skipped when no cues -> 0 height.
+    if (m_cueLaneHeight > 0.0f) {
+        renderCueLane(childOrigin, m_cueLaneHeight, childOrigin.y + m_cueLaneHeight);
+    }
+
+    // Push cursor down past the cue lane so renderTimeRuler() lands at the
+    // correct screen Y. m_rulerScreenPos must point at the ruler top, NOT
+    // the cue-lane top — playhead/section-break rendering reads it.
+    ImGui::SetCursorPos(ImVec2(0, m_cueLaneHeight));
     m_rulerScreenPos = ImGui::GetCursorScreenPos();
 
-    ImGui::SetCursorPos(ImVec2(0, 0));
     ImGui::InvisibleButton("##rulerArea", ImVec2(timelineWidth, RULER_HEIGHT));
-    ImGui::SetCursorPos(ImVec2(0, 0));
+    ImGui::SetCursorPos(ImVec2(0, m_cueLaneHeight));
 
     renderTimeRuler();
     handleRulerInteraction();
@@ -417,9 +448,142 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
 Timecode TimelineWidget::snapTimeToTickGrid(Timecode t) const {
     if (!m_timeline) return t;
     const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
-    FrameNumber f = m_timeline->timeToFrame(t);
-    f = ((f + tickEvery / 2) / tickEvery) * tickEvery;  // round to nearest tick
+    const double fps = m_timeline->getFrameRate();
+    if (fps <= 0.0) return t;
+    // Floor — click resolves to the start of the cell the cursor is in.
+    FrameNumber f = static_cast<FrameNumber>(std::floor((t / 1000000.0) * fps));
+    f = (f / tickEvery) * tickEvery;
     return m_timeline->frameToTime(f);
+}
+
+Timecode TimelineWidget::snapTimeToCues(Timecode t, Timecode tol) const {
+    if (!m_timeline) return t;
+    const auto& cues = m_timeline->getCueTags();
+    Timecode best = t;
+    Timecode bestDist = tol + 1;
+    for (const auto& cue : cues) {
+        // Skip the cue currently being dragged so it can't snap to its own
+        // pre-drag position (which would freeze the drag in place).
+        if (m_isDraggingCue && cue.number == m_draggedCueNumber) continue;
+        const Timecode d = std::llabs(static_cast<long long>(cue.timestamp - t));
+        if (d <= tol && d < bestDist) {
+            bestDist = d;
+            best = cue.timestamp;
+        }
+    }
+    return best;
+}
+
+Timecode TimelineWidget::snapTimeToSections(Timecode t, Timecode tol) const {
+    if (!m_timeline) return t;
+    const auto& sections = m_timeline->getSections();
+    Timecode best = t;
+    Timecode bestDist = tol + 1;
+    for (const auto& sec : sections) {
+        const Timecode d = std::llabs(static_cast<long long>(sec.breakFrame - t));
+        if (d <= tol && d < bestDist) {
+            bestDist = d;
+            best = sec.breakFrame;
+        }
+    }
+    return best;
+}
+
+Timecode TimelineWidget::snapTimeToBest(Timecode t) const {
+    if (!m_timeline) return t;
+    const Timecode tol = pixelToTime(kSnapPx);
+    const Timecode gridT = snapTimeToTickGrid(t);
+    const Timecode cueT  = snapTimeToCues(t, tol);
+    const Timecode secT  = snapTimeToSections(t, tol);
+
+    Timecode best = gridT;
+    Timecode bestDist = std::llabs(static_cast<long long>(gridT - t));
+    auto consider = [&](Timecode candidate) {
+        const Timecode d = std::llabs(static_cast<long long>(candidate - t));
+        if (d < bestDist) {
+            bestDist = d;
+            best = candidate;
+        }
+    };
+    consider(cueT);
+    consider(secT);
+    return best;
+}
+
+void TimelineWidget::computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, int& outRowsUsed) const {
+    outSlots.clear();
+    outRowsUsed = 0;
+    if (!m_timeline) return;
+    const auto& cues = m_timeline->getCueTags();
+    if (cues.empty()) return;
+
+    // Build sorted index list by timestamp so we walk left-to-right
+    // (cue vector is sorted by `number`, not time).
+    std::vector<size_t> order;
+    order.reserve(cues.size());
+    for (size_t i = 0; i < cues.size(); ++i) order.push_back(i);
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        return cues[a].timestamp < cues[b].timestamp;
+    });
+
+    // Greedy left-to-right with per-row "rightmost-end" trackers. For each
+    // cue compute its label rect, place in the lowest row whose previous
+    // rightmost end is <= this cue's left edge. New row if all rows
+    // collide. Capped at kMaxCueRows; over-cap rows fall back to short
+    // (number-only) labels and re-attempt; if still over-cap, force-place
+    // on the last row (visual overlap accepted as the degenerate case).
+    constexpr float kFlagPadX = 4.0f;
+    constexpr float kFlagSepX = 2.0f;
+    std::vector<float> rowRightX(kMaxCueRows, -1.0e9f);
+    int maxRowAssigned = -1;
+
+    auto measureLabel = [](const CueTag& cue, bool useLong) -> float {
+        char buf[320];
+        if (useLong && !cue.label.empty()) {
+            std::snprintf(buf, sizeof(buf), "%.2f [%s]", cue.number, cue.label.c_str());
+        } else {
+            std::snprintf(buf, sizeof(buf), "%.2f", cue.number);
+        }
+        return ImGui::CalcTextSize(buf).x + 2.0f * kFlagPadX;
+    };
+
+    outSlots.reserve(order.size());
+    for (size_t idx : order) {
+        const CueTag& cue = cues[idx];
+        const float x = timeToPixel(cue.timestamp);
+
+        bool useLong = !cue.label.empty();
+        float w = measureLabel(cue, useLong);
+
+        int chosenRow = -1;
+        for (int r = 0; r < kMaxCueRows; ++r) {
+            if (x >= rowRightX[r] + kFlagSepX) { chosenRow = r; break; }
+        }
+        if (chosenRow < 0 && useLong) {
+            useLong = false;
+            w = measureLabel(cue, false);
+            for (int r = 0; r < kMaxCueRows; ++r) {
+                if (x >= rowRightX[r] + kFlagSepX) { chosenRow = r; break; }
+            }
+        }
+        if (chosenRow < 0) {
+            chosenRow = kMaxCueRows - 1;
+            useLong = false;
+            w = measureLabel(cue, false);
+        }
+
+        rowRightX[chosenRow] = x + w;
+        if (chosenRow > maxRowAssigned) maxRowAssigned = chosenRow;
+
+        CueLaneSlot s;
+        s.cueIndex = idx;
+        s.row = chosenRow;
+        s.labelW = w;
+        s.longLabel = useLong;
+        outSlots.push_back(s);
+    }
+
+    outRowsUsed = (maxRowAssigned >= 0) ? (maxRowAssigned + 1) : 0;
 }
 
 int TimelineWidget::findTrackAtY(float mouseY, float windowY) const {

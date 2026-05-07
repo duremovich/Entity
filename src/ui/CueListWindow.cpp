@@ -80,8 +80,7 @@ void CueListWindow::render() {
             char numBuf[24];
             std::snprintf(numBuf, sizeof(numBuf), "%.2f", cue.number);
             const bool isSelected = selectedCueOpt.has_value() && *selectedCueOpt == cue.number;
-            ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_SpanAllColumns
-                                          | ImGuiSelectableFlags_AllowDoubleClick;
+            ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
             if (ImGui::Selectable(numBuf, isSelected, selFlags)) {
                 timeline->setSelectedCueNumber(cue.number);
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && dispatcher) {
@@ -96,9 +95,19 @@ void CueListWindow::render() {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(cue.label.c_str());
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                rightClickedNumber = cue.number;
+                rightClickedValid = true;
+                ImGui::OpenPopup("CueRowContextMenu");
+            }
 
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(formatSmpte(cue.timestamp, frameRate).c_str());
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                rightClickedNumber = cue.number;
+                rightClickedValid = true;
+                ImGui::OpenPopup("CueRowContextMenu");
+            }
 
             ImGui::TableSetColumnIndex(3);
             if (ImGui::SmallButton("Fire")) {

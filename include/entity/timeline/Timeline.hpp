@@ -4,6 +4,7 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/timeline/CueTag.hpp"
 #include <entt/entt.hpp>
+#include <array>
 #include <vector>
 #include <string>
 #include <functional>
@@ -11,6 +12,8 @@
 #include <unordered_set>
 #include <cmath>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 
 namespace entity {
 
@@ -209,7 +212,6 @@ public:
     // ============================================================================
     struct Section {
         Timecode    breakFrame{0};      // Single point on the timeline (microseconds)
-        std::string name;               // Optional label for the span starting here
         uint32_t    color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
         double      fadeSeconds{0.0};   // Phase D will use; serialized now
     };
@@ -219,7 +221,7 @@ public:
     /** Insert a section break at the given frame. Returns false if a break
      *  already exists at that exact frame. Sorted-insert; no snapping
      *  (callers snap to the tick grid before invoking). */
-    bool addSectionBreak(Timecode breakFrame, std::string name = {},
+    bool addSectionBreak(Timecode breakFrame,
                          uint32_t color = 0xFF6090C8, double fadeSeconds = 0.0);
 
     /** Remove the break at `breakFrame`. Returns true on success. */
@@ -228,8 +230,7 @@ public:
     /** Edit an existing break. If `newBreakFrame != oldBreakFrame`, fails when
      *  another break already sits at `newBreakFrame`. Re-sorts on change. */
     bool editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
-                          std::string newName, uint32_t newColor,
-                          double newFadeSeconds);
+                          uint32_t newColor, double newFadeSeconds);
 
     /** Look up the first break strictly after `time`. Binary search (hot path
      *  called every tick by SectionScheduler). nullptr if none. */
@@ -409,5 +410,33 @@ private:
     // Callback for clip creation
     ClipCreatedCallback m_clipCreatedCallback;
 };
+
+// ============================================================================
+// Section color palette (Round-3 Phase 2 — auto-coloring).
+// 8-entry ABGR palette. The implicit first segment uses index 0; UI-driven
+// adds index by `getSections().size() + 1` so the first user-added break
+// gets palette[1] and successive breaks rotate through the palette.
+// `addSectionBreak` keeps its blue default for backward-compat with
+// serialized projects + scripted creation; the UI add path passes a
+// palette-derived color explicitly.
+// ============================================================================
+namespace sectionPalette {
+
+inline constexpr std::array<uint32_t, 8> kSectionColors = {
+    0xFF6090C8u,  // cool blue (matches addSectionBreak default)
+    0xFFE07A7Au,  // coral
+    0xFF7AC07Au,  // jade green
+    0xFFD0A050u,  // amber
+    0xFF9870C0u,  // violet
+    0xFF50B0C0u,  // teal
+    0xFFC07AA0u,  // rose
+    0xFF80A050u,  // olive
+};
+
+inline uint32_t pickColor(std::size_t index) {
+    return kSectionColors[index % kSectionColors.size()];
+}
+
+} // namespace sectionPalette
 
 } // namespace entity

@@ -5,10 +5,19 @@
 #include "entity/timeline/Timeline.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
 namespace entity {
+
+namespace {
+    constexpr FrameNumber kAtBreakSnapTol = 1;
+    inline bool isAtBreakAlignedStart(FrameNumber clipStart, FrameNumber breakTimelineFrame) {
+        const FrameNumber d = clipStart >= breakTimelineFrame ? clipStart - breakTimelineFrame : breakTimelineFrame - clipStart;
+        return d <= kAtBreakSnapTol;
+    }
+}
 
 SectionScheduler::SectionScheduler(entt::registry& registry, Timeline* timeline)
     : m_registry(registry)
@@ -33,6 +42,10 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         // Stop also cancels continuation -- the clips would resume from
         // wherever the timeline next plays from, not from the parked phase.
         clearAllContinuation();
+        // Round-2 fixup, Phase 4 — Stopped is effectively a scrub away
+        // from playback. Anchors set at frames past the current playhead
+        // are stale and would otherwise re-engage on the next play.
+        resetAnchorsAcrossScrub(currentTime);
         return;
     }
 
@@ -53,13 +66,14 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         return;
     }
 
-    // Manual-resume unstick: if the timeline transitioned to Playing while
-    // we still hold the at-break latch (user clicked the UI play button or
-    // a script fired Play / TogglePlayPause without going through GO), the
-    // latch is stale. Drop it before processing this tick — otherwise the
-    // next spacebar would fire SectionGo and yank the playhead back to the
-    // last break.
-    if (m_atBreak && currentTime > m_lastBreakHitFrame) {
+    // Manual-resume unstick: any state-Playing tick where m_atBreak is
+    // still raised is stale. Drop the latch unconditionally — Timeline::seek
+    // already clears `sectionAtBreak()` (above), and the discontinuity
+    // branch (below) clears scheduler state. This guard is the last
+    // safety net for paths that don't go through either. The previous
+    // `currentTime > m_lastBreakHitFrame` guard failed when the user
+    // scrubbed BACKWARD before pressing Play.
+    if (m_atBreak) {
         m_atBreak = false;
         m_timeline->setSectionAtBreak(false);
         clearAllContinuation();
@@ -82,6 +96,23 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         : static_cast<Timecode>(0);
     const Timecode discontinuityThreshold = std::max(oneFrame * 2, tickAdvance * 5);
     if (delta > discontinuityThreshold) {
+        // Round-2 fixup, Phase 4 — a discontinuity here means the user
+        // scrubbed (or some non-playback driver moved the playhead). Any
+        // post-break anchor whose `anchorTimelineFrame > currentTimelineFrame`
+        // is now stale: the user either jumped backward past the break
+        // that set it, or forward-skipped the at-break pause without
+        // experiencing it.
+        resetAnchorsAcrossScrub(currentTime);
+        // Round-3 fixup, Phase 1 — also drop the at-break latch. Belt-and-
+        // braces against scrubs that come through paths Timeline::seek
+        // doesn't see (e.g., direct currentTime mutation). Continuation is
+        // cleared too: the parked phase no longer corresponds to the new
+        // playhead position.
+        if (m_atBreak) {
+            m_atBreak = false;
+            m_timeline->setSectionAtBreak(false);
+        }
+        clearAllContinuation();
         m_lastTickFrame = currentTime;
         return;
     }
@@ -101,8 +132,9 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
             // Phase C: seed Normal clips with the source-frame phase they
             // had at the break so their continuation picks up smoothly.
             seedContinuationAt(hit);
-            std::cout << "[SectionScheduler] At break frame=" << hit
-                      << " ('" << brk->name << "')" << std::endl;
+            std::cout << "[SectionScheduler] At break frame=" << hit << std::endl;
+            // [SBG] diag — REMOVE after section-break-glitch fix lands.
+            std::cout << "[SBG][at-break] hit=" << hit << std::endl;
             return;
         }
     }
@@ -117,8 +149,25 @@ void SectionScheduler::go() {
     const Timecode oneFrame = static_cast<Timecode>(1000000.0 / frameRate);
     const Timecode resumeFrame = m_lastBreakHitFrame + oneFrame;
 
+    // Phase 6 — snapshot the displayed frame for any continuing clip
+    // ending at this break, so the post-break held-fade shows what the
+    // user actually saw. Must run BEFORE clearAllContinuation, otherwise
+    // the math falls back to the (frozen) timeline-derived path and a
+    // looping clip would snapshot the wrong frame.
+    snapshotTailHoldFrames(m_lastBreakHitFrame);
+
+    // Round-2 fixup, Phase 4 — for clips that span the break (don't end
+    // at it), capture a post-break source-frame anchor so the 3-arg
+    // mapToMediaFrame can resume from where the user was watching at GO
+    // instead of rewinding to the natural clipStart-derived mapping. Same
+    // ordering rationale as snapshotTailHoldFrames: must run BEFORE
+    // clearAllContinuation while `inContinuation == true` and
+    // `sourcePhaseFrames` still reflect the at-break advance.
+    snapshotPostBreakAnchors(m_lastBreakHitFrame);
+
     // Clear continuation BEFORE flipping the at-break flag so the very next
-    // mapToMediaFrame call (post-resume) takes the timeline-derived path.
+    // mapToMediaFrame call (post-resume) takes the anchor-derived path
+    // (or the timeline-derived path for non-spanning clips).
     clearAllContinuation();
 
     m_atBreak = false;
@@ -130,6 +179,9 @@ void SectionScheduler::go() {
 
     std::cout << "[SectionScheduler] GO from break " << m_lastBreakHitFrame
               << " -> resume at " << resumeFrame << std::endl;
+    // [SBG] diag — REMOVE after section-break-glitch fix lands.
+    std::cout << "[SBG][go] from=" << m_lastBreakHitFrame
+              << " resumeFrame=" << resumeFrame << std::endl;
 }
 
 void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
@@ -156,15 +208,40 @@ void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
             continue;
         }
 
-        // Source-frame phase at the break = (timeline delta since clip
-        // start) * (clipFps / timelineFps). Lazy-allocate the component
-        // (existing components are reused — clearAllContinuation keeps
-        // them around between break crossings).
+        // Lazy-allocate phase for both queued and spanning paths so
+        // snapshotPostBreakAnchors can stamp on the same component.
         ClipPlaybackPhase& phase = m_registry.get_or_emplace<ClipPlaybackPhase>(entity);
+
+        if (isAtBreakAlignedStart(clip.startFrame, breakTimelineFrame)) {
+            // Queued clip — does NOT accumulate continuation. The post-GO
+            // anchor is stamped in snapshotPostBreakAnchors so playback
+            // flows through the existing anchor branch, just like a
+            // spanning clip would after its own break.
+            phase.inContinuation = false;
+            phase.sourcePhaseFrames = 0.0;
+            continue;
+        }
+
+        // Source-frame phase at the break = (timeline delta since clip
+        // start) * (clipFps / timelineFps).
         const double deltaTimelineFrames =
             static_cast<double>(breakTimelineFrame - clip.startFrame);
         const double frameRateRatio = clip.framerate / timelineFrameRate;
-        phase.sourcePhaseFrames = deltaTimelineFrames * frameRateRatio;
+        // Round-2 fixup, Phase 4 — multi-break: when a clip spans break-A
+        // (which set an anchor) and reaches break-B, seed the new
+        // continuation phase from the carry-forward anchor instead of the
+        // natural (clipStart-derived) mapping. Otherwise the at-break-B
+        // pause would visibly jump backward to whatever clip-start delta
+        // happens to land on.
+        if (phase.postBreakMediaAnchor >= 0) {
+            const double timelineDelta =
+                static_cast<double>(breakTimelineFrame - phase.anchorTimelineFrame);
+            phase.sourcePhaseFrames =
+                static_cast<double>(phase.postBreakMediaAnchor - clip.mediaStartFrame)
+                + timelineDelta * frameRateRatio;
+        } else {
+            phase.sourcePhaseFrames = deltaTimelineFrames * frameRateRatio;
+        }
         phase.inContinuation = true;
     }
 }
@@ -188,6 +265,186 @@ void SectionScheduler::clearAllContinuation() {
         ClipPlaybackPhase& phase = view.get<ClipPlaybackPhase>(entity);
         phase.inContinuation = false;
         phase.sourcePhaseFrames = 0.0;
+        // tailHoldMediaFrame is intentionally left intact when called from
+        // go() — it's seeded just above by snapshotTailHoldFrames and read
+        // by mapToMediaFrame during the post-end fade tail. The Stopped /
+        // unstick paths reach this through the same routine; they don't
+        // produce a fade tail (no resume into a break-aligned clip end),
+        // so a stale value sitting on a re-seeded clip is harmless until
+        // the next snapshotTailHoldFrames overwrites or seedContinuationAt
+        // (which doesn't touch the field) leaves it alone.
+        //
+        // Round-2 fixup, Phase 4 — postBreakMediaAnchor / anchorTimelineFrame
+        // are likewise preserved here. They were just seeded above by
+        // snapshotPostBreakAnchors and the post-GO 3-arg mapToMediaFrame
+        // path needs them to keep playback rolling without a rewind.
+        // Anchor invalidation happens via resetAnchorsAcrossScrub on
+        // discontinuities and on Stopped, not here.
+    }
+}
+
+void SectionScheduler::snapshotTailHoldFrames(Timecode breakFrameTime) {
+    if (!m_timeline) return;
+    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+
+    const FrameNumber breakTimelineFrame = static_cast<FrameNumber>(
+        (static_cast<double>(breakFrameTime) * timelineFrameRate) / 1000000.0);
+
+    // ±1 timeline-frame snap tolerance, mirroring sectionFadeTailFrames.
+    constexpr FrameNumber snapTol = 1;
+    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
+        return a >= b ? a - b : b - a;
+    };
+
+    auto view = m_registry.view<Clip, ClipPlaybackPhase>();
+    for (auto entity : view) {
+        const Clip& clip = view.get<Clip>(entity);
+        ClipPlaybackPhase& phase = view.get<ClipPlaybackPhase>(entity);
+
+        if (!phase.inContinuation) continue;
+        if (clip.sectionBehavior != SectionBehavior::Normal) continue;
+        if (clip.framerate <= 0.0) continue;
+
+        // Only clips whose end aligns with this break get a tail snapshot;
+        // others won't enter the post-end fade window in the first place.
+        const FrameNumber clipEnd = clip.startFrame + clip.duration;
+        if (absDiff(clipEnd, breakTimelineFrame) > snapTol) continue;
+
+        const FrameNumber sourceLength = clip.totalMediaFrames > 0
+            ? clip.totalMediaFrames
+            : static_cast<FrameNumber>(
+                clip.duration * (clip.framerate / timelineFrameRate));
+        if (sourceLength <= 0) continue;
+
+        const double phaseClamped = std::max(phase.sourcePhaseFrames, 0.0);
+        const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
+
+        FrameNumber held = clip.mediaStartFrame + sourceLength - 1;
+        switch (clip.playbackMode) {
+            case PlaybackMode::Freeze:
+                held = clip.mediaStartFrame + std::min(phaseFrame, sourceLength - 1);
+                break;
+            case PlaybackMode::Loop:
+                held = clip.mediaStartFrame + (phaseFrame % sourceLength);
+                break;
+            case PlaybackMode::PingPong: {
+                const FrameNumber cycle = phaseFrame / sourceLength;
+                const FrameNumber pos   = phaseFrame % sourceLength;
+                held = (cycle % 2 == 0)
+                    ? clip.mediaStartFrame + pos
+                    : clip.mediaStartFrame + (sourceLength - 1 - pos);
+                break;
+            }
+        }
+        phase.tailHoldMediaFrame = held;
+    }
+}
+
+void SectionScheduler::snapshotPostBreakAnchors(Timecode breakFrameTime) {
+    if (!m_timeline) return;
+    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+
+    const FrameNumber breakTimelineFrame = static_cast<FrameNumber>(
+        (static_cast<double>(breakFrameTime) * timelineFrameRate) / 1000000.0);
+
+    // ±1 timeline-frame snap tolerance, mirroring snapshotTailHoldFrames.
+    constexpr FrameNumber snapTol = 1;
+    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
+        return a >= b ? a - b : b - a;
+    };
+
+    auto view = m_registry.view<Clip, ClipPlaybackPhase>();
+    for (auto entity : view) {
+        const Clip& clip = view.get<Clip>(entity);
+        ClipPlaybackPhase& phase = view.get<ClipPlaybackPhase>(entity);
+
+        if (clip.sectionBehavior != SectionBehavior::Normal) continue;
+        if (clip.framerate <= 0.0) continue;
+
+        // Skip clips ending AT the break — those are owned by tail-hold,
+        // they don't play past the break, so they don't need an anchor.
+        const FrameNumber clipEnd = clip.startFrame + clip.duration;
+        if (absDiff(clipEnd, breakTimelineFrame) <= snapTol) continue;
+
+        if (isAtBreakAlignedStart(clip.startFrame, breakTimelineFrame)) {
+            // Queued clip — first visible post-GO tick is clipStart+1,
+            // mapping to mediaStartFrame. Stamp the anchor with that
+            // pairing; the existing anchor branch in mapToMediaFrame
+            // (and the decoder's anchor steer) handles every subsequent
+            // tick naturally. Must run BEFORE the !inContinuation guard
+            // because seedContinuationAt leaves queued phase with
+            // inContinuation=false.
+            phase.postBreakMediaAnchor = clip.mediaStartFrame;
+            phase.anchorTimelineFrame = clip.startFrame + 1;
+            continue;
+        }
+
+        if (!phase.inContinuation) continue;
+
+        // Compute the source-media frame the clip is currently mapping
+        // to — same Freeze/Loop/PingPong wrap math the 3-arg
+        // mapToMediaFrame uses on `sourcePhaseFrames`. We can't call
+        // PlaybackTimeAuthority from here (Director-side ownership cut),
+        // so mirror the math inline.
+        const FrameNumber sourceLength = clip.totalMediaFrames > 0
+            ? clip.totalMediaFrames
+            : static_cast<FrameNumber>(
+                clip.duration * (clip.framerate / timelineFrameRate));
+        if (sourceLength <= 0) continue;
+
+        const double phaseClamped = std::max(phase.sourcePhaseFrames, 0.0);
+        const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
+
+        FrameNumber currentSrc = clip.mediaStartFrame + sourceLength - 1;
+        switch (clip.playbackMode) {
+            case PlaybackMode::Freeze:
+                currentSrc = clip.mediaStartFrame + std::min(phaseFrame, sourceLength - 1);
+                break;
+            case PlaybackMode::Loop:
+                currentSrc = clip.mediaStartFrame + (phaseFrame % sourceLength);
+                break;
+            case PlaybackMode::PingPong: {
+                const FrameNumber cycle = phaseFrame / sourceLength;
+                const FrameNumber pos   = phaseFrame % sourceLength;
+                currentSrc = (cycle % 2 == 0)
+                    ? clip.mediaStartFrame + pos
+                    : clip.mediaStartFrame + (sourceLength - 1 - pos);
+                break;
+            }
+        }
+
+        phase.postBreakMediaAnchor = currentSrc;
+        // Anchor's reference frame is the post-GO timeline position (one
+        // frame past the break). The 3-arg mapToMediaFrame computes
+        // `(timelineFrame - anchorTimelineFrame) * ratio` as the delta
+        // off the anchor — so at frame breakTimelineFrame+1 the delta is
+        // zero and the returned media frame equals the anchor exactly.
+        phase.anchorTimelineFrame = breakTimelineFrame + 1;
+    }
+}
+
+void SectionScheduler::resetAnchorsAcrossScrub(Timecode currentTime) {
+    if (!m_timeline) return;
+    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+    const FrameNumber currentTimelineFrame = static_cast<FrameNumber>(
+        (static_cast<double>(currentTime) * timelineFrameRate) / 1000000.0);
+
+    auto view = m_registry.view<ClipPlaybackPhase>();
+    for (auto entity : view) {
+        ClipPlaybackPhase& phase = view.get<ClipPlaybackPhase>(entity);
+        if (phase.postBreakMediaAnchor < 0) continue;
+        // The anchor was set at break-N for play resuming at break-N+1.
+        // If the user is now at a timeline frame BEFORE that resume
+        // point, they either scrubbed backward past the break or
+        // forward-jumped to skip the at-break pause; either way the
+        // anchor should not be applied to the new playback position.
+        if (phase.anchorTimelineFrame > currentTimelineFrame) {
+            phase.postBreakMediaAnchor = -1;
+            phase.anchorTimelineFrame = 0;
+        }
     }
 }
 

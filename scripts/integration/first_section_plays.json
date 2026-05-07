@@ -1,0 +1,20 @@
+{
+    "version": 1,
+    "description": "Round-3 Phase 1 — first-section playback (issue #3 regression guard). One break at timeline frame 60 (2000000us at 30fps); a clip occupies frames 0..29 entirely inside the first section, ending well before the break. Hit Play from frame 0. The clip must be active and the playhead must advance normally — no Phase 5 visibility-gate misfire even though m_atSectionBreak might transiently get set during the test session. Pre-fix: when sectionAtBreak() got stuck true after an earlier interaction, clips with startFrame ≈ break frame would be hidden; this test pins the simpler case where the clip is nowhere near the break and SHOULD always play. Together with scrub_clears_at_break.json this covers both the bad state path and the basic invariant.",
+    "commands": [
+        {"type": "AddScreen", "name": "FirstSectionPlaysScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 30},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 0.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertPlayheadAtFrame", "frame": 0, "tolerance": 0},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "Exit"}
+    ]
+}

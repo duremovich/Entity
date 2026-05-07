@@ -9,11 +9,13 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
+#include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodeBufferPool.hpp"
 #include "entity/media/FrameCache.hpp"
+#include <cmath>
 #include <iostream>
 #include <chrono>
 
@@ -58,6 +60,24 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
     FrameNumber currentTimelineFrame = m_timeline->getCurrentFrame();
 
+    // [SBG] diag — helper to flag clips aligned with any section break.
+    // REMOVE after section-break-glitch fix lands.
+    const auto& sbgSections = m_timeline->getSections();
+    const double sbgTLFrameRate = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+    auto sbgIsAligned = [&](const Clip& c) -> bool {
+        for (const auto& sec : sbgSections) {
+            const FrameNumber bf = static_cast<FrameNumber>(
+                (static_cast<double>(sec.breakFrame) * sbgTLFrameRate) / 1000000.0);
+            const FrameNumber start = c.startFrame;
+            const FrameNumber end   = c.startFrame + c.duration;
+            const FrameNumber dStart = (start >= bf) ? start - bf : bf - start;
+            const FrameNumber dEnd   = (end   >= bf) ? end   - bf : bf - end;
+            if (dStart <= 1 || dEnd <= 1) return true;
+        }
+        return false;
+    };
+
     auto view = registry.view<Clip, FrameBuffer>();
     // FrameBuffer is an empty marker type; entt elides empty components from
     // view::each's tuple, so the binding here is (entity, clip) only.
@@ -66,7 +86,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
         auto workerIt = m_workers.find(entity);
         if (workerIt == m_workers.end()) {
-            // Bootstrap a worker at the current playhead-mapped media frame
+            // Bootstrap a worker at the current playhead-mapped media frame.
             FrameNumber initialMediaFrame = clip.mediaStartFrame;
             if (currentTimelineFrame >= clip.startFrame &&
                 currentTimelineFrame < clip.startFrame + clip.duration) {
@@ -75,6 +95,15 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
                 FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
                 initialMediaFrame = clip.mediaStartFrame + sourceLocalFrame;
+            }
+            // [SBG] diag — REMOVE after fix lands.
+            if (sbgIsAligned(clip)) {
+                std::cout << "[SBG][decode-bootstrap] entity=" << static_cast<uint32_t>(entity)
+                          << " clipStart=" << clip.startFrame
+                          << " currentTLFrame=" << currentTimelineFrame
+                          << " initialMediaFrame=" << initialMediaFrame
+                          << " state=" << static_cast<int>(m_timeline->getPlaybackState())
+                          << std::endl;
             }
             createWorker(entity, registry, initialMediaFrame);
             workerIt = m_workers.find(entity);
@@ -95,12 +124,39 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
         if (currentTimelineFrame >= clip.startFrame &&
             currentTimelineFrame < clip.startFrame + clip.duration) {
-            // Active clip: compute target media frame using playback mode
+            // Active clip: compute target media frame using playback mode.
             FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
 
             double timelineFrameRate = m_timeline->getFrameRate();
             double frameRateRatio = clip.framerate / timelineFrameRate;
             FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
+
+            // Phase 1 fix — when the SectionScheduler has put this clip in
+            // Normal continuation, the timeline frame is frozen at the
+            // break but `phase.sourcePhaseFrames` keeps walking at
+            // `clip.framerate`. Steer the worker's target by the same
+            // phase so the decoder doesn't park at break + DECODE_AHEAD
+            // and silently miss every subsequent wrapped frame.
+            const ClipPlaybackPhase* phase = registry.try_get<ClipPlaybackPhase>(entity);
+            if (phase && phase->inContinuation
+                    && clip.sectionBehavior == SectionBehavior::Normal) {
+                const double phaseClamped = std::max(phase->sourcePhaseFrames, 0.0);
+                sourceLocalFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
+            } else if (phase && phase->postBreakMediaAnchor >= 0) {
+                // Round-2 fixup, Phase 4 — post-break anchor steers the
+                // decoder so the worker target tracks the same media
+                // frame the presenter is mapping to. Mirrors the
+                // anchor branch in PlaybackTimeAuthority::mapToMediaFrame
+                // — the wrap math below (Loop / PingPong / Freeze)
+                // applies the same way to this sourceLocalFrame.
+                const double timelineDelta = static_cast<double>(
+                    currentTimelineFrame - phase->anchorTimelineFrame);
+                const double localFloat =
+                    static_cast<double>(phase->postBreakMediaAnchor - clip.mediaStartFrame)
+                    + timelineDelta * frameRateRatio;
+                sourceLocalFrame = static_cast<FrameNumber>(
+                    std::floor(std::max(localFloat, 0.0)));
+            }
 
             FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames :
                 static_cast<FrameNumber>(clip.duration * frameRateRatio);
@@ -145,6 +201,19 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
             }
 
+            // [SBG] diag — REMOVE after fix lands. Only log for break-aligned
+            // clips so volume stays bounded.
+            if (sbgIsAligned(clip)) {
+                std::cout << "[SBG][decode-target] entity=" << static_cast<uint32_t>(entity)
+                          << " currentTLFrame=" << currentTimelineFrame
+                          << " mediaFrame=" << mediaFrame
+                          << " target=" << worker->targetFrame.load()
+                          << " workerCurrent=" << worker->currentFrame.load()
+                          << " initialized=" << (worker->initialized.load() ? 1 : 0)
+                          << " state=" << static_cast<int>(m_timeline->getPlaybackState())
+                          << std::endl;
+            }
+
             // Seek-on-discontinuity. Same thresholds during scrubbing as
             // outside it — seekPending already prevents piling up seeks, so
             // running this path during a drag doesn't thrash. The previous
@@ -167,6 +236,19 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                     if (std::abs(frameDelta) > static_cast<int64_t>(sourceLength)) {
                         needsSeek = true;
                     }
+                } else if (clip.playbackMode == PlaybackMode::Loop &&
+                           sourceLength > 0 &&
+                           frameDelta == -static_cast<int64_t>(sourceLength - 1)) {
+                    // Phase 1 fix — Loop continuation wrap. The phase-driven
+                    // mediaFrame just stepped from (end - 1) back to
+                    // mediaStartFrame; that's not a scrub, it's a planned
+                    // wrap. Issue a single one-shot seek to the start so the
+                    // decoder is positioned for the next cycle's keyframe-1
+                    // (~10 ms for ProRes), instead of the backward-scrub
+                    // path that would clear/refill the buffer.
+                    seekClip(entity, clip.mediaStartFrame);
+                    worker->lastRequestedFrame.store(mediaFrame);
+                    continue;
                 } else {
                     constexpr int SEEK_HYSTERESIS = 8;
                     if (frameDelta < -SEEK_HYSTERESIS) {

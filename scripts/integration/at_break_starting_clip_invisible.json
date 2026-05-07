@@ -1,0 +1,26 @@
+{
+    "version": 1,
+    "description": "Phase 5 (post-test-fixup) — at-break visibility gate. Clip A on track 0 ends at the section break (frame 60), clip B on track 1 starts at the section break. fadeSeconds=0 so neither clip has an authored fade envelope. While SectionScheduler holds the playhead at the break, clip B (which starts at the break) must be suppressed by the new gate (multiplier 0.0) -- otherwise its first frame would pop on screen during the at-break pause. Clip A is at currentFrame == clipEnd, the held-tail boundary (multiplier 1.0). After SectionGo the gate releases and clip B becomes fully visible (multiplier 1.0) since fadeSeconds=0.",
+    "commands": [
+        {"type": "AddScreen", "name": "AtBreakGateScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 60},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 1, "position": 2000000},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 1, "clipIndex": 0, "duration": 60},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 0.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 1, "clipIndex": 0, "expected": 0.0, "tolerance": 0.01},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 1, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "Exit"}
+    ]
+}

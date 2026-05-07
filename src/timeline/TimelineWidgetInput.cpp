@@ -223,19 +223,42 @@ ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPo
             Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
             Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
-            float clipX = windowPos.x + timeToPixel(startTime) - m_syncScrollX;
+            // windowPos == m_tracksScreenPos == GetCursorScreenPos() inside the
+            // scrolled child window, which ImGui already adjusts for scroll.
+            // findClipAtPosition() and renderClip() both compute their X as
+            // `windowPos.x + timeToPixel(startTime)` — this hit-test must
+            // match. The previous `- m_syncScrollX` subtraction double-counted
+            // scroll, which is what made trim handles visually drift away
+            // from the clip body the further the user scrolled (worst at
+            // 1f/2f zoom because that's where horizontal scroll matters
+            // most). Round-3 Phase 3A fix.
+            float clipX = windowPos.x + timeToPixel(startTime);
             float clipWidth = timeToPixel(endTime - startTime);
             float clipEndX = clipX + clipWidth;
 
+            // Edge hit-test half-width: scales with clip pixel width so a
+            // narrow clip still distinguishes left vs. right. Floor 3px so
+            // there's always something to grab; cap at 40% of clipWidth so
+            // the left-half hit zone never overlaps the right-half hit
+            // zone (above 15px wide that puts each half at the original
+            // 4px). Wider clips keep the original 4px half so hover
+            // sensitivity matches what users learned at the default zoom.
+            const float halfDefault = TRIM_EDGE_WIDTH * 0.5f;
+            const float halfFloor = 3.0f;
+            const float halfCap = clipWidth * 0.4f;
+            float halfHit = halfDefault;
+            if (halfCap < halfHit) halfHit = halfCap;
+            if (halfHit < halfFloor) halfHit = halfFloor;
+
             // Check if mouse is near the left edge
-            if (mousePos.x >= clipX - TRIM_EDGE_WIDTH / 2 && mousePos.x <= clipX + TRIM_EDGE_WIDTH / 2) {
+            if (mousePos.x >= clipX - halfHit && mousePos.x <= clipX + halfHit) {
                 outClip = clipEntity;
                 outTrackIndex = static_cast<int>(i);
                 return ClipEdge::Left;
             }
 
             // Check if mouse is near the right edge
-            if (mousePos.x >= clipEndX - TRIM_EDGE_WIDTH / 2 && mousePos.x <= clipEndX + TRIM_EDGE_WIDTH / 2) {
+            if (mousePos.x >= clipEndX - halfHit && mousePos.x <= clipEndX + halfHit) {
                 outClip = clipEntity;
                 outTrackIndex = static_cast<int>(i);
                 return ClipEdge::Right;
@@ -256,17 +279,96 @@ void TimelineWidget::handleRulerInteraction() {
     ImVec2 mousePos = ImGui::GetMousePos();
     ImGuiIO& io = ImGui::GetIO();
 
+    // Cue lane sits ABOVE the ruler. windowPos.y == ruler top, so the
+    // lane occupies [windowPos.y - m_cueLaneHeight, windowPos.y).
+    const float laneTopY = windowPos.y - m_cueLaneHeight;
+    bool overCueLane = (m_cueLaneHeight > 0.0f &&
+                        mousePos.x >= windowPos.x &&
+                        mousePos.x <= windowPos.x + windowSize.x &&
+                        mousePos.y >= laneTopY &&
+                        mousePos.y <  windowPos.y);
+
     // Check if mouse is over the ruler window
     bool overRuler = (mousePos.x >= windowPos.x &&
                       mousePos.x <= windowPos.x + windowSize.x &&
                       mousePos.y >= windowPos.y &&
                       mousePos.y <= windowPos.y + RULER_HEIGHT);
 
-    // Alt+scroll over the ruler also steps the discrete zoom ladder.
-    // (Same as in handleInteraction(); ruler is its own child window so the
-    // event arrives here instead.)
-    if (overRuler && io.MouseWheel != 0.0f && io.KeyAlt) {
+    // Alt+scroll over the ruler (or cue lane) also steps the discrete zoom
+    // ladder. Same as in handleInteraction().
+    if ((overRuler || overCueLane) && io.MouseWheel != 0.0f && io.KeyAlt) {
         setZoomIndex(m_zoomIndex + (io.MouseWheel > 0.0f ? -1 : 1));
+    }
+
+    // Track the tick-division currently under the mouse on the ruler band
+    // (NOT the cue lane) — renderTimeRuler() reads this to draw the
+    // hover highlight.
+    if (overRuler) {
+        const float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        const FrameNumber currentFrame = m_timeline->timeToFrame(pixelToTime(relativeX));
+        const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
+        m_hoverDivisionIndex = (tickEvery > 0 && currentFrame >= 0)
+            ? static_cast<int>(currentFrame / tickEvery)
+            : -1;
+    } else {
+        m_hoverDivisionIndex = -1;
+    }
+
+    // ── Cue lane left-click: hit-test cue flags for drag-to-move. Done
+    // before ruler scrub so cue drag gets first shot at the click.
+    if (overCueLane && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !m_isDraggingCue) {
+        std::vector<CueLaneSlot> slots;
+        int rowsUsed = 0;
+        computeCueLaneLayout(slots, rowsUsed);
+        const auto& cues = m_timeline->getCueTags();
+        for (const CueLaneSlot& slot : slots) {
+            const CueTag& cue = cues[slot.cueIndex];
+            const float cx = windowPos.x + timeToPixel(cue.timestamp);
+            const float rowTop = laneTopY + slot.row * kCueRowH;
+            const float rowBot = rowTop + kCueRowH;
+            if (mousePos.x >= cx && mousePos.x <= cx + slot.labelW &&
+                mousePos.y >= rowTop && mousePos.y <= rowBot) {
+                m_isDraggingCue = true;
+                m_draggedCueNumber = cue.number;
+                m_dragOriginalCueTime = cue.timestamp;
+                m_dragCurrentCueTime = cue.timestamp;
+                break;
+            }
+        }
+    }
+
+    // ── Cue drag updates / release. While dragging we DON'T enqueue any
+    // commands; renderCueLane() reads m_dragCurrentCueTime to draw the
+    // cue at its visual position. Release commits one EditCueCommand.
+    if (m_isDraggingCue) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            Timecode t = pixelToTime(relativeX);
+            if (t < 0) t = 0;
+            m_dragCurrentCueTime = snapTimeToBest(t);
+        } else {
+            // Release. Commit only if the frame actually moved.
+            const FrameNumber origF = m_timeline->timeToFrame(m_dragOriginalCueTime);
+            const FrameNumber newF  = m_timeline->timeToFrame(m_dragCurrentCueTime);
+            if (std::llabs(static_cast<long long>(newF - origF)) > 1 && m_commandDispatcher) {
+                std::string existingLabel;
+                if (const CueTag* live = m_timeline->findCueTag(m_draggedCueNumber)) {
+                    existingLabel = live->label;
+                }
+                auto cmd = std::make_unique<EditCueCommand>(
+                    m_draggedCueNumber, m_draggedCueNumber,
+                    m_dragCurrentCueTime, existingLabel);
+                if (const CueTag* live = m_timeline->findCueTag(m_draggedCueNumber)) {
+                    cmd->setPreviousState(*live);
+                }
+                m_commandDispatcher->enqueue(std::move(cmd));
+            }
+            m_isDraggingCue = false;
+            m_draggedCueNumber = 0.0;
+            m_dragOriginalCueTime = 0;
+            m_dragCurrentCueTime = 0;
+        }
+        return;  // Suppress ruler scrub / range while a cue drag is active.
     }
 
     // Shift+click on the ruler starts a range selection. Plain click keeps
@@ -331,24 +433,32 @@ void TimelineWidget::handleRulerInteraction() {
         }
     }
 
-    // Right-click handling on the ruler — cue + section ops. Cue flags get
-    // checked first (smaller hit target on top of the band), then sections,
-    // then range, then a generic ruler context for creating new markers.
-    if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    // Right-click is now disambiguated by Y-band:
+    //   - cue lane (above ruler) -> cue ops (edit/delete an existing flag,
+    //                                        or "Add Cue Here..." on empty lane)
+    //   - ruler (below cue lane) -> section break ops + range ops
+    // This kills the prior cue-vs-break right-click ambiguity that lived
+    // when both shared the ruler band.
+    if (overCueLane && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
         Timecode clickTime = pixelToTime(relativeX);
         if (clickTime < 0) clickTime = 0;
         m_rulerRightClickTime = clickTime;
 
-        // Cue flag hit-test first. Flags render relative to ruler windowPos
-        // without scroll offset, so use the screen-space x of each cue and
-        // compare directly to mousePos.x.
+        // Lane-row hit test against rendered cue label rects.
         m_rightClickedCueIndex = -1;
+        std::vector<CueLaneSlot> slots;
+        int rowsUsed = 0;
+        computeCueLaneLayout(slots, rowsUsed);
         const auto& cues = m_timeline->getCueTags();
-        for (size_t i = 0; i < cues.size(); ++i) {
-            const float cueX = windowPos.x + timeToPixel(cues[i].timestamp);
-            if (std::abs(mousePos.x - cueX) <= m_pixelToleranceCue) {
-                m_rightClickedCueIndex = static_cast<int>(i);
+        for (const CueLaneSlot& slot : slots) {
+            const CueTag& cue = cues[slot.cueIndex];
+            const float cx = windowPos.x + timeToPixel(cue.timestamp);
+            const float rowTop = laneTopY + slot.row * kCueRowH;
+            const float rowBot = rowTop + kCueRowH;
+            if (mousePos.x >= cx && mousePos.x <= cx + slot.labelW &&
+                mousePos.y >= rowTop && mousePos.y <= rowBot) {
+                m_rightClickedCueIndex = static_cast<int>(slot.cueIndex);
                 break;
             }
         }
@@ -356,36 +466,39 @@ void TimelineWidget::handleRulerInteraction() {
         if (m_rightClickedCueIndex >= 0) {
             ImGui::OpenPopup("CueContextMenu");
         } else {
-            // Section break hit-test (Phase B). Hit-tests against the rendered
-            // break line at ±6px. Selects the captured break frame for the
-            // popup; vector indices shift on edit, so we key by Timecode.
-            // TODO: drag-to-reposition deferred — right-click → Edit covers
-            // the use case for now. Implement when scrubbing-vs-dragging
-            // disambiguation is well-defined (the existing scrub gesture
-            // currently owns left-mouse-down on the ruler).
-            m_rightClickedSectionBreakFrame.reset();
-            const float kBreakHitPx = 6.0f;
-            const auto& sections = m_timeline->getSections();
-            for (const auto& sec : sections) {
-                const float bx = windowPos.x + timeToPixel(sec.breakFrame);
-                if (std::abs(mousePos.x - bx) <= kBreakHitPx) {
-                    m_rightClickedSectionBreakFrame = sec.breakFrame;
-                    break;
-                }
-            }
+            // Empty lane area -> directly offer Add Cue Here.
+            ImGui::OpenPopup("CueLaneContextMenu");
+        }
+    } else if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        Timecode clickTime = pixelToTime(relativeX);
+        if (clickTime < 0) clickTime = 0;
+        m_rulerRightClickTime = clickTime;
 
-            if (m_rightClickedSectionBreakFrame.has_value()) {
-                ImGui::OpenPopup("SectionBreakContextMenu");
-            } else if (m_range.active && m_range.end > m_range.start) {
-                // No break under cursor but a range is active — offer to make
-                // a pair of breaks at the range endpoints (mirrors the legacy
-                // "Create Section from Selection" intent under the new model).
-                m_rangeContextMenuRequested = true;
-                ImGui::OpenPopup("RangeContextMenu");
-            } else {
-                // Empty ruler — offer Add Cue Here / Add Section Break Here.
-                ImGui::OpenPopup("RulerContextMenu");
+        // Section break hit-test (Phase B). Hit-tests against the rendered
+        // break line at ±6px. Selects the captured break frame for the
+        // popup; vector indices shift on edit, so we key by Timecode.
+        m_rightClickedSectionBreakFrame.reset();
+        const float kBreakHitPx = 6.0f;
+        const auto& sections = m_timeline->getSections();
+        for (const auto& sec : sections) {
+            const float bx = windowPos.x + timeToPixel(sec.breakFrame);
+            if (std::abs(mousePos.x - bx) <= kBreakHitPx) {
+                m_rightClickedSectionBreakFrame = sec.breakFrame;
+                break;
             }
+        }
+
+        if (m_rightClickedSectionBreakFrame.has_value()) {
+            ImGui::OpenPopup("SectionBreakContextMenu");
+        } else if (m_range.active && m_range.end > m_range.start) {
+            // Range active -> offer endpoint break creation.
+            m_rangeContextMenuRequested = true;
+            ImGui::OpenPopup("RangeContextMenu");
+        } else {
+            // Empty ruler -> Add Section Break Here (cue ops moved to the
+            // cue lane band above).
+            ImGui::OpenPopup("RulerContextMenu");
         }
     }
 
@@ -395,11 +508,10 @@ void TimelineWidget::handleRulerInteraction() {
     if (ImGui::BeginPopup("RangeContextMenu")) {
         if (m_range.active && m_range.end > m_range.start) {
             if (ImGui::MenuItem("Create Section Breaks at Range Endpoints") && m_commandDispatcher) {
-                std::string name = "Section " + std::to_string(m_timeline->getSections().size() + 1);
                 m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_range.start, name, 0xFF6090C8u, 0.0));
+                    m_range.start, 0xFF6090C8u, 0.0));
                 m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_range.end, name + " end", 0xFF6090C8u, 0.0));
+                    m_range.end, 0xFF6090C8u, 0.0));
             }
             ImGui::Separator();
             FrameNumber inF = m_timeline->timeToFrame(m_range.start);
@@ -418,7 +530,10 @@ void TimelineWidget::handleRulerInteraction() {
             const Timecode brkT = *m_rightClickedSectionBreakFrame;
             const Timeline::Section* live = m_timeline->findSectionBreakNear(brkT, 0);
             if (live) {
-                ImGui::TextDisabled("%s", live->name.empty() ? "(unnamed break)" : live->name.c_str());
+                char hdr[64];
+                std::snprintf(hdr, sizeof(hdr), "Break @ F%lld",
+                              static_cast<long long>(m_timeline->timeToFrame(live->breakFrame)));
+                ImGui::TextDisabled("%s", hdr);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Jump to Break") && m_commandDispatcher) {
                     m_commandDispatcher->enqueue(std::make_unique<SeekCommand>(brkT));
@@ -427,9 +542,6 @@ void TimelineWidget::handleRulerInteraction() {
                     m_sectionBreakModalMode = SectionBreakModalMode::Edit;
                     m_sectionBreakModalOldFrame = brkT;
                     m_sectionBreakModalFrame = brkT;
-                    std::strncpy(m_sectionBreakModalNameBuf, live->name.c_str(),
-                                 sizeof(m_sectionBreakModalNameBuf) - 1);
-                    m_sectionBreakModalNameBuf[sizeof(m_sectionBreakModalNameBuf) - 1] = '\0';
                     m_sectionBreakModalColor = live->color;
                     m_sectionBreakModalFadeSeconds = live->fadeSeconds;
                     m_sectionBreakModalOpenRequested = true;
@@ -480,26 +592,52 @@ void TimelineWidget::handleRulerInteraction() {
         ImGui::EndPopup();
     }
 
-    // Empty-ruler right-click: offer "Add Cue Here..." / "Add Section Break Here...".
+    // Empty-ruler right-click: section break ops + cue add (Round-3 Phase 2 #2).
+    // The ADD path is now dialog-less — auto-color from the palette, fade=0;
+    // EDIT (right-click an existing break line) still opens the modal so the
+    // user can override color + fade.
     if (ImGui::BeginPopup("RulerContextMenu")) {
+        if (ImGui::MenuItem("Add Section Break Here") && m_commandDispatcher) {
+            // Grid-only snap: snapTimeToBest would prefer an existing nearby
+            // section break, producing a near-duplicate.
+            const Timecode at = snapTimeToTickGrid(m_rulerRightClickTime);
+            // Auto-color: index = current section count + 1, so the first
+            // user-added break gets palette[1] (palette[0] is reserved for
+            // the implicit first segment).
+            const std::size_t sectionCount =
+                m_timeline ? m_timeline->getSections().size() : 0;
+            const uint32_t color = sectionPalette::pickColor(sectionCount + 1);
+            m_commandDispatcher->enqueue(
+                std::make_unique<AddSectionBreakCommand>(at, color, 0.0));
+        }
+        if (ImGui::MenuItem("Add Cue Here...")) {
+            // Cue ADD keeps its modal — the user still needs to set the
+            // cue number + label. Mirrors the CueLaneContextMenu shortcut
+            // so the operator doesn't have to chase the cue-lane band.
+            m_cueModalMode = CueModalMode::Add;
+            const auto& cues = m_timeline->getCueTags();
+            m_cueModalOldNumber = 0.0;
+            m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
+            m_cueModalTimestamp = snapTimeToTickGrid(m_rulerRightClickTime);
+            m_cueModalLabelBuf[0] = '\0';
+            m_cueModalOpenRequested = true;
+        }
+        ImGui::EndPopup();
+    }
+
+    // Empty cue-lane right-click: offer Add Cue Here. Direct shortcut since
+    // the lane has no other actions on empty space.
+    if (ImGui::BeginPopup("CueLaneContextMenu")) {
         if (ImGui::MenuItem("Add Cue Here...")) {
             m_cueModalMode = CueModalMode::Add;
             const auto& cues = m_timeline->getCueTags();
             m_cueModalOldNumber = 0.0;
             m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
-            m_cueModalTimestamp = m_rulerRightClickTime;
+            // Grid-only snap: snapTimeToBest would prefer an existing nearby
+            // cue, producing a near-duplicate.
+            m_cueModalTimestamp = snapTimeToTickGrid(m_rulerRightClickTime);
             m_cueModalLabelBuf[0] = '\0';
             m_cueModalOpenRequested = true;
-        }
-        if (ImGui::MenuItem("Add Section Break Here...")) {
-            m_sectionBreakModalMode = SectionBreakModalMode::Add;
-            m_sectionBreakModalOldFrame = 0;
-            m_sectionBreakModalFrame = m_rulerRightClickTime;
-            std::snprintf(m_sectionBreakModalNameBuf, sizeof(m_sectionBreakModalNameBuf),
-                          "Section %zu", m_timeline->getSections().size() + 1);
-            m_sectionBreakModalColor = 0xFF6090C8u;
-            m_sectionBreakModalFadeSeconds = 0.0;
-            m_sectionBreakModalOpenRequested = true;
         }
         ImGui::EndPopup();
     }
@@ -527,6 +665,12 @@ void TimelineWidget::handleTracksInteraction() {
             float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
             Timecode mouseTime = pixelToTime(relativeX);
             if (mouseTime < 0) mouseTime = 0;
+            // Round-3 Phase 3B — shift held bypasses grid+cue+section snap so
+            // the user can land a frame-precise trim. Default behavior keeps
+            // snapTimeToBest (grid + nearest cue + nearest section break).
+            if (!ImGui::GetIO().KeyShift) {
+                mouseTime = snapTimeToBest(mouseTime);
+            }
 
             // Get the clip being trimmed
             if (registry.valid(m_trimClip)) {
@@ -659,28 +803,55 @@ void TimelineWidget::handleTracksInteraction() {
                     // Convert snap threshold from pixels to time
                     Timecode snapThresholdTime = pixelToTime(SNAP_THRESHOLD_PIXELS);
 
+                    // Round-3 Phase 3B — shift modifier bypasses tick-grid
+                    // snap only. Without it, a raw playhead / clip-edge
+                    // candidate sitting closer than the nearest tick wins
+                    // and the user observes 1-frame snaps even at 5f/10f
+                    // tick zoom. With grid-snap on, every candidate is
+                    // pre-floored to the tick grid so they compete at
+                    // grid resolution. Playhead + clip-edge snap still
+                    // apply with shift held — only the implicit grid
+                    // floor is dropped.
+                    const bool gridSnap = !ImGui::GetIO().KeyShift;
+                    auto floorToGrid = [&](Timecode raw) -> Timecode {
+                        return gridSnap ? snapTimeToTickGrid(raw) : raw;
+                    };
+
                     // Track best snap candidate
                     Timecode bestSnapTime = 0;
                     Timecode bestSnapDistance = snapThresholdTime + 1;  // Start with invalid distance
                     bool snapToStart = true;  // Whether to snap clip start (true) or end (false)
 
-                    // Check snap to playhead - start edge
-                    Timecode distToPlayheadStart = std::abs(desiredStartTime - playheadTime);
-                    if (distToPlayheadStart < bestSnapDistance) {
-                        bestSnapDistance = distToPlayheadStart;
-                        bestSnapTime = playheadTime;
-                        snapToStart = true;
-                    }
+                    // Unified candidate ranker. `targetForStart` chooses
+                    // whether the candidate is being matched against the
+                    // dragged clip's start edge (true) or end edge (false).
+                    // `candidate` is the snap target time; the lambda
+                    // grid-floors it and computes the cursor->candidate
+                    // distance against the appropriate edge.
+                    auto considerCandidate = [&](Timecode raw, bool targetForStart) {
+                        const Timecode candidate = floorToGrid(raw);
+                        const Timecode desired = targetForStart ? desiredStartTime : desiredEndTime;
+                        const Timecode dist = std::abs(desired - candidate);
+                        if (dist < bestSnapDistance) {
+                            bestSnapDistance = dist;
+                            bestSnapTime = candidate;
+                            snapToStart = targetForStart;
+                        }
+                    };
 
-                    // Check snap to playhead - end edge
-                    Timecode distToPlayheadEnd = std::abs(desiredEndTime - playheadTime);
-                    if (distToPlayheadEnd < bestSnapDistance) {
-                        bestSnapDistance = distToPlayheadEnd;
-                        bestSnapTime = playheadTime;
-                        snapToStart = false;
-                    }
+                    // Playhead — both edges.
+                    considerCandidate(playheadTime, true);
+                    considerCandidate(playheadTime, false);
 
-                    // Check snap to other clips on the same track
+                    // Grid + cues + sections (snapTimeToBest already returns
+                    // a snapped value; floorToGrid is a no-op for the grid
+                    // case but rounds cue/section snaps to the tick grid
+                    // when grid-snap is on, otherwise leaves them at raw).
+                    considerCandidate(snapTimeToBest(desiredStartTime), true);
+                    considerCandidate(snapTimeToBest(desiredEndTime),   false);
+
+                    // Other clips on the same track — their edges, both
+                    // matched against our start and our end.
                     if (m_selectedClipTrackIndex >= 0) {
                         const auto& tracks = m_timeline->getTracks();
                         if (m_selectedClipTrackIndex < static_cast<int>(tracks.size())) {
@@ -697,37 +868,10 @@ void TimelineWidget::handleTracksInteraction() {
                                     Timecode otherStartTime = static_cast<Timecode>(otherStartSec * 1000000.0f);
                                     Timecode otherEndTime = static_cast<Timecode>((otherStartSec + otherDurSec) * 1000000.0f);
 
-                                    // Our start to other's start
-                                    Timecode dist1 = std::abs(desiredStartTime - otherStartTime);
-                                    if (dist1 < bestSnapDistance) {
-                                        bestSnapDistance = dist1;
-                                        bestSnapTime = otherStartTime;
-                                        snapToStart = true;
-                                    }
-
-                                    // Our start to other's end
-                                    Timecode dist2 = std::abs(desiredStartTime - otherEndTime);
-                                    if (dist2 < bestSnapDistance) {
-                                        bestSnapDistance = dist2;
-                                        bestSnapTime = otherEndTime;
-                                        snapToStart = true;
-                                    }
-
-                                    // Our end to other's start
-                                    Timecode dist3 = std::abs(desiredEndTime - otherStartTime);
-                                    if (dist3 < bestSnapDistance) {
-                                        bestSnapDistance = dist3;
-                                        bestSnapTime = otherStartTime;
-                                        snapToStart = false;
-                                    }
-
-                                    // Our end to other's end
-                                    Timecode dist4 = std::abs(desiredEndTime - otherEndTime);
-                                    if (dist4 < bestSnapDistance) {
-                                        bestSnapDistance = dist4;
-                                        bestSnapTime = otherEndTime;
-                                        snapToStart = false;
-                                    }
+                                    considerCandidate(otherStartTime, true);   // our start ↔ other's start
+                                    considerCandidate(otherEndTime,   true);   // our start ↔ other's end
+                                    considerCandidate(otherStartTime, false);  // our end   ↔ other's start
+                                    considerCandidate(otherEndTime,   false);  // our end   ↔ other's end
                                 }
                             }
                         }

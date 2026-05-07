@@ -70,8 +70,7 @@ TEST_F(SectionFadeTest, NoAlignedBreak_ReturnsOne) {
     fillClip(c, /*start*/0, /*duration*/60);
 
     // Add a break far away from the clip's edges with non-zero fade.
-    timeline.addSectionBreak(toTimelineMicros(120, 30.0), "FarBreak",
-                             0xFF6090C8, 1.0);
+    timeline.addSectionBreak(toTimelineMicros(120, 30.0), 0xFF6090C8, 1.0);
 
     seekToFrame(30);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
@@ -83,8 +82,7 @@ TEST_F(SectionFadeTest, ZeroFadeSeconds_NoEnvelope) {
     fillClip(c, /*start*/30, /*duration*/60);
 
     // Break exactly at clip start, but fadeSeconds = 0.
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "ZeroFade",
-                             0xFF6090C8, 0.0);
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 0.0);
 
     seekToFrame(30);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
@@ -96,8 +94,7 @@ TEST_F(SectionFadeTest, FadeIn_MidRamp_ProportionalValue) {
     fillClip(c, /*start*/30, /*duration*/120);
 
     // Break at clip's start, 1.0 second fade -> 30 frames at 30fps.
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "FadeIn",
-                             0xFF6090C8, 1.0);
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
 
     // Frame 30 = clip start, t = 0/30 -> 0.0.
     seekToFrame(30);
@@ -116,32 +113,37 @@ TEST_F(SectionFadeTest, FadeIn_MidRamp_ProportionalValue) {
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }
 
-// 4. Fade-out mid-ramp.
+// 4. Fade-out mid-ramp. Phase 6 — held tail post-clipEnd. Window is
+// [clipEnd, clipEnd + fadeFrames).
 TEST_F(SectionFadeTest, FadeOut_MidRamp_ProportionalValue) {
     Clip c;
     fillClip(c, /*start*/0, /*duration*/60);
     // clipEnd = 60.
 
     // Break at clip end, 0.5s fade -> 15 frames at 30fps.
-    // Fade-out window: (clipEnd - 15, clipEnd] = (45, 60].
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), "FadeOut",
-                             0xFF6090C8, 0.5);
+    // New fade-out window: [60, 75).
+    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.5);
 
-    // Frame 45 = just outside the open lower edge -> 1.0.
+    // Frame 45 = well inside the clip, no envelope -> 1.0.
     seekToFrame(45);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 
-    // Frame 50 = mid fade-out: (60 - 50)/15 = 10/15 ~= 0.667.
-    seekToFrame(50);
+    // Frame 60 = clip end: held at full alpha, t = 1 - 0/15 = 1.0.
+    seekToFrame(60);
+    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 1.0f, 1e-5f);
+
+    // Frame 65 = mid fade-out: t = 1 - 5/15 = 10/15 ~= 0.667.
+    seekToFrame(65);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 10.0f / 15.0f, 1e-5f);
 
-    // Frame 59 = late in fade-out: (60 - 59)/15 = 1/15 ~= 0.067.
-    seekToFrame(59);
+    // Frame 74 = last frame inside the open-upper window:
+    // t = 1 - 14/15 = 1/15 ~= 0.067.
+    seekToFrame(74);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 1.0f / 15.0f, 1e-5f);
 
-    // Frame 60 = clip end (still inside (45, 60]): (60 - 60)/15 = 0.
-    seekToFrame(60);
-    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 0.0f, 1e-5f);
+    // Frame 75 = upper edge (open), window closed -> identity 1.0.
+    seekToFrame(75);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }
 
 // 5a. Snap tolerance: clip start ±1 frame from break still aligns.
@@ -149,8 +151,7 @@ TEST_F(SectionFadeTest, SnapTolerance_OneFrameOff_StillAligns) {
     Clip c;
     // Clip starts at frame 31, break at frame 30 -> diff = 1, within ±1.
     fillClip(c, /*start*/31, /*duration*/120);
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "Snap1",
-                             0xFF6090C8, 1.0);
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
 
     // Frame 31 = clip start + 0; ramp t = 0/30 -> 0.0.
     seekToFrame(31);
@@ -164,8 +165,7 @@ TEST_F(SectionFadeTest, SnapTolerance_OneFrameOff_StillAligns) {
 TEST_F(SectionFadeTest, SnapTolerance_TwoFramesOff_NoEnvelope) {
     Clip c;
     fillClip(c, /*start*/32, /*duration*/120);
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "Snap2",
-                             0xFF6090C8, 1.0);
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
 
     // Frame 32 (clip start). With no alignment, multiplier should be 1.0
     // even though the timeline frame is right at the clip boundary.
@@ -174,61 +174,75 @@ TEST_F(SectionFadeTest, SnapTolerance_TwoFramesOff_NoEnvelope) {
 }
 
 // 6. Both ends aligned: min-combine of fade-in and fade-out.
+// Phase 6 — fade-in window stays at clip start; fade-out window moves
+// past clip end. Windows can no longer overlap on the same clip.
 TEST_F(SectionFadeTest, BothEndsAligned_MinCombine) {
     // Clip 30-frames long, both ends on breaks with 0.5s fade (15 frames).
-    // Fades would overlap entirely (fadeIn covers [0, 15), fadeOut covers
-    // (15, 30]). At frame 15 (the apex), neither ramp's window is open
-    // -> identity 1.0.
+    // Fade-in window: [30, 45). Fade-out window: [60, 75).
     Clip c;
     fillClip(c, /*start*/30, /*duration*/30);
 
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "StartBreak",
-                             0xFF6090C8, 0.5);
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), "EndBreak",
-                             0xFF7060C8, 0.5);
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 0.5);
+    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF7060C8, 0.5);
 
-    // Frame 30: t = 0/15 fade-in -> 0.0. Fade-out window is (45, 60], so
-    // not yet inside.
+    // Frame 30: t = 0/15 fade-in -> 0.0. Fade-out window not yet open.
     seekToFrame(30);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 0.0f, 1e-5f);
 
-    // Frame 37 (mid fade-in): t = 7/15 fade-in. Fade-out window not yet open.
+    // Frame 37 (mid fade-in): t = 7/15. Fade-out window not yet open.
     seekToFrame(37);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 7.0f / 15.0f, 1e-5f);
 
-    // Frame 45: outside both fade windows -> 1.0.
+    // Frame 45: fade-in window just closed; fade-out not yet open -> 1.0.
     seekToFrame(45);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 
-    // Frame 50: mid fade-out, t = 10/15 -> 10/15 ~= 0.667. Fade-in is gone.
-    seekToFrame(50);
+    // Frame 60: clip end, held at full alpha, t = 1 - 0/15 = 1.0.
+    seekToFrame(60);
+    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 1.0f, 1e-5f);
+
+    // Frame 65: mid fade-out, t = 1 - 5/15 = 10/15.
+    seekToFrame(65);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 10.0f / 15.0f, 1e-5f);
 
-    // Frame 60: end of fade-out, t = 0/15 -> 0.0.
-    seekToFrame(60);
-    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 0.0f, 1e-5f);
+    // Frame 74: late in tail, t = 1 - 14/15 = 1/15.
+    seekToFrame(74);
+    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 1.0f / 15.0f, 1e-5f);
 }
 
-// 6b. Both ends aligned, fades overlap: the min(fadeIn, fadeOut) wins so
-// a clip shorter than fadeIn + fadeOut never shows above the smaller ramp.
-TEST_F(SectionFadeTest, BothEndsAligned_OverlappingFades_MinCombine) {
-    // Clip 10 frames, fade 1.0s each end (30 frames each); they overlap
-    // entirely. At any point inside the clip, both windows are open.
+// 6b. Both ends aligned, short clip: fade-in still constrains the in-clip
+// span; fade-out window now sits entirely past clipEnd, so the only window
+// open mid-clip is the fade-in.
+TEST_F(SectionFadeTest, BothEndsAligned_ShortClip_FadeInDominates) {
+    // Clip 10 frames, fade 1.0s each end (30 frames each).
+    // Fade-in window: [30, 60). Fade-out window: [40, 70).
+    // Inside the clip [30, 40) only fade-in is open; the fade-out window
+    // overlaps the post-end held tail.
     Clip c;
     fillClip(c, /*start*/30, /*duration*/10);
 
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "StartBreak",
-                             0xFF6090C8, 1.0);
-    timeline.addSectionBreak(toTimelineMicros(40, 30.0), "EndBreak",
-                             0xFF7060C8, 1.0);
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
+    timeline.addSectionBreak(toTimelineMicros(40, 30.0), 0xFF7060C8, 1.0);
 
-    // At frame 35: fade-in t = 5/30, fade-out t = 5/30 -> min = 5/30.
+    // At frame 35: fade-in t = 5/30. Fade-out not yet open.
     seekToFrame(35);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 5.0f / 30.0f, 1e-5f);
 
-    // At frame 31: fade-in t = 1/30, fade-out t = 9/30 -> min = 1/30.
+    // At frame 31: fade-in t = 1/30. Fade-out not yet open.
     seekToFrame(31);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 1.0f / 30.0f, 1e-5f);
+
+    // At frame 40 (clipEnd, inside both fade-in's window [30,60) and the
+    // start of fade-out [40,70)): fade-in t = 10/30, fade-out t = 1.0
+    // (held at start of tail). min = 10/30.
+    seekToFrame(40);
+    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 10.0f / 30.0f, 1e-5f);
+
+    // At frame 55: past fade-in window (closed at 60? no, fade-in window
+    // is [30, 60) so 55 is inside it: t = 25/30). Fade-out open at 55:
+    // t = 1 - 15/30 = 15/30. min = 15/30.
+    seekToFrame(55);
+    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 15.0f / 30.0f, 1e-5f);
 }
 
 // 7. Outside any fade window mid-clip -> 1.0.
@@ -236,13 +250,11 @@ TEST_F(SectionFadeTest, OutsideFadeWindow_ReturnsOne) {
     Clip c;
     fillClip(c, /*start*/30, /*duration*/120);
 
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), "FadeIn",
-                             0xFF6090C8, 0.5);   // 15-frame fade-in
-    timeline.addSectionBreak(toTimelineMicros(150, 30.0), "FadeOut",
-                             0xFF7060C8, 0.5);   // 15-frame fade-out
+    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 0.5);   // fade-in window [30, 45)
+    timeline.addSectionBreak(toTimelineMicros(150, 30.0), 0xFF7060C8, 0.5);  // fade-out window [150, 165)
 
-    // Frame 75 is well past fade-in (45+) and well before fade-out
-    // (135+). Result must be identity.
+    // Frame 75 is well past fade-in close (45) and well before fade-out
+    // open (150). Result must be identity.
     seekToFrame(75);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }

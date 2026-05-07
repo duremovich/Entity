@@ -115,6 +115,18 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
                 ? m_playbackPresenter->fadeMultiplier(entity) : 1.0f;
             const float drawOpacity = layer.opacity * fadeMul;
 
+            // [SBG] diag — REMOVE after section-break-glitch fix lands.
+            // Log fade lookup for any draw whose final opacity != layer
+            // opacity (i.e. fadeMul < 1.0) OR whose entity recently had
+            // a fade entry. We approximate the latter with "any draw
+            // call" — gate by fadeMul < 1.0 only would miss the bug
+            // case where fadeMul reads 1.0 when it should be 0.0.
+            std::cout << "[SBG][compose] entity=" << static_cast<uint32_t>(entity)
+                      << " layerOpacity=" << layer.opacity
+                      << " fadeMul=" << fadeMul
+                      << " drawOpacity=" << drawOpacity
+                      << std::endl;
+
             // Check if entity has a valid video texture
             auto* videoTex = registry.try_get<VideoTexture>(entity);
 

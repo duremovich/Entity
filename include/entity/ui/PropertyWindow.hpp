@@ -86,8 +86,8 @@ private:
 
     /**
      * Render section break properties (when a break is selected via
-     * Timeline::setSelectedSectionBreak). Phase B — name, color, frame
-     * editable; fadeSeconds shown disabled (Phase D activates it).
+     * Timeline::setSelectedSectionBreak). Color, frame, and fadeSeconds
+     * are editable.
      */
     void renderSectionBreakProperties();
 
@@ -156,6 +156,12 @@ private:
     };
     PreEditState m_preEditOpacity;
     PreEditState m_preEditRotZ;
+
+    // Simple scalar pre-edit captures for the In/Out point DragInts in
+    // renderClipInfo. mediaStartFrame and duration aren't animatable
+    // properties so the keyframe-aware PreEditState shape is overkill.
+    FrameNumber m_preEditMediaStartFrame{0};
+    FrameNumber m_preEditDuration{0};
 };
 
 } // namespace entity

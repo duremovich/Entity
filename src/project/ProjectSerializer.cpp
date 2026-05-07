@@ -434,7 +434,6 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         for (const auto& sec : timeline.getSections()) {
             json sj;
             sj["breakFrame"]  = sec.breakFrame;
-            sj["name"]        = sec.name;
             sj["color"]       = sec.color;
             sj["fadeSeconds"] = sec.fadeSeconds;
             sectionsJson.push_back(sj);
@@ -1033,27 +1032,27 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             }
         }
 
-        // Load timeline sections. Phase B shape: each entry is a break-point
-        // marker `{breakFrame, name, color, fadeSeconds}`. Pre-Phase-B
-        // `{start, end}` entries migrate inline to TWO break points (start
-        // and end) with the same name + color and fadeSeconds=0.
+        // Load timeline sections. v10 shape: each entry is a break-point
+        // marker `{breakFrame, color, fadeSeconds}`. Pre-v10 entries may
+        // also carry a "name" string (silently ignored — Phase 4 dropped
+        // section names). Pre-Phase-B `{start, end}` entries migrate
+        // inline to TWO break points (start and end) with the same color
+        // and fadeSeconds=0.
         timeline.clearSections();
         if (project.contains("sections")) {
             for (const auto& sj : project["sections"]) {
                 if (sj.contains("breakFrame")) {
                     timeline.addSectionBreak(
                         sj.value("breakFrame", static_cast<Timecode>(0)),
-                        sj.value("name", std::string{}),
                         sj.value("color", static_cast<uint32_t>(0xFF6090C8)),
                         sj.value("fadeSeconds", 0.0));
                 } else if (sj.contains("start") && sj.contains("end")) {
-                    const auto name  = sj.value("name", std::string{});
                     const auto color = sj.value("color", static_cast<uint32_t>(0xFF6090C8));
                     const auto start = sj.value("start", static_cast<Timecode>(0));
                     const auto end   = sj.value("end", static_cast<Timecode>(0));
-                    timeline.addSectionBreak(start, name, color, 0.0);
+                    timeline.addSectionBreak(start, color, 0.0);
                     if (end > start) {
-                        timeline.addSectionBreak(end, name + " end", color, 0.0);
+                        timeline.addSectionBreak(end, color, 0.0);
                     }
                 }
             }

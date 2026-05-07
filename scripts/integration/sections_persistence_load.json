@@ -5,9 +5,6 @@
         {"type": "LoadProject", "filepath": "test_output/sections_persistence/test.entity"},
         {"type": "WaitFrames", "count": 4},
         {"type": "AssertSectionCount", "count": 3},
-        {"type": "AssertSectionExists", "name": "Verse 1"},
-        {"type": "AssertSectionExists", "name": "Chorus"},
-        {"type": "AssertSectionExists", "name": "Bridge"},
         {"type": "Exit"}
     ]
 }

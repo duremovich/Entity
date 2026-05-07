@@ -1,0 +1,27 @@
+{
+    "version": 1,
+    "description": "Round-2 fixup, Phase 4 — post-break anchor: spanning Normal-mode Loop clip resumes from where the user was watching at GO, not from the natural clipStart-derived mapping. 30fps timeline, single Loop clip on track 0 starting at frame 0, duration 240. Source asset gradient_seq has 16 frames so Loop wraps modulo 16. Natural mapping at post-GO frame 62 = 62 % 16 = 14 (and would be 14 regardless of how the at-break advance unfolds, since natural path discards phase). Anchor mapping = (anchor + delta) % 16 where anchor reflects the actual source frame the user saw at GO; with at-break pause advancing phase past 60 source-frames, anchor ends up well away from 13 (which would otherwise post-GO to 14). The two assertions: (a) post-GO playhead is at frame 62 and state is Playing — proves SectionGo did its job end-to-end; (b) post-GO mediaFrame is NOT the natural value 14 — proves the anchor branch is steering. Detailed anchor math (Loop/PingPong wrap correctness, multi-break re-seed, scrub reset) is covered by tests/unit/PostBreakAnchorTests.cpp; this script is the end-to-end smoke that wires Director's GO state machine into the per-tick mapping.",
+    "commands": [
+        {"type": "AddScreen", "name": "PostBreakAnchorScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 240},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 0.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+
+        {"type": "WaitFrames", "count": 60},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "AssertPlayheadAtFrame", "frame": 62, "tolerance": 4},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 14, "tolerance": 0, "mode": "notEqual"},
+        {"type": "Exit"}
+    ]
+}

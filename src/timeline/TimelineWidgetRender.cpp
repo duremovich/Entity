@@ -54,6 +54,23 @@ void TimelineWidget::renderTimeRuler() {
     const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
     const int LABEL_EVERY_N = 5;
 
+    // Hover-division highlight (Disguise-style). Fills the [x, x + tickEvery]
+    // band across the ruler when the mouse hovers a tick division. Drawn
+    // before the tick lines so the lines remain visible on top.
+    if (m_hoverDivisionIndex >= 0) {
+        const float pxPerFrameHL = m_pixelsPerSecond / static_cast<float>(frameRate);
+        const FrameNumber bandStartFrame = static_cast<FrameNumber>(m_hoverDivisionIndex) * tickEvery;
+        const float bandX0 = windowPos.x + bandStartFrame * pxPerFrameHL;
+        const float bandX1 = bandX0 + tickEvery * pxPerFrameHL;
+        if (bandX1 > windowPos.x && bandX0 < rulerMax.x) {
+            drawList->AddRectFilled(
+                ImVec2(std::max(bandX0, rulerMin.x), rulerMin.y),
+                ImVec2(std::min(bandX1, rulerMax.x), rulerMax.y),
+                IM_COL32(255, 255, 255, 18)
+            );
+        }
+    }
+
     // Only iterate the visible range — at extreme zoom (1f over 10 min) the
     // total frame count hits 18000. Drawing all of them would blow past ImGui's
     // default 16-bit vertex index limit and silently drop past a threshold.
@@ -109,33 +126,62 @@ void TimelineWidget::renderTimeRuler() {
         );
     }
 
-    // Section break lines. Each break is a vertical marker; the implicit
-    // span from one break to the next gets a thin tinted bar at the top of
-    // the ruler using break[N].color (the band starts at break[N] so it
-    // inherits the break's color).
+    // Section break lines + always-on tinted band. The timeline is treated
+    // as a single implicit section by default; once break-points exist they
+    // split the band into sub-spans:
+    //   `[0, breaks[0])`                       -> palette[0] when clips exist,
+    //                                              else neutral gray
+    //   `[breaks[i].breakFrame, breaks[i+1])`  -> breaks[i].color
+    //   `[breaks[N-1].breakFrame, duration]`   -> breaks[N-1].color
     {
         const auto& sections = m_timeline->getSections();
         const float bandH = 4.0f;
         const float bandY = rulerMin.y + 1.0f;
         const Timecode currentT = m_timeline->getCurrentTime();
         const bool atBreak = m_timeline->sectionAtBreak();
+        const Timecode duration = m_timeline->getDuration();
+        // Truly-empty timeline (no breaks AND no clips) gets the neutral
+        // tint — the band has no semantic meaning yet. Once a clip lands
+        // on the timeline the implicit first section adopts palette[0]
+        // even before the user adds any breaks (Round-3 Phase 2 #1).
+        constexpr ImU32 kDefaultSpanColor = 0xFF404040u;
+        bool timelineHasClips = false;
+        {
+            auto& registry = m_timeline->getRegistry();
+            for (entt::entity trackEntity : m_timeline->getTracks()) {
+                const auto* track = registry.try_get<TimelineTrack>(trackEntity);
+                if (track && !track->clips.empty()) { timelineHasClips = true; break; }
+            }
+        }
+        const ImU32 implicitFirstColor = timelineHasClips
+            ? sectionPalette::pickColor(0)
+            : kDefaultSpanColor;
 
-        // Span tints first (under the lines).
-        for (size_t i = 0; i < sections.size(); ++i) {
-            const Timecode startT = sections[i].breakFrame;
-            const Timecode endT = (i + 1 < sections.size())
-                                  ? sections[i + 1].breakFrame
-                                  : m_timeline->getDuration();
+        auto drawSpan = [&](Timecode startT, Timecode endT, ImU32 baseColor) {
             const float xs = windowPos.x + timeToPixel(startT);
             const float xe = windowPos.x + timeToPixel(endT);
-            if (xe < windowPos.x || xs > rulerMax.x) continue;
-            // Soft band using break[N].color at low alpha.
-            const ImU32 base = sections[i].color;
-            const ImU32 tint = (base & 0x00FFFFFFu) | (60u << 24);
+            if (xe < windowPos.x || xs > rulerMax.x) return;
+            const ImU32 tint = (baseColor & 0x00FFFFFFu) | (60u << 24);
             drawList->AddRectFilled(ImVec2(xs, bandY), ImVec2(xe, bandY + bandH), tint);
+        };
+
+        if (sections.empty()) {
+            drawSpan(0, duration, implicitFirstColor);
+        } else {
+            // Pre-first-break span IS the implicit first section.
+            if (sections.front().breakFrame > 0) {
+                drawSpan(0, sections.front().breakFrame, implicitFirstColor);
+            }
+            for (size_t i = 0; i < sections.size(); ++i) {
+                const Timecode startT = sections[i].breakFrame;
+                const Timecode endT = (i + 1 < sections.size())
+                                      ? sections[i + 1].breakFrame
+                                      : duration;
+                drawSpan(startT, endT, sections[i].color);
+            }
         }
 
-        // Break lines + labels.
+        // Break lines.
         for (const auto& sec : sections) {
             const float x = windowPos.x + timeToPixel(sec.breakFrame);
             if (x < windowPos.x - 4.0f || x > rulerMax.x + 4.0f) continue;
@@ -149,18 +195,11 @@ void TimelineWidget::renderTimeRuler() {
                 : sec.color;
             drawList->AddLine(ImVec2(x, rulerMin.y), ImVec2(x, rulerMax.y),
                               lineColor, 2.0f);
-
-            if (!sec.name.empty()) {
-                drawList->AddText(ImVec2(x + 3.0f, bandY + bandH + 1.0f),
-                                  IM_COL32(240, 240, 240, 230), sec.name.c_str());
-            }
         }
     }
 
-    // Cue flag markers above the ruler band. Drawn after sections but
-    // before the range-selection overlay so the overlay still wins on
-    // top, and selection tinting doesn't bury cue labels.
-    renderCueFlags(windowPos);
+    // Cue lane is now drawn separately, ABOVE the ruler band, by
+    // render() before renderTimeRuler() runs. See renderCueLane().
 
     // Range-selection overlay on the ruler — stronger tint than the tracks
     // band so the endpoints are obviously interactive. While the user is
@@ -1078,55 +1117,87 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
 }
 
 // ============================================================================
-// Cue tag rendering (Phase A)
+// Cue lane rendering (Phase A + Phase 3)
+//
+// Cues live in a dedicated band ABOVE the ruler with row stacking so labels
+// don't overlap. The band height is computed at the top of render() via
+// computeCueLaneLayout(); this function does the actual draw using the same
+// stacking pass for visual placement.
 // ============================================================================
 
-void TimelineWidget::renderCueFlags(ImVec2 windowPos) {
+void TimelineWidget::renderCueLane(ImVec2 laneOriginPos, float laneHeight, float rulerTopY) {
     if (!m_timeline) return;
     const auto& cues = m_timeline->getCueTags();
     if (cues.empty()) return;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
-    // Cue flag visual: a small filled triangle (point down toward ruler) +
-    // a horizontal flag rectangle holding the number. Drawn just above the
-    // ruler band, hit-testable by the input layer with m_pixelToleranceCue.
-    constexpr float kFlagH      = 14.0f;
-    constexpr float kTriH       =  6.0f;
-    constexpr float kFlagPadX   =  4.0f;
-    const ImU32 cueFill   = IM_COL32(240, 200,  80, 230);
+    // Lane background — slightly darker than the ruler so it reads as a
+    // separate band, matching the ruler width via the parent child window's
+    // content width (we draw beyond if needed; ImGui clip rect handles it).
+    const float laneRight = laneOriginPos.x + ImGui::GetContentRegionAvail().x +
+                            ImGui::GetScrollX() + ImGui::GetScrollMaxX();
+    drawList->AddRectFilled(
+        ImVec2(laneOriginPos.x, laneOriginPos.y),
+        ImVec2(laneRight, laneOriginPos.y + laneHeight),
+        IM_COL32(30, 30, 32, 255));
+
+    constexpr float kFlagPadX = 4.0f;
+    const ImU32 cueFill    = IM_COL32(240, 200,  80, 230);
     const ImU32 cueOutline = IM_COL32(255, 240, 140, 255);
-    const ImU32 cueText   = IM_COL32( 30,  30,  30, 255);
-    const ImU32 selFill   = IM_COL32(255, 230, 120, 255);
+    const ImU32 cueText    = IM_COL32( 30,  30,  30, 255);
+    const ImU32 selFill    = IM_COL32(255, 230, 120, 255);
+    const ImU32 ptrColor   = IM_COL32(200, 170,  60, 200);
 
     auto selectedCueOpt = m_timeline->getSelectedCueNumber();
 
-    for (const auto& cue : cues) {
-        const float x = windowPos.x + timeToPixel(cue.timestamp);
+    std::vector<CueLaneSlot> slots;
+    int rowsUsed = 0;
+    computeCueLaneLayout(slots, rowsUsed);
 
-        char numBuf[24];
-        std::snprintf(numBuf, sizeof(numBuf), "%.2f", cue.number);
-        const float textW = ImGui::CalcTextSize(numBuf).x;
-        const float flagW = textW + 2.0f * kFlagPadX;
+    for (const CueLaneSlot& slot : slots) {
+        const CueTag& cue = cues[slot.cueIndex];
 
-        const float flagTop = windowPos.y;
-        const float flagBot = windowPos.y + kFlagH;
+        // While dragging, render the dragged cue at its drag-current
+        // position instead of cue.timestamp. The original timestamp slot
+        // is skipped so it doesn't ghost-render in two places.
+        Timecode renderT = cue.timestamp;
+        if (m_isDraggingCue && cue.number == m_draggedCueNumber) {
+            renderT = m_dragCurrentCueTime;
+        }
+
+        const float x = laneOriginPos.x + timeToPixel(renderT);
+        const float flagTop = laneOriginPos.y + slot.row * kCueRowH;
+        const float flagBot = flagTop + kCueRowH - 1.0f;
+
+        char buf[320];
+        if (slot.longLabel && !cue.label.empty()) {
+            std::snprintf(buf, sizeof(buf), "%.2f [%s]", cue.number, cue.label.c_str());
+        } else {
+            std::snprintf(buf, sizeof(buf), "%.2f", cue.number);
+        }
 
         const ImU32 fill = (selectedCueOpt.has_value() && *selectedCueOpt == cue.number)
                            ? selFill : cueFill;
 
-        // Flag rectangle hugging the marker line on its right side.
+        // Flag body hugging the marker line on its right side.
         drawList->AddRectFilled(ImVec2(x, flagTop),
-                                ImVec2(x + flagW, flagBot), fill);
+                                ImVec2(x + slot.labelW, flagBot), fill);
         drawList->AddRect(ImVec2(x, flagTop),
-                          ImVec2(x + flagW, flagBot), cueOutline);
-        drawList->AddText(ImVec2(x + kFlagPadX, flagTop + 1.0f), cueText, numBuf);
+                          ImVec2(x + slot.labelW, flagBot), cueOutline);
+        drawList->AddText(ImVec2(x + kFlagPadX, flagTop + 1.0f), cueText, buf);
 
-        // Small triangle pointing down to the timestamp tick.
+        // Pointer line dropping from the cue's row down to the ruler tick.
+        // Length depends on which row it landed in (deeper rows draw a
+        // longer line). A small filled arrow at the bottom keeps the
+        // tick origin obvious.
+        drawList->AddLine(ImVec2(x, flagBot),
+                          ImVec2(x, rulerTopY),
+                          ptrColor, 1.0f);
         ImVec2 tri[3] = {
-            ImVec2(x - 4.0f, flagBot),
-            ImVec2(x + 4.0f, flagBot),
-            ImVec2(x,        flagBot + kTriH)
+            ImVec2(x - 3.0f, rulerTopY - 4.0f),
+            ImVec2(x + 3.0f, rulerTopY - 4.0f),
+            ImVec2(x,        rulerTopY)
         };
         drawList->AddTriangleFilled(tri[0], tri[1], tri[2], fill);
         drawList->AddTriangle(tri[0], tri[1], tri[2], cueOutline);
@@ -1204,8 +1275,6 @@ void TimelineWidget::renderSectionBreakModal() {
     ImGui::Text(isEdit ? "Edit Section Break" : "Add Section Break");
     ImGui::Separator();
 
-    ImGui::InputText("Name", m_sectionBreakModalNameBuf, sizeof(m_sectionBreakModalNameBuf));
-
     FrameNumber frame = m_timeline->timeToFrame(m_sectionBreakModalFrame);
     long long frameLL = static_cast<long long>(frame);
     if (ImGui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
@@ -1241,11 +1310,10 @@ void TimelineWidget::renderSectionBreakModal() {
 
     if (ImGui::Button("OK", ImVec2(120, 0))) {
         if (m_commandDispatcher) {
-            std::string name(m_sectionBreakModalNameBuf);
             if (isEdit) {
                 auto cmd = std::make_unique<EditSectionBreakCommand>(
                     m_sectionBreakModalOldFrame, m_sectionBreakModalFrame,
-                    name, m_sectionBreakModalColor, m_sectionBreakModalFadeSeconds);
+                    m_sectionBreakModalColor, m_sectionBreakModalFadeSeconds);
                 if (const Timeline::Section* live =
                         m_timeline->findSectionBreakNear(m_sectionBreakModalOldFrame, 0)) {
                     cmd->setPreviousState(*live);
@@ -1253,7 +1321,7 @@ void TimelineWidget::renderSectionBreakModal() {
                 m_commandDispatcher->enqueue(std::move(cmd));
             } else {
                 m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_sectionBreakModalFrame, name,
+                    m_sectionBreakModalFrame,
                     m_sectionBreakModalColor, m_sectionBreakModalFadeSeconds));
             }
         }

@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <vector>
 
 namespace entity {
 
@@ -232,12 +233,50 @@ private:
     int findTrackAtY(float mouseY, float windowY) const;
 
     /**
-     * Render the per-cue flag overlays above the ruler band. Each cue
-     * draws as a small numbered triangle/flag, hit-testable by the
-     * ruler right-click handler via m_pixelToleranceCue.
-     * @param windowPos The ruler's CursorScreenPos at draw time.
+     * Render the dedicated cue lane band that sits *above* the time ruler.
+     * Stacks overlapping cue labels into rows (greedy left-to-right,
+     * lowest available row), draws each cue as a numbered flag with a
+     * triangle pointer dropping down to the ruler tick.
+     * @param laneOriginPos Top-left of the cue-lane band in screen space.
+     * @param laneHeight    Pixel height of the cue lane (== getCueLaneHeight()).
+     * @param rulerTopY     Screen-space Y of the ruler top, where pointer
+     *                      triangles terminate.
      */
-    void renderCueFlags(ImVec2 windowPos);
+    void renderCueLane(ImVec2 laneOriginPos, float laneHeight, float rulerTopY);
+
+    /**
+     * Per-cue stacking decision used by both the renderer and the input
+     * hit-test so they agree on which row a cue ends up in. Cheap to
+     * recompute (cue counts are O(tens)).
+     */
+    struct CueLaneSlot {
+        size_t   cueIndex{0};   // index into Timeline::getCueTags()
+        int      row{0};        // 0..kMaxCueRows-1
+        float    labelW{0.0f};  // measured pixel width of the rendered label
+        bool     longLabel{true}; // false = fell back to "1.50" (over-stacked row cap)
+    };
+
+    /**
+     * Run the stacking pass over the current cue list. Returns slot rows
+     * and the total row count used (caller multiplies by kCueRowH for
+     * lane height). Empty cue list -> empty result, rowsUsed=0.
+     */
+    void computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, int& outRowsUsed) const;
+
+    /**
+     * Cue lane layout constants. Public-private so renderer + input + the
+     * top-level layout shift can all read them. Cap at 4 rows; beyond
+     * that, we shrink labels to the smallest form (number-only).
+     */
+    static constexpr float kCueRowH    = 16.0f;
+    static constexpr float kCueLanePad = 2.0f;
+    static constexpr int   kMaxCueRows = 4;
+
+    /**
+     * Effective lane height for the current frame's cue layout.
+     * Recomputed each render() before laying out the ruler.
+     */
+    float getCueLaneHeight() const { return m_cueLaneHeight; }
 
     /**
      * Modal popup for "Add Cue Here..." / "Edit Cue..." opened from the
@@ -342,6 +381,24 @@ private:
      *  current zoom level. Used to keep range endpoints frame-aligned. */
     Timecode snapTimeToTickGrid(Timecode t) const;
 
+    /** Snap a Timecode to the closest cue timestamp within `tol`. Skips the
+     *  cue currently being dragged so a cue can't snap to itself. Returns
+     *  `t` unchanged if no cue is within tolerance. */
+    Timecode snapTimeToCues(Timecode t, Timecode tol) const;
+
+    /** Snap a Timecode to the closest section break within `tol`. Returns
+     *  `t` unchanged if no break is within tolerance. */
+    Timecode snapTimeToSections(Timecode t, Timecode tol) const;
+
+    /** Combined snap: grid (always-on) + nearest cue + nearest section
+     *  break, returning whichever candidate is closest to `t`. Tolerance
+     *  derived from kSnapPx pixels at current zoom. */
+    Timecode snapTimeToBest(Timecode t) const;
+
+    /** Snap tolerance in pixels for cue/section near-snap. Grid snap is
+     *  always-on and ignores this. */
+    static constexpr float kSnapPx = 6.0f;
+
     // Section break context-menu state. nullopt = nothing right-clicked;
     // otherwise the breakFrame of the right-clicked break (the vector
     // index isn't stable across edits, but the breakFrame is).
@@ -354,7 +411,6 @@ private:
     bool      m_sectionBreakModalOpenRequested{false};
     Timecode  m_sectionBreakModalOldFrame{0};
     Timecode  m_sectionBreakModalFrame{0};
-    char      m_sectionBreakModalNameBuf[256]{0};
     uint32_t  m_sectionBreakModalColor{0xFF6090C8u};
     double    m_sectionBreakModalFadeSeconds{0.0};
 
@@ -378,6 +434,22 @@ private:
     // as the timestamp for "Add Cue Here..." when no cue/section/range
     // is under the cursor).
     Timecode m_rulerRightClickTime{0};
+
+    // Cue-drag state (left-click on a cue flag in the lane drags it to a
+    // new timestamp). Edit emitted on release if the frame moved by >1.
+    bool       m_isDraggingCue{false};
+    double     m_draggedCueNumber{0.0};
+    Timecode   m_dragOriginalCueTime{0};
+    Timecode   m_dragCurrentCueTime{0};
+
+    // Cue lane height computed each render() (function of stacked rows).
+    // 0 when there are no cues. Read by ruler/tracks layout to shift down.
+    float m_cueLaneHeight{0.0f};
+
+    // Index of the tick-division currently under the mouse on the ruler,
+    // or -1 when the mouse is elsewhere. Computed in handleRulerInteraction()
+    // and consumed by renderTimeRuler() to draw the hover highlight.
+    int m_hoverDivisionIndex{-1};
 
     // Optional dispatcher for ruler-menu cue commands.
     CommandDispatcher* m_commandDispatcher{nullptr};

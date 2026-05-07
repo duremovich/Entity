@@ -66,12 +66,49 @@ private:
     // left allocated so re-seeding on the next break crossing is alloc-free.
     void clearAllContinuation();
 
+    // Phase 6 — capture the source-media frame each Normal-mode continuing
+    // clip is currently displaying, so the post-break held-frame fade
+    // shows what the user actually saw at the moment of GO. Must be
+    // called BEFORE `clearAllContinuation` flips `inContinuation` to
+    // false — otherwise the math falls back to the timeline-frozen path
+    // and we snapshot the wrong frame. No-op for clips that aren't
+    // ending at this break (their tail hold is irrelevant).
+    void snapshotTailHoldFrames(Timecode breakFrameTime);
+
+    // Round-2 fixup, Phase 4 — capture a post-break source-frame anchor
+    // for every Normal-mode continuing clip that SPANS this break (clip
+    // does NOT end at it; ends-at-break is owned by tail-hold). Called
+    // from go() between `snapshotTailHoldFrames` and `clearAllContinuation`
+    // so the same observed source frame fed into the tail snapshot is
+    // also frozen as the anchor for clips that continue past the break.
+    // The 3-arg `mapToMediaFrame` later derives subsequent media frames
+    // as `anchor + (timelineFrame - anchorTimelineFrame) * frameRateRatio`
+    // wrapped per playbackMode, so post-GO playback resumes without the
+    // rewind that natural-mapping (clipStart-derived) would produce.
+    void snapshotPostBreakAnchors(Timecode breakFrameTime);
+
+    // Round-2 fixup, Phase 4 — invalidate post-break anchors when the
+    // user scrubs backward past the timeline frame that set them, or
+    // forward-scrubs past a break without experiencing the at-break pause.
+    // Called from the discontinuity branch in `tick()` (and from the
+    // Stopped path) using the current playhead frame; any anchor whose
+    // `anchorTimelineFrame > currentTimelineFrame` is reset to sentinels.
+    void resetAnchorsAcrossScrub(Timecode currentTime);
+
     entt::registry& m_registry;
     Timeline*       m_timeline{nullptr};
     bool            m_atBreak{false};
     Timecode        m_lastBreakHitFrame{0};
     Timecode        m_lastTickFrame{0};
     bool            m_haveLastTickFrame{false};  // First-tick guard: skip crossing detection.
+
+    // Round-2 fixup, Phase 4 — unit tests for the post-break anchor
+    // model exercise the private snapshot / re-seed / scrub-reset paths
+    // directly. The state-machine wrapper (tick / go) is gated on
+    // Timeline play-state transitions that are awkward to drive
+    // synthetically; calling the helpers directly keeps the assertions
+    // tight to the behavior under test.
+    friend class PostBreakAnchorTest;
 };
 
 } // namespace entity

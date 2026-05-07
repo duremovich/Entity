@@ -20,6 +20,11 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v10 (2026-05-07) — drops Section.name. v9 entries kept a "name"
+    //                      string per section; the loader now silently
+    //                      ignores it (no separate migration step needed —
+    //                      `j.value(...)` already tolerates missing keys
+    //                      and unknown keys are ignored).
     //   v9 (2026-05-06) — adds Timeline cue tags array (Phase A — numbered
     //                     timeline markers fired by command). Each entry is
     //                     {number, timestamp, label}. v8 files load with no
@@ -56,7 +61,7 @@ public:
     // v6 mediaLibrary entries load with pathKind="linked";
     // v7 files load with no projectors (missing "projectors" key = empty);
     // v8 files load with no cues (missing "cues" key = empty).
-    static constexpr int PROJECT_VERSION = 9;
+    static constexpr int PROJECT_VERSION = 10;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

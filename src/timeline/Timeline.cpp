@@ -79,6 +79,12 @@ void Timeline::seek(Timecode time) {
         m_currentTime = m_duration;
     }
 
+    // At-break state is owned by SectionScheduler's park flow, not by manual
+    // seeks. Any user-driven seek (UI scrub, script SeekToFrame, command
+    // playback) breaks the at-break invariant — clear it so the Phase 5
+    // visibility gate doesn't misfire on the new playhead position.
+    setSectionAtBreak(false);
+
     std::cout << "[Timeline] Seek to " << m_currentTime << std::endl;
 }
 
@@ -713,7 +719,7 @@ void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
 // Vector kept sorted ascending by `breakFrame`; lookups are binary-search.
 // ============================================================================
 
-bool Timeline::addSectionBreak(Timecode breakFrame, std::string name,
+bool Timeline::addSectionBreak(Timecode breakFrame,
                                uint32_t color, double fadeSeconds) {
     auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
         [](const Section& s, Timecode v) { return s.breakFrame < v; });
@@ -724,7 +730,6 @@ bool Timeline::addSectionBreak(Timecode breakFrame, std::string name,
     }
     Section sec;
     sec.breakFrame  = breakFrame;
-    sec.name        = std::move(name);
     sec.color       = color;
     sec.fadeSeconds = fadeSeconds;
     m_sections.insert(it, std::move(sec));
@@ -745,8 +750,7 @@ bool Timeline::removeSectionBreak(Timecode breakFrame) {
 }
 
 bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
-                                std::string newName, uint32_t newColor,
-                                double newFadeSeconds) {
+                                uint32_t newColor, double newFadeSeconds) {
     auto oldIt = std::lower_bound(m_sections.begin(), m_sections.end(), oldBreakFrame,
         [](const Section& s, Timecode v) { return s.breakFrame < v; });
     if (oldIt == m_sections.end() || oldIt->breakFrame != oldBreakFrame) {
@@ -766,13 +770,11 @@ bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
     }
 
     if (newBreakFrame == oldBreakFrame) {
-        oldIt->name        = std::move(newName);
         oldIt->color       = newColor;
         oldIt->fadeSeconds = newFadeSeconds;
     } else {
         Section updated;
         updated.breakFrame  = newBreakFrame;
-        updated.name        = std::move(newName);
         updated.color       = newColor;
         updated.fadeSeconds = newFadeSeconds;
         m_sections.erase(oldIt);

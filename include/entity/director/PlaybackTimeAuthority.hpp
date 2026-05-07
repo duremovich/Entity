@@ -120,6 +120,15 @@ public:
 private:
     std::string lookupInputColorSpaceOverride(const Clip& clip) const;
 
+    // Phase 6 — hold + fade-after-break. Returns the number of timeline
+    // frames the clip's tail extends past `endFrame` when a section break
+    // sits at `endFrame` (±1 frame snap) with non-zero fadeSeconds; 0
+    // otherwise. Used by isClipActiveAtFrame to keep the clip in the
+    // active set during the post-end hold + fade window, and by
+    // mapToMediaFrame to short-circuit to the last decoded source frame
+    // inside that window.
+    FrameNumber sectionFadeTailFrames(FrameNumber endFrame) const;
+
     entt::registry& m_registry;
     Timeline*       m_timeline{nullptr};
     ProjectManager* m_projectManager{nullptr};

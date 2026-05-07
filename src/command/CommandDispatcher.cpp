@@ -170,6 +170,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetClipPlaybackMode", SetClipPlaybackModeCommand::fromJson);
     registerFactory("SetClipFramerate", SetClipFramerateCommand::fromJson);
     registerFactory("SetClipDuration", SetClipDurationCommand::fromJson);
+    registerFactory("SetClipMediaStartFrame", SetClipMediaStartFrameCommand::fromJson);
     registerFactory("RippleInsertTime", RippleInsertTimeCommand::fromJson);
     registerFactory("RippleDeleteTime", RippleDeleteTimeCommand::fromJson);
 
@@ -181,7 +182,6 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetClipSectionBehavior", SetClipSectionBehaviorCommand::fromJson);
     registerFactory("AddSection", AddSectionCommand::fromJson);  // legacy alias (emits 2 breaks)
     registerFactory("AssertSectionCount", AssertSectionCountCommand::fromJson);
-    registerFactory("AssertSectionExists", AssertSectionExistsCommand::fromJson);
     registerFactory("AssertPlayheadAtFrame", AssertPlayheadAtFrameCommand::fromJson);
     registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
     registerFactory("AssertClipMediaFrame", AssertClipMediaFrameCommand::fromJson);

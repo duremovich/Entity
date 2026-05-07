@@ -1776,19 +1776,73 @@ CommandPtr SetClipDurationCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// SetClipMediaStartFrameCommand
+// ============================================================================
+
+bool SetClipMediaStartFrameCommand::execute(Engine& engine) {
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipMediaStartFrame");
+    if (!clip) return false;
+    if (m_mediaStartFrame < 0) {
+        std::cerr << "[SetClipMediaStartFrame] Must be >= 0: " << m_mediaStartFrame << std::endl;
+        return false;
+    }
+    if (clip->totalMediaFrames > 0 && m_mediaStartFrame >= clip->totalMediaFrames) {
+        std::cerr << "[SetClipMediaStartFrame] Out of range ("
+                  << m_mediaStartFrame << " >= " << clip->totalMediaFrames << ")" << std::endl;
+        return false;
+    }
+    if (!m_previousMediaStartFrame.has_value()) {
+        m_previousMediaStartFrame = clip->mediaStartFrame;
+    }
+    clip->mediaStartFrame = m_mediaStartFrame;
+    std::cout << "[SetClipMediaStartFrame] Track " << m_trackIndex
+              << ", Clip " << m_clipIndex
+              << " -> " << m_mediaStartFrame << std::endl;
+    return true;
+}
+
+bool SetClipMediaStartFrameCommand::undo(Engine& engine) {
+    if (!m_previousMediaStartFrame.has_value()) return false;
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipMediaStartFrame");
+    if (!clip) return false;
+    clip->mediaStartFrame = *m_previousMediaStartFrame;
+    return true;
+}
+
+nlohmann::json SetClipMediaStartFrameCommand::toJson() const {
+    return {{"type", "SetClipMediaStartFrame"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"mediaStartFrame", m_mediaStartFrame}};
+}
+
+std::string SetClipMediaStartFrameCommand::getDescription() const {
+    return "Set mediaStartFrame -> " + std::to_string(m_mediaStartFrame) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr SetClipMediaStartFrameCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    FrameNumber mediaStartFrame = j.value("mediaStartFrame", static_cast<FrameNumber>(0));
+    return std::make_unique<SetClipMediaStartFrameCommand>(trackIndex, clipIndex, mediaStartFrame);
+}
+
+// ============================================================================
 // Section break-point commands (Phase B)
 // ============================================================================
 
 bool AddSectionBreakCommand::execute(Engine& engine) {
     auto* timeline = engine.getTimeline();
     if (!timeline) return false;
-    m_inserted = timeline->addSectionBreak(m_breakFrame, m_name, m_color, m_fadeSeconds);
+    m_inserted = timeline->addSectionBreak(m_breakFrame, m_color, m_fadeSeconds);
     if (!m_inserted) {
         std::cerr << "[AddSectionBreak] FAIL: a break already exists at "
                   << m_breakFrame << std::endl;
         return false;
     }
-    std::cout << "[AddSectionBreak] OK '" << m_name << "' at " << m_breakFrame << std::endl;
+    std::cout << "[AddSectionBreak] OK at " << m_breakFrame << std::endl;
     return true;
 }
 
@@ -1807,21 +1861,20 @@ bool AddSectionBreakCommand::redo(Engine& engine) {
 nlohmann::json AddSectionBreakCommand::toJson() const {
     return {{"type", "AddSectionBreak"},
             {"breakFrame", m_breakFrame},
-            {"name", m_name},
             {"color", m_color},
             {"fadeSeconds", m_fadeSeconds}};
 }
 
 std::string AddSectionBreakCommand::getDescription() const {
-    return "Add section break '" + m_name + "' at " + std::to_string(m_breakFrame);
+    return "Add section break at " + std::to_string(m_breakFrame);
 }
 
 CommandPtr AddSectionBreakCommand::fromJson(const nlohmann::json& j) {
+    // Pre-Phase-4 payloads carried a "name" string; ignored on load.
     Timecode breakFrame = j.value("breakFrame", static_cast<Timecode>(0));
-    std::string name = j.value("name", std::string{});
     uint32_t color = j.value("color", static_cast<uint32_t>(0xFF6090C8));
     double fadeSeconds = j.value("fadeSeconds", 0.0);
-    return std::make_unique<AddSectionBreakCommand>(breakFrame, std::move(name), color, fadeSeconds);
+    return std::make_unique<AddSectionBreakCommand>(breakFrame, color, fadeSeconds);
 }
 
 bool RemoveSectionBreakCommand::execute(Engine& engine) {
@@ -1855,7 +1908,6 @@ bool RemoveSectionBreakCommand::undo(Engine& engine) {
     auto* timeline = engine.getTimeline();
     if (!timeline || !m_captured) return false;
     return timeline->addSectionBreak(m_previousState.breakFrame,
-                                     m_previousState.name,
                                      m_previousState.color,
                                      m_previousState.fadeSeconds);
 }
@@ -1894,7 +1946,7 @@ bool EditSectionBreakCommand::execute(Engine& engine) {
         }
     }
     bool ok = timeline->editSectionBreak(m_oldBreakFrame, m_newBreakFrame,
-                                         m_newName, m_newColor, m_newFadeSeconds);
+                                         m_newColor, m_newFadeSeconds);
     if (!ok) {
         std::cerr << "[EditSectionBreak] FAIL: edit rejected (old=" << m_oldBreakFrame
                   << ", new=" << m_newBreakFrame << ")" << std::endl;
@@ -1907,7 +1959,6 @@ bool EditSectionBreakCommand::undo(Engine& engine) {
     if (!timeline || !m_hasPreviousState) return false;
     // Restore by editing from the new state back to the captured pre-state.
     return timeline->editSectionBreak(m_newBreakFrame, m_previousState.breakFrame,
-                                      m_previousState.name,
                                       m_previousState.color,
                                       m_previousState.fadeSeconds);
 }
@@ -1920,7 +1971,6 @@ nlohmann::json EditSectionBreakCommand::toJson() const {
     return {{"type", "EditSectionBreak"},
             {"oldBreakFrame", m_oldBreakFrame},
             {"newBreakFrame", m_newBreakFrame},
-            {"newName", m_newName},
             {"newColor", m_newColor},
             {"newFadeSeconds", m_newFadeSeconds}};
 }
@@ -1931,13 +1981,12 @@ std::string EditSectionBreakCommand::getDescription() const {
 }
 
 CommandPtr EditSectionBreakCommand::fromJson(const nlohmann::json& j) {
+    // Pre-Phase-4 payloads carried a "newName" string; ignored on load.
     Timecode oldBreakFrame = j.value("oldBreakFrame", static_cast<Timecode>(0));
     Timecode newBreakFrame = j.value("newBreakFrame", oldBreakFrame);
-    std::string newName = j.value("newName", std::string{});
     uint32_t newColor = j.value("newColor", static_cast<uint32_t>(0xFF6090C8));
     double newFadeSeconds = j.value("newFadeSeconds", 0.0);
     return std::make_unique<EditSectionBreakCommand>(oldBreakFrame, newBreakFrame,
-                                                     std::move(newName),
                                                      newColor, newFadeSeconds);
 }
 
@@ -2007,8 +2056,8 @@ bool AddSectionCommand::execute(Engine& engine) {
         std::cerr << "[AddSection] FAIL: bad range [" << m_start << ", " << m_end << ")" << std::endl;
         return false;
     }
-    bool okStart = timeline->addSectionBreak(m_start, m_name, m_color, 0.0);
-    bool okEnd   = timeline->addSectionBreak(m_end, m_name + " end", m_color, 0.0);
+    bool okStart = timeline->addSectionBreak(m_start, m_color, 0.0);
+    bool okEnd   = timeline->addSectionBreak(m_end, m_color, 0.0);
     if (!okStart && !okEnd) {
         std::cerr << "[AddSection] FAIL: both break points already existed" << std::endl;
         return false;
@@ -2058,32 +2107,6 @@ std::string AssertSectionCountCommand::getDescription() const {
 CommandPtr AssertSectionCountCommand::fromJson(const nlohmann::json& j) {
     size_t count = j.value("count", static_cast<size_t>(0));
     return std::make_unique<AssertSectionCountCommand>(count);
-}
-
-bool AssertSectionExistsCommand::execute(Engine& engine) {
-    auto* timeline = engine.getTimeline();
-    if (!timeline) return false;
-    for (const auto& sec : timeline->getSections()) {
-        if (sec.name == m_name) {
-            std::cout << "[AssertSectionExists] OK name=" << m_name << std::endl;
-            return true;
-        }
-    }
-    std::cerr << "[AssertSectionExists] FAIL: no section named '" << m_name << "'" << std::endl;
-    return false;
-}
-
-nlohmann::json AssertSectionExistsCommand::toJson() const {
-    return {{"type", "AssertSectionExists"}, {"name", m_name}};
-}
-
-std::string AssertSectionExistsCommand::getDescription() const {
-    return "Assert section exists: " + m_name;
-}
-
-CommandPtr AssertSectionExistsCommand::fromJson(const nlohmann::json& j) {
-    std::string name = j.value("name", "");
-    return std::make_unique<AssertSectionExistsCommand>(name);
 }
 
 bool AssertPlayheadAtFrameCommand::execute(Engine& engine) {

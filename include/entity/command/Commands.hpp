@@ -906,14 +906,14 @@ private:
 /**
  * Add a section break at the given timeline frame. Undoable.
  *
- * JSON: {"type":"AddSectionBreak","breakFrame":<usec>,"name":"Verse 1",
+ * JSON: {"type":"AddSectionBreak","breakFrame":<usec>,
  *        "color":4286074559,"fadeSeconds":0.0}
  */
 class AddSectionBreakCommand : public UndoableCommand {
 public:
-    AddSectionBreakCommand(Timecode breakFrame, std::string name = {},
+    AddSectionBreakCommand(Timecode breakFrame,
                            uint32_t color = 0xFF6090C8, double fadeSeconds = 0.0)
-        : m_breakFrame(breakFrame), m_name(std::move(name)),
+        : m_breakFrame(breakFrame),
           m_color(color), m_fadeSeconds(fadeSeconds) {}
 
     bool execute(Engine& engine) override;
@@ -926,7 +926,6 @@ public:
 
 private:
     Timecode    m_breakFrame;
-    std::string m_name;
     uint32_t    m_color;
     double      m_fadeSeconds;
     bool        m_inserted{false};
@@ -959,16 +958,14 @@ private:
  * snapshot so undo restores the original even when `breakFrame` changed.
  *
  * JSON: {"type":"EditSectionBreak","oldBreakFrame":...,"newBreakFrame":...,
- *        "newName":"...","newColor":...,"newFadeSeconds":0.0}
+ *        "newColor":...,"newFadeSeconds":0.0}
  */
 class EditSectionBreakCommand : public UndoableCommand {
 public:
     EditSectionBreakCommand(Timecode oldBreakFrame, Timecode newBreakFrame,
-                            std::string newName, uint32_t newColor,
-                            double newFadeSeconds)
+                            uint32_t newColor, double newFadeSeconds)
         : m_oldBreakFrame(oldBreakFrame), m_newBreakFrame(newBreakFrame),
-          m_newName(std::move(newName)), m_newColor(newColor),
-          m_newFadeSeconds(newFadeSeconds) {}
+          m_newColor(newColor), m_newFadeSeconds(newFadeSeconds) {}
 
     void setPreviousState(Timeline::Section prev) {
         m_previousState = std::move(prev);
@@ -986,7 +983,6 @@ public:
 private:
     Timecode    m_oldBreakFrame;
     Timecode    m_newBreakFrame;
-    std::string m_newName;
     uint32_t    m_newColor;
     double      m_newFadeSeconds;
     bool        m_hasPreviousState{false};
@@ -1075,18 +1071,6 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 private:
     size_t m_count;
-};
-
-class AssertSectionExistsCommand : public Command {
-public:
-    explicit AssertSectionExistsCommand(std::string name) : m_name(std::move(name)) {}
-    bool execute(Engine& engine) override;
-    const char* getTypeName() const override { return "AssertSectionExists"; }
-    nlohmann::json toJson() const override;
-    std::string getDescription() const override;
-    static CommandPtr fromJson(const nlohmann::json& j);
-private:
-    std::string m_name;
 };
 
 /**
@@ -1424,6 +1408,39 @@ private:
     int m_clipIndex;
     FrameNumber m_duration;
     std::optional<FrameNumber> m_previousDuration;
+};
+
+/**
+ * Set a clip's mediaStartFrame (in-point) — slip edit. Leaves duration
+ * untouched, so the timeline footprint stays the same and the source
+ * window slides. Clamps to [0, totalMediaFrames - 1].
+ *
+ * JSON shape:
+ *   { "type": "SetClipMediaStartFrame",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "mediaStartFrame": 12 }
+ */
+class SetClipMediaStartFrameCommand : public UndoableCommand {
+public:
+    SetClipMediaStartFrameCommand(int trackIndex, int clipIndex, FrameNumber mediaStartFrame)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_mediaStartFrame(mediaStartFrame) {}
+
+    void setPreviousMediaStartFrame(FrameNumber prev) { m_previousMediaStartFrame = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipMediaStartFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    FrameNumber m_mediaStartFrame;
+    std::optional<FrameNumber> m_previousMediaStartFrame;
 };
 
 } // namespace entity

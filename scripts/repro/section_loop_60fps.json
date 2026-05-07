@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "Phase 1 repro — 60fps clip looping past a section break under sectionBehavior=Normal. Continuation phase advances at clip.framerate=60, but DecodeSystem still derives its decode target from the (frozen) timeline frame during the at-break pause. The decoder stops feeding the cache past `breakMediaFrame + DECODE_AHEAD_FRAMES`, so PlaybackPresenter's exact-cache hits start missing; with playState=Paused the nearest-frame fallback is gated off and the texture freezes until phase wraps to a cached frame. Visible as choppy stutter. GAP: no SetTimelineFrameRate script command — timeline stays at default 30fps; the 60fps clip framerate alone drives the divergence (phase advances at 60Hz, decode target at the timeline-derived rate). Once SetTimelineFrameRate exists, set it to 60 to amplify.",
+    "commands": [
+        {"type": "AddScreen", "name": "LoopSixtyScreen", "width": 1920, "height": 1080},
+        {"type": "ImportVideo", "filepath": "test_media/loop_60fps.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 600},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 10000000, "name": "Halfway"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 600},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "CaptureScreenshot", "filepath": "debug/section_loop_60fps_at_break.png", "region": "fullWindow"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "CaptureScreenshot", "filepath": "debug/section_loop_60fps_after_at_break_5s.png", "region": "fullWindow"},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

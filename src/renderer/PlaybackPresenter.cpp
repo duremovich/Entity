@@ -41,6 +41,15 @@ void PlaybackPresenter::refreshFadeMultiplierCache(const bus::RenderFrame& rf) {
                                       ac.sectionFadeMultiplier);
         }
     }
+    // [SBG] diag — REMOVE after section-break-glitch fix lands. Logs every
+    // entity present in the per-tick fade cache so we can verify the bus
+    // payload's multiplier landed where the compositor will read it.
+    for (const auto& [e, m] : m_fadeMultipliers) {
+        std::cout << "[SBG][present-cache] entity=" << static_cast<uint32_t>(e)
+                  << " fadeMult=" << m
+                  << " tickFrame=" << rf.frameNumber
+                  << std::endl;
+    }
 }
 
 void PlaybackPresenter::present(const bus::RenderFrame& rf) {
@@ -79,6 +88,11 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
         const DecodeWorker* worker = m_decodeSystem ? m_decodeSystem->getWorker(entity) : nullptr;
         if (worker && worker->seekPending.load()) continue;
 
+        // [SBG] diag — only log for clips whose multiplier was stamped <1.0
+        // this tick (i.e. present in the side cache). Keeps volume low.
+        // REMOVE after section-break-glitch fix lands.
+        const bool sbgRelevant = m_fadeMultipliers.find(entity) != m_fadeMultipliers.end();
+
         // Exact cache hit -- the common path on steady-state playback
         // and on click-to-recently-viewed-frame.
         if (auto lease = m_frameCache->get(entity, ac.mediaFrame)) {
@@ -98,9 +112,21 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                 if (state) state->lastDecodedFrame = ac.mediaFrame;
             }
             cacheHits++;
+            if (sbgRelevant) {
+                std::cout << "[SBG][present-hit] entity=" << static_cast<uint32_t>(entity)
+                          << " mediaFrame=" << ac.mediaFrame
+                          << " upload=" << (ok ? 1 : 0)
+                          << std::endl;
+            }
             continue;
         }
         cacheMisses++;
+        if (sbgRelevant) {
+            std::cout << "[SBG][present-miss] entity=" << static_cast<uint32_t>(entity)
+                      << " mediaFrame=" << ac.mediaFrame
+                      << " playState=" << static_cast<int>(playState)
+                      << std::endl;
+        }
 
         // Closest-available-frame fallback ONLY during Playing. The
         // fallback exists so playback keeps progressing when the

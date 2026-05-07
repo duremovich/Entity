@@ -9,6 +9,8 @@ add_executable(EntityMediaTests
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
     unit/SectionFadeTests.cpp
+    unit/SectionAutoColorTests.cpp
+    unit/PostBreakAnchorTests.cpp
     unit/PlaybackPresenterFadeCacheTests.cpp
     unit/ClipPlaybackPhaseTests.cpp
     unit/HapFormatTests.cpp
@@ -158,6 +160,28 @@ entity_add_integration_test(section_normal_to_locked_at_break section_normal_to_
 entity_add_integration_test(section_fade_in       section_fade_in.json)
 entity_add_integration_test(section_fade_out      section_fade_out.json)
 entity_add_integration_test(section_fade_combined section_fade_combined.json)
+
+# Round-2 fixup, Phase 4 — post-break anchor model. Spanning Normal-mode
+# Loop clip resumes from where the user was watching at GO, not from
+# the natural clipStart-derived rewind.
+entity_add_integration_test(post_break_no_rewind  post_break_no_rewind.json)
+
+# Round-3 fixup, Phase 1 — manual seek clears Timeline::sectionAtBreak().
+# Park at break, scrub backward, hit Play; the at-break latch must drop so
+# subsequent playback advances normally.
+entity_add_integration_test(scrub_clears_at_break  scrub_clears_at_break.json)
+
+# Round-3 fixup, Phase 1 — first-section playback (issue #3 regression guard).
+# A clip entirely inside the first section must play normally on Play; the
+# Phase 5 visibility gate must NOT fire when the playhead isn't at a break.
+entity_add_integration_test(first_section_plays  first_section_plays.json)
+
+# Phase 6 / queued-at-break — clip whose start aligns with a section break
+# is queued waiting for GO; first visible post-GO tick must map to
+# clip.mediaStartFrame, not mediaStartFrame + 1. Companion scripts cover
+# the in-point=0 baseline and the non-zero in-point case.
+entity_add_integration_test(at_break_clip_starts_at_inpoint        at_break_clip_starts_at_inpoint.json)
+entity_add_integration_test(at_break_clip_starts_at_inpoint_offset at_break_clip_starts_at_inpoint_offset.json)
 
 # Cue tag fire + persistence round-trip (Phase A — numbered timeline markers).
 entity_add_integration_test(cue_fire cue_fire.json)

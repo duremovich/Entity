@@ -1,0 +1,21 @@
+{
+    "version": 1,
+    "description": "Phase 6 — hold + fade-after-break. Clip starts at frame 0, duration 60 (clipEnd=60). Section break at frame 60 (microseconds 60/30*1_000_000=2_000_000) with fadeSeconds=1.0 (30 frames at 30fps). New semantic: fade-out window is [clipEnd, clipEnd+fadeFrames) = [60, 90). At frame 60 the clip is at full alpha (held last frame), multiplier=1.0. At frame 75 (mid fade-out), multiplier = 1 - 15/30 = 0.5. At frame 89 (last frame in window), multiplier = 1 - 29/30 ~= 0.0333. SeekToFrame avoids the section auto-pause path entirely so we can sample multiplier at exact frames inside the held tail.",
+    "commands": [
+        {"type": "AddScreen", "name": "FadeAfterBreakScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 60},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 1.0},
+        {"type": "SeekToFrame", "frame": 60},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 1.0, "tolerance": 0.01},
+        {"type": "SeekToFrame", "frame": 75},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.5, "tolerance": 0.02},
+        {"type": "SeekToFrame", "frame": 89},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertClipFadeMultiplier", "trackIndex": 0, "clipIndex": 0, "expected": 0.0333, "tolerance": 0.02},
+        {"type": "Exit"}
+    ]
+}
