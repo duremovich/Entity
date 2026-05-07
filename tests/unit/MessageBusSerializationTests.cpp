@@ -58,6 +58,7 @@ TEST(MessageBusSerialization, RenderFrameRoundTrip) {
     clip.opacity = 0.75f;
     clip.blendMode = BlendMode::Multiply;
     clip.targetScreen = 99ull;
+    clip.sectionFadeMultiplier = 0.42f;
     rf.activeClips.push_back(clip);
 
     rf.wantedFrames.push_back(WantedFrame{12345ull, 8, 4});
@@ -76,6 +77,7 @@ TEST(MessageBusSerialization, RenderFrameRoundTrip) {
     EXPECT_FLOAT_EQ(oc.opacity, clip.opacity);
     EXPECT_EQ(oc.blendMode, clip.blendMode);
     EXPECT_EQ(oc.targetScreen, clip.targetScreen);
+    EXPECT_FLOAT_EQ(oc.sectionFadeMultiplier, clip.sectionFadeMultiplier);
     ASSERT_EQ(out.wantedFrames.size(), 1u);
     EXPECT_EQ(out.wantedFrames[0].entity, 12345ull);
     EXPECT_EQ(out.wantedFrames[0].mediaFrame, 8);

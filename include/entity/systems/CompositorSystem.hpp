@@ -9,6 +9,7 @@ namespace entity {
 
 // Forward declarations
 class Timeline;
+class PlaybackPresenter;
 
 /**
  * CompositorSystem - Renders visible layers to screen
@@ -31,6 +32,14 @@ public:
      * Set the timeline for frame-accurate rendering.
      */
     void setTimeline(Timeline* timeline) { m_timeline = timeline; }
+
+    /**
+     * Set the playback presenter — Renderer-side cache of per-clip
+     * section-fade multipliers. CompositorSystem multiplies the
+     * cached value into MediaLayer.opacity at draw time so the fade
+     * envelope is applied without mutating the registry.
+     */
+    void setPlaybackPresenter(PlaybackPresenter* presenter) { m_playbackPresenter = presenter; }
 
     void initialize(entt::registry& registry) override;
     void update(entt::registry& registry, float deltaTime) override;
@@ -68,6 +77,7 @@ private:
 
     IRenderer* m_renderer{nullptr};
     Timeline* m_timeline{nullptr};
+    PlaybackPresenter* m_playbackPresenter{nullptr};
     bool m_debugLogging{false};
 };
 

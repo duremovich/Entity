@@ -105,12 +105,22 @@ Result Renderer::initialize(GLFWwindow* window,
         m_registry, m_d3d12Renderer.get(), m_frameCache.get());
     m_playbackPresenter->setDecodeSystem(m_decodeSystem.get());
 
+    // Phase D — CompositorSystem reads section-fade multipliers from
+    // the presenter's per-tick cache to apply fade envelopes at draw
+    // time without mutating the registry.
+    m_compositorSystem->setPlaybackPresenter(m_playbackPresenter.get());
+
     m_initialized = true;
     return Result::Success;
 }
 
 void Renderer::shutdown() {
     if (!m_initialized) return;
+
+    // CompositorSystem holds a raw pointer to the presenter for fade
+    // multiplier lookups; null it out before the presenter goes away
+    // so a stray draw during shutdown can't follow a dangling pointer.
+    if (m_compositorSystem) m_compositorSystem->setPlaybackPresenter(nullptr);
 
     // Presenter holds raw refs into FrameCache + DecodeSystem; release
     // first so those are still alive while it goes away.

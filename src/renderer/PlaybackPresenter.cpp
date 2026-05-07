@@ -2,7 +2,6 @@
 
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
-#include "entity/components/MediaLayer.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/media/DecodedFrame.hpp"
@@ -25,7 +24,31 @@ PlaybackPresenter::PlaybackPresenter(entt::registry& registry, IRenderer* render
 
 PlaybackPresenter::~PlaybackPresenter() = default;
 
+void PlaybackPresenter::refreshFadeMultiplierCache(const bus::RenderFrame& rf) {
+    // Phase D — refresh the per-tick fade-multiplier cache from the bus
+    // payload. CompositorSystem queries `fadeMultiplier(entity)` at
+    // draw time and multiplies it into MediaLayer.opacity for its draw
+    // call, so the envelope is applied without ever mutating the
+    // registry. Direct registry mutation would compound across ticks
+    // for any clip without an enabled Opacity keyframe track (nothing
+    // rewrites the multiplied value back), producing exponential decay
+    // instead of an envelope. Extracted from present() so unit tests
+    // can verify the cache without a live renderer backend.
+    m_fadeMultipliers.clear();
+    for (const bus::ClipRenderState& ac : rf.activeClips) {
+        if (ac.sectionFadeMultiplier < 1.0f) {
+            m_fadeMultipliers.emplace(static_cast<entt::entity>(ac.entity),
+                                      ac.sectionFadeMultiplier);
+        }
+    }
+}
+
 void PlaybackPresenter::present(const bus::RenderFrame& rf) {
+    // Refresh fade cache before the renderer-null short-circuit so the
+    // cache is consistent with the most recent bus payload even if the
+    // GPU upload pass is gated off (headless / pre-init paths).
+    refreshFadeMultiplierCache(rf);
+
     if (!m_renderer || !m_frameCache) return;
 
     auto funcStart = std::chrono::high_resolution_clock::now();
@@ -43,20 +66,6 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
         const auto entity = static_cast<entt::entity>(ac.entity);
         auto* videoTex = m_registry.try_get<VideoTexture>(entity);
         if (!videoTex) continue;
-
-        // Phase D — section fade envelope. Director side stamps
-        // sectionFadeMultiplier on the bus payload; we apply it to the
-        // registry-side MediaLayer.opacity so CompositorSystem (which
-        // still reads from the registry until subtask 8 collapses that
-        // path through the bus) draws the faded clip this same tick.
-        // AnimationSystem rewrites layer.opacity next tick from the
-        // animated value, so this multiplication is per-tick effective
-        // opacity, not a destructive write to the underlying animation.
-        if (ac.sectionFadeMultiplier < 1.0f) {
-            if (auto* layer = m_registry.try_get<MediaLayer>(entity)) {
-                layer->opacity = layer->opacity * ac.sectionFadeMultiplier;
-            }
-        }
 
         // Skip if the frame number hasn't changed since last upload --
         // the GPU texture is rendered every tick but only needs re-upload

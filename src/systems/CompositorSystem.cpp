@@ -11,6 +11,7 @@
 
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/render/IRenderer.hpp"
+#include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -103,6 +104,17 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
             // IRenderer takes glm::mat4 directly — no DirectX conversion needed here
             const glm::mat4& transformMatrix = transform.getMatrix();
 
+            // Phase D — multiply the section-fade multiplier into the
+            // draw opacity here. The Director side stamps the multiplier
+            // on the bus payload; PlaybackPresenter caches the per-tick
+            // map; we read it at draw time. This keeps MediaLayer.opacity
+            // in the registry untouched (no exponential decay across
+            // ticks for clips without an Opacity keyframe track) and
+            // keeps the Director→Renderer write boundary intact.
+            const float fadeMul = m_playbackPresenter
+                ? m_playbackPresenter->fadeMultiplier(entity) : 1.0f;
+            const float drawOpacity = layer.opacity * fadeMul;
+
             // Check if entity has a valid video texture
             auto* videoTex = registry.try_get<VideoTexture>(entity);
 
@@ -111,7 +123,7 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
                 // (HAP Q content needs in-shader YCoCg→RGB; everything else is Linear).
                 TextureRef tex = m_renderer->getVideoTexture(videoTex->descriptorSlot);
                 if (tex.valid()) {
-                    m_renderer->drawTexturedQuad(tex, transformMatrix, layer.opacity,
+                    m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
                                                  layer.blendMode, videoTex->colorSpace,
                                                  videoTex->ocioColorSpace);
                     continue;
@@ -127,7 +139,7 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
                 ((entityId * 97)  % 256) / 255.0f,
                 1.0f
             );
-            m_renderer->drawColoredQuad(transformMatrix, color, layer.opacity);
+            m_renderer->drawColoredQuad(transformMatrix, color, drawOpacity);
         }
 
         // End rendering to this screen's compose target

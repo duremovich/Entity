@@ -21,6 +21,7 @@ that have moved on.
 | 0009 | [Structured projects (folder-as-project) with reference-mode escape hatch](0009-structured-projects-with-reference-mode.md) | Accepted | 2026-04-29 |
 | 0010 | [`content/` is the source of truth; filename-based versioning](0010-content-as-source-of-truth.md) | Accepted | 2026-04-29 |
 | 0011 | [Projector calibration — manual correspondence + LM solve + post-fit IDW residual warp](0011-projector-calibration-architecture.md) | Accepted | 2026-05-03 |
+| 0012 | [Timeline structural playback — break-point sections, cue tags, and continuation-phase decoupling](0012-timeline-sections-and-cues.md) | Accepted | 2026-05-06 |
 
 ## Format
 

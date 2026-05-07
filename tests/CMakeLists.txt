@@ -9,6 +9,7 @@ add_executable(EntityMediaTests
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
     unit/SectionFadeTests.cpp
+    unit/PlaybackPresenterFadeCacheTests.cpp
     unit/ClipPlaybackPhaseTests.cpp
     unit/HapFormatTests.cpp
     unit/TranscodeManagerTests.cpp

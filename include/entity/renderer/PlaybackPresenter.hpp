@@ -3,6 +3,7 @@
 #include "entity/bus/Message.hpp"
 #include "entity/core/Types.hpp"
 #include <entt/entt.hpp>
+#include <unordered_map>
 
 namespace entity {
 
@@ -41,6 +42,11 @@ public:
     // open command list before any shader reads them.
     void present(const bus::RenderFrame& rf);
 
+    // Phase D — refresh the per-clip section-fade-multiplier cache from
+    // the bus payload. Called from present() but exposed separately so
+    // unit tests can populate the cache without a live renderer backend.
+    void refreshFadeMultiplierCache(const bus::RenderFrame& rf);
+
     // Single-clip preview accessor (StageWindow's 2D view, etc.). Walks
     // `view<Clip, VideoTexture>`, asks the time authority which clip is
     // active at the current timeline frame and what mediaFrame to look
@@ -50,11 +56,28 @@ public:
     // against eviction.
     const DecodedFrame* getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const;
 
+    // Phase D — section fade envelope lookup. The bus payload carries
+    // sectionFadeMultiplier per active clip; PlaybackPresenter caches
+    // it Renderer-locally each tick so CompositorSystem can multiply
+    // it into the per-clip draw opacity at composite time. Caching it
+    // here (vs. mutating MediaLayer.opacity in the registry) keeps the
+    // boundary contract clean and avoids the exponential-decay bug
+    // that would happen for clips without an enabled Opacity keyframe
+    // track to rewrite the multiplied value each tick.
+    float fadeMultiplier(entt::entity entity) const {
+        auto it = m_fadeMultipliers.find(entity);
+        return it != m_fadeMultipliers.end() ? it->second : 1.0f;
+    }
+
 private:
     entt::registry& m_registry;
     IRenderer*      m_renderer{nullptr};
     FrameCache*     m_frameCache{nullptr};
     DecodeSystem*   m_decodeSystem{nullptr};
+
+    // Per-tick cache of fade multipliers from the bus payload; cleared
+    // and repopulated at the top of each present() call.
+    std::unordered_map<entt::entity, float> m_fadeMultipliers;
 };
 
 } // namespace entity
