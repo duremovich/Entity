@@ -1,78 +1,69 @@
-# Entity — Brand Assets
+# entity — brand assets
 
-Drop-in brand asset bundle for the Entity media server.
+Pixel-grid creature mark + lowercase wordmark for **entity**, a media server.
 
-## Contents
+## What's here
 
 ```
 dist/
-├── brand.html                          ← Full design canvas (offline, 4MB)
-├── README.md                           ← this file
-├── svg/
-│   ├── mark.svg                        ← Primary mark (rounded plate)
-│   ├── mark-square.svg                 ← Mark with square corners
-│   ├── lockup-horizontal.svg           ← Mark + "entity" + "MEDIA SERVER" (horizontal)
-│   ├── lockup-vertical.svg             ← Mark over wordmark (centered)
-│   ├── lockup-stacked.svg              ← Mark + "entity" only (no tagline)
+├── README.md              ← you are here
+├── brand.html             ← interactive design doc (open in browser)
+├── svg/                   ← scalable vector source
+│   ├── mark.svg                       primary mark, rounded corners
+│   ├── mark-square.svg                primary mark, square corners (app icon)
+│   ├── lockup-horizontal.svg          mark + entity + media server, side-by-side
+│   ├── lockup-vertical.svg            mark above wordmark + tagline, centered
+│   ├── lockup-stacked.svg             mark above entity (no tagline)
+│   ├── wordmark.svg                   "entity" wordmark only
+│   ├── wordmark-with-tagline.svg      "entity" + "media server"
 │   ├── lockup-horizontal-transparent.svg
-│   ├── lockup-vertical-transparent.svg
-│   ├── wordmark.svg                    ← "entity" wordmark only
-│   └── wordmark-with-tagline.svg
+│   └── lockup-vertical-transparent.svg
 └── png/
-    ├── favicon-16.png
-    ├── favicon-32.png
-    ├── favicon-64.png
-    ├── favicon-128.png
-    ├── apple-touch-icon-180.png
-    ├── icon-192.png                    ← PWA / Android
-    ├── icon-256.png
-    ├── icon-512.png                    ← PWA / Android
-    ├── icon-1024.png                   ← App Store / iOS
-    ├── mark-square-512.png
-    ├── mark-square-1024.png
-    ├── lockup-horizontal-2400.png
-    ├── lockup-horizontal-1200.png
-    ├── lockup-horizontal-1200-transparent.png
-    ├── lockup-horizontal-mark-wordmark.png   ← no tagline
-    ├── lockup-vertical-1000.png
-    ├── lockup-vertical-1000-transparent.png
-    ├── wordmark-2000.png
-    ├── wordmark-with-tagline-2000.png
-    ├── wordmark-1200-transparent.png
-    ├── og-banner-1280x640.png          ← Twitter / generic social
-    └── og-banner-1200x630.png          ← Open Graph / Facebook
+    ├── icon/              ← favicons & app icons (16 → 1024)
+    ├── lockup/            ← rasterized lockups @ 1x and 2x
+    └── social/            ← OG image, Twitter header, README hero
 ```
+
+All SVGs are self-contained — text is converted to paths (Space Grotesk SemiBold / Medium) so they render identically without any font installed.
 
 ## Colors
 
-| Token         | Hex       | Use                                     |
-| ------------- | --------- | --------------------------------------- |
-| Plate         | `#3a1a5a` | Primary background plate inside the mark |
-| Canvas        | `#1f0a35` | Dark canvas / page background; gridlines |
-| Body (start)  | `#41b261` | Body cells gradient — top-left          |
-| Body (end)    | `#5dff8a` | Body cells gradient — bottom-right      |
-| Whites (start)| `#a8ffc4` | Eye whites gradient — top-left          |
-| Whites (end)  | `#dfffe9` | Eye whites gradient — bottom-right      |
-| Iris (start)  | `#ff3d0a` | Iris/accent gradient — top-left         |
-| Iris (end)    | `#ffd86b` | Iris/accent gradient — bottom-right     |
-| Accent        | `#ff7a2e` | Tagline / orange accent text            |
-| Stroke        | `#3ca65a` | Subtle cell outline                     |
+| Token        | Hex       | Use                              |
+|--------------|-----------|----------------------------------|
+| canvas       | `#1f0a35` | page / canvas background         |
+| plate        | `#3a1a5a` | mark plate inside the rim        |
+| body-from    | `#41b261` | wordmark + body pixels (start)   |
+| body-to      | `#5dff8a` | wordmark + body pixels (end)     |
+| stroke       | `#3ca65a` | per-pixel cell stroke            |
+| whites-from  | `#a8ffc4` | eye whites (start)               |
+| whites-to    | `#dfffe9` | eye whites (end)                 |
+| iris-from    | `#ff3d0a` | iris (start)                     |
+| iris-to      | `#ffd86b` | iris (end)                       |
+| accent       | `#ff7a2e` | "media server" / accent text     |
 
-## Typography
+Gradients run top-left → bottom-right (135°).
 
-**Wordmark / display:** Space Grotesk 600 (lowercase). Letter-spacing `-2.5%`.
+## Type
 
-**Tagline:** Space Grotesk 500, all caps, letter-spacing `+30%`.
+- **Wordmark** — Space Grotesk SemiBold (600), lowercase, letter-spacing −3%
+- **Tagline / accent** — Space Grotesk Medium (500), uppercase, tracking +30%
 
-## Usage
+The exported SVGs convert text to paths, so no font install is required to render them.
 
-- **Favicon** — use `png/favicon-32.png` (HTML `<link rel="icon">`) or `svg/mark.svg` for a vector favicon.
-- **App icon (web)** — `png/icon-192.png` and `png/icon-512.png` for the manifest.
-- **App icon (iOS)** — `png/apple-touch-icon-180.png` for `<link rel="apple-touch-icon">`.
-- **README hero / repo banner** — `png/lockup-horizontal-1200.png` (or `-transparent.png` if your README has its own background).
-- **Open Graph / social cards** — `png/og-banner-1200x630.png`.
-- **In-app brand mark** — `svg/mark.svg` is the canonical vector — scales cleanly to any size.
+## Favicon HTML
 
-## Editing
+```html
+<link rel="icon" type="image/svg+xml" href="/svg/mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/png/icon/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/png/icon/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/png/icon/apple-touch-icon-180.png">
+<link rel="manifest" href="/site.webmanifest">
+```
 
-The full design canvas is in `brand.html` — open it in any browser to browse every variant explored. The source for the asset generators lives in the design project. To regenerate this bundle, re-run the export from there.
+## OG / social
+
+```html
+<meta property="og:image" content="https://yourdomain.com/png/social/og-1200x630.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://yourdomain.com/png/social/og-1200x630.png">
+```

@@ -1,69 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 800" font-family="&#39;Space Grotesk&#39;, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 800">
   <defs>
-    
-    <linearGradient id="wordmark-grad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop>
-    </linearGradient>
+    <linearGradient id="wm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop></linearGradient>
   </defs>
   <g transform="translate(120 100) scale(0.6578947368421053)">
   <defs>
-    <linearGradient id="mark-body" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop>
-    </linearGradient>
-    <linearGradient id="mark-whites" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#a8ffc4"></stop><stop offset="1" stop-color="#dfffe9"></stop>
-    </linearGradient>
-    <linearGradient id="mark-iris" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ff3d0a"></stop><stop offset="1" stop-color="#ffd86b"></stop>
-    </linearGradient>
+    <linearGradient id="lkmk-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop></linearGradient>
+    <linearGradient id="lkmk-whites" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a8ffc4"></stop><stop offset="1" stop-color="#dfffe9"></stop></linearGradient>
+    <linearGradient id="lkmk-iris" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3d0a"></stop><stop offset="1" stop-color="#ffd86b"></stop></linearGradient>
   </defs>
   <rect x="8" y="8" width="896" height="896" fill="#3a1a5a" rx="37.5" ry="37.5"></rect>
-  <rect x="208.44" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="108.22" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="108.22" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="108.22" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="108.22" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="108.22" width="94.22" height="94.22" fill="url(#mark-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="108.22" width="94.22" height="94.22" fill="url(#mark-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="108.22" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="208.44" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="208.44" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="208.44" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="208.44" width="94.22" height="94.22" fill="url(#mark-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="408.89" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="408.89" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="509.11" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="509.11" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="609.33" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="609.33" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="709.56" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="709.56" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="709.56" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <g shape-rendering="crispEdges">
+  <rect x="208.44" y="8.00" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="8.00" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="8.00" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="8.00" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="8.00" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="108.22" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="208.44" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="308.67" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="408.89" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="408.89" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="509.11" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="509.11" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="609.33" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="609.33" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="709.56" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="709.56" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="709.56" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="809.78" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="809.78" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="809.78" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="809.78" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="809.78" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="809.78" width="94.22" height="94.22" fill="url(#lkmk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <g>
     <rect x="4.5" y="4.5" width="903" height="903" fill="none" stroke="#1f0a35" stroke-width="7" rx="41" ry="41"></rect>
     <line x1="105.22" y1="8" x2="105.22" y2="904" stroke="#1f0a35" stroke-width="7"></line>
     <line x1="205.44" y1="8" x2="205.44" y2="904" stroke="#1f0a35" stroke-width="7"></line>
@@ -83,6 +74,6 @@
     <line x1="8" y1="806.78" x2="904" y2="806.78" stroke="#1f0a35" stroke-width="7"></line>
   </g>
   </g>
-  <text x="820" y="350" text-anchor="start" font-size="380" font-weight="600" letter-spacing="-9.5" fill="url(#wordmark-grad)">entity</text>
-  <text x="820" y="510" text-anchor="start" font-size="56" font-weight="500" letter-spacing="16.8" fill="#ff7a2e" font-family="&#39;Space Grotesk&#39;, sans-serif">MEDIA SERVER</text>
+  <path d="M933.62 473.72L933.62 473.72Q905.50 473.72 884.03 461.75Q862.56 449.78 850.59 427.93Q838.62 406.08 838.62 376.82L838.62 376.82L838.62 372.26Q838.62 342.62 850.40 320.96Q862.18 299.30 883.46 287.33Q904.74 275.36 932.48 275.36L932.48 275.36Q959.84 275.36 980.36 287.33Q1000.88 299.30 1012.28 320.96Q1023.68 342.62 1023.68 371.50L1023.68 371.50L1023.68 387.08L882.70 387.08Q883.46 409.12 898.28 422.42Q913.10 435.72 934.76 435.72L934.76 435.72Q956.04 435.72 966.30 426.41Q976.56 417.10 981.88 405.32L981.88 405.32L1017.98 423.94Q1012.66 434.20 1002.59 445.79Q992.52 457.38 975.80 465.55Q959.08 473.72 933.62 473.72ZM883.08 354.02L883.08 354.02L979.22 354.02Q977.70 335.40 964.97 324.38Q952.24 313.36 932.10 313.36L932.10 313.36Q911.20 313.36 898.66 324.38Q886.12 335.40 883.08 354.02Z M1102.72 468.40L1059.02 468.40L1059.02 280.68L1101.96 280.68L1101.96 306.90L1108.42 306.90Q1113.36 296.26 1126.28 286.76Q1139.20 277.26 1165.42 277.26L1165.42 277.26Q1187.08 277.26 1203.80 287.14Q1220.52 297.02 1229.83 314.50Q1239.14 331.98 1239.14 355.92L1239.14 355.92L1239.14 468.40L1195.44 468.40L1195.44 359.34Q1195.44 336.54 1184.23 325.33Q1173.02 314.12 1152.50 314.12L1152.50 314.12Q1129.32 314.12 1116.02 329.51Q1102.72 344.90 1102.72 373.40L1102.72 373.40L1102.72 468.40Z M1406.72 468.40L1354.66 468.40Q1336.42 468.40 1325.59 457.57Q1314.76 446.74 1314.76 428.12L1314.76 428.12L1314.76 316.78L1265.74 316.78L1265.74 280.68L1314.76 280.68L1314.76 220.26L1358.46 220.26L1358.46 280.68L1412.42 280.68L1412.42 316.78L1358.46 316.78L1358.46 420.90Q1358.46 432.30 1369.10 432.30L1369.10 432.30L1406.72 432.30L1406.72 468.40Z M1491.08 468.40L1447.38 468.40L1447.38 280.68L1491.08 280.68L1491.08 468.40ZM1469.04 256.74L1469.04 256.74Q1457.26 256.74 1448.71 248.95Q1440.16 241.16 1440.16 228.24L1440.16 228.24Q1440.16 215.32 1448.71 207.53Q1457.26 199.74 1469.04 199.74L1469.04 199.74Q1481.58 199.74 1489.75 207.53Q1497.92 215.32 1497.92 228.24L1497.92 228.24Q1497.92 241.16 1489.75 248.95Q1481.58 256.74 1469.04 256.74Z M1660.56 468.40L1608.50 468.40Q1590.26 468.40 1579.43 457.57Q1568.60 446.74 1568.60 428.12L1568.60 428.12L1568.60 316.78L1519.58 316.78L1519.58 280.68L1568.60 280.68L1568.60 220.26L1612.30 220.26L1612.30 280.68L1666.26 280.68L1666.26 316.78L1612.30 316.78L1612.30 420.90Q1612.30 432.30 1622.94 432.30L1622.94 432.30L1660.56 432.30L1660.56 468.40Z M1839.92 544.40L1722.12 544.40L1722.12 506.40L1825.86 506.40Q1836.50 506.40 1836.50 495L1836.50 495L1836.50 442.56L1830.04 442.56Q1827 449.40 1820.16 456.05Q1813.32 462.70 1801.92 467.07Q1790.52 471.44 1773.04 471.44L1773.04 471.44Q1751.38 471.44 1734.66 461.75Q1717.94 452.06 1708.82 434.39Q1699.70 416.72 1699.70 393.16L1699.70 393.16L1699.70 280.68L1743.02 280.68L1743.02 389.74Q1743.02 412.54 1754.23 423.56Q1765.44 434.58 1785.96 434.58L1785.96 434.58Q1809.14 434.58 1822.63 419.38Q1836.12 404.18 1836.12 375.68L1836.12 375.68L1836.12 280.68L1879.44 280.68L1879.44 504.12Q1879.44 522.74 1868.80 533.57Q1858.16 544.40 1839.92 544.40L1839.92 544.40Z" fill="url(#wm)"></path>
+  <path d="M829.97 568.40L824.09 568.40L824.09 529.20L835.46 529.20L844.02 564.37L844.92 564.37L853.49 529.20L864.86 529.20L864.86 568.40L858.98 568.40L858.98 533.46L858.08 533.46L849.57 568.40L839.38 568.40L830.86 533.46L829.97 533.46L829.97 568.40Z M914.81 568.40L889.83 568.40L889.83 529.20L914.53 529.20L914.53 534.69L895.88 534.69L895.88 545.94L912.96 545.94L912.96 551.43L895.88 551.43L895.88 562.91L914.81 562.91L914.81 568.40Z M952.16 568.40L936.48 568.40L936.48 563.02L941.74 563.02L941.74 534.58L936.48 534.58L936.48 529.20L952.16 529.20Q960 529.20 964.17 533.18Q968.34 537.15 968.34 545.16L968.34 545.16L968.34 552.50Q968.34 560.50 964.17 564.45Q960 568.40 952.16 568.40L952.16 568.40ZM947.85 534.74L947.85 562.91L952.22 562.91Q957.31 562.91 959.78 560.34Q962.24 557.76 962.24 552.66L962.24 552.66L962.24 544.94Q962.24 539.78 959.78 537.26Q957.31 534.74 952.22 534.74L952.22 534.74L947.85 534.74Z M998.02 568.40L991.98 568.40L991.98 529.20L998.02 529.20L998.02 568.40Z M1026.36 568.40L1020.09 568.40L1031.29 529.20L1041.93 529.20L1053.07 568.40L1046.86 568.40L1044.28 559.16L1028.94 559.16L1026.36 568.40ZM1036.16 532.95L1030.45 553.56L1042.77 553.56L1037.06 532.95L1036.16 532.95Z  M1119.60 569.18L1119.60 569.18Q1115.18 569.18 1111.76 567.62Q1108.34 566.05 1106.41 563.00Q1104.48 559.94 1104.48 555.58L1104.48 555.58L1104.48 554.18L1110.47 554.18L1110.47 555.58Q1110.47 559.72 1112.96 561.79Q1115.46 563.86 1119.60 563.86L1119.60 563.86Q1123.80 563.86 1125.93 562.10Q1128.06 560.34 1128.06 557.54L1128.06 557.54Q1128.06 555.69 1127.05 554.51Q1126.04 553.34 1124.19 552.64Q1122.34 551.94 1119.77 551.32L1119.77 551.32L1117.70 550.82Q1113.94 549.92 1111.17 548.60Q1108.40 547.29 1106.89 545.10Q1105.38 542.92 1105.38 539.50L1105.38 539.50Q1105.38 536.03 1107.08 533.57Q1108.79 531.10 1111.82 529.76Q1114.84 528.42 1118.93 528.42L1118.93 528.42Q1123.02 528.42 1126.24 529.82Q1129.46 531.22 1131.30 533.96Q1133.15 536.70 1133.15 540.85L1133.15 540.85L1133.15 542.86L1127.16 542.86L1127.16 540.85Q1127.16 538.33 1126.12 536.76Q1125.09 535.19 1123.24 534.46Q1121.39 533.74 1118.93 533.74L1118.93 533.74Q1115.34 533.74 1113.36 535.22Q1111.37 536.70 1111.37 539.34L1111.37 539.34Q1111.37 541.13 1112.24 542.28Q1113.10 543.42 1114.78 544.15Q1116.46 544.88 1118.98 545.44L1118.98 545.44L1121.06 545.94Q1124.86 546.78 1127.78 548.10Q1130.69 549.42 1132.37 551.66Q1134.05 553.90 1134.05 557.42L1134.05 557.42Q1134.05 560.95 1132.28 563.58Q1130.52 566.22 1127.27 567.70Q1124.02 569.18 1119.60 569.18Z M1182.15 568.40L1157.18 568.40L1157.18 529.20L1181.87 529.20L1181.87 534.69L1163.22 534.69L1163.22 545.94L1180.30 545.94L1180.30 551.43L1163.22 551.43L1163.22 562.91L1182.15 562.91L1182.15 568.40Z M1211.33 568.40L1205.28 568.40L1205.28 529.20L1221.74 529.20Q1225.38 529.20 1228.16 530.46Q1230.93 531.72 1232.47 534.07Q1234.01 536.42 1234.01 539.67L1234.01 539.67L1234.01 540.29Q1234.01 543.98 1232.24 546.20Q1230.48 548.41 1227.96 549.30L1227.96 549.30L1227.96 550.20Q1230.09 550.31 1231.38 551.63Q1232.66 552.94 1232.66 555.41L1232.66 555.41L1232.66 568.40L1226.56 568.40L1226.56 556.25Q1226.56 554.74 1225.78 553.84Q1224.99 552.94 1223.26 552.94L1223.26 552.94L1211.33 552.94L1211.33 568.40ZM1211.33 534.69L1211.33 547.46L1221.07 547.46Q1224.32 547.46 1226.11 545.80Q1227.90 544.15 1227.90 541.30L1227.90 541.30L1227.90 540.85Q1227.90 537.99 1226.14 536.34Q1224.38 534.69 1221.07 534.69L1221.07 534.69L1211.33 534.69Z M1275.95 568.40L1265.48 568.40L1254.56 529.20L1260.83 529.20L1270.35 564.59L1271.08 564.59L1280.54 529.20L1286.82 529.20L1275.95 568.40Z M1333.91 568.40L1308.94 568.40L1308.94 529.20L1333.63 529.20L1333.63 534.69L1314.98 534.69L1314.98 545.94L1332.06 545.94L1332.06 551.43L1314.98 551.43L1314.98 562.91L1333.91 562.91L1333.91 568.40Z M1363.09 568.40L1357.04 568.40L1357.04 529.20L1373.50 529.20Q1377.14 529.20 1379.92 530.46Q1382.69 531.72 1384.23 534.07Q1385.77 536.42 1385.77 539.67L1385.77 539.67L1385.77 540.29Q1385.77 543.98 1384.00 546.20Q1382.24 548.41 1379.72 549.30L1379.72 549.30L1379.72 550.20Q1381.85 550.31 1383.14 551.63Q1384.42 552.94 1384.42 555.41L1384.42 555.41L1384.42 568.40L1378.32 568.40L1378.32 556.25Q1378.32 554.74 1377.54 553.84Q1376.75 552.94 1375.02 552.94L1375.02 552.94L1363.09 552.94L1363.09 568.40ZM1363.09 534.69L1363.09 547.46L1372.83 547.46Q1376.08 547.46 1377.87 545.80Q1379.66 544.15 1379.66 541.30L1379.66 541.30L1379.66 540.85Q1379.66 537.99 1377.90 536.34Q1376.14 534.69 1372.83 534.69L1372.83 534.69L1363.09 534.69Z" fill="#ff7a2e"></path>
 </svg>

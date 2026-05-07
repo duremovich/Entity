@@ -1,69 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1400" font-family="&#39;Space Grotesk&#39;, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1400">
   <defs>
-    
-    <linearGradient id="wordmark-grad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop>
-    </linearGradient>
+    <linearGradient id="wm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop></linearGradient>
   </defs>
   <g transform="translate(200 80) scale(0.6578947368421053)">
   <defs>
-    <linearGradient id="mark-body" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop>
-    </linearGradient>
-    <linearGradient id="mark-whites" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#a8ffc4"></stop><stop offset="1" stop-color="#dfffe9"></stop>
-    </linearGradient>
-    <linearGradient id="mark-iris" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ff3d0a"></stop><stop offset="1" stop-color="#ffd86b"></stop>
-    </linearGradient>
+    <linearGradient id="lkmkv-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop></linearGradient>
+    <linearGradient id="lkmkv-whites" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a8ffc4"></stop><stop offset="1" stop-color="#dfffe9"></stop></linearGradient>
+    <linearGradient id="lkmkv-iris" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3d0a"></stop><stop offset="1" stop-color="#ffd86b"></stop></linearGradient>
   </defs>
   <rect x="8" y="8" width="896" height="896" fill="#3a1a5a" rx="37.5" ry="37.5"></rect>
-  <rect x="208.44" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="8.00" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="108.22" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="108.22" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="108.22" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="108.22" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="108.22" width="94.22" height="94.22" fill="url(#mark-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="108.22" width="94.22" height="94.22" fill="url(#mark-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="108.22" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="208.44" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="208.44" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="208.44" width="94.22" height="94.22" fill="url(#mark-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="208.44" width="94.22" height="94.22" fill="url(#mark-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="208.44" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="308.67" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="408.89" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="408.89" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="509.11" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="509.11" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="609.33" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="609.33" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="709.56" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="709.56" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="709.56" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="809.78" width="94.22" height="94.22" fill="url(#mark-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <g shape-rendering="crispEdges">
+  <rect x="208.44" y="8.00" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="8.00" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="8.00" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="8.00" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="8.00" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="108.22" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="208.44" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="308.67" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="408.89" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="408.89" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="509.11" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="509.11" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="609.33" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="609.33" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="709.56" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="709.56" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="709.56" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="809.78" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="809.78" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="809.78" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="809.78" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="809.78" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="809.78" width="94.22" height="94.22" fill="url(#lkmkv-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <g>
     <rect x="4.5" y="4.5" width="903" height="903" fill="none" stroke="#1f0a35" stroke-width="7" rx="41" ry="41"></rect>
     <line x1="105.22" y1="8" x2="105.22" y2="904" stroke="#1f0a35" stroke-width="7"></line>
     <line x1="205.44" y1="8" x2="205.44" y2="904" stroke="#1f0a35" stroke-width="7"></line>
@@ -83,6 +74,6 @@
     <line x1="8" y1="806.78" x2="904" y2="806.78" stroke="#1f0a35" stroke-width="7"></line>
   </g>
   </g>
-  <text x="500" y="880" text-anchor="middle" font-size="200" font-weight="600" letter-spacing="-5" fill="url(#wordmark-grad)">entity</text>
-  <text x="500" y="970" text-anchor="middle" font-size="40" font-weight="500" letter-spacing="12" fill="#ff7a2e" font-family="&#39;Space Grotesk&#39;, sans-serif">MEDIA SERVER</text>
+  <path d="M273.70 882.80L273.70 882.80Q258.90 882.80 247.60 876.50Q236.30 870.20 230.00 858.70Q223.70 847.20 223.70 831.80L223.70 831.80L223.70 829.40Q223.70 813.80 229.90 802.40Q236.10 791 247.30 784.70Q258.50 778.40 273.10 778.40L273.10 778.40Q287.50 778.40 298.30 784.70Q309.10 791 315.10 802.40Q321.10 813.80 321.10 829L321.10 829L321.10 837.20L246.90 837.20Q247.30 848.80 255.10 855.80Q262.90 862.80 274.30 862.80L274.30 862.80Q285.50 862.80 290.90 857.90Q296.30 853 299.10 846.80L299.10 846.80L318.10 856.60Q315.30 862 310 868.10Q304.70 874.20 295.90 878.50Q287.10 882.80 273.70 882.80ZM247.10 819.80L247.10 819.80L297.70 819.80Q296.90 810 290.20 804.20Q283.50 798.40 272.90 798.40L272.90 798.40Q261.90 798.40 255.30 804.20Q248.70 810 247.10 819.80Z M362.70 880L339.70 880L339.70 781.20L362.30 781.20L362.30 795L365.70 795Q368.30 789.40 375.10 784.40Q381.90 779.40 395.70 779.40L395.70 779.40Q407.10 779.40 415.90 784.60Q424.70 789.80 429.60 799Q434.50 808.20 434.50 820.80L434.50 820.80L434.50 880L411.50 880L411.50 822.60Q411.50 810.60 405.60 804.70Q399.70 798.80 388.90 798.80L388.90 798.80Q376.70 798.80 369.70 806.90Q362.70 815 362.70 830L362.70 830L362.70 880Z M522.70 880L495.30 880Q485.70 880 480.00 874.30Q474.30 868.60 474.30 858.80L474.30 858.80L474.30 800.20L448.50 800.20L448.50 781.20L474.30 781.20L474.30 749.40L497.30 749.40L497.30 781.20L525.70 781.20L525.70 800.20L497.30 800.20L497.30 855Q497.30 861 502.90 861L502.90 861L522.70 861L522.70 880Z M567.10 880L544.10 880L544.10 781.20L567.10 781.20L567.10 880ZM555.50 768.60L555.50 768.60Q549.30 768.60 544.80 764.50Q540.30 760.40 540.30 753.60L540.30 753.60Q540.30 746.80 544.80 742.70Q549.30 738.60 555.50 738.60L555.50 738.60Q562.10 738.60 566.40 742.70Q570.70 746.80 570.70 753.60L570.70 753.60Q570.70 760.40 566.40 764.50Q562.10 768.60 555.50 768.60Z M656.30 880L628.90 880Q619.30 880 613.60 874.30Q607.90 868.60 607.90 858.80L607.90 858.80L607.90 800.20L582.10 800.20L582.10 781.20L607.90 781.20L607.90 749.40L630.90 749.40L630.90 781.20L659.30 781.20L659.30 800.20L630.90 800.20L630.90 855Q630.90 861 636.50 861L636.50 861L656.30 861L656.30 880Z M750.70 920L688.70 920L688.70 900L743.30 900Q748.90 900 748.90 894L748.90 894L748.90 866.40L745.50 866.40Q743.90 870 740.30 873.50Q736.70 877 730.70 879.30Q724.70 881.60 715.50 881.60L715.50 881.60Q704.10 881.60 695.30 876.50Q686.50 871.40 681.70 862.10Q676.90 852.80 676.90 840.40L676.90 840.40L676.90 781.20L699.70 781.20L699.70 838.60Q699.70 850.60 705.60 856.40Q711.50 862.20 722.30 862.20L722.30 862.20Q734.50 862.20 741.60 854.20Q748.70 846.20 748.70 831.20L748.70 831.20L748.70 781.20L771.50 781.20L771.50 898.80Q771.50 908.60 765.90 914.30Q760.30 920 750.70 920L750.70 920Z" fill="url(#wm)"></path>
+  <path d="M304.14 970L299.94 970L299.94 942L308.06 942L314.18 967.12L314.82 967.12L320.94 942L329.06 942L329.06 970L324.86 970L324.86 945.04L324.22 945.04L318.14 970L310.86 970L304.78 945.04L304.14 945.04L304.14 970Z M364.74 970L346.90 970L346.90 942L364.54 942L364.54 945.92L351.22 945.92L351.22 953.96L363.42 953.96L363.42 957.88L351.22 957.88L351.22 966.08L364.74 966.08L364.74 970Z M391.42 970L380.22 970L380.22 966.16L383.98 966.16L383.98 945.84L380.22 945.84L380.22 942L391.42 942Q397.02 942 400 944.84Q402.98 947.68 402.98 953.40L402.98 953.40L402.98 958.64Q402.98 964.36 400 967.18Q397.02 970 391.42 970L391.42 970ZM388.34 945.96L388.34 966.08L391.46 966.08Q395.10 966.08 396.86 964.24Q398.62 962.40 398.62 958.76L398.62 958.76L398.62 953.24Q398.62 949.56 396.86 947.76Q395.10 945.96 391.46 945.96L391.46 945.96L388.34 945.96Z M424.18 970L419.86 970L419.86 942L424.18 942L424.18 970Z M444.42 970L439.94 970L447.94 942L455.54 942L463.50 970L459.06 970L457.22 963.40L446.26 963.40L444.42 970ZM451.42 944.68L447.34 959.40L456.14 959.40L452.06 944.68L451.42 944.68Z  M511.02 970.56L511.02 970.56Q507.86 970.56 505.42 969.44Q502.98 968.32 501.60 966.14Q500.22 963.96 500.22 960.84L500.22 960.84L500.22 959.84L504.50 959.84L504.50 960.84Q504.50 963.80 506.28 965.28Q508.06 966.76 511.02 966.76L511.02 966.76Q514.02 966.76 515.54 965.50Q517.06 964.24 517.06 962.24L517.06 962.24Q517.06 960.92 516.34 960.08Q515.62 959.24 514.30 958.74Q512.98 958.24 511.14 957.80L511.14 957.80L509.66 957.44Q506.98 956.80 505 955.86Q503.02 954.92 501.94 953.36Q500.86 951.80 500.86 949.36L500.86 949.36Q500.86 946.88 502.08 945.12Q503.30 943.36 505.46 942.40Q507.62 941.44 510.54 941.44L510.54 941.44Q513.46 941.44 515.76 942.44Q518.06 943.44 519.38 945.40Q520.70 947.36 520.70 950.32L520.70 950.32L520.70 951.76L516.42 951.76L516.42 950.32Q516.42 948.52 515.68 947.40Q514.94 946.28 513.62 945.76Q512.30 945.24 510.54 945.24L510.54 945.24Q507.98 945.24 506.56 946.30Q505.14 947.36 505.14 949.24L505.14 949.24Q505.14 950.52 505.76 951.34Q506.38 952.16 507.58 952.68Q508.78 953.20 510.58 953.60L510.58 953.60L512.06 953.96Q514.78 954.56 516.86 955.50Q518.94 956.44 520.14 958.04Q521.34 959.64 521.34 962.16L521.34 962.16Q521.34 964.68 520.08 966.56Q518.82 968.44 516.50 969.50Q514.18 970.56 511.02 970.56Z M555.70 970L537.86 970L537.86 942L555.50 942L555.50 945.92L542.18 945.92L542.18 953.96L554.38 953.96L554.38 957.88L542.18 957.88L542.18 966.08L555.70 966.08L555.70 970Z M576.54 970L572.22 970L572.22 942L583.98 942Q586.58 942 588.56 942.90Q590.54 943.80 591.64 945.48Q592.74 947.16 592.74 949.48L592.74 949.48L592.74 949.92Q592.74 952.56 591.48 954.14Q590.22 955.72 588.42 956.36L588.42 956.36L588.42 957Q589.94 957.08 590.86 958.02Q591.78 958.96 591.78 960.72L591.78 960.72L591.78 970L587.42 970L587.42 961.32Q587.42 960.24 586.86 959.60Q586.30 958.96 585.06 958.96L585.06 958.96L576.54 958.96L576.54 970ZM576.54 945.92L576.54 955.04L583.50 955.04Q585.82 955.04 587.10 953.86Q588.38 952.68 588.38 950.64L588.38 950.64L588.38 950.32Q588.38 948.28 587.12 947.10Q585.86 945.92 583.50 945.92L583.50 945.92L576.54 945.92Z M622.70 970L615.22 970L607.42 942L611.90 942L618.70 967.28L619.22 967.28L625.98 942L630.46 942L622.70 970Z M664.10 970L646.26 970L646.26 942L663.90 942L663.90 945.92L650.58 945.92L650.58 953.96L662.78 953.96L662.78 957.88L650.58 957.88L650.58 966.08L664.10 966.08L664.10 970Z M684.94 970L680.62 970L680.62 942L692.38 942Q694.98 942 696.96 942.90Q698.94 943.80 700.04 945.48Q701.14 947.16 701.14 949.48L701.14 949.48L701.14 949.92Q701.14 952.56 699.88 954.14Q698.62 955.72 696.82 956.36L696.82 956.36L696.82 957Q698.34 957.08 699.26 958.02Q700.18 958.96 700.18 960.72L700.18 960.72L700.18 970L695.82 970L695.82 961.32Q695.82 960.24 695.26 959.60Q694.70 958.96 693.46 958.96L693.46 958.96L684.94 958.96L684.94 970ZM684.94 945.92L684.94 955.04L691.90 955.04Q694.22 955.04 695.50 953.86Q696.78 952.68 696.78 950.64L696.78 950.64L696.78 950.32Q696.78 948.28 695.52 947.10Q694.26 945.92 691.90 945.92L691.90 945.92L684.94 945.92Z" fill="#ff7a2e"></path>
 </svg>

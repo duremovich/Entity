@@ -1,62 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 912 912">
   <defs>
-    <linearGradient id="m-body" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop>
-    </linearGradient>
-    <linearGradient id="m-whites" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#a8ffc4"></stop><stop offset="1" stop-color="#dfffe9"></stop>
-    </linearGradient>
-    <linearGradient id="m-iris" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ff3d0a"></stop><stop offset="1" stop-color="#ffd86b"></stop>
-    </linearGradient>
+    <linearGradient id="mk-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#41b261"></stop><stop offset="1" stop-color="#5dff8a"></stop></linearGradient>
+    <linearGradient id="mk-whites" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a8ffc4"></stop><stop offset="1" stop-color="#dfffe9"></stop></linearGradient>
+    <linearGradient id="mk-iris" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3d0a"></stop><stop offset="1" stop-color="#ffd86b"></stop></linearGradient>
   </defs>
   <rect x="8" y="8" width="896" height="896" fill="#3a1a5a" rx="37.5" ry="37.5"></rect>
-  <rect x="208.44" y="8.00" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="8.00" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="8.00" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="8.00" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="8.00" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="108.22" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="108.22" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="108.22" width="94.22" height="94.22" fill="url(#m-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="108.22" width="94.22" height="94.22" fill="url(#m-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="108.22" width="94.22" height="94.22" fill="url(#m-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="108.22" width="94.22" height="94.22" fill="url(#m-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="108.22" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="208.44" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="208.44" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="208.44" width="94.22" height="94.22" fill="url(#m-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="208.44" width="94.22" height="94.22" fill="url(#m-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="208.44" width="94.22" height="94.22" fill="url(#m-whites)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="208.44" width="94.22" height="94.22" fill="url(#m-iris)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="208.44" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="208.44" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="308.67" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="408.89" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="408.89" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="509.11" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="509.11" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="8.00" y="609.33" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="609.33" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="108.22" y="709.56" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="709.56" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="809.78" y="709.56" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="208.44" y="809.78" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="308.67" y="809.78" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="408.89" y="809.78" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="509.11" y="809.78" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="609.33" y="809.78" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <rect x="709.56" y="809.78" width="94.22" height="94.22" fill="url(#m-body)" stroke="#3ca65a" stroke-width="1.4" shape-rendering="crispEdges"></rect>
-  <g shape-rendering="crispEdges">
+  <rect x="208.44" y="8.00" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="8.00" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="8.00" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="8.00" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="8.00" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="108.22" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="108.22" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="108.22" width="94.22" height="94.22" fill="url(#mk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="108.22" width="94.22" height="94.22" fill="url(#mk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="108.22" width="94.22" height="94.22" fill="url(#mk-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="108.22" width="94.22" height="94.22" fill="url(#mk-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="108.22" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="208.44" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="208.44" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="208.44" width="94.22" height="94.22" fill="url(#mk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="208.44" width="94.22" height="94.22" fill="url(#mk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="208.44" width="94.22" height="94.22" fill="url(#mk-whites)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="208.44" width="94.22" height="94.22" fill="url(#mk-iris)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="208.44" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="208.44" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="308.67" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="408.89" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="408.89" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="509.11" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="509.11" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="8.00" y="609.33" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="609.33" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="108.22" y="709.56" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="709.56" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="809.78" y="709.56" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="208.44" y="809.78" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="308.67" y="809.78" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="408.89" y="809.78" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="509.11" y="809.78" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="609.33" y="809.78" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <rect x="709.56" y="809.78" width="94.22" height="94.22" fill="url(#mk-body)" stroke="#3ca65a" stroke-width="1.4"></rect>
+  <g>
     <rect x="4.5" y="4.5" width="903" height="903" fill="none" stroke="#1f0a35" stroke-width="7" rx="41" ry="41"></rect>
     <line x1="105.22" y1="8" x2="105.22" y2="904" stroke="#1f0a35" stroke-width="7"></line>
     <line x1="205.44" y1="8" x2="205.44" y2="904" stroke="#1f0a35" stroke-width="7"></line>
