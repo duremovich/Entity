@@ -8,6 +8,7 @@ add_executable(EntityMediaTests
     unit/RippleTimeTests.cpp
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
+    unit/ClipPlaybackPhaseTests.cpp
     unit/HapFormatTests.cpp
     unit/TranscodeManagerTests.cpp
     unit/SettingsTests.cpp
@@ -137,6 +138,12 @@ set_tests_properties(integration_sections_legacy_migration_load PROPERTIES
 entity_add_integration_test(section_pause_locked    section_pause_locked.json)
 entity_add_integration_test(section_go_keyboard     section_go_keyboard.json)
 entity_add_integration_test(section_keyframe_freeze section_keyframe_freeze.json)
+
+# Phase C — Normal continuation phase (Loop / PingPong cycling at-break)
+# plus Locked-overrides-PlaybackMode regression guard.
+entity_add_integration_test(section_loop_normal     section_loop_normal.json)
+entity_add_integration_test(section_pingpong_normal section_pingpong_normal.json)
+entity_add_integration_test(section_locked_clip     section_locked_clip.json)
 
 # Cue tag fire + persistence round-trip (Phase A — numbered timeline markers).
 entity_add_integration_test(cue_fire cue_fire.json)

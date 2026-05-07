@@ -515,18 +515,20 @@ void PropertyWindow::renderPlaybackSection() {
         ImGui::Text("Extra frames: %d", extraFrames);
     }
 
-    // Section behavior policy (Phase B serializes; Phase C activates Normal).
+    // Section behavior policy. Normal: clip continues per its PlaybackMode
+    // at section breaks (Loop / PingPong wraparound keeps cycling while the
+    // playhead is parked). Locked: clip freezes with the playhead at any
+    // break, regardless of PlaybackMode.
     ImGui::Spacing();
     ImGui::Text("Section Behavior");
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Behavior at section breaks.\n\n"
-                          "Locked: clip freezes with the playhead.\n"
-                          "Normal: clip keeps cycling per its Extend Mode (Phase C).");
+                          "Normal: clip continues per its PlaybackMode at section breaks.\n"
+                          "Locked: clip freezes with the playhead at any break.");
     }
     static const char* sectionBehaviorNames[] = { "Normal", "Locked" };
     int currentBehavior = static_cast<int>(clip->sectionBehavior);
     ImGui::SetNextItemWidth(-1);
-    ImGui::BeginDisabled(true);
     if (ImGui::Combo("##sectionBehavior", &currentBehavior, sectionBehaviorNames, IM_ARRAYSIZE(sectionBehaviorNames))) {
         SectionBehavior prev = clip->sectionBehavior;
         SectionBehavior next = static_cast<SectionBehavior>(currentBehavior);
@@ -539,10 +541,6 @@ void PropertyWindow::renderPlaybackSection() {
                 m_dispatcher->enqueue(std::move(cmd));
             }
         }
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Activated in Phase C. Phase B treats every clip as Locked.");
     }
 }
 

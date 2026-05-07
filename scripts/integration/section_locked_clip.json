@@ -1,0 +1,23 @@
+{
+    "version": 1,
+    "description": "Phase C — Locked overrides Normal mode (regression guard). 16-frame PNG sequence in Loop mode but with sectionBehavior=Locked. Section break at timeline frame 8. Locked clips skip continuation entirely: SectionScheduler does not seed ClipPlaybackPhase, so mapToMediaFrame falls back to the timeline-derived path. With timeline paused at frame 8, mediaFrame stays at source 8 forever no matter how long we wait. This guards the 'Locked overrides PlaybackMode' invariant -- without it, the Loop branch would have continued cycling.",
+    "commands": [
+        {"type": "AddScreen", "name": "LockedScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Locked"},
+        {"type": "AddSectionBreak", "breakFrame": 266666, "name": "LockedBreak"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 200},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 1},
+        {"type": "WaitFrames", "count": 120},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 1},
+        {"type": "Exit"}
+    ]
+}

@@ -1132,6 +1132,51 @@ private:
     PlaybackState m_state;
 };
 
+/**
+ * Assert the clip at (trackIndex, clipIndex) currently maps to `expected`
+ * source-media frame. Used by Phase C continuation tests to verify that
+ * Loop / PingPong clips keep cycling while the playhead is parked at a
+ * section break, and that Locked clips freeze. Calls
+ * PlaybackTimeAuthority::mapToMediaFrame with the entity handle so the
+ * ClipPlaybackPhase override fires when set.
+ *
+ * The `mode` controls how the result is compared:
+ *   - "equal"    (default): pass when |actual - expected| <= tolerance.
+ *   - "notEqual"          : pass when |actual - expected| >  tolerance
+ *                           (used to verify continuation drift away from
+ *                           a known seed value).
+ *
+ * JSON: {"type":"AssertClipMediaFrame","trackIndex":0,"clipIndex":0,
+ *        "expected":12,"tolerance":1,"mode":"equal"}
+ */
+class AssertClipMediaFrameCommand : public Command {
+public:
+    enum class Mode { Equal, NotEqual };
+
+    AssertClipMediaFrameCommand(int trackIndex, int clipIndex,
+                                FrameNumber expected,
+                                FrameNumber tolerance = 0,
+                                Mode mode = Mode::Equal)
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_expected(expected)
+        , m_tolerance(tolerance)
+        , m_mode(mode) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertClipMediaFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    FrameNumber m_expected;
+    FrameNumber m_tolerance;
+    Mode        m_mode;
+};
+
 // ============================================================================
 // Cue Tag Commands (Phase A — numbered timeline markers)
 // ============================================================================

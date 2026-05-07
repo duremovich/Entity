@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "description": "Phase C — Normal continuation: PingPong clip with sectionBehavior=Normal keeps cycling forward / reverse past the break. 16-frame PNG sequence (30fps source, 30fps timeline) extended to 200 timeline frames; section break at timeline frame 8. With Locked, the timeline-derived path would freeze the source frame at 8. With Normal+PingPong, SectionScheduler seeds ClipPlaybackPhase=8 (cycle 0, forward) and advances it each at-break tick -- the phase drifts forward, then reflects back past sourceLength=16. Asserts mediaFrame is NOT 8 by the end of the at-break wait, exercising the reflection branch in the entity-aware mapToMediaFrame.",
+    "commands": [
+        {"type": "AddScreen", "name": "PingPongNormalScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "PingPong"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 266666, "name": "PingPongBreak"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 2, "mode": "notEqual"},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

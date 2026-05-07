@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "description": "Phase C — Normal continuation: Loop clip with sectionBehavior=Normal keeps cycling past the break. 16-frame PNG sequence (30fps source, 30fps timeline) extended to 200 timeline frames; section break at timeline frame 8. With Locked, the timeline-derived path would freeze the source frame at 8 (timeline frame 8 / 30fps * 30fps = source 8). With Normal+Loop, SectionScheduler seeds ClipPlaybackPhase=8 and advances it each at-break tick, so by the end of the at-break wait the source phase has drifted well past 8 -- mediaFrame is no longer 8. Asserts mediaFrame is NOT 8 (with a small tolerance) -- this is the differentiator vs. section_locked_clip.json, which asserts the same setup with sectionBehavior=Locked stays at 8.",
+    "commands": [
+        {"type": "AddScreen", "name": "LoopNormalScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 266666, "name": "LoopBreak"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+        {"type": "WaitFrames", "count": 300},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 2, "mode": "notEqual"},
+        {"type": "SectionGo"},
+        {"type": "WaitFrames", "count": 30},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

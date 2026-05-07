@@ -879,7 +879,7 @@ void Engine::update() {
     // frame so AnimationSystem and DecodeSystem (below) see the snapped
     // frame when the playhead just crossed a break.
     if (m_sectionScheduler) {
-        m_sectionScheduler->tick();
+        m_sectionScheduler->tick(deltaTime);
     }
     auto t1 = std::chrono::high_resolution_clock::now();
 

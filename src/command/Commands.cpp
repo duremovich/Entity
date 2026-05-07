@@ -3,6 +3,7 @@
 #include "entity/core/Engine.hpp"
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
+#include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/director/SectionScheduler.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
@@ -2156,6 +2157,89 @@ CommandPtr AssertPlaybackStateCommand::fromJson(const nlohmann::json& j) {
     if (s == "Playing") st = PlaybackState::Playing;
     else if (s == "Paused") st = PlaybackState::Paused;
     return std::make_unique<AssertPlaybackStateCommand>(st);
+}
+
+bool AssertClipMediaFrameCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    auto* director = engine.getDirector();
+    if (!timeline || !director) {
+        std::cerr << "[AssertClipMediaFrame] FAIL: timeline/director unavailable" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertClipMediaFrame] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->clips.size()) {
+        std::cerr << "[AssertClipMediaFrame] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->clips[m_clipIndex];
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[AssertClipMediaFrame] FAIL: no Clip component" << std::endl;
+        return false;
+    }
+
+    auto* timeAuthority = director->getTimeAuthority();
+    if (!timeAuthority) {
+        std::cerr << "[AssertClipMediaFrame] FAIL: no PlaybackTimeAuthority" << std::endl;
+        return false;
+    }
+
+    FrameNumber currentFrame = timeline->getCurrentFrame();
+    FrameNumber actual = timeAuthority->mapToMediaFrame(clipEntity, *clip, currentFrame);
+    FrameNumber diff = actual >= m_expected ? (actual - m_expected) : (m_expected - actual);
+    const bool inBracket = (diff <= m_tolerance);
+    const bool pass = (m_mode == Mode::Equal) ? inBracket : !inBracket;
+    const char* op = (m_mode == Mode::Equal) ? "==" : "!=";
+    if (pass) {
+        std::cout << "[AssertClipMediaFrame] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " mediaFrame=" << actual
+                  << " (" << op << " " << m_expected << " +/-" << m_tolerance << ")"
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertClipMediaFrame] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex
+              << " expected " << op << " " << m_expected
+              << " (+/-" << m_tolerance << "), got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertClipMediaFrameCommand::toJson() const {
+    return {{"type", "AssertClipMediaFrame"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance},
+            {"mode", (m_mode == Mode::Equal) ? "equal" : "notEqual"}};
+}
+
+std::string AssertClipMediaFrameCommand::getDescription() const {
+    return "Assert clip media frame for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertClipMediaFrameCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex  = j.value("clipIndex", 0);
+    FrameNumber expected  = j.value("expected", static_cast<FrameNumber>(0));
+    FrameNumber tolerance = j.value("tolerance", static_cast<FrameNumber>(0));
+    std::string modeStr = j.value("mode", std::string{"equal"});
+    AssertClipMediaFrameCommand::Mode mode = (modeStr == "notEqual")
+        ? AssertClipMediaFrameCommand::Mode::NotEqual
+        : AssertClipMediaFrameCommand::Mode::Equal;
+    return std::make_unique<AssertClipMediaFrameCommand>(trackIndex, clipIndex,
+                                                          expected, tolerance, mode);
 }
 
 // ============================================================================

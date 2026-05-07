@@ -431,6 +431,15 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     drawList->AddRectFilled(clipMin, clipMax, clipColor, 3.0f);
     drawList->AddRect(clipMin, clipMax, IM_COL32(120, 160, 220, 255), 3.0f, 0, 2.0f);
 
+    // Phase C — Locked clips get a muted-red outline so the section-behavior
+    // policy is glanceable on the timeline. Drawn over the default border so
+    // the tint always wins. Cheap (one extra rect per Locked clip).
+    if (clip->sectionBehavior == SectionBehavior::Locked) {
+        drawList->AddRect(clipMin, clipMax,
+                          IM_COL32(200, 80, 60, 220),
+                          3.0f, 0, 4.0f);
+    }
+
     // Draw clip label — full basename, truncated with ellipsis only when the
     // current zoom × clip width can't fit it. The previous implementation
     // hard-capped at 20 chars regardless of available space.

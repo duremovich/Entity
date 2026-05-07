@@ -184,6 +184,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertSectionExists", AssertSectionExistsCommand::fromJson);
     registerFactory("AssertPlayheadAtFrame", AssertPlayheadAtFrameCommand::fromJson);
     registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
+    registerFactory("AssertClipMediaFrame", AssertClipMediaFrameCommand::fromJson);
 
     // Cue tag commands (Phase A — numbered timeline markers)
     registerFactory("FireCue", FireCueCommand::fromJson);

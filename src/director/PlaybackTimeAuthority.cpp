@@ -1,6 +1,7 @@
 #include "entity/director/PlaybackTimeAuthority.hpp"
 
 #include "entity/components/Clip.hpp"
+#include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
@@ -9,6 +10,7 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -88,6 +90,52 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(const Clip& clip, FrameNumber
     return clip.mediaStartFrame + sourceLength - 1;
 }
 
+FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
+                                                   const Clip& clip,
+                                                   FrameNumber timelineFrame) const {
+    // Continuation-phase override only applies when the component exists
+    // AND the scheduler has placed the clip in continuation. Otherwise
+    // fall through to the timeline-derived path so existing semantics
+    // (and unit-test expectations) are preserved.
+    const ClipPlaybackPhase* phase = m_registry.try_get<ClipPlaybackPhase>(entity);
+    if (!phase || !phase->inContinuation) {
+        return mapToMediaFrame(clip, timelineFrame);
+    }
+
+    // Continuation path: derive the media frame from the accumulated source
+    // phase directly. Mirrors the Freeze/Loop/PingPong branches of the
+    // timeline-derived path, but operates on `sourcePhaseFrames` instead
+    // of the timeline-delta * frame-rate-ratio.
+    const double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
+    const double frameRateRatio = (timelineFrameRate > 0.0)
+        ? clip.framerate / timelineFrameRate : 1.0;
+    const FrameNumber sourceLength = clip.totalMediaFrames > 0
+        ? clip.totalMediaFrames
+        : static_cast<FrameNumber>(clip.duration * frameRateRatio);
+
+    if (sourceLength <= 0) return clip.mediaStartFrame;
+
+    const double phaseClamped = std::max(phase->sourcePhaseFrames, 0.0);
+    const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
+
+    switch (clip.playbackMode) {
+        case PlaybackMode::Freeze:
+            return clip.mediaStartFrame + std::min(phaseFrame, sourceLength - 1);
+        case PlaybackMode::Loop:
+            return clip.mediaStartFrame + (phaseFrame % sourceLength);
+        case PlaybackMode::PingPong: {
+            const FrameNumber cycle = phaseFrame / sourceLength;
+            const FrameNumber pos   = phaseFrame % sourceLength;
+            if (cycle % 2 == 0) {
+                return clip.mediaStartFrame + pos;
+            } else {
+                return clip.mediaStartFrame + (sourceLength - 1 - pos);
+            }
+        }
+    }
+    return clip.mediaStartFrame + sourceLength - 1;
+}
+
 std::string PlaybackTimeAuthority::lookupInputColorSpaceOverride(const Clip& clip) const {
     if (!m_projectManager) return {};
     if (clip.filepath.empty()) return {};
@@ -109,7 +157,7 @@ void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
         ActiveClip ac;
         ac.entity         = entity;
         ac.descriptorSlot = videoTex.descriptorSlot;
-        ac.mediaFrame     = mapToMediaFrame(clip, currentFrame);
+        ac.mediaFrame     = mapToMediaFrame(entity, clip, currentFrame);
         ac.ocioOverride   = lookupInputColorSpaceOverride(clip);
         out.push_back(std::move(ac));
     }
@@ -135,7 +183,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {
         bus::ClipRenderState c;
         c.entity       = static_cast<std::uint64_t>(entity);
         c.slot         = static_cast<int>(videoTex.descriptorSlot);
-        c.mediaFrame   = mapToMediaFrame(clip, currentFrame);
+        c.mediaFrame   = mapToMediaFrame(entity, clip, currentFrame);
         c.ocioOverride = lookupInputColorSpaceOverride(clip);
 
         // Optional render-side fields. These exist so the wire format

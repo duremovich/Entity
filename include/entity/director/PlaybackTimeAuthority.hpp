@@ -69,6 +69,17 @@ public:
     bool        isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const;
     FrameNumber mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame) const;
 
+    // Entity-aware overload (Phase C — Normal continuation phase). When the
+    // entity carries a ClipPlaybackPhase component with `inContinuation` set,
+    // the media frame is derived from `sourcePhaseFrames` instead of the
+    // (frozen) timeline-frame delta -- letting Loop/PingPong clips keep
+    // cycling while the playhead is parked at a section break. Falls through
+    // to the two-arg overload when no ClipPlaybackPhase exists or the clip
+    // is not in continuation, so existing call sites keep their semantics.
+    FrameNumber mapToMediaFrame(entt::entity entity,
+                                const Clip& clip,
+                                FrameNumber timelineFrame) const;
+
     // Walks `view<Clip, VideoTexture>` at the timeline's current frame,
     // emits one ActiveClip tuple per allocated + active clip. Reuses
     // `out` (clears + appends) so a long-lived caller can avoid reallocs.
