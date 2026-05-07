@@ -64,7 +64,7 @@ struct Clip {
     FrameNumber startFrame{0};          // Start frame on timeline
     FrameNumber duration{0};            // Duration in frames (on timeline)
     FrameNumber mediaStartFrame{0};     // Offset into source media (in-point, source frames, inclusive)
-    FrameNumber mediaOutFrame{-1};      // Out-point: last source frame played, inclusive (industry convention — Avid/Premiere/Resolve/Watchout/Disguise). Sentinel -1 means "end of source" (resolved on decoder open / project load).
+    FrameNumber mediaOutFrame{-1};      // Out-point: last source frame played, inclusive (NLE / video-editing convention). Sentinel -1 means "end of source" (resolved on decoder open / project load).
     FrameNumber totalMediaFrames{0};    // Total frames in source media
     double framerate{30.0};             // Frames per second
     PlaybackMode playbackMode{PlaybackMode::Freeze};  // Behavior when clip extends beyond source

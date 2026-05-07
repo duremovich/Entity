@@ -591,7 +591,7 @@ void PropertyWindow::renderClipInfo() {
     }
 
     // Out-point — explicit source-frame index (INCLUSIVE — the last frame
-    // played, matching Avid/Premiere/Resolve/Watchout/Disguise convention).
+    // played, matching the standard NLE / video-editing convention).
     // Decoupled from `duration`: editing it does NOT change the clip's
     // timeline footprint. Past the out-point, the clip's playbackMode
     // (Freeze / Loop / PingPong) decides what plays inside the remaining
