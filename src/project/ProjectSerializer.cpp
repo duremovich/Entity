@@ -150,6 +150,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 clipJson["startFrame"] = clip->startFrame;
                 clipJson["duration"] = clip->duration;
                 clipJson["mediaStartFrame"] = clip->mediaStartFrame;
+                clipJson["mediaOutFrame"] = clip->mediaOutFrame;
                 clipJson["totalMediaFrames"] = clip->totalMediaFrames;
                 clipJson["playbackMode"] = static_cast<int>(clip->playbackMode);
                 clipJson["sectionBehavior"] =
@@ -763,6 +764,36 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         // totalMediaFrames is always in source frames
                         FrameNumber jsonDuration = clipJson.value("duration", 0);
                         clip.totalMediaFrames = clipJson.value("totalMediaFrames", jsonDuration);
+
+                        // mediaOutFrame migration. When the JSON key exists
+                        // (post-decoupling saves), trust it. When it's
+                        // missing (legacy projects), derive an INCLUSIVE
+                        // out-point (last frame played) so playback matches
+                        // the old implicit boundary exactly:
+                        //   mediaOutFrame = mediaStartFrame + duration * (sourceFps / timelineFps) - 1
+                        // clamped to [mediaStartFrame, totalMediaFrames - 1].
+                        // The -1 makes the result inclusive; the old
+                        // wrap-math boundary `sourceLength = totalMediaFrames`
+                        // exactly equals `mediaOutFrame - mediaStartFrame + 1`
+                        // when mediaOutFrame = totalMediaFrames - 1 and
+                        // mediaStartFrame = 0, so unmodified imports load
+                        // identically.
+                        if (clipJson.contains("mediaOutFrame")) {
+                            clip.mediaOutFrame = clipJson.value("mediaOutFrame", static_cast<FrameNumber>(-1));
+                        } else if (clip.totalMediaFrames > 0 && clip.framerate > 0) {
+                            const double timelineFrameRate = timeline.getFrameRate() > 0.0
+                                ? timeline.getFrameRate() : 30.0;
+                            const double frameRateRatio = clip.framerate / timelineFrameRate;
+                            const FrameNumber derived = clip.mediaStartFrame +
+                                static_cast<FrameNumber>(std::floor(jsonDuration * frameRateRatio)) - 1;
+                            clip.mediaOutFrame = std::min(derived, clip.totalMediaFrames - 1);
+                            if (clip.mediaOutFrame < clip.mediaStartFrame) {
+                                clip.mediaOutFrame = clip.totalMediaFrames - 1;
+                            }
+                        } else {
+                            clip.mediaOutFrame = clip.totalMediaFrames > 0
+                                ? clip.totalMediaFrames - 1 : -1;
+                        }
 
                         // Recalculate duration in timeline frames from totalMediaFrames
                         // This ensures correct timing even for old project files where duration was in source frames

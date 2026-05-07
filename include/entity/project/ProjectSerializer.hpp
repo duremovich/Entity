@@ -20,6 +20,15 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v11 (2026-05-07) — adds Clip.mediaOutFrame (INCLUSIVE last frame
+    //                      played, industry convention), decoupling the
+    //                      source-playback out-point from the timeline-
+    //                      footprint duration. v10 clips load with the
+    //                      out-point derived from
+    //                      `mediaStartFrame + duration*ratio - 1` (clamped
+    //                      to totalMediaFrames - 1), reproducing the old
+    //                      implicit boundary exactly so playback is
+    //                      unchanged.
     //   v10 (2026-05-07) — drops Section.name. v9 entries kept a "name"
     //                      string per section; the loader now silently
     //                      ignores it (no separate migration step needed —
@@ -61,7 +70,7 @@ public:
     // v6 mediaLibrary entries load with pathKind="linked";
     // v7 files load with no projectors (missing "projectors" key = empty);
     // v8 files load with no cues (missing "cues" key = empty).
-    static constexpr int PROJECT_VERSION = 10;
+    static constexpr int PROJECT_VERSION = 11;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

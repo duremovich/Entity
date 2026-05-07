@@ -2188,6 +2188,8 @@ void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaTy
     clip.height = m_decoder->getHeight();
     clip.framerate = m_decoder->getFrameRate();
     clip.totalMediaFrames = m_decoder->getDuration();  // Store original source length (in source frames)
+    clip.mediaOutFrame = clip.totalMediaFrames > 0     // Default out-point: last frame of source (inclusive)
+        ? clip.totalMediaFrames - 1 : -1;
     // Convert source frames to timeline frames for duration
     // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames
     double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
@@ -2390,6 +2392,8 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     clip.height = decoder->getHeight();
     clip.framerate = sourceFrameRate;
     clip.totalMediaFrames = decoder->getDuration();  // Store original source length (in source frames)
+    clip.mediaOutFrame = clip.totalMediaFrames > 0   // Default out-point: last frame of source (inclusive)
+        ? clip.totalMediaFrames - 1 : -1;
     // Convert source frames to timeline frames for duration
     // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames
     clip.duration = static_cast<FrameNumber>(std::ceil(

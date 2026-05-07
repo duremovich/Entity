@@ -171,6 +171,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetClipFramerate", SetClipFramerateCommand::fromJson);
     registerFactory("SetClipDuration", SetClipDurationCommand::fromJson);
     registerFactory("SetClipMediaStartFrame", SetClipMediaStartFrameCommand::fromJson);
+    registerFactory("SetClipMediaOutFrame", SetClipMediaOutFrameCommand::fromJson);
     registerFactory("RippleInsertTime", RippleInsertTimeCommand::fromJson);
     registerFactory("RippleDeleteTime", RippleDeleteTimeCommand::fromJson);
 

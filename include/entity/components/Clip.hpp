@@ -63,7 +63,8 @@ struct Clip {
     // Timing information
     FrameNumber startFrame{0};          // Start frame on timeline
     FrameNumber duration{0};            // Duration in frames (on timeline)
-    FrameNumber mediaStartFrame{0};     // Offset into source media
+    FrameNumber mediaStartFrame{0};     // Offset into source media (in-point, source frames, inclusive)
+    FrameNumber mediaOutFrame{-1};      // Out-point: last source frame played, inclusive (industry convention — Avid/Premiere/Resolve/Watchout/Disguise). Sentinel -1 means "end of source" (resolved on decoder open / project load).
     FrameNumber totalMediaFrames{0};    // Total frames in source media
     double framerate{30.0};             // Frames per second
     PlaybackMode playbackMode{PlaybackMode::Freeze};  // Behavior when clip extends beyond source
@@ -103,6 +104,7 @@ struct Clip {
         , startFrame(other.startFrame)
         , duration(other.duration)
         , mediaStartFrame(other.mediaStartFrame)
+        , mediaOutFrame(other.mediaOutFrame)
         , totalMediaFrames(other.totalMediaFrames)
         , framerate(other.framerate)
         , playbackMode(other.playbackMode)
@@ -142,6 +144,7 @@ struct Clip {
             startFrame = other.startFrame;
             duration = other.duration;
             mediaStartFrame = other.mediaStartFrame;
+            mediaOutFrame = other.mediaOutFrame;
             totalMediaFrames = other.totalMediaFrames;
             framerate = other.framerate;
             playbackMode = other.playbackMode;
@@ -169,5 +172,21 @@ struct Clip {
     // Default constructor
     Clip() = default;
 };
+
+// Source-frame span actually served by the decoder for this clip.
+// Used by the wrap math (Freeze/Loop/PingPong) as the boundary at which
+// playback hits the out-point. mediaOutFrame is INCLUSIVE (the last frame
+// played), so the window [mediaStartFrame, mediaOutFrame] is
+// (mediaOutFrame - mediaStartFrame + 1) frames long. Returns at least 1
+// to keep cycle math safe.
+inline FrameNumber effectivePlaybackLength(const Clip& clip) {
+    if (clip.mediaOutFrame >= clip.mediaStartFrame) {
+        return clip.mediaOutFrame - clip.mediaStartFrame + 1;
+    }
+    if (clip.totalMediaFrames > clip.mediaStartFrame) {
+        return clip.totalMediaFrames - clip.mediaStartFrame;
+    }
+    return 1;
+}
 
 } // namespace entity

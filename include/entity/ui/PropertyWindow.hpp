@@ -158,9 +158,11 @@ private:
     PreEditState m_preEditRotZ;
 
     // Simple scalar pre-edit captures for the In/Out point DragInts in
-    // renderClipInfo. mediaStartFrame and duration aren't animatable
-    // properties so the keyframe-aware PreEditState shape is overkill.
+    // renderClipInfo. mediaStartFrame, mediaOutFrame, and duration aren't
+    // animatable properties so the keyframe-aware PreEditState shape is
+    // overkill.
     FrameNumber m_preEditMediaStartFrame{0};
+    FrameNumber m_preEditMediaOutFrame{0};
     FrameNumber m_preEditDuration{0};
 };
 

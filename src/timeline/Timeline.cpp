@@ -261,6 +261,7 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
     newClip.startFrame = rightStart;
     newClip.duration = rightDuration;
     newClip.mediaStartFrame = rightMediaStart;
+    newClip.mediaOutFrame = clip->mediaOutFrame;        // Same source out-point
     newClip.totalMediaFrames = clip->totalMediaFrames;  // Same source media
     newClip.framerate = clip->framerate;
     newClip.playbackMode = clip->playbackMode;
@@ -407,6 +408,7 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
     newClip.startFrame = newStartFrame;
     newClip.duration = clip->duration;
     newClip.mediaStartFrame = clip->mediaStartFrame;  // Same media start
+    newClip.mediaOutFrame = clip->mediaOutFrame;
     newClip.totalMediaFrames = clip->totalMediaFrames;
     newClip.framerate = clip->framerate;
     newClip.playbackMode = clip->playbackMode;

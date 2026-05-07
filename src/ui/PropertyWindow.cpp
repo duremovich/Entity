@@ -569,10 +569,6 @@ void PropertyWindow::renderClipInfo() {
     // In-point (mediaStartFrame) — slip edit. Leaves duration alone, so
     // the timeline footprint stays put; the source-window slides. Capped
     // at totalMediaFrames - 1 (>= 0). totalMediaFrames is in source frames.
-    const double timelineFrameRate = (m_timeline && m_timeline->getFrameRate() > 0.0)
-        ? m_timeline->getFrameRate() : 30.0;
-    const double frameRateRatio = (timelineFrameRate > 0.0)
-        ? clip->framerate / timelineFrameRate : 1.0;
     const int totalMediaInt = static_cast<int>(clip->totalMediaFrames);
     const int inPointMin = 0;
     const int inPointMax = totalMediaInt > 0 ? totalMediaInt - 1 : 0;
@@ -594,42 +590,41 @@ void PropertyWindow::renderClipInfo() {
         }
     }
 
-    // Out-point — derived from mediaStartFrame + duration*ratio (source
-    // frames). Editing it adjusts `duration` so the source window's far
-    // edge lands on the new out-point. Clamps so the resulting duration
-    // remains > 0 and the source window stays inside [0, totalMediaFrames].
-    const int outPointMin = static_cast<int>(clip->mediaStartFrame) + 1;
-    const int outPointMax = totalMediaInt > 0 ? totalMediaInt : outPointMin;
-    int outPoint = static_cast<int>(clip->mediaStartFrame +
-        static_cast<FrameNumber>(std::floor(clip->duration * frameRateRatio)));
+    // Out-point — explicit source-frame index (INCLUSIVE — the last frame
+    // played, matching Avid/Premiere/Resolve/Watchout/Disguise convention).
+    // Decoupled from `duration`: editing it does NOT change the clip's
+    // timeline footprint. Past the out-point, the clip's playbackMode
+    // (Freeze / Loop / PingPong) decides what plays inside the remaining
+    // timeline frames. Clamps to [mediaStartFrame, totalMediaFrames - 1].
+    const int outPointMin = static_cast<int>(clip->mediaStartFrame);
+    const int outPointMax = totalMediaInt > 0 ? totalMediaInt - 1 : outPointMin;
+    // Display value: mediaOutFrame if set, else last source frame (the
+    // sentinel -1 case for clips that haven't had an explicit out-point
+    // assigned yet — typical for fresh imports / pre-migration projects).
+    int outPoint = clip->mediaOutFrame >= clip->mediaStartFrame
+        ? static_cast<int>(clip->mediaOutFrame)
+        : outPointMax;
     if (outPoint < outPointMin) outPoint = outPointMin;
     if (outPoint > outPointMax) outPoint = outPointMax;
     bool outPointChanged = ImGui::DragInt("Out Point", &outPoint, 1.0f, outPointMin, outPointMax,
                                           "%d frames", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemActivated()) {
-        m_preEditDuration = clip->duration;
+        m_preEditMediaOutFrame = clip->mediaOutFrame;
     }
     if (outPointChanged) {
-        // Convert back: duration_timelineFrames = (outPoint - mediaStart) / ratio.
-        const double sourceWindow = static_cast<double>(outPoint) -
-                                    static_cast<double>(clip->mediaStartFrame);
-        const double ratioSafe = frameRateRatio > 0.0 ? frameRateRatio : 1.0;
-        FrameNumber newDuration = static_cast<FrameNumber>(
-            std::max<double>(1.0, std::ceil(sourceWindow / ratioSafe)));
-        clip->duration = newDuration;
+        clip->mediaOutFrame = static_cast<FrameNumber>(outPoint);
     }
     if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
         if (auto idx = findClipIndices(m_timeline, selectedClip)) {
-            auto cmd = std::make_unique<SetClipDurationCommand>(
-                idx->first, idx->second, clip->duration);
-            cmd->setPreviousDuration(m_preEditDuration);
+            auto cmd = std::make_unique<SetClipMediaOutFrameCommand>(
+                idx->first, idx->second, clip->mediaOutFrame);
+            cmd->setPreviousMediaOutFrame(m_preEditMediaOutFrame);
             m_dispatcher->enqueue(std::move(cmd));
         }
     }
 
-    // Duration — read-only mirror so the user sees the derived effect of
-    // an out-point edit. Same line shape as before to avoid breaking
-    // muscle memory.
+    // Duration — clip's timeline footprint in timeline frames. Read-only
+    // here; edited via right-edge trim drag on the timeline.
     ImGui::Text("Duration: %d frames", static_cast<int>(clip->duration));
 
     // Calculate duration in seconds

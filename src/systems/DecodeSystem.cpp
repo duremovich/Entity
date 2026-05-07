@@ -158,8 +158,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                     std::floor(std::max(localFloat, 0.0)));
             }
 
-            FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames :
-                static_cast<FrameNumber>(clip.duration * frameRateRatio);
+            FrameNumber sourceLength = effectivePlaybackLength(clip);
             FrameNumber mediaFrame = clip.mediaStartFrame;
 
             if (sourceLocalFrame < sourceLength) {

@@ -1443,4 +1443,40 @@ private:
     std::optional<FrameNumber> m_previousMediaStartFrame;
 };
 
+/**
+ * Set a clip's mediaOutFrame (out-point) — controls where source playback
+ * ends. INCLUSIVE: the last frame played (industry convention). Leaves
+ * duration (timeline footprint) untouched: the clip keeps its timeline
+ * length, but the playback window shrinks/grows. Past the out-point, the
+ * clip's playbackMode (Freeze / Loop / PingPong) decides what plays.
+ * Clamps to [mediaStartFrame, totalMediaFrames - 1].
+ *
+ * JSON shape:
+ *   { "type": "SetClipMediaOutFrame",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "mediaOutFrame": 30 }
+ */
+class SetClipMediaOutFrameCommand : public UndoableCommand {
+public:
+    SetClipMediaOutFrameCommand(int trackIndex, int clipIndex, FrameNumber mediaOutFrame)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_mediaOutFrame(mediaOutFrame) {}
+
+    void setPreviousMediaOutFrame(FrameNumber prev) { m_previousMediaOutFrame = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipMediaOutFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    FrameNumber m_mediaOutFrame;
+    std::optional<FrameNumber> m_previousMediaOutFrame;
+};
+
 } // namespace entity

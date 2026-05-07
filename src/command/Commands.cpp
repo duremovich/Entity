@@ -1830,6 +1830,64 @@ CommandPtr SetClipMediaStartFrameCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// SetClipMediaOutFrameCommand
+// ============================================================================
+
+bool SetClipMediaOutFrameCommand::execute(Engine& engine) {
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipMediaOutFrame");
+    if (!clip) return false;
+    // Inclusive out-point: must be >= mediaStartFrame (allowing 1-frame
+    // playback windows) and < totalMediaFrames (last valid index is
+    // totalMediaFrames - 1).
+    if (m_mediaOutFrame < clip->mediaStartFrame) {
+        std::cerr << "[SetClipMediaOutFrame] Must be >= mediaStartFrame ("
+                  << m_mediaOutFrame << " < " << clip->mediaStartFrame << ")" << std::endl;
+        return false;
+    }
+    if (clip->totalMediaFrames > 0 && m_mediaOutFrame >= clip->totalMediaFrames) {
+        std::cerr << "[SetClipMediaOutFrame] Out of range ("
+                  << m_mediaOutFrame << " >= " << clip->totalMediaFrames << ")" << std::endl;
+        return false;
+    }
+    if (!m_previousMediaOutFrame.has_value()) {
+        m_previousMediaOutFrame = clip->mediaOutFrame;
+    }
+    clip->mediaOutFrame = m_mediaOutFrame;
+    std::cout << "[SetClipMediaOutFrame] Track " << m_trackIndex
+              << ", Clip " << m_clipIndex
+              << " -> " << m_mediaOutFrame << std::endl;
+    return true;
+}
+
+bool SetClipMediaOutFrameCommand::undo(Engine& engine) {
+    if (!m_previousMediaOutFrame.has_value()) return false;
+    Clip* clip = lookupClipByTrack(engine, m_trackIndex, m_clipIndex, "SetClipMediaOutFrame");
+    if (!clip) return false;
+    clip->mediaOutFrame = *m_previousMediaOutFrame;
+    return true;
+}
+
+nlohmann::json SetClipMediaOutFrameCommand::toJson() const {
+    return {{"type", "SetClipMediaOutFrame"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"mediaOutFrame", m_mediaOutFrame}};
+}
+
+std::string SetClipMediaOutFrameCommand::getDescription() const {
+    return "Set mediaOutFrame -> " + std::to_string(m_mediaOutFrame) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr SetClipMediaOutFrameCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    FrameNumber mediaOutFrame = j.value("mediaOutFrame", static_cast<FrameNumber>(0));
+    return std::make_unique<SetClipMediaOutFrameCommand>(trackIndex, clipIndex, mediaOutFrame);
+}
+
+// ============================================================================
 // Section break-point commands (Phase B)
 // ============================================================================
 

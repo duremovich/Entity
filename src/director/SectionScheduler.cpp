@@ -311,10 +311,7 @@ void SectionScheduler::snapshotTailHoldFrames(Timecode breakFrameTime) {
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
         if (absDiff(clipEnd, breakTimelineFrame) > snapTol) continue;
 
-        const FrameNumber sourceLength = clip.totalMediaFrames > 0
-            ? clip.totalMediaFrames
-            : static_cast<FrameNumber>(
-                clip.duration * (clip.framerate / timelineFrameRate));
+        const FrameNumber sourceLength = effectivePlaybackLength(clip);
         if (sourceLength <= 0) continue;
 
         const double phaseClamped = std::max(phase.sourcePhaseFrames, 0.0);
@@ -388,10 +385,7 @@ void SectionScheduler::snapshotPostBreakAnchors(Timecode breakFrameTime) {
         // mapToMediaFrame uses on `sourcePhaseFrames`. We can't call
         // PlaybackTimeAuthority from here (Director-side ownership cut),
         // so mirror the math inline.
-        const FrameNumber sourceLength = clip.totalMediaFrames > 0
-            ? clip.totalMediaFrames
-            : static_cast<FrameNumber>(
-                clip.duration * (clip.framerate / timelineFrameRate));
+        const FrameNumber sourceLength = effectivePlaybackLength(clip);
         if (sourceLength <= 0) continue;
 
         const double phaseClamped = std::max(phase.sourcePhaseFrames, 0.0);

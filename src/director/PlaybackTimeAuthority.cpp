@@ -92,8 +92,7 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(const Clip& clip, FrameNumber
     double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
     double frameRateRatio = clip.framerate / timelineFrameRate;
 
-    FrameNumber sourceLength = clip.totalMediaFrames > 0 ? clip.totalMediaFrames :
-        static_cast<FrameNumber>(clip.duration * frameRateRatio);
+    FrameNumber sourceLength = effectivePlaybackLength(clip);
 
     // Phase 6 — post-end tail (held last decoded frame). isClipActiveAtFrame
     // gates entry into this window, so when timelineFrame >= clipEnd we
@@ -169,9 +168,7 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
             const double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
             const double frameRateRatio = (timelineFrameRate > 0.0)
                 ? clip.framerate / timelineFrameRate : 1.0;
-            const FrameNumber sourceLength = clip.totalMediaFrames > 0
-                ? clip.totalMediaFrames
-                : static_cast<FrameNumber>(clip.duration * frameRateRatio);
+            const FrameNumber sourceLength = effectivePlaybackLength(clip);
             if (sourceLength <= 0) return clip.mediaStartFrame;
 
             const double timelineDelta =
@@ -207,12 +204,7 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
     // phase directly. Mirrors the Freeze/Loop/PingPong branches of the
     // timeline-derived path, but operates on `sourcePhaseFrames` instead
     // of the timeline-delta * frame-rate-ratio.
-    const double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
-    const double frameRateRatio = (timelineFrameRate > 0.0)
-        ? clip.framerate / timelineFrameRate : 1.0;
-    const FrameNumber sourceLength = clip.totalMediaFrames > 0
-        ? clip.totalMediaFrames
-        : static_cast<FrameNumber>(clip.duration * frameRateRatio);
+    const FrameNumber sourceLength = effectivePlaybackLength(clip);
 
     if (sourceLength <= 0) return clip.mediaStartFrame;
 
