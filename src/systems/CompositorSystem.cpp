@@ -1,25 +1,11 @@
-/**
- * CompositorSystem Implementation
- *
- * Renders visible layers by querying entities with Transform and MediaLayer,
- * sorting by z-order, and issuing draw calls through IRenderer.
- *
- * Timeline-aware: Only renders clips that are active at the current frame.
- * For entities with VideoTexture components, renders video frames.
- * Falls back to colored quads for entities without video textures.
- */
-
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/render/IRenderer.hpp"
-#include "entity/renderer/PlaybackPresenter.hpp"
-#include "entity/timeline/Timeline.hpp"
-#include "entity/components/Transform.hpp"
-#include "entity/components/MediaLayer.hpp"
 #include "entity/components/VideoTexture.hpp"
-#include "entity/components/Clip.hpp"
 #include "entity/components/MappingSurface.hpp"
 #include "entity/components/Screen.hpp"
 
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <vector>
 #include <iostream>
@@ -35,116 +21,76 @@ void CompositorSystem::initialize(entt::registry& registry) {
     std::cout << "CompositorSystem initialized" << std::endl;
 }
 
-void CompositorSystem::update(entt::registry& registry, float deltaTime) {
+void CompositorSystem::update(const bus::RenderFrame& rf,
+                               entt::registry& registry,
+                               float deltaTime) {
     if (!m_renderer || !m_renderer->isInitialized()) {
         return;
     }
 
-    // Get current timeline frame for visibility checks
-    FrameNumber currentFrame = 0;
-    if (m_timeline) {
-        currentFrame = m_timeline->getCurrentFrame();
-    }
+    // Sort the active-clip list by z-order once per frame (stable so ties
+    // keep their arrival order from PlaybackTimeAuthority).
+    std::vector<const bus::ClipRenderState*> sorted;
+    sorted.reserve(rf.activeClips.size());
+    for (const auto& crs : rf.activeClips) sorted.push_back(&crs);
+    std::stable_sort(sorted.begin(), sorted.end(),
+        [](const bus::ClipRenderState* a, const bus::ClipRenderState* b) {
+            return a->zOrder < b->zOrder;
+        });
 
-    // Get the view for Transform+MediaLayer entities (used for all screens)
-    auto view = registry.view<Transform, MediaLayer>();
-
-    // Iterate ALL visible screens (each gets its own compose target)
+    // Iterate ALL visible screens (each gets its own compose target).
     auto screenView = registry.view<Screen>();
     for (auto [screenEntity, screen] : screenView.each()) {
         if (!screen.visible) continue;
 
-        // Ensure this screen has a valid render target
-        if (!ensureScreenRenderTarget(registry, screenEntity)) {
-            continue;
-        }
+        if (!ensureScreenRenderTarget(registry, screenEntity)) continue;
 
-        // Collect clips for THIS screen
-        std::vector<entt::entity> sortedEntities;
-        sortedEntities.reserve(view.size_hint());
+        const std::uint64_t screenId = static_cast<std::uint64_t>(screenEntity);
 
-        for (auto entity : view) {
-            auto& layer = view.get<MediaLayer>(entity);
-            if (!layer.visible) continue;
-
-            // Check if this entity has a Clip component - if so, verify it's active
-            auto* clip = registry.try_get<Clip>(entity);
-            if (clip) {
-                if (!isClipActiveAtFrame(*clip, currentFrame)) {
-                    continue;  // Clip is not active at current frame, skip
-                }
-
-                // Filter by target screen:
-                // - Include if clip targets ALL screens (entt::null)
-                // - Include if clip targets THIS specific screen
-                if (clip->targetScreen != entt::null && clip->targetScreen != screenEntity) {
-                    continue;  // Clip targets a different screen
-                }
-            }
-
-            sortedEntities.push_back(entity);
-        }
-
-        // Sort by z-order (lower values render first, higher values on top)
-        std::sort(sortedEntities.begin(), sortedEntities.end(),
-            [&view](entt::entity a, entt::entity b) {
-                const auto& layerA = view.get<MediaLayer>(a);
-                const auto& layerB = view.get<MediaLayer>(b);
-                return layerA.zOrder < layerB.zOrder;
-            });
-
-        // Begin rendering to THIS screen's compose target
         m_renderer->beginComposeTarget(screen.renderTargetSlot);
 
-        // Render each visible layer to the compose target
-        for (auto entity : sortedEntities) {
-            auto& transform = view.get<Transform>(entity);
-            const auto& layer = view.get<MediaLayer>(entity);
+        for (const auto* crs : sorted) {
+            // Filter by target screen (UINT64_MAX = all screens).
+            if (crs->targetScreen != UINT64_MAX && crs->targetScreen != screenId) {
+                continue;
+            }
 
-            // IRenderer takes glm::mat4 directly — no DirectX conversion needed here
-            const glm::mat4& transformMatrix = transform.getMatrix();
+            const entt::entity entity = static_cast<entt::entity>(crs->entity);
 
-            // Phase D — multiply the section-fade multiplier into the
-            // draw opacity here. The Director side stamps the multiplier
-            // on the bus payload; PlaybackPresenter caches the per-tick
-            // map; we read it at draw time. This keeps MediaLayer.opacity
-            // in the registry untouched (no exponential decay across
-            // ticks for clips without an Opacity keyframe track) and
-            // keeps the Director→Renderer write boundary intact.
-            const float fadeMul = m_playbackPresenter
-                ? m_playbackPresenter->fadeMultiplier(entity) : 1.0f;
-            const float drawOpacity = layer.opacity * fadeMul;
+            // Section-fade × bus opacity — both sourced from the RenderFrame.
+            // No registry read needed; fadeMul is already baked into
+            // sectionFadeMultiplier by PlaybackTimeAuthority.
+            const float drawOpacity = crs->opacity * crs->sectionFadeMultiplier;
 
             // [SBG] diag — REMOVE after section-break-glitch fix lands.
-            // Log fade lookup for any draw whose final opacity != layer
-            // opacity (i.e. fadeMul < 1.0) OR whose entity recently had
-            // a fade entry. We approximate the latter with "any draw
-            // call" — gate by fadeMul < 1.0 only would miss the bug
-            // case where fadeMul reads 1.0 when it should be 0.0.
-            std::cout << "[SBG][compose] entity=" << static_cast<uint32_t>(entity)
-                      << " layerOpacity=" << layer.opacity
-                      << " fadeMul=" << fadeMul
+            std::cout << "[SBG][compose] entity=" << crs->entity
+                      << " opacity=" << crs->opacity
+                      << " sectionFadeMul=" << crs->sectionFadeMultiplier
                       << " drawOpacity=" << drawOpacity
                       << std::endl;
 
-            // Check if entity has a valid video texture
-            auto* videoTex = registry.try_get<VideoTexture>(entity);
+            // transformMatrix is column-major float[16] — map directly to glm.
+            glm::mat4 transformMatrix;
+            std::memcpy(glm::value_ptr(transformMatrix),
+                        crs->transformMatrix.data(),
+                        sizeof(float) * 16);
 
+            // VideoTexture is Renderer-side state stamped by PlaybackPresenter;
+            // read colorSpace / ocioColorSpace from the registry component.
+            auto* videoTex = registry.try_get<VideoTexture>(entity);
             if (videoTex && videoTex->isValid()) {
-                // Draw textured quad for video layers with blend mode + colour-space hint
-                // (HAP Q content needs in-shader YCoCg→RGB; everything else is Linear).
-                TextureRef tex = m_renderer->getVideoTexture(videoTex->descriptorSlot);
+                TextureRef tex = m_renderer->getVideoTexture(
+                    static_cast<uint32_t>(crs->slot));
                 if (tex.valid()) {
                     m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
-                                                 layer.blendMode, videoTex->colorSpace,
+                                                 crs->blendMode, videoTex->colorSpace,
                                                  videoTex->ocioColorSpace);
                     continue;
                 }
-                // Fall through to colored-quad fallback if the slot isn't ready yet.
             }
 
-            // Fallback to colored quad for non-video layers
-            uint32_t entityId = static_cast<uint32_t>(entity);
+            // Fallback colored quad for slots not yet uploaded.
+            const uint32_t entityId = static_cast<uint32_t>(crs->entity);
             glm::vec4 color(
                 ((entityId * 137) % 256) / 255.0f,
                 ((entityId * 211) % 256) / 255.0f,
@@ -154,17 +100,12 @@ void CompositorSystem::update(entt::registry& registry, float deltaTime) {
             m_renderer->drawColoredQuad(transformMatrix, color, drawOpacity);
         }
 
-        // End rendering to this screen's compose target
         m_renderer->endComposeTarget();
     }
 }
 
 void CompositorSystem::shutdown(entt::registry& registry) {
     std::cout << "CompositorSystem shutdown" << std::endl;
-}
-
-bool CompositorSystem::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
-    return frame >= clip.startFrame && frame < (clip.startFrame + clip.duration);
 }
 
 bool CompositorSystem::ensureScreenRenderTarget(entt::registry& registry, entt::entity screenEntity) {

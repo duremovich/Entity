@@ -37,10 +37,12 @@ struct ClipRenderState {
     // Section fade envelope (Phase D — auto-fade at section break boundaries).
     // Computed by PlaybackTimeAuthority each tick based on the clip's
     // start/end vs. surrounding Section break frames; 1.0 means no envelope.
-    // PlaybackPresenter multiplies it into the per-clip MediaLayer opacity
-    // so the CompositorSystem draw call (registry-side, until subtask 8
-    // collapses that path through the bus) reflects the fade.
+    // CompositorSystem multiplies this into opacity at draw time.
     float sectionFadeMultiplier{1.0f};
+    // Render z-order (lower values render first / behind). Sourced from
+    // MediaLayer::zOrder; present on the bus so CompositorSystem can sort
+    // without touching the registry.
+    std::uint32_t zOrder{0};
 };
 
 // One frame the Renderer should warm into the FrameCache this tick.

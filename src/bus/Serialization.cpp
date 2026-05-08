@@ -115,6 +115,7 @@ ojson encode(const ClipRenderState& c) {
     j["blendMode"] = blendModeName(c.blendMode);
     j["targetScreen"] = c.targetScreen;
     j["sectionFadeMultiplier"] = c.sectionFadeMultiplier;
+    j["zOrder"] = c.zOrder;
     return j;
 }
 
@@ -137,6 +138,7 @@ ClipRenderState decodeClipRenderState(const json& j) {
     // MessageBusSerializationTests) omit the key — default to 1.0 so a
     // missing key is a no-op envelope rather than a parse failure.
     c.sectionFadeMultiplier = j.value("sectionFadeMultiplier", 1.0f);
+    c.zOrder = j.value("zOrder", std::uint32_t{0});
     return c;
 }
 

@@ -200,11 +200,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                  "TranscodeManager + CommandDispatcher + AnimationSystem + "
                  "PlaybackTimeAuthority)" << std::endl;
 
-    // Cross-side wiring -- the Director side owns Timeline; the
-    // Renderer-side systems need a raw read-only pointer to it. Subtask 8
-    // replaces this with the per-tick RenderFrame bus message.
     if (auto* compositor = m_rendererService->getCompositorSystem()) {
-        compositor->setTimeline(m_timeline);
         compositor->setDebugLogging(false);
     }
     if (m_decodeSystem) {
@@ -1226,19 +1222,20 @@ void Engine::render() {
         //
         // Must run after beginFrame() so the GPU upload calls land on a
         // recording command list.
+        bus::RenderFrame lastRF;
         if (m_transport) {
             if (m_timeAuthority && m_playbackPresenter) {
-                bus::RenderFrame rf;
-                m_timeAuthority->buildRenderFrame(rf);
-                m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{rf}));
+                m_timeAuthority->buildRenderFrame(lastRF);
+                m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{lastRF}));
             }
-            m_transport->drain(bus::Direction::D2R, [this](std::vector<std::uint8_t>&& bytes) {
+            m_transport->drain(bus::Direction::D2R, [this, &lastRF](std::vector<std::uint8_t>&& bytes) {
                 auto msg = bus::deserialize(bytes);
                 if (!msg) return;
-                std::visit([this](auto& body) {
+                std::visit([this, &lastRF](auto& body) {
                     using T = std::decay_t<decltype(body)>;
                     if constexpr (std::is_same_v<T, bus::RenderFrame>) {
                         if (m_playbackPresenter) m_playbackPresenter->present(body);
+                        lastRF = body;
                     } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
                         if (m_outputManager) {
                             m_outputManager->setOutputEnabled(
@@ -1298,7 +1295,7 @@ void Engine::render() {
         // list -- this is why it isn't in update().
         if (auto* compositor = m_rendererService ? m_rendererService->getCompositorSystem() : nullptr) {
             double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
-            compositor->update(m_registry, static_cast<float>(deltaTime));
+            compositor->update(lastRF, m_registry, static_cast<float>(deltaTime));
         }
 
         // Physical outputs: fan out each enabled output's compose target to

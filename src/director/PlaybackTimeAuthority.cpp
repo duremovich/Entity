@@ -416,6 +416,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {
         if (auto* layer = m_registry.try_get<MediaLayer>(entity)) {
             c.opacity   = layer->getOpacity();
             c.blendMode = layer->blendMode;
+            c.zOrder    = layer->zOrder;
         }
         c.targetScreen = (clip.targetScreen == entt::null)
             ? UINT64_MAX

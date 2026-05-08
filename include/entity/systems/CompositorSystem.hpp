@@ -1,6 +1,7 @@
 #pragma once
 
 #include "System.hpp"
+#include "entity/bus/Message.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/render/IRenderer.hpp"
 #include <entt/entt.hpp>
@@ -22,62 +23,27 @@ class PlaybackPresenter;
  */
 class CompositorSystem : public System {
 public:
-    /**
-     * Construct compositor system with renderer reference.
-     * @param renderer Pointer to rendering backend (must outlive this system)
-     */
     explicit CompositorSystem(IRenderer* renderer);
 
-    /**
-     * Set the timeline for frame-accurate rendering.
-     */
-    void setTimeline(Timeline* timeline) { m_timeline = timeline; }
-
-    /**
-     * Set the playback presenter — Renderer-side cache of per-clip
-     * section-fade multipliers. CompositorSystem multiplies the
-     * cached value into MediaLayer.opacity at draw time so the fade
-     * envelope is applied without mutating the registry.
-     */
-    void setPlaybackPresenter(PlaybackPresenter* presenter) { m_playbackPresenter = presenter; }
+    void setDebugLogging(bool enabled) { m_debugLogging = enabled; }
 
     void initialize(entt::registry& registry) override;
-    void update(entt::registry& registry, float deltaTime) override;
+    // Base-class override — satisfies System interface; Engine calls the
+    // RenderFrame overload below directly.
+    void update(entt::registry& registry, float deltaTime) override {}
+    // Primary render path: walks rf.activeClips instead of the registry.
+    // Registry stays as the parameter for Screen enumeration and
+    // MappingSurface reads only.
+    void update(const bus::RenderFrame& rf, entt::registry& registry, float deltaTime);
     void shutdown(entt::registry& registry) override;
     const char* getName() const override { return "CompositorSystem"; }
 
-    /**
-     * Enable/disable verbose debug logging.
-     */
-    void setDebugLogging(bool enabled) { m_debugLogging = enabled; }
-
-    /**
-     * Render a video texture through all visible mapping surfaces.
-     * Used for projection mapping output.
-     *
-     * @param registry The ECS registry containing mapping surfaces
-     * @param texture Texture reference for the video texture to render
-     */
     void renderMappingSurfaces(entt::registry& registry, TextureRef texture);
 
 private:
-    /**
-     * Check if a clip is active at the given frame.
-     */
-    bool isClipActiveAtFrame(const struct Clip& clip, FrameNumber frame) const;
-
-    /**
-     * Ensure a screen has a valid render target, creating one if needed.
-     * Handles lazy allocation and dimension change detection.
-     * @param registry The ECS registry
-     * @param screenEntity The screen entity to check/initialize
-     * @return true if screen has valid render target after call
-     */
     bool ensureScreenRenderTarget(entt::registry& registry, entt::entity screenEntity);
 
     IRenderer* m_renderer{nullptr};
-    Timeline* m_timeline{nullptr};
-    PlaybackPresenter* m_playbackPresenter{nullptr};
     bool m_debugLogging{false};
 };
 
