@@ -119,6 +119,11 @@ Settings loadSettings(const std::filesystem::path& path) {
         }
     }
 
+    if (j.contains("activeWorkspace") && j["activeWorkspace"].is_string()) {
+        auto name = j["activeWorkspace"].get<std::string>();
+        if (!name.empty()) settings.activeWorkspace = std::move(name);
+    }
+
     return settings;
 }
 
@@ -148,6 +153,7 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     j["importStoragePolicy"]  = static_cast<int>(settings.importStoragePolicy);
     j["oscReceiverEnabled"]   = settings.oscReceiverEnabled;
     j["oscReceiverPort"]      = settings.oscReceiverPort;
+    j["activeWorkspace"]      = settings.activeWorkspace;
 
     // Write to a temp file then rename — atomic on POSIX, near-atomic on
     // Windows (rename-over-existing requires MoveFileEx, but

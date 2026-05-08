@@ -4,6 +4,7 @@
 #include "SettingsWindow.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/ui/FileDialog.hpp"
+#include "entity/ui/Workspace.hpp"
 #include <imgui.h>
 #include <filesystem>
 #include <memory>
@@ -232,6 +233,36 @@ public:
      */
     void setOcioManager(OcioManager* mgr) { m_settingsWindow.setOcioManager(mgr); }
 
+    // -----------------------------------------------------------------
+    // Named workspaces. The list lives at %APPDATA%/Entity/workspaces.json
+    // (see WorkspaceStore); WindowManager owns the in-memory copy and
+    // routes user actions (switch / save / save-as / reset / delete)
+    // through the menu bar's Workspace menu.
+    //
+    // Engine drives initialization in two steps:
+    //   1. loadWorkspaces() — read JSON into m_workspaces, take over ImGui
+    //      ini handling. Call after WindowManager::initialize().
+    //   2. activateWorkspace(name) — apply a workspace's saved state to
+    //      ImGui + registered windows. Call AFTER all registerWindow()
+    //      calls, before the first render(), so visibility flags can
+    //      target real windows.
+    // -----------------------------------------------------------------
+    void loadWorkspaces();
+    void activateWorkspace(const std::string& name);
+    std::vector<std::string> listWorkspaceNames() const;
+    const std::string& activeWorkspaceName() const { return m_activeWorkspaceName; }
+    bool isBuiltInWorkspace(const std::string& name) const;
+    void saveActiveWorkspace();
+    bool saveAsNewWorkspace(const std::string& name);
+    void resetActiveWorkspace();
+    bool deleteWorkspace(const std::string& name);
+
+    // Engine wires this to persist activeWorkspace into Settings on switch.
+    using ActiveWorkspaceChangedCallback = std::function<void(const std::string&)>;
+    void setActiveWorkspaceChangedCallback(ActiveWorkspaceChangedCallback cb) {
+        m_activeWorkspaceChangedCallback = std::move(cb);
+    }
+
     /**
      * Native file dialogs (Issue #21). The dialog runs on a worker thread
      * and the result is delivered to `onPicked` from the main thread on a
@@ -272,7 +303,13 @@ private:
     ImGuiID m_dockspaceId{0};
     bool m_firstFrame{true};
     bool m_layoutResetRequested{false};
-    bool m_layoutLocked{true};  // Default: layout locked to prevent accidental undocking
+    // Default: unlocked so cross-pane tab dragging works out of the box.
+    // Ctrl+L (and Windows menu) still toggle the lock as an opt-in safety
+    // once the user has the layout how they like it. When locked, docked
+    // windows get ImGuiWindowFlags_NoMove which also blocks tab transfers
+    // between dock nodes — that's the trade-off, and it matches what the
+    // lock actually protects against (accidental undocking).
+    bool m_layoutLocked{false};
 
     // Per-window floating state (windows explicitly undocked by user)
     std::unordered_set<std::string> m_floatingWindows;      // Currently floating windows
@@ -327,6 +364,31 @@ private:
     void pumpPendingDialog();
     void startDialog(std::unique_ptr<ui::FileDialogTask> task,
                      std::function<void(std::filesystem::path)> onComplete);
+
+    // ----- Named workspaces (see public API above) -------------------
+    std::vector<Workspace>           m_workspaces;
+    std::string                      m_activeWorkspaceName;
+    ActiveWorkspaceChangedCallback   m_activeWorkspaceChangedCallback;
+    double                           m_lastWorkspaceAutosaveTime{0.0};
+
+    // "Save As New Workspace" modal — single text-input field, mirrors the
+    // Save Bundle modal's shape.
+    bool        m_workspaceSaveAsModalOpen{false};
+    bool        m_workspaceSaveAsModalSeed{false};
+    std::string m_workspaceSaveAsName;
+    std::string m_workspaceSaveAsError;
+    void renderWorkspaceSaveAsModal();
+
+    // "Delete Workspace" confirm modal.
+    bool        m_workspaceDeleteModalOpen{false};
+    std::string m_workspaceDeleteTarget;
+    void renderWorkspaceDeleteModal();
+
+    // Internal helpers for workspace state.
+    Workspace*       findWorkspace(const std::string& name);
+    const Workspace* findWorkspace(const std::string& name) const;
+    void             captureCurrentStateInto(const std::string& name);
+    void             applyWorkspaceState(const Workspace& w);
 };
 
 } // namespace entity

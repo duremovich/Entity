@@ -1,9 +1,14 @@
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/FileDialog.hpp"
+#include "entity/ui/WorkspaceStore.hpp"
 #include <imgui_internal.h>  // For DockBuilder API
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <utility>
 
 namespace {
@@ -39,6 +44,21 @@ void WindowManager::initialize() {
 
 void WindowManager::shutdown() {
     std::cout << "Shutting down WindowManager..." << std::endl;
+    // Capture the user's current arrangement into the active workspace and
+    // flush to disk. Mirrors what ImGui's auto-save-on-exit used to do
+    // (when IniFilename was the default), now that we own the persistence.
+    //
+    // Critical: shutdown() is reachable from both Engine::shutdown (where
+    // ImGui is still alive) and the WindowManager destructor (where it
+    // probably isn't, since the renderer service teardown destroys ImGui
+    // first). saveActiveWorkspace() calls ImGui::SaveIniSettingsToMemory,
+    // so we must save exactly once — during the explicit Engine::shutdown
+    // call. Clearing m_activeWorkspaceName after the save makes the
+    // destructor's repeat call into a safe no-op.
+    if (!m_activeWorkspaceName.empty() && !m_workspaces.empty()) {
+        saveActiveWorkspace();
+        m_activeWorkspaceName.clear();
+    }
     m_windows.clear();
 }
 
@@ -73,12 +93,19 @@ void WindowManager::render() {
     ImGuiID dockspaceID = ImGui::GetID("MainDockSpace");
     m_dockspaceId = dockspaceID;
 
-    // Create default layout on first frame or after reset
-    if (m_firstFrame || m_layoutResetRequested) {
+    // Build the default layout only when there's no persisted dock tree
+    // (first ever launch / no imgui.ini) or when the user explicitly hits
+    // Reset Layout. Previously this fired on every app launch's first frame
+    // and called DockBuilderRemoveNode, which threw away ImGui's persisted
+    // state — so any window not listed in createDefaultLayout (e.g. Cues)
+    // came back floating every time.
+    const bool noPersistedLayout =
+        (ImGui::DockBuilderGetNode(dockspaceID) == nullptr);
+    if ((m_firstFrame && noPersistedLayout) || m_layoutResetRequested) {
         createDefaultLayout(dockspaceID);
-        m_firstFrame = false;
         m_layoutResetRequested = false;
     }
+    m_firstFrame = false;
 
     // Create the dockspace node
     ImGui::DockSpace(dockspaceID, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
@@ -225,6 +252,27 @@ void WindowManager::render() {
     // ADR-0009 — Save-As-Bundle modal. No-op when m_saveBundleModalOpen is false.
     if (m_saveBundleModalOpen) {
         renderSaveBundleModal();
+    }
+
+    // Workspace modals.
+    if (m_workspaceSaveAsModalOpen) {
+        renderWorkspaceSaveAsModal();
+    }
+    if (m_workspaceDeleteModalOpen) {
+        renderWorkspaceDeleteModal();
+    }
+
+    // Throttled workspace auto-save. ImGui sets WantSaveIniSettings whenever
+    // the user moves/docks/resizes a window. We snapshot into the active
+    // workspace at most every 5 seconds — same cadence ImGui used to use
+    // for imgui.ini, except now state lands in workspaces.json.
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantSaveIniSettings && !m_activeWorkspaceName.empty()) {
+        const double now = ImGui::GetTime();
+        if (now - m_lastWorkspaceAutosaveTime > 5.0) {
+            saveActiveWorkspace();
+            m_lastWorkspaceAutosaveTime = now;
+        }
     }
 }
 
@@ -428,6 +476,332 @@ void WindowManager::startDialog(
     if (m_pendingDialog) return;  // gated; caller's UI should disable launch
     m_pendingDialog         = std::move(task);
     m_pendingDialogCallback = std::move(onComplete);
+}
+
+// ============================================================
+//                      Named workspaces
+// ============================================================
+
+Workspace* WindowManager::findWorkspace(const std::string& name) {
+    for (auto& w : m_workspaces) {
+        if (w.name == name) return &w;
+    }
+    return nullptr;
+}
+
+const Workspace* WindowManager::findWorkspace(const std::string& name) const {
+    for (const auto& w : m_workspaces) {
+        if (w.name == name) return &w;
+    }
+    return nullptr;
+}
+
+void WindowManager::loadWorkspaces() {
+    m_workspaces = WorkspaceStore::loadAll();
+
+    // Take over ImGui's ini handling. With IniFilename = nullptr ImGui
+    // skips its automatic load-from-disk-on-first-frame and skips the
+    // periodic flush, leaving us in charge of LoadIniSettingsFromMemory /
+    // SaveIniSettingsToMemory and persistence into workspaces.json.
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+
+    // First-run migration: if Default has no saved ini and a legacy
+    // imgui.ini exists in the working dir (the pre-workspace location),
+    // slurp its content into Default so existing users don't lose their
+    // arrangement on upgrade.
+    Workspace* def = findWorkspace("Default");
+    if (def && def->imguiIni.empty()) {
+        std::ifstream legacy("imgui.ini", std::ios::binary);
+        if (legacy.is_open()) {
+            std::stringstream buf;
+            buf << legacy.rdbuf();
+            def->imguiIni = buf.str();
+            std::cout << "[Workspaces] Migrated legacy imgui.ini into Default workspace"
+                      << std::endl;
+        }
+    }
+}
+
+void WindowManager::applyWorkspaceState(const Workspace& w) {
+    if (!w.imguiIni.empty()) {
+        ImGui::LoadIniSettingsFromMemory(w.imguiIni.c_str(), w.imguiIni.size());
+    } else {
+        // Empty ini — request the procedural default layout on the next
+        // render() (gate is m_layoutResetRequested in the dockspace setup).
+        m_layoutResetRequested = true;
+        m_floatingWindows.clear();
+        m_pendingUndock.clear();
+        m_pendingDock.clear();
+    }
+    m_layoutLocked = w.layoutLocked;
+
+    for (auto& window : m_windows) {
+        const std::string n = window->getName();
+        const bool hidden = std::find(w.hiddenWindows.begin(),
+                                       w.hiddenWindows.end(), n)
+                             != w.hiddenWindows.end();
+        window->setVisible(!hidden);
+    }
+}
+
+void WindowManager::activateWorkspace(const std::string& name) {
+    // Capture the outgoing workspace's current state so unsaved tweaks
+    // survive the switch (After Effects-style).
+    if (!m_activeWorkspaceName.empty() && m_activeWorkspaceName != name) {
+        captureCurrentStateInto(m_activeWorkspaceName);
+    }
+
+    Workspace* target = findWorkspace(name);
+    if (!target) {
+        std::cerr << "[Workspaces] Unknown workspace '" << name
+                  << "' — falling back to Default" << std::endl;
+        target = findWorkspace("Default");
+        if (!target) return;  // WorkspaceStore guarantees Default; defensive
+    }
+
+    applyWorkspaceState(*target);
+    m_activeWorkspaceName = target->name;
+
+    // Persist the list (the captured state for the previous workspace)
+    // and notify Engine so settings.json picks up the new active name.
+    if (!WorkspaceStore::saveAll(m_workspaces)) {
+        std::cerr << "[Workspaces] Failed to write workspaces.json on activate"
+                  << std::endl;
+    }
+    if (m_activeWorkspaceChangedCallback) {
+        m_activeWorkspaceChangedCallback(m_activeWorkspaceName);
+    }
+}
+
+std::vector<std::string> WindowManager::listWorkspaceNames() const {
+    std::vector<std::string> names;
+    names.reserve(m_workspaces.size());
+    for (const auto& w : m_workspaces) names.push_back(w.name);
+    return names;
+}
+
+bool WindowManager::isBuiltInWorkspace(const std::string& name) const {
+    const Workspace* w = findWorkspace(name);
+    return w && w->builtIn;
+}
+
+void WindowManager::captureCurrentStateInto(const std::string& name) {
+    Workspace* w = findWorkspace(name);
+    if (!w) return;
+
+    size_t iniSize = 0;
+    const char* ini = ImGui::SaveIniSettingsToMemory(&iniSize);
+    if (ini && iniSize > 0) {
+        w->imguiIni.assign(ini, iniSize);
+    }
+    w->layoutLocked = m_layoutLocked;
+
+    w->hiddenWindows.clear();
+    for (auto& window : m_windows) {
+        if (!window->isVisible()) {
+            w->hiddenWindows.push_back(window->getName());
+        }
+    }
+}
+
+void WindowManager::saveActiveWorkspace() {
+    if (m_activeWorkspaceName.empty()) return;
+    captureCurrentStateInto(m_activeWorkspaceName);
+    if (!WorkspaceStore::saveAll(m_workspaces)) {
+        std::cerr << "[Workspaces] Failed to write workspaces.json" << std::endl;
+    }
+    // Clear ImGui's pending-save flag — we just persisted.
+    ImGui::GetIO().WantSaveIniSettings = false;
+}
+
+bool WindowManager::saveAsNewWorkspace(const std::string& name) {
+    if (name.empty()) return false;
+    if (findWorkspace(name)) return false;
+
+    // Snapshot current state so the new entry gets an exact copy of the
+    // user's live layout (regardless of which workspace was active).
+    captureCurrentStateInto(m_activeWorkspaceName);
+    Workspace src;
+    if (Workspace* current = findWorkspace(m_activeWorkspaceName)) {
+        src = *current;
+    } else {
+        size_t iniSize = 0;
+        const char* ini = ImGui::SaveIniSettingsToMemory(&iniSize);
+        if (ini && iniSize > 0) src.imguiIni.assign(ini, iniSize);
+        src.layoutLocked = m_layoutLocked;
+    }
+
+    Workspace fresh;
+    fresh.name           = name;
+    fresh.imguiIni       = src.imguiIni;
+    fresh.layoutLocked   = src.layoutLocked;
+    fresh.hiddenWindows  = src.hiddenWindows;
+    fresh.builtIn        = false;
+    m_workspaces.push_back(std::move(fresh));
+    m_activeWorkspaceName = name;
+
+    if (!WorkspaceStore::saveAll(m_workspaces)) {
+        std::cerr << "[Workspaces] Failed to write workspaces.json on save-as"
+                  << std::endl;
+    }
+    if (m_activeWorkspaceChangedCallback) {
+        m_activeWorkspaceChangedCallback(m_activeWorkspaceName);
+    }
+    return true;
+}
+
+void WindowManager::resetActiveWorkspace() {
+    Workspace* w = findWorkspace(m_activeWorkspaceName);
+    if (!w) return;
+
+    if (w->builtIn) {
+        // Built-in: rebuild from procedural defaults.
+        w->imguiIni.clear();
+        w->layoutLocked  = false;
+        w->hiddenWindows.clear();
+
+        m_layoutResetRequested = true;
+        m_layoutLocked         = false;
+        m_floatingWindows.clear();
+        m_pendingUndock.clear();
+        m_pendingDock.clear();
+        for (auto& window : m_windows) window->setVisible(true);
+    } else {
+        // User-created: re-load from disk to discard any unsaved tweaks.
+        auto fresh = WorkspaceStore::loadAll();
+        for (const auto& f : fresh) {
+            if (f.name == w->name) {
+                *w = f;
+                applyWorkspaceState(*w);
+                break;
+            }
+        }
+    }
+
+    if (!WorkspaceStore::saveAll(m_workspaces)) {
+        std::cerr << "[Workspaces] Failed to write workspaces.json on reset"
+                  << std::endl;
+    }
+}
+
+bool WindowManager::deleteWorkspace(const std::string& name) {
+    const Workspace* w = findWorkspace(name);
+    if (!w) return false;
+    if (w->builtIn) return false;
+    if (name == m_activeWorkspaceName) return false;
+
+    m_workspaces.erase(
+        std::remove_if(m_workspaces.begin(), m_workspaces.end(),
+                       [&](const Workspace& ws) { return ws.name == name; }),
+        m_workspaces.end());
+
+    if (!WorkspaceStore::saveAll(m_workspaces)) {
+        std::cerr << "[Workspaces] Failed to write workspaces.json on delete"
+                  << std::endl;
+        return false;
+    }
+    return true;
+}
+
+void WindowManager::renderWorkspaceSaveAsModal() {
+    if (m_workspaceSaveAsModalSeed) {
+        m_workspaceSaveAsName.clear();
+        m_workspaceSaveAsError.clear();
+        m_workspaceSaveAsModalSeed = false;
+    }
+
+    ImGui::OpenPopup("Save Workspace As");
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                  viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(420, 0));
+
+    if (ImGui::BeginPopupModal("Save Workspace As", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Save the current window arrangement as a new workspace. "
+            "You can switch back to it later from the Workspace menu.");
+        ImGui::Spacing();
+
+        ImGui::Text("Workspace Name");
+        char nameBuf[128];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", m_workspaceSaveAsName.c_str());
+        if (ImGui::InputText("##workspace-name", nameBuf, sizeof(nameBuf))) {
+            m_workspaceSaveAsName = nameBuf;
+            m_workspaceSaveAsError.clear();
+        }
+
+        if (!m_workspaceSaveAsError.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+                               m_workspaceSaveAsError.c_str());
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const bool canSave = !m_workspaceSaveAsName.empty();
+        ImGui::BeginDisabled(!canSave);
+        if (ImGui::Button("Save", ImVec2(120, 0))) {
+            if (saveAsNewWorkspace(m_workspaceSaveAsName)) {
+                m_workspaceSaveAsModalOpen = false;
+                ImGui::CloseCurrentPopup();
+            } else {
+                m_workspaceSaveAsError =
+                    "A workspace with that name already exists.";
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            m_workspaceSaveAsModalOpen = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+void WindowManager::renderWorkspaceDeleteModal() {
+    ImGui::OpenPopup("Delete Workspace");
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImVec2 center(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                  viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(420, 0));
+
+    if (ImGui::BeginPopupModal("Delete Workspace", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Delete workspace '%s'? This cannot be undone. The current "
+            "window arrangement is unaffected — only the saved layout "
+            "is removed.",
+            m_workspaceDeleteTarget.c_str());
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Delete", ImVec2(120, 0))) {
+            deleteWorkspace(m_workspaceDeleteTarget);
+            m_workspaceDeleteModalOpen = false;
+            m_workspaceDeleteTarget.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            m_workspaceDeleteModalOpen = false;
+            m_workspaceDeleteTarget.clear();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
 }
 
 void WindowManager::renderMenuBar() {
@@ -684,6 +1058,68 @@ void WindowManager::renderMenuBar() {
             ImGui::EndMenu();
         }
 
+        // Workspace menu — named layouts (Editing / Live Show / Cue Building).
+        // Switching applies the saved arrangement; Save / Save As / Reset /
+        // Delete manage the named entries. workspaces.json lives in
+        // %APPDATA%/Entity/.
+        if (ImGui::BeginMenu("Workspace")) {
+            const std::vector<std::string> names = listWorkspaceNames();
+            for (const auto& name : names) {
+                const bool isActive = (name == m_activeWorkspaceName);
+                if (ImGui::MenuItem(name.c_str(), nullptr, isActive)) {
+                    if (!isActive) activateWorkspace(name);
+                }
+            }
+            ImGui::Separator();
+
+            const bool haveActive = !m_activeWorkspaceName.empty();
+            const bool activeIsBuiltIn = haveActive && isBuiltInWorkspace(m_activeWorkspaceName);
+
+            ImGui::BeginDisabled(!haveActive);
+            if (ImGui::MenuItem("Save Workspace")) {
+                saveActiveWorkspace();
+            }
+            ImGui::EndDisabled();
+
+            if (ImGui::MenuItem("Save As New Workspace...")) {
+                m_workspaceSaveAsModalOpen = true;
+                m_workspaceSaveAsModalSeed = true;
+            }
+
+            ImGui::BeginDisabled(!haveActive);
+            if (ImGui::MenuItem("Reset Workspace")) {
+                resetActiveWorkspace();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(activeIsBuiltIn
+                    ? "Rebuild from the procedural default layout."
+                    : "Discard unsaved tweaks and reload from disk.");
+            }
+            ImGui::EndDisabled();
+
+            // Delete: enabled only for non-built-in, non-active workspaces.
+            // Show a submenu listing each deletable workspace by name.
+            if (ImGui::BeginMenu("Delete Workspace")) {
+                bool anyDeletable = false;
+                for (const auto& name : names) {
+                    const bool builtIn = isBuiltInWorkspace(name);
+                    const bool isActive = (name == m_activeWorkspaceName);
+                    if (builtIn || isActive) continue;
+                    anyDeletable = true;
+                    if (ImGui::MenuItem(name.c_str())) {
+                        m_workspaceDeleteTarget = name;
+                        m_workspaceDeleteModalOpen = true;
+                    }
+                }
+                if (!anyDeletable) {
+                    ImGui::TextDisabled("(no deletable workspaces)");
+                }
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMenu();
+        }
+
         // Help menu
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::BeginMenu("Keyboard Shortcuts")) {
@@ -769,14 +1205,21 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow("Mapping", dockCenter);
     ImGui::DockBuilderDockWindow("Stage", dockCenter);
 
+    // Right panel: Properties + Cues as tabs (Properties = active).
+    // Cues is docked AFTER Properties so it would normally win the
+    // last-docked-wins active-tab heuristic; SetWindowFocus("Properties")
+    // below pins Properties as the active tab on first run.
     ImGui::DockBuilderDockWindow("Properties", dockRight);
+    ImGui::DockBuilderDockWindow("Cues", dockRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
 
-    // Force Stage to be the active tab in its dock node. Last-docked-wins
-    // sets it on a clean run, but imgui.ini persists the user's last-clicked
-    // tab and overrides that on subsequent launches; SetWindowFocus wins.
+    // Force Stage and Properties to be the active tabs in their dock nodes.
+    // Last-docked-wins sets Stage on a clean run, but imgui.ini persists the
+    // user's last-clicked tab and overrides that on subsequent launches;
+    // SetWindowFocus wins.
     ImGui::SetWindowFocus("Stage");
+    ImGui::SetWindowFocus("Properties");
 
     std::cout << "Default layout created: Timeline (bottom), Media Bin/Model Bin/Screens (left tabs), Stage/Mapping (center tabs), Properties (right)" << std::endl;
 }

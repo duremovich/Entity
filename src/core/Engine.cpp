@@ -242,6 +242,22 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager = std::make_unique<WindowManager>();
     m_windowManager->initialize();
 
+    // Load named workspaces from disk and take over ImGui ini handling
+    // before any window registration. ImGui auto-loads ini on the first
+    // frame; loadWorkspaces() disables that and points us at workspaces.json
+    // instead. Active-workspace activation runs further down once windows
+    // are registered.
+    m_windowManager->loadWorkspaces();
+    m_windowManager->setActiveWorkspaceChangedCallback(
+        [this](const std::string& name) {
+            if (m_settings.activeWorkspace == name) return;
+            m_settings.activeWorkspace = name;
+            if (!saveSettings(m_settings)) {
+                std::cerr << "[Engine] Could not persist activeWorkspace to settings.json"
+                          << std::endl;
+            }
+        });
+
     // Lend OcioManager to the Preferences dialog so its Color section can
     // populate color-space / display / view dropdowns from the active OCIO
     // config. Renderer service owns OcioManager -- it outlives the
@@ -415,6 +431,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
     m_windowManager->registerWindow(std::make_unique<CueListWindow>(this));
 
+    // Apply the user's last-active workspace now that all windows are
+    // registered. activateWorkspace() restores the saved ImGui ini, the
+    // layout-lock state, and which windows were toggled off via the
+    // Windows menu. Falls back to "Default" if the named workspace was
+    // since deleted (WorkspaceStore guarantees Default always exists).
+    m_windowManager->activateWorkspace(m_settings.activeWorkspace);
+
     // Create 5 empty tracks as default
     for (int i = 1; i <= 5; ++i) {
         m_timeline->createTrack("Video Track " + std::to_string(i));
@@ -487,6 +510,15 @@ void Engine::shutdown() {
     // FFmpeg state or systems they might be touching.
     if (m_transcodeManager) {
         m_transcodeManager->joinAll();
+    }
+
+    // Flush workspace state to disk while ImGui is still alive — the
+    // Renderer service teardown below destroys the ImGui context, and
+    // WindowManager::shutdown() captures the current dock layout via
+    // ImGui::SaveIniSettingsToMemory. The destructor's repeat call later
+    // is a no-op (saveActiveWorkspace clears the active-name guard).
+    if (m_windowManager) {
+        m_windowManager->shutdown();
     }
 
     // Tear down Renderer-service-owned subsystems explicitly. Order inside

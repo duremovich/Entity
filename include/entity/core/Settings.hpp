@@ -88,6 +88,15 @@ struct Settings {
     // -----------------------------------------------------------------
     bool     oscReceiverEnabled{true};
     uint16_t oscReceiverPort{53000};
+
+    // -----------------------------------------------------------------
+    // Active named workspace (UI dock layout). The workspaces themselves
+    // live in `%APPDATA%/Entity/workspaces.json` (see WorkspaceStore);
+    // this field is just the "currently selected" pointer. Survives app
+    // restarts so the user reopens into whichever workspace they last
+    // had active.
+    // -----------------------------------------------------------------
+    std::string activeWorkspace{"Default"};
 };
 
 /**
