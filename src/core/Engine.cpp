@@ -797,6 +797,14 @@ void Engine::run() {
         // the operator knows they need to restart.
         if (m_renderer && m_renderer->isDeviceLost()) {
             std::cerr << "[Engine] D3D12 device lost — exiting main loop." << std::endl;
+            if (m_transport && !m_deviceLostPosted) {
+                m_deviceLostPosted = true;
+                bus::DeviceLost msg{};
+                msg.hresult = static_cast<int>(m_renderer->getDeviceLostReason());
+                msg.reason  = "D3D12 device removed or hung — see stderr for details";
+                m_transport->send(bus::Direction::R2D,
+                                  bus::serialize(bus::Message{msg}));
+            }
             m_running = false;
         }
 
@@ -3272,9 +3280,16 @@ void Engine::drainRendererToDirector() {
                                   << ": " << body.errorMessage << std::endl;
                     }
                 }
+            } else if constexpr (std::is_same_v<T, bus::DeviceLost>) {
+                // Autosave-on-device-loss hook. The Engine already observed
+                // isDeviceLost() in the main loop and set m_running=false;
+                // this drain gives the Director side a chance to trigger
+                // any crash-recovery autosave before the process exits.
+                std::cerr << "[Engine] bus::DeviceLost received on R2D drain "
+                          << "(HRESULT=0x" << std::hex << body.hresult << std::dec
+                          << "): " << body.reason << std::endl;
             }
-            // Other R2D event types (DeviceLost, FrameDropped) arrive on
-            // future subtasks. Ignored for now.
+            // FrameDropped is informational; no action needed in this path.
         }, *msg);
     });
 }

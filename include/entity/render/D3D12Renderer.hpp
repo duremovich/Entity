@@ -50,8 +50,9 @@ public:
     Result initialize(GLFWwindow* window, uint32_t width, uint32_t height) override;
     void   shutdown() override;
     Result resize(uint32_t width, uint32_t height) override;
-    bool   isInitialized() const override { return m_initialized; }
-    bool   isDeviceLost() const override  { return m_deviceLost; }
+    bool    isInitialized() const override        { return m_initialized; }
+    bool    isDeviceLost() const override         { return m_deviceLost; }
+    int32_t getDeviceLostReason() const override  { return static_cast<int32_t>(m_deviceLostReason); }
 
     void     beginFrame() override;
     void     endFrame() override;
@@ -585,7 +586,8 @@ private:
     uint32_t m_width;
     uint32_t m_height;
     bool m_initialized;
-    bool m_deviceLost{false};  // Set when GPU device-removed is detected; Engine shuts down cleanly.
+    bool    m_deviceLost{false};          // Latched on first device-removed detection.
+    HRESULT m_deviceLostReason{S_OK};    // GetDeviceRemovedReason() result; available via getDeviceLostReason().
 
     // Descriptor heap caching (to avoid redundant SetDescriptorHeaps calls)
     ID3D12DescriptorHeap* m_currentDescriptorHeap{nullptr};

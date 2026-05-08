@@ -817,6 +817,7 @@ private:
     bool m_initialized{false};
     bool m_running{false};
     bool m_resizePending{false};
+    bool m_deviceLostPosted{false};  // Guard: post bus::DeviceLost at most once.
     uint32_t m_pendingWidth{0};
     uint32_t m_pendingHeight{0};
 

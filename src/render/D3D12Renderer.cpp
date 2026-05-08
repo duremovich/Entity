@@ -495,11 +495,12 @@ void D3D12Renderer::endFrame() {
 
 void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     if (m_deviceLost) return;  // Already reported.
-    m_deviceLost = true;
 
     HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
         ? m_gpu->device()->GetDeviceRemovedReason()
         : hr;
+    m_deviceLostReason = removedReason;  // store before latching so readers see consistent state
+    m_deviceLost = true;
     std::cerr << "=======================================================" << std::endl;
     std::cerr << "[D3D12] GPU DEVICE LOST at " << site << std::endl;
     std::cerr << "        HRESULT:         0x" << std::hex << hr << std::dec << std::endl;
@@ -764,10 +765,20 @@ void D3D12Renderer::moveToNextFrame() {
     // Move to next frame
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 
-    // Wait if next frame is not ready yet
+    // Wait if next frame is not ready yet. Use a 2-second timeout instead of
+    // INFINITE so a GPU hang (MED-13) surfaces as device-lost rather than a
+    // silent process freeze. On timeout, query GetDeviceRemovedReason() which
+    // will return a meaningful HRESULT if the driver crashed (TDR, etc.).
     if (m_fence->GetCompletedValue() < m_fenceValues[m_currentBackBufferIndex]) {
         m_fence->SetEventOnCompletion(m_fenceValues[m_currentBackBufferIndex], m_fenceEvent);
-        WaitForSingleObject(m_fenceEvent, INFINITE);
+        DWORD result = WaitForSingleObject(m_fenceEvent, 2000);
+        if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
+            HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
+                ? m_gpu->device()->GetDeviceRemovedReason()
+                : DXGI_ERROR_DEVICE_HUNG;
+            handleDeviceLost(removedReason, "moveToNextFrame fence wait timeout");
+            return;
+        }
     }
 
     // Increment fence value for next frame

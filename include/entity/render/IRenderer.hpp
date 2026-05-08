@@ -62,8 +62,12 @@ public:
     virtual Result initialize(GLFWwindow* window, uint32_t width, uint32_t height) = 0;
     virtual void   shutdown() = 0;
     virtual Result resize(uint32_t width, uint32_t height) = 0;
-    virtual bool   isInitialized() const = 0;
-    virtual bool   isDeviceLost() const = 0;
+    virtual bool     isInitialized() const = 0;
+    virtual bool     isDeviceLost() const = 0;
+    // Returns the HRESULT from GetDeviceRemovedReason() captured at the time
+    // of detection; 0 (S_OK) until device loss occurs. Typed as int32_t to
+    // keep Windows types out of this backend-agnostic header.
+    virtual int32_t  getDeviceLostReason() const = 0;
 
     // ------------------------------------------------------------------------
     // Per-frame

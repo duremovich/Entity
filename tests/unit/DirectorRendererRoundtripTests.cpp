@@ -52,8 +52,9 @@ public:
     Result initialize(GLFWwindow*, uint32_t, uint32_t) override { return Result::Success; }
     void   shutdown() override {}
     Result resize(uint32_t, uint32_t) override { return Result::Success; }
-    bool   isInitialized() const override { return true; }
-    bool   isDeviceLost() const override { return false; }
+    bool    isInitialized() const override      { return true; }
+    bool    isDeviceLost() const override       { return false; }
+    int32_t getDeviceLostReason() const override { return 0; }
 
     void     beginFrame() override {}
     void     endFrame() override {}
