@@ -3,6 +3,7 @@
 #include "entity/core/EnginePluginContext.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/plugin/Plugin.hpp"
+#include <filesystem>
 #include <iostream>
 #include <cstdlib>
 #include <string>
@@ -25,16 +26,22 @@
  */
 
 void printHelp() {
-    std::cout << "Usage: EntityMediaEditor [options]" << std::endl;
+    std::cout << "Usage: EntityMediaEditor [options] [<project.entity>]" << std::endl;
     std::cout << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "  --script <path>   Run a JSON script file after initialization" << std::endl;
     std::cout << "  --headless        Run with a hidden window (for integration tests / CI)" << std::endl;
     std::cout << "  --help            Show this help message" << std::endl;
     std::cout << std::endl;
+    std::cout << "A trailing positional <project.entity> path opens that project" << std::endl;
+    std::cout << "directly, bypassing the launcher. This is the path the OS hands" << std::endl;
+    std::cout << "the editor when a .entity file is opened via Explorer / Finder" << std::endl;
+    std::cout << "double-click after a file association is set." << std::endl;
+    std::cout << std::endl;
     std::cout << "Example:" << std::endl;
     std::cout << "  EntityMediaEditor --script scripts/test.json" << std::endl;
     std::cout << "  EntityMediaEditor --headless --script scripts/integration/seek.json" << std::endl;
+    std::cout << "  EntityMediaEditor \"C:\\Shows\\IIWY\\IIWY.entity\"" << std::endl;
 }
 
 int main(int argc, char** argv) {
@@ -57,6 +64,7 @@ int main(int argc, char** argv) {
 
     // Parse command-line arguments
     std::string scriptPath;
+    std::string projectPath;   // Positional <project.entity> for OS file-association open
     bool headless = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -77,11 +85,30 @@ int main(int argc, char** argv) {
         else if (arg == "--headless") {
             headless = true;
         }
+        else if (!arg.empty() && arg[0] != '-') {
+            // Positional path. Windows hands this to the editor when a .entity
+            // file is opened via Explorer / file association. Reject a second
+            // positional so a typo'd flag doesn't silently get treated as a
+            // path.
+            if (!projectPath.empty()) {
+                std::cerr << "Error: more than one project path supplied ("
+                          << projectPath << ", " << arg << ")" << std::endl;
+                return EXIT_FAILURE;
+            }
+            projectPath = arg;
+        }
         else {
             std::cerr << "Unknown argument: " << arg << std::endl;
             std::cerr << "Use --help for usage information" << std::endl;
             return EXIT_FAILURE;
         }
+    }
+
+    if (!scriptPath.empty() && !projectPath.empty()) {
+        std::cerr << "Error: cannot combine --script with a positional project "
+                     "path. Scripts run their own OpenProject command if they "
+                     "need a project loaded." << std::endl;
+        return EXIT_FAILURE;
     }
 
     // Create engine instance
@@ -113,6 +140,17 @@ int main(int argc, char** argv) {
         if (!engine.runScript(scriptPath)) {
             std::cerr << "Failed to load script: " << scriptPath << std::endl;
             // Continue running anyway - don't exit on script failure
+        }
+    } else if (!projectPath.empty()) {
+        // OS file-association / "open with" flow. Skip the launcher and
+        // load the project directly. On failure (file missing, corrupt,
+        // wrong version) fall back to the launcher so the user gets a
+        // recoverable surface instead of a silently-empty editor.
+        std::cout << "Opening project: " << projectPath << std::endl;
+        if (!engine.loadProject(std::filesystem::path(projectPath))) {
+            std::cerr << "Failed to open project: " << projectPath
+                      << " — falling back to launcher." << std::endl;
+            engine.showLauncher();
         }
     } else {
         // ADR-0009 — interactive launches enter the Project Launcher
