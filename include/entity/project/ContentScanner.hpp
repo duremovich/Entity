@@ -88,6 +88,17 @@ public:
     /** Configure the polling interval (default 2s). For tests. */
     void setPollIntervalForTesting(std::chrono::milliseconds interval);
 
+    /**
+     * Free-standing filters that match the polling scanner's rules.
+     * Engine's initial-sync content/ scan calls these so the in-process
+     * "have we seen this file already" decision uses the same whitelist
+     * as the background poller — files dropped before the app started
+     * shouldn't show up under different rules than ones dropped after.
+     */
+    static bool isMediaExtensionStatic(const std::filesystem::path& ext);
+    static bool shouldSkipFileStatic(const std::filesystem::path& filename);
+    static bool shouldSkipDirStatic(const std::filesystem::path& dirname);
+
 private:
     struct FileState {
         std::int64_t sizeBytes{0};

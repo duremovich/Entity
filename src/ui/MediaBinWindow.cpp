@@ -3,6 +3,7 @@
 #include "entity/color/OcioManager.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/TranscodeManager.hpp"
+#include "entity/media/MediaProbeWorker.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/project/MediaVersioning.hpp"
 #include <imgui.h>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <unordered_map>
 #include <tuple>
 #include <vector>
@@ -23,53 +25,15 @@ MediaBinWindow::MediaBinWindow(Engine* engine)
 
 namespace {
 
-// Classify an FFmpeg codec short name into the playback tier we use to
-// color-code the Codec column (#27). Unknowns fall through to OK so we
-// don't paint legitimate codecs red just because we forgot to list them.
-MediaBinWindow::CodecTier classifyCodec(std::string_view ffmpegName) {
-    if (ffmpegName.empty()) return MediaBinWindow::CodecTier::Unknown;
-    // HAP family — designed for realtime media servers.
-    if (ffmpegName == "hap")    return MediaBinWindow::CodecTier::Good;
-    // Intra-frame / image sequences — heavy but predictable.
-    if (ffmpegName == "prores") return MediaBinWindow::CodecTier::OK;
-    if (ffmpegName == "dnxhd")  return MediaBinWindow::CodecTier::OK;
-    if (ffmpegName == "cfhd")   return MediaBinWindow::CodecTier::OK;  // CineForm
-    if (ffmpegName == "png")    return MediaBinWindow::CodecTier::OK;
-    if (ffmpegName == "dpx")    return MediaBinWindow::CodecTier::OK;
-    if (ffmpegName == "tiff")   return MediaBinWindow::CodecTier::OK;
-    // Interframe / GOP codecs — seek-hostile, slow random-access.
-    if (ffmpegName == "h264")   return MediaBinWindow::CodecTier::Bad;
-    if (ffmpegName == "hevc")   return MediaBinWindow::CodecTier::Bad;
-    if (ffmpegName == "vp9")    return MediaBinWindow::CodecTier::Bad;
-    if (ffmpegName == "av1")    return MediaBinWindow::CodecTier::Bad;
-    if (ffmpegName == "mpeg4")  return MediaBinWindow::CodecTier::Bad;
-    return MediaBinWindow::CodecTier::OK;  // unknowns default to "playable but unverified"
-}
+// classifyCodec / prettyCodec live in entity/media/MediaProbe.hpp now
+// (shared with MediaProbeWorker). Anon-namespace duplicates removed.
 
-// Pretty-print an FFmpeg codec name for the user-facing cell.
-std::string prettyCodec(std::string_view ffmpegName) {
-    if (ffmpegName == "hap")    return "HAP";
-    if (ffmpegName == "prores") return "ProRes";
-    if (ffmpegName == "dnxhd")  return "DNxHD";
-    if (ffmpegName == "cfhd")   return "CineForm";
-    if (ffmpegName == "h264")   return "H.264";
-    if (ffmpegName == "hevc")   return "H.265";
-    if (ffmpegName == "vp9")    return "VP9";
-    if (ffmpegName == "av1")    return "AV1";
-    if (ffmpegName == "mpeg4")  return "MPEG-4";
-    if (ffmpegName == "png")    return "PNG sequence";
-    if (ffmpegName == "dpx")    return "DPX sequence";
-    if (ffmpegName == "tiff")   return "TIFF sequence";
-    if (ffmpegName.empty())     return "(unknown)";
-    return std::string(ffmpegName);
-}
-
-ImVec4 colorForTier(MediaBinWindow::CodecTier tier) {
+ImVec4 colorForTier(CodecTier tier) {
     switch (tier) {
-        case MediaBinWindow::CodecTier::Good: return ImVec4(0.50f, 0.85f, 0.50f, 1.0f);
-        case MediaBinWindow::CodecTier::OK:   return ImVec4(0.90f, 0.78f, 0.45f, 1.0f);
-        case MediaBinWindow::CodecTier::Bad:  return ImVec4(0.95f, 0.45f, 0.45f, 1.0f);
-        default:                              return ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
+        case CodecTier::Good: return ImVec4(0.50f, 0.85f, 0.50f, 1.0f);
+        case CodecTier::OK:   return ImVec4(0.90f, 0.78f, 0.45f, 1.0f);
+        case CodecTier::Bad:  return ImVec4(0.95f, 0.45f, 0.45f, 1.0f);
+        default:              return ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
     }
 }
 
@@ -534,44 +498,25 @@ void MediaBinWindow::render() {
             const std::string& filepath = entry.originalPath;
             const std::string& logicalPath = group.logicalPath;
 
-            // Cache the "is HAP?" check. The underlying probe
-            // (avformat_open_input + find_stream_info on a .mov) costs
-            // 30-40ms per call on a 4K ProRes file; calling it every
-            // render frame produced sustained ~17fps render during
-            // playback. Codec doesn't change at runtime, so write-once
-            // is enough.
-            // Lazy probe of codec + metadata. Cached per filepath because
-            // each probe opens the file with FFmpeg (avformat + decoder
-            // open), which is 30-40ms on a 4K ProRes. Managed entries
-            // store project-relative paths, so resolve through the engine
-            // first to give FFmpeg an absolute path it can actually open.
-            const ProbeInfo* probe = nullptr;
-            if (auto it = m_probeCache.find(filepath); it != m_probeCache.end()) {
-                probe = &it->second;
-            } else {
-                ProbeInfo info;
-                const std::string absForProbe = m_engine->resolveMediaPath(filepath);
-                const MediaType mt = detectMediaType(absForProbe);
-                info.isHap = isHapMediaType(mt);
-                if (mt != MediaType::Unknown) {
-                    if (auto dec = createDecoder(mt); dec) {
-                        if (dec->open(absForProbe) == Result::Success) {
-                            info.width       = dec->getWidth();
-                            info.height      = dec->getHeight();
-                            info.framerate   = dec->getFrameRate();
-                            info.totalFrames = dec->getDuration();
-                            info.hasAlpha    = dec->hasAlpha();
-                            info.valid       = true;
-                        }
-                    }
-                }
-                info.sourceCodecName  = probeSourceCodecName(absForProbe);
-                info.tier             = classifyCodec(info.sourceCodecName);
-                info.displayCodecName = prettyCodec(info.sourceCodecName);
-                auto [it2, _] = m_probeCache.emplace(filepath, info);
-                probe = &it2->second;
+            // Probe metadata (codec / resolution / framerate / alpha) is
+            // populated off-thread by Engine::probeWorker (see
+            // entity/media/MediaProbeWorker.hpp). The synchronous in-row
+            // probe that used to live here cost 30-60ms per first-render
+            // and froze the UI during startup with a few dozen files.
+            //
+            // tryGet returns nullopt while the worker hasn't completed
+            // this row's probe yet; the row renders with "(probing)" /
+            // "--" placeholders and fills in next frame after the worker
+            // posts a result. The enqueue call is a safety net for paths
+            // that slipped past Engine's bulk enqueue (Linked entries
+            // with empty resolved paths, etc.) — idempotent.
+            std::optional<ProbeInfo> probeOpt;
+            if (m_engine && m_engine->probeWorker()) {
+                probeOpt = m_engine->probeWorker()->tryGet(filepath);
+                if (!probeOpt) m_engine->probeWorker()->enqueue(filepath);
             }
-            const bool isHap = probe->isHap;
+            const ProbeInfo* probe = probeOpt ? &*probeOpt : nullptr;
+            const bool isHap = probe ? probe->isHap : false;
             const StatusDisplay status = computeStatus(entry, tmgr, isHap);
 
             ImGui::TableNextRow();

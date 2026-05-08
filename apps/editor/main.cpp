@@ -143,15 +143,14 @@ int main(int argc, char** argv) {
         }
     } else if (!projectPath.empty()) {
         // OS file-association / "open with" flow. Skip the launcher and
-        // load the project directly. On failure (file missing, corrupt,
-        // wrong version) fall back to the launcher so the user gets a
-        // recoverable surface instead of a silently-empty editor.
+        // stage the load so it runs on the first render frame, with a
+        // "Loading..." overlay painted in between (see
+        // Engine::render()'s file-association handshake). The previous
+        // synchronous loadProject() before run() left the user staring
+        // at a blank window during deserialize. Engine handles the
+        // failure-to-launcher fallback internally.
         std::cout << "Opening project: " << projectPath << std::endl;
-        if (!engine.loadProject(std::filesystem::path(projectPath))) {
-            std::cerr << "Failed to open project: " << projectPath
-                      << " — falling back to launcher." << std::endl;
-            engine.showLauncher();
-        }
+        engine.requestProjectLoad(std::filesystem::path(projectPath));
     } else {
         // ADR-0009 — interactive launches enter the Project Launcher
         // first; the editor only opens once a project root exists.

@@ -161,6 +161,7 @@ target_sources(EntityMediaCore
         src/media/HapTranscoder.cpp
         src/media/TranscodeWorker.cpp
         src/media/TranscodeManager.cpp
+        src/media/MediaProbeWorker.cpp
         src/media/ObjLoader.cpp
 
         # Render

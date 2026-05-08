@@ -2,11 +2,10 @@
 
 #include "EditorWindow.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/media/MediaProbe.hpp"  // ProbeInfo + CodecTier (shared with MediaProbeWorker)
 #include <imgui.h>
 
-#include <cstdint>
 #include <string>
-#include <unordered_map>
 
 namespace entity {
 
@@ -18,6 +17,10 @@ class Engine;
  *
  * Shows a list of all media files that have been imported into the project.
  * Displays metadata such as resolution, duration, framerate, and codec info.
+ *
+ * Probe metadata (codec, resolution, framerate) is fetched non-blockingly
+ * from Engine::probeWorker(); rows render with a "(probing)" placeholder
+ * until the worker thread fills the cache.
  */
 class MediaBinWindow : public EditorWindow {
 public:
@@ -26,15 +29,6 @@ public:
 
     void render() override;
     const char* getName() const override { return "Media Bin"; }
-
-    // Public so free helpers in the .cpp's anonymous namespace can name
-    // the enum without going through `MediaBinWindow::` everywhere.
-    enum class CodecTier {
-        Unknown,
-        Good,  // HAP* — designed for realtime, green
-        OK,    // ProRes / DNxHD / image sequences — intra-frame, yellow
-        Bad,   // H.264 / H.265 / VP9 / AV1 — interframe, seek-hostile, red
-    };
 
 private:
     void renderPendingImportModal();
@@ -53,29 +47,6 @@ private:
 
     // Substring filter applied to the bin's logical path. Empty = show all.
     char        m_filterBuf[128]{0};
-
-    // Cache of probe results keyed by the entry's stored filepath.
-    // First-row-render opens the file with FFmpeg to extract codec
-    // (HAP vs. ProRes vs. PNG seq), resolution, framerate, duration,
-    // and alpha-channel presence. Each probe costs 30-40 ms on a 4K
-    // ProRes file -- catastrophic to run every frame -- so cache is
-    // write-once. Entries are populated lazily; ScrollY in the table
-    // means we only pay for visible rows (#27 — auto-discovered files
-    // need this so MediaBin shows resolution etc. before any clip
-    // is created on the timeline).
-    struct ProbeInfo {
-        bool        valid{false};
-        bool        isHap{false};
-        std::uint32_t width{0};
-        std::uint32_t height{0};
-        double      framerate{0.0};
-        FrameNumber totalFrames{0};
-        bool        hasAlpha{false};
-        std::string sourceCodecName;   // "hap", "prores", "h264", ...
-        std::string displayCodecName;  // pretty form: "HAP", "ProRes", "H.264"
-        CodecTier   tier{CodecTier::Unknown};
-    };
-    mutable std::unordered_map<std::string, ProbeInfo> m_probeCache;
 };
 
 } // namespace entity

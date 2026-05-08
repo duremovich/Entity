@@ -32,6 +32,7 @@
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/project/ContentScanner.hpp"
+#include "entity/media/MediaProbeWorker.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
 #include "entity/render/OutputManager.hpp"
@@ -470,6 +471,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // path doesn't need it.
     m_contentScanner = std::make_unique<ContentScanner>();
 
+    // Off-thread FFmpeg metadata probe. Resolver runs on the calling
+    // thread (always main thread by contract), so the worker thread
+    // never touches ProjectManager state. resolveMediaPath is a const
+    // pass-through to ProjectManager::decoderPathFor.
+    m_probeWorker = std::make_unique<MediaProbeWorker>(
+        [this](const std::string& storedPath) -> std::string {
+            return resolveMediaPath(storedPath);
+        });
+
     m_initialized = true;
 
     // Run component tests (Phase 3)
@@ -511,6 +521,12 @@ void Engine::shutdown() {
     if (m_transcodeManager) {
         m_transcodeManager->joinAll();
     }
+
+    // Join the metadata probe worker before any project state goes
+    // away. The worker thread itself doesn't touch ProjectManager (the
+    // resolver runs on main), but reset() blocks until the in-flight
+    // probe finishes, so doing it early keeps shutdown ordered.
+    m_probeWorker.reset();
 
     // Flush workspace state to disk while ImGui is still alive — the
     // Renderer service teardown below destroys the ImGui context, and
@@ -594,6 +610,92 @@ void Engine::paintLauncherLoadingOverlay(const std::filesystem::path& path) {
     ImGui::TextUnformatted("Loading project...");
     ImGui::Spacing();
     ImGui::TextDisabled("%s", projectName.c_str());
+    ImGui::End();
+}
+
+void Engine::requestProjectLoad(const std::filesystem::path& filepath) {
+    // Stage the path; render() runs the two-frame handshake.
+    m_pendingFileAssociationLoad = filepath;
+    m_fileAssocPhase = FileAssocPhase::Idle;
+}
+
+void Engine::renderProjectLoadModal() {
+    if (!m_showProjectLoadModal) return;
+    if (!m_probeWorker) {
+        m_showProjectLoadModal = false;
+        return;
+    }
+    // Done — close on the same frame as we'd otherwise have opened.
+    if (m_probeWorker->pendingCount() == 0) {
+        m_showProjectLoadModal = false;
+        if (ImGui::IsPopupOpen("Loading project")) {
+            ImGui::CloseCurrentPopup();
+        }
+        return;
+    }
+
+    if (!ImGui::IsPopupOpen("Loading project")) {
+        ImGui::OpenPopup("Loading project");
+    }
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Loading project", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings)) {
+        const std::filesystem::path& projPath = getProjectPath();
+        const std::string projName = projPath.filename().string();
+        if (!projName.empty()) {
+            ImGui::TextDisabled("%s", projName.c_str());
+            ImGui::Spacing();
+        }
+        ImGui::TextUnformatted("Indexing media...");
+        ImGui::Spacing();
+
+        const std::size_t total = m_probeWorker->totalEnqueuedSinceReset();
+        const std::size_t done  = m_probeWorker->doneCount();
+        const float frac = total > 0
+            ? static_cast<float>(done) / static_cast<float>(total)
+            : 0.0f;
+        char label[64];
+        std::snprintf(label, sizeof(label), "%zu / %zu", done, total);
+        ImGui::ProgressBar(frac, ImVec2(300.0f, 0.0f), label);
+
+        ImGui::EndPopup();
+    }
+}
+
+void Engine::renderIndexingToast() {
+    // Modal owns the screen during initial load; don't double up.
+    if (m_showProjectLoadModal) return;
+    if (!m_probeWorker) return;
+    if (m_probeWorker->pendingCount() == 0) return;
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2 padding(12.0f, 12.0f);
+    const ImVec2 anchor(vp->WorkPos.x + vp->WorkSize.x - padding.x,
+                        vp->WorkPos.y + vp->WorkSize.y - padding.y);
+    ImGui::SetNextWindowPos(anchor, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    ImGui::Begin("##indexing_toast", nullptr,
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoInputs |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav);
+
+    const std::size_t total = m_probeWorker->totalEnqueuedSinceReset();
+    const std::size_t done  = m_probeWorker->doneCount();
+    char text[96];
+    std::snprintf(text, sizeof(text), "Indexing %zu / %zu media files...", done, total);
+    ImGui::TextUnformatted(text);
+    const float frac = total > 0
+        ? static_cast<float>(done) / static_cast<float>(total)
+        : 0.0f;
+    ImGui::ProgressBar(frac, ImVec2(220.0f, 4.0f), "");
+
     ImGui::End();
 }
 
@@ -892,6 +994,7 @@ void Engine::resolvePendingImport(ImportMode mode,
     if (m_projectManager) {
         m_projectManager->addMediaFile(canonicalPath, importedKind);
     }
+    if (m_probeWorker) m_probeWorker->enqueue(canonicalPath);
 
     if (p.transcodeEligible && transcode) {
         scheduleTranscode(canonicalPath, p.mediaType);
@@ -1014,6 +1117,40 @@ void Engine::render() {
     }
 
     if (m_renderer && m_renderer->isInitialized()) {
+        // File-association entry point (apps/editor/main.cpp -> opens
+        // .entity directly via OS double-click): same two-frame
+        // handshake as the launcher's Open action, but with no
+        // launcher behind it. Frame N: paint the "Loading..." overlay
+        // alone and present so the user sees something instead of a
+        // blank window during the deserialize freeze. Frame N+1: run
+        // the blocking load with that overlay still on the front
+        // buffer. On failure, fall back to the launcher (recoverable).
+        if (!m_pendingFileAssociationLoad.empty() && !m_showLauncher) {
+            m_renderer->beginFrame();
+            m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
+            m_renderer->beginImGuiFrame();
+            paintLauncherLoadingOverlay(m_pendingFileAssociationLoad);
+            m_renderer->endImGuiFrame();
+            m_renderer->endFrame();
+
+            if (m_fileAssocPhase == FileAssocPhase::Idle) {
+                // Frame N — overlay presented, defer the load to N+1
+                // so the user gets a dedicated frame of feedback.
+                m_fileAssocPhase = FileAssocPhase::OverlayStaged;
+                return;
+            }
+            // Frame N+1 — overlay is on the front buffer. Run the load.
+            auto path = std::move(m_pendingFileAssociationLoad);
+            m_pendingFileAssociationLoad.clear();
+            m_fileAssocPhase = FileAssocPhase::Idle;
+            if (!loadProject(path)) {
+                std::cerr << "[Engine] file-association load failed for "
+                          << path << " — falling back to launcher." << std::endl;
+                showLauncher();
+            }
+            return;
+        }
+
         // ADR-0009 — Launcher mode: skip the compositor + outputs pass
         // entirely; just clear, run an ImGui frame containing the
         // launcher, and present. Avoids touching scene-state-dependent
@@ -1180,6 +1317,12 @@ void Engine::render() {
         if (m_windowManager) {
             m_windowManager->render();
         }
+
+        // Indexing UI: modal during the post-load probe sweep, toast for
+        // live drops once the editor is interactive. The two are mutually
+        // exclusive (renderIndexingToast bails if the modal is active).
+        renderProjectLoadModal();
+        renderIndexingToast();
 
         // End ImGui frame and render UI
         m_renderer->endImGuiFrame();
@@ -2177,6 +2320,7 @@ void Engine::onVideoFileSelected(const std::string& filePath) {
     if (m_projectManager) {
         m_projectManager->addMediaFile(canonicalPath, importedKind);
     }
+    if (m_probeWorker) m_probeWorker->enqueue(canonicalPath);
     if (transcodeEligible && resolvedTranscode) {
         scheduleTranscode(canonicalPath, mediaType);
     } else {
@@ -2418,6 +2562,7 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
                 : ProjectManager::PathKind::Managed;
         m_projectManager->addMediaFile(filePath, kind);
     }
+    if (m_probeWorker) m_probeWorker->enqueue(filePath);
 
     // Create clip entity with all required components
     entt::entity clipEntity = m_registry.create();
@@ -2652,6 +2797,72 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         m_recentProjects->save();
     }
 
+    // Async metadata probe: every library entry feeds the
+    // MediaProbeWorker so MediaBin can render rows immediately and
+    // fill in codec/resolution/framerate as the worker drains. Reset
+    // counters first so the modal's progress bar starts at 0/N for
+    // this load. Cached probes from a previous in-session load are
+    // preserved (resetCounters doesn't drop m_results), so already-
+    // probed paths return instantly via tryGet.
+    if (m_probeWorker) {
+        m_probeWorker->resetCounters();
+        for (const auto& entry : m_projectManager->loadedMediaFiles()) {
+            m_probeWorker->enqueue(entry.originalPath);
+        }
+    }
+
+    // Initial sync scan of <projectDir>/content/ — picks up files the
+    // user dropped in while the app was closed. Bypasses the polling
+    // scanner's 2-tick stability gate (those files have been on disk
+    // for a while; they're not mid-write) so the bin is fully populated
+    // by the time the editor renders. ContentScanner still starts below
+    // and handles drops that happen later.
+    if (!filepath.empty() && m_projectManager) {
+        const std::filesystem::path projectRoot = filepath.parent_path();
+        const std::filesystem::path contentDir = projectRoot / "content";
+        std::error_code ec;
+        if (std::filesystem::exists(contentDir, ec) &&
+            std::filesystem::is_directory(contentDir, ec)) {
+            std::filesystem::recursive_directory_iterator it(
+                contentDir,
+                std::filesystem::directory_options::skip_permission_denied,
+                ec);
+            for (; !ec && it != std::filesystem::recursive_directory_iterator{};
+                 it.increment(ec)) {
+                const auto& entry = *it;
+                if (entry.is_directory(ec)) {
+                    if (ContentScanner::shouldSkipDirStatic(entry.path())) {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
+                if (!entry.is_regular_file(ec)) continue;
+                if (ContentScanner::shouldSkipFileStatic(entry.path())) continue;
+                if (!ContentScanner::isMediaExtensionStatic(entry.path().extension())) continue;
+
+                std::error_code relEc;
+                std::filesystem::path rel =
+                    std::filesystem::relative(entry.path(), projectRoot, relEc);
+                if (relEc) continue;
+                const std::string relStr = rel.generic_string();  // forward slashes
+
+                if (m_projectManager->findEntry(relStr) != nullptr) continue;
+                auto& libEntry = m_projectManager->addMediaFile(
+                    relStr, ProjectManager::PathKind::Managed);
+                libEntry.missingOnDisk = false;
+                if (m_probeWorker) m_probeWorker->enqueue(relStr);
+                std::cout << "[Engine] initial scan discovered " << relStr << std::endl;
+            }
+        }
+    }
+
+    // Show the project-load modal while probes drain. When the user
+    // opened a tiny project (or one whose entries are all already
+    // cached) pendingCount() will be 0 by the time render() polls
+    // this and the modal will skip the open. Larger projects keep
+    // the modal until the worker finishes.
+    m_showProjectLoadModal = m_probeWorker && m_probeWorker->pendingCount() > 0;
+
     // #27 — kick off the content/ poller now that we know the project
     // root. Files that already exist in content/ but aren't in the
     // library (because the user copied them in via Explorer / sync
@@ -2765,6 +2976,7 @@ void Engine::drainContentScannerDeltas() {
                 auto& entry = m_projectManager->addMediaFile(
                     d.relativePath, ProjectManager::PathKind::Managed);
                 entry.missingOnDisk = false;
+                if (m_probeWorker) m_probeWorker->enqueue(d.relativePath);
                 std::cout << "[ContentScanner] discovered " << d.relativePath << std::endl;
                 break;
             }

@@ -43,6 +43,9 @@ class RecentProjects;   // ADR-0009 — persisted recent-projects list backing
                         // the launcher's Recent panel.
 class ContentScanner;   // #27 — periodic poll of project's content/ folder
                         // for files added or removed by external tools.
+class MediaProbeWorker; // Off-thread FFmpeg metadata probe so MediaBin's
+                        // first-row-render doesn't freeze on a 4K ProRes
+                        // avformat_open_input. Lives in entity/media/.
 struct DecodedFrame;
 namespace bus {
 class IMessageTransport;
@@ -475,6 +478,28 @@ public:
     bool loadProject(const std::filesystem::path& filepath);
 
     /**
+     * Stage a project to be loaded on the next render frame, with the
+     * "Loading…" overlay painted in between so the user doesn't stare
+     * at a blank window during deserialize. Used by the file-association
+     * (CLI positional arg) entry point so it shares the same handshake
+     * the launcher uses for its Open action. main.cpp calls this
+     * before engine.run() instead of calling loadProject() directly.
+     *
+     * On load failure, the engine falls back to the launcher (same
+     * recovery path as the previous synchronous call site).
+     */
+    void requestProjectLoad(const std::filesystem::path& filepath);
+
+    /**
+     * Off-thread FFmpeg metadata probe. Returns nullptr before
+     * initialize() / after shutdown(). MediaBinWindow uses this to
+     * fetch codec / resolution / framerate without blocking the
+     * render thread on `avformat_open_input`.
+     */
+    MediaProbeWorker* probeWorker() { return m_probeWorker.get(); }
+    const MediaProbeWorker* probeWorker() const { return m_probeWorker.get(); }
+
+    /**
      * ADR-0009 — close the current project and return to the launcher.
      * Tears down physical output windows, joins in-flight transcodes,
      * clears the timeline (clips + tracks + sections + selection),
@@ -638,6 +663,18 @@ private:
     // branch for the two-frame handshake.
     void paintLauncherLoadingOverlay(const std::filesystem::path& path);
 
+    // Modal popup shown during the post-load probe sweep so the user
+    // sees explicit progress while MediaBin metadata fills in. Driven
+    // by m_showProjectLoadModal + MediaProbeWorker counters; auto-
+    // closes when pendingCount() drops to 0.
+    void renderProjectLoadModal();
+
+    // Bottom-right corner toast for live drops into content/ while the
+    // editor is running. NoDecoration / NoInputs window so it doesn't
+    // steal focus or block clicks. Only renders when the project-load
+    // modal is NOT active and the worker has pending probes.
+    void renderIndexingToast();
+
 private:
     // ECS registry
     entt::registry m_registry;
@@ -685,6 +722,7 @@ private:
     std::unique_ptr<ProjectLauncher> m_launcher;
     std::unique_ptr<RecentProjects>  m_recentProjects;
     std::unique_ptr<ContentScanner>  m_contentScanner;
+    std::unique_ptr<MediaProbeWorker> m_probeWorker;
     bool m_showLauncher{false};
 
     // Two-frame handshake for project open from the launcher: when the
@@ -693,6 +731,25 @@ private:
     // path, paints the overlay alone, presents, then runs the blocking
     // load. Empty == no pending load.
     std::filesystem::path m_pendingLauncherLoad{};
+
+    // File-association entry point (apps/editor/main.cpp). Same idea as
+    // m_pendingLauncherLoad but for the path where there's no launcher
+    // visible — main.cpp sets this via requestProjectLoad() before
+    // engine.run(). Engine::render() runs a parallel two-frame handshake
+    // (paint overlay, present, then load) and falls back to the
+    // launcher on failure. m_fileAssocPhase tracks which leg of the
+    // handshake we're on so render() knows whether to present-and-stage
+    // or run the actual load.
+    enum class FileAssocPhase { Idle, OverlayStaged };
+    std::filesystem::path m_pendingFileAssociationLoad{};
+    FileAssocPhase        m_fileAssocPhase{FileAssocPhase::Idle};
+
+    // Set at the end of loadProject() if the probe worker has work
+    // outstanding. Drives a blocking modal "Loading project — N/M
+    // files" so the user knows the editor is still warming up. Cleared
+    // when the worker drains. Live drops while the editor is running
+    // use the toast path (see renderIndexingToast) instead.
+    bool m_showProjectLoadModal{false};
 
     // #27 — drain ContentScanner deltas, dedupe against existing
     // library, call addMediaFile / mark-missing on the main thread.

@@ -119,12 +119,24 @@ void ContentScanner::runLoop() {
 }
 
 bool ContentScanner::shouldSkipDir(const fs::path& dirname) const {
+    return shouldSkipDirStatic(dirname);
+}
+
+bool ContentScanner::shouldSkipFile(const fs::path& filename) const {
+    return shouldSkipFileStatic(filename);
+}
+
+bool ContentScanner::isMediaExtension(const fs::path& ext) const {
+    return isMediaExtensionStatic(ext);
+}
+
+bool ContentScanner::shouldSkipDirStatic(const fs::path& dirname) {
     const std::string s = dirname.filename().string();
     if (s.empty()) return false;
     return s.front() == '.';  // .archive/, .cache/, .anything
 }
 
-bool ContentScanner::shouldSkipFile(const fs::path& filename) const {
+bool ContentScanner::shouldSkipFileStatic(const fs::path& filename) {
     const std::string s = filename.filename().string();
     if (s.empty()) return true;
     if (s.front() == '.') return true;
@@ -134,11 +146,12 @@ bool ContentScanner::shouldSkipFile(const fs::path& filename) const {
     return false;
 }
 
-bool ContentScanner::isMediaExtension(const fs::path& ext) const {
+bool ContentScanner::isMediaExtensionStatic(const fs::path& ext) {
     std::string s = ext.string();
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return m_mediaExts.find(s) != m_mediaExts.end();
+    const auto& exts = defaultMediaExts();
+    return exts.find(s) != exts.end();
 }
 
 bool ContentScanner::isOpenableForRead(const fs::path& absolute) const {
