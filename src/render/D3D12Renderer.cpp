@@ -38,6 +38,13 @@
 
 namespace entity {
 
+// Thread-local active command list and descriptor-heap cache.
+// beginShowFrame (show thread) and beginEditorFrame (editor thread) each write
+// their own copy; all draw methods read their thread's copy. This avoids the
+// data race that would occur if both threads wrote a shared member concurrently.
+thread_local ID3D12GraphicsCommandList* tl_activeCmdList{nullptr};
+thread_local ID3D12DescriptorHeap*      tl_currentDescriptorHeap{nullptr};
+
 D3D12Renderer::D3D12Renderer()
     : m_currentBackBufferIndex(0)
     , m_rtvDescriptorSize(0)
@@ -45,10 +52,12 @@ D3D12Renderer::D3D12Renderer()
     , m_height(0)
     , m_initialized(false)
     , m_fenceEvent(nullptr)
+    , m_showFenceEvent(nullptr)
     , m_constantBufferData(nullptr)
 {
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        m_fenceValues[i] = 0;
+        m_editorFenceValues[i] = 1;
+        m_showFenceValues[i]   = 1;
     }
     m_vertexBufferView = {};
 }
@@ -244,6 +253,10 @@ void D3D12Renderer::shutdown() {
         CloseHandle(m_fenceEvent);
         m_fenceEvent = nullptr;
     }
+    if (m_showFenceEvent) {
+        CloseHandle(m_showFenceEvent);
+        m_showFenceEvent = nullptr;
+    }
 
     if (m_textureUploader) {
         m_textureUploader->shutdown();
@@ -253,8 +266,10 @@ void D3D12Renderer::shutdown() {
     m_videoUploadBuffer.Reset();
 
     for (auto& target : m_composeTargets) {
-        target.resource.Reset();
-        target.rtvHeap.Reset();
+        for (uint32_t sub = 0; sub < ComposeTarget::TRIPLE; ++sub) {
+            target.resources[sub].Reset();
+            target.rtvHeaps[sub].Reset();
+        }
     }
     m_composeTargets.clear();
 
@@ -298,16 +313,19 @@ void D3D12Renderer::shutdown() {
     m_rootSignature.Reset();
 
     // Release all COM objects (ComPtr handles this automatically)
-    m_commandList.Reset();
+    m_editorCmdList.Reset();
+    m_showCmdList.Reset();
     m_copyCommandList.Reset();
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        m_commandAllocators[i].Reset();
+        m_editorAllocators[i].Reset();
+        m_showAllocators[i].Reset();
         m_copyCommandAllocators[i].Reset();
         m_renderTargets[i].Reset();
     }
     m_rtvHeap.Reset();
     m_swapChain.Reset();
-    m_fence.Reset();
+    m_editorFence.Reset();
+    m_showFence.Reset();
     m_uploadFence.Reset();
     // Release the device + queue last (after all resources allocated from
     // them have been released above).
@@ -353,96 +371,71 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
     return createRenderTargetViews();
 }
 
-void D3D12Renderer::beginFrame() {
-    // Get current back buffer index
-    m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+// ---------------------------------------------------------------------------
+// Stage 1 A/B-list split:
+//   Show frame  = copy uploads + compositor + output draws + output Present
+//   Editor frame = back-buffer setup + ImGui + editor Present
+// Both still run sequentially on the main thread in Stage 1.
+// Stage 3 moves showXxxFrame onto a separate thread.
+// ---------------------------------------------------------------------------
 
-    // CRIT-04: reset the per-frame mapping-surface CB ring cursor. Fence sync in
-    // moveToNextFrame() has already ensured the GPU is done with this frame's region.
+void D3D12Renderer::beginShowFrame() {
+    // Show thread rotates its own ring slot independently — never calls
+    // GetCurrentBackBufferIndex(), which is not thread-safe to call
+    // concurrently with the editor thread on the same IDXGISwapChain3.
+    m_showBackBufferIndex = (m_showBackBufferIndex + 1) % FRAME_COUNT;
+
+    // Wait for the show fence for this ring slot before resetting its allocator.
+    // m_showFenceValues[slot] holds the NEXT value to signal (pending), so the
+    // last signaled value for this slot is showFenceValues[slot]-1. On the very
+    // first frame that value is 0 which equals the fence's initial completed
+    // value — so no wait occurs. After each endShowFrame the pending value
+    // advances by 1, and the gate fires only if the previous submission for this
+    // slot is still in-flight (safe even at 120 Hz show / 60 Hz editor).
+    // Stage 3: show thread uses m_showFenceEvent; editor uses m_fenceEvent.
+    // Never share — concurrent SetEventOnCompletion on one handle is UB.
+    if (m_showFence && m_showFenceValues[m_showBackBufferIndex] > 0) {
+        const uint64_t lastSignaled = m_showFenceValues[m_showBackBufferIndex] - 1;
+        if (m_showFence->GetCompletedValue() < lastSignaled) {
+            m_showFence->SetEventOnCompletion(lastSignaled, m_showFenceEvent);
+            DWORD result = WaitForSingleObject(m_showFenceEvent, 2000);
+            if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
+                HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
+                    ? m_gpu->device()->GetDeviceRemovedReason()
+                    : DXGI_ERROR_DEVICE_HUNG;
+                handleDeviceLost(removedReason, "beginShowFrame show fence wait timeout");
+                return;
+            }
+        }
+    }
+
+    // CRIT-04: reset the per-frame mapping-surface CB ring cursor. Fence sync
+    // above has ensured the GPU is done with this frame's show region.
     m_mappingSurfaceDrawIndex = 0;
     m_mappingSurfaceOverflowed = false;
 
-    // Reset command allocator for current frame
-    m_commandAllocators[m_currentBackBufferIndex]->Reset();
-
-    // Reset command list
-    m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    // Reset show-side allocator + command list
+    m_showAllocators[m_showBackBufferIndex]->Reset();
+    m_showCmdList->Reset(m_showAllocators[m_showBackBufferIndex].Get(), nullptr);
 
     // Phase C.11: reset the COPY queue's allocator + list for this frame.
-    // moveToNextFrame's wait on the direct queue's fence guarantees the
-    // matching copy work has also drained (direct waits on copy before
-    // signaling), so the allocator's previous recording is safe to free.
-    m_copyCommandAllocators[m_currentBackBufferIndex]->Reset();
-    m_copyCommandList->Reset(m_copyCommandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    m_copyCommandAllocators[m_showBackBufferIndex]->Reset();
+    m_copyCommandList->Reset(m_copyCommandAllocators[m_showBackBufferIndex].Get(), nullptr);
     m_uploadsRecordedThisFrame = false;
 
     // Reset descriptor heap cache (command list state is reset)
-    m_currentDescriptorHeap = nullptr;
+    tl_currentDescriptorHeap = nullptr;
 
-    // Set viewport and scissor rect to match back buffer size
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-
-    D3D12_RECT scissorRect = {};
-    scissorRect.right = static_cast<LONG>(m_width);
-    scissorRect.bottom = static_cast<LONG>(m_height);
-
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissorRect);
+    // Route all draw calls to the show command list
+    tl_activeCmdList = m_showCmdList.Get();
 }
 
-void D3D12Renderer::clear(float r, float g, float b, float a) {
-    // Transition render target to RENDER_TARGET state
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier.Transition.pResource = m_renderTargets[m_currentBackBufferIndex].Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    m_commandList->ResourceBarrier(1, &barrier);
-
-    // Get RTV handle for current back buffer
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
-
-    // Set render target
-    m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-    // Clear the render target
-    const float clearColor[] = { r, g, b, a };
-    m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-}
-
-void D3D12Renderer::endFrame() {
-    if (m_deviceLost) return;  // Don't pile more work onto a dead device.
-
-    // Transition render target to PRESENT state
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier.Transition.pResource = m_renderTargets[m_currentBackBufferIndex].Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    m_commandList->ResourceBarrier(1, &barrier);
-
-    // Close command list
-    HRESULT hr = m_commandList->Close();
-    if (FAILED(hr)) {
-        std::cerr << "Failed to close command list!" << std::endl;
-        return;
-    }
+void D3D12Renderer::endShowFrame() {
+    if (m_deviceLost) return;
 
     // Phase C.11: close + execute the COPY queue's command list before the
-    // direct queue's. Cross-queue ordering: copy Signals on completion,
-    // direct Wait()s before its own Execute. We always close (D3D12 requires
-    // it after Reset) but only Signal/Wait when uploads were recorded — saves
-    // a fence value when the frame had no upload work.
+    // direct queue's. Always close (D3D12 requires it after Reset) but only
+    // Signal/Wait when uploads were recorded.
     HRESULT chr = m_copyCommandList->Close();
     if (FAILED(chr)) {
         std::cerr << "Failed to close copy command list!" << std::endl;
@@ -456,25 +449,17 @@ void D3D12Renderer::endFrame() {
         m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
     }
 
-    // Execute command list
-    ID3D12CommandList* commandLists[] = { m_commandList.Get() };
-    m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
-
-    // Present — failures here commonly signal device-removed on live systems
-    // (driver timeout, TDR, unplugged external GPU). We detect and latch so the
-    // Engine can shut down cleanly instead of spinning on a dead device.
-    hr = m_swapChain->Present(1, 0); // VSync on
+    // Close and execute show command list
+    HRESULT hr = m_showCmdList->Close();
     if (FAILED(hr)) {
-        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-            handleDeviceLost(hr, "Present");
-            return;
-        }
-        std::cerr << "Failed to present swap chain! HRESULT: 0x"
-                  << std::hex << hr << std::dec << std::endl;
+        std::cerr << "Failed to close show command list!" << std::endl;
+        return;
     }
+    ID3D12CommandList* showLists[] = { m_showCmdList.Get() };
+    m_gpu->commandQueue()->ExecuteCommandLists(1, showLists);
 
-    // Present all active output swap chains (Phase C #1). They share the main
-    // command queue; the ExecuteCommandLists above committed all their work.
+    // Present all active output swap chains. The ExecuteCommandLists above
+    // has committed all their work.
     for (auto& ow : m_outputWindows) {
         if (!ow.active || !ow.swapChain) continue;
         HRESULT ohr = ow.swapChain->Present(1, 0);
@@ -489,8 +474,116 @@ void D3D12Renderer::endFrame() {
         ow.currentBackBufferIndex = ow.swapChain->GetCurrentBackBufferIndex();
     }
 
-    // Move to next frame
+    // Signal show fence for this slot. m_showFenceValues[slot] holds the
+    // next value to signal; after signaling we advance to slot+1 for the
+    // next time this slot comes around. beginShowFrame gates on
+    // showFenceValues[slot]-1 (the value just signaled) not the pending value.
+    const uint64_t showValue = m_showFenceValues[m_showBackBufferIndex];
+    m_gpu->commandQueue()->Signal(m_showFence.Get(), showValue);
+    m_showFenceValues[m_showBackBufferIndex] = showValue + 1;
+
+    // Stage 3d: after Signal, GPU work for this tick is committed. Publish
+    // each compose target's write index as the new stable read index so the
+    // editor thread can sample the freshly-rendered sub-resource via ImGui.
+    for (auto& ct : m_composeTargets) {
+        if (ct.ready) {
+            ct.lastStableIndex.store(ct.writeIndex % ComposeTarget::TRIPLE,
+                                     std::memory_order_release);
+            // Advance to next sub-resource for the next show tick.
+            ++ct.writeIndex;
+        }
+    }
+
+    tl_activeCmdList = nullptr;
+}
+
+void D3D12Renderer::beginEditorFrame() {
+    // Editor thread tracks its own buffer index independently of the show thread.
+    m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+    // Reset editor-side allocator + command list
+    m_editorAllocators[m_currentBackBufferIndex]->Reset();
+    m_editorCmdList->Reset(m_editorAllocators[m_currentBackBufferIndex].Get(), nullptr);
+
+    // Reset descriptor heap cache for editor recording
+    tl_currentDescriptorHeap = nullptr;
+
+    // Route draw calls to the editor command list
+    tl_activeCmdList = m_editorCmdList.Get();
+
+    // Set viewport and scissor to back-buffer size for ImGui
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width    = static_cast<float>(m_width);
+    viewport.Height   = static_cast<float>(m_height);
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissorRect = {};
+    scissorRect.right  = static_cast<LONG>(m_width);
+    scissorRect.bottom = static_cast<LONG>(m_height);
+
+    tl_activeCmdList->RSSetViewports(1, &viewport);
+    tl_activeCmdList->RSSetScissorRects(1, &scissorRect);
+}
+
+void D3D12Renderer::endEditorFrame() {
+    if (m_deviceLost) return;
+
+    // Transition back buffer to PRESENT state
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource   = m_renderTargets[m_currentBackBufferIndex].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
+
+    // Close and execute editor command list
+    HRESULT hr = m_editorCmdList->Close();
+    if (FAILED(hr)) {
+        std::cerr << "Failed to close editor command list!" << std::endl;
+        return;
+    }
+    ID3D12CommandList* editorLists[] = { m_editorCmdList.Get() };
+    m_gpu->commandQueue()->ExecuteCommandLists(1, editorLists);
+
+    // Present editor swap chain
+    hr = m_swapChain->Present(1, 0);
+    if (FAILED(hr)) {
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            handleDeviceLost(hr, "Present");
+            return;
+        }
+        std::cerr << "Failed to present swap chain! HRESULT: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+    }
+
+    tl_activeCmdList = nullptr;
     moveToNextFrame();
+}
+
+void D3D12Renderer::clear(float r, float g, float b, float a) {
+    // Transition render target to RENDER_TARGET state
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = m_renderTargets[m_currentBackBufferIndex].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
+
+    // Get RTV handle for current back buffer
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
+
+    // Set render target
+    tl_activeCmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // Clear the render target
+    const float clearColor[] = { r, g, b, a };
+    tl_activeCmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 }
 
 void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
@@ -621,16 +714,24 @@ Result D3D12Renderer::createCommandAllocators() {
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         HRESULT hr = m_gpu->device()->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
-            IID_PPV_ARGS(&m_commandAllocators[i])
+            IID_PPV_ARGS(&m_editorAllocators[i])
         );
-
         if (FAILED(hr)) {
-            std::cerr << "Failed to create command allocator " << i << "!" << std::endl;
+            std::cerr << "Failed to create editor command allocator " << i << "!" << std::endl;
+            return Result::Failure;
+        }
+
+        hr = m_gpu->device()->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&m_showAllocators[i])
+        );
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create show command allocator " << i << "!" << std::endl;
             return Result::Failure;
         }
     }
 
-    std::cout << "Command allocators created" << std::endl;
+    std::cout << "Command allocators created (editor + show)" << std::endl;
     return Result::Success;
 }
 
@@ -638,20 +739,30 @@ Result D3D12Renderer::createCommandList() {
     HRESULT hr = m_gpu->device()->CreateCommandList(
         0,
         D3D12_COMMAND_LIST_TYPE_DIRECT,
-        m_commandAllocators[0].Get(),
+        m_editorAllocators[0].Get(),
         nullptr,
-        IID_PPV_ARGS(&m_commandList)
+        IID_PPV_ARGS(&m_editorCmdList)
     );
-
     if (FAILED(hr)) {
-        std::cerr << "Failed to create command list!" << std::endl;
+        std::cerr << "Failed to create editor command list!" << std::endl;
         return Result::Failure;
     }
+    m_editorCmdList->Close();
 
-    // Close command list (it starts in recording state)
-    m_commandList->Close();
+    hr = m_gpu->device()->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        m_showAllocators[0].Get(),
+        nullptr,
+        IID_PPV_ARGS(&m_showCmdList)
+    );
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create show command list!" << std::endl;
+        return Result::Failure;
+    }
+    m_showCmdList->Close();
 
-    std::cout << "Command list created" << std::endl;
+    std::cout << "Command lists created (editor + show)" << std::endl;
     return Result::Success;
 }
 
@@ -682,20 +793,27 @@ Result D3D12Renderer::createCopyCommandList() {
         std::cerr << "Failed to create copy command list!" << std::endl;
         return Result::Failure;
     }
-    m_copyCommandList->Close();  // Lists start in recording state; close so beginFrame's Reset works.
+    m_copyCommandList->Close();  // Lists start in recording state; close so beginShowFrame's Reset works.
     std::cout << "Copy command list created" << std::endl;
     return Result::Success;
 }
 
 Result D3D12Renderer::createFence() {
-    HRESULT hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
+    HRESULT hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_editorFence));
     if (FAILED(hr)) {
-        std::cerr << "Failed to create fence!" << std::endl;
+        std::cerr << "Failed to create editor fence!" << std::endl;
+        return Result::Failure;
+    }
+
+    hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_showFence));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create show fence!" << std::endl;
         return Result::Failure;
     }
 
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        m_fenceValues[i] = 0;
+        m_editorFenceValues[i] = 1;
+        m_showFenceValues[i]   = 1;
     }
 
     // Phase C.11: separate fence for cross-queue ordering (copy → direct).
@@ -708,10 +826,19 @@ Result D3D12Renderer::createFence() {
     }
     m_uploadFenceValue = 0;
 
-    // Create fence event
+    // Per-thread fence events: editor thread uses m_fenceEvent;
+    // show thread uses m_showFenceEvent. Never share — concurrent
+    // SetEventOnCompletion on the same handle is a data race.
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!m_fenceEvent) {
         std::cerr << "Failed to create fence event!" << std::endl;
+        return Result::Failure;
+    }
+    m_showFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!m_showFenceEvent) {
+        std::cerr << "Failed to create show fence event!" << std::endl;
+        CloseHandle(m_fenceEvent);
+        m_fenceEvent = nullptr;
         return Result::Failure;
     }
 
@@ -720,47 +847,68 @@ Result D3D12Renderer::createFence() {
 }
 
 void D3D12Renderer::waitForGpu() {
+    // Use a function-local event so this call cannot race with concurrent
+    // SetEventOnCompletion/WaitForSingleObject pairs on m_fenceEvent. Auto-reset
+    // events are FIFO-ish but only wake one waiter per signal; the editor
+    // thread's moveToNextFrame waits on m_fenceEvent with a 2-second timeout,
+    // and the show thread enters waitForGpu via createComposeTarget. With both
+    // arming m_fenceEvent on the same fence, whichever Wait runs first steals
+    // the wakeup and the other times out — surfaces as a false device-lost.
+    HANDLE localEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!localEvent) {
+        std::cerr << "[D3D12] waitForGpu: CreateEvent failed" << std::endl;
+        return;
+    }
+
     // Drain the COPY queue first (Phase C.11). Resize/shutdown/freeSlot must
     // not release a texture while an upload is still in flight on the copy
-    // queue. The direct queue's Wait(uploadFence) inside endFrame() does NOT
+    // queue. The direct queue's Wait(uploadFence) inside endShowFrame() does NOT
     // help here because we may be called outside the per-frame loop.
     if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
         const uint64_t copyTarget = ++m_uploadFenceValue;
         m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
         if (m_uploadFence->GetCompletedValue() < copyTarget) {
-            m_uploadFence->SetEventOnCompletion(copyTarget, m_fenceEvent);
-            WaitForSingleObject(m_fenceEvent, INFINITE);
+            m_uploadFence->SetEventOnCompletion(copyTarget, localEvent);
+            WaitForSingleObject(localEvent, INFINITE);
         }
     }
 
-    // Schedule a signal command in the direct queue
-    // Use a fence value higher than any frame's current value to ensure all work completes
-    uint64_t maxFenceValue = 0;
-    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        if (m_fenceValues[i] > maxFenceValue) {
-            maxFenceValue = m_fenceValues[i];
-        }
+    if (!m_gpu) { CloseHandle(localEvent); return; }
+
+    // Drain both show and editor fences so all direct-queue work is complete.
+    // Use a fresh monotonic value (GetCompletedValue + 1) so the Signal is
+    // always strictly greater than the last signaled value — re-signaling the
+    // same value is E_INVALIDARG in D3D12. Per-slot fence values
+    // (m_showFenceValues / m_editorFenceValues) are NOT updated here; they are
+    // owned by endShowFrame / moveToNextFrame and must be left intact so the
+    // per-frame allocator-reuse gate still works correctly after this call.
+    if (m_showFence) {
+        const uint64_t drainValue = m_showFence->GetCompletedValue() + 1;
+        m_gpu->commandQueue()->Signal(m_showFence.Get(), drainValue);
+        m_showFence->SetEventOnCompletion(drainValue, localEvent);
+        WaitForSingleObject(localEvent, INFINITE);
     }
 
-    const uint64_t fenceValueToWaitFor = maxFenceValue;
-    m_gpu->commandQueue()->Signal(m_fence.Get(), fenceValueToWaitFor);
-
-    // Wait until the GPU has completed all work up to this fence point
-    if (m_fence->GetCompletedValue() < fenceValueToWaitFor) {
-        m_fence->SetEventOnCompletion(fenceValueToWaitFor, m_fenceEvent);
-        WaitForSingleObject(m_fenceEvent, INFINITE);
+    if (m_editorFence) {
+        const uint64_t drainValue = m_editorFence->GetCompletedValue() + 1;
+        m_gpu->commandQueue()->Signal(m_editorFence.Get(), drainValue);
+        m_editorFence->SetEventOnCompletion(drainValue, localEvent);
+        WaitForSingleObject(localEvent, INFINITE);
     }
 
-    // Update all fence values to be at least this value since we know all work is done
-    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
-        m_fenceValues[i] = fenceValueToWaitFor + 1;
-    }
+    CloseHandle(localEvent);
 }
 
 void D3D12Renderer::moveToNextFrame() {
-    // Signal and increment fence value for current frame
-    const uint64_t currentFenceValue = m_fenceValues[m_currentBackBufferIndex];
-    m_gpu->commandQueue()->Signal(m_fence.Get(), currentFenceValue);
+    // Signal the editor fence to mark the end of this slot's work. The signal
+    // value must be strictly greater than the fence's current completed value —
+    // waitForGpu() may have drained it beyond m_editorFenceValues[slot] during
+    // a resize or slot-free operation mid-session. Taking the max() of both
+    // keeps the fence monotonically increasing regardless of out-of-band drains.
+    const uint64_t signalValue = std::max(m_editorFenceValues[m_currentBackBufferIndex],
+                                          m_editorFence->GetCompletedValue() + 1);
+    m_gpu->commandQueue()->Signal(m_editorFence.Get(), signalValue);
+    m_editorFenceValues[m_currentBackBufferIndex] = signalValue + 1;
 
     // Move to next frame
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
@@ -769,8 +917,8 @@ void D3D12Renderer::moveToNextFrame() {
     // INFINITE so a GPU hang (MED-13) surfaces as device-lost rather than a
     // silent process freeze. On timeout, query GetDeviceRemovedReason() which
     // will return a meaningful HRESULT if the driver crashed (TDR, etc.).
-    if (m_fence->GetCompletedValue() < m_fenceValues[m_currentBackBufferIndex]) {
-        m_fence->SetEventOnCompletion(m_fenceValues[m_currentBackBufferIndex], m_fenceEvent);
+    if (m_editorFence->GetCompletedValue() < m_editorFenceValues[m_currentBackBufferIndex]) {
+        m_editorFence->SetEventOnCompletion(m_editorFenceValues[m_currentBackBufferIndex], m_fenceEvent);
         DWORD result = WaitForSingleObject(m_fenceEvent, 2000);
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
             HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
@@ -780,9 +928,6 @@ void D3D12Renderer::moveToNextFrame() {
             return;
         }
     }
-
-    // Increment fence value for next frame
-    m_fenceValues[m_currentBackBufferIndex] = currentFenceValue + 1;
 }
 
 // ============================================================================
@@ -1092,19 +1237,19 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
     constants.padding3 = 0.0f;
 
     // Set pipeline state
-    m_commandList->SetPipelineState(m_pipelineState.Get());
-    m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+    tl_activeCmdList->SetPipelineState(m_pipelineState.Get());
+    tl_activeCmdList->SetGraphicsRootSignature(m_rootSignature.Get());
 
     // Set root constants (copies data into command buffer - each draw gets its own values!)
-    m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
 
-    // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginFrame) sets these
+    // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginShowFrame) sets these
     // This allows drawColoredQuad to work correctly with both main window and offscreen targets
 
     // Set vertex buffer and draw
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-    m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-    m_commandList->DrawInstanced(4, 1, 0, 0);
+    tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    tl_activeCmdList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+    tl_activeCmdList->DrawInstanced(4, 1, 0, 0);
 }
 
 // ============================================================================
@@ -1305,14 +1450,14 @@ void D3D12Renderer::endImGuiFrame() {
     ImGui::Render();
 
     // Set ImGui descriptor heap (only if not already set)
-    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+    if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
         ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-        m_commandList->SetDescriptorHeaps(1, heaps);
-        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+        tl_activeCmdList->SetDescriptorHeaps(1, heaps);
+        tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
     }
 
     // Render ImGui draw data
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), m_commandList.Get());
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), tl_activeCmdList);
 }
 
 // ============================================================================
@@ -1465,7 +1610,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
 
     // Only transition if texture was previously used
     if (!m_videoTextureFirstUpload) {
-        m_commandList->ResourceBarrier(1, &barrier);
+        tl_activeCmdList->ResourceBarrier(1, &barrier);
     }
     m_videoTextureFirstUpload = false;
 
@@ -1480,12 +1625,12 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
     dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     dstLocation.SubresourceIndex = 0;
 
-    m_commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    tl_activeCmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
 
     // Transition texture back to shader resource state
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    m_commandList->ResourceBarrier(1, &barrier);
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
 
     return reinterpret_cast<void*>(m_videoTextureGpuHandle.ptr);
 }
@@ -1539,7 +1684,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         waitForGpu();
     }
 
-    // Phase C.11: record into the COPY queue's command list. endFrame()
+    // Phase C.11: record into the COPY queue's command list. endShowFrame()
     // executes it on the copy queue and inserts a cross-queue fence wait so
     // the direct queue doesn't sample the texture until the copy completes.
     if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data, width, height, format)) {
@@ -1965,10 +2110,10 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     constants.padding3 = 0.0f;
 
     // Ensure the shader-visible heap is bound regardless of which path we take.
-    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+    if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
         ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-        m_commandList->SetDescriptorHeaps(1, heaps);
-        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+        tl_activeCmdList->SetDescriptorHeaps(1, heaps);
+        tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
     }
 
     // ------------------------------------------------------------------------
@@ -1989,7 +2134,7 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         // -> COPY_DEST on the snapshot, batched in one ResourceBarrier call.
         D3D12_RESOURCE_BARRIER pre[2] = {};
         pre[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        pre[0].Transition.pResource = target.resource.Get();
+        pre[0].Transition.pResource = target.writeResource().Get();
         pre[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         pre[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         pre[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -1998,16 +2143,16 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         pre[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         pre[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
         pre[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_commandList->ResourceBarrier(2, pre);
+        tl_activeCmdList->ResourceBarrier(2, pre);
 
-        m_commandList->CopyResource(target.snapshotResource.Get(), target.resource.Get());
+        tl_activeCmdList->CopyResource(target.snapshotResource.Get(), target.writeResource().Get());
 
         // Restore both resources to their pre-snapshot states. Compose target
         // returns to RENDER_TARGET so subsequent draws (this one + any later
         // ones in the same beginComposeTarget cycle) keep working.
         D3D12_RESOURCE_BARRIER post[2] = {};
         post[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        post[0].Transition.pResource = target.resource.Get();
+        post[0].Transition.pResource = target.writeResource().Get();
         post[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         post[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         post[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -2016,7 +2161,7 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         post[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
         post[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         post[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_commandList->ResourceBarrier(2, post);
+        tl_activeCmdList->ResourceBarrier(2, post);
 
         // Phase C.12 #5/#6: pick OCIO-spliced shader-blend PSO if available
         // (uses the per-call OCIO color space resolved above).
@@ -2026,15 +2171,15 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                 getOrBuildOcioCompositePsoSet(*activeInput);
             if (set && set->psoBlend) blendPso = set->psoBlend.Get();
         }
-        m_commandList->SetPipelineState(blendPso);
-        m_commandList->SetGraphicsRootSignature(m_blendRootSignature.Get());
-        m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
-        m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);            // fg (t0)
-        m_commandList->SetGraphicsRootDescriptorTable(2, target.snapshotSrvHandle); // bg (t1)
+        tl_activeCmdList->SetPipelineState(blendPso);
+        tl_activeCmdList->SetGraphicsRootSignature(m_blendRootSignature.Get());
+        tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+        tl_activeCmdList->SetGraphicsRootDescriptorTable(1, textureSrv);            // fg (t0)
+        tl_activeCmdList->SetGraphicsRootDescriptorTable(2, target.snapshotSrvHandle); // bg (t1)
 
-        m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-        m_commandList->DrawInstanced(4, 1, 0, 0);
+        tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        tl_activeCmdList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+        tl_activeCmdList->DrawInstanced(4, 1, 0, 0);
         return;
     }
 
@@ -2065,17 +2210,17 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         }
     }
 
-    m_commandList->SetPipelineState(pipelineState);
-    m_commandList->SetGraphicsRootSignature(m_texturedRootSignature.Get());
-    m_commandList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
-    m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
+    tl_activeCmdList->SetPipelineState(pipelineState);
+    tl_activeCmdList->SetGraphicsRootSignature(m_texturedRootSignature.Get());
+    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+    tl_activeCmdList->SetGraphicsRootDescriptorTable(1, textureSrv);
 
-    // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginFrame) sets these
+    // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginShowFrame) sets these
     // This allows drawTexturedQuad to work correctly with both main window and offscreen targets
 
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-    m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-    m_commandList->DrawInstanced(4, 1, 0, 0);
+    tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    tl_activeCmdList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+    tl_activeCmdList->DrawInstanced(4, 1, 0, 0);
 }
 
 // ============================================================================
@@ -2298,7 +2443,7 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
     // CRIT-04 fix: allocate a ring of per-draw constant buffer slots sized for
     // FRAME_COUNT frames-in-flight × MAX_MAPPING_SURFACES_PER_FRAME draws per frame.
     // Each frame occupies a contiguous region; within a frame each draw gets its
-    // own 256-aligned slot. beginFrame() resets the draw index; moveToNextFrame()
+    // own 256-aligned slot. beginShowFrame() resets the draw index; moveToNextFrame()
     // fence-syncs a region before it's reused.
     m_mappingSurfaceSlotSize = (sizeof(MappingSurfaceConstants) + 255) & ~255u;
     const UINT totalSize = m_mappingSurfaceSlotSize * MAX_MAPPING_SURFACES_PER_FRAME * FRAME_COUNT;
@@ -2437,34 +2582,34 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         auto p = getOrBuildOcioMappingSurfacePso(*m_activeDisplayProcessor);
         if (p) mappingPso = p.Get();
     }
-    m_commandList->SetPipelineState(mappingPso);
-    m_commandList->SetGraphicsRootSignature(m_mappingSurfaceRootSignature.Get());
+    tl_activeCmdList->SetPipelineState(mappingPso);
+    tl_activeCmdList->SetGraphicsRootSignature(m_mappingSurfaceRootSignature.Get());
 
     // Set descriptor heap (only if not already set)
-    if (m_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+    if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
         ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-        m_commandList->SetDescriptorHeaps(1, heaps);
-        m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+        tl_activeCmdList->SetDescriptorHeaps(1, heaps);
+        tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
     }
 
     // Set root parameters — bind this draw's unique slot in the ring buffer
     const D3D12_GPU_VIRTUAL_ADDRESS slotGpuVa =
         m_mappingSurfaceConstantRing->GetGPUVirtualAddress() + slotOffset;
-    m_commandList->SetGraphicsRootConstantBufferView(0, slotGpuVa);
-    m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
+    tl_activeCmdList->SetGraphicsRootConstantBufferView(0, slotGpuVa);
+    tl_activeCmdList->SetGraphicsRootDescriptorTable(1, textureSrv);
 
     m_mappingSurfaceDrawIndex++;
 
-    // NOTE: Viewport/scissor are set by the caller (beginFrame,
+    // NOTE: Viewport/scissor are set by the caller (beginShowFrame,
     // beginComposeTarget, or beginOutputFrame). Overriding here to the main
     // back-buffer size was a latent bug that only manifested with per-output
     // rendering — a 1280x1080 secondary got clipped to the editor's 1920x1080
     // viewport, or vice-versa. Trust the caller's setup.
 
     // Set vertex buffer and draw (6 vertices = 2 triangles)
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->IASetVertexBuffers(0, 1, &m_mappingSurfaceVertexBufferView);
-    m_commandList->DrawInstanced(6, 1, 0, 0);
+    tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    tl_activeCmdList->IASetVertexBuffers(0, 1, &m_mappingSurfaceVertexBufferView);
+    tl_activeCmdList->DrawInstanced(6, 1, 0, 0);
 }
 
 // ========================================================================
@@ -2493,8 +2638,11 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
         return UINT32_MAX;
     }
 
-    // Wait for GPU before modifying resources
-    waitForGpu();
+    // No waitForGpu here. createComposeTarget runs on the show thread between
+    // beginShowFrame and endShowFrame, with an open show command list. A drain
+    // mid-frame races the editor's moveToNextFrame fence wait. We're creating
+    // *new* resources at fresh descriptor heap slots that no prior GPU work
+    // could reference, so a drain isn't required.
 
     // Create new compose target
     uint32_t slot = static_cast<uint32_t>(m_composeTargets.size());
@@ -2503,23 +2651,6 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
 
     std::cout << "Creating compose target " << slot << ": " << width << "x" << height << std::endl;
 
-    // Create RTV descriptor heap for compose target
-    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = 1;
-    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-    HRESULT hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&target.rtvHeap));
-    if (FAILED(hr)) {
-        std::cerr << "Failed to create compose target RTV heap!" << std::endl;
-        m_composeTargets.pop_back();
-        return UINT32_MAX;
-    }
-
-    // Create the render target texture.
-    // Phase C.12 #3: compose targets become FP16 linear ACEScg working space.
-    // Mapping-surface PSO (writes to swap chain) and the per-output capture
-    // buffer (subtask 3 capture pass) stay UNORM8.
     D3D12_RESOURCE_DESC textureDesc = {};
     textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     textureDesc.Width = width;
@@ -2542,32 +2673,11 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     clearValue.Color[2] = 0.0f;
     clearValue.Color[3] = 1.0f;
 
-    hr = m_gpu->device()->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &textureDesc,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,  // Start in shader resource state
-        &clearValue,
-        IID_PPV_ARGS(&target.resource)
-    );
-
-    if (FAILED(hr)) {
-        std::cerr << "Failed to create compose target texture!" << std::endl;
-        m_composeTargets.pop_back();
-        return UINT32_MAX;
-    }
-
-    // Create RTV for the compose target
     D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
     rtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     rtvDesc.Texture2D.MipSlice = 0;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_gpu->device()->CreateRenderTargetView(target.resource.Get(), &rtvDesc, rtvHandle);
-
-    // Create SRV for the compose target in the ImGui heap
-    // Heap layout: 0=fonts, 1=legacy, 2+=compose targets (one per screen)
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -2575,32 +2685,56 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     srvDesc.Texture2D.MipLevels = 1;
     srvDesc.Texture2D.MostDetailedMip = 0;
 
-    // Compose target slot layout owned by DescriptorHeapLayout
-    const uint32_t heapSlot = DescriptorHeapLayout::composeTargetSlot(slot);
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
-        m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+    // Stage 3d: allocate all 3 triple-buffer sub-resources + RTVs + SRVs.
+    for (uint32_t sub = 0; sub < ComposeTarget::TRIPLE; ++sub) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+        rtvHeapDesc.NumDescriptors = 1;
+        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    m_gpu->device()->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
+        HRESULT hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&target.rtvHeaps[sub]));
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create compose target RTV heap [sub=" << sub << "]!" << std::endl;
+            m_composeTargets.pop_back();
+            return UINT32_MAX;
+        }
 
-    target.srvHandle = DescriptorHeapLayout::gpuHandle(
-        m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+        hr = m_gpu->device()->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &textureDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue,
+            IID_PPV_ARGS(&target.resources[sub])
+        );
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create compose target texture [sub=" << sub << "]!" << std::endl;
+            m_composeTargets.pop_back();
+            return UINT32_MAX;
+        }
 
-    // Snapshot texture is now lazily allocated on first shader-blend draw
-    // (see ensureSnapshotResource(), invoked from drawTexturedQuad's shader-
-    // blend branch). With Phase C.12 #3's FP16 compose target a snapshot per
-    // compose × FRAME_COUNT × 1080p is ~33 MB; lazy allocation saves the
-    // entire ~265 MB on workloads that never use Overlay/Difference/etc.
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeaps[sub]->GetCPUDescriptorHandleForHeapStart();
+        m_gpu->device()->CreateRenderTargetView(target.resources[sub].Get(), &rtvDesc, rtvHandle);
+
+        const uint32_t heapSlot = DescriptorHeapLayout::composeTargetTripleSlot(slot, sub);
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
+            m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+        m_gpu->device()->CreateShaderResourceView(target.resources[sub].Get(), &srvDesc, cpuHandle);
+        target.srvHandles[sub] = DescriptorHeapLayout::gpuHandle(
+            m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+    }
+
+    // Snapshot texture is lazily allocated on first shader-blend draw.
     target.snapshotSrvSlot = DescriptorHeapLayout::snapshotSlot(slot);
 
-    target.width = width;
+    target.width  = width;
     target.height = height;
-    target.ready = true;
+    target.writeIndex = 0;
+    target.lastStableIndex.store(UINT32_MAX, std::memory_order_relaxed);
+    target.ready  = true;
 
-    std::cout << "Compose target " << slot << " created successfully: " << width << "x" << height << std::endl;
-    std::cout << "  Heap slot: " << heapSlot << std::endl;
-    std::cout << "  SRV descriptor size: " << m_srvDescriptorSize << std::endl;
-    std::cout << "  GPU handle ptr: " << target.srvHandle.ptr << std::endl;
-    std::cout << "  Heap start ptr: " << m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart().ptr << std::endl;
+    std::cout << "Compose target " << slot << " created successfully (triple-buffered): "
+              << width << "x" << height << std::endl;
 
     return slot;
 }
@@ -2634,16 +2768,15 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     // post-waitForGpu, but be defensive) skips this slot until we're done.
     target.ready = false;
 
-    // Drop the old GPU resource. The RTV heap (target.rtvHeap) and the
-    // SRV slot in m_imguiSrvHeap stay allocated — we re-bind them to the
-    // new resource below. The snapshot is sized to the texture, so it
-    // also has to go; ensureSnapshotResource recreates it lazily on the
-    // next shader-blend draw.
-    target.resource.Reset();
+    // Drop all 3 triple-buffer GPU resources. RTV heaps and SRV slots in
+    // m_imguiSrvHeap stay allocated — we re-bind them to the new resources.
+    // The snapshot is sized to the texture, so it also has to go.
+    for (uint32_t sub = 0; sub < ComposeTarget::TRIPLE; ++sub) {
+        target.resources[sub].Reset();
+    }
     target.snapshotResource.Reset();
+    target.lastStableIndex.store(UINT32_MAX, std::memory_order_relaxed);
 
-    // Recreate the texture at the new dimensions (same desc as
-    // createComposeTarget — keep these in sync).
     D3D12_RESOURCE_DESC textureDesc = {};
     textureDesc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     textureDesc.Width              = width;
@@ -2666,38 +2799,40 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     clearValue.Color[2]  = 0.0f;
     clearValue.Color[3]  = 1.0f;
 
-    HRESULT hr = m_gpu->device()->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &textureDesc,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        &clearValue, IID_PPV_ARGS(&target.resource));
-    if (FAILED(hr)) {
-        std::cerr << "[D3D12] resizeComposeTarget: CreateCommittedResource failed hr=0x"
-                  << std::hex << hr << std::dec << std::endl;
-        return false;
-    }
-
-    // Re-bind the existing RTV (same heap, same start handle).
     D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
     rtvDesc.Format               = DXGI_FORMAT_R16G16B16A16_FLOAT;
     rtvDesc.ViewDimension        = D3D12_RTV_DIMENSION_TEXTURE2D;
     rtvDesc.Texture2D.MipSlice   = 0;
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-        target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_gpu->device()->CreateRenderTargetView(target.resource.Get(), &rtvDesc, rtvHandle);
 
-    // Re-bind the SRV at the SAME slot in the shared ImGui heap — the
-    // GPU handle (target.srvHandle) is unchanged so any cached
-    // TextureRefs the compositor or ImGui hold remain valid.
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format                          = DXGI_FORMAT_R16G16B16A16_FLOAT;
     srvDesc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping         = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels             = 1;
     srvDesc.Texture2D.MostDetailedMip       = 0;
-    const uint32_t heapSlot = DescriptorHeapLayout::composeTargetSlot(slot);
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
-        m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
-    m_gpu->device()->CreateShaderResourceView(target.resource.Get(), &srvDesc, cpuHandle);
+
+    for (uint32_t sub = 0; sub < ComposeTarget::TRIPLE; ++sub) {
+        HRESULT hr = m_gpu->device()->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &textureDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue, IID_PPV_ARGS(&target.resources[sub]));
+        if (FAILED(hr)) {
+            std::cerr << "[D3D12] resizeComposeTarget: CreateCommittedResource failed "
+                      << "sub=" << sub << " hr=0x" << std::hex << hr << std::dec << std::endl;
+            return false;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+            target.rtvHeaps[sub]->GetCPUDescriptorHandleForHeapStart();
+        m_gpu->device()->CreateRenderTargetView(target.resources[sub].Get(), &rtvDesc, rtvHandle);
+
+        const uint32_t heapSlot = DescriptorHeapLayout::composeTargetTripleSlot(slot, sub);
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = DescriptorHeapLayout::cpuHandle(
+            m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+        m_gpu->device()->CreateShaderResourceView(target.resources[sub].Get(), &srvDesc, cpuHandle);
+        target.srvHandles[sub] = DescriptorHeapLayout::gpuHandle(
+            m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+    }
 
     target.width  = width;
     target.height = height;
@@ -2716,24 +2851,24 @@ void D3D12Renderer::beginComposeTarget(uint32_t slot) {
     ComposeTarget& target = m_composeTargets[slot];
     m_currentComposeTargetSlot = slot;
 
-    // Transition compose target from shader resource to render target
+    // Transition the current write sub-resource from shader resource to render target.
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = target.resource.Get();
+    barrier.Transition.pResource = target.writeResource().Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &barrier);
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
 
-    // Get RTV handle
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    // Get RTV handle for the current write sub-resource.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.writeRtvHeap()->GetCPUDescriptorHandleForHeapStart();
 
     // Set compose target as render target
-    m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    tl_activeCmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
     // Clear to black (compose target background)
     const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+    tl_activeCmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
     // Set viewport and scissor for compose target
     D3D12_VIEWPORT viewport = {};
@@ -2745,8 +2880,8 @@ void D3D12Renderer::beginComposeTarget(uint32_t slot) {
     scissorRect.right = target.width;
     scissorRect.bottom = target.height;
 
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissorRect);
+    tl_activeCmdList->RSSetViewports(1, &viewport);
+    tl_activeCmdList->RSSetScissorRects(1, &scissorRect);
 }
 
 void D3D12Renderer::endComposeTarget() {
@@ -2756,44 +2891,25 @@ void D3D12Renderer::endComposeTarget() {
 
     ComposeTarget& target = m_composeTargets[m_currentComposeTargetSlot];
 
-    // Transition compose target from render target to shader resource
+    // Transition the write sub-resource from render target to shader resource.
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = target.resource.Get();
+    barrier.Transition.pResource = target.writeResource().Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &barrier);
-
-    // Restore the main render target (back buffer)
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
-    m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-    // Restore viewport for main render target
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-
-    D3D12_RECT scissorRect = {};
-    scissorRect.right = m_width;
-    scissorRect.bottom = m_height;
-
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissorRect);
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
 }
 
 void* D3D12Renderer::getComposeTargetTextureID(uint32_t slot) const {
-    if (slot < m_composeTargets.size() && m_composeTargets[slot].ready && m_composeTargets[slot].srvHandle.ptr != 0) {
-        return reinterpret_cast<void*>(m_composeTargets[slot].srvHandle.ptr);
-    }
-    return nullptr;
+    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) return nullptr;
+    const D3D12_GPU_DESCRIPTOR_HANDLE h = m_composeTargets[slot].stableSrvHandle();
+    return h.ptr ? reinterpret_cast<void*>(h.ptr) : nullptr;
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::getComposeTargetSrvHandle(uint32_t slot) const {
     if (slot < m_composeTargets.size() && m_composeTargets[slot].ready) {
-        return m_composeTargets[slot].srvHandle;
+        return m_composeTargets[slot].stableSrvHandle();
     }
     D3D12_GPU_DESCRIPTOR_HANDLE nullHandle = {};
     return nullHandle;
@@ -3039,11 +3155,11 @@ void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &barrier);
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += ow.currentBackBufferIndex * m_rtvDescriptorSize;
-    m_commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    tl_activeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
     D3D12_VIEWPORT viewport = {};
     viewport.Width = static_cast<float>(ow.width);
@@ -3054,8 +3170,8 @@ void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
     scissor.right = static_cast<LONG>(ow.width);
     scissor.bottom = static_cast<LONG>(ow.height);
 
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissor);
+    tl_activeCmdList->RSSetViewports(1, &viewport);
+    tl_activeCmdList->RSSetScissorRects(1, &scissor);
 
     m_currentOutputSlot = outputSlot;
 }
@@ -3069,7 +3185,7 @@ void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += ow.currentBackBufferIndex * m_rtvDescriptorSize;
     const float color[] = { r, g, b, a };
-    m_commandList->ClearRenderTargetView(rtv, color, 0, nullptr);
+    tl_activeCmdList->ClearRenderTargetView(rtv, color, 0, nullptr);
 }
 
 void D3D12Renderer::endOutputFrame(uint32_t outputSlot) {
@@ -3077,31 +3193,17 @@ void D3D12Renderer::endOutputFrame(uint32_t outputSlot) {
     OutputWindow& ow = m_outputWindows[outputSlot];
     if (!ow.active) return;
 
+    // Transition output back buffer to PRESENT state.
+    // No back-buffer restore here — the show command list must not touch
+    // the editor-owned back buffer. beginEditorFrame sets up the back-buffer
+    // RTV on the editor command list.
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = ow.renderTargets[ow.currentBackBufferIndex].Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &barrier);
-
-    // Restore the main render target + viewport so subsequent draws
-    // (ImGui overlay) target the editor window.
-    D3D12_CPU_DESCRIPTOR_HANDLE mainRtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    mainRtv.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
-    m_commandList->OMSetRenderTargets(1, &mainRtv, FALSE, nullptr);
-
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
-    viewport.MaxDepth = 1.0f;
-
-    D3D12_RECT scissor = {};
-    scissor.right = static_cast<LONG>(m_width);
-    scissor.bottom = static_cast<LONG>(m_height);
-
-    m_commandList->RSSetViewports(1, &viewport);
-    m_commandList->RSSetScissorRects(1, &scissor);
+    tl_activeCmdList->ResourceBarrier(1, &barrier);
 
     m_currentOutputSlot = UINT32_MAX;
 }
@@ -3186,13 +3288,13 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     waitForGpu();
 
     // Reset command allocator and command list for this operation
-    HRESULT hr = m_commandAllocators[m_currentBackBufferIndex]->Reset();
+    HRESULT hr = m_editorAllocators[m_currentBackBufferIndex]->Reset();
     if (FAILED(hr)) {
         std::cerr << "[Readback] Failed to reset command allocator!" << std::endl;
         return false;
     }
 
-    hr = m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    hr = m_editorCmdList->Reset(m_editorAllocators[m_currentBackBufferIndex].Get(), nullptr);
     if (FAILED(hr)) {
         std::cerr << "[Readback] Failed to reset command list!" << std::endl;
         return false;
@@ -3207,7 +3309,7 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
         barrier.Transition.StateBefore = sourceState;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_commandList->ResourceBarrier(1, &barrier);
+        m_editorCmdList->ResourceBarrier(1, &barrier);
     }
 
     // Set up copy locations
@@ -3227,7 +3329,7 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     dstLocation.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(m_screenshotStagingRowPitch);
 
     // Copy texture to staging buffer
-    m_commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    m_editorCmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
 
     // Transition source texture back to original state
     if (sourceState != D3D12_RESOURCE_STATE_COPY_SOURCE) {
@@ -3238,17 +3340,17 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.StateAfter = sourceState;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_commandList->ResourceBarrier(1, &barrier);
+        m_editorCmdList->ResourceBarrier(1, &barrier);
     }
 
     // Close and execute command list
-    hr = m_commandList->Close();
+    hr = m_editorCmdList->Close();
     if (FAILED(hr)) {
         std::cerr << "[Readback] Failed to close command list!" << std::endl;
         return false;
     }
 
-    ID3D12CommandList* commandLists[] = { m_commandList.Get() };
+    ID3D12CommandList* commandLists[] = { m_editorCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
 
     // Wait for GPU to finish the copy
@@ -3358,7 +3460,7 @@ bool D3D12Renderer::captureBackBufferToPNG(const std::string& filepath) {
         return false;
     }
 
-    // Note: Back buffer should be in PRESENT state after endFrame()
+    // Note: Back buffer should be in PRESENT state after endEditorFrame()
     // We capture from the current back buffer
     return readbackTextureToPNG(
         m_renderTargets[m_currentBackBufferIndex].Get(),
@@ -3401,7 +3503,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) 
             break;
         case TextureRef::Kind::ComposeTarget:
             if (tex.slot < m_composeTargets.size() && m_composeTargets[tex.slot].ready) {
-                return m_composeTargets[tex.slot].srvHandle;
+                return m_composeTargets[tex.slot].stableSrvHandle();
             }
             break;
         case TextureRef::Kind::Invalid:
@@ -3489,9 +3591,9 @@ void D3D12Renderer::drawMappingSurface(TextureRef texture,
 
 bool D3D12Renderer::ensureSnapshotResource(ComposeTarget& target) {
     if (target.snapshotResource) return true;
-    if (!target.resource || target.width == 0 || target.height == 0) return false;
+    if (!target.writeResource() || target.width == 0 || target.height == 0) return false;
 
-    D3D12_RESOURCE_DESC snapshotDesc = target.resource->GetDesc();
+    D3D12_RESOURCE_DESC snapshotDesc = target.writeResource()->GetDesc();
     snapshotDesc.Flags = D3D12_RESOURCE_FLAG_NONE; // No RTV needed on the snapshot
 
     D3D12_HEAP_PROPERTIES heapProps = {};
@@ -3694,12 +3796,12 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
 
     waitForGpu();
 
-    HRESULT hr = m_commandAllocators[m_currentBackBufferIndex]->Reset();
+    HRESULT hr = m_editorAllocators[m_currentBackBufferIndex]->Reset();
     if (FAILED(hr)) {
         std::cerr << "[Capture] command allocator Reset failed" << std::endl;
         return false;
     }
-    hr = m_commandList->Reset(m_commandAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    hr = m_editorCmdList->Reset(m_editorAllocators[m_currentBackBufferIndex].Get(), nullptr);
     if (FAILED(hr)) {
         std::cerr << "[Capture] command list Reset failed" << std::endl;
         return false;
@@ -3707,14 +3809,14 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
 
     // 1. Bind the SRV heap, viewport, RTV, and run the tone-map pass.
     ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-    m_commandList->SetDescriptorHeaps(1, heaps);
-    m_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    m_editorCmdList->SetDescriptorHeaps(1, heaps);
+    tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
 
     D3D12_VIEWPORT vp = { 0, 0, static_cast<float>(target.width), static_cast<float>(target.height), 0.0f, 1.0f };
     D3D12_RECT scissor = { 0, 0, static_cast<LONG>(target.width), static_cast<LONG>(target.height) };
-    m_commandList->RSSetViewports(1, &vp);
-    m_commandList->RSSetScissorRects(1, &scissor);
-    m_commandList->OMSetRenderTargets(1, &m_captureRtv, FALSE, nullptr);
+    m_editorCmdList->RSSetViewports(1, &vp);
+    m_editorCmdList->RSSetScissorRects(1, &scissor);
+    m_editorCmdList->OMSetRenderTargets(1, &m_captureRtv, FALSE, nullptr);
 
     // Phase C.12 #5: prefer the OCIO-spliced capture PSO so the captured
     // image matches what mapping_surface_ps puts on a sRGB monitor. Falls
@@ -3722,12 +3824,12 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     ID3D12PipelineState* capturePso = m_ocioCapturePipelineState
         ? m_ocioCapturePipelineState.Get()
         : m_capturePipelineState.Get();
-    m_commandList->SetPipelineState(capturePso);
-    m_commandList->SetGraphicsRootSignature(m_captureRootSignature.Get());
-    m_commandList->SetGraphicsRootDescriptorTable(0, target.srvHandle);
+    m_editorCmdList->SetPipelineState(capturePso);
+    m_editorCmdList->SetGraphicsRootSignature(m_captureRootSignature.Get());
+    m_editorCmdList->SetGraphicsRootDescriptorTable(0, target.stableSrvHandle());
 
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->DrawInstanced(3, 1, 0, 0); // full-screen triangle from SV_VERTEXID
+    m_editorCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_editorCmdList->DrawInstanced(3, 1, 0, 0); // full-screen triangle from SV_VERTEXID
 
     // 2. RENDER_TARGET -> COPY_SOURCE, copy to staging, restore.
     D3D12_RESOURCE_BARRIER toCopy = {};
@@ -3736,7 +3838,7 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     toCopy.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
     toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &toCopy);
+    m_editorCmdList->ResourceBarrier(1, &toCopy);
 
     D3D12_TEXTURE_COPY_LOCATION src = {};
     src.pResource         = m_captureResource.Get();
@@ -3759,7 +3861,7 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     // resource subresource and trigger E_INVALIDARG on the second screen
     // when sizes differ.
     D3D12_BOX srcBox = { 0, 0, 0, target.width, target.height, 1 };
-    m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
+    m_editorCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
 
     D3D12_RESOURCE_BARRIER restore = {};
     restore.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -3767,16 +3869,16 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     restore.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
     restore.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
     restore.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &restore);
+    m_editorCmdList->ResourceBarrier(1, &restore);
 
-    hr = m_commandList->Close();
+    hr = m_editorCmdList->Close();
     if (FAILED(hr)) {
         std::cerr << "[Capture] command list Close failed hr=0x"
                   << std::hex << hr << std::dec << std::endl;
         return false;
     }
 
-    ID3D12CommandList* lists[] = { m_commandList.Get() };
+    ID3D12CommandList* lists[] = { m_editorCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, lists);
     waitForGpu();
 
@@ -4401,16 +4503,16 @@ void D3D12Renderer::drawMeshTriangle(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         constants[12 + i * 4 + 3] = 0.0f;
     }
 
-    m_commandList->SetPipelineState(m_meshTriPipelineState.Get());
-    m_commandList->SetGraphicsRootSignature(m_meshTriRootSignature.Get());
-    m_commandList->SetGraphicsRoot32BitConstants(0, 24, constants, 0);
+    tl_activeCmdList->SetPipelineState(m_meshTriPipelineState.Get());
+    tl_activeCmdList->SetGraphicsRootSignature(m_meshTriRootSignature.Get());
+    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, constants, 0);
 
     ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-    m_commandList->SetDescriptorHeaps(1, heaps);
-    m_commandList->SetGraphicsRootDescriptorTable(1, textureSrv);
+    tl_activeCmdList->SetDescriptorHeaps(1, heaps);
+    tl_activeCmdList->SetGraphicsRootDescriptorTable(1, textureSrv);
 
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->DrawInstanced(3, 1, 0, 0);
+    tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
 }
 
 void D3D12Renderer::drawMeshTriangle(TextureRef texture,
@@ -4477,19 +4579,19 @@ void D3D12Renderer::renderCalibrationOverlay() {
     // We use a draw-based "clear" by relying on the black background the PS returns.
 
     // Set calibration PSO
-    m_commandList->SetPipelineState(m_calibPipelineState.Get());
-    m_commandList->SetGraphicsRootSignature(m_calibRootSignature.Get());
+    tl_activeCmdList->SetPipelineState(m_calibPipelineState.Get());
+    tl_activeCmdList->SetGraphicsRootSignature(m_calibRootSignature.Get());
 
     // Upload calibration constants as root 32-bit constants (slot 0)
-    m_commandList->SetGraphicsRoot32BitConstants(
+    tl_activeCmdList->SetGraphicsRoot32BitConstants(
         0,
         sizeof(CalibrationConstants) / 4,
         &m_calibConstants,
         0);
 
     // Draw fullscreen triangle (3 vertices, no VB)
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->DrawInstanced(3, 1, 0, 0);
+    tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
 
     endComposeTarget();
 }
