@@ -78,6 +78,16 @@ struct Settings {
         AlwaysLink  = 2,
     };
     ImportStoragePolicy importStoragePolicy{ImportStoragePolicy::Ask};
+
+    // -----------------------------------------------------------------
+    // OSC receiver plugin. Read once at plugin register time
+    // (Engine::initialize loads + publishes settings before
+    // registerStaticPlugins runs). Restart-to-apply, mirroring
+    // ocioConfigPath's lifecycle. ENV var ENTITY_OSC_PORT still wins
+    // when set, as a developer escape hatch.
+    // -----------------------------------------------------------------
+    bool     oscReceiverEnabled{true};
+    uint16_t oscReceiverPort{53000};
 };
 
 /**

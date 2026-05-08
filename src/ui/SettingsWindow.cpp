@@ -157,6 +157,35 @@ void renderColorSection(Settings& staged,
     ImGui::TextDisabled("OCIO config switches require app restart in C.12.");
 }
 
+void renderOscReceiverSection(Settings& staged) {
+    ImGui::Checkbox("Enable OSC receiver", &staged.oscReceiverEnabled);
+
+    int port = static_cast<int>(staged.oscReceiverPort);
+    if (!staged.oscReceiverEnabled) ImGui::BeginDisabled();
+    if (ImGui::InputInt("Listener port##oscPort", &port, 1, 100,
+                        ImGuiInputTextFlags_EnterReturnsTrue)) {
+        port = std::clamp(port, 1, 65535);
+        staged.oscReceiverPort = static_cast<uint16_t>(port);
+    }
+    if (!staged.oscReceiverEnabled) ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "UDP port for the inbound OSC receiver plugin.\n"
+            "Default 53000 matches QLab's outbound default.\n"
+            "Point QLab Network Cues at <this-machine-ip>:<port>.\n"
+            "Address namespace: /entity/play, /entity/pause,\n"
+            "/entity/stop, /entity/section/next,\n"
+            "/entity/cue/{number}/go, /entity/seek <int frame>.");
+        ImGui::EndTooltip();
+    }
+
+    ImGui::TextDisabled("OSC changes take effect after restart.");
+}
+
 } // namespace
 
 void SettingsWindow::open(const Settings& current) {
@@ -197,6 +226,11 @@ void SettingsWindow::render() {
     // ----- Color (Phase C.12 #7) -------------------------------------------
     if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderColorSection(m_staged, m_ocioManager, m_browseOcio);
+    }
+
+    // ----- OSC Receiver -----------------------------------------------------
+    if (ImGui::CollapsingHeader("OSC Receiver", ImGuiTreeNodeFlags_DefaultOpen)) {
+        renderOscReceiverSection(m_staged);
     }
 
     ImGui::Separator();

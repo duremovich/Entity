@@ -58,6 +58,50 @@ public:
     // target name from CMake, e.g. "bus-logger"). Useful for log prefixes
     // and for error messages a plugin emits about itself.
     virtual std::string_view pluginName() const noexcept = 0;
+
+    // Enqueue a Director command from a plugin (control-plane shortcut).
+    //
+    // `typeName` is the dispatcher type string (e.g. "Play", "FireCue",
+    // "SectionGo"); `paramsJson` is a UTF-8 JSON object literal of the
+    // command's parameters (e.g. `{"number":1.5}`) or an empty view for
+    // commands with no params. The implementation parses paramsJson and
+    // forwards to `CommandDispatcher::enqueue(typeName, params)`.
+    //
+    // Returns true if the command type was recognized and queued. Returns
+    // false on unknown command type, malformed JSON, or null bus/engine.
+    // Thread-safe: the dispatcher's queue is mutex-guarded, so plugins may
+    // call this from any worker thread.
+    //
+    // ABI note: this method lives at the bottom of the vtable so plugins
+    // compiled against an older header still work — they just don't see
+    // the new entry point. No PLUGIN_API_VERSION bump.
+    virtual bool enqueueCommand(std::string_view typeName,
+                                std::string_view paramsJson) noexcept = 0;
+
+    // Install a callback the engine invokes at the start of its shutdown
+    // sequence, before tearing down the bus, the dispatcher, or any other
+    // subsystem the plugin might reach back into. Plugins that spawn worker
+    // threads MUST register a hook that joins those threads here — otherwise
+    // a worker holding the IPluginContext can race the destruction of the
+    // engine and crash on use-after-free.
+    //
+    // Hooks fire in registration order. The function pointer must remain
+    // valid until the engine has finished shutting down. Pass nullptr is a
+    // no-op. Same ABI rule as enqueueCommand: bottom of the vtable, no
+    // version bump.
+    virtual void registerShutdownHook(PluginShutdownFn hook) noexcept = 0;
+
+    // Read a primitive value from the engine's active Settings snapshot.
+    // Stringly-typed because the GPL Settings struct can't be exposed
+    // through this Apache-2.0 header (boundary rule). Unknown keys return
+    // `defaultValue`; that lets a plugin compiled against a newer engine
+    // ask for a setting an older engine doesn't have without breaking.
+    //
+    // Same ABI rule: bottom of the vtable, no PLUGIN_API_VERSION bump.
+    virtual bool getBoolSetting(std::string_view key,
+                                bool defaultValue) const noexcept = 0;
+    virtual int  getIntSetting(std::string_view key,
+                               int defaultValue) const noexcept = 0;
 };
 
 } // namespace entity::plugin

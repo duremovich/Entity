@@ -166,6 +166,19 @@ public:
     bus::IMessageTransport* getBusTransport() { return m_transport.get(); }
 
     /**
+     * Register a plugin shutdown hook. Hooks fire at the start of
+     * Engine::shutdown(), in registration order, before any subsystem is
+     * torn down — gives plugins a chance to join worker threads that
+     * touch the bus or dispatcher. The function pointer must remain
+     * valid until the engine has finished shutting down. Used by
+     * EnginePluginContext::registerShutdownHook(); plugins should not
+     * call this directly.
+     */
+    void addPluginShutdownHook(void (*hook)()) {
+        if (hook) m_pluginShutdownHooks.push_back(hook);
+    }
+
+    /**
      * Get the GLFW window.
      */
     GLFWwindow* getWindow() { return m_window; }
@@ -732,6 +745,11 @@ private:
     // format. Engine builds the message Director-side, drains it
     // Renderer-side inside render() right after beginFrame().
     std::unique_ptr<bus::IMessageTransport> m_transport;
+
+    // Plugin shutdown hooks. Fired at the top of Engine::shutdown() so
+    // plugins can join worker threads before bus/dispatcher tear down.
+    // Populated by EnginePluginContext::registerShutdownHook().
+    std::vector<void(*)()> m_pluginShutdownHooks;
 
     // FPS display tracking (window title only)
     double m_fpsAccumulator{0.0};

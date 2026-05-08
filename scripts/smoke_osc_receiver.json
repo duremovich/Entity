@@ -1,0 +1,8 @@
+{
+    "version": 1,
+    "description": "Smoke test for the osc-receiver plugin. Waits long enough for an external OSC sender to fire packets at 127.0.0.1:53000 while the editor is up. Assert nothing — this is for manual verification of plugin startup logging and command dispatch via stdout/[Command] traces.",
+    "commands": [
+        {"type": "WaitFrames", "count": 600},
+        {"type": "Exit"}
+    ]
+}

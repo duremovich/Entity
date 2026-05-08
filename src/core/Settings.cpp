@@ -109,6 +109,16 @@ Settings loadSettings(const std::filesystem::path& path) {
         }
     }
 
+    if (j.contains("oscReceiverEnabled") && j["oscReceiverEnabled"].is_boolean()) {
+        settings.oscReceiverEnabled = j["oscReceiverEnabled"].get<bool>();
+    }
+    if (j.contains("oscReceiverPort") && j["oscReceiverPort"].is_number_unsigned()) {
+        const auto raw = j["oscReceiverPort"].get<uint64_t>();
+        if (raw > 0 && raw < 65536) {
+            settings.oscReceiverPort = static_cast<uint16_t>(raw);
+        }
+    }
+
     return settings;
 }
 
@@ -136,6 +146,8 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     j["defaultDisplay"]       = settings.defaultDisplay;
     j["defaultView"]          = settings.defaultView;
     j["importStoragePolicy"]  = static_cast<int>(settings.importStoragePolicy);
+    j["oscReceiverEnabled"]   = settings.oscReceiverEnabled;
+    j["oscReceiverPort"]      = settings.oscReceiverPort;
 
     // Write to a temp file then rename — atomic on POSIX, near-atomic on
     // Windows (rename-over-existing requires MoveFileEx, but

@@ -1,0 +1,8 @@
+{
+    "version": 1,
+    "description": "Briefest possible boot test. Confirms the editor starts up with the OSC plugin loaded and shuts down cleanly.",
+    "commands": [
+        {"type": "WaitFrames", "count": 30},
+        {"type": "Exit"}
+    ]
+}

@@ -471,6 +471,18 @@ void Engine::shutdown() {
     // Stop running if still active
     m_running = false;
 
+    // Fire plugin shutdown hooks first, before any subsystem teardown. Plugins
+    // that spawned worker threads use this to join them while the dispatcher
+    // and bus are still alive (a worker that races a torn-down engine would
+    // crash on use-after-free).
+    for (auto* hook : m_pluginShutdownHooks) {
+        if (hook) {
+            try { hook(); }
+            catch (...) { /* hooks are noexcept by contract; swallow anyway */ }
+        }
+    }
+    m_pluginShutdownHooks.clear();
+
     // Cancel + join any in-flight transcode workers before we tear down
     // FFmpeg state or systems they might be touching.
     if (m_transcodeManager) {

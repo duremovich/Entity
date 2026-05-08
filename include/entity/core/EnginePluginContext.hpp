@@ -33,6 +33,14 @@ public:
     void                             log(entity::plugin::LogLevel level,
                                          std::string_view message) noexcept override;
     std::string_view                 pluginName()  const noexcept override;
+    bool                             enqueueCommand(std::string_view typeName,
+                                                    std::string_view paramsJson) noexcept override;
+    void                             registerShutdownHook(
+                                         entity::plugin::PluginShutdownFn hook) noexcept override;
+    bool                             getBoolSetting(std::string_view key,
+                                                    bool defaultValue) const noexcept override;
+    int                              getIntSetting(std::string_view key,
+                                                   int defaultValue) const noexcept override;
 
 private:
     Engine*     m_engine;
