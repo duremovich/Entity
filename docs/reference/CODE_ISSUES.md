@@ -1,8 +1,8 @@
 # Known Code Issues
 
-Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-28 after the PlaybackController -> PlaybackTimeAuthority + PlaybackPresenter split (Phase D entry, subtask 6). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
+Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-28 after the PlaybackController -> PlaybackTimeAuthority + PlaybackPresenter split (Phase D entry, subtask 6). HIGH-02 follow-up (#10) closed and MED-13 fixed 2026-05-08 by Phase A of issue #42; NEW-06 partially addressed (detection only). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
 
-**Current state**: 0 Critical, 2 High, ~20 Medium, ~13 Low — down from 7 / 18 / 27 / 15.
+**Current state**: 0 Critical, 1 High, ~19 Medium, ~13 Low — down from 7 / 18 / 27 / 15.
 
 Most issues have been fixed. This document was previously stale; the version before this rewrite listed all original issues as open even though commits had closed most of them. Always verify against current code before acting on an ID.
 
@@ -39,12 +39,17 @@ _(none)_
 
 ## High Priority Issues
 
-### Still Open (2)
+### Still Open (1)
 
 | ID | File:Line | Details |
 |----|-----------|---------|
-| HIGH-02 | PlaybackPresenter.cpp (`playState` snapshot in `present()`) | Playback state re-read pattern within a single tick — `playState` is now cached once at the top of `PlaybackPresenter::present()`, and the per-tick active set comes from `PlaybackTimeAuthority::buildActiveSet()` which already saw a consistent timeline state during Director's tick. The remaining concern is that an interactive-mode editor could in principle observe the GLFW input thread changing playback state mid-tick, but the relevant value is `std::atomic<PlaybackState>` (MED-20) so reads are coherent. The Phase D entry split (subtask 6) collapsed the prior multi-read pattern into a single read at the top of the upload pass; revisit only if subtask 8's `RenderFrame` payload exposes per-active-clip playState fields that drift from the snapshot. |
 | HIGH-13 | HAPDecoder.cpp | Every method returns `Result::NotImplemented`. Phase A mitigation landed: factory no longer constructs the stub (Decoder.cpp now returns nullptr for HAP types with a clear log). Actual codec implementation deferred to Phase D. |
+
+### Recently fixed
+
+| ID | Fixed In | Details |
+|----|----------|---------|
+| HIGH-02 | 6944415 (Phase A1 of #42, 2026-05-08) | Structurally closed. CompositorSystem::update now consumes `bus::RenderFrame::activeClips` directly (transform / opacity / blend / target screen / section fade / z-order / mediaFrame / slot all on the snapshot). Registry stays as a parameter for Screen enumeration + MappingSurface calibration only. The "future RenderFrame payload could expose per-active-clip playState that drifts" concern from the prior entry no longer applies — there is one source of truth per tick. Issue #10 (the follow-up audit card) closed by this commit. |
 
 ### Re-evaluated (Not Actually Bugs)
 
@@ -94,7 +99,7 @@ _(none)_
 Not individually re-verified in this pass. The original list (MED-02, MED-03, MED-05, MED-06, MED-07, MED-10–18, MED-21, MED-23–27) is largely still applicable. Highlights of what matters most for Phase B:
 
 - **MED-05** (Engine.cpp) — Three separate maps for per-clip data. Fragmentation; consolidate into a single per-clip struct. Touches Phase B Engine decomposition.
-- **MED-13** (D3D12Renderer.cpp:561-577) — `moveToNextFrame()` has INFINITE GPU wait. Real hang risk on device loss; pair with Phase A crash-recovery work.
+- ~~**MED-13** (D3D12Renderer.cpp:561-577) — `moveToNextFrame()` has INFINITE GPU wait. Real hang risk on device loss; pair with Phase A crash-recovery work.~~ **Fixed 2026-05-08 (commit 1c5ccb4, Phase A2 of #42)** — replaced `WaitForSingleObject(INFINITE)` with a 2-second timeout that delegates to `handleDeviceLost` on timeout/failure. Two remaining INFINITE waits in `D3D12Renderer::waitForGpu()` (lines 731 / 750) are tracked under the NEW-06 robust-recovery follow-up.
 - **MED-23** (MappingWindow.cpp:112-127) — UI selection state mixed with domain. Phase B UI/domain split should address.
 - **MED-03** (VideoTexture.hpp:30-32) — Dangling `currentFrame` pointer risk. Audit ownership before Phase C output work.
 
@@ -127,7 +132,7 @@ Not in the original review, surfaced while writing this update:
 | NEW-03 | Engine.cpp | Low | 4 `TODO` comments for unfinished integration points. |
 | NEW-04 | OutputManager.cpp | ~~Medium~~ **Fixed (Phase C #1, 2026-04-20)** | OutputManager now drives physical displays. Per-output swap chains on `IRenderer`; `renderOutputs()` fans the selected Screen's compose target to each enabled Physical output with InputRegion UV cropping. Mapping-surface warping + soft edges deferred to Phase C #2. |
 | NEW-05 | TestSystem.hpp | Medium | Pure skeleton. Phase A plan calls for replacing with a real integration test harness. |
-| NEW-06 | D3D12Renderer device-removed handling | High | `GetDeviceRemovedReason()` is not called anywhere; mid-session device loss will crash or hang. Critical for live-performance reliability (Phase A). |
+| NEW-06 | D3D12Renderer device-removed handling | High | **Partially fixed 2026-05-08 (commit 1c5ccb4, Phase A2 of #42)** — detection landed: `handleDeviceLost` now calls `GetDeviceRemovedReason()`, stores the HRESULT into `m_deviceLostReason` before flipping the latch (matters once handleDeviceLost runs on the show thread post-#42-Phase-B), `IRenderer` exposes `int32_t getDeviceLostReason()`, Engine posts `bus::DeviceLost` on R2D once and exits cleanly. **Robust device recovery still pending**: release/recreate device, re-provision GPU resources, resync UI thread. Two remaining INFINITE waits at `D3D12Renderer.cpp:731,750` (`waitForGpu`) and the `m_deviceLostPosted` plain-bool → atomic-bool migration belong here. Track under a new follow-up issue keyed off NEW-06 with #42 as trigger. |
 
 ---
 
