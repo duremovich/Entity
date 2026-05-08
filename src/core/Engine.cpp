@@ -810,6 +810,7 @@ void Engine::run() {
 
         autoSaveTick(deltaTime);
         pollTranscodes();
+        pollProbeCompletions();
 
         m_timeAuthority->incrementFrameCount();
     }
@@ -829,6 +830,23 @@ IRenderer* Engine::getRenderer() {
 
 void Engine::autoSaveTick(double deltaTime) {
     if (m_projectManager) m_projectManager->tickAutosave(deltaTime);
+}
+
+void Engine::pollProbeCompletions() {
+    if (!m_probeWorker || !m_projectManager) return;
+    auto fresh = m_probeWorker->drainCompletedFreshProbes();
+    if (fresh.empty()) return;
+    for (auto& cp : fresh) {
+        auto* entry = m_projectManager->findEntry(cp.storedPath);
+        if (!entry) continue;
+        // Worker captures size+mtime at probe time. Treat (0, 0) as
+        // "stat failed" — skip the writeback so we re-probe next
+        // session rather than persist a useless sentinel.
+        if (cp.sizeBytes <= 0) continue;
+        entry->lastProbeSizeBytes = cp.sizeBytes;
+        entry->lastProbeMtimeUnix = cp.mtimeUnix;
+        entry->cachedProbe        = std::move(cp.info);
+    }
 }
 
 void Engine::updateTranscodeCacheDir() {
@@ -2812,7 +2830,14 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     if (m_probeWorker) {
         m_probeWorker->resetCounters();
         for (const auto& entry : m_projectManager->loadedMediaFiles()) {
-            m_probeWorker->enqueue(entry.originalPath);
+            // v12 — seed from cache when the on-disk file matches the
+            // last-saved size+mtime; otherwise enqueue a fresh probe.
+            // Cache misses (modified files, fresh entries) fall through
+            // and re-probe silently.
+            m_probeWorker->enqueueOrSeed(entry.originalPath,
+                                         entry.lastProbeSizeBytes,
+                                         entry.lastProbeMtimeUnix,
+                                         entry.cachedProbe);
         }
     }
 
@@ -2855,7 +2880,16 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
                 auto& libEntry = m_projectManager->addMediaFile(
                     relStr, ProjectManager::PathKind::Managed);
                 libEntry.missingOnDisk = false;
-                if (m_probeWorker) m_probeWorker->enqueue(relStr);
+                // Brand-new entry (no probe yet) — enqueueOrSeed falls
+                // through to the enqueue branch since lastProbeSizeBytes
+                // is 0. Using the same call site here keeps the gating
+                // logic in one place.
+                if (m_probeWorker) {
+                    m_probeWorker->enqueueOrSeed(relStr,
+                                                 libEntry.lastProbeSizeBytes,
+                                                 libEntry.lastProbeMtimeUnix,
+                                                 libEntry.cachedProbe);
+                }
                 std::cout << "[Engine] initial scan discovered " << relStr << std::endl;
             }
         }

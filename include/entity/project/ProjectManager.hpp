@@ -16,6 +16,8 @@
  */
 
 #include "entity/core/Types.hpp"
+#include "entity/media/MediaProbe.hpp"
+#include <cstdint>
 #include <entt/entt.hpp>
 #include <filesystem>
 #include <string>
@@ -225,6 +227,17 @@ public:
         // Original" UX to label the archived entry. Empty when no
         // archive exists. Persisted only when no archive exists.
         std::string originalCodec;
+
+        // Cached MediaProbeWorker output. Persisted (v12+) so reopening
+        // a project doesn't re-probe every file from scratch. Validity
+        // is gated on size + mtime matching the on-disk file: if they
+        // match, the worker is seeded directly from `cachedProbe` and
+        // no FFmpeg open happens; otherwise the worker re-probes and
+        // the cache is updated. `lastProbeSizeBytes == 0` means
+        // "never probed" (fresh entry, or a pre-v12 file).
+        std::int64_t lastProbeSizeBytes{0};
+        std::int64_t lastProbeMtimeUnix{0};
+        ProbeInfo    cachedProbe{};
 
         // Transient — set by ContentScanner when the file's no longer on
         // disk (#27). NOT serialized; reset to false on every load. UI

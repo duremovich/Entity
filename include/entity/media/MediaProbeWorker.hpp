@@ -29,6 +29,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -38,8 +39,20 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace entity {
+
+// One newly-completed probe surfaced via drainCompletedFreshProbes().
+// Pairs the result with the size + mtime captured at probe time so
+// the caller (Engine) can write everything back to the persistent
+// MediaLibraryEntry cache.
+struct CompletedProbe {
+    std::string  storedPath;
+    ProbeInfo    info;
+    std::int64_t sizeBytes{0};
+    std::int64_t mtimeUnix{0};
+};
 
 class MediaProbeWorker {
 public:
@@ -65,10 +78,33 @@ public:
     void enqueue(const std::string& storedPath);
 
     /**
+     * Project-load fast path: if the on-disk file's size + mtime
+     * match the persisted snapshot AND `cachedProbe.valid` is true,
+     * seed the result map directly (no FFmpeg open) and return true.
+     * Otherwise enqueue a fresh probe and return false. Idempotent
+     * via the same `m_known` dedupe set as `enqueue()` — calling on
+     * an already-seen path is a no-op (returns true if it was
+     * previously seeded, false otherwise).
+     */
+    bool enqueueOrSeed(const std::string& storedPath,
+                       std::int64_t lastSizeBytes,
+                       std::int64_t lastMtimeUnix,
+                       const ProbeInfo& cachedProbe);
+
+    /**
      * Non-blocking lookup. Empty optional means the probe hasn't
      * completed yet — render a placeholder.
      */
     std::optional<ProbeInfo> tryGet(const std::string& storedPath) const;
+
+    /**
+     * Drain probes completed since the previous call. Used by Engine
+     * to copy results + size/mtime back to MediaLibraryEntry so the
+     * next save persists the cache and the next open can seed
+     * instead of re-probing. Seeded entries (`enqueueOrSeed` cache
+     * hits) do NOT appear here — they were already cached on disk.
+     */
+    std::vector<CompletedProbe> drainCompletedFreshProbes();
 
     // Counters for status UI. Atomic — transient inconsistencies between
     // pending/done/total across one frame are acceptable.
@@ -107,6 +143,12 @@ private:
     // shares the lock; worker takes exclusive only on completion.
     mutable std::shared_mutex                  m_resultsMutex;
     std::unordered_map<std::string, ProbeInfo> m_results;
+
+    // Newly-completed probes awaiting Engine-side writeback to the
+    // persistent MediaLibraryEntry cache. Steal-and-clear under the
+    // lock per drain; cache-hits via `enqueueOrSeed` never land here.
+    mutable std::mutex          m_freshMutex;
+    std::vector<CompletedProbe> m_freshlyCompleted;
 
     std::atomic<std::size_t> m_pending{0};         // queued + in-flight
     std::atomic<std::size_t> m_doneSinceReset{0};

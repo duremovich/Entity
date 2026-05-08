@@ -233,6 +233,27 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 if (!entry.originalCodec.empty()) {
                     ej["originalCodec"] = entry.originalCodec;
                 }
+                // v12 — probe cache. Emit only when we've actually probed
+                // the file (size > 0); pre-v12 / never-probed entries
+                // serialize without the keys and re-probe on next open.
+                if (entry.lastProbeSizeBytes > 0) {
+                    ej["lastProbeSizeBytes"] = entry.lastProbeSizeBytes;
+                    ej["lastProbeMtimeUnix"] = entry.lastProbeMtimeUnix;
+                    if (entry.cachedProbe.valid) {
+                        json pj;
+                        pj["valid"]            = entry.cachedProbe.valid;
+                        pj["isHap"]            = entry.cachedProbe.isHap;
+                        pj["width"]            = entry.cachedProbe.width;
+                        pj["height"]           = entry.cachedProbe.height;
+                        pj["framerate"]        = entry.cachedProbe.framerate;
+                        pj["totalFrames"]      = entry.cachedProbe.totalFrames;
+                        pj["hasAlpha"]         = entry.cachedProbe.hasAlpha;
+                        pj["sourceCodecName"]  = entry.cachedProbe.sourceCodecName;
+                        pj["displayCodecName"] = entry.cachedProbe.displayCodecName;
+                        pj["tier"]             = static_cast<int>(entry.cachedProbe.tier);
+                        ej["probe"] = pj;
+                    }
+                }
                 libJson.push_back(ej);
             }
             project["mediaLibrary"] = libJson;
@@ -695,6 +716,30 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     entry.pathKind         = jsonToPathKind(pathKindStr);
                     entry.archivedOriginal = archived;
                     entry.originalCodec    = origCodec;
+                    // v12 — probe cache. Pre-v12 files lack these keys;
+                    // defaults (size=0, valid=false) force a one-time
+                    // re-probe at load that the next save persists.
+                    entry.lastProbeSizeBytes = ej.value("lastProbeSizeBytes",
+                                                       static_cast<std::int64_t>(0));
+                    entry.lastProbeMtimeUnix = ej.value("lastProbeMtimeUnix",
+                                                       static_cast<std::int64_t>(0));
+                    if (ej.contains("probe")) {
+                        const auto& pj = ej["probe"];
+                        entry.cachedProbe.valid       = pj.value("valid", false);
+                        entry.cachedProbe.isHap       = pj.value("isHap", false);
+                        entry.cachedProbe.width       = pj.value("width",
+                                                          static_cast<std::uint32_t>(0));
+                        entry.cachedProbe.height      = pj.value("height",
+                                                          static_cast<std::uint32_t>(0));
+                        entry.cachedProbe.framerate   = pj.value("framerate", 0.0);
+                        entry.cachedProbe.totalFrames = pj.value("totalFrames",
+                                                          static_cast<FrameNumber>(0));
+                        entry.cachedProbe.hasAlpha    = pj.value("hasAlpha", false);
+                        entry.cachedProbe.sourceCodecName  = pj.value("sourceCodecName",  "");
+                        entry.cachedProbe.displayCodecName = pj.value("displayCodecName", "");
+                        entry.cachedProbe.tier        = static_cast<CodecTier>(
+                                                          pj.value("tier", 0));
+                    }
                 }
             }
             // Prefer v5 field. Fall back to v4 autoTranscodeOnImport if present

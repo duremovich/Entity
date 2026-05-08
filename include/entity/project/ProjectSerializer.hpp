@@ -29,6 +29,14 @@ public:
     //                      to totalMediaFrames - 1), reproducing the old
     //                      implicit boundary exactly so playback is
     //                      unchanged.
+    //   v12 (2026-05-08) — persists per-media-entry probe cache
+    //                       (lastProbeSizeBytes / lastProbeMtimeUnix /
+    //                       probe sub-object). Lets reopen skip the
+    //                       FFmpeg metadata probe when the file's
+    //                       size + mtime match the saved snapshot.
+    //                       Older files load fine — missing fields
+    //                       default to 0 / invalid, forcing a one-time
+    //                       re-probe that the next save persists.
     //   v10 (2026-05-07) — drops Section.name. v9 entries kept a "name"
     //                      string per section; the loader now silently
     //                      ignores it (no separate migration step needed —
@@ -69,8 +77,9 @@ public:
     // v5 outputs load with empty OCIO display/view (= config default at draw time);
     // v6 mediaLibrary entries load with pathKind="linked";
     // v7 files load with no projectors (missing "projectors" key = empty);
-    // v8 files load with no cues (missing "cues" key = empty).
-    static constexpr int PROJECT_VERSION = 11;
+    // v8 files load with no cues (missing "cues" key = empty);
+    // v11 mediaLibrary entries load with no probe cache (re-index on first open).
+    static constexpr int PROJECT_VERSION = 12;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

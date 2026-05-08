@@ -852,6 +852,13 @@ private:
     // into the media library and prunes finished entries.
     void pollTranscodes();
 
+    // Per-tick metadata-probe drain. Copies freshly-completed
+    // MediaProbeWorker results (and the size+mtime captured at probe
+    // time) back into MediaLibraryEntry so the next save persists the
+    // probe cache. Skipping the FFmpeg open on next reopen is the
+    // whole point of v12's project schema.
+    void pollProbeCompletions();
+
     /**
      * Point the transcode manager at <projectDir>/.cache/hap, creating
      * the dir on demand. Called on project save/load. Falls back to the
