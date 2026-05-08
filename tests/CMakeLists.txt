@@ -191,3 +191,21 @@ set_tests_properties(integration_cues_persistence_save PROPERTIES
     FIXTURES_SETUP cues_persistence_data)
 set_tests_properties(integration_cues_persistence_load PROPERTIES
     FIXTURES_REQUIRED cues_persistence_data)
+
+# Stage 3c: show-thread-keeps-advancing while editor is stalled.
+# No pixel-hash comparison so no ENTITY_FORCE_WARP needed.
+add_test(
+    NAME integration_show_thread_advances
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/show_thread_advances.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_show_thread_advances PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
+# Regression gate: AddScreen must not double-allocate compose targets.
+# If the bug recurs the GPU wedges, DeviceLost is posted, the show thread
+# stalls, and the frame-count assertion fires before Exit.
+entity_add_integration_test(screen_no_double_allocation screen_no_double_allocation.json)

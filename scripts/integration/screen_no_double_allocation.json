@@ -1,0 +1,23 @@
+{
+    "version": 1,
+    "description": "Regression gate for compose-target double-allocation bug. AddScreen triggers ensureScreenRenderTarget; if the show thread double-allocates on every tick before the editor acks the slot, the descriptor heap saturates, the GPU wedges, the engine posts DeviceLost and exits, and the show frame counter stalls below 10. A healthy run posts ScreenRenderTargetAllocated on the first tick, the editor writes the slot back, and subsequent ticks take path-1 (no alloc). 200 ms at 60 Hz yields >= 12 ticks.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "Screen1",
+            "width": 1920,
+            "height": 1080
+        },
+        {
+            "type": "SleepMs",
+            "ms": 200
+        },
+        {
+            "type": "AssertShowFrameCountAtLeast",
+            "minCount": 10
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

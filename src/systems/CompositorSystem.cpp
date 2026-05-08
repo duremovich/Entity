@@ -1,4 +1,5 @@
 #include "entity/systems/CompositorSystem.hpp"
+#include "entity/bus/Serialization.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/MappingSurface.hpp"
@@ -12,8 +13,9 @@
 
 namespace entity {
 
-CompositorSystem::CompositorSystem(IRenderer* renderer)
-    : m_renderer(renderer)
+CompositorSystem::CompositorSystem(IRenderer* renderer, bus::IMessageTransport* transport)
+    : m_transport(transport)
+    , m_renderer(renderer)
 {
 }
 
@@ -38,16 +40,30 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
             return a->zOrder < b->zOrder;
         });
 
-    // Iterate ALL visible screens (each gets its own compose target).
-    auto screenView = registry.view<Screen>();
-    for (auto [screenEntity, screen] : screenView.each()) {
-        if (!screen.visible) continue;
+    // GC: remove pending-allocation cache entries for screens that no longer
+    // exist in the snapshot. releaseComposeTarget is not available on IRenderer,
+    // so leaked slots are bounded by MAX_COMPOSE_TARGETS (8); screen destroy is rare.
+    for (auto it = m_pendingAllocations.begin(); it != m_pendingAllocations.end(); ) {
+        const std::uint64_t id = static_cast<std::uint64_t>(it->first);
+        const bool found = std::any_of(rf.screens.begin(), rf.screens.end(),
+            [id](const bus::ScreenSnapshot& s) { return s.entity == id; });
+        it = found ? std::next(it) : m_pendingAllocations.erase(it);
+    }
 
-        if (!ensureScreenRenderTarget(registry, screenEntity)) continue;
+    // Iterate all visible screens from the RenderFrame snapshot. Screen
+    // enumeration and slot lookup use the snapshot exclusively; registry is
+    // never written here. If a slot hasn't been allocated yet, allocate it
+    // now and post an R2D ScreenRenderTargetAllocated reply so the editor
+    // thread writes the slot back into Screen for the next SceneSnapshot.
+    for (const auto& screenSnap : rf.screens) {
+        if (!screenSnap.visible) continue;
 
-        const std::uint64_t screenId = static_cast<std::uint64_t>(screenEntity);
+        const std::uint32_t slot = ensureScreenRenderTarget(screenSnap);
+        if (slot == UINT32_MAX) continue;
 
-        m_renderer->beginComposeTarget(screen.renderTargetSlot);
+        const std::uint64_t screenId = screenSnap.entity;
+
+        m_renderer->beginComposeTarget(slot);
 
         for (const auto* crs : sorted) {
             // Filter by target screen (UINT64_MAX = all screens).
@@ -75,16 +91,22 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
                         crs->transformMatrix.data(),
                         sizeof(float) * 16);
 
-            // VideoTexture is Renderer-side state stamped by PlaybackPresenter;
-            // read colorSpace / ocioColorSpace from the registry component.
-            auto* videoTex = registry.try_get<VideoTexture>(entity);
-            if (videoTex && videoTex->isValid()) {
+            // Gate on the snapshot slot (baked on editor thread into ClipCatalogEntry
+            // then forwarded into ClipRenderState). Avoids reading descriptorSlot from
+            // the registry component (data race: editor writes it in drainRendererToDirector).
+            if (crs->slot >= 0) {
                 TextureRef tex = m_renderer->getVideoTexture(
                     static_cast<uint32_t>(crs->slot));
                 if (tex.valid()) {
+                    // Only read colorSpace / ocioColorSpace from the registry — written
+                    // by PlaybackPresenter::present on the show thread in the same tick,
+                    // before compositor->update, so no cross-thread race here.
+                    auto* videoTex = registry.try_get<VideoTexture>(entity);
+                    const auto colorSpace = videoTex ? videoTex->colorSpace : TextureColorSpace::Linear;
+                    const auto ocioColorSpace = videoTex ? videoTex->ocioColorSpace : std::string{};
                     m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
-                                                 crs->blendMode, videoTex->colorSpace,
-                                                 videoTex->ocioColorSpace);
+                                                 crs->blendMode, colorSpace,
+                                                 ocioColorSpace);
                     continue;
                 }
             }
@@ -108,48 +130,66 @@ void CompositorSystem::shutdown(entt::registry& registry) {
     std::cout << "CompositorSystem shutdown" << std::endl;
 }
 
-bool CompositorSystem::ensureScreenRenderTarget(entt::registry& registry, entt::entity screenEntity) {
-    auto* screen = registry.try_get<Screen>(screenEntity);
-    if (!screen) return false;
+std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap) {
+    if (!m_renderer) return UINT32_MAX;
 
-    // Check if render target needs creation or recreation
-    bool needsCreate = !screen->renderTargetValid ||
-                       screen->renderTargetSlot == UINT32_MAX;
+    const auto entity = static_cast<entt::entity>(screenSnap.entity);
 
-    // If we already own a slot but the dimensions drifted, resize in
-    // place — DON'T allocate a new slot. Allocating fresh slots on
-    // every resize leaks descriptor heap entries and after
-    // MAX_COMPOSE_TARGETS resizes corrupts the heap (#31).
-    if (screen->renderTargetValid && screen->renderTargetSlot != UINT32_MAX) {
-        uint32_t currentWidth  = m_renderer->getComposeTargetWidth(screen->renderTargetSlot);
-        uint32_t currentHeight = m_renderer->getComposeTargetHeight(screen->renderTargetSlot);
-        if (currentWidth != screen->width || currentHeight != screen->height) {
-            if (m_renderer->resizeComposeTarget(screen->renderTargetSlot,
-                                                 screen->width, screen->height)) {
-                return true;  // slot ID and descriptor heap entries unchanged
+    // 1. Snapshot has caught up — drop the pending-allocation cache entry and
+    //    use the confirmed slot. Check for dimension drift in place.
+    if (screenSnap.renderTargetValid && screenSnap.renderTargetSlot != UINT32_MAX) {
+        m_pendingAllocations.erase(entity);
+        const std::uint32_t slot = screenSnap.renderTargetSlot;
+        const uint32_t currentWidth  = m_renderer->getComposeTargetWidth(slot);
+        const uint32_t currentHeight = m_renderer->getComposeTargetHeight(slot);
+        if (currentWidth != screenSnap.width || currentHeight != screenSnap.height) {
+            m_renderer->resizeComposeTarget(slot, screenSnap.width, screenSnap.height);
+            // If resize fails, render at old dims this tick. Editor retries on next snapshot.
+        }
+        return slot;
+    }
+
+    // 2. Snapshot hasn't acknowledged our allocation yet — reuse the cached slot
+    //    so we don't double-allocate. Resize in place if dimensions drifted.
+    if (auto it = m_pendingAllocations.find(entity); it != m_pendingAllocations.end()) {
+        auto& cached = it->second;
+        if (cached.width != screenSnap.width || cached.height != screenSnap.height) {
+            if (m_renderer->resizeComposeTarget(cached.slot, screenSnap.width, screenSnap.height)) {
+                cached.width  = screenSnap.width;
+                cached.height = screenSnap.height;
             }
-            // Resize failed (e.g. OOM). Fall back to a fresh allocation
-            // attempt — better than rendering to a stale-sized target.
-            screen->renderTargetValid = false;
-            needsCreate = true;
+            // Resize failed: keep old slot at old dims until editor catches up.
         }
+        return cached.slot;
     }
 
-    if (needsCreate) {
-        uint32_t slot = m_renderer->createComposeTarget(screen->width, screen->height);
-        if (slot == UINT32_MAX) {
-            std::cerr << "[Compositor] Failed to create render target for screen: "
-                      << screen->name << std::endl;
-            return false;
-        }
-        screen->renderTargetSlot = slot;
-        screen->renderTargetValid = true;
-        std::cout << "[Compositor] Created render target slot " << slot
-                  << " for screen: " << screen->name
-                  << " (" << screen->width << "x" << screen->height << ")" << std::endl;
+    // 3. Genuinely new entity — allocate, cache, and post the R2D reply.
+    const std::uint32_t slot = m_renderer->createComposeTarget(screenSnap.width, screenSnap.height);
+    if (slot == UINT32_MAX) {
+        std::cerr << "[Compositor] Failed to create render target for screen entity "
+                  << screenSnap.entity << std::endl;
+        return UINT32_MAX;
     }
 
-    return true;
+    std::cout << "[Compositor] Created render target slot " << slot
+              << " for screen entity " << screenSnap.entity
+              << " (" << screenSnap.width << "x" << screenSnap.height << ")" << std::endl;
+
+    m_pendingAllocations[entity] = { slot, screenSnap.width, screenSnap.height };
+
+    // Post R2D reply so the editor thread writes the slot back into Screen
+    // for the next SceneSnapshot. No registry write on the show thread.
+    if (m_transport) {
+        bus::ScreenRenderTargetAllocated reply{};
+        reply.entity = screenSnap.entity;
+        reply.slot   = slot;
+        reply.width  = screenSnap.width;
+        reply.height = screenSnap.height;
+        m_transport->send(bus::Direction::R2D,
+                          bus::serialize(bus::Message{reply}));
+    }
+
+    return slot;
 }
 
 void CompositorSystem::renderMappingSurfaces(entt::registry& registry, TextureRef texture) {
@@ -201,7 +241,7 @@ void CompositorSystem::renderMappingSurfaces(entt::registry& registry, TextureRe
             softEdges,
             surface.brightness,
             surface.gamma,
-            1.0f  // Per-surface opacity could be added later
+            1.0f
         );
     }
 }
