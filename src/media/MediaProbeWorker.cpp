@@ -121,15 +121,37 @@ bool MediaProbeWorker::enqueueOrSeed(const std::string& storedPath,
                                             : storedPath;
     if (abs.empty()) return false;
 
-    // Cache-hit gate: persisted probe is valid AND on-disk size+mtime
-    // match what we recorded at probe time. Both sides of the gate
-    // matter — a `valid=false` cache means the prior probe failed
-    // (e.g. corrupted file) and we should retry, not seed a useless
-    // sentinel.
+    // Cache-hit gate. The "is this the same file?" check is **size
+    // alone**: file_size is set by the kernel on every content write
+    // and cannot drift without a real rewrite. last_write_time, by
+    // contrast, gets re-stamped by sync agents (OneDrive Files
+    // On-Demand, Dropbox), antivirus quarantine/restore, and similar
+    // background activity — observed in the field as files getting
+    // re-probed every reopen even when nothing in the project changed.
+    // For media-server use cases files are replaced wholesale (new
+    // file → different size or different mtime), not edited in place,
+    // so a same-size-different-content collision is vanishingly
+    // unlikely. mtime is still persisted for diagnostics + as a
+    // tiebreaker if we ever tighten this.
+    //
+    // `cachedProbe.valid == false` means the prior probe failed
+    // (corrupt file, codec we couldn't open) — retry rather than seed
+    // a sentinel.
     if (cachedProbe.valid && lastSizeBytes > 0) {
         const auto stat = statFile(abs);
-        if (stat && stat->sizeBytes == lastSizeBytes
-                 && stat->mtimeUnix == lastMtimeUnix) {
+        if (!stat) {
+            std::cerr << "[probe] cache miss " << storedPath
+                      << ": stat failed (file unreachable)" << std::endl;
+        } else if (stat->sizeBytes == lastSizeBytes) {
+            // Size match: seed. Log mtime drift (informational only)
+            // so we can verify the relaxed gate is doing its job.
+            if (stat->mtimeUnix != lastMtimeUnix) {
+                std::cerr << "[probe] mtime drift tolerated " << storedPath
+                          << " (saved=" << lastMtimeUnix
+                          << ", on-disk=" << stat->mtimeUnix
+                          << ", dT=" << (stat->mtimeUnix - lastMtimeUnix)
+                          << "s)" << std::endl;
+            }
             {
                 std::lock_guard<std::mutex> lk(m_queueMutex);
                 if (m_known.count(storedPath)) return true;  // already seeded / probed
@@ -144,8 +166,18 @@ bool MediaProbeWorker::enqueueOrSeed(const std::string& storedPath,
             // Don't touch m_freshlyCompleted — Engine already has this
             // data on the entry, no writeback needed.
             return true;
+        } else {
+            std::cerr << "[probe] cache miss " << storedPath
+                      << ": size changed (saved=" << lastSizeBytes
+                      << ", on-disk=" << stat->sizeBytes << ")" << std::endl;
         }
+    } else if (!cachedProbe.valid && lastSizeBytes > 0) {
+        std::cerr << "[probe] cache miss " << storedPath
+                  << ": cachedProbe.valid=false (re-probing)" << std::endl;
     }
+    // lastSizeBytes == 0 is the legitimate "never probed" case — first
+    // run for this entry, no log line (it'd fire 179 times on a fresh
+    // project and add no signal).
 
     // Re-probe path. Mirrors enqueue() but re-uses the abs we resolved.
     {
