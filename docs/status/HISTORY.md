@@ -4,6 +4,59 @@ Detailed completion notes for Entity Media Server phases.
 
 ---
 
+## Phase D: Feature work (in progress)
+
+### OSC Receiver Plugin + Preferences (2026-05-08)
+
+Inbound OSC over UDP for triggering Entity from external show-control
+software (Network Cues, stage-manager consoles, Companion, TouchOSC).
+Hand-rolled OSC 1.0 parser; Winsock listener on port 53000 (default,
+configurable via Preferences); routes a fixed namespace into Director
+commands:
+
+```
+/entity/play  /entity/pause  /entity/stop
+/entity/section/next
+/entity/cue/{number}/go
+/entity/seek <int frame>
+```
+
+**First control-plane plugin shipped.** Routing departs from ADR-0005's
+stated bus-based model — control-plane plugins call
+`CommandDispatcher::enqueue(typeName, paramsJson)` via narrow
+`IPluginContext` accessors instead. Bus stays Director↔Renderer-only
+until Phase E forces multi-process. Documented in ADR-0013.
+
+**Plugin-API additions** (additive at vtable bottom, no
+`PLUGIN_API_VERSION` bump):
+- `enqueueCommand(typeName, paramsJson)`
+- `registerShutdownHook(fn)` — engine joins worker threads before
+  tearing down dispatcher/bus
+- `getBoolSetting` / `getIntSetting` — narrow stringly-typed Settings
+  accessors so the GPL Settings struct stays out of the Apache-2.0
+  header
+
+**Settings UI**: new "OSC Receiver" section in Preferences (enable
+checkbox + listener port, restart-required). Defaults: enabled, 53000.
+
+**File-association support**: editor accepts a positional
+`<project.entity>` argument; Windows hands this to the editor on
+double-click after the user sets a file association. Falls back to
+the launcher on load failure so a stale association doesn't dead-end.
+
+**Files**: `plugins/osc-receiver/`,
+`plugin-api/include/entity/plugin/PluginContext.hpp`,
+`include/entity/core/{Settings,Engine,EnginePluginContext}.hpp`,
+`src/core/{Settings,Engine,EnginePluginContext}.cpp`,
+`src/ui/SettingsWindow.cpp`, `apps/editor/main.cpp`,
+`docs/adr/0013-control-plane-plugins-route-via-command-dispatcher.md`.
+
+**Roadmap status**: Issue #2 ("Phase D: OSC control surface") still
+open — outbound OSC sender and per-project custom mapping UI remain
+as future subtasks.
+
+---
+
 ## Phase 5: Projection Mapping (In Progress)
 
 ### Mixed Frame Rate Support (2025-11-28)

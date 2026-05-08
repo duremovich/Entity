@@ -22,6 +22,7 @@ that have moved on.
 | 0010 | [`content/` is the source of truth; filename-based versioning](0010-content-as-source-of-truth.md) | Accepted | 2026-04-29 |
 | 0011 | [Projector calibration — manual correspondence + LM solve + post-fit IDW residual warp](0011-projector-calibration-architecture.md) | Accepted | 2026-05-03 |
 | 0012 | [Timeline structural playback — break-point sections, cue tags, and continuation-phase decoupling](0012-timeline-sections-and-cues.md) | Accepted | 2026-05-06 |
+| 0013 | [Control-plane plugins route via CommandDispatcher (defer bus-routing to Phase E)](0013-control-plane-plugins-route-via-command-dispatcher.md) | Accepted | 2026-05-08 |
 
 ## Format
 
