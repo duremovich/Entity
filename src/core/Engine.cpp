@@ -844,19 +844,33 @@ void Engine::showThreadMain() {
             m_timeAuthority->updateTiming();
         }
 
-        // Consume any SceneSnapshot published by the editor half.
+        // Consume any SceneSnapshot published by the editor half. Other D2R
+        // messages (SetOutputEnabled, ApplySettings, ProvisionClipResources, ...)
+        // are deferred and re-published so the post-beginShowFrame drain picks
+        // them up — drain() empties the queue, so anything we don't requeue here
+        // is silently dropped.
         if (m_transport) {
-            m_transport->drain(bus::Direction::D2R, [this](std::vector<std::uint8_t>&& bytes) {
+            std::vector<std::vector<std::uint8_t>> deferred;
+            m_transport->drain(bus::Direction::D2R, [this, &deferred](std::vector<std::uint8_t>&& bytes) {
                 auto msg = bus::deserialize(bytes);
-                if (!msg) return;
-                std::visit([this](auto& body) {
+                if (!msg) {
+                    // Malformed payload — push back as-is rather than dropping.
+                    deferred.push_back(std::move(bytes));
+                    return;
+                }
+                bool isSceneSnapshot = false;
+                std::visit([this, &isSceneSnapshot](auto& body) {
                     using T = std::decay_t<decltype(body)>;
                     if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
                         m_cachedSceneSnapshot = std::move(body);
+                        isSceneSnapshot = true;
                     }
-                    // Other D2R messages are handled in the show-side drain below.
                 }, *msg);
+                if (!isSceneSnapshot) deferred.push_back(std::move(bytes));
             });
+            for (auto& bytes : deferred) {
+                m_transport->send(bus::Direction::D2R, std::move(bytes));
+            }
         }
 
         // Launcher mode: show thread idles at 60 Hz with an empty RenderFrame.
