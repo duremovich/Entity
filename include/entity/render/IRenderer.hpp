@@ -72,12 +72,18 @@ public:
     // ------------------------------------------------------------------------
     // Per-frame
     // ------------------------------------------------------------------------
-    virtual void     beginFrame() = 0;
-    virtual void     endFrame() = 0;
     virtual void     clear(float r, float g, float b, float a) = 0;
     virtual uint32_t getCurrentBackBufferIndex() const = 0;
     virtual void     beginImGuiFrame() = 0;
     virtual void     endImGuiFrame() = 0;
+
+    // Stage 1 A/B-list split.
+    // Show role: copy-queue uploads, compositor draws, output-window Present.
+    // Editor role: back-buffer transition, ImGui recording, editor Present.
+    virtual void beginShowFrame() = 0;
+    virtual void endShowFrame() = 0;
+    virtual void beginEditorFrame() = 0;
+    virtual void endEditorFrame() = 0;
 
     // ------------------------------------------------------------------------
     // Video texture slots (per-clip video uploads)
@@ -168,11 +174,13 @@ public:
     // destroyOutputWindow is the only way to close it.
     //
     // Per-frame flow:
-    //   beginFrame()
+    //   beginShowFrame()
     //     ... compose-target rendering ...
     //     for each output: beginOutputFrame(slot) -> draws -> endOutputFrame(slot)
+    //   endShowFrame()   // presents output swap chains
+    //   beginEditorFrame()
     //     ... ImGui overlay on main window ...
-    //   endFrame()   // presents main AND all output swap chains
+    //   endEditorFrame()   // presents main swap chain
     // ------------------------------------------------------------------------
 
     /** Create a borderless output window at desktop (x,y) with size (w,h).

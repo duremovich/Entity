@@ -15,6 +15,7 @@
 #include <wrl/client.h>
 #include <DirectXMath.h>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -54,12 +55,18 @@ public:
     bool    isDeviceLost() const override         { return m_deviceLost; }
     int32_t getDeviceLostReason() const override  { return static_cast<int32_t>(m_deviceLostReason); }
 
-    void     beginFrame() override;
-    void     endFrame() override;
     void     clear(float r, float g, float b, float a) override;
     uint32_t getCurrentBackBufferIndex() const override { return m_currentBackBufferIndex; }
     void     beginImGuiFrame() override;
     void     endImGuiFrame() override;
+
+    // Stage 1 A/B-list split. Show-side owns copy uploads + compositor +
+    // output draws + output Present. Editor-side owns back-buffer setup,
+    // ImGui recording, and editor swap-chain Present.
+    void beginShowFrame() override;
+    void endShowFrame() override;
+    void beginEditorFrame() override;
+    void endEditorFrame() override;
 
     uint32_t   allocateVideoTextureSlot() override;
     void       freeVideoTextureSlot(uint32_t slot) override;
@@ -245,7 +252,7 @@ private:
     // (createDevice / createCommandQueue moved to D3D12Device class)
     Result createSwapChain(void* windowHandle, uint32_t width, uint32_t height);
     Result createRenderTargetViews();
-    Result createCommandAllocators();
+    Result createCommandAllocators();   // creates both editor and show allocators + lists
     Result createCommandList();
     Result createCopyCommandList();   // Phase C.11: COPY queue cmd list + per-frame allocators
     Result createFence();
@@ -316,13 +323,25 @@ private:
     ComPtr<IDXGISwapChain3> m_swapChain;
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
     ComPtr<ID3D12Resource> m_renderTargets[FRAME_COUNT];
-    ComPtr<ID3D12CommandAllocator> m_commandAllocators[FRAME_COUNT];
-    ComPtr<ID3D12GraphicsCommandList> m_commandList;
 
-    // Synchronization objects
-    ComPtr<ID3D12Fence> m_fence;
-    uint64_t m_fenceValues[FRAME_COUNT];
-    void* m_fenceEvent;
+    // Stage 1 A/B-list: editor-side command recording (back-buffer, ImGui).
+    ComPtr<ID3D12CommandAllocator>    m_editorAllocators[FRAME_COUNT];
+    ComPtr<ID3D12GraphicsCommandList> m_editorCmdList;
+
+    // Stage 1 A/B-list: show-side command recording (compose + outputs).
+    ComPtr<ID3D12CommandAllocator>    m_showAllocators[FRAME_COUNT];
+    ComPtr<ID3D12GraphicsCommandList> m_showCmdList;
+
+    // Separate per-role fences. Editor fence gates back-buffer reuse;
+    // show fence gates compose-target and output swap-chain resource reuse.
+    // Both submit to the same direct command queue (thread-safe for
+    // ExecuteCommandLists/Signal per D3D12 spec).
+    ComPtr<ID3D12Fence> m_editorFence;
+    uint64_t            m_editorFenceValues[FRAME_COUNT];
+    ComPtr<ID3D12Fence> m_showFence;
+    uint64_t            m_showFenceValues[FRAME_COUNT];
+    void* m_fenceEvent;      // editor thread only (beginEditorFrame / waitForGpu)
+    void* m_showFenceEvent;  // show thread only  (beginShowFrame)
 
     // Phase C.11: async copy queue. Texture uploads (TextureUploader::upload)
     // record into m_copyCommandList and execute on m_gpu->copyQueue() so they
@@ -425,7 +444,7 @@ private:
     D3D12_VERTEX_BUFFER_VIEW m_mappingSurfaceVertexBufferView;
 
     // Per-frame ring buffer of constant buffer slots (CRIT-04 fix).
-    // One slot per drawMappingSurface call. Reset each frame at beginFrame().
+    // One slot per drawMappingSurface call. Reset each frame at beginShowFrame().
     // Fence sync (moveToNextFrame) ensures the GPU has finished reading the
     // previous use of the current frame's region before we overwrite.
     static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 8192;
@@ -465,18 +484,58 @@ private:
     // transform in mapping_surface_ps consumes when it writes to the
     // (still-UNORM8) swap chain.
     struct ComposeTarget {
-        ComPtr<ID3D12Resource> resource;               // FP16 render target texture
-        ComPtr<ID3D12DescriptorHeap> rtvHeap;         // RTV for rendering to it
-        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle{};      // SRV for sampling
-        // Read-back copy of `resource` taken just before each shader-blend
-        // draw, sampled as t1 in composite_blend_ps. Lazily allocated on
-        // first shader-blend draw (see ensureSnapshotResource); workloads
-        // that never use Overlay/Difference/etc. skip this entirely.
-        // Resting state is PIXEL_SHADER_RESOURCE; transitions to COPY_DEST
-        // and back during the snapshot copy in drawTexturedQuad.
-        ComPtr<ID3D12Resource> snapshotResource;
+        // Stage 3d: triple-buffered backing resources. Show thread writes to
+        // resources[writeIndex % TRIPLE] each tick, then stores writeIndex into
+        // lastStableIndex (release). Editor reads at lastStableIndex.load(acquire).
+        // Sub-index 0 reuses the existing composeTargetSlot heap entry for
+        // backward compatibility; sub-indices 1+2 use composeTargetTripleSlot.
+        static constexpr uint32_t TRIPLE = 3;
+        ComPtr<ID3D12Resource>       resources[TRIPLE];
+        ComPtr<ID3D12DescriptorHeap> rtvHeaps[TRIPLE];
+        D3D12_GPU_DESCRIPTOR_HANDLE  srvHandles[TRIPLE]{};
+        std::atomic<uint32_t>        lastStableIndex{UINT32_MAX}; // UINT32_MAX = no stable frame yet
+        uint32_t                     writeIndex{0};               // show thread only; next sub to write
+
+        // std::atomic is not moveable, so provide an explicit move constructor
+        // so std::vector can reallocate. Safe: targets are only added during
+        // startup before the show thread is running.
+        ComposeTarget() = default;
+        ComposeTarget(ComposeTarget&& o) noexcept
+            : srvHandles{o.srvHandles[0], o.srvHandles[1], o.srvHandles[2]}
+            , lastStableIndex(o.lastStableIndex.load(std::memory_order_relaxed))
+            , writeIndex(o.writeIndex)
+            , snapshotResource(std::move(o.snapshotResource))
+            , snapshotSrvHandle(o.snapshotSrvHandle)
+            , snapshotSrvSlot(o.snapshotSrvSlot)
+            , width(o.width)
+            , height(o.height)
+            , ready(o.ready)
+        {
+            for (int i = 0; i < TRIPLE; ++i) {
+                resources[i] = std::move(o.resources[i]);
+                rtvHeaps[i]  = std::move(o.rtvHeaps[i]);
+            }
+        }
+        ComposeTarget& operator=(ComposeTarget&&) = delete;
+        ComposeTarget(const ComposeTarget&) = delete;
+        ComposeTarget& operator=(const ComposeTarget&) = delete;
+
+        // Helpers for callers that work with the current write sub-resource.
+        ComPtr<ID3D12Resource>&       writeResource() { return resources[writeIndex % TRIPLE]; }
+        ComPtr<ID3D12DescriptorHeap>& writeRtvHeap () { return rtvHeaps[writeIndex % TRIPLE]; }
+
+        // SRV handle for the last stably-rendered sub-resource (editor reads this).
+        D3D12_GPU_DESCRIPTOR_HANDLE stableSrvHandle() const {
+            const uint32_t idx = lastStableIndex.load(std::memory_order_acquire);
+            return (idx != UINT32_MAX) ? srvHandles[idx % TRIPLE] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+        }
+
+        // Read-back copy for shader-blend modes (Overlay, Difference, etc.).
+        // Snapshotted from writeResource() just before each blend draw.
+        // Lazily allocated; see ensureSnapshotResource().
+        ComPtr<ID3D12Resource>      snapshotResource;
         D3D12_GPU_DESCRIPTOR_HANDLE snapshotSrvHandle{};
-        uint32_t snapshotSrvSlot{0};                  // Reserved slot in m_imguiSrvHeap (populated lazily)
+        uint32_t snapshotSrvSlot{0}; // reserved heap slot (populated lazily)
         uint32_t width{0};
         uint32_t height{0};
         bool ready{false};
@@ -562,10 +621,15 @@ private:
     /** Compile + return the capture PSO for a fixed sRGB display+view. */
     ComPtr<ID3D12PipelineState> buildOcioCapturePso(const OcioGpuProcessor& display);
 
+    // Active command list — thread_local, lives in D3D12Renderer.cpp.
+    // Set by begin{Show,Editor}Frame; read by all draw methods.
+    // No member needed here; the thread_local is accessed via activeCmdList()
+    // (a file-static helper in the .cpp). Not a struct member because
+    // thread_local members are not allowed in C++.
+
     // Per-output swap chains for physical displays (Phase C #1).
     // Each OutputWindow owns its own borderless GLFW window, DXGI swap chain,
-    // and set of back-buffer RTVs. Draws go into the shared main command list;
-    // Present happens inside endFrame() alongside the main swap chain.
+    // and set of back-buffer RTVs. Draws record into the thread-local active list.
     struct OutputWindow {
         GLFWwindow* window{nullptr};       // Owned GLFW window (nullptr when freed)
         void* hwnd{nullptr};               // HWND kept as void* to avoid leaking windows.h
@@ -581,7 +645,12 @@ private:
     uint32_t m_currentOutputSlot{UINT32_MAX};  // Set during begin/endOutputFrame
 
     // State
+    // m_currentBackBufferIndex: editor thread only (beginEditorFrame / endEditorFrame).
+    // m_showBackBufferIndex:    show thread only  (beginShowFrame / endShowFrame).
+    // Both are set from GetCurrentBackBufferIndex() at the start of their respective
+    // begin calls. Never cross-access: that would be a data race.
     uint32_t m_currentBackBufferIndex;
+    uint32_t m_showBackBufferIndex{0};
     uint32_t m_rtvDescriptorSize;
     uint32_t m_width;
     uint32_t m_height;
@@ -589,8 +658,8 @@ private:
     bool    m_deviceLost{false};          // Latched on first device-removed detection.
     HRESULT m_deviceLostReason{S_OK};    // GetDeviceRemovedReason() result; available via getDeviceLostReason().
 
-    // Descriptor heap caching (to avoid redundant SetDescriptorHeaps calls)
-    ID3D12DescriptorHeap* m_currentDescriptorHeap{nullptr};
+    // Descriptor heap caching — thread_local, lives in D3D12Renderer.cpp.
+    // Each thread tracks its own last-bound heap to avoid redundant calls.
 
     // Screenshot capture staging buffer
     ComPtr<ID3D12Resource> m_screenshotStagingBuffer;

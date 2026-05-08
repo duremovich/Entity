@@ -56,12 +56,14 @@ public:
     bool    isDeviceLost() const override       { return false; }
     int32_t getDeviceLostReason() const override { return 0; }
 
-    void     beginFrame() override {}
-    void     endFrame() override {}
     void     clear(float, float, float, float) override {}
     uint32_t getCurrentBackBufferIndex() const override { return 0; }
     void     beginImGuiFrame() override {}
     void     endImGuiFrame() override {}
+    void     beginShowFrame() override {}
+    void     endShowFrame() override {}
+    void     beginEditorFrame() override {}
+    void     endEditorFrame() override {}
 
     uint32_t allocateVideoTextureSlot() override { return 0; }
     void     freeVideoTextureSlot(uint32_t) override {}

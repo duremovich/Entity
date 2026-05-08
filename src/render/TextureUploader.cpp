@@ -71,6 +71,7 @@ void TextureUploader::shutdown() {
 }
 
 uint32_t TextureUploader::allocateSlot() {
+    std::lock_guard<std::mutex> lk(m_slotMutex);
     for (uint32_t i = 0; i < MAX_SLOTS; ++i) {
         if (!m_slots[i].allocated) {
             m_slots[i].allocated = true;
@@ -85,6 +86,7 @@ uint32_t TextureUploader::allocateSlot() {
 
 void TextureUploader::freeSlot(uint32_t slot) {
     if (slot >= MAX_SLOTS) return;
+    std::lock_guard<std::mutex> lk(m_slotMutex);
     auto& s = m_slots[slot];
     s.texture.Reset();
     s.uploadBuffer.Reset();

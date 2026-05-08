@@ -158,6 +158,201 @@ WantedFrame decodeWantedFrame(const json& j) {
     return w;
 }
 
+ojson encode(const ScreenSnapshot& s) {
+    ojson j = ojson::object();
+    j["entity"]           = s.entity;
+    j["name"]             = s.name;
+    j["visible"]          = s.visible;
+    j["width"]            = s.width;
+    j["height"]           = s.height;
+    j["renderTargetSlot"] = s.renderTargetSlot;
+    j["renderTargetValid"]= s.renderTargetValid;
+    j["position"]         = s.position;
+    j["rotation"]         = s.rotation;
+    j["scale"]            = s.scale;
+    j["modelEntity"]      = s.modelEntity;
+    return j;
+}
+
+ScreenSnapshot decodeScreenSnapshot(const json& j) {
+    ScreenSnapshot s;
+    s.entity            = j.at("entity").get<std::uint64_t>();
+    s.name              = j.at("name").get<std::string>();
+    s.visible           = j.at("visible").get<bool>();
+    s.width             = j.at("width").get<std::uint32_t>();
+    s.height            = j.at("height").get<std::uint32_t>();
+    s.renderTargetSlot  = j.at("renderTargetSlot").get<std::uint32_t>();
+    s.renderTargetValid = j.at("renderTargetValid").get<bool>();
+    const auto& pos = j.at("position");
+    for (int i = 0; i < 3; ++i) s.position[i] = pos[i].get<float>();
+    const auto& rot = j.at("rotation");
+    for (int i = 0; i < 3; ++i) s.rotation[i] = rot[i].get<float>();
+    const auto& sc = j.at("scale");
+    for (int i = 0; i < 3; ++i) s.scale[i] = sc[i].get<float>();
+    s.modelEntity = j.at("modelEntity").get<std::uint64_t>();
+    return s;
+}
+
+ojson encode(const MappingSurfaceSnapshot& s) {
+    ojson j = ojson::object();
+    j["entity"]         = s.entity;
+    j["visible"]        = s.visible;
+    j["outputIndex"]    = s.outputIndex;
+    j["surfaceIndex"]   = s.surfaceIndex;
+    auto corners = ojson::array();
+    for (const auto& c : s.corners) corners.push_back(ojson{c[0], c[1]});
+    j["corners"] = std::move(corners);
+    auto uvs = ojson::array();
+    for (const auto& u : s.sourceUVs) uvs.push_back(ojson{u[0], u[1]});
+    j["sourceUVs"]      = std::move(uvs);
+    j["softEdgeLeft"]   = s.softEdgeLeft;
+    j["softEdgeRight"]  = s.softEdgeRight;
+    j["softEdgeTop"]    = s.softEdgeTop;
+    j["softEdgeBottom"] = s.softEdgeBottom;
+    j["brightness"]     = s.brightness;
+    j["gamma"]          = s.gamma;
+    return j;
+}
+
+MappingSurfaceSnapshot decodeMappingSurfaceSnapshot(const json& j) {
+    MappingSurfaceSnapshot s;
+    s.entity       = j.at("entity").get<std::uint64_t>();
+    s.visible      = j.at("visible").get<bool>();
+    s.outputIndex  = j.at("outputIndex").get<std::uint32_t>();
+    s.surfaceIndex = j.at("surfaceIndex").get<std::uint32_t>();
+    const auto& corners = j.at("corners");
+    for (int i = 0; i < 4; ++i) {
+        s.corners[i][0] = corners[i][0].get<float>();
+        s.corners[i][1] = corners[i][1].get<float>();
+    }
+    const auto& uvs = j.at("sourceUVs");
+    for (int i = 0; i < 4; ++i) {
+        s.sourceUVs[i][0] = uvs[i][0].get<float>();
+        s.sourceUVs[i][1] = uvs[i][1].get<float>();
+    }
+    s.softEdgeLeft   = j.at("softEdgeLeft").get<float>();
+    s.softEdgeRight  = j.at("softEdgeRight").get<float>();
+    s.softEdgeTop    = j.at("softEdgeTop").get<float>();
+    s.softEdgeBottom = j.at("softEdgeBottom").get<float>();
+    s.brightness     = j.at("brightness").get<float>();
+    s.gamma          = j.at("gamma").get<float>();
+    return s;
+}
+
+ojson encode(const CalibrationPointSnapshot& cp) {
+    ojson j = ojson::object();
+    j["worldPos"]    = cp.worldPos;
+    j["projectorUV"] = cp.projectorUV;
+    return j;
+}
+
+CalibrationPointSnapshot decodeCalibrationPointSnapshot(const json& j) {
+    CalibrationPointSnapshot cp;
+    const auto& wp = j.at("worldPos");
+    for (int i = 0; i < 3; ++i) cp.worldPos[i] = wp[i].get<float>();
+    const auto& uv = j.at("projectorUV");
+    for (int i = 0; i < 2; ++i) cp.projectorUV[i] = uv[i].get<float>();
+    return cp;
+}
+
+ojson encode(const ProjectorSnapshot& p) {
+    ojson j = ojson::object();
+    j["entity"]           = p.entity;
+    j["position"]         = p.position;
+    j["rotation"]         = p.rotation;
+    j["fovDegrees"]       = p.fovDegrees;
+    j["nearClip"]         = p.nearClip;
+    j["farClip"]          = p.farClip;
+    j["distortionK1"]     = p.distortionK1;
+    j["distortionK2"]     = p.distortionK2;
+    j["useResidualWarp"]  = p.useResidualWarp;
+    j["isCalibrated"]     = p.isCalibrated;
+    j["targetSurfaceCount"] = p.targetSurfaceCount;
+    auto ts = ojson::array();
+    for (int i = 0; i < p.targetSurfaceCount; ++i) ts.push_back(p.targetSurfaces[i]);
+    j["targetSurfaces"] = std::move(ts);
+    auto cps = ojson::array();
+    for (const auto& cp : p.calibrationPoints) cps.push_back(encode(cp));
+    j["calibrationPoints"] = std::move(cps);
+    return j;
+}
+
+ProjectorSnapshot decodeProjectorSnapshot(const json& j) {
+    ProjectorSnapshot p;
+    p.entity = j.at("entity").get<std::uint64_t>();
+    const auto& pos = j.at("position");
+    for (int i = 0; i < 3; ++i) p.position[i] = pos[i].get<float>();
+    const auto& rot = j.at("rotation");
+    for (int i = 0; i < 3; ++i) p.rotation[i] = rot[i].get<float>();
+    p.fovDegrees      = j.at("fovDegrees").get<float>();
+    p.nearClip        = j.at("nearClip").get<float>();
+    p.farClip         = j.at("farClip").get<float>();
+    p.distortionK1    = j.at("distortionK1").get<float>();
+    p.distortionK2    = j.at("distortionK2").get<float>();
+    p.useResidualWarp = j.at("useResidualWarp").get<bool>();
+    p.isCalibrated    = j.at("isCalibrated").get<bool>();
+    p.targetSurfaceCount = j.at("targetSurfaceCount").get<int>();
+    const auto& ts = j.at("targetSurfaces");
+    for (int i = 0; i < std::min(p.targetSurfaceCount, 8); ++i)
+        p.targetSurfaces[i] = ts[i].get<std::uint64_t>();
+    for (const auto& cp : j.at("calibrationPoints"))
+        p.calibrationPoints.push_back(decodeCalibrationPointSnapshot(cp));
+    return p;
+}
+
+ojson encode(const OutputSnapshot& o) {
+    ojson j = ojson::object();
+    j["entity"]               = o.entity;
+    j["name"]                 = o.name;
+    j["outputType"]           = o.outputType;
+    j["enabled"]              = o.enabled;
+    j["isPhysical"]           = o.isPhysical;
+    j["outputWindowSlot"]     = o.outputWindowSlot;
+    j["physicalDisplayIndex"] = o.physicalDisplayIndex;
+    j["width"]                = o.width;
+    j["height"]               = o.height;
+    j["inputRegionX"]         = o.inputRegionX;
+    j["inputRegionY"]         = o.inputRegionY;
+    j["inputRegionWidth"]     = o.inputRegionWidth;
+    j["inputRegionHeight"]    = o.inputRegionHeight;
+    j["brightness"]           = o.brightness;
+    j["gamma"]                = o.gamma;
+    j["sourceProjector"]      = o.sourceProjector;
+    j["sourceScreen"]         = o.sourceScreen;
+    j["calibrationOverlaySlot"] = o.calibrationOverlaySlot;
+    j["windowX"]              = o.windowX;
+    j["windowY"]              = o.windowY;
+    j["outputIndex"]          = o.outputIndex;
+    return j;
+}
+
+OutputSnapshot decodeOutputSnapshot(const json& j) {
+    OutputSnapshot o;
+    o.entity               = j.at("entity").get<std::uint64_t>();
+    o.name                 = j.at("name").get<std::string>();
+    o.outputType           = j.at("outputType").get<int>();
+    o.enabled              = j.at("enabled").get<bool>();
+    o.isPhysical           = j.at("isPhysical").get<bool>();
+    o.outputWindowSlot     = j.at("outputWindowSlot").get<std::uint32_t>();
+    o.physicalDisplayIndex = j.at("physicalDisplayIndex").get<std::int32_t>();
+    o.width                = j.at("width").get<std::int32_t>();
+    o.height               = j.at("height").get<std::int32_t>();
+    o.inputRegionX         = j.at("inputRegionX").get<float>();
+    o.inputRegionY         = j.at("inputRegionY").get<float>();
+    o.inputRegionWidth     = j.at("inputRegionWidth").get<float>();
+    o.inputRegionHeight    = j.at("inputRegionHeight").get<float>();
+    o.brightness           = j.at("brightness").get<float>();
+    o.gamma                = j.at("gamma").get<float>();
+    o.sourceProjector      = j.at("sourceProjector").get<std::uint64_t>();
+    o.sourceScreen         = j.at("sourceScreen").get<std::uint64_t>();
+    o.calibrationOverlaySlot = j.at("calibrationOverlaySlot").get<std::uint32_t>();
+    o.windowX              = j.at("windowX").get<std::int32_t>();
+    o.windowY              = j.at("windowY").get<std::int32_t>();
+    if (j.contains("outputIndex"))
+        o.outputIndex      = j.at("outputIndex").get<std::uint32_t>();
+    return o;
+}
+
 ojson encode(const RenderFrame& m) {
     ojson j = ojson::object();
     j["frameNumber"] = m.frameNumber;
@@ -169,6 +364,18 @@ ojson encode(const RenderFrame& m) {
     auto wanted = ojson::array();
     for (const auto& w : m.wantedFrames) wanted.push_back(encode(w));
     j["wantedFrames"] = std::move(wanted);
+    auto screens = ojson::array();
+    for (const auto& s : m.screens) screens.push_back(encode(s));
+    j["screens"] = std::move(screens);
+    auto surfaces = ojson::array();
+    for (const auto& s : m.surfaces) surfaces.push_back(encode(s));
+    j["surfaces"] = std::move(surfaces);
+    auto projectors = ojson::array();
+    for (const auto& p : m.projectors) projectors.push_back(encode(p));
+    j["projectors"] = std::move(projectors);
+    auto outputs = ojson::array();
+    for (const auto& o : m.outputs) outputs.push_back(encode(o));
+    j["outputs"] = std::move(outputs);
     return j;
 }
 
@@ -179,7 +386,107 @@ RenderFrame decodeRenderFrame(const json& j) {
     m.playState = transportStateFromString(j.at("playState").get<std::string>());
     for (const auto& c : j.at("activeClips")) m.activeClips.push_back(decodeClipRenderState(c));
     for (const auto& w : j.at("wantedFrames")) m.wantedFrames.push_back(decodeWantedFrame(w));
+    // Stage 2 snapshot fields — default to empty arrays for payloads that
+    // predate this stage (e.g. hand-crafted test strings in older unit tests).
+    if (j.contains("screens"))
+        for (const auto& s : j.at("screens")) m.screens.push_back(decodeScreenSnapshot(s));
+    if (j.contains("surfaces"))
+        for (const auto& s : j.at("surfaces")) m.surfaces.push_back(decodeMappingSurfaceSnapshot(s));
+    if (j.contains("projectors"))
+        for (const auto& p : j.at("projectors")) m.projectors.push_back(decodeProjectorSnapshot(p));
+    if (j.contains("outputs"))
+        for (const auto& o : j.at("outputs")) m.outputs.push_back(decodeOutputSnapshot(o));
     return m;
+}
+
+ojson encode(const ClipCatalogEntry& e) {
+    ojson j = ojson::object();
+    j["entity"]               = e.entity;
+    j["startFrame"]           = e.startFrame;
+    j["duration"]             = e.duration;
+    j["mediaStartFrame"]      = e.mediaStartFrame;
+    j["mediaOutFrame"]        = e.mediaOutFrame;
+    j["framerate"]            = e.framerate;
+    j["playbackMode"]         = e.playbackMode;
+    j["sectionBehavior"]      = e.sectionBehavior;
+    j["descriptorSlot"]       = e.descriptorSlot;
+    j["transformMatrix"]      = e.transformMatrix;
+    j["opacity"]              = e.opacity;
+    j["blendMode"]            = e.blendMode;
+    j["zOrder"]               = e.zOrder;
+    j["targetScreen"]         = e.targetScreen;
+    j["ocioOverride"]         = e.ocioOverride;
+    j["hasPhase"]             = e.hasPhase;
+    j["phase_inContinuation"]     = e.phase_inContinuation;
+    j["phase_sourcePhaseFrames"]  = e.phase_sourcePhaseFrames;
+    j["phase_tailHoldMediaFrame"] = e.phase_tailHoldMediaFrame;
+    j["phase_postBreakMediaAnchor"] = e.phase_postBreakMediaAnchor;
+    j["phase_anchorTimelineFrame"]  = e.phase_anchorTimelineFrame;
+    return j;
+}
+
+ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
+    ClipCatalogEntry e;
+    e.entity          = j.at("entity").get<std::uint64_t>();
+    e.startFrame      = j.at("startFrame").get<FrameNumber>();
+    e.duration        = j.at("duration").get<FrameNumber>();
+    e.mediaStartFrame = j.at("mediaStartFrame").get<FrameNumber>();
+    e.mediaOutFrame   = j.at("mediaOutFrame").get<FrameNumber>();
+    e.framerate       = j.at("framerate").get<double>();
+    e.playbackMode    = j.at("playbackMode").get<int>();
+    e.sectionBehavior = j.at("sectionBehavior").get<int>();
+    e.descriptorSlot  = j.at("descriptorSlot").get<int>();
+    const auto& arr   = j.at("transformMatrix");
+    if (!arr.is_array() || arr.size() != 16)
+        throw std::invalid_argument("ClipCatalogEntry transformMatrix must be array of 16 floats");
+    for (std::size_t i = 0; i < 16; ++i) e.transformMatrix[i] = arr[i].get<float>();
+    e.opacity         = j.at("opacity").get<float>();
+    e.blendMode       = j.at("blendMode").get<int>();
+    e.zOrder          = j.at("zOrder").get<std::uint32_t>();
+    e.targetScreen    = j.at("targetScreen").get<std::uint64_t>();
+    e.ocioOverride    = j.at("ocioOverride").get<std::string>();
+    e.hasPhase        = j.at("hasPhase").get<bool>();
+    e.phase_inContinuation     = j.at("phase_inContinuation").get<bool>();
+    e.phase_sourcePhaseFrames  = j.at("phase_sourcePhaseFrames").get<double>();
+    e.phase_tailHoldMediaFrame = j.at("phase_tailHoldMediaFrame").get<FrameNumber>();
+    e.phase_postBreakMediaAnchor = j.at("phase_postBreakMediaAnchor").get<FrameNumber>();
+    e.phase_anchorTimelineFrame  = j.at("phase_anchorTimelineFrame").get<FrameNumber>();
+    return e;
+}
+
+ojson encode(const SceneSnapshot& s) {
+    ojson j = ojson::object();
+    auto screens = ojson::array();
+    for (const auto& ss : s.screens) screens.push_back(encode(ss));
+    j["screens"] = std::move(screens);
+    auto surfaces = ojson::array();
+    for (const auto& ms : s.surfaces) surfaces.push_back(encode(ms));
+    j["surfaces"] = std::move(surfaces);
+    auto projectors = ojson::array();
+    for (const auto& ps : s.projectors) projectors.push_back(encode(ps));
+    j["projectors"] = std::move(projectors);
+    auto outputs = ojson::array();
+    for (const auto& os : s.outputs) outputs.push_back(encode(os));
+    j["outputs"] = std::move(outputs);
+    auto catalog = ojson::array();
+    for (const auto& ce : s.clipCatalog) catalog.push_back(encode(ce));
+    j["clipCatalog"] = std::move(catalog);
+    return j;
+}
+
+SceneSnapshot decodeSceneSnapshot(const json& j) {
+    SceneSnapshot s;
+    if (j.contains("screens"))
+        for (const auto& ss : j.at("screens")) s.screens.push_back(decodeScreenSnapshot(ss));
+    if (j.contains("surfaces"))
+        for (const auto& ms : j.at("surfaces")) s.surfaces.push_back(decodeMappingSurfaceSnapshot(ms));
+    if (j.contains("projectors"))
+        for (const auto& ps : j.at("projectors")) s.projectors.push_back(decodeProjectorSnapshot(ps));
+    if (j.contains("outputs"))
+        for (const auto& os : j.at("outputs")) s.outputs.push_back(decodeOutputSnapshot(os));
+    if (j.contains("clipCatalog"))
+        for (const auto& ce : j.at("clipCatalog")) s.clipCatalog.push_back(decodeClipCatalogEntry(ce));
+    return s;
 }
 
 ojson encode(const RequestComposeCapture& m) {
@@ -321,20 +628,84 @@ FrameDropped decodeFrameDropped(const json& j) {
     return m;
 }
 
+ojson encode(const ScreenRenderTargetAllocated& m) {
+    ojson j = ojson::object();
+    j["entity"] = m.entity;
+    j["slot"]   = m.slot;
+    j["width"]  = m.width;
+    j["height"] = m.height;
+    return j;
+}
+
+ScreenRenderTargetAllocated decodeScreenRenderTargetAllocated(const json& j) {
+    ScreenRenderTargetAllocated m;
+    m.entity = j.at("entity").get<std::uint64_t>();
+    m.slot   = j.at("slot").get<std::uint32_t>();
+    m.width  = j.at("width").get<std::uint32_t>();
+    m.height = j.at("height").get<std::uint32_t>();
+    return m;
+}
+
+ojson encode(const CreateOutputWindowRequest& m) {
+    ojson j = ojson::object();
+    j["entity"]     = m.entity;
+    j["title"]      = m.title;
+    j["x"]          = m.x;
+    j["y"]          = m.y;
+    j["width"]      = m.width;
+    j["height"]     = m.height;
+    j["borderless"] = m.borderless;
+    return j;
+}
+
+CreateOutputWindowRequest decodeCreateOutputWindowRequest(const json& j) {
+    CreateOutputWindowRequest m;
+    m.entity     = j.at("entity").get<std::uint64_t>();
+    m.title      = j.at("title").get<std::string>();
+    m.x          = j.at("x").get<std::int32_t>();
+    m.y          = j.at("y").get<std::int32_t>();
+    m.width      = j.at("width").get<std::int32_t>();
+    m.height     = j.at("height").get<std::int32_t>();
+    m.borderless = j.at("borderless").get<bool>();
+    return m;
+}
+
+ojson encode(const OutputWindowReady& m) {
+    ojson j = ojson::object();
+    j["entity"]           = m.entity;
+    j["outputWindowSlot"] = m.outputWindowSlot;
+    j["ok"]               = m.ok;
+    j["errorMessage"]     = m.errorMessage;
+    return j;
+}
+
+OutputWindowReady decodeOutputWindowReady(const json& j) {
+    OutputWindowReady m;
+    m.entity           = j.at("entity").get<std::uint64_t>();
+    m.outputWindowSlot = j.at("outputWindowSlot").get<std::uint32_t>();
+    m.ok               = j.at("ok").get<bool>();
+    m.errorMessage     = j.at("errorMessage").get<std::string>();
+    return m;
+}
+
 } // namespace
 
 const char* messageTypeName(const Message& msg) noexcept {
     return std::visit([](const auto& m) -> const char* {
         using T = std::decay_t<decltype(m)>;
         if constexpr (std::is_same_v<T, RenderFrame>)             return "RenderFrame";
+        else if constexpr (std::is_same_v<T, SceneSnapshot>)          return "SceneSnapshot";
         else if constexpr (std::is_same_v<T, RequestComposeCapture>)  return "RequestComposeCapture";
         else if constexpr (std::is_same_v<T, CaptureCompleted>)       return "CaptureCompleted";
         else if constexpr (std::is_same_v<T, ProvisionClipResources>) return "ProvisionClipResources";
-        else if constexpr (std::is_same_v<T, ResourcesProvisioned>)   return "ResourcesProvisioned";
-        else if constexpr (std::is_same_v<T, SetOutputEnabled>)       return "SetOutputEnabled";
-        else if constexpr (std::is_same_v<T, ApplySettings>)          return "ApplySettings";
-        else if constexpr (std::is_same_v<T, DeviceLost>)             return "DeviceLost";
-        else if constexpr (std::is_same_v<T, FrameDropped>)           return "FrameDropped";
+        else if constexpr (std::is_same_v<T, ResourcesProvisioned>)          return "ResourcesProvisioned";
+        else if constexpr (std::is_same_v<T, ScreenRenderTargetAllocated>) return "ScreenRenderTargetAllocated";
+        else if constexpr (std::is_same_v<T, SetOutputEnabled>)            return "SetOutputEnabled";
+        else if constexpr (std::is_same_v<T, ApplySettings>)               return "ApplySettings";
+        else if constexpr (std::is_same_v<T, DeviceLost>)                  return "DeviceLost";
+        else if constexpr (std::is_same_v<T, FrameDropped>)                return "FrameDropped";
+        else if constexpr (std::is_same_v<T, CreateOutputWindowRequest>)   return "CreateOutputWindowRequest";
+        else if constexpr (std::is_same_v<T, OutputWindowReady>)           return "OutputWindowReady";
         else return "Unknown";
     }, msg);
 }
@@ -361,14 +732,18 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
     const json& data = j["data"];
     try {
         if (type == "RenderFrame")             return Message{decodeRenderFrame(data)};
+        if (type == "SceneSnapshot")           return Message{decodeSceneSnapshot(data)};
         if (type == "RequestComposeCapture")   return Message{decodeRequestComposeCapture(data)};
         if (type == "CaptureCompleted")        return Message{decodeCaptureCompleted(data)};
         if (type == "ProvisionClipResources")  return Message{decodeProvisionClipResources(data)};
         if (type == "ResourcesProvisioned")    return Message{decodeResourcesProvisioned(data)};
         if (type == "SetOutputEnabled")        return Message{decodeSetOutputEnabled(data)};
         if (type == "ApplySettings")           return Message{decodeApplySettings(data)};
-        if (type == "DeviceLost")              return Message{decodeDeviceLost(data)};
-        if (type == "FrameDropped")            return Message{decodeFrameDropped(data)};
+        if (type == "DeviceLost")                    return Message{decodeDeviceLost(data)};
+        if (type == "FrameDropped")                  return Message{decodeFrameDropped(data)};
+        if (type == "ScreenRenderTargetAllocated")   return Message{decodeScreenRenderTargetAllocated(data)};
+        if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
+        if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
     } catch (const std::exception&) {
         return std::nullopt;
     }

@@ -44,7 +44,7 @@ public:
     static constexpr uint32_t VIDEO_TEXTURE_BASE   = COMPOSE_TARGET_BASE + MAX_COMPOSE_TARGETS;
     static constexpr uint32_t SNAPSHOT_BASE        = VIDEO_TEXTURE_BASE + MAX_VIDEO_TEXTURE_SLOTS;
     static constexpr uint32_t OCIO_LUT_BASE        = SNAPSHOT_BASE + MAX_COMPOSE_TARGETS;
-    static constexpr uint32_t TOTAL_SLOTS          = OCIO_LUT_BASE + MAX_OCIO_LUT_SLOTS;
+    static constexpr uint32_t TOTAL_SLOTS          = OCIO_LUT_BASE + MAX_OCIO_LUT_SLOTS + MAX_COMPOSE_TARGETS * 2;
 
     // Slot-index computation (the "2 + MAX_COMPOSE_TARGETS + slot" math)
     static constexpr uint32_t composeTargetSlot(uint32_t composeIndex) {
@@ -64,6 +64,17 @@ public:
     // active processors (input transforms + display transforms).
     static constexpr uint32_t ocioLutSlot(uint32_t lutIndex) {
         return OCIO_LUT_BASE + lutIndex;
+    }
+    // Stage 3d triple-buffer extra slots. Sub-index 0 reuses composeTargetSlot;
+    // sub-indices 1 and 2 live in this region. Placed after OCIO LUTs so no
+    // existing slot numbers shift.
+    //   COMPOSE_TARGET_TRIPLE_BASE + composeIndex * 2 + (subIndex - 1)
+    static constexpr uint32_t COMPOSE_TARGET_TRIPLE_BASE = OCIO_LUT_BASE + MAX_OCIO_LUT_SLOTS;
+    static constexpr uint32_t TOTAL_SLOTS_WITH_TRIPLE    = COMPOSE_TARGET_TRIPLE_BASE + MAX_COMPOSE_TARGETS * 2;
+    static constexpr uint32_t composeTargetTripleSlot(uint32_t composeIndex, uint32_t subIndex) {
+        // subIndex 0: use existing composeTargetSlot
+        if (subIndex == 0) return composeTargetSlot(composeIndex);
+        return COMPOSE_TARGET_TRIPLE_BASE + composeIndex * 2 + (subIndex - 1);
     }
 
     // Bounds checks (useful in allocation paths)

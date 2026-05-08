@@ -14,6 +14,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/media/FrameCache.hpp"
 #include <imgui.h>
+#include <chrono>
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
@@ -2698,6 +2699,53 @@ CommandPtr RippleDeleteTimeCommand::fromJson(const nlohmann::json& j) {
     FrameNumber rangeStart = j.value("rangeStart", static_cast<FrameNumber>(0));
     FrameNumber rangeEnd = j.value("rangeEnd", static_cast<FrameNumber>(0));
     return std::make_unique<RippleDeleteTimeCommand>(rangeStart, rangeEnd);
+}
+
+bool SleepMsCommand::execute(Engine& engine) {
+    std::cout << "[SleepMs] Pausing script for " << m_ms << " ms (editor thread unblocked)" << std::endl;
+    if (auto* dispatcher = engine.getCommandDispatcher()) {
+        dispatcher->setWaitUntil(
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(m_ms));
+    }
+    return true;
+}
+
+nlohmann::json SleepMsCommand::toJson() const {
+    return {{"type", "SleepMs"}, {"ms", m_ms}};
+}
+
+std::string SleepMsCommand::getDescription() const {
+    return "Sleep editor " + std::to_string(m_ms) + " ms";
+}
+
+CommandPtr SleepMsCommand::fromJson(const nlohmann::json& j) {
+    uint32_t ms = j.value("ms", uint32_t{0});
+    return std::make_unique<SleepMsCommand>(ms);
+}
+
+bool AssertShowFrameCountAtLeastCommand::execute(Engine& engine) {
+    const uint64_t actual = engine.getShowFrameCount();
+    if (actual >= m_minCount) {
+        std::cout << "[AssertShowFrameCountAtLeast] PASS: show frame count "
+                  << actual << " >= " << m_minCount << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertShowFrameCountAtLeast] FAIL: show frame count "
+              << actual << " < " << m_minCount << std::endl;
+    return false;
+}
+
+nlohmann::json AssertShowFrameCountAtLeastCommand::toJson() const {
+    return {{"type", "AssertShowFrameCountAtLeast"}, {"minCount", m_minCount}};
+}
+
+std::string AssertShowFrameCountAtLeastCommand::getDescription() const {
+    return "Assert show frame count >= " + std::to_string(m_minCount);
+}
+
+CommandPtr AssertShowFrameCountAtLeastCommand::fromJson(const nlohmann::json& j) {
+    uint64_t minCount = j.value("minCount", uint64_t{1});
+    return std::make_unique<AssertShowFrameCountAtLeastCommand>(minCount);
 }
 
 } // namespace entity

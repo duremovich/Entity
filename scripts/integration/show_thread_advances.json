@@ -1,0 +1,36 @@
+{
+    "version": 1,
+    "description": "Stage 3c gate: the show thread must keep advancing while the editor thread is stalled. Loads the gradient PNG sequence, starts playback, then sleeps the editor thread for 500 ms (simulating a Win32 modal loop). The show thread paces itself at 60 Hz via QPC sleep_until, so 500 ms should yield >= 20 show-thread ticks. The assertion fails if the condvar gate (Stage 3b) is accidentally re-introduced or the show thread deadlocks.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "ShowThreadTestScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "test_media/gradient_seq/frame_000.png",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "SleepMs",
+            "ms": 500
+        },
+        {
+            "type": "AssertShowFrameCountAtLeast",
+            "minCount": 20
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

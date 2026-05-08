@@ -308,3 +308,192 @@ TEST(MessageBusSerialization, TransformMatrixWrongLengthRejected) {
     std::vector<std::uint8_t> bytes(bad.begin(), bad.end());
     EXPECT_FALSE(deserialize(bytes).has_value());
 }
+
+// ----------------------------------------------------------------------------
+// Stage 2: scene snapshot round-trips (ScreenSnapshot, MappingSurfaceSnapshot,
+// ProjectorSnapshot, OutputSnapshot) carried on RenderFrame.
+// ----------------------------------------------------------------------------
+
+TEST(MessageBusSerialization, ScreenSnapshotRoundTrip) {
+    RenderFrame rf;
+    ScreenSnapshot s;
+    s.entity            = 101ull;
+    s.name              = "Main Screen";
+    s.visible           = true;
+    s.width             = 3840;
+    s.height            = 2160;
+    s.renderTargetSlot  = 2;
+    s.renderTargetValid = true;
+    s.position          = {1.0f, 0.5f, -2.0f};
+    s.rotation          = {5.0f, 30.0f, 0.0f};
+    s.scale             = {2.0f, 1.0f, 1.0f};
+    s.modelEntity       = 999ull;
+    rf.screens.push_back(s);
+
+    auto out = roundTripExpect(rf);
+    ASSERT_EQ(out.screens.size(), 1u);
+    const auto& o = out.screens[0];
+    EXPECT_EQ(o.entity, s.entity);
+    EXPECT_EQ(o.name, s.name);
+    EXPECT_EQ(o.visible, s.visible);
+    EXPECT_EQ(o.width, s.width);
+    EXPECT_EQ(o.height, s.height);
+    EXPECT_EQ(o.renderTargetSlot, s.renderTargetSlot);
+    EXPECT_EQ(o.renderTargetValid, s.renderTargetValid);
+    EXPECT_EQ(o.position, s.position);
+    EXPECT_EQ(o.rotation, s.rotation);
+    EXPECT_EQ(o.scale, s.scale);
+    EXPECT_EQ(o.modelEntity, s.modelEntity);
+    expectByteStable(rf);
+}
+
+TEST(MessageBusSerialization, MappingSurfaceSnapshotRoundTrip) {
+    RenderFrame rf;
+    MappingSurfaceSnapshot m;
+    m.entity        = 202ull;
+    m.visible       = true;
+    m.outputIndex   = 1;
+    m.surfaceIndex  = 3;
+    m.corners       = {{{{-0.8f, 0.9f}}, {{0.8f, 0.9f}}, {{0.8f, -0.9f}}, {{-0.8f, -0.9f}}}};
+    m.sourceUVs     = {{{{0.1f, 0.1f}}, {{0.9f, 0.1f}}, {{0.9f, 0.9f}}, {{0.1f, 0.9f}}}};
+    m.softEdgeLeft  = 0.05f;
+    m.softEdgeRight = 0.10f;
+    m.softEdgeTop   = 0.02f;
+    m.softEdgeBottom = 0.03f;
+    m.brightness    = 0.85f;
+    m.gamma         = 1.1f;
+    rf.surfaces.push_back(m);
+
+    auto out = roundTripExpect(rf);
+    ASSERT_EQ(out.surfaces.size(), 1u);
+    const auto& o = out.surfaces[0];
+    EXPECT_EQ(o.entity, m.entity);
+    EXPECT_EQ(o.visible, m.visible);
+    EXPECT_EQ(o.outputIndex, m.outputIndex);
+    EXPECT_EQ(o.surfaceIndex, m.surfaceIndex);
+    EXPECT_EQ(o.corners, m.corners);
+    EXPECT_EQ(o.sourceUVs, m.sourceUVs);
+    EXPECT_FLOAT_EQ(o.softEdgeLeft,   m.softEdgeLeft);
+    EXPECT_FLOAT_EQ(o.softEdgeRight,  m.softEdgeRight);
+    EXPECT_FLOAT_EQ(o.softEdgeTop,    m.softEdgeTop);
+    EXPECT_FLOAT_EQ(o.softEdgeBottom, m.softEdgeBottom);
+    EXPECT_FLOAT_EQ(o.brightness, m.brightness);
+    EXPECT_FLOAT_EQ(o.gamma, m.gamma);
+    expectByteStable(rf);
+}
+
+TEST(MessageBusSerialization, ProjectorSnapshotRoundTrip) {
+    RenderFrame rf;
+    ProjectorSnapshot p;
+    p.entity              = 303ull;
+    p.position            = {0.0f, 3.0f, 5.0f};
+    p.rotation            = {-20.0f, 0.0f, 0.0f};
+    p.fovDegrees          = 55.0f;
+    p.nearClip            = 0.2f;
+    p.farClip             = 40.0f;
+    p.distortionK1        = 0.01f;
+    p.distortionK2        = -0.002f;
+    p.useResidualWarp     = true;
+    p.isCalibrated        = true;
+    p.targetSurfaces[0]   = 101ull;
+    p.targetSurfaces[1]   = 202ull;
+    p.targetSurfaceCount  = 2;
+    CalibrationPointSnapshot cp;
+    cp.worldPos    = {1.0f, 0.0f, 0.5f};
+    cp.projectorUV = {0.45f, 0.55f};
+    p.calibrationPoints.push_back(cp);
+    rf.projectors.push_back(p);
+
+    auto out = roundTripExpect(rf);
+    ASSERT_EQ(out.projectors.size(), 1u);
+    const auto& o = out.projectors[0];
+    EXPECT_EQ(o.entity, p.entity);
+    EXPECT_EQ(o.position, p.position);
+    EXPECT_EQ(o.rotation, p.rotation);
+    EXPECT_FLOAT_EQ(o.fovDegrees, p.fovDegrees);
+    EXPECT_FLOAT_EQ(o.nearClip, p.nearClip);
+    EXPECT_FLOAT_EQ(o.farClip, p.farClip);
+    EXPECT_FLOAT_EQ(o.distortionK1, p.distortionK1);
+    EXPECT_FLOAT_EQ(o.distortionK2, p.distortionK2);
+    EXPECT_EQ(o.useResidualWarp, p.useResidualWarp);
+    EXPECT_EQ(o.isCalibrated, p.isCalibrated);
+    EXPECT_EQ(o.targetSurfaceCount, p.targetSurfaceCount);
+    EXPECT_EQ(o.targetSurfaces[0], p.targetSurfaces[0]);
+    EXPECT_EQ(o.targetSurfaces[1], p.targetSurfaces[1]);
+    ASSERT_EQ(o.calibrationPoints.size(), 1u);
+    EXPECT_EQ(o.calibrationPoints[0].worldPos, cp.worldPos);
+    EXPECT_EQ(o.calibrationPoints[0].projectorUV, cp.projectorUV);
+    expectByteStable(rf);
+}
+
+TEST(MessageBusSerialization, OutputSnapshotRoundTrip) {
+    RenderFrame rf;
+    OutputSnapshot o;
+    o.entity                = 404ull;
+    o.name                  = "Projector Left";
+    o.outputType            = 0; // Physical
+    o.enabled               = true;
+    o.isPhysical            = true;
+    o.outputWindowSlot      = 5;
+    o.physicalDisplayIndex  = 1;
+    o.width                 = 1920;
+    o.height                = 1080;
+    o.inputRegionX          = 0.0f;
+    o.inputRegionY          = 0.0f;
+    o.inputRegionWidth      = 0.5f;
+    o.inputRegionHeight     = 1.0f;
+    o.brightness            = 0.9f;
+    o.gamma                 = 1.05f;
+    o.sourceProjector       = 303ull;
+    o.sourceScreen          = 0ull;
+    o.calibrationOverlaySlot = 7;
+    o.windowX               = 1920;
+    o.windowY               = 0;
+    o.outputIndex           = 2;
+    rf.outputs.push_back(o);
+
+    auto out = roundTripExpect(rf);
+    ASSERT_EQ(out.outputs.size(), 1u);
+    const auto& r = out.outputs[0];
+    EXPECT_EQ(r.entity, o.entity);
+    EXPECT_EQ(r.name, o.name);
+    EXPECT_EQ(r.outputType, o.outputType);
+    EXPECT_EQ(r.enabled, o.enabled);
+    EXPECT_EQ(r.isPhysical, o.isPhysical);
+    EXPECT_EQ(r.outputWindowSlot, o.outputWindowSlot);
+    EXPECT_EQ(r.physicalDisplayIndex, o.physicalDisplayIndex);
+    EXPECT_EQ(r.width, o.width);
+    EXPECT_EQ(r.height, o.height);
+    EXPECT_FLOAT_EQ(r.inputRegionX, o.inputRegionX);
+    EXPECT_FLOAT_EQ(r.inputRegionY, o.inputRegionY);
+    EXPECT_FLOAT_EQ(r.inputRegionWidth, o.inputRegionWidth);
+    EXPECT_FLOAT_EQ(r.inputRegionHeight, o.inputRegionHeight);
+    EXPECT_FLOAT_EQ(r.brightness, o.brightness);
+    EXPECT_FLOAT_EQ(r.gamma, o.gamma);
+    EXPECT_EQ(r.sourceProjector, o.sourceProjector);
+    EXPECT_EQ(r.sourceScreen, o.sourceScreen);
+    EXPECT_EQ(r.calibrationOverlaySlot, o.calibrationOverlaySlot);
+    EXPECT_EQ(r.windowX, o.windowX);
+    EXPECT_EQ(r.windowY, o.windowY);
+    EXPECT_EQ(r.outputIndex, o.outputIndex);
+    expectByteStable(rf);
+}
+
+TEST(MessageBusSerialization, RenderFrameWithAllSnapshotTypes) {
+    RenderFrame rf;
+    rf.frameNumber = 100;
+    rf.screens.push_back(ScreenSnapshot{101ull, "S1", true, 1920, 1080, 0, true});
+    rf.surfaces.push_back(MappingSurfaceSnapshot{202ull, true, 0, 0});
+    rf.projectors.push_back(ProjectorSnapshot{303ull});
+    rf.outputs.push_back(OutputSnapshot{404ull, "Out1", 0, true, true});
+    auto out = roundTripExpect(rf);
+    EXPECT_EQ(out.frameNumber, 100);
+    EXPECT_EQ(out.screens.size(), 1u);
+    EXPECT_EQ(out.surfaces.size(), 1u);
+    EXPECT_EQ(out.projectors.size(), 1u);
+    EXPECT_EQ(out.outputs.size(), 1u);
+    EXPECT_EQ(out.screens[0].entity, 101ull);
+    EXPECT_EQ(out.projectors[0].entity, 303ull);
+    EXPECT_EQ(out.outputs[0].outputIndex, 0u);
+    expectByteStable(rf);
+}

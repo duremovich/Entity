@@ -6,6 +6,57 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Editor/Show Thread Split (2026-05-08)
+
+Issue #42 (five stages). Editor thread is now the **sole registry writer**.
+Show thread owns GPU compositing and output Present; editor thread owns
+registry, ImGui, project I/O, and command dispatch. Modal editor loops
+cannot stall the projector pipeline.
+
+**Stage 1** — Per-role D3D12 command allocators + fences
+(`m_editorAllocators`, `m_showAllocators`, `m_editorFence`, `m_showFence`).
+`beginShowFrame`/`endShowFrame` + `beginEditorFrame`/`endEditorFrame` replace
+the deprecated `beginFrame`/`endFrame` single-list path throughout the
+codebase. Both submit to the same direct command queue (D3D12-spec
+thread-safe for `ExecuteCommandLists`/`Signal`).
+
+**Stage 2** — `bus::SceneSnapshot` + `bus::RenderFrame`. Editor thread bakes
+all per-clip state into `SceneSnapshot::clipCatalog` (`ClipCatalogEntry` per
+clip: slot, opacity, blendMode, transformMatrix, targetScreen, zOrder,
+sectionBehavior, …). Show thread calls `buildRenderFrame` from the snapshot
+with zero registry reads for clip data.
+
+**Stage 3** — Show thread spawned in `Engine::run`. `D2RChannel` carries
+`RenderFrame` with latest-wins delivery (old snapshot superseded by new one
+before the show thread drains). Show thread: drain D2R → `buildRenderFrame` →
+`compositor->update` → `outputManager->render` → `endShowFrame`. Editor thread:
+`buildSceneSnapshot` → send D2R → drain R2D → ImGui → `endEditorFrame`.
+
+**Stage 4** — `Affinity` enum on `Command`; `processQueue(engine, affinity)`
+skips wrong-affinity commands and re-queues them in order. Show thread drains
+`Affinity::Show` (Play, Pause, Seek, SectionGo, …). Editor drains
+`Affinity::Editor` + `Affinity::Either`. `ScreenRenderTargetAllocated` R2D
+reply eliminates the last show-thread registry write: compositor posts it when
+allocating a compose-target slot; editor writes `Screen::renderTargetSlot` in
+`drainRendererToDirector`. `CreateOutputWindowRequest`/`OutputWindowReady`
+bus types stub the GLFW/swap-chain handshake for output windows (wiring
+deferred). `videoTex->descriptorSlot` data race fixed by gating on
+`crs->slot >= 0` (baked from editor thread) instead of reading
+`VideoTexture::descriptorSlot` on the show thread.
+
+**Stage 5** — Remove deprecated `beginFrame`/`endFrame`; write ADR-0014;
+update `CODE_ISSUES.md` (HIGH-02 fully closed, NEW-06 updated); update
+`include/entity/bus/CLAUDE.md` with new message types.
+
+**Files**: `src/core/Engine.cpp`, `src/render/D3D12Renderer.cpp`,
+`include/entity/render/D3D12Renderer.hpp`, `include/entity/render/IRenderer.hpp`,
+`src/systems/CompositorSystem.cpp`, `include/entity/systems/CompositorSystem.hpp`,
+`src/command/CommandDispatcher.cpp`, `include/entity/command/Commands.hpp`,
+`include/entity/bus/Message.hpp`, `src/bus/Serialization.cpp`,
+`docs/adr/0014-editor-show-thread-split.md`.
+
+---
+
 ### OSC Receiver Plugin + Preferences (2026-05-08)
 
 Inbound OSC over UDP for triggering Entity from external show-control

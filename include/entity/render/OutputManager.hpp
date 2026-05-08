@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../bus/Message.hpp"
 #include "../core/Types.hpp"
 #include "../components/OutputDisplay.hpp"
 #include "../render/IRenderer.hpp"
@@ -137,7 +138,7 @@ public:
      * gets its back buffer drawn with the composited raster cropped by
      * InputRegion.
      */
-    void renderOutputs();
+    void renderOutputs(const bus::RenderFrame& rf);
 
     /**
      * Get the primary preview output (if any).
@@ -164,23 +165,29 @@ private:
     void releaseOutputResources(entt::entity outputEntity);
 
     /**
-     * Render to a single output.
+     * Render to a single output from bus snapshots.
      */
-    void renderToOutput(entt::entity outputEntity, TextureRef compositedTexture);
+    void renderToOutput(const bus::OutputSnapshot& output,
+                        uint32_t windowSlot,
+                        TextureRef compositedTexture,
+                        const std::vector<bus::MappingSurfaceSnapshot>& surfaces,
+                        const std::vector<bus::ProjectorSnapshot>& projectors,
+                        const std::vector<bus::ScreenSnapshot>& screens);
 
     /**
      * Resolve which compose target texture feeds a given output. Returns an
-     * invalid TextureRef if no suitable Screen exists. Uses output.sourceScreen
-     * if set, else falls back to the first visible Screen with a valid slot.
+     * invalid TextureRef if no suitable Screen exists.
      */
-    TextureRef resolveSourceTexture(const OutputDisplay& output) const;
+    TextureRef resolveSourceTexture(const bus::OutputSnapshot& output,
+                                    const std::vector<bus::ScreenSnapshot>& screens,
+                                    const std::vector<bus::ProjectorSnapshot>& projectors) const;
 
     /**
      * Ensure a Physical output has an owned GLFW window + swap chain on the
-     * renderer. No-op if already created or if the output has no display
-     * assigned. Called lazily from renderOutputs() and from setOutputEnabled.
+     * renderer. Returns the slot (existing or newly allocated), or UINT32_MAX
+     * on failure. Called lazily from renderOutputs() and from setOutputEnabled.
      */
-    void ensureOutputWindow(entt::entity outputEntity);
+    uint32_t ensureOutputWindow(entt::entity outputEntity);
 
     IRenderer* m_renderer{nullptr};
     entt::registry& m_registry;

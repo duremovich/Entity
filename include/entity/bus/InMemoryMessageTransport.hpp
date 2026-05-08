@@ -38,8 +38,9 @@ private:
     struct Channel {
         mutable std::mutex mu;
         std::queue<std::vector<std::uint8_t>> q;
-        // Latest-wins slot for RenderFrame (D2R only; always empty on R2D).
+        // Latest-wins slots (D2R only; always empty on R2D).
         std::optional<std::vector<std::uint8_t>> latestRenderFrame;
+        std::optional<std::vector<std::uint8_t>> latestSceneSnapshot;
     };
 
     Channel& channel(Direction d);

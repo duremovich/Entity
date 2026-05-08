@@ -18,6 +18,7 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+#include <mutex>
 
 namespace entity {
 
@@ -133,6 +134,7 @@ private:
     ID3D12DescriptorHeap*  m_srvHeap{nullptr};
     uint32_t               m_srvDescriptorSize{0};
     Slot                   m_slots[MAX_SLOTS];
+    mutable std::mutex     m_slotMutex;
 };
 
 } // namespace entity

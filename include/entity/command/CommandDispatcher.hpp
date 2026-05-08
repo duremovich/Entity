@@ -8,6 +8,7 @@
 #include <functional>
 #include <unordered_map>
 #include <vector>
+#include <chrono>
 #include <nlohmann/json.hpp>
 
 namespace entity {
@@ -49,12 +50,14 @@ public:
     bool enqueue(const std::string& typeName, const nlohmann::json& params = {});
 
     /**
-     * Process all queued commands (until WaitFrames or empty).
-     * MUST be called from main thread only.
+     * Process all queued commands matching `affinity` (until WaitFrames or empty).
+     * Editor thread passes Affinity::Editor; show thread passes Affinity::Show.
+     * Either-affinity commands are consumed by whichever thread drains first.
      * @param engine Reference to engine for command execution
+     * @param affinity Thread context of the caller
      * @return Number of commands executed
      */
-    size_t processQueue(Engine& engine);
+    size_t processQueue(Engine& engine, Affinity affinity = Affinity::Editor);
 
     /**
      * Register a command factory for JSON deserialization.
@@ -103,9 +106,9 @@ public:
     size_t getPendingCount() const;
 
     /**
-     * Check if currently waiting (WaitFrames active).
+     * Check if currently waiting (WaitFrames or WaitUntil active).
      */
-    bool isWaiting() const { return m_waitFramesRemaining > 0; }
+    bool isWaiting() const { return m_waitFramesRemaining > 0 || m_waitUntilActive; }
 
     /**
      * Get remaining wait frames.
@@ -116,6 +119,17 @@ public:
      * Set wait frames (called by WaitFramesCommand).
      */
     void setWaitFrames(uint32_t frames) { m_waitFramesRemaining = frames; }
+
+    /**
+     * Pause script execution until the given time point passes.
+     * processQueue() returns immediately each tick while the deadline hasn't
+     * elapsed — the editor thread stays unblocked and the show thread runs
+     * freely. Called by SleepMsCommand instead of a blocking sleep.
+     */
+    void setWaitUntil(std::chrono::steady_clock::time_point deadline) {
+        m_waitUntil = deadline;
+        m_waitUntilActive = true;
+    }
 
     /**
      * Check if a script is currently running.
@@ -193,6 +207,10 @@ private:
 
     // WaitFrames support
     uint32_t m_waitFramesRemaining{0};
+
+    // WaitUntil support (wall-clock pause; doesn't block the editor thread)
+    bool m_waitUntilActive{false};
+    std::chrono::steady_clock::time_point m_waitUntil{};
 
     // Recording support
     bool m_recording{false};

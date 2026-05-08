@@ -1,6 +1,6 @@
 # Known Code Issues
 
-Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-28 after the PlaybackController -> PlaybackTimeAuthority + PlaybackPresenter split (Phase D entry, subtask 6). HIGH-02 follow-up (#10) closed and MED-13 fixed 2026-05-08 by Phase A of issue #42; NEW-06 partially addressed (detection only). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
+Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-28 after the PlaybackController -> PlaybackTimeAuthority + PlaybackPresenter split (Phase D entry, subtask 6). HIGH-02 follow-up (#10) closed and MED-13 fixed 2026-05-08 by Phase A of issue #42; NEW-06 partially addressed (detection only). HIGH-02 fully closed and NEW-06 robust-recovery status updated 2026-05-08 by Phase B of issue #42 (editor/show thread split). Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
 
 **Current state**: 0 Critical, 1 High, ~19 Medium, ~13 Low — down from 7 / 18 / 27 / 15.
 
@@ -49,7 +49,7 @@ _(none)_
 
 | ID | Fixed In | Details |
 |----|----------|---------|
-| HIGH-02 | 6944415 (Phase A1 of #42, 2026-05-08) | Structurally closed. CompositorSystem::update now consumes `bus::RenderFrame::activeClips` directly (transform / opacity / blend / target screen / section fade / z-order / mediaFrame / slot all on the snapshot). Registry stays as a parameter for Screen enumeration + MappingSurface calibration only. The "future RenderFrame payload could expose per-active-clip playState that drifts" concern from the prior entry no longer applies — there is one source of truth per tick. Issue #10 (the follow-up audit card) closed by this commit. |
+| HIGH-02 | 6944415 (Phase A1), Phase B of #42 (2026-05-08) | **Fully closed.** Phase A1 moved all per-clip data onto `bus::RenderFrame::activeClips` (transform / opacity / blend / target screen / section fade / z-order / mediaFrame / slot). Phase B landed the show thread (ADR-0014): editor thread is now the sole registry writer; `m_registryMutex` wrapper removed; `CompositorSystem::update` has zero registry writes. The `videoTex->descriptorSlot` data race (show thread reading a plain `uint32_t` written by the editor) was fixed by gating on `crs->slot >= 0` (baked from editor thread via `ClipCatalogEntry::descriptorSlot`) instead of reading `VideoTexture::descriptorSlot` on the show thread. Issue #10 closed. |
 
 ### Re-evaluated (Not Actually Bugs)
 
@@ -132,7 +132,7 @@ Not in the original review, surfaced while writing this update:
 | NEW-03 | Engine.cpp | Low | 4 `TODO` comments for unfinished integration points. |
 | NEW-04 | OutputManager.cpp | ~~Medium~~ **Fixed (Phase C #1, 2026-04-20)** | OutputManager now drives physical displays. Per-output swap chains on `IRenderer`; `renderOutputs()` fans the selected Screen's compose target to each enabled Physical output with InputRegion UV cropping. Mapping-surface warping + soft edges deferred to Phase C #2. |
 | NEW-05 | TestSystem.hpp | Medium | Pure skeleton. Phase A plan calls for replacing with a real integration test harness. |
-| NEW-06 | D3D12Renderer device-removed handling | High | **Partially fixed 2026-05-08 (commit 1c5ccb4, Phase A2 of #42)** — detection landed: `handleDeviceLost` now calls `GetDeviceRemovedReason()`, stores the HRESULT into `m_deviceLostReason` before flipping the latch (matters once handleDeviceLost runs on the show thread post-#42-Phase-B), `IRenderer` exposes `int32_t getDeviceLostReason()`, Engine posts `bus::DeviceLost` on R2D once and exits cleanly. **Robust device recovery still pending**: release/recreate device, re-provision GPU resources, resync UI thread. Two remaining INFINITE waits at `D3D12Renderer.cpp:731,750` (`waitForGpu`) and the `m_deviceLostPosted` plain-bool → atomic-bool migration belong here. Track under a new follow-up issue keyed off NEW-06 with #42 as trigger. |
+| NEW-06 | D3D12Renderer device-removed handling | High | **Partially fixed — detection complete, recovery pending.** Phase A2 (#42, commit 1c5ccb4): `handleDeviceLost` calls `GetDeviceRemovedReason()`, stores HRESULT in `m_deviceLostReason`, Engine posts `bus::DeviceLost` on R2D once and exits. Phase B (#42, 2026-05-08, ADR-0014): `handleDeviceLost` now always runs on the show thread (show thread owns all D3D12 Present calls); `m_deviceLostPosted` plain-bool is safe on the show thread (single writer). **Still pending**: robust device recovery — release/recreate device, re-provision GPU resources, resync show thread and editor thread. Two INFINITE waits in `D3D12Renderer::waitForGpu()` remain (called only from shutdown / resize paths, not the per-frame hot path). File as a follow-up issue. |
 
 ---
 

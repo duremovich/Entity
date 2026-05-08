@@ -23,7 +23,7 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "Play"; }
     nlohmann::json toJson() const override { return {{"type", "Play"}}; }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
@@ -32,7 +32,7 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "Pause"; }
     nlohmann::json toJson() const override { return {{"type", "Pause"}}; }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
@@ -41,7 +41,7 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "TogglePlayPause"; }
     nlohmann::json toJson() const override { return {{"type", "TogglePlayPause"}}; }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
@@ -55,7 +55,7 @@ public:
         return {{"type", "Seek"}, {"time", m_time}};
     }
     std::string getDescription() const override;
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -72,7 +72,7 @@ public:
         return {{"type", "SeekToFrame"}, {"frame", m_frame}};
     }
     std::string getDescription() const override;
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -88,7 +88,7 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "SeekToStart"; }
     nlohmann::json toJson() const override { return {{"type", "SeekToStart"}}; }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
@@ -97,7 +97,7 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "SeekToEnd"; }
     nlohmann::json toJson() const override { return {{"type", "SeekToEnd"}}; }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
@@ -110,7 +110,7 @@ public:
     nlohmann::json toJson() const override {
         return {{"type", "StepForward"}, {"frames", m_frames}};
     }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -126,7 +126,7 @@ public:
     nlohmann::json toJson() const override {
         return {{"type", "StepBackward"}, {"frames", m_frames}};
     }
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -297,7 +297,7 @@ public:
         return {{"type", "WaitFrames"}, {"count", m_count}};
     }
     std::string getDescription() const override;
-
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -360,7 +360,7 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "Exit"; }
     nlohmann::json toJson() const override { return {{"type", "Exit"}}; }
-
+    Affinity getAffinity() const override { return Affinity::Either; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
@@ -1002,6 +1002,7 @@ public:
     const char* getTypeName() const override { return "SectionGo"; }
     nlohmann::json toJson() const override { return {{"type", "SectionGo"}}; }
     std::string getDescription() const override { return "Section GO"; }
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json&) {
         return std::make_unique<SectionGoCommand>();
     }
@@ -1477,6 +1478,50 @@ private:
     int m_clipIndex;
     FrameNumber m_mediaOutFrame;
     std::optional<FrameNumber> m_previousMediaOutFrame;
+};
+
+/**
+ * Sleep the calling (editor) thread for `ms` milliseconds using a wall-clock
+ * sleep. Simulates an editor modal-loop stall so that integration tests can
+ * verify the show thread keeps advancing independently (Stage 3c gate).
+ *
+ * JSON: {"type":"SleepMs","ms":500}
+ */
+class SleepMsCommand : public Command {
+public:
+    explicit SleepMsCommand(uint32_t ms) : m_ms(ms) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SleepMs"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint32_t m_ms;
+};
+
+/**
+ * Assert that the show thread has completed at least `minCount` ticks since
+ * the engine started. Used by integration tests to verify the show thread
+ * keeps advancing even when the editor thread is stalled (Stage 3c gate).
+ *
+ * JSON: {"type":"AssertShowFrameCountAtLeast","minCount":10}
+ */
+class AssertShowFrameCountAtLeastCommand : public Command {
+public:
+    explicit AssertShowFrameCountAtLeastCommand(uint64_t minCount) : m_minCount(minCount) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertShowFrameCountAtLeast"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint64_t m_minCount;
 };
 
 } // namespace entity

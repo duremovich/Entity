@@ -40,22 +40,35 @@ bool CommandDispatcher::enqueue(const std::string& typeName, const nlohmann::jso
     return true;
 }
 
-size_t CommandDispatcher::processQueue(Engine& engine) {
-    // Handle WaitFrames countdown
-    if (m_waitFramesRemaining > 0) {
-        m_waitFramesRemaining--;
+size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
+    // Wait states only block the Editor-thread drain. The show thread's
+    // Show-affinity drain skips them so transport commands stay responsive
+    // during editor modal loops or script waits.
+    if (affinity != Affinity::Show) {
         if (m_waitFramesRemaining > 0) {
-            return 0;  // Still waiting
+            m_waitFramesRemaining--;
+            if (m_waitFramesRemaining > 0) {
+                return 0;
+            }
         }
-        // Done waiting, continue processing
+        if (m_waitUntilActive) {
+            if (std::chrono::steady_clock::now() < m_waitUntil) {
+                return 0;
+            }
+            m_waitUntilActive = false;
+        }
     }
 
     size_t executed = 0;
 
+    // Commands that don't match `affinity` are re-queued in arrival order
+    // to be processed by the other thread's drain. Collect skipped commands
+    // into a local vector, then push them back under the lock after the loop.
+    std::vector<CommandPtr> skipped;
+
     while (true) {
         CommandPtr command;
 
-        // Extract command from queue (lock scope)
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             if (m_commandQueue.empty()) {
@@ -65,7 +78,15 @@ size_t CommandDispatcher::processQueue(Engine& engine) {
             m_commandQueue.pop();
         }
 
-        // Execute command
+        // Skip commands that belong to a different thread. Either-affinity
+        // commands run on whichever thread reaches them first.
+        const Affinity cmdAffinity = command->getAffinity();
+        if (cmdAffinity != affinity && cmdAffinity != Affinity::Either
+                && affinity != Affinity::Either) {
+            skipped.push_back(std::move(command));
+            continue;
+        }
+
         const char* typeName = command->getTypeName();
         std::string description = command->getDescription();
 
@@ -84,14 +105,10 @@ size_t CommandDispatcher::processQueue(Engine& engine) {
             addErrorToResults(std::string("Command failed: ") + description);
         }
 
-        // Record if enabled
         if (m_recording) {
             m_recordedCommands.push_back(command->toJson());
         }
 
-        // Undoable commands get moved onto the undo stack after successful
-        // execute(). A dynamic_cast is cheap compared to the rest of a
-        // command tick and avoids polluting the base Command vtable.
         if (success && dynamic_cast<UndoableCommand*>(command.get())) {
             auto* raw = static_cast<UndoableCommand*>(command.release());
             m_undoStack.emplace_back(raw);
@@ -104,22 +121,32 @@ size_t CommandDispatcher::processQueue(Engine& engine) {
         executed++;
         m_scriptCommandsExecuted++;
 
-        // If this was a WaitFrames command, stop processing until wait completes
-        if (m_waitFramesRemaining > 0) {
+        if (affinity != Affinity::Show && (m_waitFramesRemaining > 0 || m_waitUntilActive)) {
             break;
         }
     }
 
-    // Subtask 7. The queue might be empty here, but we don't write
-    // script_result.json yet -- pending capture replies still need to
-    // resolve. Engine::run() polls scriptReadyToFinish() after draining
-    // R2D and calls finishScript() once the bus has settled.
+    // Push skipped (wrong-affinity) commands back to the front of the queue
+    // in original arrival order so the other thread sees them promptly.
+    if (!skipped.empty()) {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        // Move current queue contents after the skipped ones.
+        std::queue<CommandPtr> restored;
+        for (auto& cmd : skipped) restored.push(std::move(cmd));
+        while (!m_commandQueue.empty()) {
+            restored.push(std::move(m_commandQueue.front()));
+            m_commandQueue.pop();
+        }
+        m_commandQueue = std::move(restored);
+    }
+
     return executed;
 }
 
 bool CommandDispatcher::scriptReadyToFinish() const {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    return m_scriptRunning && m_commandQueue.empty() && m_waitFramesRemaining == 0;
+    return m_scriptRunning && m_commandQueue.empty()
+        && m_waitFramesRemaining == 0 && !m_waitUntilActive;
 }
 
 void CommandDispatcher::registerFactory(const std::string& typeName, CommandFactory factory) {
@@ -213,6 +240,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     // UI commands
     registerFactory("SelectTab", SelectTabCommand::fromJson);
     registerFactory("SelectClip", SelectClipCommand::fromJson);
+
+    // Stage 3c: show-thread health gate
+    registerFactory("SleepMs", SleepMsCommand::fromJson);
+    registerFactory("AssertShowFrameCountAtLeast", AssertShowFrameCountAtLeastCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {

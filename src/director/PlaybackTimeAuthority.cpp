@@ -3,6 +3,10 @@
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/MediaLayer.hpp"
+#include "entity/components/MappingSurface.hpp"
+#include "entity/components/OutputDisplay.hpp"
+#include "entity/components/Projector.hpp"
+#include "entity/components/Screen.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -27,6 +31,130 @@ constexpr TransportState toTransportState(PlaybackState s) {
         case PlaybackState::Paused:  return TransportState::Paused;
     }
     return TransportState::Stopped;
+}
+
+// entt::null casts to a large value; normalise to 0 so the bus wire
+// representation is stable regardless of EnTT's internal sentinel.
+constexpr std::uint64_t entityToU64(entt::entity e) {
+    return (e == entt::null) ? 0ull : static_cast<std::uint64_t>(e);
+}
+
+// Reconstruct a Clip value from a ClipCatalogEntry for use with the pure
+// mapToMediaFrame(const Clip&, FrameNumber) overload and computeSectionFadeMultiplier.
+// FFmpeg pointer fields stay null — only the scheduling/math fields matter here.
+Clip clipFromCatalog(const bus::ClipCatalogEntry& e) {
+    Clip c;
+    c.startFrame      = e.startFrame;
+    c.duration        = e.duration;
+    c.mediaStartFrame = e.mediaStartFrame;
+    c.mediaOutFrame   = e.mediaOutFrame;
+    c.framerate       = e.framerate;
+    c.playbackMode    = static_cast<PlaybackMode>(e.playbackMode);
+    c.sectionBehavior = static_cast<SectionBehavior>(e.sectionBehavior);
+    // targetScreen: convert from uint64 back to entt::entity
+    c.targetScreen = (e.targetScreen == UINT64_MAX)
+        ? entt::null
+        : static_cast<entt::entity>(static_cast<std::uint32_t>(e.targetScreen));
+    return c;
+}
+
+// Show-side mapToMediaFrame: mirrors the entity-aware 3-arg overload but reads
+// phase data from the ClipCatalogEntry instead of the registry.
+FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
+                                       FrameNumber timelineFrame,
+                                       double timelineFrameRate) {
+    const Clip clip = clipFromCatalog(e);
+    const FrameNumber clipEnd = clip.startFrame + clip.duration;
+    const FrameNumber sourceLength = effectivePlaybackLength(clip);
+
+    // tail short-circuit (same as entity-aware overload)
+    if (timelineFrame >= clipEnd && e.hasPhase && e.phase_tailHoldMediaFrame >= 0) {
+        return e.phase_tailHoldMediaFrame;
+    }
+
+    const bool inContinuation = e.hasPhase && e.phase_inContinuation
+        && clip.sectionBehavior == SectionBehavior::Normal;
+
+    if (!inContinuation) {
+        // post-break anchor path
+        if (e.hasPhase && e.phase_postBreakMediaAnchor >= 0 && timelineFrame < clipEnd) {
+            const double frameRateRatio = (timelineFrameRate > 0.0)
+                ? clip.framerate / timelineFrameRate : 1.0;
+            if (sourceLength <= 0) return clip.mediaStartFrame;
+
+            const double timelineDelta =
+                static_cast<double>(timelineFrame - e.phase_anchorTimelineFrame);
+            const double localFloat =
+                static_cast<double>(e.phase_postBreakMediaAnchor - clip.mediaStartFrame)
+                + timelineDelta * frameRateRatio;
+            const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
+                std::floor(std::max(localFloat, 0.0)));
+
+            if (sourceLocalFrame < sourceLength) {
+                return clip.mediaStartFrame + sourceLocalFrame;
+            }
+            switch (clip.playbackMode) {
+                case PlaybackMode::Freeze:
+                    return clip.mediaStartFrame + sourceLength - 1;
+                case PlaybackMode::Loop:
+                    return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
+                case PlaybackMode::PingPong: {
+                    const FrameNumber cycle = sourceLocalFrame / sourceLength;
+                    const FrameNumber pos   = sourceLocalFrame % sourceLength;
+                    return (cycle % 2 == 0)
+                        ? clip.mediaStartFrame + pos
+                        : clip.mediaStartFrame + (sourceLength - 1 - pos);
+                }
+            }
+            return clip.mediaStartFrame + sourceLength - 1;
+        }
+
+        // natural timeline-derived path (2-arg equivalent, inlined)
+        const double frameRateRatio = (timelineFrameRate > 0.0)
+            ? clip.framerate / timelineFrameRate : 1.0;
+        if (timelineFrame >= clipEnd) {
+            return clip.mediaStartFrame + std::max<FrameNumber>(0, sourceLength - 1);
+        }
+        const FrameNumber localFrame = timelineFrame - clip.startFrame;
+        const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
+            std::floor(localFrame * frameRateRatio));
+        if (sourceLocalFrame < sourceLength) {
+            return clip.mediaStartFrame + sourceLocalFrame;
+        }
+        switch (clip.playbackMode) {
+            case PlaybackMode::Freeze:
+                return clip.mediaStartFrame + sourceLength - 1;
+            case PlaybackMode::Loop:
+                return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
+            case PlaybackMode::PingPong: {
+                const FrameNumber cycle = sourceLocalFrame / sourceLength;
+                const FrameNumber pos   = sourceLocalFrame % sourceLength;
+                return (cycle % 2 == 0)
+                    ? clip.mediaStartFrame + pos
+                    : clip.mediaStartFrame + (sourceLength - 1 - pos);
+            }
+        }
+        return clip.mediaStartFrame + sourceLength - 1;
+    }
+
+    // continuation path: derive from accumulated source phase
+    if (sourceLength <= 0) return clip.mediaStartFrame;
+    const double phaseClamped = std::max(e.phase_sourcePhaseFrames, 0.0);
+    const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
+    switch (clip.playbackMode) {
+        case PlaybackMode::Freeze:
+            return clip.mediaStartFrame + std::min(phaseFrame, sourceLength - 1);
+        case PlaybackMode::Loop:
+            return clip.mediaStartFrame + (phaseFrame % sourceLength);
+        case PlaybackMode::PingPong: {
+            const FrameNumber cycle = phaseFrame / sourceLength;
+            const FrameNumber pos   = phaseFrame % sourceLength;
+            return (cycle % 2 == 0)
+                ? clip.mediaStartFrame + pos
+                : clip.mediaStartFrame + (sourceLength - 1 - pos);
+        }
+    }
+    return clip.mediaStartFrame + sourceLength - 1;
 }
 
 } // namespace
@@ -376,59 +504,194 @@ void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
     }
 }
 
-void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {
+void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
+    out.screens.clear();
+    for (auto [entity, screen] : m_registry.view<Screen>().each()) {
+        bus::ScreenSnapshot ss;
+        ss.entity            = static_cast<std::uint64_t>(entity);
+        ss.name              = screen.name;
+        ss.visible           = screen.visible;
+        ss.width             = screen.width;
+        ss.height            = screen.height;
+        ss.renderTargetSlot  = screen.renderTargetSlot;
+        ss.renderTargetValid = screen.renderTargetValid;
+        ss.position          = screen.position;
+        ss.rotation          = screen.rotation;
+        ss.scale             = screen.scale;
+        ss.modelEntity       = entityToU64(screen.modelEntity);
+        out.screens.push_back(std::move(ss));
+    }
+
+    out.surfaces.clear();
+    for (auto [entity, surf] : m_registry.view<MappingSurface>().each()) {
+        bus::MappingSurfaceSnapshot ms;
+        ms.entity       = static_cast<std::uint64_t>(entity);
+        ms.visible      = surf.visible;
+        ms.outputIndex  = surf.outputIndex;
+        ms.surfaceIndex = surf.surfaceIndex;
+        for (int i = 0; i < 4; ++i) {
+            ms.corners[i]   = {surf.corners[i].x,   surf.corners[i].y};
+            ms.sourceUVs[i] = {surf.sourceUVs[i].x, surf.sourceUVs[i].y};
+        }
+        ms.softEdgeLeft   = surf.softEdge.left;
+        ms.softEdgeRight  = surf.softEdge.right;
+        ms.softEdgeTop    = surf.softEdge.top;
+        ms.softEdgeBottom = surf.softEdge.bottom;
+        ms.brightness     = surf.brightness;
+        ms.gamma          = surf.gamma;
+        out.surfaces.push_back(std::move(ms));
+    }
+
+    out.projectors.clear();
+    for (auto [entity, proj] : m_registry.view<Projector>().each()) {
+        bus::ProjectorSnapshot ps;
+        ps.entity           = static_cast<std::uint64_t>(entity);
+        ps.position         = proj.position;
+        ps.rotation         = proj.rotation;
+        ps.fovDegrees       = proj.fovDegrees;
+        ps.nearClip         = proj.nearClip;
+        ps.farClip          = proj.farClip;
+        ps.distortionK1     = proj.distortionK1;
+        ps.distortionK2     = proj.distortionK2;
+        ps.useResidualWarp  = proj.useResidualWarp;
+        ps.isCalibrated     = proj.isCalibrated;
+        ps.targetSurfaceCount = proj.targetSurfaceCount;
+        for (int i = 0; i < proj.targetSurfaceCount && i < Projector::MAX_TARGETS; ++i)
+            ps.targetSurfaces[i] = entityToU64(proj.targetSurfaces[i]);
+        for (const auto& cp : proj.calibrationPoints) {
+            bus::CalibrationPointSnapshot cps;
+            cps.worldPos    = cp.worldPos;
+            cps.projectorUV = cp.projectorUV;
+            ps.calibrationPoints.push_back(std::move(cps));
+        }
+        out.projectors.push_back(std::move(ps));
+    }
+
+    out.outputs.clear();
+    for (auto [entity, od] : m_registry.view<OutputDisplay>().each()) {
+        bus::OutputSnapshot os;
+        os.entity               = static_cast<std::uint64_t>(entity);
+        os.name                 = od.name;
+        os.outputType           = static_cast<int>(od.type);
+        os.enabled              = od.enabled;
+        os.isPhysical           = od.isPhysical();
+        os.outputWindowSlot     = od.outputWindowSlot;
+        os.physicalDisplayIndex = od.physicalDisplayIndex;
+        os.width                = od.width;
+        os.height               = od.height;
+        os.inputRegionX         = od.inputRegion.x;
+        os.inputRegionY         = od.inputRegion.y;
+        os.inputRegionWidth     = od.inputRegion.width;
+        os.inputRegionHeight    = od.inputRegion.height;
+        os.brightness           = od.brightness;
+        os.gamma                = od.gamma;
+        os.sourceProjector      = entityToU64(od.sourceProjector);
+        os.sourceScreen         = entityToU64(od.sourceScreen);
+        os.calibrationOverlaySlot = od.calibrationOverlaySlot;
+        os.windowX              = od.windowX;
+        os.windowY              = od.windowY;
+        os.outputIndex          = od.outputIndex;
+        out.outputs.push_back(std::move(os));
+    }
+
+    // Clip catalog — all registry reads for clip/layer/phase state happen here
+    // on the editor thread. The show thread reads only out.clipCatalog.
+    out.clipCatalog.clear();
+    for (auto [entity, clip, videoTex] : m_registry.view<Clip, VideoTexture>().each()) {
+        if (!videoTex.isAllocated()) continue;
+
+        bus::ClipCatalogEntry ce;
+        ce.entity          = static_cast<std::uint64_t>(entity);
+        ce.startFrame      = clip.startFrame;
+        ce.duration        = clip.duration;
+        ce.mediaStartFrame = clip.mediaStartFrame;
+        ce.mediaOutFrame   = clip.mediaOutFrame;
+        ce.framerate       = clip.framerate;
+        ce.playbackMode    = static_cast<int>(clip.playbackMode);
+        ce.sectionBehavior = static_cast<int>(clip.sectionBehavior);
+        ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
+
+        // Bake transform matrix on the editor thread (no const_cast needed here)
+        if (auto* t = m_registry.try_get<Transform>(entity)) {
+            t->updateMatrix();
+            std::memcpy(ce.transformMatrix.data(),
+                        glm::value_ptr(t->matrix),
+                        sizeof(ce.transformMatrix));
+        }
+
+        if (auto* layer = m_registry.try_get<MediaLayer>(entity)) {
+            ce.opacity   = layer->getOpacity();
+            ce.blendMode = static_cast<int>(layer->blendMode);
+            ce.zOrder    = layer->zOrder;
+        }
+
+        ce.targetScreen = (clip.targetScreen == entt::null)
+            ? UINT64_MAX
+            : entityToU64(clip.targetScreen);
+
+        ce.ocioOverride = lookupInputColorSpaceOverride(clip);
+
+        if (const auto* phase = m_registry.try_get<ClipPlaybackPhase>(entity)) {
+            ce.hasPhase                  = true;
+            ce.phase_inContinuation      = phase->inContinuation;
+            ce.phase_sourcePhaseFrames   = phase->sourcePhaseFrames;
+            ce.phase_tailHoldMediaFrame  = phase->tailHoldMediaFrame;
+            ce.phase_postBreakMediaAnchor = phase->postBreakMediaAnchor;
+            ce.phase_anchorTimelineFrame  = phase->anchorTimelineFrame;
+        }
+
+        out.clipCatalog.push_back(std::move(ce));
+    }
+}
+
+void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
+                                              const bus::SceneSnapshot& scene) const {
     out.activeClips.clear();
     out.wantedFrames.clear();
     out.frameNumber = 0;
     out.deltaTime   = m_deltaTime;
     out.playState   = TransportState::Stopped;
+
+    // Merge scene snapshot (captured editor-side) into the RenderFrame.
+    out.screens    = scene.screens;
+    out.surfaces   = scene.surfaces;
+    out.projectors = scene.projectors;
+    out.outputs    = scene.outputs;
+
     if (!m_timeline) return;
 
-    FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    const FrameNumber currentFrame = m_timeline->getCurrentFrame();
     out.frameNumber = currentFrame;
     out.playState   = toTransportState(m_timeline->getPlaybackState());
+    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
 
-    auto view = m_registry.view<Clip, VideoTexture>();
-    for (auto [entity, clip, videoTex] : view.each()) {
-        if (!videoTex.isAllocated()) continue;
+    // Show thread reads ONLY the clip catalog — zero registry access.
+    for (const auto& ce : scene.clipCatalog) {
+        const Clip clip = clipFromCatalog(ce);
         if (!isClipActiveAtFrame(clip, currentFrame)) continue;
 
         bus::ClipRenderState c;
-        c.entity       = static_cast<std::uint64_t>(entity);
-        c.slot         = static_cast<int>(videoTex.descriptorSlot);
-        c.mediaFrame   = mapToMediaFrame(entity, clip, currentFrame);
-        c.ocioOverride = lookupInputColorSpaceOverride(clip);
-
-        // Optional render-side fields. These exist so the wire format
-        // already carries everything Phase E will need; the compositor
-        // still reads from the registry today, so leaving them at
-        // defaults would compile too -- filling them just keeps the
-        // message a faithful snapshot of what the compositor would draw.
-        if (auto* t = m_registry.try_get<Transform>(entity)) {
-            // Transform::updateMatrix maintains a dirty-flag cache; mutate
-            // through a non-const ref so the cached matrix is current.
-            auto* tm = const_cast<Transform*>(t);
-            tm->updateMatrix();
-            std::memcpy(c.transformMatrix.data(),
-                        glm::value_ptr(tm->matrix),
-                        sizeof(c.transformMatrix));
-        }
-        if (auto* layer = m_registry.try_get<MediaLayer>(entity)) {
-            c.opacity   = layer->getOpacity();
-            c.blendMode = layer->blendMode;
-            c.zOrder    = layer->zOrder;
-        }
-        c.targetScreen = (clip.targetScreen == entt::null)
-            ? UINT64_MAX
-            : static_cast<std::uint64_t>(clip.targetScreen);
-        // Phase D — auto-fade envelope at section break boundaries.
-        // Stamped here on the bus payload; PlaybackPresenter applies
-        // it to MediaLayer.opacity so the registry-side compositor draw
-        // reflects the fade this same tick.
+        c.entity       = ce.entity;
+        c.slot         = ce.descriptorSlot;
+        c.mediaFrame   = mapToMediaFrameFromCatalog(ce, currentFrame, timelineFrameRate);
+        c.ocioOverride = ce.ocioOverride;
+        c.transformMatrix = ce.transformMatrix;
+        c.opacity      = ce.opacity;
+        c.blendMode    = static_cast<BlendMode>(ce.blendMode);
+        c.zOrder       = ce.zOrder;
+        c.targetScreen = ce.targetScreen;
         c.sectionFadeMultiplier = computeSectionFadeMultiplier(clip);
 
         out.activeClips.push_back(std::move(c));
     }
+}
+
+void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {
+    // Legacy single-call path: build scene snapshot inline.
+    bus::SceneSnapshot scene;
+    buildSceneSnapshot(scene);
+    buildRenderFrame(out, scene);
 }
 
 } // namespace entity

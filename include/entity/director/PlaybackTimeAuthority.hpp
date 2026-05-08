@@ -86,17 +86,25 @@ public:
     // No-op when timeline is unbound.
     void buildActiveSet(std::vector<ActiveClip>& out) const;
 
-    // Per-tick Director->Renderer state snapshot. Fills the bus message
-    // body in place (clears its activeClips/wantedFrames vectors first
-    // so a long-lived caller can avoid reallocs). Stamps frameNumber,
-    // deltaTime, playState, then walks the registry to produce one
-    // ClipRenderState per allocated + active clip with `slot`,
-    // `mediaFrame`, `ocioOverride`, plus the optional render fields
-    // (transform / opacity / blendMode / targetScreen) when their
-    // components exist. wantedFrames is left empty for now -- DecodeSystem
-    // still drives itself off the registry until a later subtask
-    // collapses that path through the bus too. No-op when timeline is
-    // unbound (RenderFrame is reset to defaults).
+    // Stage 3 split of buildRenderFrame.
+    //
+    // Editor half (called once per editor frame from Engine::run()):
+    // Walks Screen / MappingSurface / Projector / OutputDisplay registry
+    // views and fills `out`. Published latest-wins on D2R as a
+    // bus::SceneSnapshot so the show thread never reads the registry.
+    void buildSceneSnapshot(bus::SceneSnapshot& out) const;
+
+    // Show half (called per show tick from Engine::showThreadMain()):
+    // Merges `scene` into `out` alongside the per-tick clip state
+    // (activeClips, playState, frameNumber, deltaTime). Zero registry reads —
+    // all clip/layer/phase data comes from scene.clipCatalog, populated by
+    // buildSceneSnapshot on the editor thread.
+    void buildRenderFrame(bus::RenderFrame& out,
+                          const bus::SceneSnapshot& scene) const;
+
+    // Legacy single-call variant kept for call sites that still run on
+    // the main thread (launcher mode, headless script path). Snapshots
+    // scene state inline rather than merging a cached SceneSnapshot.
     void buildRenderFrame(bus::RenderFrame& out) const;
 
     // Read-only Timeline accessor for callers that want to consult time

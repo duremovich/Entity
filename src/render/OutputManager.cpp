@@ -8,10 +8,8 @@
  */
 
 #include "entity/render/OutputManager.hpp"
-#include "entity/components/MappingSurface.hpp"
+#include "entity/bus/Message.hpp"
 #include "entity/components/Model.hpp"
-#include "entity/components/Projector.hpp"
-#include "entity/components/Screen.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -321,35 +319,35 @@ void OutputManager::setFullscreen(entt::entity outputEntity, bool fullscreen) {
               << (fullscreen ? "on" : "off") << std::endl;
 }
 
-void OutputManager::renderOutputs() {
+void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
     if (!m_initialized || !m_renderer) {
         return;
     }
 
-    auto view = m_registry.view<OutputDisplay>();
-    for (auto [entity, output] : view.each()) {
-        if (!output.enabled || !output.isPhysical()) {
+    for (const auto& snap : rf.outputs) {
+        if (!snap.enabled || !snap.isPhysical) {
             continue;
         }
+
+        const entt::entity entity = static_cast<entt::entity>(snap.entity);
 
         // Lazy window creation: if enabled + display assigned but no slot,
         // try to bring it up now. Useful after deserializing a project.
-        if (output.outputWindowSlot == UINT32_MAX) {
-            ensureOutputWindow(entity);
-            if (output.outputWindowSlot == UINT32_MAX) continue;
+        uint32_t windowSlot = snap.outputWindowSlot;
+        if (windowSlot == UINT32_MAX) {
+            windowSlot = ensureOutputWindow(entity);
+            if (windowSlot == UINT32_MAX) continue;
         }
 
-        TextureRef source = resolveSourceTexture(output);
+        TextureRef source = resolveSourceTexture(snap, rf.screens, rf.projectors);
         if (!source.valid()) {
-            // Still clear to black so the physical display isn't showing
-            // stale framebuffer content.
-            m_renderer->beginOutputFrame(output.outputWindowSlot);
-            m_renderer->clearOutputFrame(output.outputWindowSlot, 0.0f, 0.0f, 0.0f, 1.0f);
-            m_renderer->endOutputFrame(output.outputWindowSlot);
+            m_renderer->beginOutputFrame(windowSlot);
+            m_renderer->clearOutputFrame(windowSlot, 0.0f, 0.0f, 0.0f, 1.0f);
+            m_renderer->endOutputFrame(windowSlot);
             continue;
         }
 
-        renderToOutput(entity, source);
+        renderToOutput(snap, windowSlot, source, rf.surfaces, rf.projectors, rf.screens);
     }
 }
 
@@ -386,18 +384,18 @@ void OutputManager::syncCounterFromRegistry() {
               << " (from " << (any ? "registry state" : "empty registry") << ")" << std::endl;
 }
 
-void OutputManager::ensureOutputWindow(entt::entity outputEntity) {
+uint32_t OutputManager::ensureOutputWindow(entt::entity outputEntity) {
     if (!m_renderer || !m_registry.valid(outputEntity) ||
         !m_registry.all_of<OutputDisplay>(outputEntity)) {
-        return;
+        return UINT32_MAX;
     }
 
     auto& output = m_registry.get<OutputDisplay>(outputEntity);
-    if (output.outputWindowSlot != UINT32_MAX) return;
-    if (!output.isPhysical() || !output.enabled) return;
+    if (output.outputWindowSlot != UINT32_MAX) return output.outputWindowSlot;
+    if (!output.isPhysical() || !output.enabled) return UINT32_MAX;
     if (output.physicalDisplayIndex < 0 ||
         output.physicalDisplayIndex >= static_cast<int32_t>(m_availableDisplays.size())) {
-        return;
+        return UINT32_MAX;
     }
 
     const DisplayInfo& display = m_availableDisplays[output.physicalDisplayIndex];
@@ -411,7 +409,7 @@ void OutputManager::ensureOutputWindow(entt::entity outputEntity) {
     if (slot == UINT32_MAX) {
         std::cerr << "[OutputManager] Failed to create output window for '"
                   << output.name << "'" << std::endl;
-        return;
+        return UINT32_MAX;
     }
 
     output.outputWindowSlot = slot;
@@ -420,6 +418,7 @@ void OutputManager::ensureOutputWindow(entt::entity outputEntity) {
     std::cout << "[OutputManager] Output '" << output.name
               << "' driving display '" << display.displayName
               << "' (slot " << slot << ")" << std::endl;
+    return slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +429,7 @@ void OutputManager::ensureOutputWindow(entt::entity outputEntity) {
 // Convention: rotation[0]=pitch(X), rotation[1]=yaw(Y), rotation[2]=roll(Z).
 // Forward vector matches Stage3DRenderer::buildProjectorCamera(); roll is
 // applied by rotating the up vector around the forward axis.
-static glm::mat4 buildProjectorVP(const Projector& proj, float aspect) {
+static glm::mat4 buildProjectorVP(const bus::ProjectorSnapshot& proj, float aspect) {
     float pitch = glm::radians(proj.rotation[0]);
     float yaw   = glm::radians(proj.rotation[1]);
     float roll  = glm::radians(proj.rotation[2]);
@@ -456,7 +455,7 @@ static glm::mat4 buildProjectorVP(const Projector& proj, float aspect) {
 // falls back to Stage3DRenderer's default 16:9 × 1 quad. This matches what the
 // user actually sees in the calibration window's right pane.
 // Order: [0]=TL, [1]=TR, [2]=BR, [3]=BL (drawMappingSurface convention).
-static void computeScreenWorldCorners(const Screen& screen,
+static void computeScreenWorldCorners(const bus::ScreenSnapshot& screen,
                                       const MeshData* mesh,
                                       glm::vec3 corners[4]) {
     static constexpr float kScreenElevation = 0.5f; // matches Stage3DRenderer
@@ -512,83 +511,91 @@ static void computeScreenWorldCorners(const Screen& screen,
     renderer->drawColoredQuad(T, color, 1.0f);
 }
 
-TextureRef OutputManager::resolveSourceTexture(const OutputDisplay& output) const {
-    // Projector source: find the projector's target screen.
-    if (output.sourceProjector != entt::null &&
-        m_registry.valid(output.sourceProjector) &&
-        m_registry.all_of<Projector>(output.sourceProjector)) {
-        const auto& proj = m_registry.get<Projector>(output.sourceProjector);
-        entt::entity target = entt::null;
-        if (proj.targetSurfaceCount > 0 &&
-            m_registry.valid(proj.targetSurfaces[0]) &&
-            m_registry.all_of<Screen>(proj.targetSurfaces[0]))
-            target = proj.targetSurfaces[0];
-        if (target == entt::null) {
-            for (auto [e, s] : m_registry.view<Screen>().each())
-                if (s.visible && s.renderTargetValid && s.renderTargetSlot != UINT32_MAX) { target = e; break; }
-        }
-        if (target != entt::null) {
-            const auto& s = m_registry.get<Screen>(target);
-            if (s.renderTargetValid && s.renderTargetSlot != UINT32_MAX)
-                return m_renderer->getComposeTargetTexture(s.renderTargetSlot);
-        }
+TextureRef OutputManager::resolveSourceTexture(
+        const bus::OutputSnapshot& output,
+        const std::vector<bus::ScreenSnapshot>& screens,
+        const std::vector<bus::ProjectorSnapshot>& projectors) const {
+    auto findScreenByEntity = [&](std::uint64_t entityId) -> const bus::ScreenSnapshot* {
+        for (const auto& s : screens)
+            if (s.entity == entityId) return &s;
+        return nullptr;
+    };
+    auto textureForScreen = [&](const bus::ScreenSnapshot& s) -> TextureRef {
+        if (s.renderTargetValid && s.renderTargetSlot != UINT32_MAX)
+            return m_renderer->getComposeTargetTexture(s.renderTargetSlot);
         return TextureRef::invalid();
+    };
+
+    // Projector source: find the projector's target screen.
+    if (output.sourceProjector != 0) {
+        for (const auto& proj : projectors) {
+            if (proj.entity != output.sourceProjector) continue;
+            // Use first target surface if set.
+            if (proj.targetSurfaceCount > 0 && proj.targetSurfaces[0] != 0) {
+                if (const auto* s = findScreenByEntity(proj.targetSurfaces[0]))
+                    return textureForScreen(*s);
+            }
+            // Fallback: first visible screen.
+            for (const auto& s : screens)
+                if (s.visible && s.renderTargetValid && s.renderTargetSlot != UINT32_MAX)
+                    return textureForScreen(s);
+            return TextureRef::invalid();
+        }
     }
 
-    // Explicit route: use the Screen the user assigned (if valid).
-    if (output.sourceScreen != entt::null &&
-        m_registry.valid(output.sourceScreen) &&
-        m_registry.all_of<Screen>(output.sourceScreen)) {
-        const auto& s = m_registry.get<Screen>(output.sourceScreen);
-        if (s.renderTargetValid && s.renderTargetSlot != UINT32_MAX) {
-            return m_renderer->getComposeTargetTexture(s.renderTargetSlot);
-        }
+    // Explicit route: output.sourceScreen.
+    if (output.sourceScreen != 0) {
+        if (const auto* s = findScreenByEntity(output.sourceScreen))
+            return textureForScreen(*s);
     }
 
     // Fallback: first visible Screen with a live compose target.
-    auto view = m_registry.view<Screen>();
-    for (auto [entity, screen] : view.each()) {
-        if (!screen.visible) continue;
-        if (!screen.renderTargetValid || screen.renderTargetSlot == UINT32_MAX) continue;
-        return m_renderer->getComposeTargetTexture(screen.renderTargetSlot);
+    for (const auto& s : screens) {
+        if (!s.visible) continue;
+        auto ref = textureForScreen(s);
+        if (ref.valid()) return ref;
     }
 
     return TextureRef::invalid();
 }
 
-void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef compositedTexture) {
-    if (!m_renderer || !m_registry.valid(outputEntity)) {
-        return;
-    }
+void OutputManager::renderToOutput(
+        const bus::OutputSnapshot& output,
+        uint32_t windowSlot,
+        TextureRef compositedTexture,
+        const std::vector<bus::MappingSurfaceSnapshot>& surfaces,
+        const std::vector<bus::ProjectorSnapshot>& projectors,
+        const std::vector<bus::ScreenSnapshot>& screens) {
+    if (!m_renderer || !compositedTexture.valid()) return;
 
-    auto& output = m_registry.get<OutputDisplay>(outputEntity);
-    if (output.outputWindowSlot == UINT32_MAX) return;
-    if (!compositedTexture.valid()) return;
-
-    m_renderer->beginOutputFrame(output.outputWindowSlot);
-    m_renderer->clearOutputFrame(output.outputWindowSlot, 0.0f, 0.0f, 0.0f, 1.0f);
+    m_renderer->beginOutputFrame(windowSlot);
+    m_renderer->clearOutputFrame(windowSlot, 0.0f, 0.0f, 0.0f, 1.0f);
 
     // Projector-linked output: render the screen content as seen from the projector's
     // camera. Project the screen's 3D corners through the projector VP to get NDC
     // positions, then use drawMappingSurface for perspective-correct warping.
-    if (output.sourceProjector != entt::null &&
-        m_registry.valid(output.sourceProjector) &&
-        m_registry.all_of<Projector>(output.sourceProjector)) {
-        const auto& proj = m_registry.get<Projector>(output.sourceProjector);
+    if (output.sourceProjector != 0) {
+        // Find projector snapshot
+        const bus::ProjectorSnapshot* projPtr = nullptr;
+        for (const auto& p : projectors)
+            if (p.entity == output.sourceProjector) { projPtr = &p; break; }
 
-        // Find the target screen entity (same resolution logic as resolveSourceTexture).
-        entt::entity screenEntity = entt::null;
-        if (proj.targetSurfaceCount > 0 &&
-            m_registry.valid(proj.targetSurfaces[0]) &&
-            m_registry.all_of<Screen>(proj.targetSurfaces[0]))
-            screenEntity = proj.targetSurfaces[0];
-        if (screenEntity == entt::null) {
-            for (auto [e, s] : m_registry.view<Screen>().each())
-                if (s.visible) { screenEntity = e; break; }
+        if (projPtr) {
+        const auto& proj = *projPtr;
+
+        // Find the target screen snapshot (same resolution logic as resolveSourceTexture).
+        const bus::ScreenSnapshot* screenSnap = nullptr;
+        if (proj.targetSurfaceCount > 0 && proj.targetSurfaces[0] != 0) {
+            for (const auto& s : screens)
+                if (s.entity == proj.targetSurfaces[0]) { screenSnap = &s; break; }
+        }
+        if (!screenSnap) {
+            for (const auto& s : screens)
+                if (s.visible) { screenSnap = &s; break; }
         }
 
-        if (screenEntity != entt::null) {
-            const auto& screen = m_registry.get<Screen>(screenEntity);
+        if (screenSnap) {
+            const auto& screen = *screenSnap;
 
             // Projector mesh-render pipeline: pose → per-vertex k1/k2 lens
             // distortion → optional IDW residual warp → triangle. The
@@ -600,11 +607,18 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
 
             // Resolve mesh — when present, render per-triangle so the projector
             // output matches what the calibration window's right pane shows.
+            // Mesh data stays in the registry (read-only, read-mostly).
+            // Stage 4 will move this to a renderer-side mesh store via
+            // bus::ProvisionMesh (open question #1 in the plan).
             const MeshData* mesh = nullptr;
-            if (m_registry.valid(screen.modelEntity) &&
-                m_registry.all_of<Model>(screen.modelEntity)) {
-                const auto& model = m_registry.get<Model>(screen.modelEntity);
-                if (model.mesh.isValid()) mesh = &model.mesh;
+            {
+                const entt::entity modelEnt = static_cast<entt::entity>(screen.modelEntity);
+                if (screen.modelEntity != 0 &&
+                    m_registry.valid(modelEnt) &&
+                    m_registry.all_of<Model>(modelEnt)) {
+                    const auto& model = m_registry.get<Model>(modelEnt);
+                    if (model.mesh.isValid()) mesh = &model.mesh;
+                }
             }
 
             float aspect = output.height > 0 ? static_cast<float>(output.width) / output.height
@@ -801,9 +815,14 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
             }
         }
 
-        m_renderer->endOutputFrame(output.outputWindowSlot);
+        m_renderer->endOutputFrame(windowSlot);
         return;
-    }
+        } // if (projPtr)
+
+        // projPtr not found — fall through to a black frame.
+        m_renderer->endOutputFrame(windowSlot);
+        return;
+    } // if (output.sourceProjector != 0)
 
     // Projection-mapping render order (Disguise model):
     //   compose target -> InputRegion pre-crop -> per-surface warp + source UVs
@@ -816,29 +835,28 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
     //
     // Corner ordering matches the mapping shader: [0]=TL, [1]=TR, [2]=BR, [3]=BL
 
-    auto surfView = m_registry.view<MappingSurface>();
     bool drewAny = false;
-    for (auto [surfEntity, surf] : surfView.each()) {
+    for (const auto& surf : surfaces) {
         if (!surf.visible) continue;
         if (surf.outputIndex != output.outputIndex) continue;
 
         // Combine output's InputRegion pre-crop with surface's own sub-UVs.
         glm::vec2 combinedUVs[4];
         for (int i = 0; i < 4; ++i) {
-            combinedUVs[i].x = output.inputRegion.x + surf.sourceUVs[i].x * output.inputRegion.width;
-            combinedUVs[i].y = output.inputRegion.y + surf.sourceUVs[i].y * output.inputRegion.height;
+            combinedUVs[i].x = output.inputRegionX + surf.sourceUVs[i][0] * output.inputRegionWidth;
+            combinedUVs[i].y = output.inputRegionY + surf.sourceUVs[i][1] * output.inputRegionHeight;
         }
 
         glm::vec2 corners[4] = {
-            surf.corners[0],
-            surf.corners[1],
-            surf.corners[2],
-            surf.corners[3],
+            {surf.corners[0][0], surf.corners[0][1]},
+            {surf.corners[1][0], surf.corners[1][1]},
+            {surf.corners[2][0], surf.corners[2][1]},
+            {surf.corners[3][0], surf.corners[3][1]},
         };
 
         const glm::vec4 softEdges(
-            surf.softEdge.left, surf.softEdge.right,
-            surf.softEdge.top,  surf.softEdge.bottom);
+            surf.softEdgeLeft, surf.softEdgeRight,
+            surf.softEdgeTop,  surf.softEdgeBottom);
 
         m_renderer->drawMappingSurface(
             compositedTexture,
@@ -860,10 +878,10 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
             { 1.0f, -1.0f},
             {-1.0f, -1.0f},
         };
-        const float u0 = output.inputRegion.x;
-        const float v0 = output.inputRegion.y;
-        const float u1 = u0 + output.inputRegion.width;
-        const float v1 = v0 + output.inputRegion.height;
+        const float u0 = output.inputRegionX;
+        const float v0 = output.inputRegionY;
+        const float u1 = u0 + output.inputRegionWidth;
+        const float v1 = v0 + output.inputRegionHeight;
         glm::vec2 sourceUVs[4] = {
             {u0, v0}, {u1, v0}, {u1, v1}, {u0, v1},
         };
@@ -873,7 +891,7 @@ void OutputManager::renderToOutput(entt::entity outputEntity, TextureRef composi
             output.brightness, output.gamma, 1.0f);
     }
 
-    m_renderer->endOutputFrame(output.outputWindowSlot);
+    m_renderer->endOutputFrame(windowSlot);
 }
 
 } // namespace entity

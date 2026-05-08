@@ -6,14 +6,20 @@
 #include "entity/core/Settings.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include <entt/entt.hpp>
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 #include <filesystem>
 #include <string>
 
 // Forward declarations
 struct GLFWwindow;
+
+// Included for bus::SceneSnapshot cached in Engine (show thread).
+#include "entity/bus/Message.hpp"
 
 namespace entity {
 
@@ -812,6 +818,27 @@ private:
     double m_fpsAccumulator{0.0};
     uint32_t m_fpsFrameCount{0};
     uint32_t m_currentFPS{0};
+
+    // Stage 3: Show thread. Owns Director tick, RenderFrame production/
+    // consumption, CompositorSystem, OutputManager, and projector Present.
+    // Editor thread keeps GLFW + ImGui + editor swap chain. This split means
+    // Win32 modal loops (title-bar drag, resize) cannot stall the show.
+    std::thread           m_showThread;
+    std::atomic<bool>     m_showStopRequested{false};
+    // Incremented once per show tick. Integration tests read this to assert
+    // the show thread advanced while the editor thread was stalled.
+    std::atomic<uint64_t> m_showFrameCount{0};
+
+    // Cached scene snapshot for the show thread. Editor half of
+    // buildRenderFrame publishes via D2R; show thread merges it in.
+    bus::SceneSnapshot    m_cachedSceneSnapshot;
+
+    // The show thread's body.
+    void showThreadMain();
+
+public:
+    uint64_t getShowFrameCount() const { return m_showFrameCount.load(std::memory_order_relaxed); }
+private:
 
     // State
     bool m_initialized{false};

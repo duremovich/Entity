@@ -56,7 +56,9 @@
 #include <filesystem>
 #include <cassert>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 namespace entity {
 
@@ -216,6 +218,12 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // travels through this transport. In-process today; Phase E swaps the
     // implementation without touching the wire format.
     m_transport = std::make_unique<bus::InMemoryMessageTransport>();
+
+    // Wire transport into CompositorSystem so it can post ScreenRenderTargetAllocated
+    // R2D replies from the show thread instead of writing the registry directly.
+    if (auto* compositor = m_rendererService->getCompositorSystem()) {
+        compositor->setTransport(m_transport.get());
+    }
 
     // Phase D entry, subtask 7: capture-command request/reply broker on
     // the Director side needs both the transport (to publish requests)
@@ -500,6 +508,14 @@ void Engine::shutdown() {
     // Stop running if still active
     m_running = false;
 
+    // Join the show thread BEFORE any subsystem teardown. The show thread
+    // holds raw pointers into m_renderer, m_outputManager, etc.; tearing
+    // those down while the thread is still running causes use-after-free.
+    m_showStopRequested.store(true, std::memory_order_release);
+    if (m_showThread.joinable()) {
+        m_showThread.join();
+    }
+
     // Fire plugin shutdown hooks first, before any subsystem teardown. Plugins
     // that spawned worker threads use this to join them while the dispatcher
     // and bus are still alive (a worker that races a torn-down engine would
@@ -721,70 +737,63 @@ void Engine::run() {
         return;
     }
 
-    std::cout << "Starting main loop..." << std::endl;
+    std::cout << "Starting main loop (show thread spawned)..." << std::endl;
     m_running = true;
+    m_showStopRequested.store(false, std::memory_order_relaxed);
+    m_showThread = std::thread([this]() { showThreadMain(); });
 
     while (m_running && !glfwWindowShouldClose(m_window)) {
-        // Update timing
-        m_timeAuthority->updateTiming();
-        double deltaTime = m_timeAuthority->getDeltaTime();
-
-        // Detect potential freeze (frame took > 100ms)
-        if (deltaTime > 0.1) {
-            std::cout << "[FREEZE WARNING] Frame " << m_timeAuthority->getFrameCount() << " took "
-                      << (deltaTime * 1000.0) << "ms (timeline frame: "
-                      << (m_timeline ? m_timeline->getCurrentFrame() : 0) << ")" << std::endl;
+        // FPS tracking (editor-side; measures editor frame rate).
+        {
+            if (m_timeAuthority) {
+                const double dt = m_timeAuthority->getDeltaTime();
+                m_fpsAccumulator += dt;
+                m_fpsFrameCount++;
+                if (m_fpsAccumulator >= 0.5) {
+                    m_currentFPS = static_cast<uint32_t>(m_fpsFrameCount / m_fpsAccumulator);
+                    m_fpsAccumulator = 0.0;
+                    m_fpsFrameCount  = 0;
+                    const std::string title =
+                        "Entity Media Server - Editor | " + std::to_string(m_currentFPS) + " FPS";
+                    glfwSetWindowTitle(m_window, title.c_str());
+                }
+            }
         }
 
-        // Update FPS counter
-        m_fpsAccumulator += deltaTime;
-        m_fpsFrameCount++;
-
-        // Update FPS display every 0.5 seconds
-        if (m_fpsAccumulator >= 0.5) {
-            m_currentFPS = static_cast<uint32_t>(m_fpsFrameCount / m_fpsAccumulator);
-            m_fpsAccumulator = 0.0;
-            m_fpsFrameCount = 0;
-
-            // Update window title with FPS
-            std::string title = "Entity Media Server - Editor | " + std::to_string(m_currentFPS) + " FPS";
-            glfwSetWindowTitle(m_window, title.c_str());
-        }
-
-        // Process events
+        // Editor-only work: GLFW events, Editor-affinity commands, ImGui.
         processEvents();
 
-        // ADR-0009 — Launcher mode: editor UI is suppressed and the per-
-        // tick simulation work is skipped entirely. Render still runs;
-        // the launcher renders inside it.
+        // Stage 3c: condvar gate removed. Show thread paces itself via Present(1,0)
+        // or QPC sleep_until; editor and show run at their own rates.
+
+        // ADR-0009 — Launcher mode: editor renders the launcher only.
         if (m_showLauncher) {
             render();
-            m_timeAuthority->incrementFrameCount();
             continue;
         }
 
-        // Process command queue
+        // Editor-affinity commands (undo/redo, UI mutations).
+        // Editor thread is sole registry writer; no lock needed.
         if (m_commandDispatcher) {
-            m_commandDispatcher->processQueue(*this);
+            m_commandDispatcher->processQueue(*this, Affinity::Editor);
         }
-
-        // Update systems
+        // Editor-side simulation work: timeline, section scheduler, decode.
         update();
 
-        // Render
+        // Editor-half of scene snapshot: snapshot Screen/Surface/Projector/
+        // Output registry views and publish latest-wins on D2R.
+        if (m_transport && m_timeAuthority) {
+            bus::SceneSnapshot snap;
+            m_timeAuthority->buildSceneSnapshot(snap);
+            m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{snap}));
+        }
+
+        // Editor-side render: back buffer, ImGui, editor swap chain.
         render();
 
-        // Subtask 7: drain Renderer->Director replies (CaptureCompleted)
-        // so capture-broker resolutions land on the script-results object
-        // before this iteration's finishScript check below. Same-tick
-        // resolution keeps the existing ctest semantics where Exit can
-        // immediately follow CaptureHash without losing the result.
+        // Drain R2D replies from the show thread (CaptureCompleted, etc).
         drainRendererToDirector();
 
-        // Defer-finishScript pump: processQueue no longer auto-finishes
-        // the script. We do it here, after the bus has resolved any
-        // outstanding capture replies, so the written script_result.json
-        // reflects the final state.
         if (m_commandDispatcher && m_commandDispatcher->scriptReadyToFinish()) {
             auto* broker = m_director ? m_director->getCaptureBroker() : nullptr;
             if (!broker || !broker->hasPending()) {
@@ -792,9 +801,7 @@ void Engine::run() {
             }
         }
 
-        // Bail on GPU device-lost. Keep rendering into a dead device and you
-        // get silent hangs, not useful for a live show. Shut down cleanly so
-        // the operator knows they need to restart.
+        // Bail on GPU device-lost.
         if (m_renderer && m_renderer->isDeviceLost()) {
             std::cerr << "[Engine] D3D12 device lost — exiting main loop." << std::endl;
             if (m_transport && !m_deviceLostPosted) {
@@ -808,14 +815,158 @@ void Engine::run() {
             m_running = false;
         }
 
-        autoSaveTick(deltaTime);
+        autoSaveTick(m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0);
         pollTranscodes();
         pollProbeCompletions();
+    }
 
-        m_timeAuthority->incrementFrameCount();
+    // Stop the show thread.
+    m_showStopRequested.store(true, std::memory_order_release);
+    if (m_showThread.joinable()) {
+        m_showThread.join();
     }
 
     std::cout << "Main loop exited." << std::endl;
+}
+
+void Engine::showThreadMain() {
+    // ShowClock: QPC-based 60 Hz pacing used when no physical output provides
+    // vsync via Present(1,0). Keeps the show loop from spinning flat-out when
+    // idling in editor-preview-only mode.
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kShowPeriod = std::chrono::nanoseconds(16'666'667); // ~60 Hz
+    auto nextTick = Clock::now() + kShowPeriod;
+
+    while (!m_showStopRequested.load(std::memory_order_acquire)) {
+        // Stage 3c: show thread paces itself. No condvar gate with the editor.
+        // Show-side timing update.
+        if (m_timeAuthority) {
+            m_timeAuthority->updateTiming();
+        }
+
+        // Consume any SceneSnapshot published by the editor half.
+        if (m_transport) {
+            m_transport->drain(bus::Direction::D2R, [this](std::vector<std::uint8_t>&& bytes) {
+                auto msg = bus::deserialize(bytes);
+                if (!msg) return;
+                std::visit([this](auto& body) {
+                    using T = std::decay_t<decltype(body)>;
+                    if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
+                        m_cachedSceneSnapshot = std::move(body);
+                    }
+                    // Other D2R messages are handled in the show-side drain below.
+                }, *msg);
+            });
+        }
+
+        // Launcher mode: show thread idles at 60 Hz with an empty RenderFrame.
+        if (m_showLauncher) {
+            m_showFrameCount.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_until(nextTick);
+            nextTick += kShowPeriod;
+            continue;
+        }
+
+        // Drain Show-affinity commands (transport, playback control).
+        // Editor-affinity commands are skipped here and remain in the queue
+        // for the editor thread to consume on its next tick.
+        if (m_commandDispatcher) {
+            m_commandDispatcher->processQueue(*this, Affinity::Show);
+        }
+
+        // Build per-tick RenderFrame. No registry lock needed here — all clip/
+        // layer/phase data comes from m_cachedSceneSnapshot::clipCatalog, populated
+        // by buildSceneSnapshot on the editor thread. Zero registry reads.
+        bus::RenderFrame lastRF;
+        if (m_transport && m_timeAuthority && m_playbackPresenter) {
+            m_timeAuthority->buildRenderFrame(lastRF, m_cachedSceneSnapshot);
+            m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{lastRF}));
+        }
+
+        // Drain D2R: deliver RenderFrame to PlaybackPresenter + handle controls.
+        if (m_transport) {
+            m_transport->drain(bus::Direction::D2R, [this, &lastRF](std::vector<std::uint8_t>&& bytes) {
+                auto msg = bus::deserialize(bytes);
+                if (!msg) return;
+                std::visit([this, &lastRF](auto& body) {
+                    using T = std::decay_t<decltype(body)>;
+                    if constexpr (std::is_same_v<T, bus::RenderFrame>) {
+                        if (m_playbackPresenter) m_playbackPresenter->present(body);
+                        lastRF = body;
+                    } else if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
+                        m_cachedSceneSnapshot = std::move(body);
+                    } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
+                        if (m_outputManager) {
+                            m_outputManager->setOutputEnabled(
+                                static_cast<entt::entity>(body.entity), body.enabled);
+                        }
+                    } else if constexpr (std::is_same_v<T, bus::ApplySettings>) {
+                        if (m_frameCache) {
+                            m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
+                        }
+                    } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
+                        bus::ResourcesProvisioned reply{};
+                        reply.entity = body.entity;
+                        if (m_renderer) {
+                            const uint32_t slot = m_renderer->allocateVideoTextureSlot();
+                            if (slot == UINT32_MAX) {
+                                reply.descriptorSlot = -1;
+                                reply.ok = false;
+                                reply.errorMessage = "no available video texture slots";
+                            } else {
+                                reply.descriptorSlot = static_cast<int>(slot);
+                                reply.ok = true;
+                            }
+                        } else {
+                            reply.descriptorSlot = -1;
+                            reply.ok = false;
+                            reply.errorMessage = "renderer not initialized";
+                        }
+                        if (m_transport) {
+                            m_transport->send(bus::Direction::R2D,
+                                              bus::serialize(bus::Message{reply}));
+                        }
+                    }
+                }, *msg);
+            });
+        }
+
+        // Show frame: copy uploads + compositor + output draws + output Present.
+        if (m_renderer) {
+            drainCaptureRequestsPreFrame();
+            m_renderer->beginShowFrame();
+
+            // Stage 4: compositor->update no longer writes registry.
+            // ensureScreenRenderTarget posts ScreenRenderTargetAllocated R2D
+            // so the editor drains and writes Screen::renderTargetSlot itself.
+            // No registry lock needed here.
+            if (auto* compositor = m_rendererService ? m_rendererService->getCompositorSystem() : nullptr) {
+                double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
+                compositor->update(lastRF, m_registry, static_cast<float>(deltaTime));
+            }
+            if (m_outputManager) {
+                m_outputManager->renderOutputs(lastRF);
+            }
+
+            m_renderer->endShowFrame();
+        }
+
+        if (m_timeAuthority) {
+            m_timeAuthority->incrementFrameCount();
+        }
+
+        m_showFrameCount.fetch_add(1, std::memory_order_relaxed);
+
+        // QPC pacing: when the show frame finished before the next 60 Hz tick
+        // (i.e. no physical output's Present(1,0) consumed the time), sleep
+        // until the next boundary so we don't spin. If the frame took longer
+        // than one period we skip the sleep and let the next tick run immediately.
+        const auto now = Clock::now();
+        if (now < nextTick) {
+            std::this_thread::sleep_until(nextTick);
+        }
+        nextTick += kShowPeriod;
+    }
 }
 
 void Engine::requestExit() {
@@ -1052,8 +1203,8 @@ void Engine::update() {
     }
     auto t1 = std::chrono::high_resolution_clock::now();
 
-    // NOTE: updateClipVideos() moved to render() - must be called AFTER beginFrame()
-    // because beginFrame() resets the command list
+    // NOTE: updateClipVideos() moved to render() - must be called AFTER beginShowFrame()
+    // because beginShowFrame() resets the show command list
 
     // Legacy single-clip decode (for backwards compatibility)
     if (m_decoder && m_decoder->isOpen() && m_currentFrame) {
@@ -1067,7 +1218,7 @@ void Engine::update() {
 
     // Update Director + Renderer-side systems by hand. CompositorSystem
     // stays out of this list -- it must run inside render() between
-    // beginFrame/endFrame so its draw calls land on a recording command
+    // beginShowFrame/endShowFrame so its draw calls land on a recording command
     // list. Order: Animation (Director) -> Decode (Renderer). DecodeSystem
     // doesn't depend on Animation; the order is "Director-side first,
     // Renderer-side second" to match the eventual director.tick() ->
@@ -1148,12 +1299,12 @@ void Engine::render() {
         // the blocking load with that overlay still on the front
         // buffer. On failure, fall back to the launcher (recoverable).
         if (!m_pendingFileAssociationLoad.empty() && !m_showLauncher) {
-            m_renderer->beginFrame();
+            m_renderer->beginEditorFrame();
             m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
             m_renderer->beginImGuiFrame();
             paintLauncherLoadingOverlay(m_pendingFileAssociationLoad);
             m_renderer->endImGuiFrame();
-            m_renderer->endFrame();
+            m_renderer->endEditorFrame();
 
             if (m_fileAssocPhase == FileAssocPhase::Idle) {
                 // Frame N — overlay presented, defer the load to N+1
@@ -1179,7 +1330,7 @@ void Engine::render() {
         // systems (CompositorSystem, OutputManager) before a project
         // exists.
         if (m_showLauncher) {
-            m_renderer->beginFrame();
+            m_renderer->beginEditorFrame();
             m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
             m_renderer->beginImGuiFrame();
 
@@ -1193,7 +1344,7 @@ void Engine::render() {
             if (!m_pendingLauncherLoad.empty()) {
                 paintLauncherLoadingOverlay(m_pendingLauncherLoad);
                 m_renderer->endImGuiFrame();
-                m_renderer->endFrame();
+                m_renderer->endEditorFrame();
                 auto path = std::move(m_pendingLauncherLoad);
                 m_pendingLauncherLoad.clear();
                 onLauncherOpenProject(path);
@@ -1212,7 +1363,7 @@ void Engine::render() {
                         m_pendingLauncherLoad = result.path;
                         paintLauncherLoadingOverlay(result.path);
                         m_renderer->endImGuiFrame();
-                        m_renderer->endFrame();
+                        m_renderer->endEditorFrame();
                         return;
                     case ProjectLauncher::Action::Quit:
                         requestExit();
@@ -1222,116 +1373,17 @@ void Engine::render() {
                 }
             }
             m_renderer->endImGuiFrame();
-            m_renderer->endFrame();
+            m_renderer->endEditorFrame();
             return;
         }
 
-        auto t0 = std::chrono::high_resolution_clock::now();
+        // Editor frame: back-buffer clear, ImGui, editor Present.
+        // Show-side work (copy uploads, compositor, output draws, endShowFrame)
+        // now runs in showThreadMain().
+        m_renderer->beginEditorFrame();
 
-        // Subtask 7: capture-request drain runs *before* beginFrame.
-        // tonemapAndReadbackComposeTarget and captureBackBufferToPNG
-        // both reset the command list themselves and assume the GPU is
-        // settled (no in-flight beginFrame work). Anything else on D2R
-        // (RenderFrame, SetOutputEnabled, ApplySettings) gets stashed
-        // here and replayed after beginFrame.
-        drainCaptureRequestsPreFrame();
-
-        m_renderer->beginFrame();
-        auto t1 = std::chrono::high_resolution_clock::now();
-
-        // Phase D entry, subtask 8: Director publishes a per-tick
-        // RenderFrame to the bus; Renderer drains it and applies it via
-        // PlaybackPresenter. Sequential ticks on the main thread make
-        // this a single send + drain pair per frame -- the in-memory
-        // transport is just a serialization point. Phase E swaps the
-        // transport for UDP without touching either endpoint.
-        //
-        // Must run after beginFrame() so the GPU upload calls land on a
-        // recording command list.
-        bus::RenderFrame lastRF;
-        if (m_transport) {
-            if (m_timeAuthority && m_playbackPresenter) {
-                m_timeAuthority->buildRenderFrame(lastRF);
-                m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{lastRF}));
-            }
-            m_transport->drain(bus::Direction::D2R, [this, &lastRF](std::vector<std::uint8_t>&& bytes) {
-                auto msg = bus::deserialize(bytes);
-                if (!msg) return;
-                std::visit([this, &lastRF](auto& body) {
-                    using T = std::decay_t<decltype(body)>;
-                    if constexpr (std::is_same_v<T, bus::RenderFrame>) {
-                        if (m_playbackPresenter) m_playbackPresenter->present(body);
-                        lastRF = body;
-                    } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
-                        if (m_outputManager) {
-                            m_outputManager->setOutputEnabled(
-                                static_cast<entt::entity>(body.entity), body.enabled);
-                        }
-                    } else if constexpr (std::is_same_v<T, bus::ApplySettings>) {
-                        if (m_frameCache) {
-                            m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
-                        }
-                        // OCIO config-path reload still requires a restart;
-                        // tooltip in Preferences flags this. The path travels
-                        // here so a future hot-reload subtask only touches
-                        // Renderer-side code.
-                        (void)body.ocioConfigPath;
-                    } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
-                        // Renderer-side: allocate the GPU descriptor slot.
-                        // ClipDecodeState already carries the decoder
-                        // (Director opened it to read metadata before
-                        // publishing); spawning the actual DecodeWorker
-                        // happens lazily via DecodeSystem. Reply on R2D so
-                        // Director writes the slot back to the VideoTexture
-                        // component this same tick.
-                        bus::ResourcesProvisioned reply{};
-                        reply.entity = body.entity;
-                        if (m_renderer) {
-                            const uint32_t slot = m_renderer->allocateVideoTextureSlot();
-                            if (slot == UINT32_MAX) {
-                                reply.descriptorSlot = -1;
-                                reply.ok = false;
-                                reply.errorMessage = "no available video texture slots";
-                            } else {
-                                reply.descriptorSlot = static_cast<int>(slot);
-                                reply.ok = true;
-                            }
-                        } else {
-                            reply.descriptorSlot = -1;
-                            reply.ok = false;
-                            reply.errorMessage = "renderer not initialized";
-                        }
-                        if (m_transport) {
-                            m_transport->send(bus::Direction::R2D,
-                                              bus::serialize(bus::Message{reply}));
-                        }
-                    }
-                    // Other variant alternatives are R2D-only or arrive on
-                    // future subtasks; ignore them here.
-                }, *msg);
-            });
-        }
-        auto t2 = std::chrono::high_resolution_clock::now();
-
-        // Clear to a nice teal/cyan color (to warm your heart!)
+        // Clear back buffer to the editor background color.
         m_renderer->clear(0.0f, 0.5f, 0.6f, 1.0f);
-
-        // Render all layers via CompositorSystem. Must run inside the
-        // beginFrame/endFrame window so draws land on the open command
-        // list -- this is why it isn't in update().
-        if (auto* compositor = m_rendererService ? m_rendererService->getCompositorSystem() : nullptr) {
-            double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
-            compositor->update(lastRF, m_registry, static_cast<float>(deltaTime));
-        }
-
-        // Physical outputs: fan out each enabled output's compose target to
-        // its dedicated swap chain. Must run after the compositor (compose
-        // targets are now in SHADER_RESOURCE state) and before ImGui (so the
-        // main RT stays selected for the overlay).
-        if (m_outputManager) {
-            m_outputManager->renderOutputs();
-        }
-        auto t3 = std::chrono::high_resolution_clock::now();
 
         // Begin ImGui frame for UI rendering
         m_renderer->beginImGuiFrame();
@@ -1349,27 +1401,8 @@ void Engine::render() {
 
         // End ImGui frame and render UI
         m_renderer->endImGuiFrame();
-        auto t4 = std::chrono::high_resolution_clock::now();
 
-        m_renderer->endFrame();
-        auto t5 = std::chrono::high_resolution_clock::now();
-
-        // Log timing if any stage took > 50ms
-        auto beginFrameMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-        auto clipVideosMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-        auto compositorMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
-        auto imguiMs = std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count();
-        auto endFrameMs = std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count();
-        auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count();
-
-        if (totalMs > 50) {
-            std::cout << "[RENDER TIMING] Total=" << totalMs << "ms"
-                      << " (beginFrame=" << beginFrameMs
-                      << ", clipVideos=" << clipVideosMs
-                      << ", compositor=" << compositorMs
-                      << ", imgui=" << imguiMs
-                      << ", endFrame=" << endFrameMs << ")" << std::endl;
-        }
+        m_renderer->endEditorFrame();
     }
 }
 
@@ -3202,7 +3235,7 @@ void Engine::publishProvisionClipResources(const bus::ProvisionClipResources& ms
 void Engine::drainCaptureRequestsPreFrame() {
     if (!m_transport) return;
     // Skim D2R for capture requests; everything else gets re-published so
-    // the post-beginFrame drain below picks it up in the original order.
+    // the post-beginShowFrame drain below picks it up in the original order.
     std::vector<std::vector<std::uint8_t>> deferred;
     m_transport->drain(bus::Direction::D2R, [&](std::vector<std::uint8_t>&& bytes) {
         auto msg = bus::deserialize(bytes);
@@ -3314,6 +3347,15 @@ void Engine::drainRendererToDirector() {
                                   << ": " << body.errorMessage << std::endl;
                     }
                 }
+            } else if constexpr (std::is_same_v<T, bus::ScreenRenderTargetAllocated>) {
+                // Show thread allocated a compose-target slot for a Screen.
+                // Write it back into the Screen component on the editor thread
+                // so the next SceneSnapshot carries the valid slot.
+                const auto entity = static_cast<entt::entity>(body.entity);
+                if (auto* screen = m_registry.try_get<Screen>(entity)) {
+                    screen->renderTargetSlot  = body.slot;
+                    screen->renderTargetValid = (body.slot != UINT32_MAX);
+                }
             } else if constexpr (std::is_same_v<T, bus::DeviceLost>) {
                 // Autosave-on-device-loss hook. The Engine already observed
                 // isDeviceLost() in the main loop and set m_running=false;
@@ -3323,7 +3365,8 @@ void Engine::drainRendererToDirector() {
                           << "(HRESULT=0x" << std::hex << body.hresult << std::dec
                           << "): " << body.reason << std::endl;
             }
-            // FrameDropped is informational; no action needed in this path.
+            // FrameDropped, CreateOutputWindowRequest, OutputWindowReady:
+            // informational or deferred — no action needed in this path.
         }, *msg);
     });
 }
