@@ -883,58 +883,61 @@ void Engine::showThreadMain() {
             m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{lastRF}));
         }
 
-        // Drain D2R: deliver RenderFrame to PlaybackPresenter + handle controls.
-        if (m_transport) {
-            m_transport->drain(bus::Direction::D2R, [this, &lastRF](std::vector<std::uint8_t>&& bytes) {
-                auto msg = bus::deserialize(bytes);
-                if (!msg) return;
-                std::visit([this, &lastRF](auto& body) {
-                    using T = std::decay_t<decltype(body)>;
-                    if constexpr (std::is_same_v<T, bus::RenderFrame>) {
-                        if (m_playbackPresenter) m_playbackPresenter->present(body);
-                        lastRF = body;
-                    } else if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
-                        m_cachedSceneSnapshot = std::move(body);
-                    } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
-                        if (m_outputManager) {
-                            m_outputManager->setOutputEnabled(
-                                static_cast<entt::entity>(body.entity), body.enabled);
-                        }
-                    } else if constexpr (std::is_same_v<T, bus::ApplySettings>) {
-                        if (m_frameCache) {
-                            m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
-                        }
-                    } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
-                        bus::ResourcesProvisioned reply{};
-                        reply.entity = body.entity;
-                        if (m_renderer) {
-                            const uint32_t slot = m_renderer->allocateVideoTextureSlot();
-                            if (slot == UINT32_MAX) {
-                                reply.descriptorSlot = -1;
-                                reply.ok = false;
-                                reply.errorMessage = "no available video texture slots";
-                            } else {
-                                reply.descriptorSlot = static_cast<int>(slot);
-                                reply.ok = true;
-                            }
-                        } else {
-                            reply.descriptorSlot = -1;
-                            reply.ok = false;
-                            reply.errorMessage = "renderer not initialized";
-                        }
-                        if (m_transport) {
-                            m_transport->send(bus::Direction::R2D,
-                                              bus::serialize(bus::Message{reply}));
-                        }
-                    }
-                }, *msg);
-            });
-        }
-
         // Show frame: copy uploads + compositor + output draws + output Present.
         if (m_renderer) {
             drainCaptureRequestsPreFrame();
             m_renderer->beginShowFrame();
+
+            // Drain D2R *after* beginShowFrame: PlaybackPresenter::present records
+            // CopyTextureRegion onto m_copyCommandList, which beginShowFrame just
+            // Reset() and reopened. Draining before beginShowFrame would record
+            // into a closed command list and the Reset would wipe the recordings.
+            if (m_transport) {
+                m_transport->drain(bus::Direction::D2R, [this, &lastRF](std::vector<std::uint8_t>&& bytes) {
+                    auto msg = bus::deserialize(bytes);
+                    if (!msg) return;
+                    std::visit([this, &lastRF](auto& body) {
+                        using T = std::decay_t<decltype(body)>;
+                        if constexpr (std::is_same_v<T, bus::RenderFrame>) {
+                            if (m_playbackPresenter) m_playbackPresenter->present(body);
+                            lastRF = body;
+                        } else if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
+                            m_cachedSceneSnapshot = std::move(body);
+                        } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
+                            if (m_outputManager) {
+                                m_outputManager->setOutputEnabled(
+                                    static_cast<entt::entity>(body.entity), body.enabled);
+                            }
+                        } else if constexpr (std::is_same_v<T, bus::ApplySettings>) {
+                            if (m_frameCache) {
+                                m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
+                            }
+                        } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
+                            bus::ResourcesProvisioned reply{};
+                            reply.entity = body.entity;
+                            if (m_renderer) {
+                                const uint32_t slot = m_renderer->allocateVideoTextureSlot();
+                                if (slot == UINT32_MAX) {
+                                    reply.descriptorSlot = -1;
+                                    reply.ok = false;
+                                    reply.errorMessage = "no available video texture slots";
+                                } else {
+                                    reply.descriptorSlot = static_cast<int>(slot);
+                                    reply.ok = true;
+                                }
+                            } else {
+                                reply.descriptorSlot = -1;
+                                reply.ok = false;
+                                reply.errorMessage = "renderer not initialized";
+                            }
+                            if (m_transport) {
+                                m_transport->send(bus::Direction::R2D,
+                                                  bus::serialize(bus::Message{reply}));
+                            }
+                        }
+                    }, *msg);
+                });
+            }
 
             // Stage 4: compositor->update no longer writes registry.
             // ensureScreenRenderTarget posts ScreenRenderTargetAllocated R2D
