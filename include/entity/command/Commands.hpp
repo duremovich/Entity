@@ -360,7 +360,10 @@ public:
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "Exit"; }
     nlohmann::json toJson() const override { return {{"type", "Exit"}}; }
-    Affinity getAffinity() const override { return Affinity::Either; }
+    // Editor (not Either): otherwise the show thread eats Exit out of order
+    // while skipping Editor-affinity commands (AddScreen, ImportVideo, ...)
+    // queued ahead of it by a script, terminating the run early.
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 };
 
