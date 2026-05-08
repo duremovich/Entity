@@ -6,7 +6,9 @@
 
 #include <cstddef>
 #include <mutex>
+#include <optional>
 #include <queue>
+#include <vector>
 
 namespace entity::bus {
 
@@ -14,19 +16,30 @@ namespace entity::bus {
 // mutexes; no worker threads. drain() moves the queue out under the lock
 // then invokes the sink without holding it (so a sink that re-enters
 // send() on the same direction can't deadlock).
+//
+// Latest-wins for RenderFrame on D2R:
+//   A new RenderFrame sent on D2R supersedes any unconsumed prior one in
+//   the channel — only the last one is ever delivered to the consumer.
+//   All other message types keep strict FIFO ordering. This is safe because
+//   RenderFrame is an immutable snapshot (bus CLAUDE.md §4); the consumer
+//   never observed the dropped frames. Other D2R types (ProvisionClipResources,
+//   SetOutputEnabled, etc.) are reply-bearing and must not be dropped.
+//   R2D never carries RenderFrame; its channel is plain FIFO.
 class InMemoryMessageTransport final : public IMessageTransport {
 public:
     void send(Direction d, std::vector<std::uint8_t> bytes) override;
     void drain(Direction d, const Sink& sink) override;
 
-    // Diagnostics for tests + telemetry. Snapshot count; can change between
-    // call and use under contention.
+    // Diagnostics for tests + telemetry. Returns total pending message count
+    // (FIFO queue + 1 if a latest-only RenderFrame slot is occupied).
     std::size_t pending(Direction d) const;
 
 private:
     struct Channel {
         mutable std::mutex mu;
         std::queue<std::vector<std::uint8_t>> q;
+        // Latest-wins slot for RenderFrame (D2R only; always empty on R2D).
+        std::optional<std::vector<std::uint8_t>> latestRenderFrame;
     };
 
     Channel& channel(Direction d);

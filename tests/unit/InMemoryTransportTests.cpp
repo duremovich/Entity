@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -196,4 +197,97 @@ TEST(InMemoryTransport, RoundTripViaSerialization) {
     EXPECT_EQ(got.frameNumber, 7);
     EXPECT_DOUBLE_EQ(got.deltaTime, 0.0166);
     EXPECT_EQ(got.playState, TransportState::Playing);
+}
+
+// ---------------------------------------------------------------------------
+// Latest-wins semantics for RenderFrame on D2R
+// ---------------------------------------------------------------------------
+
+// Helper: build a serialized RenderFrame with a given frameNumber.
+static std::vector<std::uint8_t> makeRF(FrameNumber n) {
+    RenderFrame rf;
+    rf.frameNumber = n;
+    return serialize(Message{rf});
+}
+
+// Helper: build a serialized ProvisionClipResources with a given entity id.
+static std::vector<std::uint8_t> makePCR(std::uint64_t entity) {
+    ProvisionClipResources pcr;
+    pcr.entity = entity;
+    return serialize(Message{pcr});
+}
+
+// Two RenderFrames sent without an intervening drain: only the second
+// (latest) frame should reach the consumer.
+TEST(InMemoryTransport, LatestWins_TwoRenderFrames_OnlyLastDelivered) {
+    InMemoryMessageTransport t;
+    t.send(Direction::D2R, makeRF(1));
+    t.send(Direction::D2R, makeRF(2));
+
+    EXPECT_EQ(t.pending(Direction::D2R), 1u) << "two RFs collapse to one pending";
+
+    std::vector<FrameNumber> frames;
+    t.drain(Direction::D2R, [&](std::vector<std::uint8_t>&& bytes) {
+        auto msg = deserialize(bytes);
+        ASSERT_TRUE(msg.has_value());
+        if (auto* rf = std::get_if<RenderFrame>(&*msg)) {
+            frames.push_back(rf->frameNumber);
+        }
+    });
+
+    ASSERT_EQ(frames.size(), 1u) << "only one RenderFrame delivered";
+    EXPECT_EQ(frames[0], FrameNumber{2}) << "must be the latest frame";
+}
+
+// RenderFrame, then ProvisionClipResources, then RenderFrame: the second RF
+// wins; the ProvisionClipResources arrives in order (after the winning RF).
+TEST(InMemoryTransport, LatestWins_RFandPCRandRF_CorrectOrder) {
+    InMemoryMessageTransport t;
+    t.send(Direction::D2R, makeRF(10));
+    t.send(Direction::D2R, makePCR(42));
+    t.send(Direction::D2R, makeRF(20));
+
+    // 1 slot (latest RF) + 1 FIFO (PCR) = 2 pending
+    EXPECT_EQ(t.pending(Direction::D2R), 2u);
+
+    std::vector<std::string> order;
+    t.drain(Direction::D2R, [&](std::vector<std::uint8_t>&& bytes) {
+        auto msg = deserialize(bytes);
+        ASSERT_TRUE(msg.has_value());
+        std::visit([&](auto& body) {
+            using T = std::decay_t<decltype(body)>;
+            if constexpr (std::is_same_v<T, RenderFrame>) {
+                order.push_back("RF:" + std::to_string(body.frameNumber));
+            } else if constexpr (std::is_same_v<T, ProvisionClipResources>) {
+                order.push_back("PCR:" + std::to_string(body.entity));
+            }
+        }, *msg);
+    });
+
+    ASSERT_EQ(order.size(), 2u);
+    EXPECT_EQ(order[0], "RF:20")  << "latest RF delivered first";
+    EXPECT_EQ(order[1], "PCR:42") << "ProvisionClipResources in FIFO order after RF";
+}
+
+// Two ProvisionClipResources sent without an intervening drain: both must
+// arrive in send order (FIFO — non-RenderFrame messages are never dropped).
+TEST(InMemoryTransport, LatestWins_TwoPCR_BothDeliveredInOrder) {
+    InMemoryMessageTransport t;
+    t.send(Direction::D2R, makePCR(1));
+    t.send(Direction::D2R, makePCR(2));
+
+    EXPECT_EQ(t.pending(Direction::D2R), 2u);
+
+    std::vector<std::uint64_t> entities;
+    t.drain(Direction::D2R, [&](std::vector<std::uint8_t>&& bytes) {
+        auto msg = deserialize(bytes);
+        ASSERT_TRUE(msg.has_value());
+        if (auto* pcr = std::get_if<ProvisionClipResources>(&*msg)) {
+            entities.push_back(pcr->entity);
+        }
+    });
+
+    ASSERT_EQ(entities.size(), 2u) << "both PCR messages must arrive";
+    EXPECT_EQ(entities[0], 1u) << "first PCR in send order";
+    EXPECT_EQ(entities[1], 2u) << "second PCR in send order";
 }
