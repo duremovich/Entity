@@ -319,9 +319,69 @@ void OutputManager::setFullscreen(entt::entity outputEntity, bool fullscreen) {
               << (fullscreen ? "on" : "off") << std::endl;
 }
 
+// Marker-test overlay (TROUBLESHOOTING.md "Output Content Appears Frozen
+// During Editor Drag / Resize / Modal"). Set ENTITY_MARKER_TEST=1 to draw a
+// 20%-size quad in the bottom-right corner of every physical output. Color
+// cycles across 8 hues on rf.frameNumber (Timeline current frame). Regular
+// content keeps rendering underneath — the corner strobe and the user's own
+// content frame counter are independent signals:
+//   strobe ticks normally + content advances → all clear
+//   strobe ticks normally + content frozen   → freeze is downstream of Timeline
+//                                              (decode workers / FrameCache /
+//                                              PlaybackPresenter skip)
+//   strobe slows or freezes + content frozen → Timeline itself isn't
+//                                              advancing on the show thread
+static std::uint64_t s_markerTimelineFrame = 0;
+static bool markerTestEnabled() {
+    static const bool s_enabled = []() {
+        const char* v = std::getenv("ENTITY_MARKER_TEST");
+        return v && v[0] != '0' && v[0] != '\0';
+    }();
+    return s_enabled;
+}
+static void drawMarkerOverlay(IRenderer* renderer) {
+    if (!markerTestEnabled() || !renderer) return;
+    const std::uint64_t phase = s_markerTimelineFrame & 0x7ULL;
+    glm::vec4 color(0.0f, 0.0f, 0.0f, 1.0f);
+    switch (phase) {
+        case 0: color.r = 1.0f; break;                              // red
+        case 1: color.r = 1.0f; color.g = 0.5f; break;              // orange
+        case 2: color.r = color.g = 1.0f; break;                    // yellow
+        case 3: color.g = 1.0f; break;                              // green
+        case 4: color.g = color.b = 1.0f; break;                    // cyan
+        case 5: color.b = 1.0f; break;                              // blue
+        case 6: color.r = color.b = 1.0f; break;                    // magenta
+        case 7: color.r = color.g = color.b = 1.0f; break;          // white
+    }
+    // 20% size, bottom-right corner. NDC: x=[0.6, 1.0], y=[-1.0, -0.6].
+    glm::mat4 T(1.0f);
+    T = glm::translate(T, glm::vec3(0.8f, -0.8f, 0.0f));
+    T = glm::scale(T, glm::vec3(0.2f, 0.2f, 1.0f));
+    renderer->drawColoredQuad(T, color, 1.0f);
+}
+
 void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
     if (!m_initialized || !m_renderer) {
         return;
+    }
+
+    // Marker-test mode (TROUBLESHOOTING.md "Output Content Appears Frozen
+    // During Editor Drag / Resize / Modal"). Set ENTITY_MARKER_TEST=1 to
+    // overlay a 20% corner quad on each physical output, color-cycling on
+    // rf.frameNumber. Regular content rendering still runs underneath, so
+    // the user can compare the strobe (Timeline) against their own content's
+    // frame counter (decode pipeline). See drawMarkerOverlay() above.
+    s_markerTimelineFrame = rf.frameNumber;
+    if (markerTestEnabled()) {
+        static uint64_t s_showCounter = 0;
+        ++s_showCounter;
+        // Log every 10 show frames for finer-grained pace evidence.
+        if ((s_showCounter % 10) == 0) {
+            std::cerr << "[MARKER] showFrame=" << s_showCounter
+                      << " rf.frameNumber=" << rf.frameNumber
+                      << " playState=" << static_cast<int>(rf.playState)
+                      << std::endl;
+        }
     }
 
     for (const auto& snap : rf.outputs) {
@@ -343,6 +403,7 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
         if (!source.valid()) {
             m_renderer->beginOutputFrame(windowSlot);
             m_renderer->clearOutputFrame(windowSlot, 0.0f, 0.0f, 0.0f, 1.0f);
+            drawMarkerOverlay(m_renderer);
             m_renderer->endOutputFrame(windowSlot);
             continue;
         }
@@ -815,11 +876,13 @@ void OutputManager::renderToOutput(
             }
         }
 
+        drawMarkerOverlay(m_renderer);
         m_renderer->endOutputFrame(windowSlot);
         return;
         } // if (projPtr)
 
         // projPtr not found — fall through to a black frame.
+        drawMarkerOverlay(m_renderer);
         m_renderer->endOutputFrame(windowSlot);
         return;
     } // if (output.sourceProjector != 0)
@@ -891,6 +954,7 @@ void OutputManager::renderToOutput(
             output.brightness, output.gamma, 1.0f);
     }
 
+    drawMarkerOverlay(m_renderer);
     m_renderer->endOutputFrame(windowSlot);
 }
 
