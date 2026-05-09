@@ -188,6 +188,17 @@ public:
                                   const std::vector<uint32_t>& indices);
     void     scheduleMeshSlotFree(uint32_t slot);
 
+    // Returns the MeshUploader slot for the shared default 16:9 screen quad.
+    // Uploaded once lazily on first ensureStageTarget call; UINT32_MAX until then.
+    uint32_t getDefaultScreenMeshSlot() const { return m_defaultScreenMeshSlot; }
+
+    // Heap slot of the *stable* (last fully-rendered) sub-resource for a
+    // compose target. Compose targets are triple-buffered; the show thread
+    // rotates through writes. Reading from the base slot races against the
+    // show thread's RT writes — use this for editor-thread sampling instead.
+    // Returns UINT32_MAX if the slot is invalid or no frame is stable yet.
+    uint32_t getComposeTargetStableSrvSlot(uint32_t slot) const;
+
     // -----------------------------------------------------------------------
     // Mesh-triangle rendering for projector output. Renders one triangle
     // (3 NDC verts + 3 UVs) of a textured mesh with proper hardware
@@ -425,6 +436,9 @@ private:
 
     // Mesh vertex/index buffer pool (Phase 4+). Wired up in Phase 7 lifecycle.
     std::unique_ptr<class MeshUploader> m_meshUploader;
+    // Slot for the shared default 16:9 quad used by flat (mesh-less) screens.
+    // Uploaded once in ensureStageTarget; never freed (MeshUploader::shutdown clears it).
+    uint32_t m_defaultScreenMeshSlot{UINT32_MAX};
 
     // Textured rendering pipeline (for drawTexturedQuad)
     ComPtr<ID3D12RootSignature> m_texturedRootSignature;

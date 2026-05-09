@@ -173,6 +173,15 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         std::cerr << "Failed to initialize MeshUploader!" << std::endl;
         m_meshUploader.reset();
         // Non-fatal: mesh upload will be skipped, but 3D preview still works without meshes.
+    } else {
+        // Eagerly upload the shared default 16:9 screen quad so flat-screen-only
+        // projects don't hit the bootstrap deadlock where ensureStageTarget never
+        // fires (renderMeshes early-exits when all slots are UINT32_MAX).
+        MeshData defaultMesh = createDefaultScreenMesh();
+        m_defaultScreenMeshSlot = uploadMeshImmediate(defaultMesh.vertices, defaultMesh.indices);
+        if (m_defaultScreenMeshSlot == UINT32_MAX) {
+            std::cerr << "[D3D12Renderer] Failed to upload default screen mesh during init.\n";
+        }
     }
 
     // Create textured rendering pipeline (for multi-layer compositing)
@@ -2986,6 +2995,13 @@ void* D3D12Renderer::getComposeTargetTextureID(uint32_t slot) const {
     return h.ptr ? reinterpret_cast<void*>(h.ptr) : nullptr;
 }
 
+uint32_t D3D12Renderer::getComposeTargetStableSrvSlot(uint32_t slot) const {
+    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) return UINT32_MAX;
+    const uint32_t stableIdx = m_composeTargets[slot].lastStableIndex.load(std::memory_order_acquire);
+    if (stableIdx == UINT32_MAX) return UINT32_MAX;
+    return DescriptorHeapLayout::composeTargetTripleSlot(slot, stableIdx % ComposeTarget::TRIPLE);
+}
+
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::getComposeTargetSrvHandle(uint32_t slot) const {
     if (slot < m_composeTargets.size() && m_composeTargets[slot].ready) {
         return m_composeTargets[slot].stableSrvHandle();
@@ -4871,6 +4887,15 @@ void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
         m_stageTarget.height != height) {
         waitForGpu();
         if (!createStageRenderTarget(width, height)) return nullptr;
+    }
+
+    // Lazily upload the shared default 16:9 screen quad once the GPU is ready.
+    if (m_defaultScreenMeshSlot == UINT32_MAX && m_meshUploader) {
+        MeshData defaultMesh = createDefaultScreenMesh();
+        m_defaultScreenMeshSlot = uploadMeshImmediate(defaultMesh.vertices, defaultMesh.indices);
+        if (m_defaultScreenMeshSlot == UINT32_MAX) {
+            std::cerr << "[StageRenderer] Failed to upload default screen mesh — flat screens won't render.\n";
+        }
     }
 
     // Return the GPU handle for the current back-buffer's color SRV as ImTextureID.
