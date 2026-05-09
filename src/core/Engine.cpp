@@ -1,4 +1,7 @@
 #include "entity/core/Engine.hpp"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "entity/bus/InMemoryMessageTransport.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/bus/Serialization.hpp"
@@ -98,6 +101,18 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     m_windowWidth = windowWidth;
     m_windowHeight = windowHeight;
+
+#ifdef _WIN32
+    // Disable Win32's "ghost window" mechanism. When the editor window's
+    // message pump stalls inside a modal resize/move loop for >5 seconds,
+    // Windows would normally mark the entire process as "not responding"
+    // and ghost ALL its windows — including the projector output windows
+    // that the show thread is still rendering at 60Hz. DWM stops compositing
+    // ghosted windows, so the physical display freezes until the modal loop
+    // exits. Disabling ghosting lets the show thread's Present continue to
+    // reach the display while the editor is in a modal loop.
+    DisableProcessWindowsGhosting();
+#endif
 
     // Initialize GLFW
     if (!glfwInit()) {
@@ -740,7 +755,9 @@ void Engine::run() {
     std::cout << "Starting main loop (show thread spawned)..." << std::endl;
     m_running = true;
     m_showStopRequested.store(false, std::memory_order_relaxed);
-    m_showThread = std::thread([this]() { showThreadMain(); });
+    m_showThread = std::thread([this]() {
+        showThreadMain();
+    });
 
     // Editor-side wall clock. Independent from PlaybackTimeAuthority's clock
     // (which the show thread owns) so the editor can compute its own
@@ -873,6 +890,13 @@ void Engine::showThreadMain() {
         // Threshold > 1 normal editor frame (16ms) so we don't double-tick
         // during steady-state playback. Timeline::update no-ops when not
         // Playing, so this is safe to call unconditionally during a stall.
+        //
+        // The same heartbeat also drives DecodeSystem::update — without it
+        // the decode workers' targetFrame would stay pinned at its
+        // pre-modal value, the FrameRingBuffer would stop advancing, and
+        // PlaybackPresenter would keep re-uploading the same media frame.
+        // Result: marker quad keeps cycling (independent counter) but the
+        // video texture appears frozen on the projector.
         if (m_timeline && m_timeAuthority) {
             const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
             const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -880,6 +904,10 @@ void Engine::showThreadMain() {
             constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
             if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
                 m_timeline->update(m_timeAuthority->getDeltaTime());
+                if (m_decodeSystem) {
+                    m_decodeSystem->update(m_registry,
+                        static_cast<float>(m_timeAuthority->getDeltaTime()));
+                }
             }
         }
 
@@ -2890,20 +2918,24 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // Post-load: sync the output-index counter so new outputs the user
     // creates don't collide with loaded indices; then bring up windows for
     // any physical outputs that were saved as enabled.
+    //
+    // CRITICAL: route this through the D2R bus so the show thread creates
+    // the GLFW output window. Calling setOutputEnabled() directly here would
+    // create the window on the editor thread, making its WndProc owned by
+    // the editor thread. When the editor enters Win32's modal resize loop,
+    // the output window's message pump stops, Windows marks the process
+    // as "not responding," and DWM ghosts the swap chain — the physical
+    // display freezes for the duration of the resize even though the show
+    // thread keeps Presenting fresh frames.
     if (m_outputManager) {
         m_outputManager->syncCounterFromRegistry();
 
         auto view = m_registry.view<OutputDisplay>();
-        std::vector<entt::entity> toEnable;
         for (auto [entity, out] : view.each()) {
             if (out.enabled && out.isPhysical() && out.physicalDisplayIndex >= 0) {
-                toEnable.push_back(entity);
+                publishSetOutputEnabled(bus::SetOutputEnabled{
+                    static_cast<std::uint64_t>(entity), true});
             }
-        }
-        for (auto e : toEnable) {
-            // setOutputEnabled(true) will call ensureOutputWindow which
-            // allocates the swap chain + back buffers for the display.
-            m_outputManager->setOutputEnabled(e, true);
         }
     }
 
