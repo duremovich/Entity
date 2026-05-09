@@ -15,6 +15,7 @@
 #include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/components/Prop.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -339,6 +340,33 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             screensJson.push_back(sj);
         }
         project["screens"] = screensJson;
+
+        // Serialize Props (v13). Pre-vis-only stage geometry — see Prop.hpp.
+        // Same modelName-by-string convention as Screens since entt::entity
+        // values aren't stable across sessions.
+        json propsJson = json::array();
+        auto propView = registry.view<Prop>();
+        for (auto [entity, prop] : propView.each()) {
+            json pj;
+            pj["name"]     = prop.name;
+            pj["position"] = {prop.position[0], prop.position[1], prop.position[2]};
+            pj["rotation"] = {prop.rotation[0], prop.rotation[1], prop.rotation[2]};
+            pj["scale"]    = {prop.scale[0],    prop.scale[1],    prop.scale[2]};
+            pj["visible"]  = prop.visible;
+            pj["displayColor"] = {prop.displayColor[0], prop.displayColor[1],
+                                  prop.displayColor[2], prop.displayColor[3]};
+
+            std::string modelName;
+            if (prop.modelEntity != entt::null &&
+                registry.valid(prop.modelEntity) &&
+                registry.all_of<Model>(prop.modelEntity)) {
+                modelName = registry.get<Model>(prop.modelEntity).name;
+            }
+            pj["modelName"] = modelName;
+
+            propsJson.push_back(pj);
+        }
+        project["props"] = propsJson;
 
         // Serialize output displays (Phase C #1)
         // outputWindowSlot is runtime-only and deliberately skipped — it's a
@@ -676,6 +704,84 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
 
                 std::cout << "[ProjectSerializer] Loaded screen: " << name
                           << " (" << screen.width << "x" << screen.height << ")" << std::endl;
+            }
+        }
+
+        // Load Props (v13+). Same name-preservation strategy as Screens —
+        // existing Props matching a saved name keep their entity; orphans
+        // get destroyed; saved entries with no match get fresh entities.
+        // Pre-v13 files have no "props" key → no-op (props vector stays as
+        // whatever existed in the registry, which on a fresh load is empty
+        // since the previous block already culled non-screens implicitly
+        // via per-component handling — props never showed up before this
+        // version so there's nothing legacy to clean).
+        if (project.contains("props")) {
+            std::unordered_set<std::string> savedPropNames;
+            for (const auto& pj : project["props"]) {
+                savedPropNames.insert(pj.value("name", ""));
+            }
+
+            std::vector<entt::entity> toDestroy;
+            for (auto [e, p] : registry.view<Prop>().each()) {
+                if (savedPropNames.find(p.name) == savedPropNames.end()) {
+                    toDestroy.push_back(e);
+                }
+            }
+            for (auto e : toDestroy) {
+                if (registry.valid(e)) registry.destroy(e);
+            }
+
+            for (const auto& pj : project["props"]) {
+                std::string name = pj.value("name", "Prop");
+
+                entt::entity propEntity = entt::null;
+                for (auto [e, p] : registry.view<Prop>().each()) {
+                    if (p.name == name) { propEntity = e; break; }
+                }
+                if (propEntity == entt::null) {
+                    propEntity = registry.create();
+                    registry.emplace<Prop>(propEntity);
+                }
+                auto& prop = registry.get<Prop>(propEntity);
+
+                prop.name    = name;
+                prop.visible = pj.value("visible", true);
+
+                if (pj.contains("position") && pj["position"].is_array() && pj["position"].size() >= 3) {
+                    prop.position = {pj["position"][0].get<float>(),
+                                     pj["position"][1].get<float>(),
+                                     pj["position"][2].get<float>()};
+                }
+                if (pj.contains("rotation") && pj["rotation"].is_array() && pj["rotation"].size() >= 3) {
+                    prop.rotation = {pj["rotation"][0].get<float>(),
+                                     pj["rotation"][1].get<float>(),
+                                     pj["rotation"][2].get<float>()};
+                }
+                if (pj.contains("scale") && pj["scale"].is_array() && pj["scale"].size() >= 3) {
+                    prop.scale = {pj["scale"][0].get<float>(),
+                                  pj["scale"][1].get<float>(),
+                                  pj["scale"][2].get<float>()};
+                }
+                if (pj.contains("displayColor") && pj["displayColor"].is_array()
+                    && pj["displayColor"].size() >= 4) {
+                    prop.displayColor = {pj["displayColor"][0].get<float>(),
+                                         pj["displayColor"][1].get<float>(),
+                                         pj["displayColor"][2].get<float>(),
+                                         pj["displayColor"][3].get<float>()};
+                }
+
+                // Resolve modelEntity by Model name. Missing model leaves
+                // prop.modelEntity null — drawProp handles that gracefully
+                // (renders an "(no mesh)" placeholder cross at the origin).
+                std::string modelName = pj.value("modelName", "");
+                prop.modelEntity = entt::null;
+                if (!modelName.empty()) {
+                    for (auto [me, m] : registry.view<Model>().each()) {
+                        if (m.name == modelName) { prop.modelEntity = me; break; }
+                    }
+                }
+
+                std::cout << "[ProjectSerializer] Loaded prop: " << name << std::endl;
             }
         }
 

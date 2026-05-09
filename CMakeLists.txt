@@ -191,6 +191,7 @@ target_sources(EntityMediaCore
         src/ui/MappingWindow.cpp
         src/ui/ModelBinWindow.cpp
         src/ui/ScreensWindow.cpp
+        src/ui/PropsWindow.cpp
         src/ui/SettingsWindow.cpp
         src/ui/ProjectorCalibrationWindow.cpp
         src/ui/CueListWindow.cpp

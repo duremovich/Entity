@@ -20,6 +20,7 @@
 #include "entity/ui/MappingWindow.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
 #include "entity/ui/ScreensWindow.hpp"
+#include "entity/ui/PropsWindow.hpp"
 #include "entity/ui/CueListWindow.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
@@ -434,6 +435,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));
     m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
+    m_windowManager->registerWindow(std::make_unique<PropsWindow>(this));
     m_windowManager->registerWindow(std::make_unique<CueListWindow>(this));
 
     // Apply the user's last-active workspace now that all windows are

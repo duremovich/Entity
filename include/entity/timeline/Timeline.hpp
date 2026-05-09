@@ -259,6 +259,7 @@ public:
             m_selectedClip = entt::null;
             m_selectedScreen = entt::null;
             m_selectedProjector = entt::null;
+            m_selectedProp = entt::null;
             m_selectedCueNumber.reset();
         }
     }
@@ -298,6 +299,11 @@ public:
         if (clip != entt::null) {
             m_selectedCueNumber.reset();
             m_selectedSectionBreakFrame.reset();
+            // Clip selection doesn't fight with prop selection in the same way
+            // it doesn't fight with screen/projector — we keep all four slots
+            // independent so the user can have a clip and a prop selected at
+            // once if they want to compare. The mutual exclusion is between
+            // *stage* primitives (screen/projector/prop) only.
         }
     }
     entt::entity getSelectedClip() const { return m_selectedClip; }
@@ -305,6 +311,7 @@ public:
     void setSelectedScreen(entt::entity screen) {
         m_selectedScreen = screen;
         m_selectedProjector = entt::null;
+        m_selectedProp = entt::null;
         if (screen != entt::null) {
             m_selectedCueNumber.reset();
             m_selectedSectionBreakFrame.reset();
@@ -315,12 +322,28 @@ public:
     void setSelectedProjector(entt::entity projector) {
         m_selectedProjector = projector;
         m_selectedScreen = entt::null;
+        m_selectedProp = entt::null;
         if (projector != entt::null) {
             m_selectedCueNumber.reset();
             m_selectedSectionBreakFrame.reset();
         }
     }
     entt::entity getSelectedProjector() const { return m_selectedProjector; }
+
+    // Prop selection — mutually exclusive with screen/projector. Props are
+    // pre-vis-only stage geometry (see Prop.hpp); selecting one drives the
+    // PropsWindow highlight, the 3D stage view's selection wireframe, and
+    // the PropertyWindow's prop pane.
+    void setSelectedProp(entt::entity prop) {
+        m_selectedProp = prop;
+        m_selectedScreen = entt::null;
+        m_selectedProjector = entt::null;
+        if (prop != entt::null) {
+            m_selectedCueNumber.reset();
+            m_selectedSectionBreakFrame.reset();
+        }
+    }
+    entt::entity getSelectedProp() const { return m_selectedProp; }
 
     // Cue selection — mutually exclusive with clip/screen/projector/section.
     // Setting a cue clears the others; setting any of the others clears this.
@@ -330,6 +353,7 @@ public:
             m_selectedClip = entt::null;
             m_selectedScreen = entt::null;
             m_selectedProjector = entt::null;
+            m_selectedProp = entt::null;
             m_selectedSectionBreakFrame.reset();
         }
     }
@@ -340,6 +364,7 @@ public:
         m_selectedClip = entt::null;
         m_selectedScreen = entt::null;
         m_selectedProjector = entt::null;
+        m_selectedProp = entt::null;
         m_selectedCueNumber.reset();
         m_selectedSectionBreakFrame.reset();
     }
@@ -398,6 +423,7 @@ private:
     entt::entity m_selectedClip{entt::null};
     entt::entity m_selectedScreen{entt::null};
     entt::entity m_selectedProjector{entt::null};
+    entt::entity m_selectedProp{entt::null};
     std::optional<double> m_selectedCueNumber;
     // Section breaks are identified by their breakFrame because vector
     // indices shift across edits and break entries don't have a stable

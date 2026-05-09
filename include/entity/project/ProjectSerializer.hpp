@@ -20,6 +20,13 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v13 (2026-05-09) — adds Prop array. Each entry persists name,
+    //                      transform, visibility, displayColor, modelName.
+    //                      Props are pre-vis-only stage geometry (see
+    //                      Prop.hpp); excluded from SceneSnapshot and the
+    //                      projector output path. Older files load with
+    //                      no props (missing array = empty); first save
+    //                      after upgrade emits the array, even if empty.
     //   v11 (2026-05-07) — adds Clip.mediaOutFrame (INCLUSIVE last frame
     //                      played, industry convention), decoupling the
     //                      source-playback out-point from the timeline-
@@ -79,7 +86,7 @@ public:
     // v7 files load with no projectors (missing "projectors" key = empty);
     // v8 files load with no cues (missing "cues" key = empty);
     // v11 mediaLibrary entries load with no probe cache (re-index on first open).
-    static constexpr int PROJECT_VERSION = 12;
+    static constexpr int PROJECT_VERSION = 13;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

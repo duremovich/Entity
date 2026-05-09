@@ -594,14 +594,16 @@ void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 
     drawList->AddLine(screenFrameCorners[3], screenFrameCorners[0], frameColor, frameThickness);
 }
 
-void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens) {
-    if (screens.empty()) {
+void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens,
+                                    const std::vector<PropFrameInput>& props) {
+    if (screens.empty() && props.empty()) {
         m_camera.reset();
         return;
     }
 
-    // Accumulate world-space AABB of every screen quad's 4 corners using
-    // the same transform drawScreen() applies.
+    // Accumulate world-space AABB of every screen quad's 4 corners and
+    // every prop mesh's vertices using the same transforms drawScreen()
+    // and drawProp() apply.
     glm::vec3 minB(std::numeric_limits<float>::max());
     glm::vec3 maxB(std::numeric_limits<float>::lowest());
 
@@ -634,6 +636,23 @@ void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens)
                 minB = glm::min(minB, wc);
                 maxB = glm::max(maxB, wc);
             }
+        }
+    }
+
+    // Props: same chain minus the screenElevation lift, and require a mesh
+    // (props without geometry contribute nothing to the AABB).
+    for (const auto& p : props) {
+        if (!p.mesh || !p.mesh->isValid()) continue;
+        glm::mat4 transform = glm::mat4(1.0f);
+        transform = glm::translate(transform, p.position);
+        transform = glm::rotate(transform, glm::radians(p.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(p.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(p.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        transform = glm::scale(transform, p.scale);
+        for (const auto& v : p.mesh->vertices) {
+            glm::vec3 wc = glm::vec3(transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f));
+            minB = glm::min(minB, wc);
+            maxB = glm::max(maxB, wc);
         }
     }
 
@@ -762,6 +781,174 @@ bool Stage3DRenderer::hitTestScreen(ImVec2 mousePos, ImVec2 renderPos, ImVec2 re
     float c3 = cross2D(sc[3], sc[0], mousePos);
     return (c0 >= 0 && c1 >= 0 && c2 >= 0 && c3 >= 0) ||
            (c0 <= 0 && c1 <= 0 && c2 <= 0 && c3 <= 0);
+}
+
+void Stage3DRenderer::drawProp(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
+                                const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
+                                const glm::vec4& displayColor, bool isSelected,
+                                const MeshData* mesh) {
+    const ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(120, 120, 120, 200);
+    const float frameThickness = isSelected ? 3.0f : 1.5f;
+
+    // Props honor their actual world position (no screenElevation lift).
+    glm::mat4 transform = glm::mat4(1.0f);
+    transform = glm::translate(transform, position);
+    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    transform = glm::scale(transform, scale);
+
+    // Normal-transform matrix: inverse-transpose of the upper-3x3 of the
+    // model matrix. Lambert needs world-space normals to shade correctly
+    // against the world-space light direction.
+    const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(transform)));
+
+    if (mesh && mesh->isValid()) {
+        // Fixed key light direction in world space (slightly off-axis from
+        // top-down so flat horizontal surfaces don't render dead-flat).
+        const glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, 1.0f, 0.3f));
+        constexpr float kAmbient = 0.35f;
+        const float baseR = displayColor.x;
+        const float baseG = displayColor.y;
+        const float baseB = displayColor.z;
+        const float baseA = displayColor.w;
+
+        struct ShadedTri { ImVec2 p[3]; ImU32 col; };
+        std::vector<ShadedTri> tris;
+
+        // Painter's-algorithm sort like drawScreen so concave meshes don't
+        // self-occlude in the wrong order.
+        struct SrcTriOrder { size_t i; float depth; };
+        std::vector<SrcTriOrder> srcOrder;
+        srcOrder.reserve(mesh->indices.size() / 3);
+        const glm::vec3 camPos = m_camera.position;
+        for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
+            glm::vec3 cen(0.0f);
+            for (int j = 0; j < 3; ++j) {
+                const auto& v = mesh->vertices[mesh->indices[i + j]];
+                cen += glm::vec3(transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f));
+            }
+            srcOrder.push_back({i, glm::length(cen / 3.0f - camPos)});
+        }
+        std::sort(srcOrder.begin(), srcOrder.end(),
+            [](const SrcTriOrder& a, const SrcTriOrder& b){ return a.depth > b.depth; });
+
+        tris.reserve(srcOrder.size());
+
+        for (const auto& st : srcOrder) {
+            const size_t i = st.i;
+
+            glm::vec3 wp[3];
+            glm::vec3 wn[3];
+            for (int j = 0; j < 3; ++j) {
+                const auto& v = mesh->vertices[mesh->indices[i + j]];
+                glm::vec4 world = transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f);
+                wp[j] = glm::vec3(world);
+                wn[j] = normalMat * glm::vec3(v.normal[0], v.normal[1], v.normal[2]);
+            }
+
+            // Backface cull: same screen-space signed-area test as drawScreen.
+            ImVec2 tp[3]; bool anyBehind = false;
+            for (int j = 0; j < 3; ++j) {
+                tp[j] = projectPoint(wp[j], screenPos, screenSize);
+                if (tp[j].x < 0.0f && tp[j].y < 0.0f) { anyBehind = true; break; }
+            }
+            if (anyBehind) continue;
+            const float area2 = (tp[1].x - tp[0].x) * (tp[2].y - tp[0].y)
+                               - (tp[1].y - tp[0].y) * (tp[2].x - tp[0].x);
+            if (area2 >= 0.0f) continue;  // back face
+
+            // Per-tri Lambert: average vertex normals, dot with light dir,
+            // clamp + ambient. Cheaper than per-pixel and visibly fine for
+            // matte set geometry at editor preview fidelity.
+            glm::vec3 avgN = glm::normalize(wn[0] + wn[1] + wn[2]);
+            float lambert = std::max(0.0f, glm::dot(avgN, lightDir));
+            float shade = kAmbient + (1.0f - kAmbient) * lambert;
+
+            int r = static_cast<int>(std::clamp(baseR * shade * 255.0f, 0.0f, 255.0f));
+            int g = static_cast<int>(std::clamp(baseG * shade * 255.0f, 0.0f, 255.0f));
+            int b = static_cast<int>(std::clamp(baseB * shade * 255.0f, 0.0f, 255.0f));
+            int a = static_cast<int>(std::clamp(baseA * 255.0f, 0.0f, 255.0f));
+
+            tris.push_back({{tp[0], tp[1], tp[2]}, IM_COL32(r, g, b, a)});
+        }
+
+        for (const auto& t : tris) {
+            drawList->AddTriangleFilled(t.p[0], t.p[1], t.p[2], t.col);
+        }
+
+        // AABB wireframe — same edges drawScreen draws, in the prop's frame color.
+        const float bx0 = mesh->minBounds[0], bx1 = mesh->maxBounds[0];
+        const float by0 = mesh->minBounds[1], by1 = mesh->maxBounds[1];
+        const float bz0 = mesh->minBounds[2], bz1 = mesh->maxBounds[2];
+        const glm::vec3 bc[8] = {
+            {bx0,by0,bz0},{bx1,by0,bz0},{bx1,by1,bz0},{bx0,by1,bz0},
+            {bx0,by0,bz1},{bx1,by0,bz1},{bx1,by1,bz1},{bx0,by1,bz1},
+        };
+        const int edges[12][2] = {
+            {0,1},{1,2},{2,3},{3,0},
+            {4,5},{5,6},{6,7},{7,4},
+            {0,4},{1,5},{2,6},{3,7},
+        };
+        for (const auto& e : edges) {
+            drawLine3D(drawList,
+                glm::vec3(transform * glm::vec4(bc[e[0]], 1.0f)),
+                glm::vec3(transform * glm::vec4(bc[e[1]], 1.0f)),
+                screenPos, screenSize, frameColor, frameThickness);
+        }
+        return;
+    }
+
+    // No mesh: draw a small placeholder cross at the prop's origin so the
+    // user can still see and click an empty prop slot.
+    ImVec2 origin = projectPoint(position, screenPos, screenSize);
+    if (origin.x >= 0.0f || origin.y >= 0.0f) {
+        const float r = 6.0f;
+        drawList->AddLine(ImVec2(origin.x - r, origin.y), ImVec2(origin.x + r, origin.y),
+                          frameColor, frameThickness);
+        drawList->AddLine(ImVec2(origin.x, origin.y - r), ImVec2(origin.x, origin.y + r),
+                          frameColor, frameThickness);
+        const char* txt = "(no mesh)";
+        ImVec2 ts = ImGui::CalcTextSize(txt);
+        drawList->AddText(ImVec2(origin.x - ts.x * 0.5f, origin.y + r + 2.0f),
+                          IM_COL32(150, 150, 150, 200), txt);
+    }
+}
+
+bool Stage3DRenderer::hitTestProp(ImVec2 mousePos, ImVec2 renderPos, ImVec2 renderSize,
+                                   const glm::vec3& position, const glm::vec3& rotation,
+                                   const glm::vec3& scale, const MeshData* mesh) const {
+    if (!mesh || !mesh->isValid()) return false;
+
+    // Same transform chain as drawProp (no screenElevation).
+    glm::mat4 transform = glm::mat4(1.0f);
+    transform = glm::translate(transform, position);
+    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    transform = glm::scale(transform, scale);
+
+    auto cross2D = [](ImVec2 o, ImVec2 a, ImVec2 p) {
+        return (a.x - o.x) * (p.y - o.y) - (a.y - o.y) * (p.x - o.x);
+    };
+
+    for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
+        ImVec2 pts[3];
+        bool valid = true;
+        for (int j = 0; j < 3; ++j) {
+            const auto& v = mesh->vertices[mesh->indices[i + j]];
+            glm::vec4 world = transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f);
+            pts[j] = projectPoint(glm::vec3(world), renderPos, renderSize);
+            if (pts[j].x < 0.0f && pts[j].y < 0.0f) { valid = false; break; }
+        }
+        if (!valid) continue;
+        float d0 = cross2D(pts[0], pts[1], mousePos);
+        float d1 = cross2D(pts[1], pts[2], mousePos);
+        float d2 = cross2D(pts[2], pts[0], mousePos);
+        if ((d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0))
+            return true;
+    }
+    return false;
 }
 
 void Stage3DRenderer::drawProjector(ImDrawList* drawList, ImVec2 renderPos, ImVec2 renderSize,

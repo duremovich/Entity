@@ -15,6 +15,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
+#include "entity/components/Prop.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
@@ -107,6 +108,13 @@ void PropertyWindow::render() {
     entt::entity selectedScreen = m_timeline->getSelectedScreen();
     if (selectedScreen != entt::null && registry.valid(selectedScreen)) {
         renderScreenProperties();
+        return;
+    }
+
+    // Check for selected prop
+    entt::entity selectedProp = m_timeline->getSelectedProp();
+    if (selectedProp != entt::null && registry.valid(selectedProp)) {
+        renderPropProperties();
         return;
     }
 
@@ -1080,6 +1088,108 @@ void PropertyWindow::renderScreenProperties() {
         ImGui::SliderFloat("Opacity", &screen->opacity, 0.0f, 1.0f);
         ImGui::SetNextItemWidth(-1);
         ImGui::DragInt("Z-Order", &screen->zOrder);
+    }
+
+    ImGui::PopID();
+}
+
+void PropertyWindow::renderPropProperties() {
+    if (!m_timeline) return;
+
+    entt::entity selectedProp = m_timeline->getSelectedProp();
+    if (selectedProp == entt::null) return;
+
+    auto& registry = m_timeline->getRegistry();
+    Prop* prop = registry.try_get<Prop>(selectedProp);
+    if (!prop) {
+        ImGui::TextDisabled("Invalid prop");
+        return;
+    }
+
+    ImGui::PushID(static_cast<int>(selectedProp));
+
+    ImGui::Text("Prop: %s", prop->name.c_str());
+    ImGui::TextDisabled("Pre-vis only \xe2\x80\x94 not in projector output");
+    ImGui::Separator();
+
+    if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char nameBuf[256];
+        strncpy(nameBuf, prop->name.c_str(), sizeof(nameBuf) - 1);
+        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
+            prop->name = nameBuf;
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::string currentModelName = "None";
+        if (prop->modelEntity != entt::null && registry.valid(prop->modelEntity)) {
+            if (const Model* m = registry.try_get<Model>(prop->modelEntity))
+                currentModelName = m->name;
+            else
+                prop->modelEntity = entt::null;  // stale reference
+        }
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##prop_model_picker", currentModelName.c_str())) {
+            if (ImGui::Selectable("None", prop->modelEntity == entt::null))
+                prop->modelEntity = entt::null;
+            for (auto [e, model] : registry.view<Model>().each()) {
+                bool sel = (prop->modelEntity == e);
+                if (ImGui::Selectable(model.name.c_str(), sel))
+                    prop->modelEntity = e;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Model");
+
+        if (prop->modelEntity != entt::null && registry.valid(prop->modelEntity)) {
+            if (const Model* model = registry.try_get<Model>(prop->modelEntity)) {
+                ImGui::TextDisabled("%zu verts  %zu tris",
+                    model->mesh.vertices.size(), model->mesh.indices.size() / 3);
+                if (ImGui::SmallButton("Clear")) {
+                    prop->modelEntity = entt::null;
+                }
+            }
+        } else {
+            ImGui::TextDisabled("Drag a model from Model Bin, or pick above.");
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MODEL_ENTITY")) {
+                    uint32_t modelEntityId = *static_cast<const uint32_t*>(payload->Data);
+                    prop->modelEntity = static_cast<entt::entity>(modelEntityId);
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Position");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##prop_pos", prop->position.data(), 0.1f);
+
+        ImGui::Text("Rotation");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##prop_rot", prop->rotation.data(), 1.0f, -180.0f, 180.0f);
+
+        ImGui::Text("Scale");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::DragFloat3("##prop_scale", prop->scale.data(), 0.01f, 0.01f, 100.0f);
+
+        if (ImGui::Button("Reset Transform")) {
+            prop->position = {0.0f, 0.0f, 0.0f};
+            prop->rotation = {0.0f, 0.0f, 0.0f};
+            prop->scale = {1.0f, 1.0f, 1.0f};
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Visible", &prop->visible);
+        ImGui::SetNextItemWidth(-1);
+        ImGui::ColorEdit4("Tint", prop->displayColor.data(),
+                          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
+        ImGui::TextDisabled("Tint shades the matte fill in the 3D stage view.");
     }
 
     ImGui::PopID();

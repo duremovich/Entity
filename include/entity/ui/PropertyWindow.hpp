@@ -73,6 +73,13 @@ private:
     void renderScreenProperties();
 
     /**
+     * Render prop properties (when a prop is selected). Shape mirrors
+     * renderScreenProperties() minus the resolution / type controls —
+     * props don't render to a compose target.
+     */
+    void renderPropProperties();
+
+    /**
      * Render projector properties (when a projector is selected).
      */
     void renderProjectorProperties();

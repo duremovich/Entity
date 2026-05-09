@@ -62,6 +62,19 @@ public:
                     const MeshData* mesh = nullptr);
 
     /**
+     * Draw a stage prop — non-screen mesh geometry rendered with matte
+     * shading instead of a video texture. Props don't get the screen
+     * elevation offset since their position is meant to be honest
+     * (set pieces sit on the floor at y=0). A null/invalid mesh draws
+     * nothing but the AABB wireframe.
+     * @param displayColor RGBA matte tint, multiplied by simple Lambert lighting.
+     */
+    void drawProp(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
+                  const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
+                  const glm::vec4& displayColor, bool isSelected,
+                  const MeshData* mesh);
+
+    /**
      * Draw a projector frustum gizmo.
      * Call between beginRender() and endRender().
      */
@@ -84,14 +97,28 @@ public:
     };
 
     /**
-     * Reposition the camera to frame all given screens in view.
-     * Computes a world-space AABB of every screen quad's 4 corners,
-     * sets orbitTarget to its center, and chooses orbitDistance so the
-     * bounding sphere fits inside both the vertical and horizontal FOV
-     * with a small margin. Preserves orbitYaw/orbitPitch.
-     * If `screens` is empty, falls back to the default Reset position.
+     * Per-prop transform for content-aware framing. Mirrors ScreenFrameInput
+     * but without the implicit screenElevation offset, since drawProp()
+     * doesn't apply that lift (props live at their actual world position).
      */
-    void frameScreens(const std::vector<ScreenFrameInput>& screens);
+    struct PropFrameInput {
+        glm::vec3 position;
+        glm::vec3 rotation;
+        glm::vec3 scale;
+        const MeshData* mesh{nullptr};
+    };
+
+    /**
+     * Reposition the camera to frame all given stage primitives in view.
+     * Computes a world-space AABB of every screen quad's 4 corners and
+     * every prop mesh's vertices, sets orbitTarget to the center, and
+     * chooses orbitDistance so the bounding sphere fits inside both the
+     * vertical and horizontal FOV with a small margin. Preserves
+     * orbitYaw/orbitPitch. If both inputs are empty, falls back to the
+     * default Reset position.
+     */
+    void frameScreens(const std::vector<ScreenFrameInput>& screens,
+                      const std::vector<PropFrameInput>& props = {});
 
     /**
      * Handle mouse input for camera control.
@@ -117,6 +144,17 @@ public:
                        const glm::vec3& position, const glm::vec3& rotation,
                        const glm::vec3& scale,
                        const MeshData* mesh = nullptr) const;
+
+    /**
+     * Test whether a 2D mouse position falls within a projected prop mesh.
+     * Same semantics as hitTestScreen() but without the screenElevation
+     * offset (props sit at their honest world position). A null/invalid
+     * mesh always misses — props without geometry can't be clicked.
+     */
+    bool hitTestProp(ImVec2 mousePos, ImVec2 renderPos, ImVec2 renderSize,
+                     const glm::vec3& position, const glm::vec3& rotation,
+                     const glm::vec3& scale,
+                     const MeshData* mesh) const;
 
     /**
      * Get the camera for external manipulation.

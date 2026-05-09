@@ -1196,7 +1196,8 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     // Note: Last window docked to a node becomes the active tab
     ImGui::DockBuilderDockWindow("Timeline", dockBottom);
 
-    // Left panel: Media Bin, Model Bin, Screens as tabs (Media Bin = active)
+    // Left panel: Media Bin, Model Bin, Screens, Props as tabs (Media Bin = active)
+    ImGui::DockBuilderDockWindow("Props", dockLeft);
     ImGui::DockBuilderDockWindow("Screens", dockLeft);
     ImGui::DockBuilderDockWindow("Model Bin", dockLeft);
     ImGui::DockBuilderDockWindow("Media Bin", dockLeft);  // Docked last = active tab

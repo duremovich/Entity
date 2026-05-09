@@ -505,6 +505,12 @@ void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
 }
 
 void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
+    // Stage primitives baked here: Screens, MappingSurfaces, Projectors,
+    // OutputDisplays, ClipCatalog. Props (Prop component) are intentionally
+    // NOT baked — they exist only for editor pre-vis (see Prop.hpp). The
+    // show thread never reads them, so they can't drift the output.
+    // If/when projector masking lands (Phase 2), it adds a separate
+    // propCatalog field rather than folding props into screens.
     out.screens.clear();
     for (auto [entity, screen] : m_registry.view<Screen>().each()) {
         bus::ScreenSnapshot ss;

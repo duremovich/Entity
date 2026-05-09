@@ -7,6 +7,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
+#include "entity/components/Prop.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>  // For std::sort, std::clamp
@@ -228,8 +229,10 @@ void StageWindow::render3DView() {
     IRenderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
     Timeline* timeline = m_engine ? m_engine->getTimeline() : nullptr;
 
-    // Get selected screen for highlighting
+    // Get selected stage primitive for highlighting (mutually exclusive
+    // between screens / props / projectors at the Timeline level).
     entt::entity selectedScreen = timeline ? timeline->getSelectedScreen() : entt::null;
+    entt::entity selectedProp   = timeline ? timeline->getSelectedProp()   : entt::null;
 
     // Begin 3D rendering (draws background, grid, axes)
     m_3dRenderer->beginRender(drawList, windowPos, contentSize);
@@ -247,6 +250,20 @@ void StageWindow::render3DView() {
         const MeshData* mesh{nullptr};
     };
     std::vector<ScreenDrawData> screensToDraw;
+
+    // Parallel collection for props — same depth-sort treatment so props
+    // and screens layer correctly against each other when they overlap.
+    struct PropDrawData {
+        entt::entity entity;
+        glm::vec3 position;
+        glm::vec3 rotation;
+        glm::vec3 scale;
+        glm::vec4 displayColor;
+        bool isSelected;
+        float distanceFromCamera;
+        const MeshData* mesh{nullptr};
+    };
+    std::vector<PropDrawData> propsToDraw;
 
     if (m_engine) {
         auto& registry = m_engine->getRegistry();
@@ -288,11 +305,48 @@ void StageWindow::render3DView() {
             }
         }
 
+        // Collect visible props
+        auto propView = registry.view<Prop>();
+        for (auto [entity, prop] : propView.each()) {
+            if (!prop.visible) continue;
+            glm::vec3 position(prop.position[0], prop.position[1], prop.position[2]);
+            glm::vec3 rotation(prop.rotation[0], prop.rotation[1], prop.rotation[2]);
+            glm::vec3 scale(prop.scale[0], prop.scale[1], prop.scale[2]);
+            glm::vec4 color(prop.displayColor[0], prop.displayColor[1],
+                            prop.displayColor[2], prop.displayColor[3]);
+            bool isSelected = (entity == selectedProp);
+
+            // Props don't get the screen-elevation lift in drawProp, so depth
+            // is from raw position. Distance to mesh AABB center would be
+            // marginally better but position is fine for sort.
+            float dist = glm::length(position - cameraPos);
+
+            const MeshData* mesh = nullptr;
+            if (prop.modelEntity != entt::null && registry.valid(prop.modelEntity)) {
+                if (const auto* model = registry.try_get<Model>(prop.modelEntity))
+                    if (model->mesh.isValid()) mesh = &model->mesh;
+            }
+
+            propsToDraw.push_back({entity, position, rotation, scale, color, isSelected, dist, mesh});
+        }
+
         // Sort by distance (farthest first for painter's algorithm)
         std::sort(screensToDraw.begin(), screensToDraw.end(),
                   [](const ScreenDrawData& a, const ScreenDrawData& b) {
                       return a.distanceFromCamera > b.distanceFromCamera;
                   });
+        std::sort(propsToDraw.begin(), propsToDraw.end(),
+                  [](const PropDrawData& a, const PropDrawData& b) {
+                      return a.distanceFromCamera > b.distanceFromCamera;
+                  });
+
+        // Draw props first so they sit "behind" screens when at equal depth —
+        // screens carry video and want to read on top of set geometry.
+        for (const auto& propData : propsToDraw) {
+            m_3dRenderer->drawProp(drawList, windowPos, contentSize,
+                                   propData.position, propData.rotation, propData.scale,
+                                   propData.displayColor, propData.isSelected, propData.mesh);
+        }
 
         // Draw screens in sorted order (farthest to nearest)
         for (const auto& screenData : screensToDraw) {
@@ -339,7 +393,10 @@ void StageWindow::render3DView() {
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && timeline) {
             ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (drag.x == 0.0f && drag.y == 0.0f) {
-                // Test screens first (nearest to camera = drawn last = tested first)
+                // Test screens first (nearest to camera = drawn last = tested first).
+                // Screens win ties over props because screens are the primary
+                // interactive primitive — clip mapping, output routing — while
+                // props are passive set dressing.
                 entt::entity hitScreen = entt::null;
                 for (auto it = screensToDraw.rbegin(); it != screensToDraw.rend(); ++it) {
                     if (m_3dRenderer->hitTestScreen(io.MousePos, windowPos, contentSize,
@@ -348,8 +405,21 @@ void StageWindow::render3DView() {
                         break;
                     }
                 }
+                entt::entity hitProp = entt::null;
+                if (hitScreen == entt::null) {
+                    for (auto it = propsToDraw.rbegin(); it != propsToDraw.rend(); ++it) {
+                        if (m_3dRenderer->hitTestProp(io.MousePos, windowPos, contentSize,
+                                                      it->position, it->rotation, it->scale, it->mesh)) {
+                            hitProp = it->entity;
+                            break;
+                        }
+                    }
+                }
                 if (hitScreen != entt::null) {
                     timeline->setSelectedScreen(hitScreen);
+                    timeline->setSelectedClip(entt::null);
+                } else if (hitProp != entt::null) {
+                    timeline->setSelectedProp(hitProp);
                     timeline->setSelectedClip(entt::null);
                 } else {
                     // Test projector apex positions (within a small radius)
@@ -381,6 +451,7 @@ void StageWindow::render3DView() {
                     } else {
                         timeline->setSelectedScreen(entt::null);
                         timeline->setSelectedProjector(entt::null);
+                        timeline->setSelectedProp(entt::null);
                     }
                 }
             }
@@ -496,14 +567,16 @@ void StageWindow::applyAutoFrame(ImVec2 viewSize) {
     // (0, 0.5, 0) Reset position.
     if (!m_didInitialFrame && m_engine) {
         auto& registry = m_engine->getRegistry();
-        bool hasAnyScreen = false;
+        bool hasAnyStage = false;
         for (auto [entity, screen] : registry.view<Screen>().each()) {
-            if (screen.visible) {
-                hasAnyScreen = true;
-                break;
+            if (screen.visible) { hasAnyStage = true; break; }
+        }
+        if (!hasAnyStage) {
+            for (auto [entity, prop] : registry.view<Prop>().each()) {
+                if (prop.visible) { hasAnyStage = true; break; }
             }
         }
-        if (hasAnyScreen) {
+        if (hasAnyStage) {
             m_pendingAutoFrame = true;
             m_didInitialFrame = true;
         }
@@ -550,7 +623,26 @@ void StageWindow::frameAllScreens(ImVec2 viewSize) {
         });
     }
 
-    m_3dRenderer->frameScreens(inputs);
+    // Include props in the framing AABB so a "Frame" press centers the full
+    // stage, not just the projection surfaces. Screens with no mesh + zero
+    // props still framing-defaults to the legacy behavior.
+    std::vector<Stage3DRenderer::PropFrameInput> propInputs;
+    for (auto [entity, prop] : registry.view<Prop>().each()) {
+        if (!prop.visible) continue;
+        const MeshData* mesh = nullptr;
+        if (prop.modelEntity != entt::null && registry.valid(prop.modelEntity)) {
+            if (const auto* model = registry.try_get<Model>(prop.modelEntity))
+                if (model->mesh.isValid()) mesh = &model->mesh;
+        }
+        propInputs.push_back({
+            glm::vec3(prop.position[0], prop.position[1], prop.position[2]),
+            glm::vec3(prop.rotation[0], prop.rotation[1], prop.rotation[2]),
+            glm::vec3(prop.scale[0],    prop.scale[1],    prop.scale[2]),
+            mesh,
+        });
+    }
+
+    m_3dRenderer->frameScreens(inputs, propInputs);
 }
 
 void StageWindow::reset2DView() {
