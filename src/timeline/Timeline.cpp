@@ -29,12 +29,16 @@ Timeline::Timeline(entt::registry& registry)
 void Timeline::update(double deltaTime) {
     if (m_playbackState.load() == PlaybackState::Playing) {
         // Advance current time based on deltaTime
-        Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000000.0); // Convert seconds to microseconds
-        m_currentTime += deltaTimecode;
+        const Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000000.0);
+        const Timecode newTime = m_currentTime.fetch_add(deltaTimecode,
+                                                         std::memory_order_relaxed)
+                                 + deltaTimecode;
 
-        // Clamp to duration
-        if (m_currentTime > m_duration) {
-            m_currentTime = m_duration;
+        // Clamp to duration. Tiny race window between fetch_add and the
+        // clamp store: a concurrent seek() can land here and get overwritten,
+        // but seek pauses playback so we won't be advancing the next tick.
+        if (newTime > m_duration) {
+            m_currentTime.store(m_duration, std::memory_order_relaxed);
             m_playbackState.store(PlaybackState::Stopped); // Stop at end
             std::cout << "[Timeline] Reached end, stopping playback" << std::endl;
         }
@@ -44,20 +48,20 @@ void Timeline::update(double deltaTime) {
 void Timeline::play() {
     if (m_playbackState.load() != PlaybackState::Playing) {
         m_playbackState.store(PlaybackState::Playing);
-        std::cout << "[Timeline] Playing from " << m_currentTime << std::endl;
+        std::cout << "[Timeline] Playing from " << getCurrentTime() << std::endl;
     }
 }
 
 void Timeline::pause() {
     if (m_playbackState.load() == PlaybackState::Playing) {
         m_playbackState.store(PlaybackState::Paused);
-        std::cout << "[Timeline] Paused at " << m_currentTime << std::endl;
+        std::cout << "[Timeline] Paused at " << getCurrentTime() << std::endl;
     }
 }
 
 void Timeline::stop() {
     m_playbackState.store(PlaybackState::Stopped);
-    m_currentTime = 0;
+    m_currentTime.store(0, std::memory_order_relaxed);
     std::cout << "[Timeline] Stopped, reset to 0" << std::endl;
 }
 
@@ -69,15 +73,8 @@ void Timeline::seek(Timecode time) {
         std::cout << "[Timeline] Auto-paused for seek" << std::endl;
     }
 
-    m_currentTime = time;
-
-    // Clamp to valid range
-    if (m_currentTime < 0) {
-        m_currentTime = 0;
-    }
-    if (m_currentTime > m_duration) {
-        m_currentTime = m_duration;
-    }
+    const Timecode clamped = std::max<Timecode>(0, std::min(time, m_duration));
+    m_currentTime.store(clamped, std::memory_order_relaxed);
 
     // At-break state is owned by SectionScheduler's park flow, not by manual
     // seeks. Any user-driven seek (UI scrub, script SeekToFrame, command
@@ -85,7 +82,7 @@ void Timeline::seek(Timecode time) {
     // visibility gate doesn't misfire on the new playhead position.
     setSectionAtBreak(false);
 
-    std::cout << "[Timeline] Seek to " << m_currentTime << std::endl;
+    std::cout << "[Timeline] Seek to " << clamped << std::endl;
 }
 
 entt::entity Timeline::createTrack(const std::string& name) {
@@ -176,7 +173,7 @@ void Timeline::clear() {
     m_selectedSectionBreakFrame.reset();
 
     // Reset timeline state
-    m_currentTime = 0;
+    m_currentTime.store(0, std::memory_order_relaxed);
     m_playbackState.store(PlaybackState::Stopped);
     m_atSectionBreak.store(false);
 

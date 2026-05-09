@@ -65,7 +65,7 @@ public:
     void seek(Timecode time);
 
     // Time getters
-    Timecode getCurrentTime() const { return m_currentTime; }
+    Timecode getCurrentTime() const { return m_currentTime.load(std::memory_order_relaxed); }
     Timecode getDuration() const { return m_duration; }
     PlaybackState getPlaybackState() const { return m_playbackState.load(); }
     double getFrameRate() const { return m_frameRate; }
@@ -93,7 +93,7 @@ public:
     /**
      * Get current frame number based on timeline position.
      */
-    FrameNumber getCurrentFrame() const { return timeToFrame(m_currentTime); }
+    FrameNumber getCurrentFrame() const { return timeToFrame(getCurrentTime()); }
 
     /**
      * Seek to a specific integer frame. Round-trip safe with getCurrentFrame().
@@ -375,8 +375,11 @@ public:
 private:
     entt::registry& m_registry;
 
-    // Timeline state
-    Timecode m_currentTime{0};
+    // Timeline state. m_currentTime is atomic so the show thread can read it
+    // (via getCurrentTime() / getCurrentFrame()) for buildRenderFrame /
+    // buildSceneSnapshot while the editor thread mutates it via update() /
+    // seek() / play()/pause()/stop(). All writes happen on the editor thread.
+    std::atomic<Timecode> m_currentTime{0};
     Timecode m_duration{600000000};  // Default: 10 minutes = 600 seconds = 600,000,000 microseconds
     std::atomic<PlaybackState> m_playbackState{PlaybackState::Stopped};
     std::atomic<bool> m_isScrubbing{false};  // True during drag-scrubbing (prevents decoder seeks)
