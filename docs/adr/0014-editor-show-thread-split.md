@@ -163,6 +163,90 @@ serialization are present.
   reuse. Both submit to the same direct command queue (thread-safe per
   D3D12 spec for `ExecuteCommandLists`/`Signal`).
 
+### Show-Thread Fallback Pattern for Editor Stalls
+
+*Added after Stage 5: commits `cf103bd` (Timeline) and `8492438`
+(DecodeSystem).*
+
+The split as described above prevents UI modality from stalling the show
+thread's `Present`. But it doesn't, by itself, prevent UI modality from
+stalling the **content** the show thread renders. `Engine::update`
+on the editor thread ticks Timeline, SectionScheduler, AnimationSystem,
+ContentScanner deltas, and DecodeSystem each frame. When the editor
+thread blocks (native modal dialog, OS resize/move loop, slow project
+load), `Engine::update` stops running, and every editor-tick system
+stops with it. The show thread keeps Present-ing fresh frames at 60 Hz
+— but with a frozen Timeline, frozen decode targets, frozen animations.
+User-visible result: projector output appears frozen on the last good
+frame for the duration of the stall.
+
+**Heartbeat + show-thread fallback.** The editor thread stamps
+`Engine::m_lastEditorTickNs` (atomic) at the top of each `Engine::run`
+loop iteration. The show thread checks staleness once per show tick
+before it builds its RenderFrame:
+
+```cpp
+const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
+const int64_t nowNs = /* QPC ns */;
+constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
+if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
+    m_timeline->update(m_timeAuthority->getDeltaTime());
+    if (m_decodeSystem) {
+        m_decodeSystem->update(m_registry,
+            static_cast<float>(m_timeAuthority->getDeltaTime()));
+    }
+}
+```
+
+The 50 ms threshold is intentionally > one normal editor frame (16 ms)
+so the editor and show threads never both run a system in the same wall
+second during steady-state playback. When the editor wakes back up, its
+heartbeat refreshes and the show-thread fallback skips on the next
+iteration.
+
+**Currently covered systems:**
+- `Timeline::update` — `cf103bd`. Safe because `m_currentTime` is
+  atomic; advancing it from either thread is well-defined.
+- `DecodeSystem::update` — `8492438`. Safe because the only state
+  it mutates per call is `worker->targetFrame.store(...)` (atomic).
+  The `view<Clip, FrameBuffer>` iteration is read-only on the registry,
+  and during a stall the editor isn't writing.
+
+**Constraint for future fallback systems.** Per the "sole writer" rule
+above, a system can only be called from the show thread during the
+fallback window if it does **not** write registry components. Atomic
+or thread-local state is fine; `registry.get<T>(e).field = ...` is not.
+
+**Known gaps** (tracked in `docs/reference/CODE_ISSUES.md`):
+- **NEW-07** AnimationSystem freezes during editor stalls. It writes
+  `Transform` and `MediaLayer` components, so a naive show-thread
+  fallback violates the constraint.
+- **NEW-08** SectionScheduler freezes the same way. It mutates
+  `Timeline` section state and `ClipPlaybackPhase` components.
+- **NEW-09** No regression test for the fallback. `cf103bd` and
+  `8492438` could silently break in a future refactor.
+
+**Future Systems rule.** Any new editor-tick system that drives output
+must, at design time, choose one of:
+
+1. **Avoid registry writes** in `update` and add a show-thread fallback
+   call next to the existing Timeline / DecodeSystem block. Cleanest
+   if the system's per-tick work is fundamentally about advancing
+   internal state.
+2. **Bake results into `SceneSnapshot`** so the show thread reads
+   pre-evaluated values from the snapshot instead of re-running
+   evaluation. Right answer for systems that map registry data to
+   render state (AnimationSystem is the prototype case).
+3. **Accept the freeze** for that subsystem, document it in
+   CODE_ISSUES.md, and confirm the freeze isn't user-visible.
+   Acceptable for low-frequency systems (e.g. ContentScanner).
+
+The diagnostic methodology is in
+`docs/reference/TROUBLESHOOTING.md` under "Threading Issues" — when a
+"frozen output" symptom surfaces, the first move is the marker test
+(per-frame counter rendered into the same swap chain) to disambiguate
+display-layer freezes from content-pipeline freezes.
+
 ## Alternatives considered
 
 - **Option i (shared registry, fine-grained locking).** Rejected: `entt` is

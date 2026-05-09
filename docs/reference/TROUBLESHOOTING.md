@@ -11,6 +11,7 @@ This document contains solutions to common issues encountered during development
 - [D3D12 Issues](#d3d12-issues)
 - [FFmpeg Issues](#ffmpeg-issues)
 - [Runtime Issues](#runtime-issues)
+- [Threading Issues](#threading-issues)
 - [Performance Issues](#performance-issues)
 
 ---
@@ -506,6 +507,93 @@ This document contains solutions to common issues encountered during development
    const float clearColor[] = { 1.0f, 0.0f, 0.0f, 1.0f }; // Bright red for testing
    commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
    ```
+
+---
+
+## Threading Issues
+
+### Output Content Appears Frozen During Editor Drag / Resize / Modal
+
+**Symptoms**:
+- The video on a physical projector / output display freezes on a single
+  frame for the duration of an editor drag, resize, or other modal
+  interaction.
+- Frame is unfrozen the moment the modal interaction ends; playback
+  resumes from a later position (Timeline kept advancing in the
+  background).
+- May also manifest with native file dialogs or any other operation that
+  blocks `Engine::run`'s main loop.
+
+**This is almost never a display-layer bug.** The editor/show split
+(ADR-0014) means the show thread keeps Present-ing fresh frames at 60 Hz
+even while the editor is stalled. What freezes is the **content** the
+show thread is rendering, because most per-tick systems (Timeline,
+DecodeSystem, AnimationSystem, SectionScheduler) only run inside
+`Engine::update` on the editor thread. When the editor stalls, those
+systems stop ticking, so the show thread keeps re-rendering the same
+state.
+
+**Diagnostic methodology — the marker test.**
+
+Before chasing display-layer theories (DWM, fullscreen, Independent
+Flip, swap-chain composition, driver bugs), prove which layer is broken.
+Add ~20 lines to render an **independent per-frame counter** into the
+same output swap chain — a small color-cycling quad in a corner is
+ideal. Critically, the counter must be totally independent of Timeline,
+SceneSnapshot, and decode state. Then run, trigger the modal stall,
+and observe the marker:
+
+- **Marker keeps cycling colors during the stall** → swap chain is
+  fine, the freeze is in the content pipeline. The show thread is
+  rendering at 60 Hz but the *content* it renders is stale because
+  some editor-tick system stopped feeding it. Check that the system
+  has a show-thread fallback (see ADR-0014's Show-Thread Fallback
+  Pattern).
+- **Marker freezes too** → the freeze really is in the swap chain or
+  display path. Much rarer. Use PresentMon to confirm whether the OS
+  is actually completing your presents.
+
+This methodology was learned the hard way (commit `8492438`): we spent
+hours layering display-layer fixes (WM_TIMER pump, ALLOW_TEARING,
+SetFullscreenState) before the marker test pivoted us to the actual
+six-line decode-pipeline fix.
+
+**Solutions** (assuming marker test confirms content-pipeline freeze):
+
+1. **Check ADR-0014 fallback list.** Timeline (`cf103bd`) and
+   DecodeSystem (`8492438`) already have show-thread fallbacks in
+   `Engine::showThreadMain` next to the editor-heartbeat staleness check.
+2. **AnimationSystem freeze** is a known gap (CODE_ISSUES NEW-07).
+   Animated clip properties (opacity, transform, rotation, scale)
+   freeze during stalls. Tracked on the project board; needs an
+   architectural choice (snapshot-bake vs. system-split) because
+   AnimationSystem writes registry components.
+3. **SectionScheduler freeze** is a known gap (CODE_ISSUES NEW-08).
+   Cues fire late after the stall ends. Same constraint.
+4. **A new system you just added doesn't fall back?** See the "Future
+   Systems" rule in ADR-0014's Show-Thread Fallback Pattern section
+   for the three options.
+
+### Output Window Freezes Including Static Content (e.g. Marker Test Fails)
+
+**Symptoms**:
+- Marker test confirms the swap chain itself is not advancing during
+  modal interaction.
+- This is genuinely rare on this codebase — the editor/show split
+  isolates Present from editor stalls.
+
+**Solutions**:
+
+1. **Confirm fullscreen / windowed state** — `IDXGISwapChain::GetFullscreenState`
+   should report what you expect.
+2. **Check for `DXGI_STATUS_OCCLUDED`** silent-success returns from
+   `Present`. They mean the present was a no-op (window not foreground
+   in exclusive fullscreen on a non-foreground display, etc.).
+3. **PresentMon** (https://github.com/GameTechDev/PresentMon) is the
+   canonical tool for confirming what the OS actually does with your
+   presents. Look at `PresentMode` (Composed: Flip vs. Hardware
+   Composed: Independent Flip etc.) and `statsPresentCount` from
+   `IDXGISwapChain::GetFrameStatistics`.
 
 ---
 
