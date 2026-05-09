@@ -819,6 +819,20 @@ private:
     uint32_t m_fpsFrameCount{0};
     uint32_t m_currentFPS{0};
 
+    // Editor-thread deltaTime (seconds, wall clock). Updated at the top of
+    // each Engine::run iteration; used by Engine::update() (SectionScheduler
+    // tick, etc.). Independent from PlaybackTimeAuthority's deltaTime, which
+    // the show thread owns.
+    double m_editorDeltaTime{0.0};
+
+    // Heartbeat for the show thread's "is the editor stalled?" check.
+    // Engine::update() stamps this with steady_clock::now(); the show thread
+    // reads it and falls back to ticking Timeline itself when the gap exceeds
+    // a threshold (interactive Win32 resize, modal dialog, slow load, ...).
+    // steady_clock::time_point underlying type is signed integral; using its
+    // count() with std::atomic<int64_t> works on every platform we ship.
+    std::atomic<int64_t> m_lastEditorTickNs{0};
+
     // Stage 3: Show thread. Owns Director tick, RenderFrame production/
     // consumption, CompositorSystem, OutputManager, and projector Present.
     // Editor thread keeps GLFW + ImGui + editor swap chain. This split means

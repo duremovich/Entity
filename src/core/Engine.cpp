@@ -742,21 +742,42 @@ void Engine::run() {
     m_showStopRequested.store(false, std::memory_order_relaxed);
     m_showThread = std::thread([this]() { showThreadMain(); });
 
+    // Editor-side wall clock. Independent from PlaybackTimeAuthority's clock
+    // (which the show thread owns) so the editor can compute its own
+    // deltaTime — used by the FPS counter and SectionScheduler::tick — even
+    // when the show thread is busy. The two clocks read the same QPC source
+    // so they don't drift.
+    using EditorClock = std::chrono::steady_clock;
+    auto lastEditorTick = EditorClock::now();
+    m_editorDeltaTime = 0.0;
+
     while (m_running && !glfwWindowShouldClose(m_window)) {
+        // Per-iteration editor delta. Clamped to 50ms so a Win32 modal-loop
+        // wake-up (resize, title-bar drag) doesn't dump multiple seconds of
+        // delta into Timeline::update at once — the show thread covered the
+        // stall via its fallback tick.
+        {
+            const auto now = EditorClock::now();
+            const std::chrono::duration<double> delta = now - lastEditorTick;
+            m_editorDeltaTime = std::min(delta.count(), 0.050);
+            lastEditorTick = now;
+            m_lastEditorTickNs.store(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    now.time_since_epoch()).count(),
+                std::memory_order_relaxed);
+        }
+
         // FPS tracking (editor-side; measures editor frame rate).
         {
-            if (m_timeAuthority) {
-                const double dt = m_timeAuthority->getDeltaTime();
-                m_fpsAccumulator += dt;
-                m_fpsFrameCount++;
-                if (m_fpsAccumulator >= 0.5) {
-                    m_currentFPS = static_cast<uint32_t>(m_fpsFrameCount / m_fpsAccumulator);
-                    m_fpsAccumulator = 0.0;
-                    m_fpsFrameCount  = 0;
-                    const std::string title =
-                        "Entity Media Server - Editor | " + std::to_string(m_currentFPS) + " FPS";
-                    glfwSetWindowTitle(m_window, title.c_str());
-                }
+            m_fpsAccumulator += m_editorDeltaTime;
+            m_fpsFrameCount++;
+            if (m_fpsAccumulator >= 0.5) {
+                m_currentFPS = static_cast<uint32_t>(m_fpsFrameCount / m_fpsAccumulator);
+                m_fpsAccumulator = 0.0;
+                m_fpsFrameCount  = 0;
+                const std::string title =
+                    "Entity Media Server - Editor | " + std::to_string(m_currentFPS) + " FPS";
+                glfwSetWindowTitle(m_window, title.c_str());
             }
         }
 
@@ -842,6 +863,24 @@ void Engine::showThreadMain() {
         // Show-side timing update.
         if (m_timeAuthority) {
             m_timeAuthority->updateTiming();
+        }
+
+        // Stalled-editor fallback for Timeline. Normally Engine::update on the
+        // editor thread advances Timeline::m_currentTime, but Win32 modal
+        // resize loops pin the editor thread inside glfwPollEvents and the
+        // tick stops. If the editor heartbeat is older than 50ms, take over
+        // here so the projector pipeline keeps producing fresh frames.
+        // Threshold > 1 normal editor frame (16ms) so we don't double-tick
+        // during steady-state playback. Timeline::update no-ops when not
+        // Playing, so this is safe to call unconditionally during a stall.
+        if (m_timeline && m_timeAuthority) {
+            const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
+            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
+            if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
+                m_timeline->update(m_timeAuthority->getDeltaTime());
+            }
         }
 
         // Consume any SceneSnapshot published by the editor half. Other D2R
@@ -1206,6 +1245,13 @@ void Engine::processEvents() {
 
 void Engine::update() {
     auto t0 = std::chrono::high_resolution_clock::now();
+    // Existing integration tests are calibrated against PlaybackTimeAuthority's
+    // show-thread deltaTime: in script mode the editor runs unpaced (no
+    // vsync-bound Present), but each editor tick reads m_deltaTime as the
+    // last show-frame interval (~16ms), so per-editor-frame Timeline advance
+    // is decoupled from real time. Switching to a true editor delta here
+    // would change WaitFrames pacing and break test calibration. Phase D
+    // will move Timeline tick to the show thread under a unified clock.
     double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
 
     // Update timeline
