@@ -73,15 +73,18 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
 
     for (const bus::ClipRenderState& ac : rf.activeClips) {
         const auto entity = static_cast<entt::entity>(ac.entity);
-        auto* videoTex = m_registry.try_get<VideoTexture>(entity);
-        if (!videoTex) continue;
+
+        // Slot is baked from the editor thread into ClipRenderState.
+        // No registry read needed (and none allowed — see ADR-0014).
+        if (ac.slot < 0) continue;
+        const uint32_t slot = static_cast<uint32_t>(ac.slot);
+
+        ClipDisplayState& display = m_clipDisplayState[entity];
 
         // Skip if the frame number hasn't changed since last upload --
         // the GPU texture is rendered every tick but only needs re-upload
         // on change.
-        auto* state = m_registry.try_get<ClipDecodeState>(entity);
-        FrameNumber lastFrame = state ? state->lastDecodedFrame : UINT32_MAX;
-        if (ac.mediaFrame == lastFrame) continue;
+        if (ac.mediaFrame == display.lastDecodedFrame) continue;
 
         // Decoder is mid-seek -- its in-flight frames are stale. Hold
         // the current texture until the seek completes.
@@ -98,18 +101,16 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
         if (auto lease = m_frameCache->get(entity, ac.mediaFrame)) {
             const DecodedFrame& f = *lease;
             bool ok = m_renderer->uploadVideoFrameToSlot(
-                videoTex->descriptorSlot, f.data.data(), f.width, f.height, f.format);
+                slot, f.data.data(), f.width, f.height, f.format);
             if (ok) {
-                videoTex->width  = f.width;
-                videoTex->height = f.height;
-                videoTex->colorSpace = f.colorSpace;
+                display.colorSpace = f.colorSpace;
                 // Per-clip MediaBin OCIO override wins over the decoder
                 // tag when set (Phase C.12 #9). Director side already
                 // resolved the override string in the message body.
-                videoTex->ocioColorSpace = ac.ocioOverride.empty()
+                display.ocioColorSpace = ac.ocioOverride.empty()
                     ? f.ocioColorSpace
                     : ac.ocioOverride;
-                if (state) state->lastDecodedFrame = ac.mediaFrame;
+                display.lastDecodedFrame = ac.mediaFrame;
             }
             cacheHits++;
             if (sbgRelevant) {
@@ -146,12 +147,10 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
             if (auto nearestLease = m_frameCache->get(entity, *nearestN)) {
                 const DecodedFrame& f = *nearestLease;
                 bool ok = m_renderer->uploadVideoFrameToSlot(
-                    videoTex->descriptorSlot, f.data.data(), f.width, f.height, f.format);
+                    slot, f.data.data(), f.width, f.height, f.format);
                 if (ok) {
-                    videoTex->width  = f.width;
-                    videoTex->height = f.height;
-                    videoTex->colorSpace = f.colorSpace;
-                    videoTex->ocioColorSpace = ac.ocioOverride.empty()
+                    display.colorSpace = f.colorSpace;
+                    display.ocioColorSpace = ac.ocioOverride.empty()
                         ? f.ocioColorSpace
                         : ac.ocioOverride;
                     // Don't bump lastDecodedFrame -- we want to re-try

@@ -216,12 +216,12 @@ TEST_F(DirectorRendererRoundtripTest, RoundTripUploadsLandInOrderedSlots) {
     EXPECT_EQ(renderer.uploads[1].firstByte, 0xBBu);
 }
 
-TEST_F(DirectorRendererRoundtripTest, RoundTripStampsOcioOverrideOnVideoTexture) {
+TEST_F(DirectorRendererRoundtripTest, RoundTripStampsOcioOverrideOnDisplayState) {
     // Subtask 8 keeps the C.12 #9 invariant -- when the message body
     // carries a per-clip OCIO override string, the Renderer-side stamp
-    // wins over the decoder's default. This belongs at the bus boundary,
-    // not just inside the presenter, so a serialized override that
-    // round-trips through JSON still applies.
+    // wins over the decoder's default. Post-ADR-0014 this lives in
+    // PlaybackPresenter's show-thread-local display-state map (not on
+    // VideoTexture, which the show thread can't safely write).
     auto e = primeClip(/*slot*/2, /*mediaFrame*/0, /*fill*/0x10);
 
     bus::RenderFrame rf;
@@ -237,8 +237,7 @@ TEST_F(DirectorRendererRoundtripTest, RoundTripStampsOcioOverrideOnVideoTexture)
     drainAndApply(transport, presenter);
 
     ASSERT_EQ(renderer.uploads.size(), 1u);
-    const auto& tex = registry.get<VideoTexture>(e);
-    EXPECT_EQ(tex.ocioColorSpace, "ACEScg");
+    EXPECT_EQ(presenter.displayState(e).ocioColorSpace, "ACEScg");
 }
 
 TEST_F(DirectorRendererRoundtripTest, ClipsWithoutCachedFrameAreSkippedWhenNotPlaying) {

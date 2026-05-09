@@ -30,6 +30,7 @@ public:
 
     void setTransport(bus::IMessageTransport* transport) { m_transport = transport; }
     void setDebugLogging(bool enabled) { m_debugLogging = enabled; }
+    void setPlaybackPresenter(PlaybackPresenter* p) { m_playbackPresenter = p; }
 
     void initialize(entt::registry& registry) override;
     // Base-class override — satisfies System interface; Engine calls the
@@ -61,6 +62,7 @@ private:
 
     bus::IMessageTransport* m_transport{nullptr};
     IRenderer* m_renderer{nullptr};
+    PlaybackPresenter* m_playbackPresenter{nullptr};
     bool m_debugLogging{false};
     // Show-thread-only; no synchronization needed (CompositorSystem::update
     // runs exclusively on the show thread per ADR-0014).

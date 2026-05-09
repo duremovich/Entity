@@ -1,7 +1,7 @@
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/bus/Serialization.hpp"
 #include "entity/render/IRenderer.hpp"
-#include "entity/components/VideoTexture.hpp"
+#include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/components/MappingSurface.hpp"
 #include "entity/components/Screen.hpp"
 
@@ -98,12 +98,19 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
                 TextureRef tex = m_renderer->getVideoTexture(
                     static_cast<uint32_t>(crs->slot));
                 if (tex.valid()) {
-                    // Only read colorSpace / ocioColorSpace from the registry — written
-                    // by PlaybackPresenter::present on the show thread in the same tick,
-                    // before compositor->update, so no cross-thread race here.
-                    auto* videoTex = registry.try_get<VideoTexture>(entity);
-                    const auto colorSpace = videoTex ? videoTex->colorSpace : TextureColorSpace::Linear;
-                    const auto ocioColorSpace = videoTex ? videoTex->ocioColorSpace : std::string{};
+                    // Per ADR-0014 the show thread must not read the registry —
+                    // editor's `registry.destroy()` on clip delete races any
+                    // try_get<VideoTexture>. PlaybackPresenter caches the
+                    // colour-space tags show-thread-locally and exposes them
+                    // via `displayState()`; on a miss the default
+                    // (Linear / empty OCIO) reproduces the prior fallback.
+                    TextureColorSpace colorSpace = TextureColorSpace::Linear;
+                    std::string ocioColorSpace;
+                    if (m_playbackPresenter) {
+                        const auto& display = m_playbackPresenter->displayState(entity);
+                        colorSpace     = display.colorSpace;
+                        ocioColorSpace = display.ocioColorSpace;
+                    }
                     m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
                                                  crs->blendMode, colorSpace,
                                                  ocioColorSpace);

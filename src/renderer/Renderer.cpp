@@ -105,6 +105,13 @@ Result Renderer::initialize(GLFWwindow* window,
         m_registry, m_d3d12Renderer.get(), m_frameCache.get());
     m_playbackPresenter->setDecodeSystem(m_decodeSystem.get());
 
+    // CompositorSystem queries PlaybackPresenter for per-clip display state
+    // (colour-space tags) on the show thread. The data lives there instead
+    // of on VideoTexture so the show thread doesn't have to read the
+    // registry — reads would race with the editor thread's
+    // registry.destroy on clip delete (ADR-0014).
+    m_compositorSystem->setPlaybackPresenter(m_playbackPresenter.get());
+
     m_initialized = true;
     return Result::Success;
 }
