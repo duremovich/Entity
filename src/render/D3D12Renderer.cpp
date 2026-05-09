@@ -900,15 +900,26 @@ void D3D12Renderer::waitForGpu() {
 }
 
 void D3D12Renderer::moveToNextFrame() {
-    // Signal the editor fence to mark the end of this slot's work. The signal
-    // value must be strictly greater than the fence's current completed value —
-    // waitForGpu() may have drained it beyond m_editorFenceValues[slot] during
-    // a resize or slot-free operation mid-session. Taking the max() of both
-    // keeps the fence monotonically increasing regardless of out-of-band drains.
-    const uint64_t signalValue = std::max(m_editorFenceValues[m_currentBackBufferIndex],
-                                          m_editorFence->GetCompletedValue() + 1);
-    m_gpu->commandQueue()->Signal(m_editorFence.Get(), signalValue);
-    m_editorFenceValues[m_currentBackBufferIndex] = signalValue + 1;
+    // Standard D3D12-sample frame-pacing pattern: m_editorFenceValues[i] is
+    // "the fence value the GPU will reach when slot i's frame is done". We:
+    //   1. Signal currentFenceValue (the value for the slot we just rendered),
+    //   2. Read the new back-buffer index from the swap chain,
+    //   3. Wait until the GPU has reached the new slot's recorded fence value,
+    //   4. Then advance the new slot's recorded value for next time.
+    //
+    // Robust to GetCurrentBackBufferIndex() returning the SAME slot after
+    // Present (DXGI_STATUS_OCCLUDED during resize, etc.): the wait target is
+    // the value we *just signaled*, which the GPU will reach normally. The
+    // prior pattern bumped editorValues[old slot] before the flip and then
+    // waited on editorValues[new slot]; when new == old that target became
+    // currentFenceValue+1, which the GPU never reached → deadlock.
+    //
+    // The std::max keeps signalValue strictly greater than the fence's
+    // current completed value: waitForGpu() can drain editorFence beyond
+    // editorValues[slot] mid-session, and Signal must be monotonic.
+    const uint64_t currentFenceValue = std::max(m_editorFenceValues[m_currentBackBufferIndex],
+                                                m_editorFence->GetCompletedValue() + 1);
+    m_gpu->commandQueue()->Signal(m_editorFence.Get(), currentFenceValue);
 
     // Move to next frame
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
@@ -928,6 +939,11 @@ void D3D12Renderer::moveToNextFrame() {
             return;
         }
     }
+
+    // Record the next fence value for the slot we just flipped to. On the
+    // next pass through this slot we'll signal currentFenceValue+1 (or
+    // higher, via the std::max).
+    m_editorFenceValues[m_currentBackBufferIndex] = currentFenceValue + 1;
 }
 
 // ============================================================================
