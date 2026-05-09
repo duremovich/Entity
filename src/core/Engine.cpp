@@ -1,7 +1,4 @@
 #include "entity/core/Engine.hpp"
-#ifdef _WIN32
-#include <windows.h>
-#endif
 #include "entity/bus/InMemoryMessageTransport.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/bus/Serialization.hpp"
@@ -101,18 +98,6 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
 
     m_windowWidth = windowWidth;
     m_windowHeight = windowHeight;
-
-#ifdef _WIN32
-    // Disable Win32's "ghost window" mechanism. When the editor window's
-    // message pump stalls inside a modal resize/move loop for >5 seconds,
-    // Windows would normally mark the entire process as "not responding"
-    // and ghost ALL its windows — including the projector output windows
-    // that the show thread is still rendering at 60Hz. DWM stops compositing
-    // ghosted windows, so the physical display freezes until the modal loop
-    // exits. Disabling ghosting lets the show thread's Present continue to
-    // reach the display while the editor is in a modal loop.
-    DisableProcessWindowsGhosting();
-#endif
 
     // Initialize GLFW
     if (!glfwInit()) {
@@ -2919,14 +2904,10 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // creates don't collide with loaded indices; then bring up windows for
     // any physical outputs that were saved as enabled.
     //
-    // CRITICAL: route this through the D2R bus so the show thread creates
-    // the GLFW output window. Calling setOutputEnabled() directly here would
-    // create the window on the editor thread, making its WndProc owned by
-    // the editor thread. When the editor enters Win32's modal resize loop,
-    // the output window's message pump stops, Windows marks the process
-    // as "not responding," and DWM ghosts the swap chain — the physical
-    // display freezes for the duration of the resize even though the show
-    // thread keeps Presenting fresh frames.
+    // Routed through the D2R bus so the show thread creates the output
+    // window. Per ADR-0014 the show thread owns output windows, swap chains,
+    // and Present; calling setOutputEnabled() directly here would create the
+    // window on the editor thread and violate that contract.
     if (m_outputManager) {
         m_outputManager->syncCounterFromRegistry();
 
