@@ -108,8 +108,11 @@ entity_compile_shader(calibration_overlay_ps.hlsl ps PSMain 6_0)
 # Mesh triangle PSO — proper barycentric UV interpolation for projector output.
 entity_compile_shader(mesh_triangle_vs.hlsl       vs VSMain 6_0)
 entity_compile_shader(mesh_triangle_ps.hlsl       ps PSMain 6_0)
+# Stage mesh PSO — depth-buffered GPU rendering for the editor 3D stage view.
+entity_compile_shader(stage_mesh_vs.hlsl          vs VSMain 6_0)
+entity_compile_shader(stage_mesh_ps.hlsl          ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 12 shaders")
+message(STATUS "Configured offline HLSL compilation for 14 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler

@@ -847,6 +847,10 @@ private:
     // buildRenderFrame publishes via D2R; show thread merges it in.
     bus::SceneSnapshot    m_cachedSceneSnapshot;
 
+    // EnTT signal: fires before a Model component is removed so we can
+    // schedule deferred GPU slot release before the component data is gone.
+    void onModelDestroyed(entt::registry& reg, entt::entity e);
+
     // The show thread's body.
     void showThreadMain();
 

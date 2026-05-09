@@ -1,6 +1,9 @@
 #include "entity/ui/StageWindow.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/render/IRenderer.hpp"
+#include "entity/render/D3D12Renderer.hpp"
+#include "entity/render/DescriptorHeapLayout.hpp"
+#include "entity/renderer/Renderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
@@ -229,6 +232,13 @@ void StageWindow::render3DView() {
     IRenderer* renderer = m_engine ? m_engine->getRenderer() : nullptr;
     Timeline* timeline = m_engine ? m_engine->getTimeline() : nullptr;
 
+    // D3D12Renderer needed for the GPU stage pass (renderMeshes).
+    D3D12Renderer* d3d = nullptr;
+    if (m_engine) {
+        if (auto* rs = m_engine->getRendererService())
+            d3d = rs->getD3D12Renderer();
+    }
+
     // Get selected stage primitive for highlighting (mutually exclusive
     // between screens / props / projectors at the Timeline level).
     entt::entity selectedScreen = timeline ? timeline->getSelectedScreen() : entt::null;
@@ -237,8 +247,11 @@ void StageWindow::render3DView() {
     // Begin 3D rendering (draws background, grid, axes)
     m_3dRenderer->beginRender(drawList, windowPos, contentSize);
 
-    // Collect visible screens and sort by distance from camera (painter's algorithm)
-    // Draw farthest screens first so nearer screens are drawn on top
+    // -------------------------------------------------------------------------
+    // Collect visible screens and props, split into two buckets:
+    //   meshDraws    — entities WITH a valid mesh → GPU pass via renderMeshes
+    //   screensToDraw / propsToDraw — entities WITHOUT meshes → existing ImGui paths
+    // -------------------------------------------------------------------------
     struct ScreenDrawData {
         entt::entity entity;
         glm::vec3 position;
@@ -249,10 +262,8 @@ void StageWindow::render3DView() {
         ImTextureID textureID;
         const MeshData* mesh{nullptr};
     };
-    std::vector<ScreenDrawData> screensToDraw;
+    std::vector<ScreenDrawData> screensToDraw;  // flat-quad screens only
 
-    // Parallel collection for props — same depth-sort treatment so props
-    // and screens layer correctly against each other when they overlap.
     struct PropDrawData {
         entt::entity entity;
         glm::vec3 position;
@@ -263,74 +274,133 @@ void StageWindow::render3DView() {
         float distanceFromCamera;
         const MeshData* mesh{nullptr};
     };
-    std::vector<PropDrawData> propsToDraw;
+    std::vector<PropDrawData> propsToDraw;  // no-mesh props (placeholder cross) only
+
+    std::vector<Stage3DRenderer::StageMeshDraw> meshDraws;
+
+    // AABB wireframes for mesh-bearing selected entities — drawn as ImGui
+    // overlay on top of the GPU image for selection feedback.
+    struct MeshAABB {
+        glm::mat4 transform;
+        float minB[3], maxB[3];
+        ImU32 color;
+        float thickness;
+    };
+    std::vector<MeshAABB> meshAABBs;
 
     if (m_engine) {
         auto& registry = m_engine->getRegistry();
-        auto screenView = registry.view<Screen>();
-
-        // Get camera position for depth sorting
         glm::vec3 cameraPos = m_3dRenderer->getCamera().position;
 
-        for (auto [entity, screen] : screenView.each()) {
-            if (screen.visible) {
-                glm::vec3 position(screen.position[0], screen.position[1], screen.position[2]);
-                glm::vec3 rotation(screen.rotation[0], screen.rotation[1], screen.rotation[2]);
-                glm::vec3 scale(screen.scale[0], screen.scale[1], screen.scale[2]);
-                bool isSelected = (entity == selectedScreen);
+        // --- Screens ---
+        for (auto [entity, screen] : registry.view<Screen>().each()) {
+            if (!screen.visible) continue;
 
-                // Calculate distance from camera to screen center
-                // Add default elevation offset (screens are centered at y=0.5 by default)
-                glm::vec3 screenCenter = position + glm::vec3(0.0f, m_3dRenderer->screenElevation, 0.0f);
-                float dist = glm::length(screenCenter - cameraPos);
+            glm::vec3 position(screen.position[0], screen.position[1], screen.position[2]);
+            glm::vec3 rotation(screen.rotation[0], screen.rotation[1], screen.rotation[2]);
+            glm::vec3 scale(screen.scale[0], screen.scale[1], screen.scale[2]);
+            bool isSelected = (entity == selectedScreen);
 
-                // Get THIS screen's compose target texture.
-                // ImTextureID in recent ImGui is ImU64 (not void*); cast through
-                // uintptr_t to preserve the descriptor-handle bits.
-                ImTextureID screenTextureID = 0;
-                if (renderer && screen.renderTargetValid &&
-                    screen.renderTargetSlot != UINT32_MAX) {
-                    screenTextureID = reinterpret_cast<ImTextureID>(
-                        renderer->getComposeTargetTextureID(screen.renderTargetSlot));
-                }
+            glm::vec3 screenCenter = position + glm::vec3(0.0f, m_3dRenderer->screenElevation, 0.0f);
+            float dist = glm::length(screenCenter - cameraPos);
 
-                // Look up mesh from assigned model entity
-                const MeshData* mesh = nullptr;
-                if (screen.modelEntity != entt::null && registry.valid(screen.modelEntity)) {
-                    if (const auto* model = registry.try_get<Model>(screen.modelEntity))
-                        if (model->mesh.isValid()) mesh = &model->mesh;
-                }
+            ImTextureID screenTextureID = 0;
+            if (renderer && screen.renderTargetValid && screen.renderTargetSlot != UINT32_MAX) {
+                screenTextureID = reinterpret_cast<ImTextureID>(
+                    renderer->getComposeTargetTextureID(screen.renderTargetSlot));
+            }
 
-                screensToDraw.push_back({entity, position, rotation, scale, isSelected, dist, screenTextureID, mesh});
+            const MeshData* mesh = nullptr;
+            const Model*    model = nullptr;
+            if (screen.modelEntity != entt::null && registry.valid(screen.modelEntity)) {
+                if (const auto* m = registry.try_get<Model>(screen.modelEntity))
+                    if (m->mesh.isValid()) { mesh = &m->mesh; model = m; }
+            }
+
+            if (mesh) {
+                Stage3DRenderer::StageMeshDraw draw;
+                draw.meshSlot   = (model && model->gpuResourcesValid) ? model->vertexBufferSlot : UINT32_MAX;
+                draw.position   = position;
+                draw.rotation   = rotation;
+                draw.scale      = scale;
+                // Compose target SRV: the screen's video content lives at
+                // composeTargetSlot(renderTargetSlot) in the shader-visible heap.
+                draw.srvSlot    = (screen.renderTargetValid && screen.renderTargetSlot != UINT32_MAX)
+                                      ? DescriptorHeapLayout::composeTargetSlot(screen.renderTargetSlot)
+                                      : DescriptorHeapLayout::IMGUI_SLOT;
+                draw.tint       = glm::vec4(1.0f);
+                draw.renderMode = 0;
+                draw.isScreen   = true;
+                meshDraws.push_back(draw);
+
+                // AABB wireframe for selection overlay
+                glm::mat4 tf = glm::mat4(1.0f);
+                tf = glm::translate(tf, glm::vec3(position.x, position.y + m_3dRenderer->screenElevation, position.z));
+                tf = glm::rotate(tf, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                tf = glm::rotate(tf, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                tf = glm::rotate(tf, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                tf = glm::scale(tf, scale);
+                ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(100, 100, 100, 255);
+                float frameThick = isSelected ? 3.0f : 2.0f;
+                meshAABBs.push_back({tf, {mesh->minBounds[0], mesh->minBounds[1], mesh->minBounds[2]},
+                                        {mesh->maxBounds[0], mesh->maxBounds[1], mesh->maxBounds[2]},
+                                        frameColor, frameThick});
+            } else {
+                // No mesh → flat-quad bucket (sorted painter's-algorithm)
+                screensToDraw.push_back({entity, position, rotation, scale, isSelected, dist, screenTextureID, nullptr});
             }
         }
 
-        // Collect visible props
-        auto propView = registry.view<Prop>();
-        for (auto [entity, prop] : propView.each()) {
+        // --- Props ---
+        for (auto [entity, prop] : registry.view<Prop>().each()) {
             if (!prop.visible) continue;
+
             glm::vec3 position(prop.position[0], prop.position[1], prop.position[2]);
             glm::vec3 rotation(prop.rotation[0], prop.rotation[1], prop.rotation[2]);
             glm::vec3 scale(prop.scale[0], prop.scale[1], prop.scale[2]);
             glm::vec4 color(prop.displayColor[0], prop.displayColor[1],
                             prop.displayColor[2], prop.displayColor[3]);
             bool isSelected = (entity == selectedProp);
-
-            // Props don't get the screen-elevation lift in drawProp, so depth
-            // is from raw position. Distance to mesh AABB center would be
-            // marginally better but position is fine for sort.
             float dist = glm::length(position - cameraPos);
 
             const MeshData* mesh = nullptr;
+            const Model*    model = nullptr;
             if (prop.modelEntity != entt::null && registry.valid(prop.modelEntity)) {
-                if (const auto* model = registry.try_get<Model>(prop.modelEntity))
-                    if (model->mesh.isValid()) mesh = &model->mesh;
+                if (const auto* m = registry.try_get<Model>(prop.modelEntity))
+                    if (m->mesh.isValid()) { mesh = &m->mesh; model = m; }
             }
 
-            propsToDraw.push_back({entity, position, rotation, scale, color, isSelected, dist, mesh});
+            if (mesh) {
+                Stage3DRenderer::StageMeshDraw draw;
+                draw.meshSlot   = (model && model->gpuResourcesValid) ? model->vertexBufferSlot : UINT32_MAX;
+                draw.position   = position;
+                draw.rotation   = rotation;
+                draw.scale      = scale;
+                draw.srvSlot    = 0;  // renderMode=1: PS ignores the texture SRV
+                draw.tint       = color;
+                draw.renderMode = 1;
+                draw.isScreen   = false;
+                meshDraws.push_back(draw);
+
+                // AABB wireframe for selection overlay
+                glm::mat4 tf = glm::mat4(1.0f);
+                tf = glm::translate(tf, position);
+                tf = glm::rotate(tf, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                tf = glm::rotate(tf, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                tf = glm::rotate(tf, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                tf = glm::scale(tf, scale);
+                ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(120, 120, 120, 200);
+                float frameThick = isSelected ? 3.0f : 1.5f;
+                meshAABBs.push_back({tf, {mesh->minBounds[0], mesh->minBounds[1], mesh->minBounds[2]},
+                                        {mesh->maxBounds[0], mesh->maxBounds[1], mesh->maxBounds[2]},
+                                        frameColor, frameThick});
+            } else {
+                // No mesh → placeholder-cross bucket
+                propsToDraw.push_back({entity, position, rotation, scale, color, isSelected, dist, nullptr});
+            }
         }
 
-        // Sort by distance (farthest first for painter's algorithm)
+        // Depth-sort the flat-quad buckets (farthest first, painter's algorithm)
         std::sort(screensToDraw.begin(), screensToDraw.end(),
                   [](const ScreenDrawData& a, const ScreenDrawData& b) {
                       return a.distanceFromCamera > b.distanceFromCamera;
@@ -339,26 +409,79 @@ void StageWindow::render3DView() {
                   [](const PropDrawData& a, const PropDrawData& b) {
                       return a.distanceFromCamera > b.distanceFromCamera;
                   });
+    }
 
-        // Draw props first so they sit "behind" screens when at equal depth —
-        // screens carry video and want to read on top of set geometry.
+    // -------------------------------------------------------------------------
+    // GPU pass: render all mesh entities into the stage render target, then
+    // composite the result behind all 2D overlays via AddImage.
+    // -------------------------------------------------------------------------
+    if (!meshDraws.empty()) {
+        Camera gpuCam = m_3dRenderer->getCamera();
+        gpuCam.aspectRatio = contentSize.x / std::max(contentSize.y, 1.0f);
+
+        ImTextureID stageTexId = m_3dRenderer->renderMeshes(
+            d3d, gpuCam, meshDraws,
+            static_cast<uint32_t>(contentSize.x),
+            static_cast<uint32_t>(contentSize.y));
+
+        if (stageTexId) {
+            ImVec2 p1(windowPos.x + contentSize.x, windowPos.y + contentSize.y);
+            drawList->AddImage(stageTexId, windowPos, p1);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 2D overlay pass: flat-quad screens, placeholder props, projectors, AABBs.
+    // These draw on top of the GPU image.
+    // -------------------------------------------------------------------------
+    if (m_engine) {
+        auto& registry = m_engine->getRegistry();
+
+        // Props first (sit behind screens at equal depth)
         for (const auto& propData : propsToDraw) {
             m_3dRenderer->drawProp(drawList, windowPos, contentSize,
                                    propData.position, propData.rotation, propData.scale,
                                    propData.displayColor, propData.isSelected, propData.mesh);
         }
 
-        // Draw screens in sorted order (farthest to nearest)
+        // Flat-quad screens
         for (const auto& screenData : screensToDraw) {
             m_3dRenderer->drawScreen(drawList, windowPos, contentSize,
                                      screenData.position, screenData.rotation, screenData.scale,
                                      screenData.textureID, screenData.isSelected, screenData.mesh);
         }
 
-        // Draw projector gizmos
+        // AABB wireframes for mesh entities (selection feedback over GPU image).
+        // Uses the public projectPoint() rather than the private drawLine3D().
+        const int kEdges[12][2] = {
+            {0,1},{1,2},{2,3},{3,0},
+            {4,5},{5,6},{6,7},{7,4},
+            {0,4},{1,5},{2,6},{3,7},
+        };
+        for (const auto& aabb : meshAABBs) {
+            const glm::vec3 bc[8] = {
+                {aabb.minB[0],aabb.minB[1],aabb.minB[2]},
+                {aabb.maxB[0],aabb.minB[1],aabb.minB[2]},
+                {aabb.maxB[0],aabb.maxB[1],aabb.minB[2]},
+                {aabb.minB[0],aabb.maxB[1],aabb.minB[2]},
+                {aabb.minB[0],aabb.minB[1],aabb.maxB[2]},
+                {aabb.maxB[0],aabb.minB[1],aabb.maxB[2]},
+                {aabb.maxB[0],aabb.maxB[1],aabb.maxB[2]},
+                {aabb.minB[0],aabb.maxB[1],aabb.maxB[2]},
+            };
+            for (const auto& e : kEdges) {
+                glm::vec3 w0 = glm::vec3(aabb.transform * glm::vec4(bc[e[0]], 1.0f));
+                glm::vec3 w1 = glm::vec3(aabb.transform * glm::vec4(bc[e[1]], 1.0f));
+                ImVec2 s0 = m_3dRenderer->projectPoint(w0, windowPos, contentSize);
+                ImVec2 s1 = m_3dRenderer->projectPoint(w1, windowPos, contentSize);
+                if ((s0.x < 0.0f && s0.y < 0.0f) || (s1.x < 0.0f && s1.y < 0.0f)) continue;
+                drawList->AddLine(s0, s1, aabb.color, aabb.thickness);
+            }
+        }
+
+        // Projector gizmos
         entt::entity selectedProjector = timeline ? timeline->getSelectedProjector() : entt::null;
-        auto projView = registry.view<Projector>();
-        for (auto [projEntity, proj] : projView.each()) {
+        for (auto [projEntity, proj] : registry.view<Projector>().each()) {
             glm::vec3 projPos{proj.position[0], proj.position[1], proj.position[2]};
             glm::vec3 projRot{proj.rotation[0], proj.rotation[1], proj.rotation[2]};
             m_3dRenderer->drawProjector(drawList, windowPos, contentSize,
@@ -368,7 +491,7 @@ void StageWindow::render3DView() {
         }
     }
 
-    // End 3D rendering (draws overlays)
+    // End 3D rendering (camera info overlay, pops clip rect)
     m_3dRenderer->endRender(drawList, windowPos, contentSize);
 
     // Handle input

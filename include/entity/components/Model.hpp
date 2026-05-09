@@ -21,6 +21,7 @@ struct Model {
     uint32_t vertexBufferSlot{UINT32_MAX};  // Slot in vertex buffer pool
     uint32_t indexBufferSlot{UINT32_MAX};   // Slot in index buffer pool
     bool gpuResourcesValid{false};
+    bool gpuUploadFailed{false};  // Set on first slot-exhaustion; suppresses retry log spam
 
     bool isValid() const { return mesh.isValid(); }
 };

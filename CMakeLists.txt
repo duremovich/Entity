@@ -170,6 +170,7 @@ target_sources(EntityMediaCore
         src/render/OutputManager.cpp
         src/render/RuntimeShaderCompiler.cpp
         src/render/Stage3DRenderer.cpp
+        src/render/MeshUploader.cpp
         src/render/TextureUploader.cpp
 
         # Timeline

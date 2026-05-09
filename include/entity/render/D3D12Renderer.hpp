@@ -8,6 +8,7 @@
  */
 
 #include "entity/core/Types.hpp"
+#include "entity/media/ObjLoader.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/render/RuntimeShaderCompiler.hpp"
 #include <d3d12.h>
@@ -150,6 +151,42 @@ public:
     void     renderCalibrationOverlay();
     uint32_t getCalibrationOverlaySlot() const { return m_calibOverlaySlot; }
     bool     hasCalibrationOverlay() const { return m_calibOverlaySlot != UINT32_MAX; }
+
+    // -----------------------------------------------------------------------
+    // Stage 3D offscreen render target — editor thread only (ADR-0014).
+    //
+    // ensureStageTarget lazily creates or resizes the double-buffered color +
+    // depth resources, DSV heap, RTVs, and SRVs. Returns an ImTextureID
+    // (GPU descriptor handle ptr cast to void*) suitable for ImGui::Image.
+    // beginStageTarget / endStageTarget bracket a single editor draw pass.
+    // setStageCamera uploads viewProj into the per-frame FrameCB; call once
+    // per pass before any drawStageMesh calls.
+    // -----------------------------------------------------------------------
+    void* ensureStageTarget(uint32_t width, uint32_t height);
+    void  beginStageTarget();
+    void  endStageTarget();
+    void  setStageCamera(const glm::mat4& viewProj);
+    void  drawStageMesh(uint32_t meshSlot,
+                        const glm::mat4& model,
+                        const glm::vec4& tint,
+                        uint32_t renderMode,
+                        uint32_t textureSrvSlot);
+
+    // -----------------------------------------------------------------------
+    // Mesh lifecycle — editor thread only (ADR-0014).
+    //
+    // uploadMeshImmediate: opens a one-shot copy-queue submission, calls
+    // MeshUploader::uploadMesh, executes + signals the upload fence, inserts
+    // a cross-queue Wait so the direct queue doesn't read the buffers until
+    // the copy completes. Returns the slot index, or UINT32_MAX on failure.
+    //
+    // scheduleMeshSlotFree: defers a slot release until the editor fence
+    // advances past the value currently at endEditorFrame. Safe to call from
+    // on_destroy<Model> callbacks on the editor thread.
+    // -----------------------------------------------------------------------
+    uint32_t uploadMeshImmediate(const std::vector<MeshVertex>& vertices,
+                                  const std::vector<uint32_t>& indices);
+    void     scheduleMeshSlotFree(uint32_t slot);
 
     // -----------------------------------------------------------------------
     // Mesh-triangle rendering for projector output. Renders one triangle
@@ -350,10 +387,14 @@ private:
     // after Execute, direct queue Wait(uploadFence, value) before its own
     // Execute. Per-frame allocators (FRAME_COUNT) so the previous frame's
     // copy commands aren't reset out from under the GPU.
+    // Show-thread copy resources (texture uploads in beginShowFrame/endShowFrame)
     ComPtr<ID3D12CommandAllocator>    m_copyCommandAllocators[FRAME_COUNT];
     ComPtr<ID3D12GraphicsCommandList> m_copyCommandList;
+    // Editor-thread copy resources (mesh uploads in uploadMeshImmediate — editor-only)
+    ComPtr<ID3D12CommandAllocator>    m_editorCopyCommandAllocators[FRAME_COUNT];
+    ComPtr<ID3D12GraphicsCommandList> m_editorCopyCommandList;
     ComPtr<ID3D12Fence>               m_uploadFence;
-    uint64_t                          m_uploadFenceValue{0};
+    std::atomic<uint64_t>             m_uploadFenceValue{0};
     bool                              m_uploadsRecordedThisFrame{false};
 
     // Rendering pipeline objects
@@ -381,6 +422,9 @@ private:
     // Declared here as std::unique_ptr so we don't have to include the header,
     // keeping the public D3D12Renderer.hpp lean. See destructor for ordering.
     std::unique_ptr<class TextureUploader> m_textureUploader;
+
+    // Mesh vertex/index buffer pool (Phase 4+). Wired up in Phase 7 lifecycle.
+    std::unique_ptr<class MeshUploader> m_meshUploader;
 
     // Textured rendering pipeline (for drawTexturedQuad)
     ComPtr<ID3D12RootSignature> m_texturedRootSignature;
@@ -542,6 +586,34 @@ private:
     };
     std::vector<ComposeTarget> m_composeTargets;
     uint32_t m_currentComposeTargetSlot{0};  // Currently active slot during rendering
+
+    // Double-buffered offscreen render target for the editor 3D stage view.
+    // Color: RGBA16F + RTV + SRV in main heap. Depth: D32_FLOAT + DSV (own heap).
+    // frameCB: persistently-mapped UPLOAD-heap buffer for FrameCB (viewProj).
+    // Editor thread only — never touched by the show thread.
+    struct StageRenderTarget {
+        ComPtr<ID3D12Resource>       color[FRAME_COUNT];
+        ComPtr<ID3D12Resource>       depth[FRAME_COUNT];
+        ComPtr<ID3D12DescriptorHeap> rtvHeap;   // FRAME_COUNT RTVs
+        ComPtr<ID3D12DescriptorHeap> dsvHeap;   // FRAME_COUNT DSVs (never shader-visible)
+        uint32_t srvSlots[FRAME_COUNT]{UINT32_MAX, UINT32_MAX}; // SRV slots in m_imguiSrvHeap
+        // Per-frame FrameCB buffers (one per FRAME_COUNT slot, 256-byte aligned).
+        // Frame N+2's CPU recording must not overwrite frame N+1's buffer while
+        // the GPU is still reading it; indexing by m_currentBackBufferIndex gives
+        // each in-flight frame its own copy, matching moveToNextFrame's fence logic.
+        ComPtr<ID3D12Resource> frameCB[FRAME_COUNT];
+        void*                  frameCBMapped[FRAME_COUNT]{nullptr, nullptr};
+        uint32_t width{0};
+        uint32_t height{0};
+        bool ready{false};
+    };
+    StageRenderTarget m_stageTarget;
+    bool createStageRenderTarget(uint32_t width, uint32_t height);
+
+    // Stage mesh PSO + root signature (depth-enabled, cull-none).
+    ComPtr<ID3D12RootSignature> m_stageMeshRootSignature;
+    ComPtr<ID3D12PipelineState> m_stageMeshPipelineState;
+    bool createStageMeshPSO();
 
     /**
      * Lazily allocate the FP16 snapshot resource for a compose target and

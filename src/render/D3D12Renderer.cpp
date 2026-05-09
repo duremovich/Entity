@@ -8,6 +8,7 @@
 #include "entity/render/D3D12Device.hpp"
 #include "entity/render/DescriptorHeapLayout.hpp"
 #include "entity/render/TextureUploader.hpp"
+#include "entity/render/MeshUploader.hpp"
 #include "entity/color/OcioManager.hpp"
 #include "entity/color/OcioGpuProcessor.hpp"
 
@@ -166,6 +167,14 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
+    // Mesh vertex/index buffer pool
+    m_meshUploader = std::make_unique<MeshUploader>();
+    if (!m_meshUploader->initialize(m_gpu->device())) {
+        std::cerr << "Failed to initialize MeshUploader!" << std::endl;
+        m_meshUploader.reset();
+        // Non-fatal: mesh upload will be skipped, but 3D preview still works without meshes.
+    }
+
     // Create textured rendering pipeline (for multi-layer compositing)
     if (createTexturedRootSignature() != Result::Success) {
         std::cerr << "Failed to create textured root signature!" << std::endl;
@@ -263,6 +272,13 @@ void D3D12Renderer::shutdown() {
         m_textureUploader.reset();
     }
 
+    if (m_meshUploader) {
+        // Drain any pending deferred frees — GPU is idle after waitForGpu() above.
+        m_meshUploader->onFrameBegin(UINT64_MAX);
+        m_meshUploader->shutdown();
+        m_meshUploader.reset();
+    }
+
     m_videoUploadBuffer.Reset();
 
     for (auto& target : m_composeTargets) {
@@ -299,6 +315,20 @@ void D3D12Renderer::shutdown() {
     m_mappingSurfaceVertexBuffer.Reset();
     m_mappingSurfaceConstantRing.Reset();
 
+    // Stage 3D render target resources
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        if (m_stageTarget.frameCBMapped[i] && m_stageTarget.frameCB[i]) {
+            m_stageTarget.frameCB[i]->Unmap(0, nullptr);
+            m_stageTarget.frameCBMapped[i] = nullptr;
+        }
+        m_stageTarget.frameCB[i].Reset();
+        m_stageTarget.color[i].Reset();
+        m_stageTarget.depth[i].Reset();
+    }
+    m_stageTarget.rtvHeap.Reset();
+    m_stageTarget.dsvHeap.Reset();
+    m_stageTarget.ready = false;
+
     // Phase C.12 #3 capture-pass resources
     m_capturePipelineState.Reset();
     m_captureRootSignature.Reset();
@@ -316,10 +346,12 @@ void D3D12Renderer::shutdown() {
     m_editorCmdList.Reset();
     m_showCmdList.Reset();
     m_copyCommandList.Reset();
+    m_editorCopyCommandList.Reset();
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         m_editorAllocators[i].Reset();
         m_showAllocators[i].Reset();
         m_copyCommandAllocators[i].Reset();
+        m_editorCopyCommandAllocators[i].Reset();
         m_renderTargets[i].Reset();
     }
     m_rtvHeap.Reset();
@@ -500,6 +532,11 @@ void D3D12Renderer::endShowFrame() {
 void D3D12Renderer::beginEditorFrame() {
     // Editor thread tracks its own buffer index independently of the show thread.
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+    // Reap deferred mesh slot frees whose fence value the GPU has passed.
+    if (m_meshUploader) {
+        m_meshUploader->onFrameBegin(m_editorFence->GetCompletedValue());
+    }
 
     // Reset editor-side allocator + command list
     m_editorAllocators[m_currentBackBufferIndex]->Reset();
@@ -794,7 +831,33 @@ Result D3D12Renderer::createCopyCommandList() {
         return Result::Failure;
     }
     m_copyCommandList->Close();  // Lists start in recording state; close so beginShowFrame's Reset works.
-    std::cout << "Copy command list created" << std::endl;
+
+    // Editor-thread copy allocators + list for uploadMeshImmediate (separate
+    // from the show-thread copy resources to avoid concurrent recording).
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        hr = m_gpu->device()->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_COPY,
+            IID_PPV_ARGS(&m_editorCopyCommandAllocators[i])
+        );
+        if (FAILED(hr)) {
+            std::cerr << "Failed to create editor copy command allocator " << i << "!" << std::endl;
+            return Result::Failure;
+        }
+    }
+    hr = m_gpu->device()->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_COPY,
+        m_editorCopyCommandAllocators[0].Get(),
+        nullptr,
+        IID_PPV_ARGS(&m_editorCopyCommandList)
+    );
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create editor copy command list!" << std::endl;
+        return Result::Failure;
+    }
+    m_editorCopyCommandList->Close();
+
+    std::cout << "Copy command lists created" << std::endl;
     return Result::Success;
 }
 
@@ -4610,6 +4673,533 @@ void D3D12Renderer::renderCalibrationOverlay() {
     tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
 
     endComposeTarget();
+}
+
+// =============================================================================
+// Stage 3D offscreen render target — editor thread only (ADR-0014)
+// =============================================================================
+
+bool D3D12Renderer::createStageRenderTarget(uint32_t width, uint32_t height) {
+    auto* device = m_gpu->device();
+
+    // Release any existing resources (resize path)
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        if (m_stageTarget.frameCBMapped[i] && m_stageTarget.frameCB[i]) {
+            m_stageTarget.frameCB[i]->Unmap(0, nullptr);
+            m_stageTarget.frameCBMapped[i] = nullptr;
+        }
+        m_stageTarget.frameCB[i].Reset();
+        m_stageTarget.color[i].Reset();
+        m_stageTarget.depth[i].Reset();
+    }
+    m_stageTarget.rtvHeap.Reset();
+    m_stageTarget.dsvHeap.Reset();
+    m_stageTarget.ready  = false;
+    m_stageTarget.width  = 0;
+    m_stageTarget.height = 0;
+
+    // --- RTV descriptor heap (FRAME_COUNT RTVs, not shader-visible) ---
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC desc{};
+        desc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        desc.NumDescriptors = FRAME_COUNT;
+        desc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        HRESULT hr = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_stageTarget.rtvHeap));
+        if (FAILED(hr)) {
+            std::cerr << "[Stage3D] Failed to create stage RTV heap HRESULT 0x"
+                      << std::hex << hr << std::dec << "\n";
+            return false;
+        }
+    }
+
+    // --- DSV descriptor heap (FRAME_COUNT DSVs, never shader-visible) ---
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC desc{};
+        desc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        desc.NumDescriptors = FRAME_COUNT;
+        desc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        HRESULT hr = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_stageTarget.dsvHeap));
+        if (FAILED(hr)) {
+            std::cerr << "[Stage3D] Failed to create stage DSV heap HRESULT 0x"
+                      << std::hex << hr << std::dec << "\n";
+            return false;
+        }
+    }
+
+    const uint32_t rtvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    const uint32_t dsvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        // --- Color resource: RGBA16F, ALLOW_RENDER_TARGET, initial state PIXEL_SHADER_RESOURCE ---
+        {
+            D3D12_RESOURCE_DESC rd{};
+            rd.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            rd.Width            = width;
+            rd.Height           = height;
+            rd.DepthOrArraySize = 1;
+            rd.MipLevels        = 1;
+            rd.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            rd.SampleDesc.Count = 1;
+            rd.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+            rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+            // Optimized clear must match the values used in ClearRenderTargetView.
+            // Transparent black (0,0,0,0) so the ImGui window shows alpha.
+            D3D12_CLEAR_VALUE cv{};
+            cv.Format   = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            cv.Color[0] = 0.0f; cv.Color[1] = 0.0f;
+            cv.Color[2] = 0.0f; cv.Color[3] = 0.0f;
+
+            HRESULT hr = device->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE, &rd,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &cv, IID_PPV_ARGS(&m_stageTarget.color[i]));
+            if (FAILED(hr)) {
+                std::cerr << "[Stage3D] Failed to create stage color[" << i << "] HRESULT 0x"
+                          << std::hex << hr << std::dec << "\n";
+                return false;
+            }
+
+            // RTV
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = m_stageTarget.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtvCpu.ptr += static_cast<SIZE_T>(i) * rtvSize;
+            D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+            rtvDesc.Format             = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            rtvDesc.ViewDimension      = D3D12_RTV_DIMENSION_TEXTURE2D;
+            rtvDesc.Texture2D.MipSlice = 0;
+            device->CreateRenderTargetView(m_stageTarget.color[i].Get(), &rtvDesc, rtvCpu);
+
+            // SRV in main heap
+            const uint32_t heapSlot = DescriptorHeapLayout::stageTargetSlot(i);
+            m_stageTarget.srvSlots[i] = heapSlot;
+            D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = DescriptorHeapLayout::cpuHandle(
+                m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Format                        = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Texture2D.MipLevels           = 1;
+            srvDesc.Texture2D.MostDetailedMip     = 0;
+            device->CreateShaderResourceView(m_stageTarget.color[i].Get(), &srvDesc, srvCpu);
+        }
+
+        // --- Depth resource: D32_FLOAT, ALLOW_DEPTH_STENCIL, initial state DEPTH_WRITE ---
+        {
+            D3D12_RESOURCE_DESC rd{};
+            rd.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            rd.Width            = width;
+            rd.Height           = height;
+            rd.DepthOrArraySize = 1;
+            rd.MipLevels        = 1;
+            rd.Format           = DXGI_FORMAT_D32_FLOAT;
+            rd.SampleDesc.Count = 1;
+            rd.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+            rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+            // Optimized clear must match ClearDepthStencilView args (depth=1.0, stencil=0).
+            D3D12_CLEAR_VALUE cv{};
+            cv.Format               = DXGI_FORMAT_D32_FLOAT;
+            cv.DepthStencil.Depth   = 1.0f;
+            cv.DepthStencil.Stencil = 0;
+
+            HRESULT hr = device->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE, &rd,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &cv, IID_PPV_ARGS(&m_stageTarget.depth[i]));
+            if (FAILED(hr)) {
+                std::cerr << "[Stage3D] Failed to create stage depth[" << i << "] HRESULT 0x"
+                          << std::hex << hr << std::dec << "\n";
+                return false;
+            }
+
+            // DSV
+            D3D12_CPU_DESCRIPTOR_HANDLE dsvCpu = m_stageTarget.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+            dsvCpu.ptr += static_cast<SIZE_T>(i) * dsvSize;
+            device->CreateDepthStencilView(m_stageTarget.depth[i].Get(), nullptr, dsvCpu);
+        }
+    }
+
+    // --- FrameCB: one persistently-mapped UPLOAD-heap buffer per frame slot ---
+    // Indexed by m_currentBackBufferIndex so frame N+2's CPU write never aliases
+    // frame N+1's buffer while the GPU is still executing N+1's draw commands.
+    {
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+        // CBV requires 256-byte alignment; viewProj is 64 bytes.
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width            = 256;
+        rd.Height           = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels        = 1;
+        rd.Format           = DXGI_FORMAT_UNKNOWN;
+        rd.SampleDesc.Count = 1;
+        rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+            HRESULT hr = device->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                IID_PPV_ARGS(&m_stageTarget.frameCB[i]));
+            if (FAILED(hr)) {
+                std::cerr << "[Stage3D] Failed to create FrameCB[" << i << "] HRESULT 0x"
+                          << std::hex << hr << std::dec << "\n";
+                return false;
+            }
+            D3D12_RANGE readRange{0, 0};
+            m_stageTarget.frameCB[i]->Map(0, &readRange, &m_stageTarget.frameCBMapped[i]);
+        }
+    }
+
+    m_stageTarget.width  = width;
+    m_stageTarget.height = height;
+    m_stageTarget.ready  = true;
+
+    std::cout << "[Stage3D] Stage render target created: " << width << "x" << height << "\n";
+    return true;
+}
+
+void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
+    if (!m_initialized || !m_gpu || width == 0 || height == 0) return nullptr;
+
+    if (!m_stageTarget.ready ||
+        m_stageTarget.width  != width ||
+        m_stageTarget.height != height) {
+        waitForGpu();
+        if (!createStageRenderTarget(width, height)) return nullptr;
+    }
+
+    // Return the GPU handle for the current back-buffer's color SRV as ImTextureID.
+    const uint32_t slot = m_stageTarget.srvSlots[m_currentBackBufferIndex];
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = DescriptorHeapLayout::gpuHandle(
+        m_imguiSrvHeap.Get(), slot, m_srvDescriptorSize);
+    return reinterpret_cast<void*>(gpu.ptr);
+}
+
+void D3D12Renderer::beginStageTarget() {
+    if (!m_stageTarget.ready) return;
+
+    const uint32_t fi = m_currentBackBufferIndex;
+    auto* cmdList = tl_activeCmdList;
+
+    // Transition color: PIXEL_SHADER_RESOURCE → RENDER_TARGET
+    D3D12_RESOURCE_BARRIER colorBarrier{};
+    colorBarrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    colorBarrier.Flags                  = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    colorBarrier.Transition.pResource   = m_stageTarget.color[fi].Get();
+    colorBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    colorBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    colorBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &colorBarrier);
+
+    const uint32_t rtvSize = m_gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    const uint32_t dsvSize = m_gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = m_stageTarget.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvCpu.ptr += static_cast<SIZE_T>(fi) * rtvSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvCpu = m_stageTarget.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    dsvCpu.ptr += static_cast<SIZE_T>(fi) * dsvSize;
+
+    // Set viewport + scissor to stage target dimensions
+    D3D12_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(m_stageTarget.width);
+    vp.Height   = static_cast<float>(m_stageTarget.height);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    D3D12_RECT scissor{};
+    scissor.right  = static_cast<LONG>(m_stageTarget.width);
+    scissor.bottom = static_cast<LONG>(m_stageTarget.height);
+    cmdList->RSSetViewports(1, &vp);
+    cmdList->RSSetScissorRects(1, &scissor);
+
+    // Bind RTV + DSV
+    cmdList->OMSetRenderTargets(1, &rtvCpu, FALSE, &dsvCpu);
+
+    // Clear color (transparent black) and depth (1.0)
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    cmdList->ClearRenderTargetView(rtvCpu, clearColor, 0, nullptr);
+    cmdList->ClearDepthStencilView(dsvCpu, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+}
+
+void D3D12Renderer::endStageTarget() {
+    if (!m_stageTarget.ready) return;
+
+    const uint32_t fi = m_currentBackBufferIndex;
+    auto* cmdList = tl_activeCmdList;
+
+    // Transition color: RENDER_TARGET → PIXEL_SHADER_RESOURCE for ImGui sampling
+    D3D12_RESOURCE_BARRIER colorBarrier{};
+    colorBarrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    colorBarrier.Flags                  = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    colorBarrier.Transition.pResource   = m_stageTarget.color[fi].Get();
+    colorBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    colorBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    colorBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &colorBarrier);
+
+    // Restore viewport + scissor to back-buffer size for subsequent ImGui rendering
+    D3D12_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(m_width);
+    vp.Height   = static_cast<float>(m_height);
+    vp.MaxDepth = 1.0f;
+    D3D12_RECT scissor{};
+    scissor.right  = static_cast<LONG>(m_width);
+    scissor.bottom = static_cast<LONG>(m_height);
+    tl_activeCmdList->RSSetViewports(1, &vp);
+    tl_activeCmdList->RSSetScissorRects(1, &scissor);
+
+    // Rebind the editor back-buffer RT — beginStageTarget bound the stage RT+DSV;
+    // ImGui's subsequent draws would otherwise render into a target we just
+    // transitioned to PIXEL_SHADER_RESOURCE (device removal).
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
+    tl_activeCmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+}
+
+// =============================================================================
+// Stage mesh PSO — depth-buffered, cull-none, RGBA16F + D32_FLOAT
+// Root signature:
+//   [0] CBV root descriptor  b0 = FrameCB  (viewProj, 64 bytes)
+//   [1] 32-bit constants     b1 = DrawCB   (model 16f + tint 4f + renderMode 1u + pad 3u = 24 DWORDs)
+//   [2] descriptor table     t0 = mesh texture SRV
+//   static sampler           s0 = linear/clamp
+// =============================================================================
+
+bool D3D12Renderer::createStageMeshPSO() {
+    // --- Root signature ---
+    D3D12_ROOT_PARAMETER rootParams[3] = {};
+
+    // [0] CBV root descriptor — b0 (FrameCB: viewProj)
+    rootParams[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[0].Descriptor.ShaderRegister           = 0; // b0
+    rootParams[0].Descriptor.RegisterSpace            = 0;
+    rootParams[0].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    // [1] 32-bit constants — b1 (DrawCB: model 16f + tint 4f + renderMode 1u + _pad 3u = 24 DWORDs)
+    rootParams[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParams[1].Constants.ShaderRegister            = 1; // b1
+    rootParams[1].Constants.RegisterSpace             = 0;
+    rootParams[1].Constants.Num32BitValues            = 24;
+    rootParams[1].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_ALL;
+
+    // [2] Descriptor table — t0 (mesh texture SRV)
+    D3D12_DESCRIPTOR_RANGE srvRange{};
+    srvRange.RangeType                               = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors                          = 1;
+    srvRange.BaseShaderRegister                      = 0; // t0
+    srvRange.RegisterSpace                           = 0;
+    srvRange.OffsetInDescriptorsFromTableStart       = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    rootParams[2].ParameterType                      = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[2].DescriptorTable.pDescriptorRanges  = &srvRange;
+    rootParams[2].ShaderVisibility                   = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler{};
+    sampler.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MaxLOD           = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister   = 0; // s0
+    sampler.RegisterSpace    = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc{};
+    rsDesc.NumParameters     = 3;
+    rsDesc.pParameters       = rootParams;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers   = &sampler;
+    // IA layout flag required for vertex + index buffer binding.
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                   D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS        |
+                   D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS      |
+                   D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) {
+        if (err) std::cerr << "[StageMesh] root sig: "
+                           << static_cast<const char*>(err->GetBufferPointer()) << "\n";
+        return false;
+    }
+    hr = m_gpu->device()->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+                                              IID_PPV_ARGS(&m_stageMeshRootSignature));
+    if (FAILED(hr)) {
+        std::cerr << "[StageMesh] CreateRootSignature hr=0x" << std::hex << hr << "\n";
+        return false;
+    }
+
+    // --- Shaders ---
+    ComPtr<ID3DBlob> vs, ps;
+    if (loadCompiledShader(L"shaders/stage_mesh_vs.cso", &vs) != Result::Success) {
+        std::cerr << "[StageMesh] missing stage_mesh_vs.cso\n"; return false;
+    }
+    if (loadCompiledShader(L"shaders/stage_mesh_ps.cso", &ps) != Result::Success) {
+        std::cerr << "[StageMesh] missing stage_mesh_ps.cso\n"; return false;
+    }
+
+    // --- Input layout matching MeshVertex: pos float3 @ 0, uv float2 @ 12, nrm float3 @ 20 ---
+    D3D12_INPUT_ELEMENT_DESC inputElements[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    // --- PSO ---
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+    psoDesc.pRootSignature        = m_stageMeshRootSignature.Get();
+    psoDesc.VS                    = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS                    = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    psoDesc.InputLayout           = { inputElements, _countof(inputElements) };
+
+    psoDesc.RasterizerState.FillMode              = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode              = D3D12_CULL_MODE_NONE; // mesh exports have inconsistent winding
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthClipEnable       = TRUE;
+
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    psoDesc.DepthStencilState.DepthEnable    = TRUE;
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    psoDesc.DepthStencilState.DepthFunc      = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    psoDesc.DepthStencilState.StencilEnable  = FALSE;
+
+    psoDesc.SampleMask                       = UINT_MAX;
+    psoDesc.PrimitiveTopologyType            = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets                 = 1;
+    psoDesc.RTVFormats[0]                    = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    psoDesc.DSVFormat                        = DXGI_FORMAT_D32_FLOAT;
+    psoDesc.SampleDesc.Count                 = 1;
+
+    hr = m_gpu->device()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_stageMeshPipelineState));
+    if (FAILED(hr)) {
+        std::cerr << "[StageMesh] CreateGraphicsPipelineState hr=0x" << std::hex << hr << "\n";
+        return false;
+    }
+    std::cout << "[StageMesh] PSO created\n";
+    return true;
+}
+
+void D3D12Renderer::setStageCamera(const glm::mat4& viewProj) {
+    const uint32_t fi = m_currentBackBufferIndex;
+    if (!m_stageTarget.frameCBMapped[fi]) return;
+    // glm::mat4 is column-major, matching HLSL float4x4 column-major layout.
+    std::memcpy(m_stageTarget.frameCBMapped[fi], &viewProj[0][0], sizeof(float) * 16);
+}
+
+void D3D12Renderer::drawStageMesh(uint32_t meshSlot,
+                                   const glm::mat4& model,
+                                   const glm::vec4& tint,
+                                   uint32_t renderMode,
+                                   uint32_t textureSrvSlot) {
+    if (!m_initialized || !m_stageTarget.ready) return;
+
+    if (!m_stageMeshRootSignature || !m_stageMeshPipelineState) {
+        if (!createStageMeshPSO()) return;
+    }
+
+    MeshUploader::BindHandle handle{};
+    if (!m_meshUploader || !m_meshUploader->getBindHandle(meshSlot, handle)) return;
+
+    // Pack DrawCB: model (16f) + tint (4f) + renderMode (1u) + _pad (3u) = 24 DWORDs
+    struct DrawCB {
+        float    model[16];
+        float    tint[4];
+        uint32_t renderMode;
+        uint32_t _pad[3];
+    };
+    static_assert(sizeof(DrawCB) == 24 * 4, "DrawCB must be 24 DWORDs");
+
+    DrawCB cb{};
+    std::memcpy(cb.model, &model[0][0], sizeof(float) * 16);
+    cb.tint[0]    = tint.x; cb.tint[1] = tint.y;
+    cb.tint[2]    = tint.z; cb.tint[3] = tint.w;
+    cb.renderMode = renderMode;
+
+    auto* cmdList = tl_activeCmdList;
+
+    cmdList->SetGraphicsRootSignature(m_stageMeshRootSignature.Get());
+    cmdList->SetPipelineState(m_stageMeshPipelineState.Get());
+
+    // [0] CBV root descriptor — FrameCB (viewProj), per-frame slot avoids write-while-read
+    cmdList->SetGraphicsRootConstantBufferView(0, m_stageTarget.frameCB[m_currentBackBufferIndex]->GetGPUVirtualAddress());
+
+    // [1] DrawCB root constants
+    cmdList->SetGraphicsRoot32BitConstants(1, 24, &cb, 0);
+
+    // [2] Texture SRV descriptor table
+    if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+        tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE texGpu = DescriptorHeapLayout::gpuHandle(
+        m_imguiSrvHeap.Get(), textureSrvSlot, m_srvDescriptorSize);
+    cmdList->SetGraphicsRootDescriptorTable(2, texGpu);
+
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmdList->IASetVertexBuffers(0, 1, &handle.vbv);
+    cmdList->IASetIndexBuffer(&handle.ibv);
+    cmdList->DrawIndexedInstanced(handle.indexCount, 1, 0, 0, 0);
+}
+
+uint32_t D3D12Renderer::uploadMeshImmediate(const std::vector<MeshVertex>& vertices,
+                                             const std::vector<uint32_t>& indices) {
+    if (!m_meshUploader || vertices.empty() || indices.empty()) return MeshUploader::INVALID_SLOT;
+
+    // One-shot copy-queue submission using the editor-thread-dedicated copy
+    // command list and allocators (separate from the show thread's copy
+    // resources so there is no concurrent command list recording).
+    const uint32_t ci = m_currentBackBufferIndex;
+    HRESULT hr = m_editorCopyCommandAllocators[ci]->Reset();
+    if (FAILED(hr)) {
+        std::cerr << "[MeshUploader] editor copy allocator Reset failed: " << std::hex << hr << std::endl;
+        return MeshUploader::INVALID_SLOT;
+    }
+    hr = m_editorCopyCommandList->Reset(m_editorCopyCommandAllocators[ci].Get(), nullptr);
+    if (FAILED(hr)) {
+        std::cerr << "[MeshUploader] editor copy command list Reset failed: " << std::hex << hr << std::endl;
+        return MeshUploader::INVALID_SLOT;
+    }
+
+    uint32_t slot = m_meshUploader->uploadMesh(m_editorCopyCommandList.Get(), vertices, indices);
+    if (slot == MeshUploader::INVALID_SLOT) {
+        m_editorCopyCommandList->Close();
+        return MeshUploader::INVALID_SLOT;
+    }
+
+    hr = m_editorCopyCommandList->Close();
+    if (FAILED(hr)) {
+        std::cerr << "[MeshUploader] editor copy command list Close failed: " << std::hex << hr << std::endl;
+        return MeshUploader::INVALID_SLOT;
+    }
+
+    ID3D12CommandList* copyLists[] = { m_editorCopyCommandList.Get() };
+    m_gpu->copyQueue()->ExecuteCommandLists(1, copyLists);
+    const uint64_t copyValue = ++m_uploadFenceValue;
+    m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+    // Cross-queue wait: direct queue must not read the vertex/index buffers
+    // until the copy queue has finished writing them.
+    m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
+
+    std::cout << "[MeshUploader] uploaded mesh to slot " << slot
+              << " (" << vertices.size() << " verts, " << indices.size() << " indices)" << std::endl;
+    return slot;
+}
+
+void D3D12Renderer::scheduleMeshSlotFree(uint32_t slot) {
+    if (!m_meshUploader || slot == MeshUploader::INVALID_SLOT) return;
+    // Key on the editor fence value that will be signaled at the next
+    // endEditorFrame. The current frame's index tells us which entry in
+    // m_editorFenceValues is the one being built now.
+    const uint64_t fenceValue = m_editorFenceValues[m_currentBackBufferIndex] + 1;
+    m_meshUploader->scheduleSlotFree(slot, fenceValue);
 }
 
 } // namespace entity

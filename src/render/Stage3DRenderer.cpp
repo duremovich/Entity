@@ -1,4 +1,5 @@
 #include "entity/render/Stage3DRenderer.hpp"
+#include "entity/render/D3D12Renderer.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
@@ -297,6 +298,45 @@ void Stage3DRenderer::drawAxes(ImDrawList* drawList, ImVec2 screenPos, ImVec2 sc
                screenPos, screenSize, IM_COL32(80, 80, 255, 255), 3.0f);
 }
 
+ImTextureID Stage3DRenderer::renderMeshes(D3D12Renderer* renderer,
+                                          const Camera& camera,
+                                          const std::vector<StageMeshDraw>& draws,
+                                          uint32_t viewportWidth,
+                                          uint32_t viewportHeight) {
+    if (!renderer) return 0;
+
+    bool hasAny = false;
+    for (const auto& d : draws) {
+        if (d.meshSlot != UINT32_MAX) { hasAny = true; break; }
+    }
+    if (!hasAny) return 0;
+
+    ImTextureID texId = static_cast<ImTextureID>(renderer->ensureStageTarget(viewportWidth, viewportHeight));
+    if (!texId) return 0;
+
+    glm::mat4 viewProj = camera.getViewProjectionMatrix();
+
+    renderer->beginStageTarget();
+    renderer->setStageCamera(viewProj);
+
+    for (const auto& d : draws) {
+        if (d.meshSlot == UINT32_MAX) continue;
+
+        glm::mat4 model = glm::mat4(1.0f);
+        const float yLift = d.isScreen ? screenElevation : 0.0f;
+        model = glm::translate(model, glm::vec3(d.position.x, d.position.y + yLift, d.position.z));
+        model = glm::rotate(model, glm::radians(d.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(d.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(d.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, d.scale);
+
+        renderer->drawStageMesh(d.meshSlot, model, d.tint, d.renderMode, d.srvSlot);
+    }
+
+    renderer->endStageTarget();
+    return texId;
+}
+
 void Stage3DRenderer::beginRender(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize) {
     // Update camera aspect ratio
     m_camera.aspectRatio = screenSize.x / screenSize.y;
@@ -336,163 +376,11 @@ void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 
     const ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(100, 100, 100, 255);
     const float frameThickness = isSelected ? 3.0f : 2.0f;
 
-    if (mesh && mesh->isValid()) {
-        // --- Mesh rendering path ---
-        glm::mat4 transform = glm::mat4(1.0f);
-        transform = glm::translate(transform, glm::vec3(position.x, position.y + screenElevation, position.z));
-        transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        transform = glm::scale(transform, scale);
+    // Mesh screens are rendered via the GPU pass (renderMeshes). This path handles
+    // flat-quad screens only.
+    (void)mesh;
 
-        struct ProjTri { ImVec2 p[3]; ImVec2 uv[3]; };
-        std::vector<ProjTri> tris;
-
-        // Subdivide each source triangle into a barycentric MESH_SUBDIV×MESH_SUBDIV grid so
-        // that each sub-tri is small in screen space.  This approximates perspective-correct
-        // UV mapping: affine error within a small sub-tri is negligible even at steep angles.
-        constexpr int MESH_SUBDIV = 8;
-        tris.reserve(mesh->indices.size() / 3 * MESH_SUBDIV * MESH_SUBDIV);
-
-        // Sort source triangles back-to-front (painter's algorithm).
-        // Concave meshes have triangles that overlap in depth; without sorting,
-        // farther triangles draw over closer ones in index order.
-        struct SrcTriOrder { size_t i; float depth; };
-        std::vector<SrcTriOrder> srcOrder;
-        srcOrder.reserve(mesh->indices.size() / 3);
-        const glm::vec3 camPos = m_camera.position;
-        for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
-            glm::vec3 cen(0.0f);
-            for (int j = 0; j < 3; ++j) {
-                const auto& v = mesh->vertices[mesh->indices[i + j]];
-                cen += glm::vec3(transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f));
-            }
-            srcOrder.push_back({i, glm::length(cen / 3.0f - camPos)});
-        }
-        std::sort(srcOrder.begin(), srcOrder.end(),
-            [](const SrcTriOrder& a, const SrcTriOrder& b){ return a.depth > b.depth; });
-
-        for (const auto& st : srcOrder) {
-            const size_t i = st.i;
-
-            // Source triangle in world space
-            glm::vec3 wp[3];
-            glm::vec2 wuv[3];
-            for (int j = 0; j < 3; ++j) {
-                const auto& v = mesh->vertices[mesh->indices[i + j]];
-                glm::vec4 world = transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f);
-                wp[j]  = glm::vec3(world);
-                wuv[j] = { v.texCoord[0], v.texCoord[1] };  // V already flipped by ObjLoader
-            }
-
-            // Backface cull: project source verts and test screen-space signed area.
-            // In screen coords (+Y down), CCW-in-3D (front-facing) triangles have area < 0.
-            // Back faces appear when looking into a concavity; their UVs render mirrored/wrong.
-            ImVec2 tp[3]; bool anyBehind = false;
-            for (int j = 0; j < 3; ++j) {
-                tp[j] = projectPoint(wp[j], screenPos, screenSize);
-                if (tp[j].x < 0.0f && tp[j].y < 0.0f) { anyBehind = true; break; }
-            }
-            if (anyBehind) continue;
-            const float area2 = (tp[1].x - tp[0].x) * (tp[2].y - tp[0].y)
-                               - (tp[1].y - tp[0].y) * (tp[2].x - tp[0].x);
-            if (area2 >= 0.0f) continue;  // back face — skip
-
-            // Walk the barycentric grid.  Each (row, col) cell produces up to 2 sub-tris.
-            // Barycentric coords: (bu, bv, bw=1-bu-bv); the valid domain is bu+bv<=1.
-            for (int row = 0; row < MESH_SUBDIV; ++row) {
-                for (int col = 0; col < MESH_SUBDIV - row; ++col) {
-                    const float u0 = float(col)   / MESH_SUBDIV;
-                    const float u1 = float(col+1) / MESH_SUBDIV;
-                    const float v0 = float(row)   / MESH_SUBDIV;
-                    const float v1 = float(row+1) / MESH_SUBDIV;
-
-                    auto baryPoint = [&](float bu, float bv) -> std::pair<ImVec2, ImVec2> {
-                        const float bw = 1.0f - bu - bv;
-                        const glm::vec3 p  = wp[0]*bw  + wp[1]*bu  + wp[2]*bv;
-                        const glm::vec2 uv = wuv[0]*bw + wuv[1]*bu + wuv[2]*bv;
-                        return { projectPoint(p, screenPos, screenSize), ImVec2(uv.x, uv.y) };
-                    };
-
-                    auto [sp00, uv00] = baryPoint(u0, v0);
-                    auto [sp10, uv10] = baryPoint(u1, v0);
-                    auto [sp01, uv01] = baryPoint(u0, v1);
-
-                    auto behind = [](ImVec2 p) { return p.x < 0.0f && p.y < 0.0f; };
-
-                    // Sub-tri A: (u0,v0)→(u1,v0)→(u0,v1)
-                    if (!behind(sp00) && !behind(sp10) && !behind(sp01))
-                        tris.push_back({{sp00, sp10, sp01}, {uv00, uv10, uv01}});
-
-                    // Sub-tri B: (u1,v0)→(u1,v1)→(u0,v1) — only inside the source triangle
-                    if (col + row + 1 < MESH_SUBDIV) {
-                        auto [sp11, uv11] = baryPoint(u1, v1);
-                        if (!behind(sp10) && !behind(sp11) && !behind(sp01))
-                            tris.push_back({{sp10, sp11, sp01}, {uv10, uv11, uv01}});
-                    }
-                }
-            }
-        }
-
-        if (!tris.empty()) {
-            if (textureID) {
-                drawList->PushTextureID(textureID);
-                drawList->PrimReserve((int)tris.size() * 3, (int)tris.size() * 3);
-                for (const auto& t : tris) {
-                    ImDrawIdx idx = (ImDrawIdx)drawList->_VtxCurrentIdx;
-                    drawList->_IdxWritePtr[0] = idx;
-                    drawList->_IdxWritePtr[1] = idx + 1;
-                    drawList->_IdxWritePtr[2] = idx + 2;
-                    drawList->_IdxWritePtr += 3;
-                    drawList->_VtxWritePtr[0].pos = t.p[0]; drawList->_VtxWritePtr[0].uv = t.uv[0]; drawList->_VtxWritePtr[0].col = IM_COL32_WHITE;
-                    drawList->_VtxWritePtr[1].pos = t.p[1]; drawList->_VtxWritePtr[1].uv = t.uv[1]; drawList->_VtxWritePtr[1].col = IM_COL32_WHITE;
-                    drawList->_VtxWritePtr[2].pos = t.p[2]; drawList->_VtxWritePtr[2].uv = t.uv[2]; drawList->_VtxWritePtr[2].col = IM_COL32_WHITE;
-                    drawList->_VtxWritePtr += 3;
-                    drawList->_VtxCurrentIdx += 3;
-                }
-                drawList->PopTextureID();
-            } else {
-                for (const auto& t : tris) {
-                    drawList->AddTriangleFilled(t.p[0], t.p[1], t.p[2], IM_COL32(40, 40, 45, 255));
-                }
-                // "No Video" label at mesh AABB center
-                glm::vec4 cw = transform * glm::vec4(
-                    (mesh->minBounds[0] + mesh->maxBounds[0]) * 0.5f,
-                    (mesh->minBounds[1] + mesh->maxBounds[1]) * 0.5f,
-                    (mesh->minBounds[2] + mesh->maxBounds[2]) * 0.5f, 1.0f);
-                ImVec2 center = projectPoint(glm::vec3(cw), screenPos, screenSize);
-                if (!(center.x < 0.0f && center.y < 0.0f)) {
-                    const char* txt = "No Video";
-                    ImVec2 ts = ImGui::CalcTextSize(txt);
-                    drawList->AddText(ImVec2(center.x - ts.x * 0.5f, center.y - ts.y * 0.5f),
-                                      IM_COL32(150, 150, 150, 255), txt);
-                }
-            }
-        }
-
-        // AABB wireframe border
-        const float bx0 = mesh->minBounds[0], bx1 = mesh->maxBounds[0];
-        const float by0 = mesh->minBounds[1], by1 = mesh->maxBounds[1];
-        const float bz0 = mesh->minBounds[2], bz1 = mesh->maxBounds[2];
-        const glm::vec3 bc[8] = {
-            {bx0,by0,bz0},{bx1,by0,bz0},{bx1,by1,bz0},{bx0,by1,bz0},
-            {bx0,by0,bz1},{bx1,by0,bz1},{bx1,by1,bz1},{bx0,by1,bz1},
-        };
-        const int edges[12][2] = {
-            {0,1},{1,2},{2,3},{3,0},
-            {4,5},{5,6},{6,7},{7,4},
-            {0,4},{1,5},{2,6},{3,7},
-        };
-        for (const auto& e : edges) {
-            drawLine3D(drawList,
-                glm::vec3(transform * glm::vec4(bc[e[0]], 1.0f)),
-                glm::vec3(transform * glm::vec4(bc[e[1]], 1.0f)),
-                screenPos, screenSize, frameColor, frameThickness);
-        }
-        return;
-    }
-
-    // --- Flat quad path (unchanged) ---
+    // --- Flat quad path ---
     float hw = screenWidth * 0.5f * scale.x;
     float hh = screenHeight * 0.5f * scale.y;
 
@@ -790,114 +678,10 @@ void Stage3DRenderer::drawProp(ImDrawList* drawList, ImVec2 screenPos, ImVec2 sc
     const ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(120, 120, 120, 200);
     const float frameThickness = isSelected ? 3.0f : 1.5f;
 
-    // Props honor their actual world position (no screenElevation lift).
-    glm::mat4 transform = glm::mat4(1.0f);
-    transform = glm::translate(transform, position);
-    transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-    transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-    transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-    transform = glm::scale(transform, scale);
-
-    // Normal-transform matrix: inverse-transpose of the upper-3x3 of the
-    // model matrix. Lambert needs world-space normals to shade correctly
-    // against the world-space light direction.
-    const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(transform)));
-
-    if (mesh && mesh->isValid()) {
-        // Fixed key light direction in world space (slightly off-axis from
-        // top-down so flat horizontal surfaces don't render dead-flat).
-        const glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, 1.0f, 0.3f));
-        constexpr float kAmbient = 0.35f;
-        const float baseR = displayColor.x;
-        const float baseG = displayColor.y;
-        const float baseB = displayColor.z;
-        const float baseA = displayColor.w;
-
-        struct ShadedTri { ImVec2 p[3]; ImU32 col; };
-        std::vector<ShadedTri> tris;
-
-        // Painter's-algorithm sort like drawScreen so concave meshes don't
-        // self-occlude in the wrong order.
-        struct SrcTriOrder { size_t i; float depth; };
-        std::vector<SrcTriOrder> srcOrder;
-        srcOrder.reserve(mesh->indices.size() / 3);
-        const glm::vec3 camPos = m_camera.position;
-        for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
-            glm::vec3 cen(0.0f);
-            for (int j = 0; j < 3; ++j) {
-                const auto& v = mesh->vertices[mesh->indices[i + j]];
-                cen += glm::vec3(transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f));
-            }
-            srcOrder.push_back({i, glm::length(cen / 3.0f - camPos)});
-        }
-        std::sort(srcOrder.begin(), srcOrder.end(),
-            [](const SrcTriOrder& a, const SrcTriOrder& b){ return a.depth > b.depth; });
-
-        tris.reserve(srcOrder.size());
-
-        for (const auto& st : srcOrder) {
-            const size_t i = st.i;
-
-            glm::vec3 wp[3];
-            glm::vec3 wn[3];
-            for (int j = 0; j < 3; ++j) {
-                const auto& v = mesh->vertices[mesh->indices[i + j]];
-                glm::vec4 world = transform * glm::vec4(v.position[0], v.position[1], v.position[2], 1.0f);
-                wp[j] = glm::vec3(world);
-                wn[j] = normalMat * glm::vec3(v.normal[0], v.normal[1], v.normal[2]);
-            }
-
-            // Backface cull: same screen-space signed-area test as drawScreen.
-            ImVec2 tp[3]; bool anyBehind = false;
-            for (int j = 0; j < 3; ++j) {
-                tp[j] = projectPoint(wp[j], screenPos, screenSize);
-                if (tp[j].x < 0.0f && tp[j].y < 0.0f) { anyBehind = true; break; }
-            }
-            if (anyBehind) continue;
-            const float area2 = (tp[1].x - tp[0].x) * (tp[2].y - tp[0].y)
-                               - (tp[1].y - tp[0].y) * (tp[2].x - tp[0].x);
-            if (area2 >= 0.0f) continue;  // back face
-
-            // Per-tri Lambert: average vertex normals, dot with light dir,
-            // clamp + ambient. Cheaper than per-pixel and visibly fine for
-            // matte set geometry at editor preview fidelity.
-            glm::vec3 avgN = glm::normalize(wn[0] + wn[1] + wn[2]);
-            float lambert = std::max(0.0f, glm::dot(avgN, lightDir));
-            float shade = kAmbient + (1.0f - kAmbient) * lambert;
-
-            int r = static_cast<int>(std::clamp(baseR * shade * 255.0f, 0.0f, 255.0f));
-            int g = static_cast<int>(std::clamp(baseG * shade * 255.0f, 0.0f, 255.0f));
-            int b = static_cast<int>(std::clamp(baseB * shade * 255.0f, 0.0f, 255.0f));
-            int a = static_cast<int>(std::clamp(baseA * 255.0f, 0.0f, 255.0f));
-
-            tris.push_back({{tp[0], tp[1], tp[2]}, IM_COL32(r, g, b, a)});
-        }
-
-        for (const auto& t : tris) {
-            drawList->AddTriangleFilled(t.p[0], t.p[1], t.p[2], t.col);
-        }
-
-        // AABB wireframe — same edges drawScreen draws, in the prop's frame color.
-        const float bx0 = mesh->minBounds[0], bx1 = mesh->maxBounds[0];
-        const float by0 = mesh->minBounds[1], by1 = mesh->maxBounds[1];
-        const float bz0 = mesh->minBounds[2], bz1 = mesh->maxBounds[2];
-        const glm::vec3 bc[8] = {
-            {bx0,by0,bz0},{bx1,by0,bz0},{bx1,by1,bz0},{bx0,by1,bz0},
-            {bx0,by0,bz1},{bx1,by0,bz1},{bx1,by1,bz1},{bx0,by1,bz1},
-        };
-        const int edges[12][2] = {
-            {0,1},{1,2},{2,3},{3,0},
-            {4,5},{5,6},{6,7},{7,4},
-            {0,4},{1,5},{2,6},{3,7},
-        };
-        for (const auto& e : edges) {
-            drawLine3D(drawList,
-                glm::vec3(transform * glm::vec4(bc[e[0]], 1.0f)),
-                glm::vec3(transform * glm::vec4(bc[e[1]], 1.0f)),
-                screenPos, screenSize, frameColor, frameThickness);
-        }
-        return;
-    }
+    // Prop meshes are rendered via the GPU pass (renderMeshes). This path handles
+    // the no-mesh placeholder only.
+    (void)rotation; (void)scale; (void)displayColor;
+    if (mesh && mesh->isValid()) return;
 
     // No mesh: draw a small placeholder cross at the prop's origin so the
     // user can still see and click an empty prop slot.

@@ -8,6 +8,8 @@
 
 namespace entity {
 
+class D3D12Renderer;
+
 /**
  * Stage3DRenderer - Renders a 3D stage environment using ImGui's DrawList.
  *
@@ -82,6 +84,46 @@ public:
                        const glm::vec3& position, const glm::vec3& rotation,
                        float fovDegrees, bool enabled, bool isSelected,
                        const char* label = nullptr);
+
+    /**
+     * One mesh draw submitted to the GPU stage pass via renderMeshes().
+     * Screens use renderMode=0 (textured). Props use renderMode=1 (Lambert matte).
+     *
+     * meshSlot must be a valid MeshUploader slot (Phase 7 uploads); UINT32_MAX
+     * skips the draw. srvSlot is the SRV descriptor-heap index for the video
+     * texture (from TextureUploader / VideoTexture::descriptorSlot);
+     * ignored when renderMode==1.
+     */
+    struct StageMeshDraw {
+        uint32_t  meshSlot{UINT32_MAX}; // MeshUploader slot; UINT32_MAX = skip
+        glm::vec3 position{0.0f};
+        glm::vec3 rotation{0.0f};  // Euler degrees (pitch=x, yaw=y, roll=z)
+        glm::vec3 scale{1.0f};
+        uint32_t  srvSlot{0};      // SRV heap index for video texture
+        glm::vec4 tint{1.0f};      // per-draw tint / matte color
+        uint32_t  renderMode{0};   // 0=textured, 1=Lambert matte
+        bool      isScreen{true};  // true → apply screenElevation lift
+    };
+
+    /**
+     * GPU-rasterized stage pass. Calls into D3D12Renderer's stage render
+     * target (ensureStageTarget / beginStageTarget / drawStageMesh / endStageTarget).
+     * Returns the ImTextureID of the stage render target for this frame, or 0
+     * if the renderer is null or all draws are skipped.
+     *
+     * Must be called from the editor thread between beginEditorFrame and
+     * endEditorFrame (ADR-0014: editor is sole D3D12 command recorder).
+     * @param renderer       Concrete D3D12Renderer; if null, returns 0.
+     * @param camera         Camera to render from (aspectRatio must be set by caller).
+     * @param draws          List of mesh draws; entries with meshSlot==UINT32_MAX skipped.
+     * @param viewportWidth  ImGui content region width in pixels — passed to ensureStageTarget.
+     * @param viewportHeight ImGui content region height in pixels — passed to ensureStageTarget.
+     */
+    ImTextureID renderMeshes(D3D12Renderer* renderer,
+                             const Camera& camera,
+                             const std::vector<StageMeshDraw>& draws,
+                             uint32_t viewportWidth,
+                             uint32_t viewportHeight);
 
     /**
      * Per-screen transform input for content-aware framing.

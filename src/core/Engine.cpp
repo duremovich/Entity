@@ -9,6 +9,7 @@
 #include "entity/director/SectionScheduler.hpp"
 #include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/render/IRenderer.hpp"
+#include "entity/render/D3D12Renderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/ProjectLauncher.hpp"
@@ -182,6 +183,9 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_decodeSystem   = m_rendererService->getDecodeSystem();
     std::cout << "  Renderer service initialized (D3D12 + OutputManager + "
                  "FrameCache + OcioManager + Compositor + Decode)" << std::endl;
+
+    // GPU mesh lifecycle: deferred-free on model destruction.
+    m_registry.on_destroy<Model>().connect<&Engine::onModelDestroyed>(this);
 
     // Phase D entry: Director owns Timeline, ProjectManager,
     // TranscodeManager, CommandDispatcher, AnimationSystem,
@@ -1310,6 +1314,26 @@ void Engine::update() {
     if (m_decodeSystem) {
         m_decodeSystem->update(m_registry, static_cast<float>(deltaTime));
     }
+
+    // Upload any Model meshes that don't yet have GPU resources.
+    if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
+        auto modelView = m_registry.view<Model>();
+        for (auto [e, m] : modelView.each()) {
+            if (!m.gpuResourcesValid && !m.gpuUploadFailed && m.mesh.isValid()) {
+                uint32_t slot = d3d->uploadMeshImmediate(m.mesh.vertices, m.mesh.indices);
+                if (slot != UINT32_MAX) {
+                    m.vertexBufferSlot = slot;
+                    m.indexBufferSlot  = slot;
+                    m.gpuResourcesValid = true;
+                } else {
+                    std::cerr << "[Engine] MeshUploader slot pool exhausted for model '"
+                              << m.name << "' — mesh will not render" << std::endl;
+                    m.gpuUploadFailed = true;
+                }
+            }
+        }
+    }
+
     auto t3 = std::chrono::high_resolution_clock::now();
 
     // Log timing if any stage took > 50ms
@@ -3447,6 +3471,13 @@ void Engine::drainRendererToDirector() {
             // informational or deferred — no action needed in this path.
         }, *msg);
     });
+}
+
+void Engine::onModelDestroyed(entt::registry& reg, entt::entity e) {
+    const Model& m = reg.get<Model>(e);
+    if (!m.gpuResourcesValid) return;
+    if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr)
+        d3d->scheduleMeshSlotFree(m.vertexBufferSlot);
 }
 
 } // namespace entity
