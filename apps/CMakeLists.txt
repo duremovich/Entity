@@ -12,6 +12,7 @@ target_link_libraries(EntityMediaEditor
         EntityMediaCore
         glfw
         imgui::imgui
+        dbghelp.lib
 )
 
 # Set as startup project in Visual Studio

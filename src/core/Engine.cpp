@@ -50,6 +50,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/media/ObjLoader.hpp"
+#include "entity/core/CrashLogger.hpp"
 #include <GLFW/glfw3.h>
 #include <cmath>
 
@@ -792,6 +793,53 @@ void Engine::run() {
         // Editor-only work: GLFW events, Editor-affinity commands, ImGui.
         processEvents();
 
+        // Synthetic crash injection for testing CrashLogger.
+        // Set ENTITY_FORCE_CRASH_AT_FRAME=N to AV on editor loop iteration N.
+        // Runs before the launcher check so it fires in all modes (launcher + normal).
+        {
+            static int s_forceCrashFrame = -1;
+            static bool s_forceCrashChecked = false;
+            static uint64_t s_editorLoopIter = 0;
+            if (!s_forceCrashChecked) {
+                s_forceCrashChecked = true;
+                if (const char* v = std::getenv("ENTITY_FORCE_CRASH_AT_FRAME")) {
+                    s_forceCrashFrame = std::atoi(v);
+                }
+            }
+            if (s_forceCrashFrame >= 0) {
+                if (s_editorLoopIter++ == static_cast<uint64_t>(s_forceCrashFrame)) {
+                    volatile int* p = nullptr;
+                    *p = 0; // intentional AV — triggers SEH filter
+                }
+            }
+        }
+
+        // Synthetic device-lost injection for testing the relaunch path.
+        // Set ENTITY_FORCE_DEVICE_LOST_AT_FRAME=N to simulate device removal
+        // on show-thread frame N. Use N >= 10 so the show thread has presented
+        // at least one frame (required for the cold-start gate to have passed).
+        {
+            static int s_forceDeviceLostFrame = -1;
+            static bool s_forceDeviceLostChecked = false;
+            if (!s_forceDeviceLostChecked) {
+                s_forceDeviceLostChecked = true;
+                if (const char* v = std::getenv("ENTITY_FORCE_DEVICE_LOST_AT_FRAME")) {
+                    s_forceDeviceLostFrame = std::atoi(v);
+                }
+            }
+            if (s_forceDeviceLostFrame >= 0 && m_renderer) {
+                uint64_t sf = m_showFrameCount.load(std::memory_order_relaxed);
+                if (sf >= static_cast<uint64_t>(s_forceDeviceLostFrame)) {
+                    s_forceDeviceLostFrame = -1; // fire once
+                    if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
+                        d3d->setDeviceLostForTesting();
+                        std::cerr << "[Engine] ENTITY_FORCE_DEVICE_LOST_AT_FRAME: "
+                                  << "synthetic device-lost set at show frame " << sf << std::endl;
+                    }
+                }
+            }
+        }
+
         // Stage 3c: condvar gate removed. Show thread paces itself via Present(1,0)
         // or QPC sleep_until; editor and show run at their own rates.
 
@@ -831,6 +879,10 @@ void Engine::run() {
         }
 
         // Bail on GPU device-lost.
+        // Send bus::DeviceLost, then drain immediately so the autosave +
+        // relaunch-flag fire before we leave the loop. A second drain here is
+        // safe — drainRendererToDirector() is idempotent and was already called
+        // above for the show-thread's normal R2D replies.
         if (m_renderer && m_renderer->isDeviceLost()) {
             std::cerr << "[Engine] D3D12 device lost — exiting main loop." << std::endl;
             if (m_transport && !m_deviceLostPosted) {
@@ -840,6 +892,7 @@ void Engine::run() {
                 msg.reason  = "D3D12 device removed or hung — see stderr for details";
                 m_transport->send(bus::Direction::R2D,
                                   bus::serialize(bus::Message{msg}));
+                drainRendererToDirector(); // process DeviceLost → autosave + relaunch flag
             }
             m_running = false;
         }
@@ -873,32 +926,32 @@ void Engine::showThreadMain() {
             m_timeAuthority->updateTiming();
         }
 
-        // Stalled-editor fallback for Timeline. Normally Engine::update on the
-        // editor thread advances Timeline::m_currentTime, but Win32 modal
-        // resize loops pin the editor thread inside glfwPollEvents and the
-        // tick stops. If the editor heartbeat is older than 50ms, take over
-        // here so the projector pipeline keeps producing fresh frames.
-        // Threshold > 1 normal editor frame (16ms) so we don't double-tick
-        // during steady-state playback. Timeline::update no-ops when not
-        // Playing, so this is safe to call unconditionally during a stall.
-        //
-        // The same heartbeat also drives DecodeSystem::update — without it
-        // the decode workers' targetFrame would stay pinned at its
-        // pre-modal value, the FrameRingBuffer would stop advancing, and
-        // PlaybackPresenter would keep re-uploading the same media frame.
-        // Result: marker quad keeps cycling (independent counter) but the
-        // video texture appears frozen on the projector.
+        // Timeline now ticks on the show thread under all conditions
+        // (Phase D move, May 2026). Show thread owns Timeline.m_currentTime
+        // advancement so playback pace stays decoupled from editor health —
+        // Win32 modal drag, slow ImGui frame, heavy project load all leave
+        // playback advancing at a stable 60 Hz. Editor still owns scrub /
+        // seek / play / pause / project load via Timeline's setters and the
+        // Director command path. Timeline::update no-ops when not Playing,
+        // so it's safe to call unconditionally.
         if (m_timeline && m_timeAuthority) {
+            m_timeline->update(m_timeAuthority->getDeltaTime());
+        }
+
+        // DecodeSystem still ticks on the editor thread (Engine::update).
+        // Show-thread fallback for full editor stalls: when the editor is
+        // pinned (>50ms heartbeat staleness — modal resize loops, hard
+        // ImGui block), tick DecodeSystem here too so workers' targetFrame
+        // keeps advancing. Without this the FrameRingBuffer stops filling
+        // and PlaybackPresenter re-uploads the same media frame.
+        if (m_decodeSystem && m_timeAuthority) {
             const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
             const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
             if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
-                m_timeline->update(m_timeAuthority->getDeltaTime());
-                if (m_decodeSystem) {
-                    m_decodeSystem->update(m_registry,
-                        static_cast<float>(m_timeAuthority->getDeltaTime()));
-                }
+                m_decodeSystem->update(m_registry,
+                    static_cast<float>(m_timeAuthority->getDeltaTime()));
             }
         }
 
@@ -933,7 +986,7 @@ void Engine::showThreadMain() {
 
         // Launcher mode: show thread idles at 60 Hz with an empty RenderFrame.
         if (m_showLauncher) {
-            m_showFrameCount.fetch_add(1, std::memory_order_relaxed);
+            m_showFrameCount.fetch_add(1, std::memory_order_release);
             std::this_thread::sleep_until(nextTick);
             nextTick += kShowPeriod;
             continue;
@@ -1030,7 +1083,7 @@ void Engine::showThreadMain() {
             m_timeAuthority->incrementFrameCount();
         }
 
-        m_showFrameCount.fetch_add(1, std::memory_order_relaxed);
+        m_showFrameCount.fetch_add(1, std::memory_order_release);
 
         // QPC pacing: when the show frame finished before the next 60 Hz tick
         // (i.e. no physical output's Present(1,0) consumed the time), sleep
@@ -1264,22 +1317,22 @@ void Engine::processEvents() {
 
 void Engine::update() {
     auto t0 = std::chrono::high_resolution_clock::now();
-    // Existing integration tests are calibrated against PlaybackTimeAuthority's
-    // show-thread deltaTime: in script mode the editor runs unpaced (no
-    // vsync-bound Present), but each editor tick reads m_deltaTime as the
-    // last show-frame interval (~16ms), so per-editor-frame Timeline advance
-    // is decoupled from real time. Switching to a true editor delta here
-    // would change WaitFrames pacing and break test calibration. Phase D
-    // will move Timeline tick to the show thread under a unified clock.
+    // Timeline.m_currentTime advancement moved to the show thread (see
+    // Engine::showThreadMain). The editor used to advance Timeline by
+    // m_timeAuthority->getDeltaTime() per editor tick, which coupled
+    // playback pace to editor health and produced half-speed playback
+    // during Win32 modal drags. Phase D move: show thread owns the per-
+    // tick advance under all conditions.
+    //
+    // The editor still uses deltaTime to drive systems whose state lives
+    // in the registry (SectionScheduler, AnimationSystem, DecodeSystem).
+    // Those tick on the editor thread so registry writes stay on the sole
+    // writer. They read Timeline's atomic m_currentTime fresh each tick.
     double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
 
-    // Update timeline
-    if (m_timeline) {
-        m_timeline->update(deltaTime);
-    }
-    // Section break detection runs against the freshly-advanced timeline
-    // frame so AnimationSystem and DecodeSystem (below) see the snapped
-    // frame when the playhead just crossed a break.
+    // Section break detection runs against the (show-thread-advanced)
+    // timeline frame so AnimationSystem and DecodeSystem (below) see the
+    // snapped frame when the playhead just crossed a break.
     if (m_sectionScheduler) {
         m_sectionScheduler->tick(deltaTime);
     }
@@ -1316,7 +1369,16 @@ void Engine::update() {
     }
 
     // Upload any Model meshes that don't yet have GPU resources.
-    if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
+    // Pacing rules:
+    //   1. Cold-start gate: skip until the show thread has presented at least
+    //      one frame. This prevents the first-frame TDR where a large mesh
+    //      upload races the show thread's first compositor present.
+    //   2. Steady-state cap: at most one successful upload per editor tick,
+    //      spreading N dirty Models across N ticks instead of one burst.
+    //      Failed-upload marker writes still complete this tick.
+    if (m_showFrameCount.load(std::memory_order_acquire) < 1) {
+        // Show thread hasn't presented yet; defer all mesh uploads.
+    } else if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
         auto modelView = m_registry.view<Model>();
         for (auto [e, m] : modelView.each()) {
             if (!m.gpuResourcesValid && !m.gpuUploadFailed && m.mesh.isValid()) {
@@ -1325,10 +1387,12 @@ void Engine::update() {
                     m.vertexBufferSlot = slot;
                     m.indexBufferSlot  = slot;
                     m.gpuResourcesValid = true;
+                    break;  // one successful upload per tick — pace the GPU
                 } else {
                     std::cerr << "[Engine] MeshUploader slot pool exhausted for model '"
                               << m.name << "' — mesh will not render" << std::endl;
                     m.gpuUploadFailed = true;
+                    // Don't break on failure — just a marker write.
                 }
             }
         }
@@ -1360,6 +1424,13 @@ double Engine::getElapsedTime() const {
 
 uint64_t Engine::getFrameCount() const {
     return m_timeAuthority ? m_timeAuthority->getFrameCount() : 0;
+}
+
+uint64_t Engine::getMeshUploadCount() const {
+    if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
+        return d3d->getMeshUploadCount();
+    }
+    return 0;
 }
 
 const DecodedFrame* Engine::getCurrentVideoFrame() const {
@@ -2887,6 +2958,8 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     bool ok = m_projectManager->load(filepath);
     if (!ok) return false;
 
+    CrashLogger::setProjectPath(m_projectManager->projectPath());
+
     // Drop undo/redo history — the previous project's commands point at
     // entities that the load just replaced. Without this, a Ctrl+Z
     // post-load would replay against a stale entity ID.
@@ -3459,13 +3532,32 @@ void Engine::drainRendererToDirector() {
                     screen->renderTargetValid = (body.slot != UINT32_MAX);
                 }
             } else if constexpr (std::is_same_v<T, bus::DeviceLost>) {
-                // Autosave-on-device-loss hook. The Engine already observed
-                // isDeviceLost() in the main loop and set m_running=false;
-                // this drain gives the Director side a chance to trigger
-                // any crash-recovery autosave before the process exits.
+                // Autosave-on-device-loss. The Engine already observed
+                // isDeviceLost() in the main loop and set m_running=false.
+                // Write a .autosave beside the project file, then set the
+                // relaunch flag so main.cpp can spawn a recovery process.
+                // Single-relaunch latch: skip if this process is already a
+                // recovery launch (m_isRecoveryRelaunch) to prevent storms.
                 std::cerr << "[Engine] bus::DeviceLost received on R2D drain "
                           << "(HRESULT=0x" << std::hex << body.hresult << std::dec
                           << "): " << body.reason << std::endl;
+                if (!m_isRecoveryRelaunch && m_projectManager &&
+                    !m_projectManager->projectPath().empty() && m_timeline) {
+                    std::filesystem::path projectPath = m_projectManager->projectPath();
+                    // Name: <stem>.autosave.entity so ProjectSerializer's
+                    // extension check passes without double-appending.
+                    std::filesystem::path autosavePath =
+                        projectPath.parent_path() /
+                        (projectPath.stem().string() + ".autosave.entity");
+                    if (ProjectSerializer::save(*m_timeline, autosavePath, m_projectManager)) {
+                        std::cerr << "[Engine] Device-lost autosave: " << autosavePath.string() << std::endl;
+                        m_relaunchProjectPath  = autosavePath;
+                        m_relaunchRequested    = true;
+                    } else {
+                        std::cerr << "[Engine] Device-lost autosave failed: "
+                                  << ProjectSerializer::getLastError() << std::endl;
+                    }
+                }
             }
             // FrameDropped, CreateOutputWindowRequest, OutputWindowReady:
             // informational or deferred — no action needed in this path.

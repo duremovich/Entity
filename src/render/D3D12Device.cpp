@@ -50,6 +50,25 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
         }
     }
 
+    // DRED — must be called before D3D12CreateDevice; settings are global.
+    // Gated on _DEBUG: forcing DRED on in release builds causes AV crashes on
+    // WARP adapters during compose-target staging-buffer readback (ctest
+    // regression confirmed 2026-05-09: 6 tests fail with 0xC0000005 under
+    // ENTITY_FORCE_WARP=1 when DRED is forced on in release).
+#if defined(_DEBUG)
+    if (enableDebugLayer) {
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
+            dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            std::cout << "D3D12 DRED enabled (auto-breadcrumbs + page-fault + context)" << std::endl;
+        } else {
+            std::cerr << "[D3D12Device] DRED enablement failed — breadcrumbs unavailable" << std::endl;
+        }
+    }
+#endif
+
     HRESULT hr = D3D12CreateDevice(
         adapter.Get(),              // null = default adapter; non-null = WARP
         D3D_FEATURE_LEVEL_11_0,     // Minimum feature level
@@ -61,6 +80,26 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
         return Result::Failure;
     }
     std::cout << "D3D12 device created" << std::endl;
+
+    // Capture adapter description (VendorId / DeviceId / Description) for
+    // forensic logging. Match by LUID so WARP and hardware adapters both work.
+    {
+        LUID luid = m_device->GetAdapterLuid();
+        ComPtr<IDXGIFactory4> factory4;
+        if (SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory4)))) {
+            ComPtr<IDXGIAdapter1> a1;
+            for (UINT i = 0; factory4->EnumAdapters1(i, &a1) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC1 d{};
+                if (SUCCEEDED(a1->GetDesc1(&d)) &&
+                    d.AdapterLuid.LowPart  == luid.LowPart &&
+                    d.AdapterLuid.HighPart == luid.HighPart) {
+                    m_adapterDesc = d;
+                    break;
+                }
+                a1.Reset();
+            }
+        }
+    }
 
     // Direct command queue — gfx + compute + copy combined. The one queue
     // matches the single-command-list rendering pattern in D3D12Renderer.

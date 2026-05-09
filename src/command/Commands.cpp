@@ -9,10 +9,12 @@
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/MediaLayer.hpp"
+#include "entity/components/Model.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/media/FrameCache.hpp"
+#include "entity/media/ObjLoader.hpp"
 #include <imgui.h>
 #include <chrono>
 #include <iostream>
@@ -2746,6 +2748,55 @@ std::string AssertShowFrameCountAtLeastCommand::getDescription() const {
 CommandPtr AssertShowFrameCountAtLeastCommand::fromJson(const nlohmann::json& j) {
     uint64_t minCount = j.value("minCount", uint64_t{1});
     return std::make_unique<AssertShowFrameCountAtLeastCommand>(minCount);
+}
+
+bool AddSyntheticModelCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    entt::entity modelEntity = registry.create();
+    Model& model = registry.emplace<Model>(modelEntity);
+    model.name = m_name;
+    model.filepath = "";
+    model.mesh = createDefaultScreenMesh();
+    std::cout << "[AddSyntheticModel] Created model '" << model.name << "' ("
+              << model.mesh.vertices.size() << " verts)\n";
+    return true;
+}
+
+nlohmann::json AddSyntheticModelCommand::toJson() const {
+    return {{"type", "AddSyntheticModel"}, {"name", m_name}};
+}
+
+std::string AddSyntheticModelCommand::getDescription() const {
+    return "Add synthetic model: " + m_name;
+}
+
+CommandPtr AddSyntheticModelCommand::fromJson(const nlohmann::json& j) {
+    std::string name = j.value("name", std::string{"SyntheticModel"});
+    return std::make_unique<AddSyntheticModelCommand>(std::move(name));
+}
+
+bool AssertMeshUploadCountCommand::execute(Engine& engine) {
+    const uint64_t actual = engine.getMeshUploadCount();
+    if (actual == m_expected) {
+        std::cout << "[AssertMeshUploadCount] PASS: upload count == " << m_expected << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertMeshUploadCount] FAIL: upload count " << actual
+              << " != expected " << m_expected << std::endl;
+    return false;
+}
+
+nlohmann::json AssertMeshUploadCountCommand::toJson() const {
+    return {{"type", "AssertMeshUploadCount"}, {"expected", m_expected}};
+}
+
+std::string AssertMeshUploadCountCommand::getDescription() const {
+    return "Assert mesh upload count == " + std::to_string(m_expected);
+}
+
+CommandPtr AssertMeshUploadCountCommand::fromJson(const nlohmann::json& j) {
+    uint64_t expected = j.value("expected", uint64_t{0});
+    return std::make_unique<AssertMeshUploadCountCommand>(expected);
 }
 
 } // namespace entity

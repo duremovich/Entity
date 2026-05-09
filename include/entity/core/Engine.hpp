@@ -855,7 +855,26 @@ private:
     void showThreadMain();
 
 public:
+    // Load-bearing for mesh upload pacing — see Engine.cpp update() where the
+    // cold-start gate defers all Model uploads until this returns >= 1.
     uint64_t getShowFrameCount() const { return m_showFrameCount.load(std::memory_order_relaxed); }
+
+    // Total successful mesh uploads since construction. Used by integration
+    // tests (mesh_upload_paces.json) to verify the cold-start gate and
+    // steady-state one-upload-per-tick cap.
+    uint64_t getMeshUploadCount() const;
+
+    // Device-lost auto-relaunch. Set from the bus::DeviceLost R2D drain after
+    // autosave completes. main.cpp checks these after engine.shutdown() to
+    // decide whether to spawn a recovery process.
+    bool shouldRelaunch() const { return m_relaunchRequested; }
+    std::filesystem::path relaunchProjectPath() const { return m_relaunchProjectPath; }
+
+    // Mark this process as a recovery relaunch (started via --device-lost-recovery).
+    // Suppresses setting m_relaunchRequested on a subsequent device-loss so we
+    // don't chain relaunches in a device-lost storm.
+    void setRecoveryRelaunch() { m_isRecoveryRelaunch = true; }
+
 private:
 
     // State
@@ -863,6 +882,9 @@ private:
     bool m_running{false};
     bool m_resizePending{false};
     bool m_deviceLostPosted{false};  // Guard: post bus::DeviceLost at most once.
+    bool m_relaunchRequested{false};         // Set on device-lost drain; checked by main.cpp.
+    bool m_isRecoveryRelaunch{false};        // True when started via --device-lost-recovery; suppresses re-relaunch.
+    std::filesystem::path m_relaunchProjectPath;  // Autosave path to load in the recovery process.
     uint32_t m_pendingWidth{0};
     uint32_t m_pendingHeight{0};
 

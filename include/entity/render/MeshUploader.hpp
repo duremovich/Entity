@@ -14,6 +14,7 @@
 #include "entity/media/ObjLoader.hpp"
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -84,6 +85,10 @@ public:
      */
     bool getBindHandle(uint32_t slot, BindHandle& out) const;
 
+    // Total successful uploads since construction. Used by integration tests
+    // to verify upload pacing (load-bearing for mesh_upload_paces.json).
+    uint64_t uploadCount() const { return m_totalUploadCount.load(std::memory_order_relaxed); }
+
 private:
     struct Slot {
         ComPtr<ID3D12Resource> vertexBuffer;
@@ -106,6 +111,7 @@ private:
     ID3D12Device*      m_device{nullptr};
     Slot               m_slots[MAX_MESH_SLOTS];
     mutable std::mutex m_slotMutex;
+    std::atomic<uint64_t> m_totalUploadCount{0};
 
     std::vector<PendingFree> m_pendingFrees;
     std::mutex               m_pendingMutex;

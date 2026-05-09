@@ -151,6 +151,7 @@ uint32_t MeshUploader::uploadMesh(ID3D12GraphicsCommandList* cmdList,
 
     s.indexCount = static_cast<uint32_t>(indices.size());
 
+    m_totalUploadCount.fetch_add(1, std::memory_order_relaxed);
     std::cout << "MeshUploader: uploaded slot " << slotIdx
               << " (" << vertices.size() << " verts, " << indices.size() << " indices)\n";
     return slotIdx;

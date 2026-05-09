@@ -1527,4 +1527,52 @@ private:
     uint64_t m_minCount;
 };
 
+/**
+ * Create a synthetic Model entity with a default screen-quad mesh (no OBJ file).
+ * **Test-only** — intended exclusively for headless integration scripts; no UI
+ * command surface exposes it.
+ *
+ * Shares the pre-existing show-thread registry-read race documented at
+ * OutputManager.cpp:610-612 (same race-surface as AddScreen / createDefaultScreen).
+ * The fix is the OutputManager Stage 4 mesh-store refactor; tracked separately.
+ *
+ * JSON: {"type":"AddSyntheticModel","name":"TestModel"}
+ */
+class AddSyntheticModelCommand : public Command {
+public:
+    explicit AddSyntheticModelCommand(std::string name) : m_name(std::move(name)) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AddSyntheticModel"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_name;
+};
+
+/**
+ * Assert that the total mesh upload count equals exactly `expected`.
+ * Used by mesh_upload_paces.json to verify the cold-start gate (0 uploads
+ * before the show thread presents) and the one-per-tick steady-state cap.
+ *
+ * JSON: {"type":"AssertMeshUploadCount","expected":0}
+ */
+class AssertMeshUploadCountCommand : public Command {
+public:
+    explicit AssertMeshUploadCountCommand(uint64_t expected) : m_expected(expected) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertMeshUploadCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint64_t m_expected;
+};
+
 } // namespace entity

@@ -56,6 +56,14 @@ public:
     bool    isDeviceLost() const override         { return m_deviceLost; }
     int32_t getDeviceLostReason() const override  { return static_cast<int32_t>(m_deviceLostReason); }
 
+    // Test seams: set m_deviceLost and exercise waitForGpu() without a real device.
+    // Used by WaitForGpuEarlyOutTests to verify waitForGpu() exits immediately.
+    void setDeviceLostForTesting(HRESULT reason = DXGI_ERROR_DEVICE_HUNG) {
+        m_deviceLost = true;
+        m_deviceLostReason = reason;
+    }
+    void waitForGpuForTesting()     { waitForGpu(); }
+
     void     clear(float r, float g, float b, float a) override;
     uint32_t getCurrentBackBufferIndex() const override { return m_currentBackBufferIndex; }
     void     beginImGuiFrame() override;
@@ -191,6 +199,10 @@ public:
     // Returns the MeshUploader slot for the shared default 16:9 screen quad.
     // Uploaded once lazily on first ensureStageTarget call; UINT32_MAX until then.
     uint32_t getDefaultScreenMeshSlot() const { return m_defaultScreenMeshSlot; }
+
+    // Total successful mesh uploads since construction. Used by integration tests
+    // to verify upload pacing; load-bearing for mesh_upload_paces.json.
+    uint64_t getMeshUploadCount() const;
 
     // Heap slot of the *stable* (last fully-rendered) sub-resource for a
     // compose target. Compose targets are triple-buffered; the show thread

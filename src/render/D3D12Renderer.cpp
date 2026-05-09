@@ -11,6 +11,7 @@
 #include "entity/render/MeshUploader.hpp"
 #include "entity/color/OcioManager.hpp"
 #include "entity/color/OcioGpuProcessor.hpp"
+#include "entity/core/CrashLogger.hpp"
 
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -88,6 +89,9 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
     if (m_gpu->initialize(kEnableDebugLayer) != Result::Success) {
         return Result::Failure;
     }
+
+    // Pass GPU identity to CrashLogger so device-lost context.json has adapter info.
+    CrashLogger::setAdapterDesc(m_gpu->adapterDesc());
 
     // Get Win32 window handle from GLFW
     HWND hwnd = glfwGetWin32Window(window);
@@ -632,6 +636,66 @@ void D3D12Renderer::clear(float r, float g, float b, float a) {
     tl_activeCmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 }
 
+// Format DRED auto-breadcrumb nodes into a human-readable string.
+// Uses std::string (heap intact at this call site — show thread controlled exit).
+static std::string formatDredBreadcrumbs(ID3D12Device* device) {
+    if (!device) return {};
+
+    ComPtr<ID3D12DeviceRemovedExtendedData1> dredData;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dredData)))) return {};
+
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
+    D3D12_DRED_PAGE_FAULT_OUTPUT1       pageFault{};
+    dredData->GetAutoBreadcrumbsOutput1(&breadcrumbs);
+    dredData->GetPageFaultAllocationOutput1(&pageFault);
+
+    std::ostringstream oss;
+
+    // Walk the breadcrumb linked list.
+    const D3D12_AUTO_BREADCRUMB_NODE1* node = breadcrumbs.pHeadAutoBreadcrumbNode;
+    int nodeIdx = 0;
+    while (node) {
+        oss << "[Node " << nodeIdx++ << "] ";
+
+        // Prefer narrow (UTF-8) name; fall back to wide conversion.
+        if (node->pCommandListDebugNameA) {
+            oss << "CmdList=" << node->pCommandListDebugNameA;
+        } else if (node->pCommandListDebugNameW) {
+            char nameBuf[256] = {};
+            WideCharToMultiByte(CP_UTF8, 0, node->pCommandListDebugNameW, -1,
+                                nameBuf, sizeof(nameBuf), nullptr, nullptr);
+            oss << "CmdList=" << nameBuf;
+        }
+
+        if (node->pCommandQueueDebugNameA) {
+            oss << " Queue=" << node->pCommandQueueDebugNameA;
+        }
+
+        UINT lastOp = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+        oss << " LastOp=" << lastOp << "/" << node->BreadcrumbCount;
+
+        // Breadcrumb contexts (UTF-16 strings — convert to UTF-8).
+        for (UINT ci = 0; ci < node->BreadcrumbContextsCount; ++ci) {
+            const auto& ctx = node->pBreadcrumbContexts[ci];
+            if (ctx.pContextString) {
+                char ctxBuf[256] = {};
+                WideCharToMultiByte(CP_UTF8, 0, ctx.pContextString, -1,
+                                    ctxBuf, sizeof(ctxBuf), nullptr, nullptr);
+                oss << " ctx[" << ctx.BreadcrumbIndex << "]=" << ctxBuf;
+            }
+        }
+        oss << "\n";
+        node = node->pNext;
+    }
+
+    // Page-fault virtual address.
+    if (pageFault.PageFaultVA != 0) {
+        oss << "PageFaultVA=0x" << std::hex << pageFault.PageFaultVA << std::dec << "\n";
+    }
+
+    return oss.str();
+}
+
 void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     if (m_deviceLost) return;  // Already reported.
 
@@ -663,6 +727,15 @@ void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     }
     std::cerr << "        Engine will shut down. Restart the application." << std::endl;
     std::cerr << "=======================================================" << std::endl;
+
+    // Capture DRED breadcrumbs and write forensic crash log.
+    std::string dredBlob = (m_gpu && m_gpu->isInitialized())
+        ? formatDredBreadcrumbs(m_gpu->device())
+        : std::string{};
+    CrashLogger::captureNonFatal("device-lost",
+                                  static_cast<long>(removedReason),
+                                  dredBlob,
+                                  site);
 }
 
 ID3D12Device* D3D12Renderer::getDevice() const {
@@ -919,6 +992,12 @@ Result D3D12Renderer::createFence() {
 }
 
 void D3D12Renderer::waitForGpu() {
+    // Top-level early-out: if the device is already lost, no fence will ever
+    // signal again. Return immediately without touching any D3D12 COM objects.
+    // Also guards the nested per-branch checks below against the race where
+    // device-lost transitions while we're mid-drain.
+    if (m_deviceLost) return;
+
     // Use a function-local event so this call cannot race with concurrent
     // SetEventOnCompletion/WaitForSingleObject pairs on m_fenceEvent. Auto-reset
     // events are FIFO-ish but only wake one waiter per signal; the editor
@@ -937,6 +1016,7 @@ void D3D12Renderer::waitForGpu() {
     // queue. The direct queue's Wait(uploadFence) inside endShowFrame() does NOT
     // help here because we may be called outside the per-frame loop.
     if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
+        if (m_deviceLost) { CloseHandle(localEvent); return; }
         const uint64_t copyTarget = ++m_uploadFenceValue;
         m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
         if (m_uploadFence->GetCompletedValue() < copyTarget) {
@@ -955,6 +1035,7 @@ void D3D12Renderer::waitForGpu() {
     // owned by endShowFrame / moveToNextFrame and must be left intact so the
     // per-frame allocator-reuse gate still works correctly after this call.
     if (m_showFence) {
+        if (m_deviceLost) { CloseHandle(localEvent); return; }
         const uint64_t drainValue = m_showFence->GetCompletedValue() + 1;
         m_gpu->commandQueue()->Signal(m_showFence.Get(), drainValue);
         m_showFence->SetEventOnCompletion(drainValue, localEvent);
@@ -962,6 +1043,7 @@ void D3D12Renderer::waitForGpu() {
     }
 
     if (m_editorFence) {
+        if (m_deviceLost) { CloseHandle(localEvent); return; }
         const uint64_t drainValue = m_editorFence->GetCompletedValue() + 1;
         m_gpu->commandQueue()->Signal(m_editorFence.Get(), drainValue);
         m_editorFence->SetEventOnCompletion(drainValue, localEvent);
@@ -5216,6 +5298,10 @@ uint32_t D3D12Renderer::uploadMeshImmediate(const std::vector<MeshVertex>& verti
     std::cout << "[MeshUploader] uploaded mesh to slot " << slot
               << " (" << vertices.size() << " verts, " << indices.size() << " indices)" << std::endl;
     return slot;
+}
+
+uint64_t D3D12Renderer::getMeshUploadCount() const {
+    return m_meshUploader ? m_meshUploader->uploadCount() : 0;
 }
 
 void D3D12Renderer::scheduleMeshSlotFree(uint32_t slot) {

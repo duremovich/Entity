@@ -1,12 +1,15 @@
 #include "entity/core/Engine.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/core/EnginePluginContext.hpp"
+#include "entity/core/CrashLogger.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/plugin/Plugin.hpp"
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -21,8 +24,11 @@
  * Main entry point for the editor application.
  *
  * Command-line arguments:
- *   --script <path>   Run a JSON script file after initialization
- *   --help            Show help message
+ *   --script <path>                Run a JSON script file after initialization
+ *   --device-lost-recovery <path>  Recovery launch: load autosave path with
+ *                                  ERROR_SHARING_VIOLATION retry logic
+ *   --headless                     Run with a hidden window (for tests / CI)
+ *   --help                         Show help message
  */
 
 void printHelp() {
@@ -44,6 +50,67 @@ void printHelp() {
     std::cout << "  EntityMediaEditor \"C:\\Shows\\IIWY\\IIWY.entity\"" << std::endl;
 }
 
+// Loop guard: scan the last 30 seconds of crash-log entries for device-lost
+// events referencing this project path. If > 2 found, the system is in a
+// device-lost storm; skip auto-load and fall through to the launcher.
+static bool shouldSkipAutoLoad(const std::filesystem::path& projectPath) {
+#ifdef _WIN32
+    namespace fs = std::filesystem;
+    fs::path logsRoot = entity::crashLogsRoot();
+    if (!fs::exists(logsRoot)) return false;
+
+    auto now = std::chrono::system_clock::now();
+    int count = 0;
+
+    std::error_code ec;
+    for (auto& entry : fs::directory_iterator(logsRoot, ec)) {
+        if (!entry.is_directory()) continue;
+        fs::path jsonPath = entry.path() / "context.json";
+        if (!fs::exists(jsonPath)) continue;
+
+        // Check file mtime — skip dirs older than 30s.
+        auto mtime = fs::last_write_time(jsonPath, ec);
+        if (ec) continue;
+        // Convert file_time_type to system_clock::time_point via duration cast.
+        auto mtimeSys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            mtime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - mtimeSys);
+        if (age.count() > 30) continue;
+
+        // Read and parse enough of context.json to check kind + projectPath.
+        std::ifstream f(jsonPath);
+        if (!f) continue;
+        std::string content((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+
+        if (content.find("\"device-lost\"") == std::string::npos) continue;
+
+        // Match project path: the JSON field stores the path as a UTF-8 string.
+        std::string projStr = projectPath.string();
+        // Strip the ".autosave.entity" suffix to match the base project path
+        // stored in context.json (setProjectPath is called with the real path,
+        // not the autosave path).
+        constexpr std::string_view kAutosaveSuffix = ".autosave.entity";
+        if (projStr.size() > kAutosaveSuffix.size() &&
+            projStr.substr(projStr.size() - kAutosaveSuffix.size()) == kAutosaveSuffix) {
+            // Replace suffix with ".entity" to reconstruct the original path.
+            projStr = projStr.substr(0, projStr.size() - kAutosaveSuffix.size()) + ".entity";
+        }
+        if (content.find(projStr) != std::string::npos) {
+            ++count;
+        }
+    }
+
+    if (count > 2) {
+        std::cerr << "[main] Device-lost loop guard: " << count
+                  << " device-lost entries for this project in the last 30s — "
+                  << "skipping auto-load and falling through to launcher." << std::endl;
+        return true;
+    }
+#endif
+    return false;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     // Declare per-monitor DPI awareness BEFORE GLFW creates a window. Without
@@ -54,6 +121,10 @@ int main(int argc, char** argv) {
     // Per-monitor V2 lets the OS keep ImGui's mouse coords and render coords
     // in lock-step at any scale and across multi-monitor setups.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    // Install SEH + terminate crash handlers before anything else so even
+    // failures during Engine::initialize produce a forensic dump.
+    entity::CrashLogger::install();
 #endif
 
     std::cout << "========================================" << std::endl;
@@ -64,7 +135,8 @@ int main(int argc, char** argv) {
 
     // Parse command-line arguments
     std::string scriptPath;
-    std::string projectPath;   // Positional <project.entity> for OS file-association open
+    std::string projectPath;         // Positional <project.entity> for OS file-association open
+    std::string recoveryAutosavePath; // --device-lost-recovery <path>
     bool headless = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -84,6 +156,14 @@ int main(int argc, char** argv) {
         }
         else if (arg == "--headless") {
             headless = true;
+        }
+        else if (arg == "--device-lost-recovery") {
+            if (i + 1 < argc) {
+                recoveryAutosavePath = argv[++i];
+            } else {
+                std::cerr << "Error: --device-lost-recovery requires a path argument" << std::endl;
+                return EXIT_FAILURE;
+            }
         }
         else if (!arg.empty() && arg[0] != '-') {
             // Positional path. Windows hands this to the editor when a .entity
@@ -114,6 +194,12 @@ int main(int argc, char** argv) {
     // Create engine instance
     entity::Engine engine;
 
+    // Mark recovery relaunch before initialize so the engine suppresses
+    // m_relaunchRequested on any subsequent device-loss (single-relaunch latch).
+    if (!recoveryAutosavePath.empty()) {
+        engine.setRecoveryRelaunch();
+    }
+
     // Initialize engine
     entity::Result result = engine.initialize(
         1920,  // Width
@@ -140,6 +226,39 @@ int main(int argc, char** argv) {
         if (!engine.runScript(scriptPath)) {
             std::cerr << "Failed to load script: " << scriptPath << std::endl;
             // Continue running anyway - don't exit on script failure
+        }
+    } else if (!recoveryAutosavePath.empty()) {
+        // Device-lost recovery launch. Load the autosave with retry-on-sharing-
+        // violation — the parent process may still be writing the file.
+        namespace fs = std::filesystem;
+        fs::path autosavePath = recoveryAutosavePath;
+        bool fileReady = false;
+#ifdef _WIN32
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            HANDLE h = CreateFileW(autosavePath.wstring().c_str(),
+                                   GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                CloseHandle(h);
+                fileReady = true;
+                break;
+            }
+            DWORD err = GetLastError();
+            if (err != ERROR_SHARING_VIOLATION && err != ERROR_FILE_NOT_FOUND) break;
+            std::cerr << "[main] --device-lost-recovery: file not ready (err=" << err
+                      << ") on attempt " << (attempt + 1) << ", retrying..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+#else
+        fileReady = std::filesystem::exists(autosavePath);
+#endif
+        if (!fileReady) {
+            std::cerr << "[main] --device-lost-recovery failed to open "
+                      << autosavePath << " — falling through to launcher." << std::endl;
+            engine.showLauncher();
+        } else {
+            std::cerr << "[main] --device-lost-recovery: loading " << autosavePath << std::endl;
+            engine.requestProjectLoad(autosavePath);
         }
     } else if (!projectPath.empty()) {
         // OS file-association / "open with" flow. Skip the launcher and
@@ -177,6 +296,45 @@ int main(int argc, char** argv) {
 
     // Shutdown (automatic via destructor, but explicit is clearer)
     engine.shutdown();
+
+    // Remove pre-opened crash handles now that the engine has exited cleanly.
+    entity::CrashLogger::teardown();
+
+    // Device-lost auto-relaunch (Step 5). Only fires if:
+    //   - The engine flagged m_relaunchRequested (autosave succeeded)
+    //   - This is NOT already a recovery process (single-relaunch latch via m_isRecoveryRelaunch)
+    //   - The loop guard finds < 3 recent device-lost entries for this project
+#ifdef _WIN32
+    if (engine.shouldRelaunch() && !scriptFailed) {
+        std::filesystem::path autosavePath = engine.relaunchProjectPath();
+        if (!shouldSkipAutoLoad(autosavePath)) {
+            // Get path to our own executable.
+            wchar_t exePathBuf[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+            std::wstring exePath(exePathBuf);
+
+            // Build command line: "<exe>" --device-lost-recovery "<autosave>"
+            // cmd.data() (not c_str()) — OS writes a null terminator into the buffer.
+            std::wstring cmd = L"\"" + exePath + L"\" --device-lost-recovery \""
+                               + autosavePath.wstring() + L"\"";
+
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(nullptr, cmd.data(),
+                               nullptr, nullptr, FALSE, 0,
+                               nullptr, nullptr, &si, &pi)) {
+                std::cerr << "[main] Device-lost recovery process spawned (PID "
+                          << pi.dwProcessId << "): " << autosavePath << std::endl;
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            } else {
+                std::cerr << "[main] CreateProcessW failed for device-lost recovery "
+                          << "(error=" << GetLastError() << ")" << std::endl;
+            }
+        }
+    }
+#endif
 
     if (scriptFailed) {
         std::cerr << "Application exited with script failures." << std::endl;

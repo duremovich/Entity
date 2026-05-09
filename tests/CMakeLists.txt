@@ -38,6 +38,7 @@ add_executable(EntityMediaTests
     unit/AssetIdTests.cpp
     unit/DecodeBufferPoolTests.cpp
     unit/CalibrationSolverTests.cpp
+    unit/WaitForGpuEarlyOutTests.cpp
     test_Decoder.cpp
 )
 
@@ -209,3 +210,7 @@ set_tests_properties(integration_show_thread_advances PROPERTIES
 # If the bug recurs the GPU wedges, DeviceLost is posted, the show thread
 # stalls, and the frame-count assertion fires before Exit.
 entity_add_integration_test(screen_no_double_allocation screen_no_double_allocation.json)
+
+# Phase 1 mesh-upload pacing: cold-start gate + one-per-tick steady-state cap.
+# No pixel comparison needed; asserts upload counts directly.
+entity_add_integration_test(mesh_upload_paces mesh_upload_paces.json)

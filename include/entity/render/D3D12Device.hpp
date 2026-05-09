@@ -17,6 +17,7 @@
 
 #include "entity/core/Types.hpp"
 #include <d3d12.h>
+#include <dxgi1_4.h>
 #include <wrl/client.h>
 
 namespace entity {
@@ -55,10 +56,16 @@ public:
 
     bool isInitialized() const { return m_device != nullptr; }
 
+    // GPU adapter description captured at device-creation time.
+    // VendorId / DeviceId / Description[128] (UTF-16).
+    // All-zero if the adapter enumeration failed (e.g. WARP).
+    const DXGI_ADAPTER_DESC1& adapterDesc() const { return m_adapterDesc; }
+
 private:
     ComPtr<ID3D12Device>       m_device;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<ID3D12CommandQueue> m_copyQueue;
+    DXGI_ADAPTER_DESC1         m_adapterDesc{};
 };
 
 } // namespace entity

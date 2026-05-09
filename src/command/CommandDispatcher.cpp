@@ -244,6 +244,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Stage 3c: show-thread health gate
     registerFactory("SleepMs", SleepMsCommand::fromJson);
     registerFactory("AssertShowFrameCountAtLeast", AssertShowFrameCountAtLeastCommand::fromJson);
+
+    // Mesh upload pacing gate
+    registerFactory("AddSyntheticModel", AddSyntheticModelCommand::fromJson);
+    registerFactory("AssertMeshUploadCount", AssertMeshUploadCountCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {

@@ -1,0 +1,67 @@
+{
+    "version": 1,
+    "description": "Phase 1 mesh-upload pacing gate. Verifies: (a) the cold-start gate defers all Model uploads until the show thread has presented at least one frame — asserted immediately after AddScreen, before any WaitFrames lets the show thread advance; (b) the steady-state cap allows at most one successful upload per editor tick. Baseline: D3D12Renderer::initialize always uploads the default screen quad (count=1). After the show thread is live, the default screen Model entity is uploaded on the first available tick (count=2). Then each synthetic model takes one additional tick.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "MeshPacingTestScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "AssertMeshUploadCount",
+            "expected": 1
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "AssertShowFrameCountAtLeast",
+            "minCount": 5
+        },
+        {
+            "type": "AssertMeshUploadCount",
+            "expected": 2
+        },
+        {
+            "type": "AddSyntheticModel",
+            "name": "PacingTestModel_A"
+        },
+        {
+            "type": "AddSyntheticModel",
+            "name": "PacingTestModel_B"
+        },
+        {
+            "type": "AddSyntheticModel",
+            "name": "PacingTestModel_C"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 1
+        },
+        {
+            "type": "AssertMeshUploadCount",
+            "expected": 3
+        },
+        {
+            "type": "WaitFrames",
+            "count": 1
+        },
+        {
+            "type": "AssertMeshUploadCount",
+            "expected": 4
+        },
+        {
+            "type": "WaitFrames",
+            "count": 1
+        },
+        {
+            "type": "AssertMeshUploadCount",
+            "expected": 5
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}
