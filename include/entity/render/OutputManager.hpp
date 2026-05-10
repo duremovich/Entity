@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../bus/IMessageTransport.hpp"
 #include "../bus/Message.hpp"
 #include "../core/Types.hpp"
 #include "../components/OutputDisplay.hpp"
@@ -153,6 +154,13 @@ public:
      */
     void syncCounterFromRegistry();
 
+    /**
+     * Wire in the D2R transport so assignDisplay can route swap-chain
+     * teardown/rebuild through the show thread instead of calling the
+     * renderer directly from the editor thread.
+     */
+    void setTransport(bus::IMessageTransport* transport) { m_transport = transport; }
+
 private:
     /**
      * Create render resources for an output (render target, etc).
@@ -191,6 +199,7 @@ private:
 
     IRenderer* m_renderer{nullptr};
     entt::registry& m_registry;
+    bus::IMessageTransport* m_transport{nullptr};
 
     // Available physical displays from enumeration
     std::vector<DisplayInfo> m_availableDisplays;

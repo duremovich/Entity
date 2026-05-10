@@ -53,14 +53,14 @@ public:
     void   shutdown() override;
     Result resize(uint32_t width, uint32_t height) override;
     bool    isInitialized() const override        { return m_initialized; }
-    bool    isDeviceLost() const override         { return m_deviceLost; }
+    bool    isDeviceLost() const override         { return m_deviceLost.load(std::memory_order_acquire); }
     int32_t getDeviceLostReason() const override  { return static_cast<int32_t>(m_deviceLostReason); }
 
     // Test seams: set m_deviceLost and exercise waitForGpu() without a real device.
     // Used by WaitForGpuEarlyOutTests to verify waitForGpu() exits immediately.
     void setDeviceLostForTesting(HRESULT reason = DXGI_ERROR_DEVICE_HUNG) {
-        m_deviceLost = true;
         m_deviceLostReason = reason;
+        m_deviceLost.store(true, std::memory_order_release);
     }
     void waitForGpuForTesting()     { waitForGpu(); }
 
@@ -753,7 +753,7 @@ private:
     uint32_t m_width;
     uint32_t m_height;
     bool m_initialized;
-    bool    m_deviceLost{false};          // Latched on first device-removed detection.
+    std::atomic<bool> m_deviceLost{false}; // Latched on first device-removed detection. Written from show or editor thread; read from both.
     HRESULT m_deviceLostReason{S_OK};    // GetDeviceRemovedReason() result; available via getDeviceLostReason().
 
     // Descriptor heap caching — thread_local, lives in D3D12Renderer.cpp.

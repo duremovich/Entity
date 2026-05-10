@@ -231,6 +231,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         compositor->setTransport(m_transport.get());
     }
 
+    // Wire transport into OutputManager so assignDisplay routes swap-chain
+    // teardown/rebuild through the show thread (SetOutputEnabled D2R), avoiding
+    // TDR from calling destroyOutputWindow on the editor thread mid-frame.
+    if (m_outputManager) {
+        m_outputManager->setTransport(m_transport.get());
+    }
+
     // Phase D entry, subtask 7: capture-command request/reply broker on
     // the Director side needs both the transport (to publish requests)
     // and the dispatcher (to resolve script-results). Dispatcher is wired
@@ -920,6 +927,13 @@ void Engine::showThreadMain() {
     auto nextTick = Clock::now() + kShowPeriod;
 
     while (!m_showStopRequested.load(std::memory_order_acquire)) {
+        // Stop spinning on a dead device. The editor thread owns the autosave +
+        // relaunch wiring; let it proceed without interference from the show thread
+        // issuing more D3D12 calls on a lost device.
+        if (m_renderer && m_renderer->isDeviceLost()) {
+            break;
+        }
+
         // Stage 3c: show thread paces itself. No condvar gate with the editor.
         // Show-side timing update.
         if (m_timeAuthority) {

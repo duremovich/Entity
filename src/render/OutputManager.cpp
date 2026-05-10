@@ -9,6 +9,7 @@
 
 #include "entity/render/OutputManager.hpp"
 #include "entity/bus/Message.hpp"
+#include "entity/bus/Serialization.hpp"
 #include "entity/components/Model.hpp"
 
 #ifdef _WIN32
@@ -227,28 +228,59 @@ void OutputManager::assignDisplay(entt::entity outputEntity, int32_t displayInde
 
     auto& output = m_registry.get<OutputDisplay>(outputEntity);
     const auto& display = m_availableDisplays[displayIndex];
-
-    // If the output already has a window on a different display, tear it
-    // down so it can be recreated on the new display.
-    if (output.outputWindowSlot != UINT32_MAX) {
-        releaseOutputResources(outputEntity);
-    }
-
-    output.physicalDisplayIndex = displayIndex;
-    output.deviceName = display.deviceName;
-    output.displayName = display.displayName;
-    output.width = display.width;
-    output.height = display.height;
-    output.refreshRate = display.refreshRate;
-    output.windowX = display.x;
-    output.windowY = display.y;
+    const bool wasEnabled = output.enabled && output.isPhysical() &&
+                            output.outputWindowSlot != UINT32_MAX;
+    const std::uint64_t entityId = static_cast<std::uint64_t>(outputEntity);
 
     std::cout << "[OutputManager] Assigned display '" << display.displayName
               << "' to output '" << output.name << "'" << std::endl;
 
-    // Eagerly create the window if the output is already enabled.
-    if (output.enabled && output.isPhysical()) {
-        ensureOutputWindow(outputEntity);
+    if (m_transport) {
+        // Route swap-chain lifecycle through the show thread so the teardown
+        // and rebuild both happen in the gap between beginShowFrame and
+        // renderOutputs, where no D3D12 work is in flight. Calling
+        // destroyOutputWindow / createOutputWindow directly from the editor
+        // thread while the show thread may be mid-frame causes TDR.
+        if (wasEnabled) {
+            bus::SetOutputEnabled disableMsg{entityId, false};
+            m_transport->send(bus::Direction::D2R,
+                              bus::serialize(bus::Message{disableMsg}));
+        }
+
+        // Update registry fields on the editor thread (sole registry writer).
+        output.physicalDisplayIndex = displayIndex;
+        output.deviceName  = display.deviceName;
+        output.displayName = display.displayName;
+        output.width       = display.width;
+        output.height      = display.height;
+        output.refreshRate = display.refreshRate;
+        output.windowX     = display.x;
+        output.windowY     = display.y;
+
+        if (output.enabled && output.isPhysical()) {
+            bus::SetOutputEnabled enableMsg{entityId, true};
+            m_transport->send(bus::Direction::D2R,
+                              bus::serialize(bus::Message{enableMsg}));
+        }
+    } else {
+        // Fallback: no transport yet (early init or shutdown path). Call
+        // directly — no show thread is running at this point.
+        if (output.outputWindowSlot != UINT32_MAX) {
+            releaseOutputResources(outputEntity);
+        }
+
+        output.physicalDisplayIndex = displayIndex;
+        output.deviceName  = display.deviceName;
+        output.displayName = display.displayName;
+        output.width       = display.width;
+        output.height      = display.height;
+        output.refreshRate = display.refreshRate;
+        output.windowX     = display.x;
+        output.windowY     = display.y;
+
+        if (output.enabled && output.isPhysical()) {
+            ensureOutputWindow(outputEntity);
+        }
     }
 }
 

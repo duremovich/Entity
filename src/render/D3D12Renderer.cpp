@@ -509,7 +509,8 @@ void D3D12Renderer::endShowFrame() {
         if (!ow.active || !ow.swapChain) continue;
         HRESULT ohr = ow.swapChain->Present(1, 0);
         if (FAILED(ohr)) {
-            if (ohr == DXGI_ERROR_DEVICE_REMOVED || ohr == DXGI_ERROR_DEVICE_RESET) {
+            if (ohr == DXGI_ERROR_DEVICE_REMOVED || ohr == DXGI_ERROR_DEVICE_RESET ||
+                ohr == DXGI_ERROR_DEVICE_HUNG) {
                 handleDeviceLost(ohr, "Output Present");
                 return;
             }
@@ -543,6 +544,8 @@ void D3D12Renderer::endShowFrame() {
 }
 
 void D3D12Renderer::beginEditorFrame() {
+    if (m_deviceLost) return;
+
     // Editor thread tracks its own buffer index independently of the show thread.
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 
@@ -600,7 +603,8 @@ void D3D12Renderer::endEditorFrame() {
     // Present editor swap chain
     hr = m_swapChain->Present(1, 0);
     if (FAILED(hr)) {
-        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
+            hr == DXGI_ERROR_DEVICE_HUNG) {
             handleDeviceLost(hr, "Present");
             return;
         }
@@ -613,6 +617,8 @@ void D3D12Renderer::endEditorFrame() {
 }
 
 void D3D12Renderer::clear(float r, float g, float b, float a) {
+    if (m_deviceLost.load(std::memory_order_relaxed)) return;
+
     // Transition render target to RENDER_TARGET state
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -697,13 +703,13 @@ static std::string formatDredBreadcrumbs(ID3D12Device* device) {
 }
 
 void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
-    if (m_deviceLost) return;  // Already reported.
+    if (m_deviceLost.load(std::memory_order_relaxed)) return;  // Already reported.
 
     HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
         ? m_gpu->device()->GetDeviceRemovedReason()
         : hr;
-    m_deviceLostReason = removedReason;  // store before latching so readers see consistent state
-    m_deviceLost = true;
+    m_deviceLostReason = removedReason;  // store before latching; release below makes this visible to acquire readers
+    m_deviceLost.store(true, std::memory_order_release);
     std::cerr << "=======================================================" << std::endl;
     std::cerr << "[D3D12] GPU DEVICE LOST at " << site << std::endl;
     std::cerr << "        HRESULT:         0x" << std::hex << hr << std::dec << std::endl;
@@ -1617,6 +1623,8 @@ void D3D12Renderer::beginImGuiFrame() {
 }
 
 void D3D12Renderer::endImGuiFrame() {
+    if (m_deviceLost.load(std::memory_order_relaxed)) return;
+
     ImGui::Render();
 
     // Set ImGui descriptor heap (only if not already set)
