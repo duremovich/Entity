@@ -12,11 +12,11 @@
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},
-        {"type": "WaitFrames", "count": 300},
+        {"type": "WaitSeconds", "count": 2.5},
         {"type": "AssertPlaybackState", "state": "Paused"},
         {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
 
-        {"type": "WaitFrames", "count": 60},
+        {"type": "WaitSeconds", "count": 1.5},
         {"type": "SectionGo"},
         {"type": "WaitFrames", "count": 5},
         {"type": "AssertPlaybackState", "state": "Playing"},

@@ -12,7 +12,7 @@
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},
-        {"type": "WaitFrames", "count": 300},
+        {"type": "WaitSeconds", "count": 1.5},
         {"type": "AssertPlaybackState", "state": "Paused"},
         {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
         {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 2, "mode": "notEqual"},
