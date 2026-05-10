@@ -35,7 +35,7 @@ namespace entity {
 //
 // Phase C (sections-and-cues epic): pure data. POD per components/CLAUDE.md.
 struct ClipPlaybackPhase {
-    double      sourcePhaseFrames{0.0};  // Accumulated source-frame phase, fractional.
+    double      sourcePhaseFrames{0.0};  // Source-frame phase, fractional. See note below.
     FrameNumber tailHoldMediaFrame{-1};  // Source-media frame to hold during tail; -1 = unset.
     bool        inContinuation{false};
 
@@ -47,6 +47,18 @@ struct ClipPlaybackPhase {
     // Reset on backward scrub past `anchorTimelineFrame`.
     FrameNumber postBreakMediaAnchor{-1};
     FrameNumber anchorTimelineFrame{0};
+
+    // Wall-clock anchor for continuation (round-3 fixup): the at-break park
+    // recomputes sourcePhaseFrames each tick as
+    //   continuationSeedFrames + (now - continuationStartTimeNs) * fps
+    // instead of accumulating dt-per-tick. Immune to editor tick-rate
+    // fluctuations and dt mis-measurement — phase tracks wall time exactly.
+    // continuationStartTimeNs == 0 means "no wall-clock anchor"; any code path
+    // (legacy / synthetic-test / future) that wants the historical
+    // dt-accumulator can leave it at 0. seedContinuationAt sets both fields
+    // when raising inContinuation; clearAllContinuation resets them.
+    int64_t     continuationStartTimeNs{0};   // steady_clock ns at continuation entry.
+    double      continuationSeedFrames{0.0};  // sourcePhaseFrames at continuation entry.
 };
 
 } // namespace entity

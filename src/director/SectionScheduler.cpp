@@ -5,6 +5,7 @@
 #include "entity/timeline/Timeline.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -16,6 +17,12 @@ namespace {
     inline bool isAtBreakAlignedStart(FrameNumber clipStart, FrameNumber breakTimelineFrame) {
         const FrameNumber d = clipStart >= breakTimelineFrame ? clipStart - breakTimelineFrame : breakTimelineFrame - clipStart;
         return d <= kAtBreakSnapTol;
+    }
+
+    inline int64_t steadyNowNs() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     }
 }
 
@@ -219,6 +226,8 @@ void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
             // spanning clip would after its own break.
             phase.inContinuation = false;
             phase.sourcePhaseFrames = 0.0;
+            phase.continuationStartTimeNs = 0;
+            phase.continuationSeedFrames = 0.0;
             continue;
         }
 
@@ -243,11 +252,28 @@ void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
             phase.sourcePhaseFrames = deltaTimelineFrames * frameRateRatio;
         }
         phase.inContinuation = true;
+        // Round-3 fixup: anchor the continuation phase to wall-clock at
+        // entry. advanceContinuation recomputes sourcePhaseFrames from
+        // (now - continuationStartTimeNs) * fps + continuationSeedFrames
+        // each tick, so phase tracks wall time exactly regardless of
+        // editor tick-rate fluctuations or dt accumulation error.
+        phase.continuationStartTimeNs = steadyNowNs();
+        phase.continuationSeedFrames = phase.sourcePhaseFrames;
     }
 }
 
 void SectionScheduler::advanceContinuation(double deltaTimeSeconds) {
-    if (deltaTimeSeconds <= 0.0) return;
+    // Round-3 fixup: prefer the wall-clock anchor (continuationStartTimeNs)
+    // over the dt accumulator. The accumulator is mathematically equivalent
+    // when dt is correctly per-editor-tick wall-clock, but it amplifies any
+    // dt mis-measurement (e.g., editor reading a stale show-thread cached
+    // dt while ticking faster) and drifts under fp accumulation.
+    // Wall-clock anchor: phase = seed + (now - start) * fps. Exact, always.
+    //
+    // The dt fallback (continuationStartTimeNs == 0) preserves the
+    // synthetic-time path used by tests that drive advanceContinuation
+    // without going through seedContinuationAt's anchor capture.
+    const int64_t nowNs = steadyNowNs();
     auto view = m_registry.view<Clip, ClipPlaybackPhase>();
     for (auto entity : view) {
         const Clip& clip = view.get<Clip>(entity);
@@ -255,7 +281,15 @@ void SectionScheduler::advanceContinuation(double deltaTimeSeconds) {
         if (!phase.inContinuation) continue;
         if (clip.sectionBehavior != SectionBehavior::Normal) continue;
         if (clip.framerate <= 0.0) continue;
-        phase.sourcePhaseFrames += deltaTimeSeconds * clip.framerate;
+
+        if (phase.continuationStartTimeNs > 0) {
+            const double elapsedSec =
+                static_cast<double>(nowNs - phase.continuationStartTimeNs) * 1e-9;
+            phase.sourcePhaseFrames =
+                phase.continuationSeedFrames + elapsedSec * clip.framerate;
+        } else if (deltaTimeSeconds > 0.0) {
+            phase.sourcePhaseFrames += deltaTimeSeconds * clip.framerate;
+        }
     }
 }
 
@@ -265,6 +299,10 @@ void SectionScheduler::clearAllContinuation() {
         ClipPlaybackPhase& phase = view.get<ClipPlaybackPhase>(entity);
         phase.inContinuation = false;
         phase.sourcePhaseFrames = 0.0;
+        // Round-3 fixup: drop the wall-clock anchor with the rest of the
+        // continuation state. Next at-break park reseeds via seedContinuationAt.
+        phase.continuationStartTimeNs = 0;
+        phase.continuationSeedFrames = 0.0;
         // tailHoldMediaFrame is intentionally left intact when called from
         // go() — it's seeded just above by snapshotTailHoldFrames and read
         // by mapToMediaFrame during the post-end fade tail. The Stopped /

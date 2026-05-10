@@ -330,6 +330,12 @@ TEST_F(PostBreakAnchorTest, SpanningClipStillUsesAnchor) {
     ASSERT_NE(phase, nullptr) << "Spanning clip MUST receive a continuation phase.";
     EXPECT_TRUE(phase->inContinuation);
 
+    // Round-3 fixup: production path uses wall-clock anchoring set by
+    // seedContinuationAt. Tests that drive synthetic dt loops opt out by
+    // zeroing the anchor — advanceContinuation falls back to the dt
+    // accumulator, preserving this test's original semantics.
+    phase->continuationStartTimeNs = 0;
+
     for (int i = 0; i < 300; ++i) {
         callAdvanceContinuation(1.0 / 60.0);
     }

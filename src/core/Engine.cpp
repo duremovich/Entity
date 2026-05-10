@@ -1342,7 +1342,14 @@ void Engine::update() {
     // in the registry (SectionScheduler, AnimationSystem, DecodeSystem).
     // Those tick on the editor thread so registry writes stay on the sole
     // writer. They read Timeline's atomic m_currentTime fresh each tick.
-    double deltaTime = m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
+    //
+    // Use the editor-thread wall-clock delta, NOT m_timeAuthority->getDeltaTime()
+    // (which is the show-thread's per-show-frame delta, refreshed only ~60Hz).
+    // SectionScheduler::advanceContinuation integrates dt over editor ticks,
+    // so feeding it the show-thread's cached dt makes phase advance at
+    // editorTicksPerSecond × ~16.67ms × clip.fps instead of wallSeconds ×
+    // clip.fps — section-break continuation runs at editor-loop speed.
+    double deltaTime = m_editorDeltaTime;
 
     // Section break detection runs against the (show-thread-advanced)
     // timeline frame so AnimationSystem and DecodeSystem (below) see the
