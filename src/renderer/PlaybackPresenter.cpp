@@ -1,4 +1,5 @@
 #include "entity/renderer/PlaybackPresenter.hpp"
+#include "entity/profile/Tracy.hpp"
 
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
@@ -53,6 +54,7 @@ void PlaybackPresenter::refreshFadeMultiplierCache(const bus::RenderFrame& rf) {
 }
 
 void PlaybackPresenter::present(const bus::RenderFrame& rf) {
+    ZoneScopedN("PlaybackPresenter::present");
     // Refresh fade cache before the renderer-null short-circuit so the
     // cache is consistent with the most recent bus payload even if the
     // GPU upload pass is gated off (headless / pre-init paths).

@@ -26,6 +26,7 @@ endif()
 # Options
 option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_D3D12_DEBUG "Enable D3D12 debug layer" ON)
+option(ENTITY_ENABLE_TRACY "Enable Tracy profiler instrumentation" ON)
 
 # Add CMake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -66,6 +67,14 @@ message(STATUS "  nlohmann_json: Found")
 
 find_package(OpenColorIO CONFIG REQUIRED)
 message(STATUS "  OpenColorIO: Found")
+
+if(ENTITY_ENABLE_TRACY)
+    find_package(Tracy CONFIG REQUIRED)
+    message(STATUS "  Tracy: Found (enabled)")
+    message(STATUS "  Tracy server: download Tracy.exe from https://github.com/wolfpld/tracy/releases (match version 0.13.1)")
+else()
+    message(STATUS "  Tracy: Disabled")
+endif()
 
 # FFmpeg - optional for now (will add later)
 find_package(FFMPEG COMPONENTS avcodec avformat avutil swscale swresample)
@@ -278,6 +287,12 @@ if(WIN32)
     target_link_libraries(EntityMediaCore PRIVATE ${D3D12_LIBRARIES})
 endif()
 
+if(ENTITY_ENABLE_TRACY)
+    target_link_libraries(EntityMediaCore PUBLIC Tracy::TracyClient)
+    target_compile_definitions(EntityMediaCore
+        PUBLIC ENTITY_ENABLE_TRACY TRACY_ENABLE)
+endif()
+
 target_compile_features(EntityMediaCore PUBLIC cxx_std_20)
 
 # Compiler warnings
@@ -355,5 +370,6 @@ message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build Tests: ${BUILD_TESTS}")
 message(STATUS "  D3D12 Debug: ${ENABLE_D3D12_DEBUG}")
+message(STATUS "  Tracy: ${ENTITY_ENABLE_TRACY}")
 message(STATUS "========================================")
 message(STATUS "")

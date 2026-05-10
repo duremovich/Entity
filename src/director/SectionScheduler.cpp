@@ -1,4 +1,5 @@
 #include "entity/director/SectionScheduler.hpp"
+#include "entity/profile/Tracy.hpp"
 
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
@@ -32,6 +33,7 @@ SectionScheduler::SectionScheduler(entt::registry& registry, Timeline* timeline)
 {}
 
 void SectionScheduler::tick(double deltaTimeSeconds) {
+    ZoneScopedN("SectionScheduler::tick");
     if (!m_timeline) {
         m_atBreak = false;
         m_haveLastTickFrame = false;

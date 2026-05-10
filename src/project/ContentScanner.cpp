@@ -1,4 +1,5 @@
 #include "entity/project/ContentScanner.hpp"
+#include "entity/profile/Tracy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -104,6 +105,7 @@ void ContentScanner::enqueue(ScanDelta d) {
 }
 
 void ContentScanner::runLoop() {
+    tracy::SetThreadName("ContentScanner");
     while (!m_stop.load(std::memory_order_acquire)) {
         // Sleep first so callers that just want a single scan can use
         // tickForTesting + start/stop without racing.

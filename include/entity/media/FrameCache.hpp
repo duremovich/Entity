@@ -2,9 +2,11 @@
 
 #include "entity/core/Types.hpp"
 #include "entity/media/DecodedFrame.hpp"
+#include "entity/profile/Tracy.hpp"
 
 #include <entt/entity/entity.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <list>
 #include <memory>
@@ -125,6 +127,13 @@ public:
     size_t bytesUsed() const;
     size_t entryCount() const;
 
+    /**
+     * Atomically reset the hit and miss counters and return their values since
+     * the last call. Called once per show frame from the show thread to feed
+     * TracyPlot("FrameCache hit rate %", ...).
+     */
+    std::pair<uint64_t, uint64_t> consumeAccessCounters();
+
 private:
     struct Key {
         entt::entity clip;
@@ -157,7 +166,7 @@ private:
     // Evict from LRU tail until bytes fit. Caller must hold m_mutex.
     void evictUntilUnderBudget();
 
-    mutable std::mutex m_mutex;
+    mutable TracyLockable(std::mutex, m_mutex);
     Lru                m_lru;       // front = most recently used
     Index              m_index;
     size_t             m_maxBytes;
@@ -167,6 +176,9 @@ private:
     // can outlive the pool safely (lease drop after pool destruction is
     // a clean fall-through to plain delete).
     std::weak_ptr<DecodeBufferPool> m_pool;
+
+    mutable std::atomic<uint64_t> m_hits{0};
+    mutable std::atomic<uint64_t> m_misses{0};
 
     friend class FrameLease;
 };

@@ -57,6 +57,58 @@ update `CODE_ISSUES.md` (HIGH-02 fully closed, NEW-06 updated); update
 
 ---
 
+### Tracy Profiler Integration (2026-05-10)
+
+Issue #43 (eight phases). Live CPU/GPU profiling via Tracy 0.13.1 (`on-demand`
+feature only; `gui-tools` excluded — POSIX `MAP_FAILED` breaks MSVC). See
+ADR-0015 for full rationale and architecture.
+
+**Build integration.** `ENTITY_ENABLE_TRACY` CMake option (default ON) gates
+the dependency. `PUBLIC` compile definitions on `EntityMediaCore` propagate to
+`EntityMediaEditor` and test targets. `entity-plugin-api` is intentionally
+excluded. Tracy.exe is obtained from the v0.13.1 GitHub release, not vendored.
+
+**Wrapper header.** `include/entity/profile/Tracy.hpp` — single include for all
+Tracy macros. Provides full stubs (`using TracyD3D12Ctx = void*`, stub
+`SetThreadName`, all macros) when disabled, so call sites need no per-line
+`#ifdef` guards.
+
+**Frame marks.** Two named frame contexts: `FrameMarkNamed("Editor")` in
+`Engine::run` and `FrameMarkNamed("Show")` in `Engine::showThreadMain`, matching
+the two independent render timelines from ADR-0014.
+
+**D3D12 GPU zones.** Single `TracyD3D12Ctx` on `D3D12Renderer`, show-thread
+only. A cross-function zone spans `beginShowFrame` → `endShowFrame` using a
+heap-allocated `thread_local tracy::D3D12ZoneScope*` (non-movable type). The
+delete site is at the very top of `endShowFrame`, before any early return
+(device-lost or copy-list-close failure), so the destructor fires on every
+code path.
+
+**Per-frame plots.** Sampled once per show frame: `FrameCache bytes used`,
+`FrameCache hit rate %`, `FrameCache entries`, `Decode queue depth` (Σ
+`max(0, targetFrame − currentFrame)` across initialized decode workers).
+`FrameCache::consumeAccessCounters()` atomically resets hit/miss counters
+each interval.
+
+**Thread names.** All worker threads named at startup: `"Decode #N"` (per
+entity uint32), `"ContentScanner"`, `"MediaProbe"`, `"Transcode"`, `"OSC"`.
+The OSC plugin uses `#if defined(TRACY_ENABLE) / #include <tracy/Tracy.hpp>`
+directly (Apache-2.0 boundary — GPL wrapper excluded).
+
+**TracyLockable.** `FrameCache::m_mutex` converted to
+`TracyLockable(std::mutex, m_mutex)`; all 10 lock sites updated to
+`std::lock_guard<LockableBase(std::mutex)>`.
+
+**Files**: `include/entity/profile/Tracy.hpp`, `CMakeLists.txt`,
+`vcpkg.json`, `src/core/Engine.cpp`, `src/render/D3D12Renderer.cpp`,
+`include/entity/render/D3D12Renderer.hpp`, `src/systems/DecodeSystem.cpp`,
+`src/media/FrameCache.cpp`, `include/entity/media/FrameCache.hpp`,
+`src/project/ContentScanner.cpp`, `src/media/MediaProbeWorker.cpp`,
+`src/media/TranscodeWorker.cpp`, `plugins/osc-receiver/OscReceiverPlugin.cpp`,
+`docs/adr/0015-profiling-with-tracy.md`.
+
+---
+
 ### OSC Receiver Plugin + Preferences (2026-05-08)
 
 Inbound OSC over UDP for triggering Entity from external show-control

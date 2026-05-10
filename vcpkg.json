@@ -21,7 +21,13 @@
     "eigen3",
     "opencolorio",
     "snappy",
-    "stb"
+    "stb",
+    {
+      "name": "tracy",
+      "features": [
+        "on-demand"
+      ]
+    }
   ],
   "features": {
     "ffmpeg": {

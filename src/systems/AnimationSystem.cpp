@@ -9,6 +9,7 @@
  */
 
 #include "entity/systems/AnimationSystem.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Transform.hpp"
@@ -24,6 +25,7 @@ void AnimationSystem::initialize(entt::registry& registry) {
 }
 
 void AnimationSystem::update(entt::registry& registry, float deltaTime) {
+    ZoneScopedN("AnimationSystem::update");
     if (!m_timeline) {
         return;
     }

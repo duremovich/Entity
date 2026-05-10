@@ -5,6 +5,7 @@
  */
 
 #include "entity/render/D3D12Renderer.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/render/D3D12Device.hpp"
 #include "entity/render/DescriptorHeapLayout.hpp"
 #include "entity/render/TextureUploader.hpp"
@@ -46,6 +47,16 @@ namespace entity {
 // data race that would occur if both threads wrote a shared member concurrently.
 thread_local ID3D12GraphicsCommandList* tl_activeCmdList{nullptr};
 thread_local ID3D12DescriptorHeap*      tl_currentDescriptorHeap{nullptr};
+
+// Show GPU zone spans beginShowFrame → endShowFrame so it covers all GPU work
+// recorded between the allocator reset and Close(). Heap-allocated so the
+// non-default-constructible D3D12ZoneScope can live across the call boundary.
+// Show-thread only — never read or written by the editor thread.
+#if defined(ENTITY_ENABLE_TRACY) && defined(TRACY_ENABLE)
+static constexpr tracy::SourceLocationData kShowGpuSrcLoc{
+    "Show GPU", "D3D12Renderer::showFrame", __FILE__, __LINE__, 0 };
+thread_local tracy::D3D12ZoneScope* tl_showGpuZone{nullptr};
+#endif
 
 D3D12Renderer::D3D12Renderer()
     : m_currentBackBufferIndex(0)
@@ -92,6 +103,9 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
 
     // Pass GPU identity to CrashLogger so device-lost context.json has adapter info.
     CrashLogger::setAdapterDesc(m_gpu->adapterDesc());
+
+    m_tracyD3D12Ctx = TracyD3D12Context(m_gpu->device(), m_gpu->commandQueue());
+    TracyD3D12ContextName(m_tracyD3D12Ctx, "DirectQ", 7);
 
     // Get Win32 window handle from GLFW
     HWND hwnd = glfwGetWin32Window(window);
@@ -372,6 +386,11 @@ void D3D12Renderer::shutdown() {
     m_editorFence.Reset();
     m_showFence.Reset();
     m_uploadFence.Reset();
+    // Destroy Tracy GPU context before releasing the device + queue.
+    // GPU must be idle (waitForGpu called above) before destroy.
+    TracyD3D12Destroy(m_tracyD3D12Ctx);
+    m_tracyD3D12Ctx = nullptr;
+
     // Release the device + queue last (after all resources allocated from
     // them have been released above).
     if (m_gpu) {
@@ -425,6 +444,8 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
 // ---------------------------------------------------------------------------
 
 void D3D12Renderer::beginShowFrame() {
+    ZoneScopedN("beginShowFrame");
+
     // Show thread rotates its own ring slot independently — never calls
     // GetCurrentBackBufferIndex(), which is not thread-safe to call
     // concurrently with the editor thread on the same IDXGISwapChain3.
@@ -442,6 +463,7 @@ void D3D12Renderer::beginShowFrame() {
     if (m_showFence && m_showFenceValues[m_showBackBufferIndex] > 0) {
         const uint64_t lastSignaled = m_showFenceValues[m_showBackBufferIndex] - 1;
         if (m_showFence->GetCompletedValue() < lastSignaled) {
+            ZoneScopedNC("GPU fence wait", 0xCC4444);
             m_showFence->SetEventOnCompletion(lastSignaled, m_showFenceEvent);
             DWORD result = WaitForSingleObject(m_showFenceEvent, 2000);
             if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
@@ -473,9 +495,31 @@ void D3D12Renderer::beginShowFrame() {
 
     // Route all draw calls to the show command list
     tl_activeCmdList = m_showCmdList.Get();
+
+    // Tracy: advance the D3D12 GPU frame counter after the fence wait and
+    // allocator reset, so Tracy knows the query heap is safe to reuse.
+    TracyD3D12NewFrame(m_tracyD3D12Ctx);
+
+    // Open a GPU zone spanning the entire show command list recording window.
+    // Closed in endShowFrame() just before Close() so the destructor injects
+    // the end-timestamp query into the same open command list.
+#if defined(ENTITY_ENABLE_TRACY) && defined(TRACY_ENABLE)
+    tl_showGpuZone = new tracy::D3D12ZoneScope(
+        m_tracyD3D12Ctx, m_showCmdList.Get(), &kShowGpuSrcLoc, true);
+#endif
 }
 
 void D3D12Renderer::endShowFrame() {
+    ZoneScopedN("endShowFrame");
+
+    // Close the GPU zone before any early return so the destructor injects
+    // the end-timestamp query into m_showCmdList while it is still open.
+    // Single delete site covers all early-return paths below.
+#if defined(ENTITY_ENABLE_TRACY) && defined(TRACY_ENABLE)
+    delete tl_showGpuZone;
+    tl_showGpuZone = nullptr;
+#endif
+
     if (m_deviceLost) return;
 
     // Phase C.11: close + execute the COPY queue's command list before the
@@ -528,6 +572,9 @@ void D3D12Renderer::endShowFrame() {
     m_gpu->commandQueue()->Signal(m_showFence.Get(), showValue);
     m_showFenceValues[m_showBackBufferIndex] = showValue + 1;
 
+    // Collect Tracy GPU timestamp results for this frame.
+    TracyD3D12Collect(m_tracyD3D12Ctx);
+
     // Stage 3d: after Signal, GPU work for this tick is committed. Publish
     // each compose target's write index as the new stable read index so the
     // editor thread can sample the freshly-rendered sub-resource via ImGui.
@@ -544,6 +591,7 @@ void D3D12Renderer::endShowFrame() {
 }
 
 void D3D12Renderer::beginEditorFrame() {
+    ZoneScopedN("beginEditorFrame");
     if (m_deviceLost) return;
 
     // Editor thread tracks its own buffer index independently of the show thread.
@@ -579,6 +627,7 @@ void D3D12Renderer::beginEditorFrame() {
 }
 
 void D3D12Renderer::endEditorFrame() {
+    ZoneScopedN("endEditorFrame");
     if (m_deviceLost) return;
 
     // Transition back buffer to PRESENT state
@@ -998,6 +1047,7 @@ Result D3D12Renderer::createFence() {
 }
 
 void D3D12Renderer::waitForGpu() {
+    ZoneScopedNC("GPU fence wait", 0xCC4444);
     // Top-level early-out: if the device is already lost, no fence will ever
     // signal again. Return immediately without touching any D3D12 COM objects.
     // Also guards the nested per-branch checks below against the race where
@@ -1060,6 +1110,7 @@ void D3D12Renderer::waitForGpu() {
 }
 
 void D3D12Renderer::moveToNextFrame() {
+    ZoneScopedN("moveToNextFrame");
     // Standard D3D12-sample frame-pacing pattern: m_editorFenceValues[i] is
     // "the fence value the GPU will reach when slot i's frame is done". We:
     //   1. Signal currentFenceValue (the value for the slot we just rendered),
@@ -1089,6 +1140,7 @@ void D3D12Renderer::moveToNextFrame() {
     // silent process freeze. On timeout, query GetDeviceRemovedReason() which
     // will return a meaningful HRESULT if the driver crashed (TDR, etc.).
     if (m_editorFence->GetCompletedValue() < m_editorFenceValues[m_currentBackBufferIndex]) {
+        ZoneScopedNC("GPU fence wait", 0xCC4444);
         m_editorFence->SetEventOnCompletion(m_editorFenceValues[m_currentBackBufferIndex], m_fenceEvent);
         DWORD result = WaitForSingleObject(m_fenceEvent, 2000);
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {

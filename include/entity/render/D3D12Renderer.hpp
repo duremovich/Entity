@@ -9,6 +9,7 @@
 
 #include "entity/core/Types.hpp"
 #include "entity/media/ObjLoader.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/render/RuntimeShaderCompiler.hpp"
 #include <d3d12.h>
@@ -371,6 +372,10 @@ private:
     // D3D12 device + command queue — owned by D3D12Device wrapper so the
     // ID3D12Device/ID3D12CommandQueue lifetime is in one place.
     std::unique_ptr<class D3D12Device> m_gpu;
+
+    // Tracy GPU profiling context for the direct command queue.
+    // Show-thread only: created after m_gpu is up, destroyed before m_gpu goes down.
+    TracyD3D12Ctx m_tracyD3D12Ctx = nullptr;
 
     // Cached DXGI factory; shared by the main swap chain and per-output
     // swap chains so we don't re-create it every call. Must outlive any

@@ -1,4 +1,5 @@
 #include "entity/media/MediaProbeWorker.hpp"
+#include "entity/profile/Tracy.hpp"
 
 #include "entity/media/Decoder.hpp"
 #include "entity/media/TranscodeManager.hpp"  // isHapMediaType
@@ -234,6 +235,7 @@ void MediaProbeWorker::resetCounters() {
 }
 
 void MediaProbeWorker::runLoop() {
+    tracy::SetThreadName("MediaProbe");
     while (true) {
         QueueEntry entry;
         {

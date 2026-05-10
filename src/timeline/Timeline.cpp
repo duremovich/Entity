@@ -5,6 +5,7 @@
  */
 
 #include "entity/timeline/Timeline.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/Transform.hpp"
@@ -27,6 +28,7 @@ Timeline::Timeline(entt::registry& registry)
 }
 
 void Timeline::update(double deltaTime) {
+    ZoneScopedN("Timeline::update");
     if (m_playbackState.load() == PlaybackState::Playing) {
         // Advance current time based on deltaTime
         const Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000000.0);

@@ -1,6 +1,7 @@
 #include "entity/media/FrameCache.hpp"
 
 #include "entity/media/DecodeBufferPool.hpp"
+#include "entity/profile/Tracy.hpp"
 
 namespace entity {
 
@@ -22,7 +23,7 @@ void FrameCache::put(entt::entity clip, FrameNumber frame, DecodedFrame&& data) 
     // upload empty buffers.
     if (bytes == 0) return;
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
 
     // Move into a heap allocation so the cache can hand out shared_ptr<const>
     // aliases without copying the pixel buffer. Custom deleter recycles the
@@ -61,26 +62,28 @@ void FrameCache::put(entt::entity clip, FrameNumber frame, DecodedFrame&& data) 
 }
 
 FrameLease FrameCache::get(entt::entity clip, FrameNumber frame) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
 
     auto it = m_index.find(Key{clip, frame});
     if (it == m_index.end()) {
+        m_misses.fetch_add(1, std::memory_order_relaxed);
         return FrameLease{};
     }
 
     // Promote to MRU (front of list). std::list::splice keeps the iterator
     // valid, so the index entry doesn't need updating.
     m_lru.splice(m_lru.begin(), m_lru, it->second);
+    m_hits.fetch_add(1, std::memory_order_relaxed);
     return FrameLease{it->second->frame};
 }
 
 bool FrameCache::has(entt::entity clip, FrameNumber frame) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
     return m_index.find(Key{clip, frame}) != m_index.end();
 }
 
 std::optional<FrameNumber> FrameCache::nearestTo(entt::entity clip, FrameNumber target) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
 
     // Linear scan over all entries belonging to this clip. With LRU storage
     // we don't keep a per-clip sorted index; under steady-state playback
@@ -103,7 +106,7 @@ std::optional<FrameNumber> FrameCache::nearestTo(entt::entity clip, FrameNumber 
 }
 
 void FrameCache::evictClip(entt::entity clip) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
 
     for (auto it = m_lru.begin(); it != m_lru.end(); ) {
         if (it->key.clip == clip) {
@@ -117,29 +120,35 @@ void FrameCache::evictClip(entt::entity clip) {
 }
 
 void FrameCache::setMaxBytes(size_t maxBytes) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
     m_maxBytes = maxBytes;
     evictUntilUnderBudget();
 }
 
 void FrameCache::setBufferPool(std::shared_ptr<DecodeBufferPool> pool) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
     m_pool = pool;
 }
 
 size_t FrameCache::maxBytes() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
     return m_maxBytes;
 }
 
 size_t FrameCache::bytesUsed() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
     return m_bytesUsed;
 }
 
 size_t FrameCache::entryCount() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::lock_guard<LockableBase(std::mutex)> lock(m_mutex);
     return m_index.size();
+}
+
+std::pair<uint64_t, uint64_t> FrameCache::consumeAccessCounters() {
+    const uint64_t hits   = m_hits.exchange(0, std::memory_order_relaxed);
+    const uint64_t misses = m_misses.exchange(0, std::memory_order_relaxed);
+    return {hits, misses};
 }
 
 void FrameCache::evictUntilUnderBudget() {

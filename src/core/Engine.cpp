@@ -1,4 +1,5 @@
 #include "entity/core/Engine.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/bus/InMemoryMessageTransport.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/bus/Serialization.hpp"
@@ -758,6 +759,9 @@ void Engine::run() {
         showThreadMain();
     });
 
+    TracySetProgramName("Entity Media Server");
+    tracy::SetThreadName("Editor");
+
     // Editor-side wall clock. Independent from PlaybackTimeAuthority's clock
     // (which the show thread owns) so the editor can compute its own
     // deltaTime — used by the FPS counter and SectionScheduler::tick — even
@@ -768,6 +772,8 @@ void Engine::run() {
     m_editorDeltaTime = 0.0;
 
     while (m_running && !glfwWindowShouldClose(m_window)) {
+        ZoneScopedN("Engine::run iter");
+
         // Per-iteration editor delta. Clamped to 50ms so a Win32 modal-loop
         // wake-up (resize, title-bar drag) doesn't dump multiple seconds of
         // delta into Timeline::update at once — the show thread covered the
@@ -794,6 +800,7 @@ void Engine::run() {
                 const std::string title =
                     "Entity Media Server - Editor | " + std::to_string(m_currentFPS) + " FPS";
                 glfwSetWindowTitle(m_window, title.c_str());
+                TracyPlot("FPS", static_cast<int64_t>(m_currentFPS));
             }
         }
 
@@ -853,6 +860,7 @@ void Engine::run() {
         // ADR-0009 — Launcher mode: editor renders the launcher only.
         if (m_showLauncher) {
             render();
+            FrameMarkNamed("Editor");
             continue;
         }
 
@@ -867,6 +875,7 @@ void Engine::run() {
         // Editor-half of scene snapshot: snapshot Screen/Surface/Projector/
         // Output registry views and publish latest-wins on D2R.
         if (m_transport && m_timeAuthority) {
+            ZoneScopedN("buildSceneSnapshot");
             bus::SceneSnapshot snap;
             m_timeAuthority->buildSceneSnapshot(snap);
             m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{snap}));
@@ -907,6 +916,8 @@ void Engine::run() {
         autoSaveTick(m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0);
         pollTranscodes();
         pollProbeCompletions();
+
+        FrameMarkNamed("Editor");
     }
 
     // Stop the show thread.
@@ -919,6 +930,8 @@ void Engine::run() {
 }
 
 void Engine::showThreadMain() {
+    tracy::SetThreadName("Show");
+
     // ShowClock: QPC-based 60 Hz pacing used when no physical output provides
     // vsync via Present(1,0). Keeps the show loop from spinning flat-out when
     // idling in editor-preview-only mode.
@@ -927,6 +940,8 @@ void Engine::showThreadMain() {
     auto nextTick = Clock::now() + kShowPeriod;
 
     while (!m_showStopRequested.load(std::memory_order_acquire)) {
+        ZoneScopedN("Show iter");
+        const auto showIterStart = Clock::now();
         // Stop spinning on a dead device. The editor thread owns the autosave +
         // relaunch wiring; let it proceed without interference from the show thread
         // issuing more D3D12 calls on a lost device.
@@ -975,6 +990,7 @@ void Engine::showThreadMain() {
         // them up — drain() empties the queue, so anything we don't requeue here
         // is silently dropped.
         if (m_transport) {
+            ZoneScopedN("D2R drain (pre-frame)");
             std::vector<std::vector<std::uint8_t>> deferred;
             m_transport->drain(bus::Direction::D2R, [this, &deferred](std::vector<std::uint8_t>&& bytes) {
                 auto msg = bus::deserialize(bytes);
@@ -1001,6 +1017,7 @@ void Engine::showThreadMain() {
         // Launcher mode: show thread idles at 60 Hz with an empty RenderFrame.
         if (m_showLauncher) {
             m_showFrameCount.fetch_add(1, std::memory_order_release);
+            FrameMarkNamed("Show");
             std::this_thread::sleep_until(nextTick);
             nextTick += kShowPeriod;
             continue;
@@ -1018,6 +1035,7 @@ void Engine::showThreadMain() {
         // by buildSceneSnapshot on the editor thread. Zero registry reads.
         bus::RenderFrame lastRF;
         if (m_transport && m_timeAuthority && m_playbackPresenter) {
+            ZoneScopedN("buildRenderFrame");
             m_timeAuthority->buildRenderFrame(lastRF, m_cachedSceneSnapshot);
             m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{lastRF}));
         }
@@ -1098,6 +1116,24 @@ void Engine::showThreadMain() {
         }
 
         m_showFrameCount.fetch_add(1, std::memory_order_release);
+
+        {
+            const auto showIterEnd = Clock::now();
+            [[maybe_unused]] const double showMs = std::chrono::duration<double, std::milli>(
+                showIterEnd - showIterStart).count();
+            TracyPlot("Show frame ms", showMs);
+        }
+
+        if (m_frameCache) {
+            auto [hits, misses] = m_frameCache->consumeAccessCounters();
+            [[maybe_unused]] const uint64_t total = hits + misses;
+            [[maybe_unused]] const double hitRate = total > 0 ? (100.0 * hits / total) : 0.0;
+            TracyPlot("FrameCache bytes used", static_cast<int64_t>(m_frameCache->bytesUsed()));
+            TracyPlot("FrameCache hit rate %", hitRate);
+            TracyPlot("FrameCache entries", static_cast<int64_t>(m_frameCache->entryCount()));
+        }
+
+        FrameMarkNamed("Show");
 
         // QPC pacing: when the show frame finished before the next 60 Hz tick
         // (i.e. no physical output's Present(1,0) consumed the time), sleep
@@ -1324,12 +1360,14 @@ const std::filesystem::path& Engine::getProjectPath() const {
 }
 
 void Engine::processEvents() {
+    ZoneScopedN("processEvents");
     glfwPollEvents();
 
     // TODO: Handle input events
 }
 
 void Engine::update() {
+    ZoneScopedN("Engine::update");
     auto t0 = std::chrono::high_resolution_clock::now();
     // Timeline.m_currentTime advancement moved to the show thread (see
     // Engine::showThreadMain). The editor used to advance Timeline by
@@ -1426,6 +1464,8 @@ void Engine::update() {
     auto legacyDecodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
     auto systemsMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
+    const double totalMsD = std::chrono::duration<double, std::milli>(t3 - t0).count();
+    TracyPlot("Editor frame ms", totalMsD);
 
     if (totalMs > 50) {
         std::cout << "[UPDATE TIMING] Total=" << totalMs << "ms"
@@ -1468,6 +1508,7 @@ const DecodedFrame* Engine::getCurrentVideoFrame() const {
 }
 
 void Engine::render() {
+    ZoneScopedN("Engine::render");
     // Handle pending resize before starting a new frame
     if (m_resizePending && m_renderer && m_renderer->isInitialized()) {
         std::cout << "Applying deferred resize to " << m_pendingWidth << "x" << m_pendingHeight << std::endl;
@@ -3220,6 +3261,7 @@ void Engine::closeProject() {
 }
 
 void Engine::drainContentScannerDeltas() {
+    ZoneScopedN("ContentScanner::drainDeltas");
     if (!m_contentScanner || !m_projectManager) return;
     auto deltas = m_contentScanner->drain();
     if (deltas.empty()) return;
@@ -3516,6 +3558,7 @@ void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
 }
 
 void Engine::drainRendererToDirector() {
+    ZoneScopedN("drainR2D");
     if (!m_transport) return;
     auto* broker = m_director ? m_director->getCaptureBroker() : nullptr;
     m_transport->drain(bus::Direction::R2D, [&](std::vector<std::uint8_t>&& bytes) {

@@ -8,6 +8,7 @@
  */
 
 #include "entity/render/OutputManager.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/bus/Serialization.hpp"
 #include "entity/components/Model.hpp"
@@ -393,6 +394,7 @@ static void drawMarkerOverlay(IRenderer* renderer) {
 }
 
 void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
+    ZoneScopedN("OutputManager::renderOutputs");
     if (!m_initialized || !m_renderer) {
         return;
     }

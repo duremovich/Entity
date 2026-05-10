@@ -6,6 +6,7 @@
  */
 
 #include "entity/systems/DecodeSystem.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
@@ -43,6 +44,7 @@ void DecodeSystem::initialize(entt::registry& registry) {
 }
 
 void DecodeSystem::update(entt::registry& registry, float deltaTime) {
+    ZoneScopedN("DecodeSystem::update");
     (void)deltaTime;
     if (!m_timeline) return;
 
@@ -289,6 +291,21 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         }
     }
 
+    // Emit decode backlog plot: total frames-behind across all active workers.
+    // Measures how many frames each worker still needs to decode to reach
+    // its target (targetFrame - currentFrame, clamped to 0). Rising steadily
+    // means decoder is falling behind realtime; steady at 0 means caught up.
+    {
+        int64_t totalPending = 0;
+        for (auto& [ent, w] : m_workers) {
+            if (!w || !w->initialized.load(std::memory_order_relaxed)) continue;
+            const FrameNumber target  = w->targetFrame.load(std::memory_order_relaxed);
+            const FrameNumber current = w->currentFrame.load(std::memory_order_relaxed);
+            if (target > current) totalPending += static_cast<int64_t>(target - current);
+        }
+        TracyPlot("Decode queue depth", totalPending);
+    }
+
     // Tear down workers for entities that were destroyed
     std::vector<entt::entity> toRemove;
     for (auto& [entity, worker] : m_workers) {
@@ -448,6 +465,9 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
         return;
     }
 
+    tracy::SetThreadName(("Decode #" + std::to_string(
+        static_cast<uint32_t>(worker->entity))).c_str());
+
     // Wrap the body in try/catch so a decoder bug (bad file, corrupted stream,
     // bad_alloc, unexpected FFmpeg return) doesn't tear down the whole process.
     // The clip is marked failed and playback continues without it.
@@ -593,6 +613,8 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
         // frames). Confirms the new realtime path is exercised under load
         // and shows the steady-state stride. Quiet for HAP / fast content.
         auto decodeStart = std::chrono::high_resolution_clock::now();
+        ZoneScopedN("Decode");
+        ZoneValue(static_cast<uint64_t>(nextFrame));
         Result result = worker->decoder->decodeFrame(nextFrame, frame);
         if (skipped > 0) {
             auto decodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(

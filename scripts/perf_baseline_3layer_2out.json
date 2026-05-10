@@ -1,0 +1,42 @@
+{
+    "version": 1,
+    "description": "Tracy baseline capture script — 3 active video layers, 2 output screens, 30 seconds (~1800 frames at 60 Hz) of continuous playback. Run this while Tracy.exe is connected to produce the issue #43 baseline .tracy file. Assets used are from test_media/ (checked into the repo). If you want a higher-fidelity baseline with real production content, swap the ImportVideo paths for your actual clips and re-record.",
+
+    "_assets_required": [
+        "test_media/hap_gradient/test.mov  — HAP codec, repo test asset (3 tracks)",
+        "test_media/blend_bg/frame_000.png — PNG sequence, repo test asset (used as track 1 fill)",
+        "test_media/blend_fg/frame_000.png — PNG sequence, repo test asset (used as track 2 fill)"
+    ],
+
+    "_how_to_capture": [
+        "1. Build: cmake --build build --config Release  (ENTITY_ENABLE_TRACY=ON, the default)",
+        "2. Run:   build/bin/Release/EntityMediaEditor.exe --script scripts/perf_baseline_3layer_2out.json",
+        "3. While the editor is running, open Tracy.exe (v0.13.1 from https://github.com/wolfpld/tracy/releases)",
+        "4. Click Connect. Two frame contexts appear: Editor and Show.",
+        "5. Let the script run its 1800-frame (~30s) playback loop.",
+        "6. File -> Save -> docs/perf/baseline-<date>-3layer-2out.tracy",
+        "7. Post median Editor frame ms / Show frame ms / p95 each / GPU mean into issue #43."
+    ],
+
+    "commands": [
+        { "type": "AddScreen", "name": "Output A", "width": 1920, "height": 1080 },
+        { "type": "AddScreen", "name": "Output B", "width": 1280, "height": 720 },
+
+        { "type": "ImportVideo", "filepath": "test_media/hap_gradient/test.mov", "trackIndex": 0, "position": 0 },
+        { "type": "ImportVideo", "filepath": "test_media/hap_gradient/test.mov", "trackIndex": 1, "position": 30 },
+        { "type": "ImportVideo", "filepath": "test_media/hap_gradient/test.mov", "trackIndex": 2, "position": 60 },
+
+        { "type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 1, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 2, "clipIndex": 0, "screenName": "Output B" },
+
+        { "type": "WaitFrames", "count": 60 },
+
+        { "type": "SeekToFrame", "frame": 0 },
+        { "type": "Play" },
+
+        { "type": "WaitFrames", "count": 1800 },
+
+        { "type": "Pause" }
+    ]
+}

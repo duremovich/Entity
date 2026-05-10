@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Dylan Uremovich
+#if defined(TRACY_ENABLE)
+#  include <tracy/Tracy.hpp>
+#endif
 //
 // osc-receiver -- minimal inbound-OSC plugin.
 //
@@ -283,6 +286,9 @@ void parsePacket(const std::uint8_t* bytes, std::size_t len) {
 // UDP listener thread.
 
 void workerLoop() {
+#if defined(TRACY_ENABLE)
+    tracy::SetThreadName("OSC");
+#endif
     constexpr std::size_t kBufSize = 4096;
     std::vector<std::uint8_t> buf(kBufSize);
     auto& s = state();

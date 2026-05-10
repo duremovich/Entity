@@ -1,5 +1,6 @@
 #include "entity/media/TranscodeWorker.hpp"
 #include "entity/media/HapTranscoder.hpp"
+#include "entity/profile/Tracy.hpp"
 
 #include <iostream>
 #include <utility>
@@ -39,6 +40,7 @@ TranscodeState TranscodeWorker::waitUntilFinished() {
 }
 
 void TranscodeWorker::threadFunc() {
+    tracy::SetThreadName("Transcode");
     m_state.store(TranscodeState::Running, std::memory_order_release);
 
     auto progressCb = [this](int64_t done, int64_t total) -> bool {

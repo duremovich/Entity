@@ -1,4 +1,5 @@
 #include "entity/systems/CompositorSystem.hpp"
+#include "entity/profile/Tracy.hpp"
 #include "entity/bus/Serialization.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/renderer/PlaybackPresenter.hpp"
@@ -26,6 +27,7 @@ void CompositorSystem::initialize(entt::registry& registry) {
 void CompositorSystem::update(const bus::RenderFrame& rf,
                                entt::registry& registry,
                                float deltaTime) {
+    ZoneScopedN("CompositorSystem::update");
     if (!m_renderer || !m_renderer->isInitialized()) {
         return;
     }
