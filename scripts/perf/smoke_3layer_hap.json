@@ -1,6 +1,7 @@
 {
     "version": 1,
     "description": "Tracy baseline capture script — 3 active video layers, 2 output screens, 30 seconds (~1800 frames at 60 Hz) of continuous playback. Run this while Tracy.exe is connected to produce the issue #43 baseline .tracy file. Assets used are from test_media/ (checked into the repo). If you want a higher-fidelity baseline with real production content, swap the ImportVideo paths for your actual clips and re-record.",
+    "target_fps": 60,
 
     "_assets_required": [
         "test_media/hap_gradient/test.mov  — HAP codec, repo test asset (3 tracks)",

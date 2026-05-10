@@ -70,6 +70,9 @@ if (-not (Test-Path $ScriptJson)) {
     Step-Error 1 "Scenario not found: $ScriptJson`nAvailable scenarios: $(Get-ChildItem (Join-Path $RepoRoot 'scripts\perf\*.json') | Select-Object -ExpandProperty BaseName)"
 }
 
+$scenarioData = Get-Content $ScriptJson -Raw | ConvertFrom-Json
+$TargetFps = if ($scenarioData.PSObject.Properties['target_fps']) { [int]$scenarioData.target_fps } else { 60 }
+
 # ---------------------------------------------------------------------------
 # Step 2 — Determine output paths
 # ---------------------------------------------------------------------------
@@ -152,6 +155,7 @@ Write-Host "  Port 8086 open."
 # ---------------------------------------------------------------------------
 
 $captureProc = $null
+$EnvJson = $null
 try {
 
 # ---------------------------------------------------------------------------
@@ -204,17 +208,47 @@ Write-Host "Step 11: Exporting GPU zones..."
 if ($LASTEXITCODE -ne 0) { Step-Error 11 "tracy-csvexport -g failed (exit $LASTEXITCODE)." }
 
 # ---------------------------------------------------------------------------
-# Step 12 — summarize.py
+# Step 12 — Collect environment fingerprint + summarize.py
 # ---------------------------------------------------------------------------
 
-Write-Host "`nStep 12: Generating summary JSON..."
+Write-Host "`nStep 12: Collecting environment fingerprint..."
+$cpuModel  = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+$gpuInfo   = Get-CimInstance Win32_VideoController |
+                 Where-Object { $_.Name -notmatch 'Microsoft Basic|Remote Desktop|Virtual' } |
+                 Select-Object -First 1
+$gpuModel  = if ($gpuInfo) { $gpuInfo.Name } else { 'Unknown' }
+$gpuDriver = if ($gpuInfo) { $gpuInfo.DriverVersion } else { 'Unknown' }
+$ramGb     = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+$osInfo    = Get-CimInstance Win32_OperatingSystem
+$osBuild   = "$($osInfo.Caption) $($osInfo.BuildNumber)"
+$gitSha    = (git -C $RepoRoot rev-parse --short HEAD 2>$null).Trim()
+if (-not $gitSha) { $gitSha = 'unknown' }
+
+$envData = [ordered]@{
+    cpu_model    = $cpuModel
+    gpu_model    = $gpuModel
+    gpu_driver   = $gpuDriver
+    ram_gb       = $ramGb
+    os_build     = $osBuild
+    git_sha      = $gitSha
+    build_config = 'Release'
+    tracy_enabled = $true
+}
+
+$EnvJson = "$Base-env.json"
+[System.IO.File]::WriteAllText($EnvJson, ($envData | ConvertTo-Json -Depth 2), (New-Object System.Text.UTF8Encoding $false))
+Write-Host "  Environment fingerprint: $EnvJson"
+
+Write-Host "`nStep 12b: Generating summary JSON..."
 $pyOutput = python (Join-Path $RepoRoot 'scripts\perf\summarize.py') `
-    --cpu-csv  $CpuCsv  `
-    --plot-csv $PlotCsv `
-    --gpu-csv  $GpuCsv  `
-    --scenario $Scenario `
+    --cpu-csv   $CpuCsv  `
+    --plot-csv  $PlotCsv `
+    --gpu-csv   $GpuCsv  `
+    --scenario  $Scenario `
     --tracy-file $TracyFile `
-    --duration 30
+    --duration  30 `
+    --env-json  $EnvJson `
+    --target-fps $TargetFps
 if ($LASTEXITCODE -ne 0) { Step-Error 12 "summarize.py failed (exit $LASTEXITCODE)." }
 
 [System.IO.File]::WriteAllText($SummaryJson, ($pyOutput -join "`n"), (New-Object System.Text.UTF8Encoding $false))
@@ -272,5 +306,8 @@ Write-Host ""
 } finally {
     if ($null -ne $editorProc -and -not $editorProc.HasExited) {
         Stop-Process -Id $editorProc.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($EnvJson -and (Test-Path $EnvJson)) {
+        Remove-Item $EnvJson -ErrorAction SilentlyContinue
     }
 }

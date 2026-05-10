@@ -183,6 +183,7 @@ void CommandDispatcher::registerBuiltinFactories() {
 
     // Script control commands
     registerFactory("WaitFrames", WaitFramesCommand::fromJson);
+    registerFactory("WaitSeconds", WaitSecondsCommand::fromJson);
     registerFactory("CaptureScreenshot", CaptureScreenshotCommand::fromJson);
     registerFactory("CaptureHash", CaptureHashCommand::fromJson);
 
@@ -227,6 +228,9 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
     registerFactory("UpsertKeyframe", UpsertKeyframeCommand::fromJson);
+
+    // Timeline structure commands
+    registerFactory("AddTrack", AddTrackCommand::fromJson);
 
     // Screen commands
     registerFactory("AddScreen", AddScreenCommand::fromJson);

@@ -17,8 +17,11 @@ CSV inputs are produced by tracy-csvexport:
     tracy-csvexport -u -p       file.tracy > plot.csv   (plot rows have empty src_file)
     tracy-csvexport -g          file.tracy > gpu.csv
 
-Frame timing is not exported by tracy-csvexport; use Engine::update p95 as
-editor-frame proxy and CompositorSystem::update p95 as show-frame proxy.
+Frame marks not in tracy-csvexport. For frame-time proxies prefer `Engine::run iter` p95
+(editor frame budget, ~7 ms typical) and `Show iter` p95 (show-thread frame budget,
+~17 ms = 60 fps cap when running v-synced; uncapped headless ~7 ms). `Engine::update`
+and `DecodeSystem::update` are instrumented but consistently 0 ms — they are no-op
+proxies, do not use.
 """
 
 import argparse
@@ -46,15 +49,27 @@ def _percentile(sorted_data, pct):
 
 
 def _zone_stats(values_ns):
-    """Return count + median/p95/p99 in ms, rounded to 1 decimal. Null on empty."""
+    """Return count + median/p95/p99/mean/stddev/tail_jitter in ms, rounded to 1 decimal. Null on empty."""
     if not values_ns:
-        return {"count": 0, "median_ms": None, "p95_ms": None, "p99_ms": None}
+        return {
+            "count": 0, "median_ms": None, "p95_ms": None, "p99_ms": None,
+            "mean_ms": None, "stddev_ms": None, "tail_jitter_ms": None,
+        }
     values_ms = sorted(v / 1e6 for v in values_ns)
+    n = len(values_ms)
+    p95 = round(_percentile(values_ms, 95), 1)
+    p99 = round(_percentile(values_ms, 99), 1)
+    mean_ms   = round(statistics.mean(values_ms), 1)
+    stddev_ms = round(statistics.stdev(values_ms), 1) if n > 1 else None
+    tail_jitter_ms = round(p99 - p95, 1) if (p95 is not None and p99 is not None) else None
     return {
-        "count":     len(values_ms),
-        "median_ms": round(statistics.median(values_ms), 1),
-        "p95_ms":    round(_percentile(values_ms, 95), 1),
-        "p99_ms":    round(_percentile(values_ms, 99), 1),
+        "count":          n,
+        "median_ms":      round(statistics.median(values_ms), 1),
+        "p95_ms":         p95,
+        "p99_ms":         p99,
+        "mean_ms":        mean_ms,
+        "stddev_ms":      stddev_ms,
+        "tail_jitter_ms": tail_jitter_ms,
     }
 
 
@@ -150,7 +165,8 @@ def read_gpu_csv(path):
 # Main
 # ---------------------------------------------------------------------------
 
-def build_summary(cpu_path, gpu_path, plot_path, scenario, tracy_file, duration_seconds):
+def build_summary(cpu_path, gpu_path, plot_path, scenario, tracy_file, duration_seconds,
+                  env_json_path=None, target_fps=60):
     cpu_raw  = read_cpu_csv(cpu_path)
     gpu_raw  = read_gpu_csv(gpu_path)
     plot_raw = read_plot_csv(plot_path)
@@ -159,19 +175,33 @@ def build_summary(cpu_path, gpu_path, plot_path, scenario, tracy_file, duration_
     gpu_zones = {name: _zone_stats(vals) for name, vals in gpu_raw.items()}
     plots     = {name: _plot_stats(vals) for name, vals in plot_raw.items()}
 
-    return {
-        "scenario":        scenario,
-        "captured_at":     datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    environment = None
+    if env_json_path:
+        with open(env_json_path, encoding="utf-8-sig") as f:
+            environment = json.load(f)
+
+    summary = {
+        "scenario":         scenario,
+        "target_fps":       target_fps,
+        "frame_budget_ms":  round(1000.0 / target_fps, 2),
+        "captured_at":      datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "duration_seconds": duration_seconds,
-        "tracy_file":      tracy_file or "",
+        "tracy_file":       tracy_file or "",
         "cpu_zones":       cpu_zones,
         "gpu_zones":       gpu_zones,
         "plots":           plots,
         "notes": (
-            "Frame timing not exported by tracy-csvexport; use Engine::update p95 as "
-            "editor-frame proxy and CompositorSystem::update p95 as show-frame proxy."
+            "Frame marks not in tracy-csvexport. For frame-time proxies prefer "
+            "`Engine::run iter` p95 (editor frame budget, ~7 ms typical) and "
+            "`Show iter` p95 (show-thread frame budget, ~17 ms = 60 fps cap when "
+            "running v-synced; uncapped headless ~7 ms). `Engine::update` and "
+            "`DecodeSystem::update` are instrumented but consistently 0 ms — they "
+            "are no-op proxies, do not use."
         ),
     }
+    if environment is not None:
+        summary["environment"] = environment
+    return summary
 
 
 def main():
@@ -184,15 +214,19 @@ def main():
     parser.add_argument("--scenario",   required=True, help="Scenario name (e.g. stress_3layer_prores_1080p)")
     parser.add_argument("--tracy-file", default="",    help="Path to the .tracy capture file")
     parser.add_argument("--duration",   type=float, default=30.0, help="Capture duration in seconds (default: 30)")
+    parser.add_argument("--env-json",   default="",    help="Path to environment fingerprint JSON written by capture.ps1")
+    parser.add_argument("--target-fps", type=int, default=60, help="Target frame rate for this scenario (default: 60); used to compute frame_budget_ms")
     args = parser.parse_args()
 
     summary = build_summary(
-        cpu_path       = args.cpu_csv,
-        gpu_path       = args.gpu_csv,
-        plot_path      = args.plot_csv,
-        scenario       = args.scenario,
-        tracy_file     = args.tracy_file,
+        cpu_path         = args.cpu_csv,
+        gpu_path         = args.gpu_csv,
+        plot_path        = args.plot_csv,
+        scenario         = args.scenario,
+        tracy_file       = args.tracy_file,
         duration_seconds = args.duration,
+        env_json_path    = args.env_json or None,
+        target_fps       = args.target_fps,
     )
     print(json.dumps(summary, indent=2))
 

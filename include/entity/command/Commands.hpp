@@ -284,6 +284,24 @@ private:
 };
 
 // ============================================================================
+// Timeline Structure Commands
+// ============================================================================
+
+class AddTrackCommand : public Command {
+public:
+    AddTrackCommand() = default;
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AddTrack"; }
+    nlohmann::json toJson() const override { return {{"type", "AddTrack"}}; }
+    std::string getDescription() const override { return "Add track"; }
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json&) {
+        return std::make_unique<AddTrackCommand>();
+    }
+};
+
+// ============================================================================
 // Script Control Commands
 // ============================================================================
 
@@ -302,6 +320,23 @@ public:
 
 private:
     uint32_t m_count;
+};
+
+class WaitSecondsCommand : public Command {
+public:
+    explicit WaitSecondsCommand(double count) : m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "WaitSeconds"; }
+    nlohmann::json toJson() const override {
+        return {{"type", "WaitSeconds"}, {"count", m_count}};
+    }
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    double m_count;
 };
 
 class CaptureScreenshotCommand : public Command {

@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "description": "Verify AddTrack creates track 5 and WaitSeconds pauses ~500ms",
+    "commands": [
+        { "type": "AddTrack" },
+        { "type": "ImportVideo", "filepath": "test_media/perf/checker_1080p_mjpeg.mov", "trackIndex": 5, "position": 0 },
+        { "type": "WaitSeconds", "count": 0.5 },
+        { "type": "Exit" }
+    ]
+}

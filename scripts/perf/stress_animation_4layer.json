@@ -1,6 +1,7 @@
 {
     "version": 1,
     "description": "Stress scenario: 4 layers of ProRes 4444 1080p noise with active keyframe animation on opacity, transform (PositionX/Y), rotation, and scale. 2 output screens, 30s playback. Stress focus: AnimationSystem evaluation cost, keyframe interpolation per frame. Requires: test_media/perf/noise_1080p_prores.mov (generate via scripts/perf/setup-fixtures.ps1).",
+    "target_fps": 60,
 
     "commands": [
         { "type": "AddScreen", "name": "Output A", "width": 1920, "height": 1080 },
@@ -55,7 +56,7 @@
         { "type": "SeekToFrame", "frame": 0 },
         { "type": "Play" },
 
-        { "type": "WaitFrames", "count": 1800 },
+        { "type": "WaitSeconds", "count": 30 },
 
         { "type": "Pause" }
     ]

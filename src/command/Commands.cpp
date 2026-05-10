@@ -538,6 +538,44 @@ CommandPtr WaitFramesCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<WaitFramesCommand>(count);
 }
 
+// ============================================================================
+// WaitSecondsCommand
+// ============================================================================
+
+bool WaitSecondsCommand::execute(Engine& engine) {
+    std::cout << "[WaitSeconds] Waiting " << m_count << " seconds" << std::endl;
+    if (auto* dispatcher = engine.getCommandDispatcher()) {
+        auto duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(m_count));
+        dispatcher->setWaitUntil(std::chrono::steady_clock::now() + duration);
+    }
+    return true;
+}
+
+std::string WaitSecondsCommand::getDescription() const {
+    return "Wait " + std::to_string(m_count) + " seconds";
+}
+
+CommandPtr WaitSecondsCommand::fromJson(const nlohmann::json& j) {
+    double count = j.value("count", 1.0);
+    return std::make_unique<WaitSecondsCommand>(count);
+}
+
+// ============================================================================
+// AddTrackCommand
+// ============================================================================
+
+bool AddTrackCommand::execute(Engine& engine) {
+    if (auto* timeline = engine.getTimeline()) {
+        auto trackCount = timeline->getTrackCount();
+        timeline->createTrack("Track " + std::to_string(trackCount + 1));
+        std::cout << "[AddTrack] Created track " << trackCount
+                  << " (total: " << (trackCount + 1) << ")" << std::endl;
+        return true;
+    }
+    return false;
+}
+
 bool CaptureScreenshotCommand::execute(Engine& engine) {
     std::cout << "[CaptureScreenshot] Queuing capture to: " << m_filepath << std::endl;
 
