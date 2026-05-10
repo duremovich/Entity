@@ -25,7 +25,8 @@
     {
       "name": "tracy",
       "features": [
-        "on-demand"
+        "on-demand",
+        "cli-tools"
       ]
     }
   ],

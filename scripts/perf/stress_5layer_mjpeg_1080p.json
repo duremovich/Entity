@@ -1,0 +1,29 @@
+{
+    "version": 1,
+    "description": "5-layer MJPEG cache-pressure stress. Engine boots with 5 tracks; 'AddTrack' script command does not exist. When AddTrack lands, bump to 8 layers and rename.",
+
+    "commands": [
+        { "type": "AddScreen", "name": "Output A", "width": 1920, "height": 1080 },
+
+        { "type": "ImportVideo", "filepath": "test_media/perf/checker_1080p_mjpeg.mov", "trackIndex": 0, "position": 0 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/checker_1080p_mjpeg.mov", "trackIndex": 1, "position": 15 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/checker_1080p_mjpeg.mov", "trackIndex": 2, "position": 30 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/checker_1080p_mjpeg.mov", "trackIndex": 3, "position": 45 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/checker_1080p_mjpeg.mov", "trackIndex": 4, "position": 60 },
+
+        { "type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 1, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 2, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 3, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 4, "clipIndex": 0, "screenName": "Output A" },
+
+        { "type": "WaitFrames", "count": 60 },
+
+        { "type": "SeekToFrame", "frame": 0 },
+        { "type": "Play" },
+
+        { "type": "WaitFrames", "count": 1800 },
+
+        { "type": "Pause" }
+    ]
+}

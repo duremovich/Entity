@@ -1,0 +1,62 @@
+{
+    "version": 1,
+    "description": "Stress scenario: 4 layers of ProRes 4444 1080p noise with active keyframe animation on opacity, transform (PositionX/Y), rotation, and scale. 2 output screens, 30s playback. Stress focus: AnimationSystem evaluation cost, keyframe interpolation per frame. Requires: test_media/perf/noise_1080p_prores.mov (generate via scripts/perf/setup-fixtures.ps1).",
+
+    "commands": [
+        { "type": "AddScreen", "name": "Output A", "width": 1920, "height": 1080 },
+        { "type": "AddScreen", "name": "Output B", "width": 1920, "height": 1080 },
+
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 0, "position": 0 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 1, "position": 30 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 2, "position": 60 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 3, "position": 90 },
+
+        { "type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 1, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 2, "clipIndex": 0, "screenName": "Output B" },
+        { "type": "SetClipTargetScreen", "trackIndex": 3, "clipIndex": 0, "screenName": "Output B" },
+
+        { "type": "WaitFrames", "count": 60 },
+
+        { "type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 1.0 },
+        { "type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 600, "value": 0.3 },
+        { "type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 1200, "value": 1.0 },
+
+        { "type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 0, "value": -0.3 },
+        { "type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 900, "value": 0.3 },
+        { "type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "PositionX", "frame": 1800, "value": -0.3 },
+
+        { "type": "AddKeyframe", "trackIndex": 1, "clipIndex": 0, "property": "Rotation", "frame": 0, "value": 0.0 },
+        { "type": "AddKeyframe", "trackIndex": 1, "clipIndex": 0, "property": "Rotation", "frame": 900, "value": 180.0 },
+        { "type": "AddKeyframe", "trackIndex": 1, "clipIndex": 0, "property": "Rotation", "frame": 1800, "value": 360.0 },
+
+        { "type": "AddKeyframe", "trackIndex": 1, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0.7 },
+        { "type": "AddKeyframe", "trackIndex": 1, "clipIndex": 0, "property": "Opacity", "frame": 600, "value": 1.0 },
+        { "type": "AddKeyframe", "trackIndex": 1, "clipIndex": 0, "property": "Opacity", "frame": 1200, "value": 0.4 },
+
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleX", "frame": 0, "value": 1.0 },
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleX", "frame": 600, "value": 1.5 },
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleX", "frame": 1200, "value": 0.8 },
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleX", "frame": 1800, "value": 1.0 },
+
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleY", "frame": 0, "value": 1.0 },
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleY", "frame": 600, "value": 1.5 },
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleY", "frame": 1200, "value": 0.8 },
+        { "type": "AddKeyframe", "trackIndex": 2, "clipIndex": 0, "property": "ScaleY", "frame": 1800, "value": 1.0 },
+
+        { "type": "AddKeyframe", "trackIndex": 3, "clipIndex": 0, "property": "PositionY", "frame": 0, "value": 0.2 },
+        { "type": "AddKeyframe", "trackIndex": 3, "clipIndex": 0, "property": "PositionY", "frame": 600, "value": -0.2 },
+        { "type": "AddKeyframe", "trackIndex": 3, "clipIndex": 0, "property": "PositionY", "frame": 1200, "value": 0.2 },
+
+        { "type": "AddKeyframe", "trackIndex": 3, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0.5 },
+        { "type": "AddKeyframe", "trackIndex": 3, "clipIndex": 0, "property": "Opacity", "frame": 900, "value": 1.0 },
+        { "type": "AddKeyframe", "trackIndex": 3, "clipIndex": 0, "property": "Opacity", "frame": 1800, "value": 0.5 },
+
+        { "type": "SeekToFrame", "frame": 0 },
+        { "type": "Play" },
+
+        { "type": "WaitFrames", "count": 1800 },
+
+        { "type": "Pause" }
+    ]
+}

@@ -1,0 +1,26 @@
+{
+    "version": 1,
+    "description": "Stress scenario: 3 layers of ProRes 4444 1080p noise, 2 output screens, 30s playback. Stress focus: CPU decode throughput, FrameCache pressure. Requires: test_media/perf/noise_1080p_prores.mov (generate via scripts/perf/setup-fixtures.ps1).",
+
+    "commands": [
+        { "type": "AddScreen", "name": "Output A", "width": 1920, "height": 1080 },
+        { "type": "AddScreen", "name": "Output B", "width": 1920, "height": 1080 },
+
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 0, "position": 0 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 1, "position": 30 },
+        { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 2, "position": 60 },
+
+        { "type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 1, "clipIndex": 0, "screenName": "Output A" },
+        { "type": "SetClipTargetScreen", "trackIndex": 2, "clipIndex": 0, "screenName": "Output B" },
+
+        { "type": "WaitFrames", "count": 60 },
+
+        { "type": "SeekToFrame", "frame": 0 },
+        { "type": "Play" },
+
+        { "type": "WaitFrames", "count": 1800 },
+
+        { "type": "Pause" }
+    ]
+}
