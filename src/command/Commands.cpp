@@ -1076,9 +1076,13 @@ bool AddKeyframeCommand::execute(Engine& engine) {
     AnimatableProperty property;
     if (m_property == "PositionX") property = AnimatableProperty::PositionX;
     else if (m_property == "PositionY") property = AnimatableProperty::PositionY;
+    else if (m_property == "PositionZ") property = AnimatableProperty::PositionZ;
     else if (m_property == "Rotation") property = AnimatableProperty::Rotation;
+    else if (m_property == "RotationX") property = AnimatableProperty::RotationX;
+    else if (m_property == "RotationY") property = AnimatableProperty::RotationY;
     else if (m_property == "ScaleX") property = AnimatableProperty::ScaleX;
     else if (m_property == "ScaleY") property = AnimatableProperty::ScaleY;
+    else if (m_property == "ScaleZ") property = AnimatableProperty::ScaleZ;
     else if (m_property == "Opacity") property = AnimatableProperty::Opacity;
     else {
         std::cerr << "[AddKeyframe] Unknown property: " << m_property << std::endl;
@@ -3031,6 +3035,89 @@ bool AssertObjectAnimationOutputCommand::execute(Engine& engine) {
               << " expected=" << m_expected
               << " (+/-" << m_tolerance << ") got=" << actual << std::endl;
     return false;
+}
+
+bool AssertScreenSnapshotCommand::execute(Engine& engine) {
+    auto* director = engine.getDirector();
+    if (!director) {
+        std::cerr << "[AssertScreenSnapshot] FAIL: director unavailable" << std::endl;
+        return false;
+    }
+    auto* timeAuthority = director->getTimeAuthority();
+    if (!timeAuthority) {
+        std::cerr << "[AssertScreenSnapshot] FAIL: no PlaybackTimeAuthority" << std::endl;
+        return false;
+    }
+
+    bus::SceneSnapshot snapshot;
+    timeAuthority->buildSceneSnapshot(snapshot);
+
+    const bus::ScreenSnapshot* found = nullptr;
+    for (const auto& ss : snapshot.screens) {
+        if (ss.name == m_screenName) {
+            found = &ss;
+            break;
+        }
+    }
+    if (!found) {
+        std::cerr << "[AssertScreenSnapshot] FAIL: no screen named '" << m_screenName
+                  << "' in snapshot (screens=" << snapshot.screens.size() << ")" << std::endl;
+        return false;
+    }
+
+    float actual = 0.0f;
+    bool  fieldKnown = true;
+    if      (m_field == "positionX") actual = found->position[0];
+    else if (m_field == "positionY") actual = found->position[1];
+    else if (m_field == "positionZ") actual = found->position[2];
+    else if (m_field == "rotationX") actual = found->rotation[0];
+    else if (m_field == "rotationY") actual = found->rotation[1];
+    else if (m_field == "rotationZ") actual = found->rotation[2];
+    else if (m_field == "scaleX")    actual = found->scale[0];
+    else if (m_field == "scaleY")    actual = found->scale[1];
+    else if (m_field == "scaleZ")    actual = found->scale[2];
+    else {
+        std::cerr << "[AssertScreenSnapshot] FAIL: unknown field '" << m_field << "'" << std::endl;
+        fieldKnown = false;
+    }
+    if (!fieldKnown) return false;
+
+    float diff = std::fabs(actual - m_expected);
+    if (diff <= m_tolerance) {
+        std::cout << "[AssertScreenSnapshot] OK screen='" << m_screenName
+                  << "' field=" << m_field
+                  << " value=" << actual
+                  << " (== " << m_expected << " +/-" << m_tolerance << ")"
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertScreenSnapshot] FAIL: screen='" << m_screenName
+              << "' field=" << m_field
+              << " expected=" << m_expected
+              << " (+/-" << m_tolerance << ") got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertScreenSnapshotCommand::toJson() const {
+    return {{"type", "AssertScreenSnapshot"},
+            {"screenName", m_screenName},
+            {"field", m_field},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance}};
+}
+
+std::string AssertScreenSnapshotCommand::getDescription() const {
+    return "Assert screen snapshot '" + m_screenName + "' " + m_field +
+           "==" + std::to_string(m_expected);
+}
+
+CommandPtr AssertScreenSnapshotCommand::fromJson(const nlohmann::json& j) {
+    std::string screenName = j.value("screenName", std::string{});
+    std::string field      = j.value("field", std::string{"positionX"});
+    float expected         = j.value("expected", 0.0f);
+    float tolerance        = j.value("tolerance", 0.01f);
+    return std::make_unique<AssertScreenSnapshotCommand>(
+        std::move(screenName), std::move(field), expected, tolerance);
 }
 
 nlohmann::json AssertObjectAnimationOutputCommand::toJson() const {

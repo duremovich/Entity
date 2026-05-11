@@ -3,9 +3,12 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
+#include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/MappingSurface.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
@@ -639,6 +642,12 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
     // show thread never reads them, so they can't drift the output.
     // If/when projector masking lands (Phase 2), it adds a separate
     // propCatalog field rather than folding props into screens.
+    // Build OA fold-in lookup: for each Screen entity, find the highest-priority
+    // (lowest trackIndex) active OA layer that targets it and has override flags set.
+    // Lower trackIndex wins (v1 deterministic multi-layer policy; see Phase 3.5 for UI).
+    FrameNumber currentFrameForOA = m_timeline ? m_timeline->getCurrentFrame() : 0;
+    auto oaScan = m_registry.view<ObjectAnimationLayer, ObjectAnimationOutput, Layer>();
+
     out.screens.clear();
     for (auto [entity, screen] : m_registry.view<Screen>().each()) {
         bus::ScreenSnapshot ss;
@@ -661,8 +670,34 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             if (const auto* m = m_registry.try_get<Model>(screen.modelEntity))
                 if (m->mesh.isValid()) mesh = &m->mesh;
         }
-        ss.scale             = computeEffectiveScale(screen.size, mesh);
-        ss.modelEntity       = entityToU64(screen.modelEntity);
+        std::array<float, 3> effectiveSize = screen.size;
+        ss.scale = computeEffectiveScale(effectiveSize, mesh);
+        ss.modelEntity = entityToU64(screen.modelEntity);
+
+        // Fold in ObjectAnimationOutput from active OA layers targeting this screen.
+        // Multiple layers may target the same screen; lower trackIndex wins (v1 policy).
+        // Belt-and-suspenders active-frame guard here mirrors AnimationSystem's reset.
+        const ObjectAnimationOutput* winningOA = nullptr;
+        uint32_t winningTrackIndex = UINT32_MAX;
+        for (auto [oaEntity, oal, oaOut, oaLayer] : oaScan.each()) {
+            if (oal.target != entity) continue;
+            if (currentFrameForOA < oaLayer.startFrame ||
+                currentFrameForOA >= oaLayer.startFrame + oaLayer.duration) continue;
+            // Equal trackIndex: first-creation-order wins. Create OA layers in priority order to avoid ambiguity.
+            if (oaLayer.trackIndex < winningTrackIndex) {
+                winningTrackIndex = oaLayer.trackIndex;
+                winningOA = &oaOut;
+            }
+        }
+        if (winningOA) {
+            if (winningOA->hasPosition) ss.position = winningOA->positionOverride;
+            if (winningOA->hasRotation) ss.rotation = winningOA->rotationOverride;
+            if (winningOA->hasSize) {
+                effectiveSize = winningOA->sizeOverride;
+                ss.scale = computeEffectiveScale(effectiveSize, mesh);
+            }
+        }
+
         out.screens.push_back(std::move(ss));
     }
 

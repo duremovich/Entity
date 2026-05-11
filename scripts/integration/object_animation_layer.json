@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Phase 3.3 gate: CreateObjectAnimationLayer places an OA layer on track 0, AddKeyframe writes a PositionX value of 5.0 at frame 0. After one editor tick, AnimationSystem must have evaluated the keyframe and written ObjectAnimationOutput::positionOverride.x == 5.0 on the layer entity. Uses WaitSeconds (not WaitFrames) because AnimationSystem runs on the editor thread and needs at least one real engine tick to fire.",
+    "description": "Phase 3.3/3.4 gate: CreateObjectAnimationLayer places an OA layer on track 0 targeting OATestScreen. AddKeyframe writes PositionX=5.0 at frame 0. After playback, AssertObjectAnimationOutput checks the editor-side component and AssertScreenSnapshot confirms the fold-in reached the SceneSnapshot. A second block seeks past the OA layer's duration and asserts the snapshot reverts to the un-overridden position (0.0 = stale-output regression).",
     "commands": [
         {
             "type": "AddScreen",
@@ -46,6 +46,28 @@
             "layerIndex": 0,
             "field": "hasPosition",
             "expected": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OATestScreen",
+            "field": "positionX",
+            "expected": 5.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 400
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.2
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OATestScreen",
+            "field": "positionX",
+            "expected": 0.0,
             "tolerance": 0.01
         },
         {

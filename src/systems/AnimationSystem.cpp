@@ -165,16 +165,14 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
     for (auto entity : oaView) {
         const auto& layer = oaView.get<Layer>(entity);
 
-        // Skip if OA layer is not active at the current frame.
-        // NOTE (3.4): this early continue leaves any existing ObjectAnimationOutput
-        // component untouched — hasPosition/hasRotation/hasSize remain true from the
-        // last active tick. Phase 3.4 folds ObjectAnimationOutput into the snapshot;
-        // at that point a stale has*=true on an inactive OA layer would incorrectly
-        // override the target's position/rotation/size. Phase 3.4 must either reset
-        // the output here before the continue, or skip inactive OA layers when reading
-        // ObjectAnimationOutput during buildSceneSnapshot.
+        // If inactive, reset any existing output so stale has* flags don't bleed
+        // into buildSceneSnapshot's fold-in (phase 3.4). Belt-and-suspenders with
+        // the active-frame guard in buildSceneSnapshot itself.
         if (currentFrame < layer.startFrame ||
             currentFrame >= layer.startFrame + layer.duration) {
+            if (auto* out = registry.try_get<ObjectAnimationOutput>(entity)) {
+                *out = ObjectAnimationOutput{};
+            }
             continue;
         }
         FrameNumber localFrame = currentFrame - layer.startFrame;

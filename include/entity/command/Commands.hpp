@@ -1655,6 +1655,38 @@ private:
 };
 
 /**
+ * AssertScreenSnapshotCommand — integration-test assertion.
+ *
+ * Calls PlaybackTimeAuthority::buildSceneSnapshot on demand and asserts a
+ * named field of the ScreenSnapshot for a screen identified by name.
+ *
+ * field values:
+ *   "positionX" | "positionY" | "positionZ"
+ *   "rotationX" | "rotationY" | "rotationZ"
+ *   "scaleX"    | "scaleY"    | "scaleZ"
+ */
+class AssertScreenSnapshotCommand : public Command {
+public:
+    AssertScreenSnapshotCommand(std::string screenName, std::string field,
+                                float expected, float tolerance = 0.01f)
+        : m_screenName(std::move(screenName)), m_field(std::move(field)),
+          m_expected(expected), m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertScreenSnapshot"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_screenName;
+    std::string m_field;
+    float       m_expected;
+    float       m_tolerance;
+};
+
+/**
  * AssertObjectAnimationOutputCommand — integration-test assertion.
  *
  * Resolves an OA layer entity by track index + layer index (same addressing

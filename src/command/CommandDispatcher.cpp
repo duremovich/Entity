@@ -253,9 +253,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AddSyntheticModel", AddSyntheticModelCommand::fromJson);
     registerFactory("AssertMeshUploadCount", AssertMeshUploadCountCommand::fromJson);
 
-    // Object Animation Layer commands (Phase 3.3)
+    // Object Animation Layer commands (Phase 3.3 + 3.4)
     registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);
     registerFactory("AssertObjectAnimationOutput", AssertObjectAnimationOutputCommand::fromJson);
+    registerFactory("AssertScreenSnapshot", AssertScreenSnapshotCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {
