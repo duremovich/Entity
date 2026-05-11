@@ -7,6 +7,7 @@ add_executable(EntityMediaTests
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
     unit/DeleteClipUndoTests.cpp
+    unit/ObjectAnimationLayerTests.cpp
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
     unit/SectionFadeTests.cpp
@@ -215,3 +216,17 @@ entity_add_integration_test(screen_no_double_allocation screen_no_double_allocat
 # Phase 1 mesh-upload pacing: cold-start gate + one-per-tick steady-state cap.
 # No pixel comparison needed; asserts upload counts directly.
 entity_add_integration_test(mesh_upload_paces mesh_upload_paces.json)
+
+# Phase 3.3 — Object Animation Layer end-to-end: CreateObjectAnimationLayer +
+# AddKeyframe + Play/WaitSeconds + AssertObjectAnimationOutput.
+# No pixel comparison; asserts ObjectAnimationOutput component state directly.
+add_test(
+    NAME integration_object_animation_layer
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/object_animation_layer.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_object_animation_layer PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

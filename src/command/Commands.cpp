@@ -8,11 +8,14 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <imgui.h>
@@ -2875,6 +2878,184 @@ std::string AssertMeshUploadCountCommand::getDescription() const {
 CommandPtr AssertMeshUploadCountCommand::fromJson(const nlohmann::json& j) {
     uint64_t expected = j.value("expected", uint64_t{0});
     return std::make_unique<AssertMeshUploadCountCommand>(expected);
+}
+
+// ============================================================================
+// CreateObjectAnimationLayerCommand (Phase 3.3)
+// ============================================================================
+
+bool CreateObjectAnimationLayerCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[CreateObjectAnimationLayer] FAIL: no timeline" << std::endl;
+        return false;
+    }
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[CreateObjectAnimationLayer] FAIL: trackIndex "
+                  << m_trackIndex << " out of range" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track) {
+        std::cerr << "[CreateObjectAnimationLayer] FAIL: track entity has no TimelineTrack" << std::endl;
+        return false;
+    }
+
+    // Resolve target: first Screen entity in the registry (placeholder for Phase 3.5 UI)
+    entt::entity targetEntity = entt::null;
+    auto screenView = registry.view<Screen>();
+    if (!screenView.empty()) {
+        targetEntity = *screenView.begin();
+    }
+
+    entt::entity layerEntity = registry.create();
+
+    auto& lay = registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::ObjectAnimation;
+    lay.startFrame = m_startFrame;
+    lay.duration   = m_duration;
+    lay.trackIndex = static_cast<uint32_t>(m_trackIndex);
+
+    auto& oal = registry.emplace<ObjectAnimationLayer>(layerEntity);
+    oal.target          = targetEntity;
+    oal.sectionBehavior = SectionBehavior::Normal;
+
+    registry.emplace<AnimatedProperties>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(registry);
+
+    m_createdEntity = layerEntity;
+
+    std::cout << "[CreateObjectAnimationLayer] OK track=" << m_trackIndex
+              << " start=" << m_startFrame
+              << " duration=" << m_duration
+              << " entity=" << static_cast<uint32_t>(layerEntity)
+              << " target=" << (targetEntity != entt::null
+                                  ? std::to_string(static_cast<uint32_t>(targetEntity))
+                                  : "none")
+              << std::endl;
+    return true;
+}
+
+nlohmann::json CreateObjectAnimationLayerCommand::toJson() const {
+    return {{"type", "CreateObjectAnimationLayer"},
+            {"trackIndex", m_trackIndex},
+            {"startFrame", m_startFrame},
+            {"duration", m_duration}};
+}
+
+std::string CreateObjectAnimationLayerCommand::getDescription() const {
+    return "Create OA layer on track " + std::to_string(m_trackIndex) +
+           " at " + std::to_string(m_startFrame) +
+           " dur=" + std::to_string(m_duration);
+}
+
+CommandPtr CreateObjectAnimationLayerCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex       = j.value("trackIndex", 0);
+    FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
+    FrameNumber duration = j.value("duration", static_cast<FrameNumber>(30));
+    return std::make_unique<CreateObjectAnimationLayerCommand>(trackIndex, start, duration);
+}
+
+// ============================================================================
+// AssertObjectAnimationOutputCommand (Phase 3.3)
+// ============================================================================
+
+bool AssertObjectAnimationOutputCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertObjectAnimationOutput] FAIL: no timeline" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertObjectAnimationOutput] FAIL: trackIndex "
+                  << m_trackIndex << " out of range" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_layerIndex < 0 ||
+        static_cast<size_t>(m_layerIndex) >= track->layers.size()) {
+        std::cerr << "[AssertObjectAnimationOutput] FAIL: layerIndex "
+                  << m_layerIndex << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity layerEntity = track->layers[m_layerIndex];
+    const auto* out = registry.try_get<ObjectAnimationOutput>(layerEntity);
+    if (!out) {
+        std::cerr << "[AssertObjectAnimationOutput] FAIL: entity "
+                  << static_cast<uint32_t>(layerEntity)
+                  << " has no ObjectAnimationOutput component" << std::endl;
+        return false;
+    }
+
+    // Resolve field name to a float value
+    float actual = 0.0f;
+    bool  fieldKnown = true;
+    if      (m_field == "positionX")   actual = out->positionOverride[0];
+    else if (m_field == "positionY")   actual = out->positionOverride[1];
+    else if (m_field == "positionZ")   actual = out->positionOverride[2];
+    else if (m_field == "rotationX")   actual = out->rotationOverride[0];
+    else if (m_field == "rotationY")   actual = out->rotationOverride[1];
+    else if (m_field == "rotationZ")   actual = out->rotationOverride[2];
+    else if (m_field == "sizeX")       actual = out->sizeOverride[0];
+    else if (m_field == "sizeY")       actual = out->sizeOverride[1];
+    else if (m_field == "sizeZ")       actual = out->sizeOverride[2];
+    else if (m_field == "hasPosition") actual = out->hasPosition ? 1.0f : 0.0f;
+    else if (m_field == "hasRotation") actual = out->hasRotation ? 1.0f : 0.0f;
+    else if (m_field == "hasSize")     actual = out->hasSize     ? 1.0f : 0.0f;
+    else {
+        std::cerr << "[AssertObjectAnimationOutput] FAIL: unknown field '" << m_field << "'" << std::endl;
+        fieldKnown = false;
+    }
+    if (!fieldKnown) return false;
+
+    float diff = std::fabs(actual - m_expected);
+    if (diff <= m_tolerance) {
+        std::cout << "[AssertObjectAnimationOutput] OK track=" << m_trackIndex
+                  << " layer=" << m_layerIndex
+                  << " field=" << m_field
+                  << " value=" << actual
+                  << " (== " << m_expected << " +/-" << m_tolerance << ")"
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertObjectAnimationOutput] FAIL: track=" << m_trackIndex
+              << " layer=" << m_layerIndex
+              << " field=" << m_field
+              << " expected=" << m_expected
+              << " (+/-" << m_tolerance << ") got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertObjectAnimationOutputCommand::toJson() const {
+    return {{"type", "AssertObjectAnimationOutput"},
+            {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex},
+            {"field", m_field},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance}};
+}
+
+std::string AssertObjectAnimationOutputCommand::getDescription() const {
+    return "Assert OA output track=" + std::to_string(m_trackIndex) +
+           " layer=" + std::to_string(m_layerIndex) +
+           " " + m_field + "==" + std::to_string(m_expected);
+}
+
+CommandPtr AssertObjectAnimationOutputCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int layerIndex = j.value("layerIndex", 0);
+    std::string field = j.value("field", std::string{"positionX"});
+    float expected  = j.value("expected", 0.0f);
+    float tolerance = j.value("tolerance", 0.01f);
+    return std::make_unique<AssertObjectAnimationOutputCommand>(
+        trackIndex, layerIndex, std::move(field), expected, tolerance);
 }
 
 } // namespace entity

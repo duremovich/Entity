@@ -1618,4 +1618,75 @@ private:
     uint64_t m_expected;
 };
 
+// ============================================================================
+// Object Animation Layer commands (Phase 3.3)
+// ============================================================================
+
+/**
+ * CreateObjectAnimationLayerCommand — debug / script command for Phase 3.3.
+ *
+ * Creates an OA layer entity on the given track at the given start frame with
+ * the given duration. Sets ObjectAnimationLayer::target to the first Screen
+ * entity found in the registry (placeholder — Phase 3.5 will expose a
+ * target-picker in the LayersWindow).
+ *
+ * Params:
+ *   trackIndex  — 0-based index into timeline tracks
+ *   startFrame  — first frame of the OA layer on the timeline
+ *   duration    — length in timeline frames
+ */
+class CreateObjectAnimationLayerCommand : public Command {
+public:
+    CreateObjectAnimationLayerCommand(int trackIndex, FrameNumber startFrame, FrameNumber duration)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreateObjectAnimationLayer"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    FrameNumber m_startFrame;
+    FrameNumber m_duration;
+    entt::entity m_createdEntity{entt::null};
+};
+
+/**
+ * AssertObjectAnimationOutputCommand — integration-test assertion.
+ *
+ * Resolves an OA layer entity by track index + layer index (same addressing
+ * as AssertClipMediaFrame), reads its ObjectAnimationOutput component, and
+ * asserts that the named field is within [expected ± tolerance].
+ *
+ * field values:
+ *   "positionX" | "positionY" | "positionZ"
+ *   "rotationX" | "rotationY" | "rotationZ"
+ *   "sizeX"     | "sizeY"     | "sizeZ"
+ *   "hasPosition" | "hasRotation" | "hasSize"  (assert 1.0 = true, 0.0 = false)
+ */
+class AssertObjectAnimationOutputCommand : public Command {
+public:
+    AssertObjectAnimationOutputCommand(int trackIndex, int layerIndex,
+                                       std::string field, float expected, float tolerance = 0.01f)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex),
+          m_field(std::move(field)), m_expected(expected), m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertObjectAnimationOutput"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_layerIndex;
+    std::string m_field;
+    float       m_expected;
+    float       m_tolerance;
+};
+
 } // namespace entity

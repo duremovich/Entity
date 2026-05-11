@@ -31,10 +31,15 @@ enum class InterpolationType {
 enum class AnimatableProperty {
     PositionX,
     PositionY,
-    Rotation,      // Z rotation for 2D
+    Rotation,      // Z rotation for 2D clips (alias for RotationZ)
     ScaleX,
     ScaleY,
-    Opacity
+    Opacity,
+    // 3D axes for ObjectAnimationLayer
+    PositionZ,
+    RotationX,
+    RotationY,
+    ScaleZ,
 };
 
 /**
@@ -48,6 +53,10 @@ inline const char* getPropertyName(AnimatableProperty prop) {
         case AnimatableProperty::ScaleX:    return "Scale X";
         case AnimatableProperty::ScaleY:    return "Scale Y";
         case AnimatableProperty::Opacity:   return "Opacity";
+        case AnimatableProperty::PositionZ: return "Position Z";
+        case AnimatableProperty::RotationX: return "Rotation X";
+        case AnimatableProperty::RotationY: return "Rotation Y";
+        case AnimatableProperty::ScaleZ:    return "Scale Z";
         default: return "Unknown";
     }
 }
@@ -200,10 +209,14 @@ private:
         switch (prop) {
             case AnimatableProperty::PositionX:
             case AnimatableProperty::PositionY:
+            case AnimatableProperty::PositionZ:
             case AnimatableProperty::Rotation:
+            case AnimatableProperty::RotationX:
+            case AnimatableProperty::RotationY:
                 return 0.0f;
             case AnimatableProperty::ScaleX:
             case AnimatableProperty::ScaleY:
+            case AnimatableProperty::ScaleZ:
             case AnimatableProperty::Opacity:
                 return 1.0f;
             default:
@@ -340,6 +353,7 @@ struct AnimatedProperties {
         switch (property) {
             case AnimatableProperty::ScaleX:
             case AnimatableProperty::ScaleY:
+            case AnimatableProperty::ScaleZ:
             case AnimatableProperty::Opacity:
                 return 1.0f;
             default:

@@ -1,0 +1,55 @@
+{
+    "version": 1,
+    "description": "Phase 3.3 gate: CreateObjectAnimationLayer places an OA layer on track 0, AddKeyframe writes a PositionX value of 5.0 at frame 0. After one editor tick, AnimationSystem must have evaluated the keyframe and written ObjectAnimationOutput::positionOverride.x == 5.0 on the layer entity. Uses WaitSeconds (not WaitFrames) because AnimationSystem runs on the editor thread and needs at least one real engine tick to fire.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "OATestScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "CreateObjectAnimationLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "property": "PositionX",
+            "frame": 0,
+            "value": 5.0
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.2
+        },
+        {
+            "type": "Pause"
+        },
+        {
+            "type": "AssertObjectAnimationOutput",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "positionX",
+            "expected": 5.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertObjectAnimationOutput",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "hasPosition",
+            "expected": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -15,6 +15,9 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/ObjectAnimationOutput.hpp"
 
 #include <iostream>
 
@@ -138,6 +141,99 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
                         }
                     }
                     break;
+
+                // 3D axes — only relevant for OA layers; no-op on Clip entities
+                // that lack ObjectAnimationLayer. Handled in the OA branch below.
+                case AnimatableProperty::PositionZ:
+                case AnimatableProperty::RotationX:
+                case AnimatableProperty::RotationY:
+                case AnimatableProperty::ScaleZ:
+                    break;
+            }
+        }
+    }
+
+    // --- Object Animation Layer branch ---
+    // For entities that have both AnimatedProperties and ObjectAnimationLayer,
+    // evaluate all tracks using Layer::startFrame as the clip-local origin and
+    // write results into ObjectAnimationOutput on the same entity.
+    // buildSceneSnapshot (Phase 3.4) reads ObjectAnimationOutput and folds it
+    // into the target's ScreenSnapshot entry.
+    // ADR-0014: this branch runs on the editor thread only and writes only the
+    // ObjectAnimationOutput component — never the target Screen/Prop registry data.
+    auto oaView = registry.view<AnimatedProperties, ObjectAnimationLayer, Layer>();
+    for (auto entity : oaView) {
+        const auto& layer = oaView.get<Layer>(entity);
+
+        // Skip if OA layer is not active at the current frame.
+        // NOTE (3.4): this early continue leaves any existing ObjectAnimationOutput
+        // component untouched — hasPosition/hasRotation/hasSize remain true from the
+        // last active tick. Phase 3.4 folds ObjectAnimationOutput into the snapshot;
+        // at that point a stale has*=true on an inactive OA layer would incorrectly
+        // override the target's position/rotation/size. Phase 3.4 must either reset
+        // the output here before the continue, or skip inactive OA layers when reading
+        // ObjectAnimationOutput during buildSceneSnapshot.
+        if (currentFrame < layer.startFrame ||
+            currentFrame >= layer.startFrame + layer.duration) {
+            continue;
+        }
+        FrameNumber localFrame = currentFrame - layer.startFrame;
+
+        // Reset output every tick so stale values don't linger when keyframes are removed
+        auto& out = registry.get_or_emplace<ObjectAnimationOutput>(entity);
+        out = ObjectAnimationOutput{};
+
+        auto& animProps = oaView.get<AnimatedProperties>(entity);
+        if (!animProps.hasAnyKeyframes()) continue;
+
+        for (const auto& track : animProps.tracks) {
+            if (!track.enabled || !track.hasKeyframes()) continue;
+            float value = track.evaluate(localFrame);
+
+            switch (track.property) {
+                case AnimatableProperty::PositionX:
+                    out.positionOverride[0] = value;
+                    out.hasPosition = true;
+                    break;
+                case AnimatableProperty::PositionY:
+                    out.positionOverride[1] = value;
+                    out.hasPosition = true;
+                    break;
+                case AnimatableProperty::PositionZ:
+                    out.positionOverride[2] = value;
+                    out.hasPosition = true;
+                    break;
+                case AnimatableProperty::Rotation:
+                case AnimatableProperty::RotationY:
+                    // NOTE (3.5): AnimatableProperty::Rotation is documented as
+                    // "Z rotation for 2D clips" in AnimatedProperties.hpp:34, but
+                    // here it maps to rotationOverride[1] (Y-axis) — the natural
+                    // "turning" axis for a Screen in 3D space. A user who adds a
+                    // "Rotation" keyframe to an OA layer will see Y-rotation, not Z.
+                    // Phase 3.5 should either rename the OA-side display label to
+                    // "Rotation Y" or introduce a dedicated RotationZ enum value and
+                    // map it consistently across both Clip and OA branches.
+                    out.rotationOverride[1] = value;
+                    out.hasRotation = true;
+                    break;
+                case AnimatableProperty::RotationX:
+                    out.rotationOverride[0] = value;
+                    out.hasRotation = true;
+                    break;
+                case AnimatableProperty::ScaleX:
+                    out.sizeOverride[0] = value;
+                    out.hasSize = true;
+                    break;
+                case AnimatableProperty::ScaleY:
+                    out.sizeOverride[1] = value;
+                    out.hasSize = true;
+                    break;
+                case AnimatableProperty::ScaleZ:
+                    out.sizeOverride[2] = value;
+                    out.hasSize = true;
+                    break;
+                case AnimatableProperty::Opacity:
+                    break;  // opacity on OA layers is not yet surfaced
             }
         }
     }

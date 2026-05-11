@@ -252,6 +252,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Mesh upload pacing gate
     registerFactory("AddSyntheticModel", AddSyntheticModelCommand::fromJson);
     registerFactory("AssertMeshUploadCount", AssertMeshUploadCountCommand::fromJson);
+
+    // Object Animation Layer commands (Phase 3.3)
+    registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);
+    registerFactory("AssertObjectAnimationOutput", AssertObjectAnimationOutputCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {
