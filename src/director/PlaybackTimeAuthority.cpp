@@ -593,7 +593,18 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         os.gamma                = od.gamma;
         os.sourceProjector      = entityToU64(od.sourceProjector);
         os.sourceScreen         = entityToU64(od.sourceScreen);
-        os.calibrationOverlaySlot = od.calibrationOverlaySlot;
+        {
+            const auto& src = od.calibrationOverlay;
+            auto& dst = os.calibrationOverlay;
+            dst.enabled         = src.enabled;
+            dst.numPoints       = src.numPoints;
+            dst.activeIndex     = src.activeIndex;
+            dst.precisionCursor = src.precisionCursor;
+            for (size_t i = 0; i < src.points.size() && i < dst.points.size(); ++i) {
+                dst.points[i][0] = src.points[i].x;
+                dst.points[i][1] = src.points[i].y;
+            }
+        }
         os.windowX              = od.windowX;
         os.windowY              = od.windowY;
         os.outputIndex          = od.outputIndex;

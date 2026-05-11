@@ -172,13 +172,6 @@ void ProjectorCalibrationWindow::open(entt::entity projectorEntity) {
 void ProjectorCalibrationWindow::close() {
     if (!m_isOpen) return;
     unrouteOutput();
-    if (m_engine) {
-        if (auto* rs = m_engine->getRendererService()) {
-            if (auto* d3d = rs->getD3D12Renderer()) {
-                d3d->destroyCalibrationOverlay();
-            }
-        }
-    }
     m_isOpen = false;
 }
 
@@ -1100,18 +1093,23 @@ void ProjectorCalibrationWindow::persistPoints() {
 }
 
 void ProjectorCalibrationWindow::syncOverlayPoints() {
+    // Editor-thread state mutation only — no D3D12 commands recorded here.
+    // The show thread reads OutputDisplay::calibrationOverlay through the
+    // SceneSnapshot and draws the overlay directly onto the projector output.
     if (!m_engine) return;
-    auto* rs  = m_engine->getRendererService();
-    if (!rs) return;
-    auto* d3d = rs->getD3D12Renderer();
-    if (!d3d || !d3d->hasCalibrationOverlay()) return;
+    auto& reg = m_engine->getRegistry();
+    if (!reg.valid(m_routedOutputEntity)) return;
+    auto* od = reg.try_get<OutputDisplay>(m_routedOutputEntity);
+    if (!od) return;
 
-    std::vector<glm::vec2> uvs;
-    uvs.reserve(m_points.size());
-    for (auto& pt : m_points) uvs.push_back(pt.projectorUV);
-    d3d->updateCalibrationPoints(uvs, m_activePointIdx);
-    d3d->setCalibrationCheckerboard(m_precisionCursor);
-    d3d->renderCalibrationOverlay();
+    auto& ov = od->calibrationOverlay;
+    ov.enabled         = true;
+    ov.numPoints       = static_cast<int32_t>(
+        std::min(m_points.size(), ov.points.size()));
+    ov.activeIndex     = m_activePointIdx;
+    ov.precisionCursor = m_precisionCursor;
+    for (int i = 0; i < ov.numPoints; ++i)
+        ov.points[i] = m_points[i].projectorUV;
 }
 
 void ProjectorCalibrationWindow::routeToOutput(entt::entity outputEntity) {
@@ -1124,21 +1122,14 @@ void ProjectorCalibrationWindow::routeToOutput(entt::entity outputEntity) {
     auto* od = reg.try_get<OutputDisplay>(outputEntity);
     if (!od) return;
 
-    // Create calibration overlay at output resolution
-    auto* rs  = m_engine->getRendererService();
-    auto* d3d = rs ? rs->getD3D12Renderer() : nullptr;
-    if (!d3d) return;
-
-    if (!d3d->createCalibrationOverlay(od->width, od->height)) return;
-
     m_routedOutputEntity = outputEntity;
     m_savedSourceScreen  = od->sourceScreen;
 
     // Route the projector to this output: OutputManager will render the
-    // projector's target screen content fullscreen to the physical display.
-    od->sourceProjector       = m_projectorEntity;
-    od->sourceScreen          = entt::null;
-    od->calibrationOverlaySlot = d3d->getCalibrationOverlaySlot();
+    // projector's target screen content fullscreen to the physical display,
+    // then draw the calibration crosshair overlay on top (show thread).
+    od->sourceProjector = m_projectorEntity;
+    od->sourceScreen    = entt::null;
 
     m_outputSize = glm::uvec2(od->width, od->height);
     syncOverlayPoints();
@@ -1149,12 +1140,13 @@ void ProjectorCalibrationWindow::unrouteOutput() {
         m_routedOutputEntity = entt::null;
         return;
     }
-    // Restore saved source and clear projector link
+    // Restore saved source and clear projector link + overlay state.
     auto& reg = m_engine->getRegistry();
     if (auto* od = reg.try_get<OutputDisplay>(m_routedOutputEntity)) {
-        od->sourceScreen           = m_savedSourceScreen;
-        od->sourceProjector        = entt::null;
-        od->calibrationOverlaySlot = UINT32_MAX;
+        od->sourceScreen                 = m_savedSourceScreen;
+        od->sourceProjector              = entt::null;
+        od->calibrationOverlay.enabled   = false;
+        od->calibrationOverlay.numPoints = 0;
     }
 
     m_routedOutputEntity = entt::null;

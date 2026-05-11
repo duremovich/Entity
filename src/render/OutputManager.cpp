@@ -899,15 +899,17 @@ void OutputManager::renderToOutput(
             }
         }
 
-        // Composite the calibration crosshair overlay on top, if active.
-        if (output.calibrationOverlaySlot != UINT32_MAX) {
-            TextureRef overlayTex = m_renderer->getComposeTargetTexture(output.calibrationOverlaySlot);
-            if (overlayTex.valid()) {
-                const glm::vec2 fsCorners[4] = {{-1.0f,1.0f},{1.0f,1.0f},{1.0f,-1.0f},{-1.0f,-1.0f}};
-                const glm::vec2 fsUVs[4]     = {{0.0f,0.0f},{1.0f,0.0f},{1.0f,1.0f},{0.0f,1.0f}};
-                m_renderer->drawMappingSurface(overlayTex, fsCorners, fsUVs, glm::vec4(0.0f),
-                                               1.0f, 1.0f, 1.0f);
-            }
+        // Draw the calibration crosshair overlay directly on top of the warped
+        // projector content. Runs on the show command list; the editor thread
+        // only updates the state through OutputDisplay::calibrationOverlay.
+        // See ADR-0014.
+        if (output.calibrationOverlay.enabled) {
+            const auto& ov = output.calibrationOverlay;
+            m_renderer->drawCalibrationOverlay(
+                &ov.points[0][0],
+                ov.numPoints,
+                ov.activeIndex,
+                ov.precisionCursor);
         }
 
         drawMarkerOverlay(m_renderer);

@@ -166,6 +166,14 @@ public:
                                    const glm::vec2 verts[3],
                                    const glm::vec2 uvs[3]) = 0;
 
+    // Draws the projector calibration crosshair overlay directly onto the
+    // currently-bound output RTV. Show-thread call (ADR-0014); records on the
+    // show command list. pointsXY is a flat array of [x0,y0,x1,y1,...] of
+    // length numPoints*2 (numPoints clamped to 16). Must be called between
+    // beginOutputFrame / endOutputFrame.
+    virtual void drawCalibrationOverlay(const float* pointsXY, int numPoints,
+                                         int activeIndex, bool precisionCursor) = 0;
+
     // ------------------------------------------------------------------------
     // Output windows (physical display outputs)
     //

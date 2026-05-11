@@ -4612,7 +4612,7 @@ bool D3D12Renderer::createCalibrationOverlayPSO() {
     psoDesc.SampleMask                            = UINT_MAX;
     psoDesc.PrimitiveTopologyType                 = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets                      = 1;
-    psoDesc.RTVFormats[0]                         = DXGI_FORMAT_R16G16B16A16_FLOAT; // compose target format
+    psoDesc.RTVFormats[0]                         = DXGI_FORMAT_R8G8B8A8_UNORM; // output swap chain backbuffer format
     psoDesc.SampleDesc.Count                      = 1;
     // No InputLayout — the VS uses SV_VertexID (no vertex buffer)
 
@@ -4760,77 +4760,43 @@ void D3D12Renderer::drawMeshTriangle(TextureRef texture,
     drawMeshTriangle(srv, verts, uvs);
 }
 
-bool D3D12Renderer::createCalibrationOverlay(uint32_t width, uint32_t height) {
-    destroyCalibrationOverlay();
-
+// Show-thread overlay draw. Records on tl_activeCmdList, which is the show
+// command list when called from OutputManager::renderToOutput between
+// beginOutputFrame/endOutputFrame. The PSO targets the output swap chain
+// backbuffer format (R8G8B8A8_UNORM) so the draw lands directly on the
+// physical projector output — no compose-target indirection, no cross-
+// thread compose-target race (ADR-0014).
+//
+// pointsXY: flat array of [x0,y0,x1,y1,...], length = numPoints * 2 floats.
+// numPoints clamps to 16 (root-constant capacity).
+void D3D12Renderer::drawCalibrationOverlay(const float* pointsXY, int numPoints,
+                                            int activeIndex, bool precisionCursor) {
+    // Lazily build the PSO on first use. PSO format is R8G8B8A8_UNORM
+    // (output backbuffer), set in createCalibrationOverlayPSO above.
     if (!m_calibRootSignature || !m_calibPipelineState) {
-        if (!createCalibrationOverlayPSO()) return false;
+        if (!createCalibrationOverlayPSO()) return;
+    }
+    if (!tl_activeCmdList) return;
+
+    CalibrationConstants c{};
+    c.numPts       = std::min(numPoints, 16);
+    c.activeIdx    = activeIndex;
+    c.checkerboard = precisionCursor ? 1 : 0;
+    c.pts.fill(0.0f);
+    for (int i = 0; i < c.numPts; ++i) {
+        c.pts[i * 2]     = pointsXY[i * 2];
+        c.pts[i * 2 + 1] = pointsXY[i * 2 + 1];
     }
 
-    m_calibOverlaySlot = createComposeTarget(width, height);
-    if (m_calibOverlaySlot == UINT32_MAX) {
-        std::cerr << "[CalibOverlay] createComposeTarget failed\n";
-        return false;
-    }
-    m_calibConstants = CalibrationConstants{};
-    return true;
-}
-
-void D3D12Renderer::destroyCalibrationOverlay() {
-    // The compose target slot is not freed here (no removeComposeTarget API yet),
-    // but we mark it invalid so renderCalibrationOverlay() becomes a no-op.
-    m_calibOverlaySlot = UINT32_MAX;
-    m_calibConstants   = CalibrationConstants{};
-}
-
-void D3D12Renderer::updateCalibrationPoints(const std::vector<glm::vec2>& uvPositions,
-                                             int activeIndex) {
-    m_calibConstants.numPts   = static_cast<int>(std::min(uvPositions.size(), size_t{16}));
-    m_calibConstants.activeIdx = activeIndex;
-
-    // Pack pairs into float4 layout expected by the PS:
-    //   pts_packed[i].xy = point 2i,  pts_packed[i].zw = point 2i+1
-    m_calibConstants.pts.fill(0.0f);
-    for (int i = 0; i < m_calibConstants.numPts; ++i) {
-        int slot = i * 2;  // offset into the float32 array
-        m_calibConstants.pts[slot]     = uvPositions[i].x;
-        m_calibConstants.pts[slot + 1] = uvPositions[i].y;
-    }
-}
-
-void D3D12Renderer::setCalibrationCheckerboard(bool enabled) {
-    m_calibConstants.checkerboard = enabled ? 1 : 0;
-}
-
-void D3D12Renderer::renderCalibrationOverlay() {
-    if (m_calibOverlaySlot == UINT32_MAX || !m_calibPipelineState) return;
-
-    beginComposeTarget(m_calibOverlaySlot);
-
-    // Clear to black
-    float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    // The compose target RTV was set in beginComposeTarget; clear it now.
-    // We need the RTV handle — reach through the compose target array.
-    // Use the command list ClearRenderTargetView via the known handle.
-    // beginComposeTarget already set the RTV and viewport; clear is the first draw.
-    // We use a draw-based "clear" by relying on the black background the PS returns.
-
-    // Set calibration PSO
     tl_activeCmdList->SetPipelineState(m_calibPipelineState.Get());
     tl_activeCmdList->SetGraphicsRootSignature(m_calibRootSignature.Get());
-
-    // Upload calibration constants as root 32-bit constants (slot 0)
     tl_activeCmdList->SetGraphicsRoot32BitConstants(
         0,
         sizeof(CalibrationConstants) / 4,
-        &m_calibConstants,
+        &c,
         0);
-
-    // Draw fullscreen triangle (3 vertices, no VB)
     tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
-
-    endComposeTarget();
 }
 
 // =============================================================================

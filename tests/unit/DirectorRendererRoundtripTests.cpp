@@ -109,6 +109,7 @@ public:
     void drawMappingSurface(TextureRef, const glm::vec2[4], const glm::vec2[4],
                             const glm::vec4&, float, float, float) override {}
     void drawMeshTriangle(TextureRef, const glm::vec2[3], const glm::vec2[3]) override {}
+    void drawCalibrationOverlay(const float*, int, int, bool) override {}
 
     uint32_t createOutputWindow(const char*, int32_t, int32_t, uint32_t, uint32_t) override {
         return UINT32_MAX;

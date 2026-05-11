@@ -1,11 +1,30 @@
 #pragma once
 
 #include "../core/Types.hpp"
-#include <string>
+#include <array>
 #include <cstdint>
+#include <string>
 #include <entt/entt.hpp>
+#include <glm/glm.hpp>
 
 namespace entity {
+
+/**
+ * Calibration overlay state for a projector being calibrated to this output.
+ * The crosshair pattern + optional precision checkerboard is drawn directly
+ * on top of the projector content on the show thread. Editor thread mutates
+ * these fields when the user interacts with ProjectorCalibrationWindow; the
+ * snapshot baker copies them into bus::OutputSnapshot.
+ *
+ * Runtime state only — not persisted to project files.
+ */
+struct CalibrationOverlay {
+    bool                       enabled{false};
+    int32_t                    numPoints{0};
+    std::array<glm::vec2, 16>  points{};
+    int32_t                    activeIndex{-1};
+    bool                       precisionCursor{false};
+};
 
 /**
  * Type of output display.
@@ -145,10 +164,11 @@ struct OutputDisplay {
     // sourceScreen. entt::null = not projector-driven.
     entt::entity sourceProjector{entt::null};
 
-    // Compose target slot for the calibration crosshair overlay. UINT32_MAX = no
-    // overlay. Set by ProjectorCalibrationWindow when routing to this output;
-    // OutputManager composites it on top of the projector view.
-    uint32_t calibrationOverlaySlot{UINT32_MAX};
+    // Calibration crosshair overlay state. enabled = false means no overlay.
+    // Set by ProjectorCalibrationWindow when routing to this output; the show
+    // thread reads this through the OutputSnapshot and draws the overlay
+    // directly onto the projector output RTV.
+    CalibrationOverlay calibrationOverlay{};
 
     /**
      * Get the aspect ratio of the output.

@@ -143,23 +143,17 @@ public:
     // -----------------------------------------------------------------------
     // Projector calibration overlay
     //
-    // Creates a dedicated compose target that shows a black field with
-    // crosshair markers at the given projector-UV positions. Route the
-    // slot returned by getCalibrationOverlaySlot() to an OutputDisplay to
-    // show calibration crosshairs on the physical projector output.
+    // Show-thread draw: records on the currently-bound output RTV
+    // (R8G8B8A8_UNORM) between beginOutputFrame/endOutputFrame. Draws crosshair
+    // markers at the given projector-UV positions; when precisionCursor is
+    // true, draws a quadrant checkerboard centered on the active crosshair
+    // for sub-pixel placement. All state travels via parameters — no renderer-
+    // member state shared across threads.
+    //
+    // pointsXY: flat array [x0,y0,x1,y1,...] of length numPoints*2 (max 32 floats).
     // -----------------------------------------------------------------------
-    bool     createCalibrationOverlay(uint32_t width, uint32_t height);
-    void     destroyCalibrationOverlay();
-    void     updateCalibrationPoints(const std::vector<glm::vec2>& uvPositions, int activeIndex);
-    // Toggle Disguise-style precision cursor: when on, the calibration overlay
-    // fills the entire frame with a quadrant checkerboard (white/black/black/white)
-    // centered on the active crosshair. Lets the user position to sub-pixel
-    // accuracy by aligning the sharp quadrant intersection against a physical
-    // feature instead of a fuzzy 5-pixel cross.
-    void     setCalibrationCheckerboard(bool enabled);
-    void     renderCalibrationOverlay();
-    uint32_t getCalibrationOverlaySlot() const { return m_calibOverlaySlot; }
-    bool     hasCalibrationOverlay() const { return m_calibOverlaySlot != UINT32_MAX; }
+    void drawCalibrationOverlay(const float* pointsXY, int numPoints,
+                                int activeIndex, bool precisionCursor) override;
 
     // -----------------------------------------------------------------------
     // Stage 3D offscreen render target — editor thread only (ADR-0014).
@@ -694,8 +688,6 @@ private:
     ComPtr<ID3D12RootSignature>  m_meshTriRootSignature;
     ComPtr<ID3D12PipelineState>  m_meshTriPipelineState;
     bool createMeshTrianglePSO();
-    uint32_t                     m_calibOverlaySlot{UINT32_MAX};
-    CalibrationConstants         m_calibConstants{};
     bool createCalibrationOverlayPSO();
     bool tonemapAndReadbackComposeTarget(uint32_t slot,
                                           uint32_t& outWidth,

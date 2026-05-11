@@ -319,7 +319,22 @@ ojson encode(const OutputSnapshot& o) {
     j["gamma"]                = o.gamma;
     j["sourceProjector"]      = o.sourceProjector;
     j["sourceScreen"]         = o.sourceScreen;
-    j["calibrationOverlaySlot"] = o.calibrationOverlaySlot;
+    {
+        ojson co = ojson::object();
+        co["enabled"]         = o.calibrationOverlay.enabled;
+        co["numPoints"]       = o.calibrationOverlay.numPoints;
+        co["activeIndex"]     = o.calibrationOverlay.activeIndex;
+        co["precisionCursor"] = o.calibrationOverlay.precisionCursor;
+        auto pts = ojson::array();
+        for (const auto& p : o.calibrationOverlay.points) {
+            auto pair = ojson::array();
+            pair.push_back(p[0]);
+            pair.push_back(p[1]);
+            pts.push_back(std::move(pair));
+        }
+        co["points"]          = std::move(pts);
+        j["calibrationOverlay"] = std::move(co);
+    }
     j["windowX"]              = o.windowX;
     j["windowY"]              = o.windowY;
     j["outputIndex"]          = o.outputIndex;
@@ -345,7 +360,19 @@ OutputSnapshot decodeOutputSnapshot(const json& j) {
     o.gamma                = j.at("gamma").get<float>();
     o.sourceProjector      = j.at("sourceProjector").get<std::uint64_t>();
     o.sourceScreen         = j.at("sourceScreen").get<std::uint64_t>();
-    o.calibrationOverlaySlot = j.at("calibrationOverlaySlot").get<std::uint32_t>();
+    if (j.contains("calibrationOverlay")) {
+        const auto& co = j.at("calibrationOverlay");
+        o.calibrationOverlay.enabled         = co.at("enabled").get<bool>();
+        o.calibrationOverlay.numPoints       = co.at("numPoints").get<std::int32_t>();
+        o.calibrationOverlay.activeIndex     = co.at("activeIndex").get<std::int32_t>();
+        o.calibrationOverlay.precisionCursor = co.at("precisionCursor").get<bool>();
+        const auto& pts = co.at("points");
+        const size_t n = std::min<size_t>(pts.size(), o.calibrationOverlay.points.size());
+        for (size_t i = 0; i < n; ++i) {
+            o.calibrationOverlay.points[i][0] = pts[i][0].get<float>();
+            o.calibrationOverlay.points[i][1] = pts[i][1].get<float>();
+        }
+    }
     o.windowX              = j.at("windowX").get<std::int32_t>();
     o.windowY              = j.at("windowY").get<std::int32_t>();
     if (j.contains("outputIndex"))

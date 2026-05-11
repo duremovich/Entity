@@ -83,6 +83,16 @@ struct ProjectorSnapshot {
     std::vector<CalibrationPointSnapshot> calibrationPoints;
 };
 
+// Calibration overlay snapshot — mirrors OutputDisplay::CalibrationOverlay
+// but uses plain types (entity-bus has no glm dependency, per bus CLAUDE.md).
+struct CalibrationOverlaySnapshot {
+    bool                                       enabled{false};
+    std::int32_t                               numPoints{0};
+    std::array<std::array<float, 2>, 16>       points{};
+    std::int32_t                               activeIndex{-1};
+    bool                                       precisionCursor{false};
+};
+
 // One-frame snapshot of an OutputDisplay entity.
 struct OutputSnapshot {
     std::uint64_t entity{0};
@@ -104,7 +114,7 @@ struct OutputSnapshot {
     // Source routing: which projector / screen drives this output.
     std::uint64_t sourceProjector{0}; // 0 = null
     std::uint64_t sourceScreen{0};    // 0 = null
-    std::uint32_t calibrationOverlaySlot{UINT32_MAX};
+    CalibrationOverlaySnapshot calibrationOverlay{};
     // Window desktop position (for windowed physical outputs)
     std::int32_t  windowX{0};
     std::int32_t  windowY{0};
