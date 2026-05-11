@@ -230,3 +230,33 @@ set_tests_properties(integration_object_animation_layer PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# Phase 3.6 — OA layer + AnimatedProperties persistence round-trip (v15 schema).
+# Save creates an OA layer targeting a Screen with a PositionX keyframe; load
+# asserts the keyframe drove the correct output. No pixel comparison.
+add_test(
+    NAME integration_oa_layer_persistence_save
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/oa_layer_persistence_save.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_oa_layer_persistence_save PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+add_test(
+    NAME integration_oa_layer_persistence_load
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/oa_layer_persistence_load.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_oa_layer_persistence_load PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+set_tests_properties(integration_oa_layer_persistence_save PROPERTIES
+    FIXTURES_SETUP oa_layer_persistence_data)
+set_tests_properties(integration_oa_layer_persistence_load PROPERTIES
+    FIXTURES_REQUIRED oa_layer_persistence_data)

@@ -6,8 +6,10 @@
 
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -89,6 +91,114 @@ static ProjectManager::PathKind jsonToPathKind(const std::string& s) {
     return ProjectManager::PathKind::Linked;
 }
 
+static std::string animatablePropertyToJson(AnimatableProperty p) {
+    switch (p) {
+        case AnimatableProperty::PositionX: return "PositionX";
+        case AnimatableProperty::PositionY: return "PositionY";
+        case AnimatableProperty::Rotation:  return "Rotation";
+        case AnimatableProperty::ScaleX:    return "ScaleX";
+        case AnimatableProperty::ScaleY:    return "ScaleY";
+        case AnimatableProperty::Opacity:   return "Opacity";
+        case AnimatableProperty::PositionZ: return "PositionZ";
+        case AnimatableProperty::RotationX: return "RotationX";
+        case AnimatableProperty::RotationY: return "RotationY";
+        case AnimatableProperty::ScaleZ:    return "ScaleZ";
+        default: return "PositionX";
+    }
+}
+
+static AnimatableProperty jsonToAnimatableProperty(const std::string& s) {
+    if (s == "PositionX") return AnimatableProperty::PositionX;
+    if (s == "PositionY") return AnimatableProperty::PositionY;
+    if (s == "Rotation")  return AnimatableProperty::Rotation;
+    if (s == "ScaleX")    return AnimatableProperty::ScaleX;
+    if (s == "ScaleY")    return AnimatableProperty::ScaleY;
+    if (s == "Opacity")   return AnimatableProperty::Opacity;
+    if (s == "PositionZ") return AnimatableProperty::PositionZ;
+    if (s == "RotationX") return AnimatableProperty::RotationX;
+    if (s == "RotationY") return AnimatableProperty::RotationY;
+    if (s == "ScaleZ")    return AnimatableProperty::ScaleZ;
+    return AnimatableProperty::PositionX;
+}
+
+static std::string interpolationTypeToJson(InterpolationType t) {
+    switch (t) {
+        case InterpolationType::Linear:    return "linear";
+        case InterpolationType::Step:      return "step";
+        case InterpolationType::EaseIn:    return "ease_in";
+        case InterpolationType::EaseOut:   return "ease_out";
+        case InterpolationType::EaseInOut: return "ease_in_out";
+        default: return "linear";
+    }
+}
+
+static InterpolationType jsonToInterpolationType(const std::string& s) {
+    if (s == "step")       return InterpolationType::Step;
+    if (s == "ease_in")    return InterpolationType::EaseIn;
+    if (s == "ease_out")   return InterpolationType::EaseOut;
+    if (s == "ease_in_out") return InterpolationType::EaseInOut;
+    return InterpolationType::Linear;
+}
+
+// Serialize AnimatedProperties keyframe tracks to JSON. Returns an empty array
+// if the component is absent. Callers embed the result as "animatedProperties".
+static json serializeAnimatedProperties(const AnimatedProperties* ap) {
+    json tracksJson = json::array();
+    if (!ap) return tracksJson;
+    for (const auto& track : ap->tracks) {
+        json tj;
+        tj["property"] = animatablePropertyToJson(track.property);
+        tj["enabled"]  = track.enabled;
+        json kfsJson = json::array();
+        for (const auto& kf : track.keyframes) {
+            json kj;
+            kj["frame"]         = kf.frame;
+            kj["value"]         = kf.value;
+            kj["interpolation"] = interpolationTypeToJson(kf.interpolation);
+            kj["easeIn"]        = kf.easeIn;
+            kj["easeOut"]       = kf.easeOut;
+            kfsJson.push_back(kj);
+        }
+        tj["keyframes"] = kfsJson;
+        tracksJson.push_back(tj);
+    }
+    return tracksJson;
+}
+
+// Deserialize AnimatedProperties keyframe tracks from JSON. Idempotent — can
+// be called on any entry that has an "animatedProperties" array; skips
+// gracefully if the key is missing (pre-v15 entries or entries with no
+// keyframes).
+static void deserializeAnimatedProperties(const json& entryJson,
+                                          AnimatedProperties& ap) {
+    if (!entryJson.contains("animatedProperties")) return;
+    const auto& tracksJson = entryJson["animatedProperties"];
+    if (!tracksJson.is_array()) return;
+    ap.tracks.clear();
+    for (const auto& tj : tracksJson) {
+        AnimatableProperty prop = jsonToAnimatableProperty(tj.value("property", "PositionX"));
+        auto& track = ap.getOrCreateTrack(prop);
+        track.enabled = tj.value("enabled", true);
+        if (tj.contains("keyframes") && tj["keyframes"].is_array()) {
+            for (const auto& kj : tj["keyframes"]) {
+                FrameNumber frame = kj.value("frame", static_cast<FrameNumber>(0));
+                float value = kj.value("value", 0.0f);
+                InterpolationType interp = jsonToInterpolationType(
+                    kj.value("interpolation", std::string{"linear"}));
+                track.addKeyframe(frame, value, interp);
+                // Restore bezier handles (post-addKeyframe the kf is guaranteed
+                // to exist at that frame — find it and patch easeIn/Out).
+                auto it = std::lower_bound(track.keyframes.begin(), track.keyframes.end(), frame,
+                    [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+                if (it != track.keyframes.end() && it->frame == frame) {
+                    it->easeIn  = kj.value("easeIn",  0.42f);
+                    it->easeOut = kj.value("easeOut", 0.58f);
+                }
+            }
+        }
+    }
+}
+
 // Helper: String to BlendMode from JSON
 static BlendMode jsonToBlendMode(const std::string& str) {
     if (str == "normal") return BlendMode::Normal;
@@ -138,75 +248,123 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             json trackJson;
             trackJson["index"] = track->trackIndex;
 
-            // Clip layers in this track
-            json clipsJson = json::array();
-            for (entt::entity clipEntity : track->layers) {
-                const auto* clip = registry.try_get<Clip>(clipEntity);
-                if (!clip) continue;
+            // Layers in this track (v15: unified "layers[]" replacing "clips[]").
+            // Each entry has a "kind" discriminator: "clip" or "object_animation".
+            json layersJson = json::array();
+            for (entt::entity layerEntity : track->layers) {
+                const auto* oal = registry.try_get<ObjectAnimationLayer>(layerEntity);
+                const auto* clip = registry.try_get<Clip>(layerEntity);
 
-                json clipJson;
+                if (clip && !oal) {
+                    // --- kind: "clip" ---
+                    json clipJson;
+                    clipJson["kind"] = "clip";
 
-                // Clip data
-                clipJson["filepath"] = clip->filepath;
-                clipJson["mediaType"] = mediaTypeToJson(clip->mediaType);
-                clipJson["startFrame"] = clip->startFrame;
-                clipJson["duration"] = clip->duration;
-                clipJson["mediaStartFrame"] = clip->mediaStartFrame;
-                clipJson["mediaOutFrame"] = clip->mediaOutFrame;
-                clipJson["totalMediaFrames"] = clip->totalMediaFrames;
-                clipJson["playbackMode"] = static_cast<int>(clip->playbackMode);
-                clipJson["sectionBehavior"] =
-                    (clip->sectionBehavior == SectionBehavior::Locked) ? "Locked" : "Normal";
-                clipJson["framerate"] = clip->framerate;
-                clipJson["width"] = clip->width;
-                clipJson["height"] = clip->height;
-                clipJson["hasAlpha"] = clip->hasAlpha;
-                clipJson["frameBlending"] = clip->frameBlending;
+                    clipJson["filepath"] = clip->filepath;
+                    clipJson["mediaType"] = mediaTypeToJson(clip->mediaType);
+                    clipJson["startFrame"] = clip->startFrame;
+                    clipJson["duration"] = clip->duration;
+                    clipJson["mediaStartFrame"] = clip->mediaStartFrame;
+                    clipJson["mediaOutFrame"] = clip->mediaOutFrame;
+                    clipJson["totalMediaFrames"] = clip->totalMediaFrames;
+                    clipJson["playbackMode"] = static_cast<int>(clip->playbackMode);
+                    clipJson["sectionBehavior"] =
+                        (clip->sectionBehavior == SectionBehavior::Locked) ? "Locked" : "Normal";
+                    clipJson["framerate"] = clip->framerate;
+                    clipJson["width"] = clip->width;
+                    clipJson["height"] = clip->height;
+                    clipJson["hasAlpha"] = clip->hasAlpha;
+                    clipJson["frameBlending"] = clip->frameBlending;
 
-                // targetScreen: persist by Screen name since entt::entity
-                // values aren't stable across sessions. Empty string = null
-                // (clip renders to all screens), matching the default.
-                std::string targetScreenName;
-                if (clip->targetScreen != entt::null &&
-                    registry.valid(clip->targetScreen) &&
-                    registry.all_of<Screen>(clip->targetScreen)) {
-                    targetScreenName = registry.get<Screen>(clip->targetScreen).name;
+                    // targetScreen: persist by Screen name since entt::entity
+                    // values aren't stable across sessions. Empty string = null
+                    // (clip renders to all screens), matching the default.
+                    std::string targetScreenName;
+                    if (clip->targetScreen != entt::null &&
+                        registry.valid(clip->targetScreen) &&
+                        registry.all_of<Screen>(clip->targetScreen)) {
+                        targetScreenName = registry.get<Screen>(clip->targetScreen).name;
+                    }
+                    clipJson["targetScreenName"] = targetScreenName;
+
+                    // Transform component (if exists)
+                    const auto* transform = registry.try_get<Transform>(layerEntity);
+                    if (transform) {
+                        clipJson["transform"]["position"] = {
+                            transform->position.x,
+                            transform->position.y,
+                            transform->position.z
+                        };
+                        clipJson["transform"]["rotation"] = {
+                            transform->rotation.x,
+                            transform->rotation.y,
+                            transform->rotation.z
+                        };
+                        clipJson["transform"]["scale"] = {
+                            transform->scale.x,
+                            transform->scale.y,
+                            transform->scale.z
+                        };
+                    }
+
+                    // MediaLayer component (if exists)
+                    const auto* mediaLayer = registry.try_get<MediaLayer>(layerEntity);
+                    if (mediaLayer) {
+                        clipJson["layer"]["zOrder"] = mediaLayer->zOrder;
+                        clipJson["layer"]["opacity"] = mediaLayer->opacity;
+                        clipJson["layer"]["blendMode"] = blendModeToJson(mediaLayer->blendMode);
+                        clipJson["layer"]["visible"] = mediaLayer->visible;
+                    }
+
+                    // AnimatedProperties (if any keyframes exist)
+                    const auto* ap = registry.try_get<AnimatedProperties>(layerEntity);
+                    clipJson["animatedProperties"] = serializeAnimatedProperties(ap);
+
+                    layersJson.push_back(clipJson);
+
+                } else if (oal) {
+                    // --- kind: "object_animation" ---
+                    json oaJson;
+                    oaJson["kind"] = "object_animation";
+
+                    // Layer placement fields. ObjectAnimationLayer doesn't own
+                    // startFrame/duration — those live on the Layer component.
+                    const auto* lay = registry.try_get<Layer>(layerEntity);
+                    oaJson["startFrame"] = lay ? lay->startFrame : 0;
+                    oaJson["duration"]   = lay ? lay->duration   : 0;
+                    oaJson["name"]       = lay ? lay->name       : "";
+                    if (lay) {
+                        oaJson["color"] = { lay->color[0], lay->color[1],
+                                            lay->color[2], lay->color[3] };
+                    }
+
+                    oaJson["sectionBehavior"] =
+                        (oal->sectionBehavior == SectionBehavior::Locked) ? "Locked" : "Normal";
+
+                    // target: persist by Screen name (or Prop name if the
+                    // target entity has a Prop component). entt::entity
+                    // values are not stable across sessions.
+                    std::string targetName;
+                    if (oal->target != entt::null && registry.valid(oal->target)) {
+                        if (registry.all_of<Screen>(oal->target)) {
+                            targetName = registry.get<Screen>(oal->target).name;
+                        } else if (registry.all_of<Prop>(oal->target)) {
+                            targetName = registry.get<Prop>(oal->target).name;
+                        }
+                    }
+                    oaJson["targetName"] = targetName;
+
+                    // AnimatedProperties keyframe tracks
+                    const auto* ap = registry.try_get<AnimatedProperties>(layerEntity);
+                    oaJson["animatedProperties"] = serializeAnimatedProperties(ap);
+
+                    layersJson.push_back(oaJson);
                 }
-                clipJson["targetScreenName"] = targetScreenName;
-
-                // Transform component (if exists)
-                const auto* transform = registry.try_get<Transform>(clipEntity);
-                if (transform) {
-                    clipJson["transform"]["position"] = {
-                        transform->position.x,
-                        transform->position.y,
-                        transform->position.z
-                    };
-                    clipJson["transform"]["rotation"] = {
-                        transform->rotation.x,
-                        transform->rotation.y,
-                        transform->rotation.z
-                    };
-                    clipJson["transform"]["scale"] = {
-                        transform->scale.x,
-                        transform->scale.y,
-                        transform->scale.z
-                    };
-                }
-
-                // MediaLayer component (if exists)
-                const auto* layer = registry.try_get<MediaLayer>(clipEntity);
-                if (layer) {
-                    clipJson["layer"]["zOrder"] = layer->zOrder;
-                    clipJson["layer"]["opacity"] = layer->opacity;
-                    clipJson["layer"]["blendMode"] = blendModeToJson(layer->blendMode);
-                    clipJson["layer"]["visible"] = layer->visible;
-                }
-
-                clipsJson.push_back(clipJson);
+                // Entities with neither Clip nor ObjectAnimationLayer are
+                // unrecognized and skipped — forward-compat guard.
             }
 
-            trackJson["clips"] = clipsJson;
+            trackJson["layers"] = layersJson;
             tracksJson.push_back(trackJson);
         }
 
@@ -942,9 +1100,91 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 auto* track = registry.try_get<TimelineTrack>(trackEntity);
                 if (!track) continue;
 
-                // Load clips
-                if (trackJson.contains("clips")) {
-                    for (const auto& clipJson : trackJson["clips"]) {
+                // Accept "layers" (v15) or "clips" (legacy v14). When reading
+                // legacy "clips", every entry is treated as kind="clip".
+                bool isLegacyClipsKey = false;
+                const json* entriesPtr = nullptr;
+                if (trackJson.contains("layers")) {
+                    entriesPtr = &trackJson["layers"];
+                } else if (trackJson.contains("clips")) {
+                    entriesPtr = &trackJson["clips"];
+                    isLegacyClipsKey = true;
+                }
+
+                if (entriesPtr) {
+                    for (const auto& entryJson : *entriesPtr) {
+                        // Determine kind. Legacy "clips[]" entries are always Clip.
+                        const std::string kind = isLegacyClipsKey
+                            ? "clip"
+                            : entryJson.value("kind", "clip");
+
+                        if (kind == "object_animation") {
+                            // --- ObjectAnimationLayer ---
+                            entt::entity layerEntity = registry.create();
+
+                            auto& lay = registry.emplace<Layer>(layerEntity);
+                            lay.kind       = Layer::Kind::ObjectAnimation;
+                            lay.startFrame = entryJson.value("startFrame", static_cast<FrameNumber>(0));
+                            lay.duration   = entryJson.value("duration",   static_cast<FrameNumber>(0));
+                            lay.name       = entryJson.value("name", std::string{});
+                            if (auto* tt = registry.try_get<TimelineTrack>(trackEntity)) {
+                                lay.trackIndex = tt->trackIndex;
+                            }
+                            if (entryJson.contains("color") && entryJson["color"].is_array()
+                                && entryJson["color"].size() >= 4) {
+                                lay.color = { entryJson["color"][0].get<float>(),
+                                              entryJson["color"][1].get<float>(),
+                                              entryJson["color"][2].get<float>(),
+                                              entryJson["color"][3].get<float>() };
+                            }
+
+                            auto& oal = registry.emplace<ObjectAnimationLayer>(layerEntity);
+                            {
+                                const auto sb = entryJson.value("sectionBehavior",
+                                                                std::string{"Normal"});
+                                oal.sectionBehavior = (sb == "Locked")
+                                    ? SectionBehavior::Locked : SectionBehavior::Normal;
+                            }
+
+                            // Resolve target by name. Try Screen first, then
+                            // Prop. Missing / stale name leaves target null —
+                            // the user can re-assign in the Properties panel.
+                            const std::string targetName = entryJson.value("targetName", "");
+                            oal.target = entt::null;
+                            if (!targetName.empty()) {
+                                for (auto [se, s] : registry.view<Screen>().each()) {
+                                    if (s.name == targetName) { oal.target = se; break; }
+                                }
+                                if (oal.target == entt::null) {
+                                    for (auto [pe, p] : registry.view<Prop>().each()) {
+                                        if (p.name == targetName) { oal.target = pe; break; }
+                                    }
+                                }
+                            }
+
+                            // AnimatedProperties (absent = no keyframes yet)
+                            if (entryJson.contains("animatedProperties")
+                                && entryJson["animatedProperties"].is_array()
+                                && !entryJson["animatedProperties"].empty()) {
+                                auto& ap = registry.emplace<AnimatedProperties>(layerEntity);
+                                deserializeAnimatedProperties(entryJson, ap);
+                            }
+
+                            track->layers.push_back(layerEntity);
+                            std::cout << "[ProjectSerializer] Loaded OA layer: "
+                                      << lay.name << std::endl;
+                            continue;
+                        }
+
+                        // --- kind: "clip" ---
+                        if (kind != "clip") {
+                            std::cerr << "[ProjectSerializer] Unknown layer kind '"
+                                      << kind << "' — skipping" << std::endl;
+                            continue;
+                        }
+                        // Alias entryJson as clipJson for readability.
+                        const json& clipJson = entryJson;
+
                         // Create clip entity
                         entt::entity clipEntity = registry.create();
 
@@ -1065,8 +1305,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             layer.visible = layerJson.value("visible", true);
                         }
 
-                        // Retroattach Layer (commit 3.2 migration — v14 schema
-                        // doesn't emit kind yet, default to Clip).
+                        // Attach Layer component. v14 legacy "clips[]" entries
+                        // default to Kind::Clip. v15 "layers[]" always emits
+                        // "kind"; we still read it tolerantly for forward compat.
                         {
                             auto& lay = registry.emplace<Layer>(clipEntity);
                             lay.kind       = Layer::Kind::Clip;
@@ -1075,17 +1316,24 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             if (auto* tt = registry.try_get<TimelineTrack>(trackEntity)) {
                                 lay.trackIndex = tt->trackIndex;
                             }
-                            // Tolerant read: accept a "kind" field if present; currently
-                            // only "clip" is emitted (3.6 will add object_animation).
                             if (clipJson.contains("kind")) {
                                 const std::string kindStr = clipJson.value("kind", "clip");
-                                if (kindStr == "object_animation") {
-                                    lay.kind = Layer::Kind::ObjectAnimation;
-                                } else if (kindStr == "generative") {
+                                if (kindStr == "generative") {
                                     lay.kind = Layer::Kind::Generative;
                                 }
-                                // "clip" (default) already set above.
+                                // "clip" is already set; "object_animation" at this
+                                // path is impossible (handled by the OA branch above).
                             }
+                        }
+
+                        // Restore AnimatedProperties keyframes (v15+). Pre-v15
+                        // clip entries have an empty array; pre-v14 entries
+                        // lack the key entirely — both are no-ops here.
+                        if (clipJson.contains("animatedProperties")
+                            && clipJson["animatedProperties"].is_array()
+                            && !clipJson["animatedProperties"].empty()) {
+                            auto& ap = registry.emplace_or_replace<AnimatedProperties>(clipEntity);
+                            deserializeAnimatedProperties(clipJson, ap);
                         }
 
                         // Add layer to track

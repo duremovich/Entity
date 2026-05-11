@@ -1,0 +1,58 @@
+{
+    "version": 1,
+    "description": "Phase 3.6 — OA layer persistence round-trip (load half). Loads test_output/oa_layer_persistence/test.entity and asserts: OAPersistScreen exists, the OA layer on track 1 survived, and its PositionX keyframe (value 7.5 at frame 0) round-tripped correctly by playing briefly and checking ObjectAnimationOutput + AssertScreenSnapshot.",
+    "commands": [
+        {
+            "type": "LoadProject",
+            "filepath": "test_output/oa_layer_persistence/test.entity"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 4
+        },
+        {
+            "type": "AssertScreenExists",
+            "name": "OAPersistScreen"
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.2
+        },
+        {
+            "type": "Pause"
+        },
+        {
+            "type": "AssertObjectAnimationOutput",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "field": "positionX",
+            "expected": 7.5,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertObjectAnimationOutput",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "field": "hasPosition",
+            "expected": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAPersistScreen",
+            "field": "positionX",
+            "expected": 7.5,
+            "tolerance": 0.01
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

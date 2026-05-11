@@ -11,9 +11,13 @@
 
 #include <gtest/gtest.h>
 
+#include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
+#include "entity/components/TimelineTrack.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -771,4 +775,181 @@ TEST(ProjectSerializer, V7ProjectLoadsWithNoProjectors) {
         << entity::ProjectSerializer::getLastError();
 
     EXPECT_EQ(registry.view<entity::Projector>().size(), 0u);
+}
+
+// --- Phase 3.6 — v15 OA layer serialization + v14 legacy migration --------
+
+TEST(ProjectSerializer, OALayerRoundTrip) {
+    // v15 round-trip: save an OA layer with a PositionX keyframe targeting a
+    // Screen; reload and confirm Layer + ObjectAnimationLayer + keyframe all
+    // survive intact.
+    TempFile tf("oa_layer_roundtrip");
+
+    entt::entity screenEntity = entt::null;
+    entt::entity oaEntity     = entt::null;
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        // Create a Screen target.
+        screenEntity = registry.create();
+        auto& screen = registry.emplace<entity::Screen>(screenEntity);
+        screen.name = "TestScreen";
+
+        // Create a timeline track and OA layer entity.
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        entity::TimelineTrack* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        if (!track) { FAIL() << "createTrack returned entity with no TimelineTrack"; }
+
+        oaEntity = registry.create();
+
+        auto& lay = registry.emplace<entity::Layer>(oaEntity);
+        lay.kind       = entity::Layer::Kind::ObjectAnimation;
+        lay.startFrame = 10;
+        lay.duration   = 300;
+        lay.trackIndex = track->trackIndex;
+        lay.name       = "Spin";
+        lay.color      = {0.6f, 0.2f, 0.8f, 1.0f};
+
+        auto& oal = registry.emplace<entity::ObjectAnimationLayer>(oaEntity);
+        oal.target          = screenEntity;
+        oal.sectionBehavior = entity::SectionBehavior::Locked;
+
+        auto& ap = registry.emplace<entity::AnimatedProperties>(oaEntity);
+        ap.addKeyframe(entity::AnimatableProperty::PositionX, 0,   2.5f);
+        ap.addKeyframe(entity::AnimatableProperty::PositionX, 150, 8.0f);
+
+        // EaseInOut + PositionZ: exercises interpolationTypeToJson("ease_in_out"),
+        // animatablePropertyToJson("PositionZ"), and easeIn/easeOut persistence.
+        ap.addKeyframe(entity::AnimatableProperty::PositionZ, 0,   0.0f,
+                       entity::InterpolationType::EaseInOut);
+        ap.addKeyframe(entity::AnimatableProperty::PositionZ, 100, 5.0f,
+                       entity::InterpolationType::EaseInOut);
+        {
+            // Patch non-default easeIn/easeOut so deserialization silence isn't hidden.
+            auto& posZTrack = ap.getOrCreateTrack(entity::AnimatableProperty::PositionZ);
+            posZTrack.keyframes[0].easeIn  = 0.25f;
+            posZTrack.keyframes[0].easeOut = 0.75f;
+        }
+
+        track->layers.push_back(oaEntity);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        // Find the OA layer entity.
+        entt::entity loaded = entt::null;
+        for (auto [e, oal, lay] :
+             registry.view<entity::ObjectAnimationLayer, entity::Layer>().each()) {
+            if (lay.name == "Spin") { loaded = e; break; }
+        }
+        ASSERT_TRUE(registry.valid(loaded)) << "OA layer 'Spin' not found after load";
+
+        const auto& lay = registry.get<entity::Layer>(loaded);
+        EXPECT_EQ(lay.startFrame, 10);
+        EXPECT_EQ(lay.duration,   300);
+        EXPECT_EQ(lay.name,       "Spin");
+        EXPECT_NEAR(lay.color[0], 0.6f, 0.001f);
+
+        const auto& oal = registry.get<entity::ObjectAnimationLayer>(loaded);
+        EXPECT_EQ(oal.sectionBehavior, entity::SectionBehavior::Locked);
+
+        // Target is resolved by Screen name — must point at "TestScreen".
+        ASSERT_TRUE(registry.valid(oal.target)) << "OA layer target is null after load";
+        EXPECT_EQ(registry.get<entity::Screen>(oal.target).name, "TestScreen");
+
+        // AnimatedProperties keyframes must have survived.
+        const auto* ap = registry.try_get<entity::AnimatedProperties>(loaded);
+        ASSERT_NE(ap, nullptr) << "AnimatedProperties missing after load";
+
+        // PositionX — Linear interpolation, two keyframes.
+        const auto* pxTrack = ap->getTrack(entity::AnimatableProperty::PositionX);
+        ASSERT_NE(pxTrack, nullptr) << "PositionX track missing after load";
+        ASSERT_EQ(pxTrack->keyframes.size(), 2u);
+        EXPECT_EQ(pxTrack->keyframes[0].frame, 0);
+        EXPECT_NEAR(pxTrack->keyframes[0].value, 2.5f, 0.001f);
+        EXPECT_EQ(pxTrack->keyframes[0].interpolation, entity::InterpolationType::Linear);
+        EXPECT_EQ(pxTrack->keyframes[1].frame, 150);
+        EXPECT_NEAR(pxTrack->keyframes[1].value, 8.0f, 0.001f);
+
+        // PositionZ — EaseInOut interpolation + custom easeIn/easeOut values.
+        const auto* pzTrack = ap->getTrack(entity::AnimatableProperty::PositionZ);
+        ASSERT_NE(pzTrack, nullptr) << "PositionZ track missing after load";
+        ASSERT_EQ(pzTrack->keyframes.size(), 2u);
+        EXPECT_EQ(pzTrack->keyframes[0].frame, 0);
+        EXPECT_NEAR(pzTrack->keyframes[0].value, 0.0f, 0.001f);
+        EXPECT_EQ(pzTrack->keyframes[0].interpolation, entity::InterpolationType::EaseInOut);
+        EXPECT_NEAR(pzTrack->keyframes[0].easeIn,  0.25f, 0.001f);
+        EXPECT_NEAR(pzTrack->keyframes[0].easeOut, 0.75f, 0.001f);
+        EXPECT_EQ(pzTrack->keyframes[1].frame, 100);
+        EXPECT_NEAR(pzTrack->keyframes[1].value, 5.0f, 0.001f);
+        EXPECT_EQ(pzTrack->keyframes[1].interpolation, entity::InterpolationType::EaseInOut);
+    }
+}
+
+TEST(ProjectSerializer, V14LegacyClipsKeyLoadsAsClipKind) {
+    // Forward-compatibility gate: a v14 file using "clips[]" per-track
+    // must load cleanly with the entries treated as kind=Clip. The loader
+    // must not require the newer "layers[]" key.
+    TempFile tf("v14_clips_key_migration");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 14,
+  "timeline": {"duration": 1800, "framerate": 30, "currentTime": 0},
+  "tracks": [
+    {
+      "index": 0,
+      "clips": [
+        {
+          "filepath": "content/test.mov",
+          "mediaType": "prores4444",
+          "startFrame": 0,
+          "duration": 300,
+          "mediaStartFrame": 0,
+          "mediaOutFrame": 299,
+          "totalMediaFrames": 300,
+          "playbackMode": 0,
+          "sectionBehavior": "Normal",
+          "framerate": 30.0,
+          "width": 1920,
+          "height": 1080,
+          "hasAlpha": false,
+          "frameBlending": false,
+          "targetScreenName": ""
+        }
+      ]
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    // The loaded entity must have a Layer with kind=Clip.
+    auto layerView = registry.view<entity::Layer, entity::Clip>();
+    int clipCount = 0;
+    for (auto [e, lay, clip] : layerView.each()) {
+        EXPECT_EQ(lay.kind, entity::Layer::Kind::Clip);
+        EXPECT_EQ(clip.filepath, "content/test.mov");
+        ++clipCount;
+    }
+    EXPECT_GT(clipCount, 0) << "No Clip+Layer entity loaded from v14 clips[] key";
+    // Must NOT have any ObjectAnimationLayer entities.
+    EXPECT_EQ(registry.view<entity::ObjectAnimationLayer>().size(), 0u);
 }

@@ -20,6 +20,15 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v15 (2026-05-11) — per-track "layers[]" array replaces "clips[]".
+    //                      Each entry carries a "kind" field ("clip" |
+    //                      "object_animation") plus kind-specific payload.
+    //                      ObjectAnimation entries persist: target (by Screen
+    //                      or Prop name), startFrame, duration,
+    //                      sectionBehavior, layer name/color, and
+    //                      AnimatedProperties keyframe tracks. v14 "clips[]"
+    //                      entries load as kind="clip" with no migration
+    //                      step required — the loaders accept both keys.
     //   v14 (2026-05-11) — Screen/Prop transform expresses real-world size
     //                      in meters via a new "size" array, replacing the
     //                      unitless "scale" key. v≤13 files load by reading
@@ -93,8 +102,9 @@ public:
     // v6 mediaLibrary entries load with pathKind="linked";
     // v7 files load with no projectors (missing "projectors" key = empty);
     // v8 files load with no cues (missing "cues" key = empty);
-    // v11 mediaLibrary entries load with no probe cache (re-index on first open).
-    static constexpr int PROJECT_VERSION = 14;
+    // v11 mediaLibrary entries load with no probe cache (re-index on first open);
+    // v14 per-track "clips[]" entries load as kind="clip" (no migration step).
+    static constexpr int PROJECT_VERSION = 15;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

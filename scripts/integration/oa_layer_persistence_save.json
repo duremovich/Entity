@@ -1,0 +1,41 @@
+{
+    "version": 1,
+    "description": "Phase 3.6 — OA layer persistence round-trip (save half). Creates one ObjectAnimationLayer on track 1 targeting OAPersistScreen. Adds a PositionX keyframe to the OA layer. Saves to test_output/oa_layer_persistence/test.entity. The load script asserts the layer and keyframe survive.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "OAPersistScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "CreateObjectAnimationLayer",
+            "trackIndex": 1,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 1,
+            "clipIndex": 0,
+            "property": "PositionX",
+            "frame": 0,
+            "value": 7.5
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "SaveProject",
+            "filepath": "test_output/oa_layer_persistence/test.entity"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}
