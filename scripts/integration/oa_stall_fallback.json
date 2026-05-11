@@ -1,0 +1,82 @@
+{
+    "version": 1,
+    "description": "Phase 3.7 gate: OA layer keyframe tracks are baked into SceneSnapshot.objectAnimationLayers and re-evaluated by buildRenderFrame on the show thread. Creates an OA layer with two PositionX keyframes (frame 0 = 3.0, frame 150 = 9.0). Seeks to frame 75 (midpoint, interpolated value = 6.0). Asserts the screen snapshot reflects the interpolated value via the show-thread re-eval path. Uses WaitSeconds (wall-clock-anchored per test guidelines) so AnimationSystem can tick.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "OAStallScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "CreateObjectAnimationLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "property": "PositionX",
+            "frame": 0,
+            "value": 3.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "property": "PositionX",
+            "frame": 150,
+            "value": 9.0
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.2
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAStallScreen",
+            "field": "positionX",
+            "expected": 3.0,
+            "tolerance": 0.05
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 75
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.2
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAStallScreen",
+            "field": "positionX",
+            "expected": 6.0,
+            "tolerance": 0.1
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 150
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.2
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAStallScreen",
+            "field": "positionX",
+            "expected": 9.0,
+            "tolerance": 0.05
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

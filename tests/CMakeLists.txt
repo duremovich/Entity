@@ -36,6 +36,7 @@ add_executable(EntityMediaTests
     unit/InMemoryTransportTests.cpp
     unit/SceneStateTests.cpp
     unit/PlaybackTimeAuthorityTests.cpp
+    unit/OAShowSideReevalTests.cpp
     unit/DirectorRendererRoundtripTests.cpp
     unit/AssetIdTests.cpp
     unit/DecodeBufferPoolTests.cpp
@@ -260,3 +261,18 @@ set_tests_properties(integration_oa_layer_persistence_save PROPERTIES
     FIXTURES_SETUP oa_layer_persistence_data)
 set_tests_properties(integration_oa_layer_persistence_load PROPERTIES
     FIXTURES_REQUIRED oa_layer_persistence_data)
+
+# Phase 3.7 — OA stall-fallback: baked tracks in SceneSnapshot.objectAnimationLayers
+# are re-evaluated by buildRenderFrame per render frame so OA animation survives
+# editor stalls. Three seek points assert the interpolated PositionX value at
+# frames 0, 75, and 150 of a two-keyframe track (3.0 → 9.0 linear, midpoint 6.0).
+add_test(
+    NAME integration_oa_stall_fallback
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/oa_stall_fallback.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_oa_stall_fallback PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

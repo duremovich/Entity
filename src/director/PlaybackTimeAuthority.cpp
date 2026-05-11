@@ -866,6 +866,50 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
 
         out.clipCatalog.push_back(std::move(ce));
     }
+
+    // OA layer catalog — all OA layers with AnimatedProperties baked into the
+    // snapshot so the show thread can re-evaluate tracks per render frame and
+    // fold results into ScreenSnapshot position/rotation/scale during editor
+    // stalls (mirrors the NEW-07 clip-animation fix via applyBakedAnimation).
+    // Layers without keyframes are omitted — the static fold-in above via
+    // ObjectAnimationOutput is sufficient for those.
+    out.objectAnimationLayers.clear();
+    for (auto [oaEntity, oal, oaLayer] : m_registry.view<ObjectAnimationLayer, Layer>().each()) {
+        // Mirror the 3.4 fold-in gate: only active layers go on the bus.
+        if (currentFrameForOA < oaLayer.startFrame ||
+            currentFrameForOA >= oaLayer.startFrame + oaLayer.duration) continue;
+        const auto* anim = m_registry.try_get<AnimatedProperties>(oaEntity);
+        if (!anim || !anim->hasAnyKeyframes()) continue;
+
+        bus::ObjectAnimationLayerSnapshot oas;
+        oas.targetScreen = (oal.target == entt::null)
+            ? std::uint64_t{0}
+            : static_cast<std::uint64_t>(oal.target);
+        oas.startFrame  = oaLayer.startFrame;
+        oas.duration    = oaLayer.duration;
+        oas.trackIndex  = oaLayer.trackIndex;
+
+        oas.tracks.reserve(anim->tracks.size());
+        for (const auto& src : anim->tracks) {
+            if (!src.hasKeyframes()) continue;
+            bus::BakedTrack dst;
+            dst.property = static_cast<int>(src.property);
+            dst.enabled  = src.enabled;
+            dst.keyframes.reserve(src.keyframes.size());
+            for (const auto& sk : src.keyframes) {
+                bus::BakedKeyframe k;
+                k.frame         = sk.frame;
+                k.value         = sk.value;
+                k.interpolation = static_cast<int>(sk.interpolation);
+                k.easeIn        = sk.easeIn;
+                k.easeOut       = sk.easeOut;
+                dst.keyframes.push_back(k);
+            }
+            oas.tracks.push_back(std::move(dst));
+        }
+        if (!oas.tracks.empty())
+            out.objectAnimationLayers.push_back(std::move(oas));
+    }
 }
 
 void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
@@ -913,6 +957,45 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         applyBakedAnimation(ce, currentFrame, c);
 
         out.activeClips.push_back(std::move(c));
+    }
+
+    // OA stall-safety: re-evaluate baked OA tracks per render frame and fold
+    // results into the ScreenSnapshot entries in out.screens. This mirrors
+    // what buildSceneSnapshot does on the editor side via ObjectAnimationOutput,
+    // but runs on the show thread so animation survives editor stalls.
+    //
+    // Priority: lower trackIndex wins when multiple OA layers target the same
+    // screen — matches the editor-side fold-in policy.
+    for (auto& ss : out.screens) {
+        const bus::ObjectAnimationLayerSnapshot* winning = nullptr;
+        for (const auto& oa : scene.objectAnimationLayers) {
+            if (oa.targetScreen != ss.entity) continue;
+            if (currentFrame < oa.startFrame || currentFrame >= oa.startFrame + oa.duration) continue;
+            if (!winning || oa.trackIndex < winning->trackIndex) winning = &oa;
+        }
+        if (!winning) continue;
+
+        const FrameNumber localFrame =
+            (currentFrame >= winning->startFrame)
+                ? (currentFrame - winning->startFrame)
+                : FrameNumber{0};
+
+        for (const auto& track : winning->tracks) {
+            if (!track.enabled || track.keyframes.empty()) continue;
+            const float v = evaluateBakedTrack(track, localFrame);
+            switch (static_cast<AnimatableProperty>(track.property)) {
+                case AnimatableProperty::PositionX: ss.position[0] = v; break;
+                case AnimatableProperty::PositionY: ss.position[1] = v; break;
+                case AnimatableProperty::PositionZ: ss.position[2] = v; break;
+                case AnimatableProperty::Rotation:
+                case AnimatableProperty::RotationY: ss.rotation[1] = v; break;
+                case AnimatableProperty::RotationX: ss.rotation[0] = v; break;
+                case AnimatableProperty::ScaleX:    ss.scale[0]    = v; break;
+                case AnimatableProperty::ScaleY:    ss.scale[1]    = v; break;
+                case AnimatableProperty::ScaleZ:    ss.scale[2]    = v; break;
+                default: break;
+            }
+        }
     }
 }
 

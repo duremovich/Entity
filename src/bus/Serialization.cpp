@@ -553,6 +553,29 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     return e;
 }
 
+ojson encode(const ObjectAnimationLayerSnapshot& oa) {
+    ojson j = ojson::object();
+    j["targetScreen"] = oa.targetScreen;
+    j["startFrame"]   = oa.startFrame;
+    j["duration"]     = oa.duration;
+    j["trackIndex"]   = oa.trackIndex;
+    auto tracks = ojson::array();
+    for (const auto& t : oa.tracks) tracks.push_back(encode(t));
+    j["tracks"] = std::move(tracks);
+    return j;
+}
+
+ObjectAnimationLayerSnapshot decodeObjectAnimationLayerSnapshot(const json& j) {
+    ObjectAnimationLayerSnapshot oa;
+    oa.targetScreen = j.value("targetScreen", std::uint64_t{0});
+    oa.startFrame   = j.value("startFrame",   FrameNumber{0});
+    oa.duration     = j.value("duration",     FrameNumber{0});
+    oa.trackIndex   = j.value("trackIndex",   std::uint32_t{UINT32_MAX});
+    if (j.contains("tracks"))
+        for (const auto& t : j.at("tracks")) oa.tracks.push_back(decodeBakedTrack(t));
+    return oa;
+}
+
 ojson encode(const SceneSnapshot& s) {
     ojson j = ojson::object();
     auto screens = ojson::array();
@@ -570,6 +593,9 @@ ojson encode(const SceneSnapshot& s) {
     auto catalog = ojson::array();
     for (const auto& ce : s.clipCatalog) catalog.push_back(encode(ce));
     j["clipCatalog"] = std::move(catalog);
+    auto oaCatalog = ojson::array();
+    for (const auto& oa : s.objectAnimationLayers) oaCatalog.push_back(encode(oa));
+    j["objectAnimationLayers"] = std::move(oaCatalog);
     return j;
 }
 
@@ -585,6 +611,9 @@ SceneSnapshot decodeSceneSnapshot(const json& j) {
         for (const auto& os : j.at("outputs")) s.outputs.push_back(decodeOutputSnapshot(os));
     if (j.contains("clipCatalog"))
         for (const auto& ce : j.at("clipCatalog")) s.clipCatalog.push_back(decodeClipCatalogEntry(ce));
+    if (j.contains("objectAnimationLayers"))
+        for (const auto& oa : j.at("objectAnimationLayers"))
+            s.objectAnimationLayers.push_back(decodeObjectAnimationLayerSnapshot(oa));
     return s;
 }
 

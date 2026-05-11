@@ -272,20 +272,44 @@ struct ClipCatalogEntry {
     std::vector<BakedTrack> tracks;
 };
 
+// One-frame snapshot of an ObjectAnimationLayer. Baked by the editor thread in
+// buildSceneSnapshot; re-evaluated per render frame by the show thread in
+// buildRenderFrame so OA animation stays alive during editor stalls (mirrors
+// the NEW-07 fix for clips via applyBakedAnimation / BakedTrack).
+//
+// targetScreen: uint64 cast of the target Screen entity (0 = null / no target).
+// startFrame / duration: OA layer window in timeline frames.
+// trackIndex: used for priority resolution (lower wins) when multiple OA layers
+//             target the same screen.
+// tracks: keyframe tracks copied from AnimatedProperties (same BakedTrack shape
+//         used by the clip catalog). Show thread evaluates these at
+//         (currentFrame - startFrame) clamped to [0, duration).
+struct ObjectAnimationLayerSnapshot {
+    std::uint64_t            targetScreen{0};
+    FrameNumber              startFrame{0};
+    FrameNumber              duration{0};
+    std::uint32_t            trackIndex{UINT32_MAX};
+    std::vector<BakedTrack>  tracks;
+};
+
 // Stage 3: Editor → Show thread. Carries the scene-state portion of what
 // buildRenderFrame used to snapshot inline. Published latest-wins on D2R
 // from the editor half of the split buildRenderFrame once per editor frame.
 // The show thread merges the most-recent cached SceneSnapshot into each
 // per-tick RenderFrame alongside the show-derived activeClips / playState.
 struct SceneSnapshot {
-    std::vector<ScreenSnapshot>         screens;
-    std::vector<MappingSurfaceSnapshot> surfaces;
-    std::vector<ProjectorSnapshot>      projectors;
-    std::vector<OutputSnapshot>         outputs;
+    std::vector<ScreenSnapshot>                screens;
+    std::vector<MappingSurfaceSnapshot>        surfaces;
+    std::vector<ProjectorSnapshot>             projectors;
+    std::vector<OutputSnapshot>                outputs;
     // Clip catalog: all allocated + potentially-active clips snapshotted from
     // the registry on the editor thread. Show thread uses this instead of
     // touching Clip / VideoTexture / Transform / MediaLayer / ClipPlaybackPhase.
-    std::vector<ClipCatalogEntry>       clipCatalog;
+    std::vector<ClipCatalogEntry>              clipCatalog;
+    // OA layer catalog: all active OA layers snapshotted from the registry.
+    // Show thread re-evaluates tracks per render frame in buildRenderFrame and
+    // folds results into the corresponding ScreenSnapshot position/rotation/scale.
+    std::vector<ObjectAnimationLayerSnapshot>  objectAnimationLayers;
 };
 
 // Director → Renderer. Triggers the existing capture-pass pipeline; reply
