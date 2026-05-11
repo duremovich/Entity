@@ -1,5 +1,6 @@
 #include "entity/render/Stage3DRenderer.hpp"
 #include "entity/render/D3D12Renderer.hpp"
+#include "entity/systems/CameraControlSystem.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
@@ -9,8 +10,7 @@ namespace entity {
 
 Stage3DRenderer::Stage3DRenderer() {
     // Initialize camera to a good default view
-    m_camera.reset();
-    m_camera.updateFromOrbit();
+    CameraControlSystem::reset(m_camera);
 }
 
 // Projection pipeline: pose → aspect-aware k1/k2 lens distortion →
@@ -485,7 +485,7 @@ void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 
 void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens,
                                     const std::vector<PropFrameInput>& props) {
     if (screens.empty() && props.empty()) {
-        m_camera.reset();
+        CameraControlSystem::reset(m_camera);
         return;
     }
 
@@ -560,7 +560,7 @@ void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens,
 
     m_camera.orbitTarget = center;
     m_camera.orbitDistance = distance;
-    m_camera.updateFromOrbit();
+    CameraControlSystem::updateFromOrbit(m_camera);
 }
 
 void Stage3DRenderer::render(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
@@ -580,7 +580,7 @@ void Stage3DRenderer::handleInput(ImVec2 mousePos, ImVec2 screenPos, ImVec2 scre
 
     // Handle scroll wheel for zoom
     if (inBounds && scrollDelta != 0.0f) {
-        m_camera.zoom(scrollDelta * 0.5f);
+        CameraControlSystem::zoom(m_camera, scrollDelta * 0.5f);
     }
 
     // Handle mouse drag
@@ -592,13 +592,13 @@ void Stage3DRenderer::handleInput(ImVec2 mousePos, ImVec2 screenPos, ImVec2 scre
 
             if (middleDown || (leftDown && shiftDown)) {
                 // Pan (middle button or shift+left)
-                m_camera.pan(deltaX * 0.01f, deltaY * 0.01f);
+                CameraControlSystem::pan(m_camera, deltaX * 0.01f, deltaY * 0.01f);
             } else if (leftDown) {
                 // Orbit (left button)
-                m_camera.orbit(-deltaX, -deltaY);
+                CameraControlSystem::orbit(m_camera, -deltaX, -deltaY);
             } else if (rightDown) {
                 // Zoom (right button drag up/down)
-                m_camera.zoom(-deltaY * 0.05f);
+                CameraControlSystem::zoom(m_camera, -deltaY * 0.05f);
             }
         } else if (inBounds) {
             // Start dragging

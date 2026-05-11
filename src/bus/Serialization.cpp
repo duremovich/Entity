@@ -426,6 +426,48 @@ RenderFrame decodeRenderFrame(const json& j) {
     return m;
 }
 
+ojson encode(const BakedKeyframe& k) {
+    ojson j = ojson::object();
+    j["frame"]         = k.frame;
+    j["value"]         = k.value;
+    j["interpolation"] = k.interpolation;
+    j["easeIn"]        = k.easeIn;
+    j["easeOut"]       = k.easeOut;
+    return j;
+}
+
+BakedKeyframe decodeBakedKeyframe(const json& j) {
+    BakedKeyframe k;
+    k.frame         = j.at("frame").get<FrameNumber>();
+    k.value         = j.at("value").get<float>();
+    k.interpolation = j.at("interpolation").get<int>();
+    k.easeIn        = j.at("easeIn").get<float>();
+    k.easeOut       = j.at("easeOut").get<float>();
+    return k;
+}
+
+ojson encode(const BakedTrack& t) {
+    ojson j = ojson::object();
+    j["property"] = t.property;
+    j["enabled"]  = t.enabled;
+    auto kfs = ojson::array();
+    for (const auto& k : t.keyframes) kfs.push_back(encode(k));
+    j["keyframes"] = std::move(kfs);
+    return j;
+}
+
+BakedTrack decodeBakedTrack(const json& j) {
+    BakedTrack t;
+    t.property = j.at("property").get<int>();
+    t.enabled  = j.at("enabled").get<bool>();
+    if (j.contains("keyframes")) {
+        for (const auto& kf : j.at("keyframes")) {
+            t.keyframes.push_back(decodeBakedKeyframe(kf));
+        }
+    }
+    return t;
+}
+
 ojson encode(const ClipCatalogEntry& e) {
     ojson j = ojson::object();
     j["entity"]               = e.entity;
@@ -449,6 +491,12 @@ ojson encode(const ClipCatalogEntry& e) {
     j["phase_tailHoldMediaFrame"] = e.phase_tailHoldMediaFrame;
     j["phase_postBreakMediaAnchor"] = e.phase_postBreakMediaAnchor;
     j["phase_anchorTimelineFrame"]  = e.phase_anchorTimelineFrame;
+    j["position"]             = e.position;
+    j["rotation"]             = e.rotation;
+    j["scale"]                = e.scale;
+    auto tracks = ojson::array();
+    for (const auto& t : e.tracks) tracks.push_back(encode(t));
+    j["tracks"] = std::move(tracks);
     return j;
 }
 
@@ -478,6 +526,30 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     e.phase_tailHoldMediaFrame = j.at("phase_tailHoldMediaFrame").get<FrameNumber>();
     e.phase_postBreakMediaAnchor = j.at("phase_postBreakMediaAnchor").get<FrameNumber>();
     e.phase_anchorTimelineFrame  = j.at("phase_anchorTimelineFrame").get<FrameNumber>();
+    // Animation fields (added for NEW-07) — optional for backward compat with
+    // any pre-recorded test fixtures or older payloads. Defaults match the
+    // struct defaults so static (un-animated) clips stay correct.
+    if (j.contains("position")) {
+        const auto& arr = j.at("position");
+        if (!arr.is_array() || arr.size() != 3)
+            throw std::invalid_argument("ClipCatalogEntry position must be array of 3 floats");
+        for (std::size_t i = 0; i < 3; ++i) e.position[i] = arr[i].get<float>();
+    }
+    if (j.contains("rotation")) {
+        const auto& arr = j.at("rotation");
+        if (!arr.is_array() || arr.size() != 3)
+            throw std::invalid_argument("ClipCatalogEntry rotation must be array of 3 floats");
+        for (std::size_t i = 0; i < 3; ++i) e.rotation[i] = arr[i].get<float>();
+    }
+    if (j.contains("scale")) {
+        const auto& arr = j.at("scale");
+        if (!arr.is_array() || arr.size() != 3)
+            throw std::invalid_argument("ClipCatalogEntry scale must be array of 3 floats");
+        for (std::size_t i = 0; i < 3; ++i) e.scale[i] = arr[i].get<float>();
+    }
+    if (j.contains("tracks")) {
+        for (const auto& t : j.at("tracks")) e.tracks.push_back(decodeBakedTrack(t));
+    }
     return e;
 }
 

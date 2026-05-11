@@ -1,5 +1,6 @@
 #include "entity/director/PlaybackTimeAuthority.hpp"
 
+#include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -12,6 +13,7 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/timeline/Timeline.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
@@ -155,6 +157,131 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
         }
     }
     return clip.mediaStartFrame + sourceLength - 1;
+}
+
+// -- Show-thread animation evaluator (NEW-07) ------------------------------
+//
+// The show thread evaluates `bus::BakedTrack`s out of the SceneSnapshot at
+// each render frame so animation stays alive while the editor thread is
+// stalled (and therefore not re-baking new snapshots / re-ticking
+// AnimationSystem). Math mirrors entity::KeyframeTrack::evaluate in
+// include/entity/components/AnimatedProperties.hpp — keep them in sync.
+
+float interpolateBakedKeyframes(const bus::BakedKeyframe& a,
+                                const bus::BakedKeyframe& b,
+                                float t) {
+    // Step on `a` holds the start value across the interval.
+    if (static_cast<InterpolationType>(a.interpolation) == InterpolationType::Step) {
+        return a.value;
+    }
+    const float delta = b.value - a.value;
+    switch (static_cast<InterpolationType>(b.interpolation)) {
+        case InterpolationType::Step:      return a.value + delta * t;
+        case InterpolationType::EaseIn:    return a.value + delta * (t * t);
+        case InterpolationType::EaseOut: {
+            const float inv = 1.0f - t;
+            return a.value + delta * (1.0f - inv * inv);
+        }
+        case InterpolationType::EaseInOut: {
+            // Cubic bezier with P0=(0,0), P1=(easeIn,0), P2=(easeOut,1), P3=(1,1).
+            // Matches the simplified bezier in KeyframeTrack::cubicBezier
+            // — same omissions (P1.y = 0 zeroes its term).
+            const float mt  = 1.0f - t;
+            const float t2  = t * t;
+            const float t3  = t2 * t;
+            const float mt2 = mt * mt;
+            const float y   = 3.0f * mt  * t2 * 1.0f  // P2.y term
+                            + t3        * 1.0f;       // P3.y term
+            return a.value + delta * y;
+        }
+        case InterpolationType::Linear:
+        default:                           return a.value + delta * t;
+    }
+}
+
+float defaultValueForProperty(AnimatableProperty p) {
+    switch (p) {
+        case AnimatableProperty::ScaleX:
+        case AnimatableProperty::ScaleY:
+        case AnimatableProperty::Opacity:  return 1.0f;
+        case AnimatableProperty::PositionX:
+        case AnimatableProperty::PositionY:
+        case AnimatableProperty::Rotation:
+        default:                            return 0.0f;
+    }
+}
+
+float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
+    const auto property = static_cast<AnimatableProperty>(track.property);
+    if (track.keyframes.empty()) return defaultValueForProperty(property);
+
+    const auto& first = track.keyframes.front();
+    const auto& last  = track.keyframes.back();
+    if (frame <= first.frame) return first.value;
+    if (frame >= last.frame)  return last.value;
+
+    // First keyframe with .frame >= frame; binary search.
+    auto it = std::lower_bound(
+        track.keyframes.begin(), track.keyframes.end(), frame,
+        [](const bus::BakedKeyframe& k, FrameNumber f) { return k.frame < f; });
+
+    if (it != track.keyframes.end() && it->frame == frame) return it->value;
+    if (it == track.keyframes.begin() || it == track.keyframes.end()) {
+        return last.value;
+    }
+
+    const auto& prev = *(it - 1);
+    const auto& next = *it;
+    const float t = static_cast<float>(frame - prev.frame)
+                  / static_cast<float>(next.frame - prev.frame);
+    return interpolateBakedKeyframes(prev, next, t);
+}
+
+// Apply animation tracks from the catalog to the render state. Touches
+// only the snapshot inputs + output ClipRenderState — no registry reads.
+// Called from the show thread.
+void applyBakedAnimation(const bus::ClipCatalogEntry& ce,
+                         FrameNumber currentFrame,
+                         bus::ClipRenderState& out) {
+    if (ce.tracks.empty()) return;  // static clip: catalog matrix/opacity are authoritative
+
+    // localFrame mirrors AnimationSystem::update: clip-local frame, clamped
+    // to non-negative. If the clip isn't active at currentFrame we still
+    // get sensible values (clamped to first/last keyframe).
+    const FrameNumber localFrame =
+        (currentFrame >= ce.startFrame) ? (currentFrame - ce.startFrame) : FrameNumber{0};
+
+    glm::vec3 position(ce.position[0], ce.position[1], ce.position[2]);
+    glm::vec3 rotation(ce.rotation[0], ce.rotation[1], ce.rotation[2]);
+    glm::vec3 scale(ce.scale[0], ce.scale[1], ce.scale[2]);
+    float     opacity = ce.opacity;
+    bool      transformDirty = false;
+
+    for (const auto& track : ce.tracks) {
+        if (!track.enabled || track.keyframes.empty()) continue;
+        const float v = evaluateBakedTrack(track, localFrame);
+        switch (static_cast<AnimatableProperty>(track.property)) {
+            case AnimatableProperty::PositionX: position.x = v; transformDirty = true; break;
+            case AnimatableProperty::PositionY: position.y = v; transformDirty = true; break;
+            case AnimatableProperty::Rotation:  rotation.z = v; transformDirty = true; break;
+            case AnimatableProperty::ScaleX:    scale.x    = v; transformDirty = true; break;
+            case AnimatableProperty::ScaleY:    scale.y    = v; transformDirty = true; break;
+            case AnimatableProperty::Opacity:   opacity    = v;                         break;
+        }
+    }
+
+    if (transformDirty) {
+        // Mirrors Transform::updateMatrix: Translation * Rot(Z*Y*X) * Scale.
+        glm::mat4 m(1.0f);
+        m = glm::translate(m, position);
+        m = glm::rotate(m, glm::radians(rotation.z), glm::vec3(0, 0, 1));
+        m = glm::rotate(m, glm::radians(rotation.y), glm::vec3(0, 1, 0));
+        m = glm::rotate(m, glm::radians(rotation.x), glm::vec3(1, 0, 0));
+        m = glm::scale(m, scale);
+        std::memcpy(out.transformMatrix.data(), glm::value_ptr(m),
+                    sizeof(out.transformMatrix));
+    }
+    out.opacity = opacity;
 }
 
 } // namespace
@@ -628,18 +755,52 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         ce.sectionBehavior = static_cast<int>(clip.sectionBehavior);
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
 
-        // Bake transform matrix on the editor thread (no const_cast needed here)
+        // Bake transform matrix on the editor thread (no const_cast needed here).
+        // Also bake the individual axes (position/rotation/scale) so the show
+        // thread can re-evaluate animation per render frame without reading
+        // the registry — see NEW-07 fix in applyBakedAnimation().
         if (auto* t = m_registry.try_get<Transform>(entity)) {
             t->updateMatrix();
             std::memcpy(ce.transformMatrix.data(),
                         glm::value_ptr(t->matrix),
                         sizeof(ce.transformMatrix));
+            ce.position = { t->position.x, t->position.y, t->position.z };
+            ce.rotation = { t->rotation.x, t->rotation.y, t->rotation.z };
+            ce.scale    = { t->scale.x,    t->scale.y,    t->scale.z    };
         }
 
         if (auto* layer = m_registry.try_get<MediaLayer>(entity)) {
             ce.opacity   = layer->getOpacity();
             ce.blendMode = static_cast<int>(layer->blendMode);
             ce.zOrder    = layer->zOrder;
+        }
+
+        // AnimatedProperties → BakedTrack snapshot. Show thread evaluates
+        // these at currentFrame each render tick so animation stays alive
+        // during editor stalls (NEW-07). Skipped (empty vector) for clips
+        // without animation; show side then falls through to the static
+        // ce.transformMatrix / ce.opacity.
+        if (const auto* anim = m_registry.try_get<AnimatedProperties>(entity);
+            anim && anim->hasAnyKeyframes())
+        {
+            ce.tracks.reserve(anim->tracks.size());
+            for (const auto& src : anim->tracks) {
+                if (!src.hasKeyframes()) continue;
+                bus::BakedTrack dst;
+                dst.property = static_cast<int>(src.property);
+                dst.enabled  = src.enabled;
+                dst.keyframes.reserve(src.keyframes.size());
+                for (const auto& sk : src.keyframes) {
+                    bus::BakedKeyframe k;
+                    k.frame         = sk.frame;
+                    k.value         = sk.value;
+                    k.interpolation = static_cast<int>(sk.interpolation);
+                    k.easeIn        = sk.easeIn;
+                    k.easeOut       = sk.easeOut;
+                    dst.keyframes.push_back(k);
+                }
+                ce.tracks.push_back(std::move(dst));
+            }
         }
 
         ce.targetScreen = (clip.targetScreen == entt::null)
@@ -699,6 +860,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder       = ce.zOrder;
         c.targetScreen = ce.targetScreen;
         c.sectionFadeMultiplier = computeSectionFadeMultiplier(clip);
+
+        // NEW-07: re-evaluate animation tracks at the show thread's current
+        // frame so opacity / transform stay alive while the editor stalls.
+        // No-op (early return) for clips without baked tracks.
+        applyBakedAnimation(ce, currentFrame, c);
 
         out.activeClips.push_back(std::move(c));
     }

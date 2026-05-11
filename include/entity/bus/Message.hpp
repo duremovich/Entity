@@ -172,6 +172,29 @@ struct RenderFrame {
     std::vector<OutputSnapshot>         outputs;
 };
 
+// One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
+// entity::Keyframe. The interpolation field encodes
+// entity::InterpolationType as int (per the enum-as-string-on-wire rule
+// in bus/CLAUDE.md, serialization translates).
+struct BakedKeyframe {
+    FrameNumber frame{0};
+    float       value{0.0f};
+    int         interpolation{0};  // InterpolationType enum as int
+    float       easeIn{0.42f};
+    float       easeOut{0.58f};
+};
+
+// One snapshot of an AnimatedProperties track — bus-safe mirror of
+// entity::KeyframeTrack. `property` encodes entity::AnimatableProperty
+// as int. Show thread re-evaluates these per render frame at
+// Timeline::getCurrentFrame() so animation stays alive when the editor
+// thread stalls and stops baking new snapshots (NEW-07).
+struct BakedTrack {
+    int                        property{0};   // AnimatableProperty enum as int
+    bool                       enabled{true};
+    std::vector<BakedKeyframe> keyframes;
+};
+
 // Per-clip catalog entry. Populated by PlaybackTimeAuthority::buildSceneSnapshot
 // on the editor thread each frame. The show thread consumes this exclusively —
 // it never reads Clip / VideoTexture / Transform / MediaLayer / ClipPlaybackPhase
@@ -179,8 +202,19 @@ struct RenderFrame {
 //
 // transformMatrix: pre-baked world matrix (column-major glm::mat4). Editor
 //   calls Transform::updateMatrix() here so the show side needs no const_cast.
+// position / rotation / scale: the underlying Transform fields prior to
+//   matrix bake. Carried so the show thread can re-evaluate animation
+//   tracks and rebuild the matrix from these axes (overriding the
+//   animated channels — PositionX/Y, Rotation Z, ScaleX/Y — while
+//   keeping the unanimated axes intact). Only consulted when
+//   `tracks` is non-empty; for static clips, transformMatrix is
+//   authoritative.
 // phase_*: snapshot of ClipPlaybackPhase (if the component exists). Shows
 //   whether the clip is in section-continuation and carries its phase state.
+// tracks: keyframe tracks copied from AnimatedProperties. Empty for
+//   clips without animation. The show thread evaluates these on every
+//   render frame at the current Timeline frame, so animation stays
+//   alive during editor stalls (NEW-07).
 struct ClipCatalogEntry {
     std::uint64_t entity{0};
 
@@ -220,6 +254,16 @@ struct ClipCatalogEntry {
     FrameNumber   phase_tailHoldMediaFrame{-1};
     FrameNumber   phase_postBreakMediaAnchor{-1};
     FrameNumber   phase_anchorTimelineFrame{0};
+
+    // Transform axes mirror (snapshot of Transform::{position,rotation,scale}).
+    // Used by the show thread only when `tracks` is non-empty; for static
+    // clips, `transformMatrix` above is the authoritative pre-bake.
+    std::array<float, 3> position{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> rotation{0.0f, 0.0f, 0.0f};  // Euler degrees, X/Y/Z
+    std::array<float, 3> scale{1.0f, 1.0f, 1.0f};
+
+    // AnimatedProperties snapshot. Empty for clips without animation.
+    std::vector<BakedTrack> tracks;
 };
 
 // Stage 3: Editor → Show thread. Carries the scene-state portion of what

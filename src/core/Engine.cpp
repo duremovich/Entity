@@ -47,7 +47,6 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/TimelineTrack.hpp"
-#include "entity/components/OutputMapping.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/media/ObjLoader.hpp"
@@ -2079,32 +2078,6 @@ void Engine::testComponents() {
 
         std::cout << "  ✓ TimelineTrack clip management works" << std::endl;
         std::cout << "  ✓ Clips in track: " << track.getClipCount() << std::endl;
-    }
-
-    // Test 7: OutputMapping Component
-    std::cout << "\nTest 7: OutputMapping Component" << std::endl;
-    {
-        auto entity = m_registry.create();
-        testEntities.push_back(entity);
-        auto& output = m_registry.emplace<OutputMapping>(entity);
-
-        output.displayIndex = 0;
-        output.displayEDID = "EDID_ABC123";
-        output.displayName = "Primary Display";
-        output.position = glm::ivec2(0, 0);
-        output.resolution = glm::ivec2(1920, 1080);
-        output.isPrimary = true;
-        output.isConnected = true;
-
-        // Note: isValid() will return false until swap chain is created
-        assert(output.isConnected == true);
-        float aspectRatio = output.getAspectRatio();
-        assert(aspectRatio == 1920.0f / 1080.0f); // 16:9
-
-        std::cout << "  ✓ OutputMapping component created" << std::endl;
-        std::cout << "  ✓ Display: " << output.displayName << " ("
-                  << output.resolution.x << "x" << output.resolution.y << ")" << std::endl;
-        std::cout << "  ✓ Aspect ratio: " << aspectRatio << std::endl;
     }
 
     // Test 8: EnTT View Iteration

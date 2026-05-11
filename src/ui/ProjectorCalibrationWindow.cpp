@@ -6,6 +6,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/OutputDisplay.hpp"
+#include "entity/systems/CameraControlSystem.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -88,8 +89,7 @@ std::vector<entt::entity> ProjectorCalibrationWindow::getTargetScreens() const {
 
 ProjectorCalibrationWindow::ProjectorCalibrationWindow(Engine* engine)
     : m_engine(engine) {
-    m_sceneCamera.reset();
-    m_sceneCamera.updateFromOrbit();
+    CameraControlSystem::reset(m_sceneCamera);
 }
 
 ProjectorCalibrationWindow::~ProjectorCalibrationWindow() {
@@ -186,8 +186,7 @@ void ProjectorCalibrationWindow::open(entt::entity projectorEntity) {
         }
     }
 
-    m_sceneCamera.reset();
-    m_sceneCamera.updateFromOrbit();
+    CameraControlSystem::reset(m_sceneCamera);
 }
 
 void ProjectorCalibrationWindow::close() {

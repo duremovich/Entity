@@ -215,6 +215,7 @@ target_sources(EntityMediaCore
         src/systems/DecodeSystem.cpp
         src/systems/CompositorSystem.cpp
         src/systems/AnimationSystem.cpp
+        src/systems/CameraControlSystem.cpp
         # src/systems/RenderSystem.cpp
         # src/systems/TimelineSystem.cpp
 

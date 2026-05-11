@@ -11,6 +11,7 @@
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Prop.hpp"
+#include "entity/systems/CameraControlSystem.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>  // For std::sort, std::clamp
@@ -24,8 +25,7 @@ StageWindow::StageWindow(Engine* engine)
     , m_3dRenderer(std::make_unique<Stage3DRenderer>())
     , m_calibWindow(std::make_unique<ProjectorCalibrationWindow>(engine)) {
     // Initialize camera to default position
-    m_3dRenderer->getCamera().reset();
-    m_3dRenderer->getCamera().updateFromOrbit();
+    CameraControlSystem::reset(m_3dRenderer->getCamera());
 }
 
 void StageWindow::render() {
@@ -633,22 +633,22 @@ void StageWindow::renderToolbar() {
 
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset")) {
-            m_3dRenderer->getCamera().reset();
+            CameraControlSystem::reset(m_3dRenderer->getCamera());
         }
 
         ImGui::SameLine();
         if (ImGui::SmallButton("Front")) {
-            m_3dRenderer->getCamera().setFrontView();
+            CameraControlSystem::setFrontView(m_3dRenderer->getCamera());
         }
 
         ImGui::SameLine();
         if (ImGui::SmallButton("Top")) {
-            m_3dRenderer->getCamera().setTopView();
+            CameraControlSystem::setTopView(m_3dRenderer->getCamera());
         }
 
         ImGui::SameLine();
         if (ImGui::SmallButton("Side")) {
-            m_3dRenderer->getCamera().setSideView();
+            CameraControlSystem::setSideView(m_3dRenderer->getCamera());
         }
 
         ImGui::SameLine();
