@@ -153,7 +153,7 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
         // Check if mouse Y is within this track (including expanded area)
         if (mousePos.y >= trackY && mousePos.y <= trackY + trackHeight) {
             // Check each clip in this track
-            for (entt::entity clipEntity : track->clips) {
+            for (entt::entity clipEntity : track->layers) {
                 const auto* clip = registry.try_get<Clip>(clipEntity);
                 if (!clip) continue;
 
@@ -212,7 +212,7 @@ ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPo
         }
 
         // Check each clip in this track
-        for (entt::entity clipEntity : track->clips) {
+        for (entt::entity clipEntity : track->layers) {
             const auto* clip = registry.try_get<Clip>(clipEntity);
             if (!clip) continue;
 
@@ -685,7 +685,7 @@ void TimelineWidget::handleTracksInteraction() {
                     for (size_t i = 0; i < tracks.size(); ++i) {
                         const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
                         if (track) {
-                            for (entt::entity clipEnt : track->clips) {
+                            for (entt::entity clipEnt : track->layers) {
                                 if (clipEnt == m_trimClip) {
                                     trimTrackIndex = static_cast<int>(i);
                                     break;
@@ -708,7 +708,7 @@ void TimelineWidget::handleTracksInteraction() {
                             if (trimTrackIndex >= 0 && trimTrackIndex < static_cast<int>(tracks.size())) {
                                 const auto* track = registry.try_get<TimelineTrack>(tracks[trimTrackIndex]);
                                 if (track) {
-                                    for (entt::entity otherClip : track->clips) {
+                                    for (entt::entity otherClip : track->layers) {
                                         if (otherClip == m_trimClip) continue;
                                         const auto* other = registry.try_get<Clip>(otherClip);
                                         if (other) {
@@ -730,6 +730,7 @@ void TimelineWidget::handleTracksInteraction() {
                             FrameNumber framesDelta = mouseFrame - m_trimOriginalStart;
                             clip->startFrame = mouseFrame;
                             clip->duration = m_trimOriginalDuration - framesDelta;
+                            Timeline::syncLayerFromClip(registry, m_trimClip);
 
                             // Adjust media start to keep sync
                             clip->mediaStartFrame = m_trimOriginalMediaStart + framesDelta;
@@ -743,7 +744,7 @@ void TimelineWidget::handleTracksInteraction() {
                             if (trimTrackIndex >= 0 && trimTrackIndex < static_cast<int>(tracks.size())) {
                                 const auto* track = registry.try_get<TimelineTrack>(tracks[trimTrackIndex]);
                                 if (track) {
-                                    for (entt::entity otherClip : track->clips) {
+                                    for (entt::entity otherClip : track->layers) {
                                         if (otherClip == m_trimClip) continue;
                                         const auto* other = registry.try_get<Clip>(otherClip);
                                         if (other) {
@@ -763,6 +764,7 @@ void TimelineWidget::handleTracksInteraction() {
                             }
 
                             clip->duration = newDuration;
+                            Timeline::syncLayerFromClip(registry, m_trimClip);
                         }
                     }
                 }
@@ -857,7 +859,7 @@ void TimelineWidget::handleTracksInteraction() {
                         if (m_selectedClipTrackIndex < static_cast<int>(tracks.size())) {
                             const auto* track = registry.try_get<TimelineTrack>(tracks[m_selectedClipTrackIndex]);
                             if (track) {
-                                for (entt::entity otherClipEntity : track->clips) {
+                                for (entt::entity otherClipEntity : track->layers) {
                                     if (otherClipEntity == m_selectedClip) continue;
 
                                     const auto* otherClip = registry.try_get<Clip>(otherClipEntity);
@@ -901,6 +903,7 @@ void TimelineWidget::handleTracksInteraction() {
                     float newStartSeconds = newStartTime / 1000000.0f;
                     double timelineFrameRate = m_timeline->getFrameRate();
                     clip->startFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
+                    Timeline::syncLayerFromClip(registry, m_selectedClip);
                 }
             }
         } else {

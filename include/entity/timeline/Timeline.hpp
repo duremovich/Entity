@@ -3,6 +3,7 @@
 #include "entity/core/Types.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/timeline/CueTag.hpp"
@@ -204,6 +205,13 @@ public:
      * @return Track entity containing the clip, or entt::null if not found
      */
     entt::entity findTrackForClip(entt::entity clipEntity) const;
+
+    /**
+     * Mirror Clip::startFrame / Clip::duration onto the entity's Layer component.
+     * Called any time clip placement changes (split, duplicate, drag, trim, load).
+     * No-op if the entity has no Layer component (pre-migration or non-clip entity).
+     */
+    static void syncLayerFromClip(entt::registry& registry, entt::entity entity);
 
     /**
      * Move a clip from one track to another.

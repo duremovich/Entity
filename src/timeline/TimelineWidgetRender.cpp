@@ -150,7 +150,7 @@ void TimelineWidget::renderTimeRuler() {
             auto& registry = m_timeline->getRegistry();
             for (entt::entity trackEntity : m_timeline->getTracks()) {
                 const auto* track = registry.try_get<TimelineTrack>(trackEntity);
-                if (track && !track->clips.empty()) { timelineHasClips = true; break; }
+                if (track && !track->layers.empty()) { timelineHasClips = true; break; }
             }
         }
         const ImU32 implicitFirstColor = timelineHasClips
@@ -398,7 +398,7 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
     );
 
     // Render clips in this track FIRST (so we can handle clip clicks before drag-drop)
-    for (entt::entity clipEntity : track->clips) {
+    for (entt::entity clipEntity : track->layers) {
         renderClip(clipEntity, trackIndex, baseWindowPos);
     }
 
@@ -891,7 +891,7 @@ float TimelineWidget::renderTrackHeaderRow(entt::entity trackEntity, int trackIn
     }
 
     // Only show triangle if track has clips
-    bool hasClips = !track->clips.empty();
+    bool hasClips = !track->layers.empty();
     if (hasClips) {
         drawList->AddTriangleFilled(triPoints[0], triPoints[1], triPoints[2], IM_COL32(180, 180, 180, 255));
     }
@@ -905,7 +905,7 @@ float TimelineWidget::renderTrackHeaderRow(entt::entity trackEntity, int trackIn
     // Clip count badge
     if (hasClips) {
         std::ostringstream clipCount;
-        clipCount << "(" << track->clips.size() << ")";
+        clipCount << "(" << track->layers.size() << ")";
         drawList->AddText(ImVec2(headerX + TRACK_HEADER_WIDTH - 50, rowY + TRACK_HEIGHT / 2 - 7),
                           IM_COL32(120, 120, 120, 255), clipCount.str().c_str());
     }

@@ -44,8 +44,8 @@ findClipIndices(Timeline* timeline, entt::entity clipEntity) {
     for (size_t ti = 0; ti < tracks.size(); ++ti) {
         auto* track = registry.try_get<TimelineTrack>(tracks[ti]);
         if (!track) continue;
-        for (size_t ci = 0; ci < track->clips.size(); ++ci) {
-            if (track->clips[ci] == clipEntity) {
+        for (size_t ci = 0; ci < track->layers.size(); ++ci) {
+            if (track->layers[ci] == clipEntity) {
                 return std::make_pair(static_cast<int>(ti), static_cast<int>(ci));
             }
         }

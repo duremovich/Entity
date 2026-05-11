@@ -7,6 +7,7 @@
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -137,9 +138,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             json trackJson;
             trackJson["index"] = track->trackIndex;
 
-            // Clips in this track
+            // Clip layers in this track
             json clipsJson = json::array();
-            for (entt::entity clipEntity : track->clips) {
+            for (entt::entity clipEntity : track->layers) {
                 const auto* clip = registry.try_get<Clip>(clipEntity);
                 if (!clip) continue;
 
@@ -1064,8 +1065,31 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             layer.visible = layerJson.value("visible", true);
                         }
 
-                        // Add clip to track
-                        track->clips.push_back(clipEntity);
+                        // Retroattach Layer (commit 3.2 migration — v14 schema
+                        // doesn't emit kind yet, default to Clip).
+                        {
+                            auto& lay = registry.emplace<Layer>(clipEntity);
+                            lay.kind       = Layer::Kind::Clip;
+                            lay.startFrame = clip.startFrame;
+                            lay.duration   = clip.duration;
+                            if (auto* tt = registry.try_get<TimelineTrack>(trackEntity)) {
+                                lay.trackIndex = tt->trackIndex;
+                            }
+                            // Tolerant read: accept a "kind" field if present; currently
+                            // only "clip" is emitted (3.6 will add object_animation).
+                            if (clipJson.contains("kind")) {
+                                const std::string kindStr = clipJson.value("kind", "clip");
+                                if (kindStr == "object_animation") {
+                                    lay.kind = Layer::Kind::ObjectAnimation;
+                                } else if (kindStr == "generative") {
+                                    lay.kind = Layer::Kind::Generative;
+                                }
+                                // "clip" (default) already set above.
+                            }
+                        }
+
+                        // Add layer to track
+                        track->layers.push_back(clipEntity);
 
                         // Trigger media load callback if provided
                         if (mediaLoadCallback && !clip.filepath.empty()) {

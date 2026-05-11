@@ -8,6 +8,7 @@
 #include "entity/profile/Tracy.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/VideoTexture.hpp"
@@ -114,10 +115,10 @@ void Timeline::deleteTrack(entt::entity track) {
         if (m_registry.valid(track)) {
             auto* trackComponent = m_registry.try_get<TimelineTrack>(track);
             if (trackComponent) {
-                // Delete all clips in this track
-                for (entt::entity clipEntity : trackComponent->clips) {
-                    if (m_registry.valid(clipEntity)) {
-                        m_registry.destroy(clipEntity);
+                // Delete all layers in this track
+                for (entt::entity layerEntity : trackComponent->layers) {
+                    if (m_registry.valid(layerEntity)) {
+                        m_registry.destroy(layerEntity);
                     }
                 }
             }
@@ -148,10 +149,10 @@ void Timeline::clear() {
         if (m_registry.valid(trackEntity)) {
             auto* trackComponent = m_registry.try_get<TimelineTrack>(trackEntity);
             if (trackComponent) {
-                // Delete all clips in this track
-                for (entt::entity clipEntity : trackComponent->clips) {
-                    if (m_registry.valid(clipEntity)) {
-                        m_registry.destroy(clipEntity);
+                // Delete all layers in this track
+                for (entt::entity layerEntity : trackComponent->layers) {
+                    if (m_registry.valid(layerEntity)) {
+                        m_registry.destroy(layerEntity);
                     }
                 }
             }
@@ -192,7 +193,7 @@ void Timeline::deleteClip(entt::entity clipEntity) {
     if (trackEntity != entt::null) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (track) {
-            track->removeClip(clipEntity);
+            track->removeLayer(clipEntity);
         }
     }
 
@@ -216,7 +217,7 @@ Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipE
     auto trackView = m_registry.view<TimelineTrack>();
     for (auto trackEnt : trackView) {
         const auto& track = trackView.get<TimelineTrack>(trackEnt);
-        if (std::find(track.clips.begin(), track.clips.end(), clipEntity) != track.clips.end()) {
+        if (std::find(track.layers.begin(), track.layers.end(), clipEntity) != track.layers.end()) {
             snap.trackEntity = trackEnt;
             break;
         }
@@ -315,8 +316,13 @@ entt::entity Timeline::restoreDeletedClip(const DeletedClipSnapshot& snap) {
         m_registry.emplace<AnimatedProperties>(newEntity) = snap.animatedProperties;
     }
 
-    track->clips.push_back(newEntity);
-    track->sortClips(m_registry);
+    {
+        auto& lay = m_registry.emplace<Layer>(newEntity);
+        lay.kind = Layer::Kind::Clip;
+    }
+    syncLayerFromClip(m_registry, newEntity);
+    track->layers.push_back(newEntity);
+    track->sortLayers(m_registry);
 
     m_selectedClip = newEntity;
 
@@ -438,6 +444,12 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
         m_registry.emplace<FrameBuffer>(newClipEntity);
     }
 
+    // Layer companion — right-half inherits Clip kind.
+    {
+        auto& lay = m_registry.emplace<Layer>(newClipEntity);
+        lay.kind = Layer::Kind::Clip;
+    }
+
     // Copy and adjust AnimatedProperties for split
     auto* srcAnimProps = m_registry.try_get<AnimatedProperties>(clipEntity);
     if (srcAnimProps) {
@@ -477,9 +489,12 @@ entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame
 
     // Modify original clip to be the left half
     clip->duration = leftDuration;
+    syncLayerFromClip(m_registry, clipEntity);
 
     // Add new clip to the same track
-    track->clips.push_back(newClipEntity);
+    syncLayerFromClip(m_registry, newClipEntity);
+    track->layers.push_back(newClipEntity);
+    track->sortLayers(m_registry);
 
     // Clear selection to avoid confusion
     m_selectedClip = entt::null;
@@ -581,6 +596,12 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
         m_registry.emplace<FrameBuffer>(newClipEntity);
     }
 
+    // Layer companion — duplicate inherits Clip kind.
+    {
+        auto& lay = m_registry.emplace<Layer>(newClipEntity);
+        lay.kind = Layer::Kind::Clip;
+    }
+
     // Copy AnimatedProperties if exists (duplicate gets identical keyframes)
     auto* srcAnimProps = m_registry.try_get<AnimatedProperties>(clipEntity);
     if (srcAnimProps) {
@@ -592,7 +613,9 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
     }
 
     // Add new clip to the same track
-    track->clips.push_back(newClipEntity);
+    syncLayerFromClip(m_registry, newClipEntity);
+    track->layers.push_back(newClipEntity);
+    track->sortLayers(m_registry);
 
     // Select the new clip
     m_selectedClip = newClipEntity;
@@ -611,8 +634,8 @@ entt::entity Timeline::findTrackForClip(entt::entity clipEntity) const {
     for (entt::entity trackEntity : m_tracks) {
         const auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (track) {
-            auto it = std::find(track->clips.begin(), track->clips.end(), clipEntity);
-            if (it != track->clips.end()) {
+            auto it = std::find(track->layers.begin(), track->layers.end(), clipEntity);
+            if (it != track->layers.end()) {
                 return trackEntity;
             }
         }
@@ -646,13 +669,13 @@ bool Timeline::moveClipToTrack(entt::entity clipEntity, int newTrackIndex) {
     }
 
     // Remove from current track
-    auto it = std::find(currentTrack->clips.begin(), currentTrack->clips.end(), clipEntity);
-    if (it != currentTrack->clips.end()) {
-        currentTrack->clips.erase(it);
+    auto it = std::find(currentTrack->layers.begin(), currentTrack->layers.end(), clipEntity);
+    if (it != currentTrack->layers.end()) {
+        currentTrack->layers.erase(it);
     }
 
     // Add to target track
-    targetTrack->clips.push_back(clipEntity);
+    targetTrack->layers.push_back(clipEntity);
 
     // Update zOrder to match new track
     // Track 0 (top of timeline UI) should render on top = highest z-order
@@ -660,6 +683,9 @@ bool Timeline::moveClipToTrack(entt::entity clipEntity, int newTrackIndex) {
     if (layer) {
         layer->zOrder = 1000 - newTrackIndex;
         std::cout << "[Timeline] Updated clip zOrder to " << layer->zOrder << " (track " << newTrackIndex << ")" << std::endl;
+    }
+    if (auto* lay = m_registry.try_get<Layer>(clipEntity)) {
+        lay->trackIndex = static_cast<uint32_t>(newTrackIndex);
     }
 
     std::cout << "[Timeline] Moved clip entity=" << static_cast<uint32_t>(clipEntity)
@@ -683,17 +709,17 @@ Timeline::RippleInsertResult Timeline::rippleInsertTime(FrameNumber insertFrame,
 
     // Phase 1: split clips that span insertFrame. Capture original duration
     // and AnimatedProperties so undo can merge cleanly.
-    // Snapshot the entity list first because splitClip mutates track->clips.
+    // Snapshot the entity list first because splitClip mutates track->layers.
     std::vector<entt::entity> toSplit;
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity clipEntity : track->clips) {
-            auto* clip = m_registry.try_get<Clip>(clipEntity);
+        for (entt::entity layerEntity : track->layers) {
+            auto* clip = m_registry.try_get<Clip>(layerEntity);
             if (!clip) continue;
             FrameNumber endF = clip->startFrame + clip->duration;
             if (clip->startFrame < insertFrame && endF > insertFrame) {
-                toSplit.push_back(clipEntity);
+                toSplit.push_back(layerEntity);
             }
         }
     }
@@ -733,12 +759,13 @@ Timeline::RippleInsertResult Timeline::rippleInsertTime(FrameNumber insertFrame,
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity clipEntity : track->clips) {
-            auto* clip = m_registry.try_get<Clip>(clipEntity);
+        for (entt::entity layerEntity : track->layers) {
+            auto* clip = m_registry.try_get<Clip>(layerEntity);
             if (!clip) continue;
             if (clip->startFrame >= insertFrame) {
-                result.shifted.push_back({clipEntity, clip->startFrame});
+                result.shifted.push_back({layerEntity, clip->startFrame});
                 clip->startFrame += durationFrames;
+                syncLayerFromClip(m_registry, layerEntity);
             }
         }
     }
@@ -758,6 +785,7 @@ void Timeline::undoRippleInsertTime(RippleInsertResult& record) {
     for (auto& s : record.shifted) {
         if (auto* clip = m_registry.try_get<Clip>(s.entity)) {
             clip->startFrame = s.oldStartFrame;
+            syncLayerFromClip(m_registry, s.entity);
         }
     }
     record.shifted.clear();
@@ -797,14 +825,14 @@ Timeline::RippleDeleteResult Timeline::rippleDeleteTime(FrameNumber rangeStart, 
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity clipEntity : track->clips) {
-            auto* clip = m_registry.try_get<Clip>(clipEntity);
+        for (entt::entity layerEntity : track->layers) {
+            auto* clip = m_registry.try_get<Clip>(layerEntity);
             if (!clip) continue;
             const FrameNumber endF = clip->startFrame + clip->duration;
             const bool overlaps = (clip->startFrame < rangeEnd) && (endF > rangeStart);
             if (overlaps) {
                 std::cerr << "[Timeline] rippleDeleteTime: aborted — clip entity="
-                          << static_cast<uint32_t>(clipEntity)
+                          << static_cast<uint32_t>(layerEntity)
                           << " (frames [" << clip->startFrame << ", " << endF << "))"
                           << " overlaps [" << rangeStart << ", " << rangeEnd << "). "
                           << "Split or move overlapping clips, then retry." << std::endl;
@@ -817,12 +845,13 @@ Timeline::RippleDeleteResult Timeline::rippleDeleteTime(FrameNumber rangeStart, 
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity clipEntity : track->clips) {
-            auto* clip = m_registry.try_get<Clip>(clipEntity);
+        for (entt::entity layerEntity : track->layers) {
+            auto* clip = m_registry.try_get<Clip>(layerEntity);
             if (!clip) continue;
             if (clip->startFrame >= rangeEnd) {
-                result.shifted.push_back({clipEntity, clip->startFrame});
+                result.shifted.push_back({layerEntity, clip->startFrame});
                 clip->startFrame -= removeDur;
+                syncLayerFromClip(m_registry, layerEntity);
             }
         }
     }
@@ -838,6 +867,7 @@ void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
     for (auto& s : record.shifted) {
         if (auto* clip = m_registry.try_get<Clip>(s.entity)) {
             clip->startFrame = s.oldStartFrame;
+            syncLayerFromClip(m_registry, s.entity);
         }
     }
     record.shifted.clear();
@@ -1012,6 +1042,15 @@ bool Timeline::editCueTag(double oldNumber, double newNumber,
         if (m_selectedCueNumber == oldNumber) m_selectedCueNumber = newNumber;
     }
     return true;
+}
+
+// static
+void Timeline::syncLayerFromClip(entt::registry& registry, entt::entity entity) {
+    const auto* clip = registry.try_get<Clip>(entity);
+    auto* layer = registry.try_get<Layer>(entity);
+    if (!clip || !layer) return;
+    layer->startFrame = clip->startFrame;
+    layer->duration   = clip->duration;
 }
 
 } // namespace entity

@@ -46,6 +46,7 @@
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
+#include "entity/components/Layer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
@@ -2066,18 +2067,18 @@ void Engine::testComponents() {
         auto clip3 = m_registry.create();
         testEntities.push_back(clip3);
 
-        track.addClip(clip1);
-        track.addClip(clip2);
-        track.addClip(clip3);
+        track.addLayer(clip1);
+        track.addLayer(clip2);
+        track.addLayer(clip3);
 
-        assert(track.getClipCount() == 3);
+        assert(track.getLayerCount() == 3);
         assert(track.isEmpty() == false);
 
-        track.removeClip(clip2);
-        assert(track.getClipCount() == 2);
+        track.removeLayer(clip2);
+        assert(track.getLayerCount() == 2);
 
-        std::cout << "  ✓ TimelineTrack clip management works" << std::endl;
-        std::cout << "  ✓ Clips in track: " << track.getClipCount() << std::endl;
+        std::cout << "  ✓ TimelineTrack layer management works" << std::endl;
+        std::cout << "  ✓ Layers in track: " << track.getLayerCount() << std::endl;
     }
 
     // Test 8: EnTT View Iteration
@@ -2708,7 +2709,7 @@ void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaTy
             return true;  // Invalid track
         }
         auto& checkTrack = m_registry.get<TimelineTrack>(tracks[checkTrackIndex]);
-        for (entt::entity existingClipEntity : checkTrack.clips) {
+        for (entt::entity existingClipEntity : checkTrack.layers) {
             auto* existingClip = m_registry.try_get<Clip>(existingClipEntity);
             if (!existingClip) continue;
 
@@ -2740,9 +2741,16 @@ void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaTy
     }
 
     // Add clip to selected track
+    {
+        auto& lay = m_registry.emplace<Layer>(clipEntity);
+        lay.kind       = Layer::Kind::Clip;
+        lay.startFrame = clip.startFrame;
+        lay.duration   = clip.duration;
+        lay.trackIndex = static_cast<uint32_t>(finalTrackIndex);
+    }
     auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
-    finalTrack.addClip(clipEntity);
-    finalTrack.sortClips(m_registry); // Maintain sorted order by start frame
+    finalTrack.addLayer(clipEntity);
+    finalTrack.sortLayers(m_registry); // Maintain sorted order by start frame
     std::cout << "Added clip to track " << (finalTrackIndex + 1) << std::endl;
 
     // Set z-order based on track index
@@ -2875,7 +2883,7 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
             return true;  // Invalid track
         }
         auto& checkTrack = m_registry.get<TimelineTrack>(tracks[checkTrackIndex]);
-        for (entt::entity existingClipEntity : checkTrack.clips) {
+        for (entt::entity existingClipEntity : checkTrack.layers) {
             auto* existingClip = m_registry.try_get<Clip>(existingClipEntity);
             if (!existingClip) continue;
 
@@ -2946,9 +2954,16 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     state.lastDecodedFrame = UINT32_MAX;  // Force decode on first frame
 
     // Add clip to the selected track
+    {
+        auto& lay = m_registry.emplace<Layer>(clipEntity);
+        lay.kind       = Layer::Kind::Clip;
+        lay.startFrame = clip.startFrame;
+        lay.duration   = clip.duration;
+        lay.trackIndex = static_cast<uint32_t>(finalTrackIndex);
+    }
     auto& finalTrack = m_registry.get<TimelineTrack>(m_timeline->getTracks()[finalTrackIndex]);
-    finalTrack.addClip(clipEntity);
-    finalTrack.sortClips(m_registry); // Maintain sorted order by start frame
+    finalTrack.addLayer(clipEntity);
+    finalTrack.sortLayers(m_registry); // Maintain sorted order by start frame
     std::cout << "Added clip to track " << (finalTrackIndex + 1) << " at frame " << startFrame << std::endl;
 
     // Extend timeline duration if needed

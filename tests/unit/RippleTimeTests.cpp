@@ -29,7 +29,11 @@ protected:
         clip.startFrame = start;
         clip.duration = duration;
         clip.framerate = 30.0;
-        registry.get<TimelineTrack>(track).clips.push_back(e);
+        auto& lay = registry.emplace<Layer>(e);
+        lay.kind       = Layer::Kind::Clip;
+        lay.startFrame = start;
+        lay.duration   = duration;
+        registry.get<TimelineTrack>(track).layers.push_back(e);
         return e;
     }
 

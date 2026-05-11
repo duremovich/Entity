@@ -341,7 +341,7 @@ entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const 
     if (!track) return entt::null;
 
     FrameNumber currentFrame = m_timeline->getCurrentFrame();
-    for (entt::entity clipEntity : track->clips) {
+    for (entt::entity clipEntity : track->layers) {
         const auto* clip = registry.try_get<Clip>(clipEntity);
         if (!clip) continue;
         if (currentFrame >= clip->startFrame &&
@@ -403,7 +403,7 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
     Timecode snapPosition = newStartTime;
     float minDistance = std::numeric_limits<float>::max();
 
-    for (entt::entity otherClipEntity : track->clips) {
+    for (entt::entity otherClipEntity : track->layers) {
         // Skip the clip we're moving
         if (otherClipEntity == clipEntity) continue;
 

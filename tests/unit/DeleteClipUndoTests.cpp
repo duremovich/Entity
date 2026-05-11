@@ -70,7 +70,12 @@ protected:
         ap.addKeyframe(AnimatableProperty::Opacity, 0,  0.0f);
         ap.addKeyframe(AnimatableProperty::Opacity, 30, 1.0f);
 
-        registry.get<TimelineTrack>(track).clips.push_back(e);
+        auto& lay = registry.emplace<Layer>(e);
+        lay.kind       = Layer::Kind::Clip;
+        lay.startFrame = start;
+        lay.duration   = duration;
+
+        registry.get<TimelineTrack>(track).layers.push_back(e);
         return e;
     }
 };
@@ -142,7 +147,7 @@ TEST_F(DeleteClipUndoTest, RestoreRoundTripsAllComponentValues) {
 
     timeline->deleteClip(clipEnt);
     ASSERT_FALSE(registry.valid(clipEnt));
-    EXPECT_EQ(registry.get<TimelineTrack>(track).clips.size(), 0u);
+    EXPECT_EQ(registry.get<TimelineTrack>(track).layers.size(), 0u);
 
     entt::entity restored = timeline->restoreDeletedClip(snap);
     ASSERT_TRUE(restored != entt::null);
@@ -152,8 +157,8 @@ TEST_F(DeleteClipUndoTest, RestoreRoundTripsAllComponentValues) {
     ASSERT_TRUE(registry.valid(restored));
 
     const auto& trackComp = registry.get<TimelineTrack>(track);
-    ASSERT_EQ(trackComp.clips.size(), 1u);
-    EXPECT_EQ(static_cast<uint32_t>(trackComp.clips.front()), static_cast<uint32_t>(restored));
+    ASSERT_EQ(trackComp.layers.size(), 1u);
+    EXPECT_EQ(static_cast<uint32_t>(trackComp.layers.front()), static_cast<uint32_t>(restored));
 
     const auto& c = registry.get<Clip>(restored);
     EXPECT_EQ(c.filepath, "C:/fake/clip.mov");
@@ -202,7 +207,7 @@ TEST_F(DeleteClipUndoTest, RestoreInsertsInStartFrameOrder) {
     auto restoredB = timeline->restoreDeletedClip(snap);
     ASSERT_TRUE(restoredB != entt::null);
 
-    const auto& trackClips = registry.get<TimelineTrack>(track).clips;
+    const auto& trackClips = registry.get<TimelineTrack>(track).layers;
     ASSERT_EQ(trackClips.size(), 3u);
     EXPECT_EQ(static_cast<uint32_t>(trackClips[0]), static_cast<uint32_t>(a));
     EXPECT_EQ(static_cast<uint32_t>(trackClips[1]), static_cast<uint32_t>(restoredB));

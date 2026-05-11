@@ -204,7 +204,7 @@ bool SelectClipCommand::execute(Engine& engine) {
         for (entt::entity te : tracks) {
             auto* track = registry.try_get<TimelineTrack>(te);
             if (track) {
-                for (entt::entity ce : track->clips) {
+                for (entt::entity ce : track->layers) {
                     if (ce == clipEntity) {
                         trackEntity = te;
                         break;
@@ -230,12 +230,12 @@ bool SelectClipCommand::execute(Engine& engine) {
             return false;
         }
 
-        if (*m_clipIndex < 0 || *m_clipIndex >= static_cast<int>(track->clips.size())) {
+        if (*m_clipIndex < 0 || *m_clipIndex >= static_cast<int>(track->layers.size())) {
             std::cerr << "[SelectClip] Invalid clip index: " << *m_clipIndex << std::endl;
             return false;
         }
 
-        clipEntity = track->clips[*m_clipIndex];
+        clipEntity = track->layers[*m_clipIndex];
     } else {
         return false;
     }
@@ -720,12 +720,12 @@ bool SetClipBlendModeCommand::execute(Engine& engine) {
 
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "SetClipBlendMode: Invalid clip index " << m_clipIndex << std::endl;
         return false;
     }
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     auto* layer = registry.try_get<MediaLayer>(clipEntity);
     if (!layer) {
         std::cerr << "SetClipBlendMode: Clip has no MediaLayer component" << std::endl;
@@ -749,8 +749,8 @@ bool SetClipBlendModeCommand::undo(Engine& engine) {
     if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
-    auto* layer = registry.try_get<MediaLayer>(track->clips[m_clipIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    auto* layer = registry.try_get<MediaLayer>(track->layers[m_clipIndex]);
     if (!layer) return false;
     layer->blendMode = *m_previousMode;
     return true;
@@ -820,12 +820,12 @@ bool SetClipOpacityCommand::execute(Engine& engine) {
 
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "SetClipOpacity: Invalid clip index " << m_clipIndex << std::endl;
         return false;
     }
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     auto* layer = registry.try_get<MediaLayer>(clipEntity);
     if (!layer) {
         std::cerr << "SetClipOpacity: Clip has no MediaLayer component" << std::endl;
@@ -849,8 +849,8 @@ bool SetClipOpacityCommand::undo(Engine& engine) {
     if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
-    auto* layer = registry.try_get<MediaLayer>(track->clips[m_clipIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    auto* layer = registry.try_get<MediaLayer>(track->layers[m_clipIndex]);
     if (!layer) return false;
     layer->opacity = *m_previousOpacity;
     return true;
@@ -890,12 +890,12 @@ bool LogClipStateCommand::execute(Engine& engine) {
         auto* track = registry.try_get<TimelineTrack>(tracks[ti]);
         if (!track) continue;
 
-        std::cout << "\nTrack " << ti << " (" << track->clips.size() << " clips):" << std::endl;
+        std::cout << "\nTrack " << ti << " (" << track->layers.size() << " clips):" << std::endl;
 
-        for (size_t ci = 0; ci < track->clips.size(); ++ci) {
+        for (size_t ci = 0; ci < track->layers.size(); ++ci) {
             if (m_clipIndex.has_value() && static_cast<int>(ci) != m_clipIndex.value()) continue;
 
-            entt::entity clipEntity = track->clips[ci];
+            entt::entity clipEntity = track->layers[ci];
             auto* clip = registry.try_get<Clip>(clipEntity);
             auto* layer = registry.try_get<MediaLayer>(clipEntity);
 
@@ -978,12 +978,12 @@ bool SetClipRotationCommand::execute(Engine& engine) {
     }
 
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "[SetClipRotation] Invalid clip index: " << m_clipIndex << std::endl;
         return false;
     }
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     auto* transform = registry.try_get<Transform>(clipEntity);
     if (!transform) {
         std::cerr << "[SetClipRotation] Clip has no Transform component!" << std::endl;
@@ -1007,8 +1007,8 @@ bool SetClipRotationCommand::undo(Engine& engine) {
     if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
-    auto* transform = registry.try_get<Transform>(track->clips[m_clipIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    auto* transform = registry.try_get<Transform>(track->layers[m_clipIndex]);
     if (!transform) return false;
     const auto& prev = *m_previousRotation;
     transform->setRotation(glm::vec3(prev[0], prev[1], prev[2]));
@@ -1059,12 +1059,12 @@ bool AddKeyframeCommand::execute(Engine& engine) {
     }
 
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "[AddKeyframe] Invalid clip index: " << m_clipIndex << std::endl;
         return false;
     }
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
 
     // Get or create AnimatedProperties component
     auto& animProps = registry.get_or_emplace<AnimatedProperties>(clipEntity);
@@ -1145,12 +1145,12 @@ bool ClearKeyframesCommand::execute(Engine& engine) {
     }
 
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "[ClearKeyframes] Invalid clip index: " << m_clipIndex << std::endl;
         return false;
     }
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
 
     // Remove AnimatedProperties component if it exists
     if (registry.any_of<AnimatedProperties>(clipEntity)) {
@@ -1223,9 +1223,9 @@ bool UpsertKeyframeCommand::execute(Engine& engine) {
 
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     auto& animProps = registry.get_or_emplace<AnimatedProperties>(clipEntity);
 
     // Auto-capture pre-edit state if the caller didn't provide it. Script
@@ -1254,8 +1254,8 @@ bool UpsertKeyframeCommand::undo(Engine& engine) {
     if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    entt::entity clipEntity = track->layers[m_clipIndex];
     auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
     if (!animProps) return false;
 
@@ -1375,12 +1375,12 @@ bool SetClipTargetScreenCommand::execute(Engine& engine) {
     }
 
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "[SetClipTargetScreen] Invalid clip index: " << m_clipIndex << std::endl;
         return false;
     }
 
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) {
         std::cerr << "[SetClipTargetScreen] Clip component not found!" << std::endl;
@@ -1429,8 +1429,8 @@ bool SetClipTargetScreenCommand::undo(Engine& engine) {
     if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) return false;
-    auto* clip = registry.try_get<Clip>(track->clips[m_clipIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    auto* clip = registry.try_get<Clip>(track->layers[m_clipIndex]);
     if (!clip) return false;
 
     const std::string& name = *m_previousScreenName;
@@ -1544,11 +1544,11 @@ bool AssertFrameCachedCommand::execute(Engine& engine) {
     }
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "[AssertFrameCached] Invalid clip index " << m_clipIndex << std::endl;
         return false;
     }
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
 
     auto* cache = engine.getFrameCache();
     if (!cache) {
@@ -1676,11 +1676,11 @@ Clip* lookupClipByTrack(Engine& engine, int trackIndex, int clipIndex, const cha
     }
     auto& registry = engine.getRegistry();
     auto* track = registry.try_get<TimelineTrack>(tracks[trackIndex]);
-    if (!track || clipIndex < 0 || clipIndex >= static_cast<int>(track->clips.size())) {
+    if (!track || clipIndex < 0 || clipIndex >= static_cast<int>(track->layers.size())) {
         std::cerr << "[" << who << "] Invalid clip index " << clipIndex << std::endl;
         return nullptr;
     }
-    return registry.try_get<Clip>(track->clips[clipIndex]);
+    return registry.try_get<Clip>(track->layers[clipIndex]);
 }
 
 const char* playbackModeName(PlaybackMode mode) {
@@ -2338,12 +2338,12 @@ bool AssertClipMediaFrameCommand::execute(Engine& engine) {
     }
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
     if (!track || m_clipIndex < 0 ||
-        static_cast<size_t>(m_clipIndex) >= track->clips.size()) {
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
         std::cerr << "[AssertClipMediaFrame] FAIL: clipIndex " << m_clipIndex
                   << " out of range" << std::endl;
         return false;
     }
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) {
         std::cerr << "[AssertClipMediaFrame] FAIL: no Clip component" << std::endl;
@@ -2422,12 +2422,12 @@ bool AssertClipFadeMultiplierCommand::execute(Engine& engine) {
     }
     auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
     if (!track || m_clipIndex < 0 ||
-        static_cast<size_t>(m_clipIndex) >= track->clips.size()) {
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
         std::cerr << "[AssertClipFadeMultiplier] FAIL: clipIndex " << m_clipIndex
                   << " out of range" << std::endl;
         return false;
     }
-    entt::entity clipEntity = track->clips[m_clipIndex];
+    entt::entity clipEntity = track->layers[m_clipIndex];
     const auto* clip = registry.try_get<Clip>(clipEntity);
     if (!clip) {
         std::cerr << "[AssertClipFadeMultiplier] FAIL: no Clip component" << std::endl;
