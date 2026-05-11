@@ -120,6 +120,13 @@ private:
 
     std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> m_workers;
 
+    // Captured in initialize() (called from editor thread on engine startup).
+    // Used in update() to gate worker create/destroy: only the editor thread
+    // mutates m_workers. The show-thread fallback (Engine.cpp:982) still
+    // ticks targetFrame on existing workers, but skips lifecycle ops to
+    // avoid two threads concurrently joining the same decode std::thread.
+    std::thread::id   m_editorThreadId;
+
     std::atomic<bool> m_globalPaused{false};
     bool              m_wasScrubbing{false};
 

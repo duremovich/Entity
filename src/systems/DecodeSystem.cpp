@@ -40,6 +40,7 @@ DecodeSystem::~DecodeSystem() {
 
 void DecodeSystem::initialize(entt::registry& registry) {
     (void)registry;
+    m_editorThreadId = std::this_thread::get_id();
     std::cout << "DecodeSystem initialized" << std::endl;
 }
 
@@ -47,6 +48,15 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     ZoneScopedN("DecodeSystem::update");
     (void)deltaTime;
     if (!m_timeline) return;
+
+    // Gate worker lifecycle (create/destroy) to the editor thread. The
+    // show-thread fallback (Engine.cpp:982) re-enters this function during
+    // editor stalls so existing workers keep targeting fresh frames, but
+    // it must NOT mutate m_workers — concurrent join() on the same decode
+    // std::thread from both threads throws std::system_error(no_such_process)
+    // when the second join finds the OS handle already released.
+    const bool isEditorTick =
+        (std::this_thread::get_id() == m_editorThreadId);
 
     // Detect scrubbing end - when scrubbing stops, force seeks for all active clips
     bool currentlyScrubbing = m_timeline->isScrubbing();
@@ -88,6 +98,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
         auto workerIt = m_workers.find(entity);
         if (workerIt == m_workers.end()) {
+            // Bootstrap is editor-only (writes m_workers). New clips can't
+            // appear during an editor stall (registry is frozen), so the
+            // show-thread fallback never has a legitimate clip without a
+            // pre-existing worker — skip and let the next editor tick
+            // bootstrap if needed.
+            if (!isEditorTick) continue;
+
             // Bootstrap a worker at the current playhead-mapped media frame.
             FrameNumber initialMediaFrame = clip.mediaStartFrame;
             if (currentTimelineFrame >= clip.startFrame &&
@@ -306,17 +323,23 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         TracyPlot("Decode queue depth", totalPending);
     }
 
-    // Tear down workers for entities that were destroyed
-    std::vector<entt::entity> toRemove;
-    for (auto& [entity, worker] : m_workers) {
-        if (!registry.valid(entity) || !registry.all_of<Clip, FrameBuffer>(entity)) {
-            toRemove.push_back(entity);
+    // Tear down workers for entities that were destroyed. Editor-only:
+    // destroyWorker calls thread.join() which blocks for the duration of
+    // any in-flight decode (4K ProRes can take 50+ ms — long enough for
+    // the show-thread fallback to fire and re-enter). Two threads joining
+    // the same std::thread races on the OS handle and throws no_such_process.
+    if (isEditorTick) {
+        std::vector<entt::entity> toRemove;
+        for (auto& [entity, worker] : m_workers) {
+            if (!registry.valid(entity) || !registry.all_of<Clip, FrameBuffer>(entity)) {
+                toRemove.push_back(entity);
+            }
         }
-    }
-    for (entt::entity entity : toRemove) {
-        // Drop this clip's frames from the cache so they don't squat budget
-        if (m_frameCache) m_frameCache->evictClip(entity);
-        destroyWorker(entity);
+        for (entt::entity entity : toRemove) {
+            // Drop this clip's frames from the cache so they don't squat budget
+            if (m_frameCache) m_frameCache->evictClip(entity);
+            destroyWorker(entity);
+        }
     }
 }
 
