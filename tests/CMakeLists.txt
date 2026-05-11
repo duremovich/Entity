@@ -6,6 +6,7 @@ add_executable(EntityMediaTests
     unit/FrameCacheTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
+    unit/DeleteClipUndoTests.cpp
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
     unit/SectionFadeTests.cpp

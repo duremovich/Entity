@@ -209,7 +209,7 @@ private:
     std::optional<uint32_t> m_entityId;
 };
 
-class DeleteClipCommand : public Command {
+class DeleteClipCommand : public UndoableCommand {
 public:
     // Delete selected clip (default)
     DeleteClipCommand() = default;
@@ -218,6 +218,8 @@ public:
     explicit DeleteClipCommand(uint32_t entityId) : m_entityId(entityId) {}
 
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
     const char* getTypeName() const override { return "DeleteClip"; }
     nlohmann::json toJson() const override;
 
@@ -225,6 +227,12 @@ public:
 
 private:
     std::optional<uint32_t> m_entityId;
+    // Pre-delete snapshot, captured on first execute(). Empty until then;
+    // undo() reads it to recreate the clip with a fresh entity ID + GPU
+    // resources. redo() retargets m_entityId to the restored entity so the
+    // re-execute deletes the right clip.
+    bool                        m_captured{false};
+    Timeline::DeletedClipSnapshot m_snapshot;
 };
 
 // ============================================================================

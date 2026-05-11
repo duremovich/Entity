@@ -1026,7 +1026,16 @@ void TimelineWidget::handleContextMenus() {
                     m_selectedClip = entt::null;
                     m_selectedClipTrackIndex = -1;
                 }
-                m_timeline->deleteClip(m_rightClickedClip);
+                // Route through the command dispatcher so the delete is
+                // undoable (Ctrl+Z restores). Falls back to the direct path
+                // only if no dispatcher is wired (shouldn't happen at runtime
+                // but keeps unit tests that use TimelineWidget standalone OK).
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<DeleteClipCommand>(
+                        static_cast<uint32_t>(m_rightClickedClip)));
+                } else {
+                    m_timeline->deleteClip(m_rightClickedClip);
+                }
                 m_rightClickedClip = entt::null;
             }
             ImGui::Separator();

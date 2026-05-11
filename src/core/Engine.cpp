@@ -1837,13 +1837,13 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 break;
 
             case GLFW_KEY_DELETE:
-                // Delete = Delete selected clip
+                // Delete = Delete selected clip. Routed through the command
+                // dispatcher so it lands on the undo stack (Ctrl+Z restores).
                 {
                     entt::entity selectedClip = m_timeline->getSelectedClip();
-                    if (selectedClip != entt::null) {
-                        m_timeline->deleteClip(selectedClip);
-                        m_timeline->setSelectedClip(entt::null);
-                        std::cout << "Deleted selected clip" << std::endl;
+                    if (selectedClip != entt::null && m_commandDispatcher) {
+                        m_commandDispatcher->enqueue(std::make_unique<DeleteClipCommand>(
+                            static_cast<uint32_t>(selectedClip)));
                     }
                 }
                 break;

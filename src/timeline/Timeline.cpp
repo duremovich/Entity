@@ -201,6 +201,135 @@ void Timeline::deleteClip(entt::entity clipEntity) {
     std::cout << "[Timeline] Deleted clip entity=" << static_cast<uint32_t>(clipEntity) << std::endl;
 }
 
+Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipEntity) const {
+    DeletedClipSnapshot snap;
+    if (!m_registry.valid(clipEntity)) {
+        return snap;
+    }
+    const auto* clip = m_registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        return snap;
+    }
+
+    // findTrackForClip is non-const; recreate its (small) lookup here so we
+    // can keep snapshotClipForDelete const-qualified.
+    auto trackView = m_registry.view<TimelineTrack>();
+    for (auto trackEnt : trackView) {
+        const auto& track = trackView.get<TimelineTrack>(trackEnt);
+        if (std::find(track.clips.begin(), track.clips.end(), clipEntity) != track.clips.end()) {
+            snap.trackEntity = trackEnt;
+            break;
+        }
+    }
+    if (snap.trackEntity == entt::null) {
+        return snap;
+    }
+
+    snap.filepath         = clip->filepath;
+    snap.mediaType        = clip->mediaType;
+    snap.startFrame       = clip->startFrame;
+    snap.duration         = clip->duration;
+    snap.mediaStartFrame  = clip->mediaStartFrame;
+    snap.mediaOutFrame    = clip->mediaOutFrame;
+    snap.totalMediaFrames = clip->totalMediaFrames;
+    snap.framerate        = clip->framerate;
+    snap.playbackMode     = clip->playbackMode;
+    snap.sectionBehavior  = clip->sectionBehavior;
+    snap.width            = clip->width;
+    snap.height           = clip->height;
+    snap.hasAlpha         = clip->hasAlpha;
+    snap.frameBlending    = clip->frameBlending;
+    snap.targetScreen     = clip->targetScreen;
+
+    if (const auto* tr = m_registry.try_get<Transform>(clipEntity)) {
+        snap.hadTransform = true;
+        snap.transform    = *tr;
+    }
+    if (const auto* ml = m_registry.try_get<MediaLayer>(clipEntity)) {
+        snap.hadMediaLayer = true;
+        snap.mediaLayer    = *ml;
+    }
+    if (const auto* vt = m_registry.try_get<VideoTexture>(clipEntity)) {
+        snap.hadVideoTexture = true;
+        snap.videoTexWidth   = vt->width;
+        snap.videoTexHeight  = vt->height;
+    }
+    snap.hadFrameBuffer = m_registry.all_of<FrameBuffer>(clipEntity);
+    if (const auto* ap = m_registry.try_get<AnimatedProperties>(clipEntity)) {
+        snap.hadAnimatedProperties = true;
+        snap.animatedProperties    = *ap;
+    }
+    return snap;
+}
+
+entt::entity Timeline::restoreDeletedClip(const DeletedClipSnapshot& snap) {
+    if (!snap.valid() || !m_registry.valid(snap.trackEntity)) {
+        std::cerr << "[Timeline] restoreDeletedClip: invalid snapshot or track gone" << std::endl;
+        return entt::null;
+    }
+    auto* track = m_registry.try_get<TimelineTrack>(snap.trackEntity);
+    if (!track) {
+        std::cerr << "[Timeline] restoreDeletedClip: track has no TimelineTrack component" << std::endl;
+        return entt::null;
+    }
+
+    entt::entity newEntity = m_registry.create();
+
+    auto& clip = m_registry.emplace<Clip>(newEntity);
+    clip.filepath         = snap.filepath;
+    clip.mediaType        = snap.mediaType;
+    clip.startFrame       = snap.startFrame;
+    clip.duration         = snap.duration;
+    clip.mediaStartFrame  = snap.mediaStartFrame;
+    clip.mediaOutFrame    = snap.mediaOutFrame;
+    clip.totalMediaFrames = snap.totalMediaFrames;
+    clip.framerate        = snap.framerate;
+    clip.playbackMode     = snap.playbackMode;
+    clip.sectionBehavior  = snap.sectionBehavior;
+    clip.width            = snap.width;
+    clip.height           = snap.height;
+    clip.hasAlpha         = snap.hasAlpha;
+    clip.frameBlending    = snap.frameBlending;
+    clip.targetScreen     = snap.targetScreen;
+    clip.loaded           = false;   // The clip-created callback re-opens the decoder.
+    clip.decoding         = false;
+
+    if (snap.hadTransform) {
+        auto& tr = m_registry.emplace<Transform>(newEntity);
+        tr        = snap.transform;
+        tr.dirty  = true;            // Force matrix recompute for the new entity.
+    }
+    if (snap.hadMediaLayer) {
+        m_registry.emplace<MediaLayer>(newEntity) = snap.mediaLayer;
+    }
+    if (snap.hadVideoTexture) {
+        auto& vt = m_registry.emplace<VideoTexture>(newEntity);
+        vt.width  = snap.videoTexWidth;
+        vt.height = snap.videoTexHeight;
+        // descriptorSlot stays at UINT32_MAX so onClipCreated provisions a fresh slot.
+    }
+    if (snap.hadFrameBuffer) {
+        m_registry.emplace<FrameBuffer>(newEntity);
+    }
+    if (snap.hadAnimatedProperties) {
+        m_registry.emplace<AnimatedProperties>(newEntity) = snap.animatedProperties;
+    }
+
+    track->clips.push_back(newEntity);
+    track->sortClips(m_registry);
+
+    m_selectedClip = newEntity;
+
+    std::cout << "[Timeline] Restored clip entity=" << static_cast<uint32_t>(newEntity)
+              << " on track=" << static_cast<uint32_t>(snap.trackEntity)
+              << " at frame=" << snap.startFrame << std::endl;
+
+    if (m_clipCreatedCallback) {
+        m_clipCreatedCallback(newEntity, clip.filepath);
+    }
+    return newEntity;
+}
+
 entt::entity Timeline::splitClip(entt::entity clipEntity, FrameNumber splitFrame) {
     // Validate clip entity
     if (!m_registry.valid(clipEntity)) {

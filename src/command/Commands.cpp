@@ -412,9 +412,49 @@ bool DeleteClipCommand::execute(Engine& engine) {
         return false;
     }
 
+    // Snapshot before destruction so undo can recreate the clip + decoder
+    // + GPU slot. Bail if the snapshot is invalid -- happens when the
+    // entity isn't in any track, which is not a recoverable state.
+    auto snapshot = timeline->snapshotClipForDelete(target);
+    if (!snapshot.valid()) {
+        std::cerr << "[DeleteClip] Failed to snapshot clip entity="
+                  << static_cast<uint32_t>(target) << " (not in any track?)" << std::endl;
+        return false;
+    }
+
     timeline->deleteClip(target);
     timeline->setSelectedClip(entt::null);
+
+    m_snapshot = std::move(snapshot);
+    m_captured = true;
     return true;
+}
+
+bool DeleteClipCommand::undo(Engine& engine) {
+    if (!m_captured) {
+        std::cerr << "[DeleteClip] undo called before successful execute" << std::endl;
+        return false;
+    }
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+
+    entt::entity restored = timeline->restoreDeletedClip(m_snapshot);
+    if (restored == entt::null) {
+        return false;
+    }
+
+    // Retarget so a subsequent redo deletes the restored entity, not the
+    // long-gone original ID.
+    m_entityId = static_cast<uint32_t>(restored);
+    return true;
+}
+
+bool DeleteClipCommand::redo(Engine& engine) {
+    // Force re-capture against the restored entity (its component values
+    // may have diverged from the original snapshot if other undoable
+    // commands ran between undo and redo).
+    m_captured = false;
+    return execute(engine);
 }
 
 nlohmann::json DeleteClipCommand::toJson() const {
