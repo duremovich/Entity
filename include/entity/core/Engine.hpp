@@ -875,6 +875,27 @@ public:
     // don't chain relaunches in a device-lost storm.
     void setRecoveryRelaunch() { m_isRecoveryRelaunch = true; }
 
+    /**
+     * Create an Object Animation layer on the given track at the given start
+     * frame and duration. Targets the provided screen entity (entt::null means
+     * no target assigned — user picks one in the Properties panel).
+     * Returns the created entity, or entt::null on failure.
+     */
+    entt::entity createObjectAnimationLayer(entt::entity targetScreen,
+                                            int trackIndex,
+                                            FrameNumber startFrame,
+                                            FrameNumber duration);
+
+    /**
+     * Create a Clip layer entity with no media (filepath empty). Used when the
+     * user drags a Clip kind from the Layers panel onto the timeline — media is
+     * assigned later via the Properties panel or drag-and-drop.
+     * Returns the created entity, or entt::null on failure.
+     */
+    entt::entity createEmptyClipLayer(int trackIndex,
+                                      FrameNumber startFrame,
+                                      FrameNumber duration);
+
 private:
 
     // State

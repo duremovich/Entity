@@ -99,6 +99,12 @@ private:
     void renderSectionBreakProperties();
 
     /**
+     * Render OA layer properties: target picker + keyframe editor.
+     * Called when the selected entity has ObjectAnimationLayer but no Clip.
+     */
+    void renderOALayerProperties(entt::entity entity);
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control
@@ -114,6 +120,21 @@ private:
      * Returns -1 if playhead is outside the clip bounds.
      */
     int getCurrentClipFrame() const;
+
+    /**
+     * Get the current frame relative to an OA layer's startFrame.
+     * Returns -1 if the playhead is outside [startFrame, startFrame+duration).
+     */
+    int getCurrentOAFrame(entt::entity oaEntity) const;
+
+    /**
+     * Render interactive keyframe controls for an OA layer property.
+     * Shows stopwatch toggle, prev/add-at-current/next buttons. Uses
+     * getCurrentOAFrame instead of getCurrentClipFrame.
+     */
+    void renderOAKeyframeControls(entt::entity oaEntity,
+                                  AnimatableProperty property,
+                                  const char* propertyName);
 
     /**
      * Navigate to the previous keyframe for a property.

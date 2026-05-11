@@ -11,6 +11,8 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
@@ -129,6 +131,13 @@ void PropertyWindow::render() {
 
     if (!registry.valid(selectedClip)) {
         ImGui::TextDisabled("Invalid selection");
+        return;
+    }
+
+    // OA layer path: entity has ObjectAnimationLayer but no Clip component
+    if (registry.all_of<ObjectAnimationLayer>(selectedClip) &&
+        !registry.all_of<Clip>(selectedClip)) {
+        renderOALayerProperties(selectedClip);
         return;
     }
 
@@ -738,6 +747,132 @@ int PropertyWindow::getCurrentClipFrame() const {
     }
 
     return static_cast<int>(clipFrame);
+}
+
+int PropertyWindow::getCurrentOAFrame(entt::entity oaEntity) const {
+    if (!m_timeline) return -1;
+    auto& registry = m_timeline->getRegistry();
+    const auto* lay = registry.try_get<Layer>(oaEntity);
+    if (!lay) return -1;
+    FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    if (currentFrame < lay->startFrame || currentFrame >= lay->startFrame + lay->duration)
+        return -1;
+    return static_cast<int>(currentFrame - lay->startFrame);
+}
+
+void PropertyWindow::renderOAKeyframeControls(entt::entity oaEntity,
+                                              AnimatableProperty property,
+                                              const char* propertyName) {
+    if (!m_timeline) return;
+    auto& registry = m_timeline->getRegistry();
+
+    auto* animProps = registry.try_get<AnimatedProperties>(oaEntity);
+    const KeyframeTrack* track = animProps ? animProps->getTrack(property) : nullptr;
+
+    bool hasKeyframes = track && track->hasKeyframes();
+    int oaFrame = getCurrentOAFrame(oaEntity);
+    bool hasKeyframeAtCurrentFrame = false;
+
+    if (track && oaFrame >= 0) {
+        hasKeyframeAtCurrentFrame = (track->getKeyframeAt(static_cast<FrameNumber>(oaFrame)) != nullptr);
+    }
+
+    ImGui::PushID(static_cast<int>(property) + 10000);
+
+    // Stopwatch button
+    ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255) : IM_COL32(128, 128, 128, 255);
+    ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
+    if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
+        if (oaFrame >= 0) {
+            if (!animProps) {
+                registry.emplace<AnimatedProperties>(oaEntity);
+                animProps = registry.try_get<AnimatedProperties>(oaEntity);
+            }
+            KeyframeTrack& mutableTrack = animProps->getOrCreateTrack(property);
+            const Keyframe* existingKf = mutableTrack.getKeyframeAt(static_cast<FrameNumber>(oaFrame));
+            if (existingKf) {
+                mutableTrack.removeKeyframe(static_cast<FrameNumber>(oaFrame));
+            } else {
+                float currentVal = track ? track->evaluate(static_cast<FrameNumber>(oaFrame)) : 0.0f;
+                mutableTrack.addKeyframe(static_cast<FrameNumber>(oaFrame), currentVal);
+            }
+        }
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(hasKeyframes ? "Animation enabled - click to toggle keyframe at current frame"
+                                       : "Click to add keyframe at current frame");
+    }
+
+    ImGui::SameLine();
+
+    // Previous keyframe button
+    bool canGoPrev = hasKeyframes && oaFrame > 0;
+    if (!canGoPrev) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("<")) {
+        if (track && !track->keyframes.empty()) {
+            const auto* lay = registry.try_get<Layer>(oaEntity);
+            FrameNumber prevFrame = FrameNumber(-1);
+            for (const auto& kf : track->keyframes) {
+                if (kf.frame < oaFrame) prevFrame = kf.frame;
+                else break;
+            }
+            if (prevFrame != FrameNumber(-1) && lay)
+                m_timeline->seekToFrame(lay->startFrame + prevFrame);
+        }
+    }
+    if (!canGoPrev) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Go to previous keyframe");
+
+    ImGui::SameLine();
+
+    // Diamond add/remove button
+    ImU32 diamondColor = hasKeyframeAtCurrentFrame ? IM_COL32(255, 180, 50, 255) : IM_COL32(128, 128, 128, 255);
+    ImGui::PushStyleColor(ImGuiCol_Text, diamondColor);
+    if (ImGui::SmallButton("<>")) {
+        if (oaFrame >= 0) {
+            if (!animProps) {
+                registry.emplace<AnimatedProperties>(oaEntity);
+                animProps = registry.try_get<AnimatedProperties>(oaEntity);
+            }
+            KeyframeTrack& mutableTrack = animProps->getOrCreateTrack(property);
+            const Keyframe* existingKf = mutableTrack.getKeyframeAt(static_cast<FrameNumber>(oaFrame));
+            if (existingKf) {
+                mutableTrack.removeKeyframe(static_cast<FrameNumber>(oaFrame));
+            } else {
+                float currentVal = track ? track->evaluate(static_cast<FrameNumber>(oaFrame)) : 0.0f;
+                mutableTrack.addKeyframe(static_cast<FrameNumber>(oaFrame), currentVal);
+            }
+        }
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(hasKeyframeAtCurrentFrame ? "Remove keyframe at current frame"
+                                                    : "Add keyframe at current frame");
+    }
+
+    ImGui::SameLine();
+
+    // Next keyframe button
+    if (!hasKeyframes) ImGui::BeginDisabled();
+    if (ImGui::SmallButton(">")) {
+        if (track && !track->keyframes.empty()) {
+            const auto* lay = registry.try_get<Layer>(oaEntity);
+            for (const auto& kf : track->keyframes) {
+                if (kf.frame > oaFrame && lay) {
+                    m_timeline->seekToFrame(lay->startFrame + kf.frame);
+                    break;
+                }
+            }
+        }
+    }
+    if (!hasKeyframes) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Go to next keyframe");
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", propertyName);
+
+    ImGui::PopID();
 }
 
 void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
@@ -1508,6 +1643,111 @@ void PropertyWindow::renderSectionBreakProperties() {
     if (ImGui::Button("Delete Break") && m_dispatcher) {
         m_dispatcher->enqueue(std::make_unique<RemoveSectionBreakCommand>(selFrame));
         m_timeline->setSelectedSectionBreak(std::nullopt);
+    }
+
+    ImGui::PopID();
+}
+
+void PropertyWindow::renderOALayerProperties(entt::entity entity) {
+    if (!m_timeline) return;
+    auto& registry = m_timeline->getRegistry();
+
+    auto* oal   = registry.try_get<ObjectAnimationLayer>(entity);
+    auto* lay   = registry.try_get<Layer>(entity);
+    auto* animP = registry.try_get<AnimatedProperties>(entity);
+    if (!oal || !lay) return;
+
+    ImGui::PushID(static_cast<int>(entity));
+
+    ImGui::Text("Object Animation Layer");
+    ImGui::Separator();
+
+    // Identity
+    if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char nameBuf[128];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", lay->name.c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
+            lay->name = nameBuf;
+        }
+
+        // Color swatch
+        float col[4] = {lay->color[0], lay->color[1], lay->color[2], lay->color[3]};
+        if (ImGui::ColorEdit4("Color", col, ImGuiColorEditFlags_NoAlpha)) {
+            lay->color = {col[0], col[1], col[2], col[3]};
+        }
+    }
+
+    // Target picker — Screen + Prop entities
+    if (ImGui::CollapsingHeader("Target", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Screen or Prop to animate:");
+
+        // Build target list: None + all Screen entities + all Prop entities
+        std::vector<entt::entity> targets;
+        std::vector<std::string>  targetLabels;
+        targets.push_back(entt::null);
+        targetLabels.push_back("(none)");
+
+        auto screenView = registry.view<Screen>();
+        for (auto e : screenView) {
+            targets.push_back(e);
+            const auto& s = screenView.get<Screen>(e);
+            targetLabels.push_back("Screen: " + s.name);
+        }
+
+        auto propView = registry.view<Prop>();
+        for (auto e : propView) {
+            targets.push_back(e);
+            targetLabels.push_back("Prop: " + std::to_string(static_cast<uint32_t>(e)));
+        }
+
+        // Build c-string array for Combo
+        std::vector<const char*> targetCstrs;
+        targetCstrs.reserve(targetLabels.size());
+        for (const auto& l : targetLabels) targetCstrs.push_back(l.c_str());
+
+        int currentIdx = 0;
+        for (size_t i = 0; i < targets.size(); ++i) {
+            if (targets[i] == oal->target) { currentIdx = static_cast<int>(i); break; }
+        }
+
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##oatarget", &currentIdx, targetCstrs.data(), static_cast<int>(targetCstrs.size()))) {
+            oal->target = targets[static_cast<size_t>(currentIdx)];
+        }
+
+        if (oal->target == entt::null) {
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                               "No target — animation has no effect until a target is chosen.");
+        }
+    }
+
+    // Timing info (read-only — driven by Layer::startFrame/duration)
+    if (ImGui::CollapsingHeader("Timing")) {
+        ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
+        ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
+    }
+
+    // Interactive keyframe controls for each animatable OA axis.
+    // Stopwatch toggles, add-at-current-frame diamond, and prev/next navigation
+    // all use getCurrentOAFrame() which returns -1 when playhead is outside the layer.
+    if (ImGui::CollapsingHeader("Keyframes", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int oaFrame = getCurrentOAFrame(entity);
+        if (oaFrame < 0) {
+            ImGui::TextDisabled("Move playhead inside the layer to add keyframes.");
+        } else {
+            ImGui::TextDisabled("Frame %d (layer-local)", oaFrame);
+        }
+        ImGui::Spacing();
+
+        renderOAKeyframeControls(entity, AnimatableProperty::PositionX, "Position X");
+        renderOAKeyframeControls(entity, AnimatableProperty::PositionY, "Position Y");
+        renderOAKeyframeControls(entity, AnimatableProperty::PositionZ, "Position Z");
+        renderOAKeyframeControls(entity, AnimatableProperty::Rotation,  "Rotation Y (yaw)");
+        renderOAKeyframeControls(entity, AnimatableProperty::RotationX, "Rotation X");
+        renderOAKeyframeControls(entity, AnimatableProperty::ScaleX,    "Scale X");
+        renderOAKeyframeControls(entity, AnimatableProperty::ScaleY,    "Scale Y");
+        renderOAKeyframeControls(entity, AnimatableProperty::ScaleZ,    "Scale Z");
     }
 
     ImGui::PopID();

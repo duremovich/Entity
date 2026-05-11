@@ -12,6 +12,8 @@
 #include "entity/command/Commands.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include <sstream>
 #include <iomanip>
@@ -414,21 +416,45 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
 
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MEDIA_FILE")) {
-            // Extract the file path from the payload
             const char* droppedPath = static_cast<const char*>(payload->Data);
             std::string filepath(droppedPath);
 
-            // Calculate the drop position in timeline time
             ImVec2 mousePos = ImGui::GetMousePos();
             float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
             Timecode dropTime = pixelToTime(relativeX);
             if (dropTime < 0) dropTime = 0;
 
-            // Call the callback if set
             if (m_mediaDropCallback) {
                 m_mediaDropCallback(filepath, trackIndex, dropTime);
             }
         }
+
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("LAYER_KIND")) {
+            uint8_t kind = *static_cast<const uint8_t*>(payload->Data);
+
+            ImVec2 mousePos = ImGui::GetMousePos();
+            float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
+            Timecode dropTime = pixelToTime(relativeX);
+            if (dropTime < 0) dropTime = 0;
+
+            if (m_timeline) {
+                double fps = m_timeline->getFrameRate();
+                FrameNumber startFrame = static_cast<FrameNumber>(dropTime / 1000000.0 * fps + 0.5);
+                // Default duration: 10 seconds worth of timeline frames
+                FrameNumber defaultDuration = static_cast<FrameNumber>(10.0 * fps);
+
+                if (static_cast<Layer::Kind>(kind) == Layer::Kind::ObjectAnimation) {
+                    if (m_oaLayerDropCallback) {
+                        m_oaLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                    }
+                } else if (static_cast<Layer::Kind>(kind) == Layer::Kind::Clip) {
+                    if (m_clipLayerDropCallback) {
+                        m_clipLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                    }
+                }
+            }
+        }
+
         ImGui::EndDragDropTarget();
     }
 }
@@ -441,6 +467,73 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
 
     auto& registry = m_timeline->getRegistry();
     const auto* clip = registry.try_get<Clip>(clipEntity);
+
+    // OA layer path: no Clip component — use Layer for timing, Layer::color for display
+    const auto* layer = registry.try_get<Layer>(clipEntity);
+    const auto* oal   = registry.try_get<ObjectAnimationLayer>(clipEntity);
+    if (!clip && oal && layer) {
+        float trackY = baseWindowPos.y;
+        double timelineFrameRate = m_timeline->getFrameRate();
+        float startSeconds   = static_cast<float>(layer->startFrame) / static_cast<float>(timelineFrameRate);
+        float durationSeconds = static_cast<float>(layer->duration) / static_cast<float>(timelineFrameRate);
+        Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
+        Timecode endTime   = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
+
+        float clipX     = baseWindowPos.x + timeToPixel(startTime);
+        float clipWidth = timeToPixel(endTime - startTime);
+
+        ImVec2 clipMin = ImVec2(clipX, trackY + CLIP_PADDING);
+        ImVec2 clipMax = ImVec2(clipX + clipWidth, trackY + TRACK_HEIGHT - CLIP_PADDING);
+
+        bool isSelected = (clipEntity == m_selectedClip) || (clipEntity == m_timeline->getSelectedClip());
+
+        // Color swatch from Layer::color; brighten on selection
+        const auto& c = layer->color;
+        ImU32 fillColor = isSelected
+            ? IM_COL32(static_cast<int>(std::min(c[0] * 1.35f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[1] * 1.35f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[2] * 1.35f, 1.0f) * 255), 255)
+            : IM_COL32(static_cast<int>(c[0] * 255), static_cast<int>(c[1] * 255),
+                       static_cast<int>(c[2] * 255), 255);
+
+        drawList->AddRectFilled(clipMin, clipMax, fillColor, 3.0f);
+        drawList->AddRect(clipMin, clipMax,
+                          isSelected ? IM_COL32(220, 180, 255, 255) : IM_COL32(160, 120, 200, 255),
+                          3.0f, 0, 2.0f);
+
+        // Label: layer name or "OA" badge
+        const std::string& label = layer->name.empty() ? std::string("Object Animation") : layer->name;
+        constexpr float kPad = 5.0f;
+        float availW = (clipMax.x - clipMin.x) - kPad * 2.0f;
+        if (availW > 0.0f) {
+            std::string displayLabel = label;
+            ImVec2 fullSize = ImGui::CalcTextSize(label.c_str());
+            if (fullSize.x > availW) {
+                while (!displayLabel.empty() &&
+                       ImGui::CalcTextSize((displayLabel + "...").c_str()).x > availW) {
+                    displayLabel.pop_back();
+                }
+                displayLabel = displayLabel.empty() ? std::string() : displayLabel + "...";
+            }
+            if (!displayLabel.empty()) {
+                drawList->AddText(ImVec2(clipMin.x + kPad, clipMin.y + 4.0f),
+                                  IM_COL32(255, 255, 255, 255), displayLabel.c_str());
+            }
+        }
+
+        // Hit-test + selection (reuse the same invisible button pattern as Clip)
+        ImGui::SetCursorScreenPos(clipMin);
+        char hitId[32];
+        std::snprintf(hitId, sizeof(hitId), "##oalayer%u", static_cast<uint32_t>(clipEntity));
+        ImGui::SetNextItemAllowOverlap();
+        if (ImGui::InvisibleButton(hitId, ImVec2(clipWidth, TRACK_HEIGHT - CLIP_PADDING * 2))) {
+            m_selectedClip = clipEntity;
+            m_timeline->setSelectedClip(clipEntity);
+        }
+
+        return TRACK_HEIGHT;
+    }
+
     if (!clip) return TRACK_HEIGHT;
 
     // Use baseWindowPos.y directly - it already includes cumulative offset from renderTracks

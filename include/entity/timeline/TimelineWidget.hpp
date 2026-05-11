@@ -21,6 +21,14 @@ class CommandDispatcher;
 // Parameters: filepath, track index, timecode position
 using MediaDropCallback = std::function<void(const std::string&, int, Timecode)>;
 
+// Callback for when an OA layer kind is dropped onto a track
+// Parameters: track index, start frame (timeline), duration in frames
+using OALayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
+// Callback for when a Clip layer kind is dropped onto a track (empty clip, no media)
+// Parameters: track index, start frame (timeline), duration in frames
+using ClipLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
 /**
  * Clip edge for trimming operations
  */
@@ -101,6 +109,9 @@ public:
      * Set callback for when media is dropped onto a track.
      */
     void setMediaDropCallback(MediaDropCallback callback) { m_mediaDropCallback = std::move(callback); }
+
+    void setOALayerDropCallback(OALayerDropCallback callback) { m_oaLayerDropCallback = std::move(callback); }
+    void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
 
     /**
      * Optional — wire the CommandDispatcher so ruler-context-menu actions
@@ -456,6 +467,8 @@ private:
 
     // Callbacks
     MediaDropCallback m_mediaDropCallback;
+    OALayerDropCallback m_oaLayerDropCallback;
+    ClipLayerDropCallback m_clipLayerDropCallback;
 
     // Track expansion state. Track twirl now drives property-panel display
     // for the clip currently under the playhead on that track — no separate

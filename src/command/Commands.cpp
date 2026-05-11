@@ -2889,55 +2889,28 @@ CommandPtr AssertMeshUploadCountCommand::fromJson(const nlohmann::json& j) {
 // ============================================================================
 
 bool CreateObjectAnimationLayerCommand::execute(Engine& engine) {
-    auto* timeline = engine.getTimeline();
-    if (!timeline) {
-        std::cerr << "[CreateObjectAnimationLayer] FAIL: no timeline" << std::endl;
-        return false;
-    }
-    const auto& tracks = timeline->getTracks();
-    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
-        std::cerr << "[CreateObjectAnimationLayer] FAIL: trackIndex "
-                  << m_trackIndex << " out of range" << std::endl;
-        return false;
-    }
-
+    // Resolve target: first Screen entity in the registry. The user can
+    // reassign to any Screen/Prop via the Properties panel after creation.
     auto& registry = engine.getRegistry();
-    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
-    if (!track) {
-        std::cerr << "[CreateObjectAnimationLayer] FAIL: track entity has no TimelineTrack" << std::endl;
-        return false;
-    }
-
-    // Resolve target: first Screen entity in the registry (placeholder for Phase 3.5 UI)
     entt::entity targetEntity = entt::null;
     auto screenView = registry.view<Screen>();
     if (!screenView.empty()) {
         targetEntity = *screenView.begin();
     }
 
-    entt::entity layerEntity = registry.create();
-
-    auto& lay = registry.emplace<Layer>(layerEntity);
-    lay.kind       = Layer::Kind::ObjectAnimation;
-    lay.startFrame = m_startFrame;
-    lay.duration   = m_duration;
-    lay.trackIndex = static_cast<uint32_t>(m_trackIndex);
-
-    auto& oal = registry.emplace<ObjectAnimationLayer>(layerEntity);
-    oal.target          = targetEntity;
-    oal.sectionBehavior = SectionBehavior::Normal;
-
-    registry.emplace<AnimatedProperties>(layerEntity);
-
-    track->addLayer(layerEntity);
-    track->sortLayers(registry);
-
-    m_createdEntity = layerEntity;
-
+    m_createdEntity = engine.createObjectAnimationLayer(targetEntity,
+                                                        m_trackIndex,
+                                                        m_startFrame,
+                                                        m_duration);
+    if (m_createdEntity == entt::null) {
+        std::cerr << "[CreateObjectAnimationLayer] FAIL: createObjectAnimationLayer returned null"
+                  << std::endl;
+        return false;
+    }
     std::cout << "[CreateObjectAnimationLayer] OK track=" << m_trackIndex
               << " start=" << m_startFrame
               << " duration=" << m_duration
-              << " entity=" << static_cast<uint32_t>(layerEntity)
+              << " entity=" << static_cast<uint32_t>(m_createdEntity)
               << " target=" << (targetEntity != entt::null
                                   ? std::to_string(static_cast<uint32_t>(targetEntity))
                                   : "none")

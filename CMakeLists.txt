@@ -206,6 +206,7 @@ target_sources(EntityMediaCore
         src/ui/SettingsWindow.cpp
         src/ui/ProjectorCalibrationWindow.cpp
         src/ui/CueListWindow.cpp
+        src/ui/LayersWindow.cpp
         src/ui/WorkspaceStore.cpp
 
         # Calibration

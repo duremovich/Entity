@@ -24,6 +24,7 @@
 #include "entity/ui/ScreensWindow.hpp"
 #include "entity/ui/PropsWindow.hpp"
 #include "entity/ui/CueListWindow.hpp"
+#include "entity/ui/LayersWindow.hpp"
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
@@ -47,6 +48,8 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
@@ -382,6 +385,22 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         timelineWidget->setMediaDropCallback([this](const std::string& filepath, int trackIndex, Timecode position) {
             this->onMediaDroppedOnTimeline(filepath, trackIndex, position);
         });
+        timelineWidget->setOALayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            // Find the first Screen entity to use as default target (user can change in Properties)
+            entt::entity target = entt::null;
+            auto screenView = m_registry.view<Screen>();
+            if (!screenView.empty()) target = *screenView.begin();
+            entt::entity created = this->createObjectAnimationLayer(target, trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
+        timelineWidget->setClipLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            entt::entity created = this->createEmptyClipLayer(trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
         // Phase A — ruler-menu cue ops route through the dispatcher.
         timelineWidget->setCommandDispatcher(m_commandDispatcher);
     }
@@ -450,6 +469,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
     m_windowManager->registerWindow(std::make_unique<PropsWindow>(this));
     m_windowManager->registerWindow(std::make_unique<CueListWindow>(this));
+    m_windowManager->registerWindow(std::make_unique<LayersWindow>(this));
 
     // Apply the user's last-active workspace now that all windows are
     // registered. activateWorkspace() restores the saved ImGui ini, the
@@ -2774,6 +2794,91 @@ void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaTy
     std::cout << "Clip duration: " << clip.duration << " frames at " << clip.framerate << " fps" << std::endl;
     std::cout << "Ready for multi-layer compositing!" << std::endl;
     std::cout << "========================================\n" << std::endl;
+}
+
+entt::entity Engine::createObjectAnimationLayer(entt::entity targetScreen,
+                                                int trackIndex,
+                                                FrameNumber startFrame,
+                                                FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createObjectAnimationLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::ObjectAnimation;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    lay.color      = {0.55f, 0.35f, 0.70f, 1.0f};
+
+    auto& oal = m_registry.emplace<ObjectAnimationLayer>(layerEntity);
+    oal.target          = targetScreen;
+    oal.sectionBehavior = SectionBehavior::Normal;
+
+    m_registry.emplace<AnimatedProperties>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created OA layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
+}
+
+entt::entity Engine::createEmptyClipLayer(int trackIndex,
+                                          FrameNumber startFrame,
+                                          FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createEmptyClipLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& clip = m_registry.emplace<Clip>(layerEntity);
+    clip.startFrame = startFrame;
+    clip.duration   = duration;
+    // All other Clip fields left at defaults (filepath empty, mediaType Unknown,
+    // etc.). User assigns media via the Properties panel or drag-and-drop.
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::Clip;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    lay.color      = {0.35f, 0.55f, 0.85f, 1.0f};
+    lay.name       = "Empty Clip";
+
+    m_registry.emplace<Transform>(layerEntity);
+    m_registry.emplace<MediaLayer>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created empty clip layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
 }
 
 void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackIndex, Timecode position) {
