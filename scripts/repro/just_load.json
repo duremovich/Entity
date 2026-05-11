@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "description": "Just load the project, no delete.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY.entity"},
+        {"type": "WaitFrames", "count": 120},
+        {"type": "Exit"}
+    ]
+}

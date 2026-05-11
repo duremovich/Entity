@@ -1,0 +1,19 @@
+{
+    "version": 1,
+    "description": "Repro: load IIWY, add track, add second clip, play, delete first clip mid-playback.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY.entity"},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "AddTrack"},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "ImportVideo", "filepath": "D:/EnityTests/IIWY/IIWY/content/Basic loop.mov", "trackIndex": 1, "position": 0},
+        {"type": "WaitFrames", "count": 60},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "DeleteClip"},
+        {"type": "WaitSeconds", "count": 2.0},
+        {"type": "Exit"}
+    ]
+}

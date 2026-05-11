@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "Repro: load IIWY, play for several wall-clock seconds (lots of decoded frames), THEN delete.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY.entity"},
+        {"type": "WaitSeconds", "count": 2.0},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 5.0},
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "DeleteClip"},
+        {"type": "WaitSeconds", "count": 3.0},
+        {"type": "Exit"}
+    ]
+}
