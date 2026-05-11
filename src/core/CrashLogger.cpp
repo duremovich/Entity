@@ -30,10 +30,12 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <typeinfo>
 #include <vector>
 
 namespace entity {
@@ -210,7 +212,37 @@ static LONG WINAPI sehFilter(LPEXCEPTION_POINTERS info) {
         makeUtcIsoNow(ts, sizeof(ts));
 
         DWORD excCode = info ? info->ExceptionRecord->ExceptionCode : 0;
-        int payloadLen = buildJsonPayload("seh", excCode, 0, nullptr, nullptr, ts);
+
+        // For MSVC C++ throws (0xE06D7363) the thrown object pointer lives at
+        // ExceptionInformation[1]. If it derives from std::exception the
+        // vtable is at offset 0 and what() is reachable via static_cast.
+        // Wrap the deref in __try so a non-std::exception throw (or a
+        // corrupt vtable) falls back instead of taking down the filter.
+        // No heap allocation — writes into a fixed stack buffer.
+        char extraBuf[512] = {};
+        const char* extraPtr = nullptr;
+        if (info && excCode == 0xE06D7363u &&
+            info->ExceptionRecord->NumberParameters >= 2) {
+            const void* exObj = reinterpret_cast<const void*>(
+                info->ExceptionRecord->ExceptionInformation[1]);
+            __try {
+                const std::exception* e =
+                    static_cast<const std::exception*>(exObj);
+                const char* what = e->what();
+                if (what) {
+                    _snprintf_s(extraBuf, sizeof(extraBuf), _TRUNCATE,
+                                "C++ throw what(): %s", what);
+                    extraPtr = extraBuf;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                _snprintf_s(extraBuf, sizeof(extraBuf), _TRUNCATE,
+                            "C++ throw: object not derived from std::exception "
+                            "(or vtable unreadable); see minidump");
+                extraPtr = extraBuf;
+            }
+        }
+
+        int payloadLen = buildJsonPayload("seh", excCode, 0, nullptr, extraPtr, ts);
 
         DWORD written = 0;
         WriteFile(s_jsonHandle, s_jsonBuf, static_cast<DWORD>(payloadLen), &written, nullptr);
@@ -228,8 +260,23 @@ static LONG WINAPI sehFilter(LPEXCEPTION_POINTERS info) {
 // ---------------------------------------------------------------------------
 
 static void terminateHandler() {
-    // Write a minimal crash entry using the normal path.
-    CrashLogger::captureNonFatal("terminate", 0, "", "std::terminate called");
+    // MSVC's C++ exception flow runs std::terminate before our SEH filter
+    // catches the resulting abort, so std::current_exception() is still live
+    // here. Rethrow into a typed catch to pull the exception type + what().
+    // Without this, the crash dir gets a generic "std::terminate called"
+    // entry and the actual cause stays buried in the minidump.
+    std::string detail = "std::terminate called";
+    if (auto eptr = std::current_exception()) {
+        try {
+            std::rethrow_exception(eptr);
+        } catch (const std::exception& e) {
+            detail = std::string("std::terminate: ")
+                   + typeid(e).name() + ": " + e.what();
+        } catch (...) {
+            detail = "std::terminate: unknown non-std::exception throw";
+        }
+    }
+    CrashLogger::captureNonFatal("terminate", 0, "", detail);
     TerminateProcess(GetCurrentProcess(), 1);
 }
 
