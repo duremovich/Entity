@@ -163,6 +163,7 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
     // ObjectAnimationOutput component — never the target Screen/Prop registry data.
     auto oaView = registry.view<AnimatedProperties, ObjectAnimationLayer, Layer>();
     for (auto entity : oaView) {
+        const auto& oal   = oaView.get<ObjectAnimationLayer>(entity);
         const auto& layer = oaView.get<Layer>(entity);
 
         // If inactive, reset any existing output so stale has* flags don't bleed
@@ -175,6 +176,15 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
             }
             continue;
         }
+
+        // Locked OA layers hold their last-evaluated output at a section break.
+        // SectionScheduler::seedContinuationAt sets frozen=true; clearAllContinuation
+        // (GO / Stop) clears it. Skip re-evaluation while frozen so the held
+        // ObjectAnimationOutput feeds buildSceneSnapshot unchanged.
+        if (oal.sectionBehavior == SectionBehavior::Locked && oal.frozen) {
+            continue;
+        }
+
         FrameNumber localFrame = currentFrame - layer.startFrame;
 
         // Reset output every tick so stale values don't linger when keyframes are removed

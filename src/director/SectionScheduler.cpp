@@ -3,6 +3,8 @@
 
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/timeline/Timeline.hpp"
 
 #include <algorithm>
@@ -262,6 +264,21 @@ void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
         phase.continuationStartTimeNs = steadyNowNs();
         phase.continuationSeedFrames = phase.sourcePhaseFrames;
     }
+
+    // Freeze Locked OA layers that are active at the break.
+    // Normal OA layers are left running (no frozen flag set); they continue
+    // to be re-evaluated by AnimationSystem every tick.
+    auto oaView = m_registry.view<ObjectAnimationLayer, Layer>();
+    for (auto entity : oaView) {
+        auto& oal = oaView.get<ObjectAnimationLayer>(entity);
+        if (oal.sectionBehavior != SectionBehavior::Locked) continue;
+        const auto& lay = oaView.get<Layer>(entity);
+        if (breakTimelineFrame < lay.startFrame ||
+            breakTimelineFrame >= lay.startFrame + lay.duration) {
+            continue;
+        }
+        oal.frozen = true;
+    }
 }
 
 void SectionScheduler::advanceContinuation(double deltaTimeSeconds) {
@@ -320,6 +337,13 @@ void SectionScheduler::clearAllContinuation() {
         // path needs them to keep playback rolling without a rewind.
         // Anchor invalidation happens via resetAnchorsAcrossScrub on
         // discontinuities and on Stopped, not here.
+    }
+
+    // Unfreeze all OA layers so AnimationSystem resumes normal evaluation
+    // after GO (or Stop, where the user scrubs to a new position).
+    auto oaView = m_registry.view<ObjectAnimationLayer>();
+    for (auto entity : oaView) {
+        oaView.get<ObjectAnimationLayer>(entity).frozen = false;
     }
 }
 

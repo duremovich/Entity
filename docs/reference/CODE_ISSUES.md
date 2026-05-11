@@ -4,6 +4,10 @@ Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-0
 
 **Current state**: 0 Critical, 1 High, ~20 Medium, ~14 Low — down from 7 / 18 / 27 / 15.
 NEW-07 closed 2026-05-11 (AnimationSystem snapshot-bake).
+Phase 3.8 (2026-05-11): OA freeze hook landed — `SectionScheduler::seedContinuationAt`
+freezes Locked OA layers at section breaks; `clearAllContinuation` unfreezes on GO/Stop.
+NEW-08 (SectionScheduler editor-stall freeze) remains open — the larger state-machine
+split needed for show-thread fallback is a separate work item.
 
 Most issues have been fixed. This document was previously stale; the version before this rewrite listed all original issues as open even though commits had closed most of them. Always verify against current code before acting on an ID.
 

@@ -26,6 +26,11 @@ namespace entity {
 struct ObjectAnimationLayer {
     entt::entity    target{entt::null};         // Screen or Prop entity being driven
     SectionBehavior sectionBehavior{SectionBehavior::Normal};
+    // Set by SectionScheduler::seedContinuationAt when a Locked OA layer is
+    // active at a section break. AnimationSystem skips re-evaluation while true,
+    // preserving the last-evaluated ObjectAnimationOutput. Cleared by
+    // SectionScheduler::clearAllContinuation (on GO or Stop).
+    bool            frozen{false};
 };
 
 } // namespace entity

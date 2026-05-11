@@ -31,8 +31,7 @@ shared across kinds. See `include/entity/components/Layer.hpp`.
 
 **Kinds shipped with the abstraction**:
 - `Kind::Clip` — paired with the `Clip` archetype below
-- `Kind::ObjectAnimation` — paired with `ObjectAnimationLayer` (commit 3.3,
-  not yet present)
+- `Kind::ObjectAnimation` — paired with `ObjectAnimationLayer` (Phase 3, see below)
 - `Kind::Generative` — reserved for future generative layers
 
 **Phase 3 migration window**: for Clip-backed layer entities,
@@ -79,6 +78,48 @@ timeline frames) → clip is *active* and will appear in `SceneSnapshot::activeC
   first section break.
 - `FrameBuffer` is currently a marker tag — `Clip` alone is sufficient
   in practice. Likely to disappear in a future cleanup.
+
+---
+
+## ObjectAnimation — Keyframed transform layer targeting a Screen or Prop
+
+| Required | Optional |
+|---|---|
+| `Layer` (Kind::ObjectAnimation) | `AnimatedProperties` |
+| `ObjectAnimationLayer` | `ObjectAnimationOutput` |
+
+**Invariant**: `Layer::startFrame ≤ currentFrame < Layer::startFrame + Layer::duration`
+→ the layer is *active* and `AnimationSystem` evaluates its keyframe tracks,
+writing results into `ObjectAnimationOutput`. `buildSceneSnapshot` folds
+`ObjectAnimationOutput` into the target screen's `ScreenSnapshot` entry
+(Phase 3.4). The baked `ObjectAnimationLayerSnapshot` in `bus::SceneSnapshot`
+lets the show thread re-evaluate tracks per render frame during editor stalls
+(Phase 3.7, mirror of the NEW-07 clip-animation fix).
+
+**Created at**:
+- `src/core/Engine.cpp` (`createObjectAnimationLayer`) — used by
+  `CreateObjectAnimationLayerCommand` and the LayersWindow drag-to-timeline UI.
+- `src/project/ProjectSerializer.cpp` (project load, schema v15).
+
+**Notes**:
+- `ObjectAnimationLayer::target` is the `Screen` or `Prop` entity being
+  driven. One OA layer → one target entity per layer. Multiple OA layers on
+  different tracks may target the same screen; `buildSceneSnapshot` folds them
+  all into the target's `ScreenSnapshot` (last-write-wins per field, ordered by
+  track index).
+- `AnimatedProperties` is optional — absent when the layer has no keyframes.
+  `AnimationSystem` skips the entity if `!animProps.hasAnyKeyframes()`.
+- `ObjectAnimationOutput` is emplace'd lazily by `AnimationSystem` on the first
+  active tick. Cleared to default on every tick the layer is active, then
+  repopulated from the evaluated tracks. Reset to default (all `has*` flags
+  false) when the layer is inactive, so stale values don't bleed into the fold-in.
+- `ObjectAnimationLayer::sectionBehavior` mirrors the same enum used by `Clip`
+  (ADR-0012 / ADR-0016). `Locked` layers freeze at a section break
+  (`frozen = true` set by `SectionScheduler::seedContinuationAt`; cleared by
+  `clearAllContinuation` on GO / Stop). `Normal` layers continue evaluating.
+- This archetype is not included in `SceneSnapshot::activeClips` and is never
+  visible to `CompositorSystem` directly. The compositor only sees the
+  downstream effect via screen position/rotation/scale in the render frame.
 
 ---
 

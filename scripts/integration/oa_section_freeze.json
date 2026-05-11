@@ -1,0 +1,110 @@
+{
+    "version": 1,
+    "description": "Phase 3.8 gate: Locked OA layer freezes at section break. A Locked OA layer has a PositionX track going from 0 to 9 over 300 frames. Section break at frame 8 (microseconds: 266666). After playing to the break, AssertScreenSnapshot confirms the OA-driven positionX is frozen at the break-frame value and stays there after waiting. SectionGo resumes the timeline; if the OA layer re-evaluates the track the position will change (confirming unfreeze).",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "OAFreezeScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "CreateObjectAnimationLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300,
+            "sectionBehavior": "Locked"
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "property": "PositionX",
+            "frame": 0,
+            "value": 0.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "property": "PositionX",
+            "frame": 300,
+            "value": 9.0
+        },
+        {
+            "type": "AddSectionBreak",
+            "breakFrame": 266666,
+            "name": "OAFreezeBreak"
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.6
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Paused"
+        },
+        {
+            "type": "AssertPlayheadAtFrame",
+            "frame": 8,
+            "tolerance": 2
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAFreezeScreen",
+            "field": "positionX",
+            "expected": 0.24,
+            "tolerance": 0.1
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.3
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAFreezeScreen",
+            "field": "positionX",
+            "expected": 0.24,
+            "tolerance": 0.1
+        },
+        {
+            "type": "SectionGo"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.5
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Playing"
+        },
+        {
+            "type": "Pause"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "AssertScreenSnapshot",
+            "screenName": "OAFreezeScreen",
+            "field": "positionX",
+            "expected": 0.72,
+            "tolerance": 0.2
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -207,10 +207,14 @@ float defaultValueForProperty(AnimatableProperty p) {
     switch (p) {
         case AnimatableProperty::ScaleX:
         case AnimatableProperty::ScaleY:
+        case AnimatableProperty::ScaleZ:   // identity scale — 0 would collapse a screen to flat
         case AnimatableProperty::Opacity:  return 1.0f;
         case AnimatableProperty::PositionX:
         case AnimatableProperty::PositionY:
+        case AnimatableProperty::PositionZ:
         case AnimatableProperty::Rotation:
+        case AnimatableProperty::RotationX:
+        case AnimatableProperty::RotationY:
         default:                            return 0.0f;
     }
 }

@@ -2907,9 +2907,15 @@ bool CreateObjectAnimationLayerCommand::execute(Engine& engine) {
                   << std::endl;
         return false;
     }
+    // Apply optional sectionBehavior (default Normal — no registry touch needed).
+    if (m_sectionBehavior != SectionBehavior::Normal) {
+        auto& oal = engine.getRegistry().get<ObjectAnimationLayer>(m_createdEntity);
+        oal.sectionBehavior = m_sectionBehavior;
+    }
     std::cout << "[CreateObjectAnimationLayer] OK track=" << m_trackIndex
               << " start=" << m_startFrame
               << " duration=" << m_duration
+              << " behavior=" << (m_sectionBehavior == SectionBehavior::Locked ? "Locked" : "Normal")
               << " entity=" << static_cast<uint32_t>(m_createdEntity)
               << " target=" << (targetEntity != entt::null
                                   ? std::to_string(static_cast<uint32_t>(targetEntity))
@@ -2922,7 +2928,8 @@ nlohmann::json CreateObjectAnimationLayerCommand::toJson() const {
     return {{"type", "CreateObjectAnimationLayer"},
             {"trackIndex", m_trackIndex},
             {"startFrame", m_startFrame},
-            {"duration", m_duration}};
+            {"duration", m_duration},
+            {"sectionBehavior", m_sectionBehavior == SectionBehavior::Locked ? "Locked" : "Normal"}};
 }
 
 std::string CreateObjectAnimationLayerCommand::getDescription() const {
@@ -2935,7 +2942,9 @@ CommandPtr CreateObjectAnimationLayerCommand::fromJson(const nlohmann::json& j) 
     int trackIndex       = j.value("trackIndex", 0);
     FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
     FrameNumber duration = j.value("duration", static_cast<FrameNumber>(30));
-    return std::make_unique<CreateObjectAnimationLayerCommand>(trackIndex, start, duration);
+    std::string behStr   = j.value("sectionBehavior", std::string{"Normal"});
+    SectionBehavior beh  = (behStr == "Locked") ? SectionBehavior::Locked : SectionBehavior::Normal;
+    return std::make_unique<CreateObjectAnimationLayerCommand>(trackIndex, start, duration, beh);
 }
 
 // ============================================================================

@@ -276,3 +276,18 @@ set_tests_properties(integration_oa_stall_fallback PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# Phase 3.8 — OA section freeze: Locked OA layer freezes at section break.
+# Plays to a break, asserts positionX is held, waits, asserts still held, GO,
+# then asserts positionX has advanced past the frozen value after resume.
+add_test(
+    NAME integration_oa_section_freeze
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/oa_section_freeze.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_oa_section_freeze PROPERTIES
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+    LABELS "integration"
+    TIMEOUT 60
+)

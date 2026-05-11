@@ -1631,14 +1631,18 @@ private:
  * target-picker in the LayersWindow).
  *
  * Params:
- *   trackIndex  — 0-based index into timeline tracks
- *   startFrame  — first frame of the OA layer on the timeline
- *   duration    — length in timeline frames
+ *   trackIndex       — 0-based index into timeline tracks
+ *   startFrame       — first frame of the OA layer on the timeline
+ *   duration         — length in timeline frames
+ *   sectionBehavior  — optional "Normal" (default) | "Locked" (Phase 3.8)
  */
 class CreateObjectAnimationLayerCommand : public Command {
 public:
-    CreateObjectAnimationLayerCommand(int trackIndex, FrameNumber startFrame, FrameNumber duration)
-        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+    CreateObjectAnimationLayerCommand(int trackIndex, FrameNumber startFrame,
+                                      FrameNumber duration,
+                                      SectionBehavior behavior = SectionBehavior::Normal)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration)
+        , m_sectionBehavior(behavior) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "CreateObjectAnimationLayer"; }
@@ -1648,10 +1652,11 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
-    int         m_trackIndex;
-    FrameNumber m_startFrame;
-    FrameNumber m_duration;
-    entt::entity m_createdEntity{entt::null};
+    int             m_trackIndex;
+    FrameNumber     m_startFrame;
+    FrameNumber     m_duration;
+    SectionBehavior m_sectionBehavior{SectionBehavior::Normal};
+    entt::entity    m_createdEntity{entt::null};
 };
 
 /**

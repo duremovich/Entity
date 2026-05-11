@@ -26,7 +26,11 @@ load, thousands of Hz in `--headless --script` mode with no decode work).
        └─ Wall-clock-anchored (steady_clock), NOT dt-accumulator.
 
 3.  AnimationSystem::update(dt)
-       └─ Evaluates keyframe tracks; writes Transform + MediaLayer fields.
+       └─ Clip branch: evaluates keyframe tracks; writes Transform + MediaLayer fields.
+       └─ OA branch: evaluates ObjectAnimationLayer keyframe tracks (PositionX/Y/Z,
+          RotationX/Y/Z, ScaleX/Y/Z); writes ObjectAnimationOutput. Skips re-evaluation
+          for Locked layers with frozen=true (set by SectionScheduler at a section break).
+          See ADR-0016.
 
 4.  drainContentScannerDeltas()
        └─ Folds filesystem-watcher deltas into MediaBin.
@@ -157,8 +161,8 @@ write the registry.** That's why only some systems have fallbacks.
 | System | Editor-tick site | Show-thread fallback? | Notes |
 |---|---|---|---|
 | `Timeline::update` | step 1 | ✅ since `cf103bd` | Writes only atomic `m_currentTime` — show-safe. |
-| `SectionScheduler::tick` | step 2 | ❌ | Writes `ClipPlaybackPhase` + `Timeline` section state. See CODE_ISSUES NEW-08. |
-| `AnimationSystem::update` | step 3 | ✅ via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` for UI surfaces. Tracks + transform axes are baked into `ClipCatalogEntry`; the show thread re-evaluates per render frame in `PlaybackTimeAuthority::buildRenderFrame::applyBakedAnimation`, so animation stays alive during editor stalls. NEW-07 closed. |
+| `SectionScheduler::tick` | step 2 | ❌ | Writes `ClipPlaybackPhase` + `Timeline` section state + `ObjectAnimationLayer::frozen` (Phase 3.8). See CODE_ISSUES NEW-08. |
+| `AnimationSystem::update` | step 3 | ✅ via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` (Clip branch) and `ObjectAnimationOutput` (OA branch) for UI surfaces. Clip tracks are baked into `ClipCatalogEntry`; OA tracks into `ObjectAnimationLayerSnapshot`. Show thread re-evaluates both per render frame in `buildRenderFrame`. Animation stays alive during editor stalls. NEW-07 closed. OA freeze for Locked layers at section breaks handled via `ObjectAnimationLayer::frozen` (ADR-0016). |
 | `drainContentScannerDeltas` | step 4 | ❌ — not needed | Filesystem-watcher updates can wait until stall ends. |
 | `DecodeSystem::update` | step 5 | ✅ since `8492438` | Writes only atomic `worker->targetFrame` — show-safe. |
 
