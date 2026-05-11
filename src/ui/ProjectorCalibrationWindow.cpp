@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 namespace entity {
@@ -60,6 +61,28 @@ static ImVec2 projectPoint(const glm::vec3& worldPos, const glm::mat4& vp,
 }
 
 // ---------------------------------------------------------------------------
+// Target-screens helper (lives on Projector::targetSurfaces — both this window
+// and PropertyWindow edit that field, so it's recomputed every frame so
+// cross-window changes flow in immediately).
+// ---------------------------------------------------------------------------
+
+std::vector<entt::entity> ProjectorCalibrationWindow::getTargetScreens() const {
+    std::vector<entt::entity> out;
+    if (!m_engine) return out;
+    auto& reg = m_engine->getRegistry();
+    if (!reg.valid(m_projectorEntity)) return out;
+    const auto* p = reg.try_get<Projector>(m_projectorEntity);
+    if (!p) return out;
+    out.reserve(p->targetSurfaceCount);
+    for (int i = 0; i < p->targetSurfaceCount && i < Projector::MAX_TARGETS; ++i) {
+        const auto e = p->targetSurfaces[i];
+        if (reg.valid(e) && reg.all_of<Screen>(e))
+            out.push_back(e);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
@@ -90,33 +113,31 @@ void ProjectorCalibrationWindow::open(entt::entity projectorEntity) {
             m_points.reserve(p->calibrationPoints.size());
             for (const auto& cp : p->calibrationPoints) {
                 CorrespondencePointEx pt;
-                pt.worldPos    = glm::vec3(cp.worldPos[0], cp.worldPos[1], cp.worldPos[2]);
-                pt.projectorUV = glm::vec2(cp.projectorUV[0], cp.projectorUV[1]);
-                pt.isAligned   = cp.isAligned;
+                pt.worldPos     = glm::vec3(cp.worldPos[0], cp.worldPos[1], cp.worldPos[2]);
+                pt.projectorUV  = glm::vec2(cp.projectorUV[0], cp.projectorUV[1]);
+                pt.isAligned    = cp.isAligned;
+                pt.sourceScreen = cp.sourceScreen;
                 m_points.push_back(pt);
             }
             if (!m_points.empty()) m_activePointIdx = 0;
         }
     }
 
-    // Restore screen choice from Projector.targetSurfaces[0] if previously
-    // saved; otherwise fall back to the first Screen entity in the registry.
+    // Seed Projector::targetSurfaces if empty so the cal window has at least
+    // one target to render and pick on. Both this window and PropertyWindow
+    // edit targetSurfaces directly — that's the single source of truth for
+    // which screens this projector targets.
     if (m_engine) {
         auto& reg = m_engine->getRegistry();
-        m_screenEntity = entt::null;
         if (reg.valid(projectorEntity)) {
-            if (const auto* p = reg.try_get<Projector>(projectorEntity)) {
-                if (p->targetSurfaceCount > 0 &&
-                    reg.valid(p->targetSurfaces[0]) &&
-                    reg.all_of<Screen>(p->targetSurfaces[0])) {
-                    m_screenEntity = p->targetSurfaces[0];
+            if (auto* p = reg.try_get<Projector>(projectorEntity)) {
+                if (p->targetSurfaceCount == 0) {
+                    for (auto [e, s] : reg.view<Screen>().each()) {
+                        p->targetSurfaces[0]  = e;
+                        p->targetSurfaceCount = 1;
+                        break;
+                    }
                 }
-            }
-        }
-        if (m_screenEntity == entt::null) {
-            for (auto [e, s] : reg.view<Screen>().each()) {
-                m_screenEntity = e;
-                break;
             }
         }
 
@@ -266,27 +287,46 @@ void ProjectorCalibrationWindow::renderToolbar() {
     }
 
     ImGui::SameLine();
-    ImGui::Text("Screen:");
+    ImGui::Text("Screens:");
     ImGui::SameLine();
-    std::string screenName = "None";
-    if (reg.valid(m_screenEntity)) {
-        if (const auto* s = reg.try_get<Screen>(m_screenEntity))
-            screenName = s->name;
+    // Label: "(none)" / single screen name / "N selected". Mirrors PropertyWindow's
+    // Target Surfaces panel — they edit the same Projector::targetSurfaces array,
+    // so a change here is visible there next frame and vice versa.
+    std::string screensLabel = "(none)";
+    if (auto* p = reg.try_get<Projector>(m_projectorEntity)) {
+        if (p->targetSurfaceCount == 1) {
+            if (const auto* s = reg.try_get<Screen>(p->targetSurfaces[0]))
+                screensLabel = s->name;
+            else
+                screensLabel = "1 selected";
+        } else if (p->targetSurfaceCount > 1) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%d selected", p->targetSurfaceCount);
+            screensLabel = buf;
+        }
     }
-    ImGui::SetNextItemWidth(120);
-    if (ImGui::BeginCombo("##CalibScreen", screenName.c_str())) {
-        for (auto [e, screen] : reg.view<Screen>().each()) {
-            bool sel = (e == m_screenEntity);
-            if (ImGui::Selectable(screen.name.c_str(), sel)) {
-                m_screenEntity = e;
-                // Persist on Projector.targetSurfaces[0] so the calibration
-                // window restores the same screen on reopen.
-                if (auto* p = reg.try_get<Projector>(m_projectorEntity)) {
-                    p->targetSurfaces[0] = e;
-                    if (p->targetSurfaceCount == 0) p->targetSurfaceCount = 1;
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::BeginCombo("##CalibScreens", screensLabel.c_str())) {
+        if (auto* p = reg.try_get<Projector>(m_projectorEntity)) {
+            for (auto [e, screen] : reg.view<Screen>().each()) {
+                int foundIdx = -1;
+                for (int i = 0; i < p->targetSurfaceCount; ++i) {
+                    if (p->targetSurfaces[i] == e) { foundIdx = i; break; }
+                }
+                bool checked = foundIdx >= 0;
+                if (ImGui::Checkbox(screen.name.c_str(), &checked)) {
+                    if (checked && foundIdx < 0 &&
+                        p->targetSurfaceCount < Projector::MAX_TARGETS) {
+                        p->targetSurfaces[p->targetSurfaceCount++] = e;
+                    } else if (!checked && foundIdx >= 0) {
+                        // Shift-left to remove without leaving a hole.
+                        for (int i = foundIdx; i < p->targetSurfaceCount - 1; ++i)
+                            p->targetSurfaces[i] = p->targetSurfaces[i + 1];
+                        p->targetSurfaces[p->targetSurfaceCount - 1] = entt::null;
+                        p->targetSurfaceCount--;
+                    }
                 }
             }
-            if (sel) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
@@ -371,69 +411,82 @@ void ProjectorCalibrationWindow::renderScenePane(ImVec2 panePos, ImVec2 paneSize
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Render stage background + mesh
+    // Render stage background + meshes (one per projector target).
     m_renderer.beginRender(dl, panePos, paneSize);
 
     auto& reg = m_engine->getRegistry();
-    const MeshData* meshForOverlay = nullptr;
-    glm::mat4       meshModel(1.0f);
-    if (reg.valid(m_screenEntity)) {
-        const auto* screen = reg.try_get<Screen>(m_screenEntity);
-        if (screen) {
-            const MeshData* mesh = nullptr;
-            if (reg.valid(screen->modelEntity)) {
-                if (const auto* model = reg.try_get<Model>(screen->modelEntity))
-                    mesh = model->mesh.isValid() ? &model->mesh : nullptr;
-            }
-            void* texID = nullptr;
-            if (auto* renderer = m_engine->getRenderer())
-                texID = renderer->getComposeTargetTextureID(screen->renderTargetSlot);
+    const auto targets = getTargetScreens();
 
-            m_renderer.drawScreen(dl, panePos, paneSize,
-                glm::vec3(screen->position[0], screen->position[1], screen->position[2]),
-                glm::vec3(screen->rotation[0], screen->rotation[1], screen->rotation[2]),
-                glm::vec3(screen->scale[0],    screen->scale[1],    screen->scale[2]),
-                reinterpret_cast<ImTextureID>(texID), false, mesh);
+    // Cache per-target info for the wireframe pass (avoids re-resolving model
+    // matrices). meshes with no mesh data are still drawn by drawScreen
+    // (default quad), but only mesh-bearing targets get wireframes.
+    struct TargetVis {
+        const MeshData* mesh;
+        glm::mat4       model;
+    };
+    std::vector<TargetVis> vis;
+    vis.reserve(targets.size());
 
-            if (m_showWireframe && mesh) {
-                meshForOverlay = mesh;
-                // Match Stage3DRenderer::drawScreen exactly — including screenElevation Y offset.
-                glm::vec3 pos(screen->position[0],
-                              screen->position[1] + m_renderer.screenElevation,
-                              screen->position[2]);
-                glm::vec3 rot(screen->rotation[0], screen->rotation[1], screen->rotation[2]);
-                glm::vec3 scl(screen->scale[0],    screen->scale[1],    screen->scale[2]);
-                meshModel = glm::translate(glm::mat4(1.0f), pos);
-                meshModel = glm::rotate(meshModel, glm::radians(rot.y), glm::vec3(0,1,0));
-                meshModel = glm::rotate(meshModel, glm::radians(rot.x), glm::vec3(1,0,0));
-                meshModel = glm::rotate(meshModel, glm::radians(rot.z), glm::vec3(0,0,1));
-                meshModel = glm::scale(meshModel, scl);
-            }
+    for (auto e : targets) {
+        const auto* screen = reg.try_get<Screen>(e);
+        if (!screen) continue;
+
+        const MeshData* mesh = nullptr;
+        if (reg.valid(screen->modelEntity)) {
+            if (const auto* model = reg.try_get<Model>(screen->modelEntity))
+                mesh = model->mesh.isValid() ? &model->mesh : nullptr;
+        }
+        void* texID = nullptr;
+        if (auto* renderer = m_engine->getRenderer())
+            texID = renderer->getComposeTargetTextureID(screen->renderTargetSlot);
+
+        m_renderer.drawScreen(dl, panePos, paneSize,
+            glm::vec3(screen->position[0], screen->position[1], screen->position[2]),
+            glm::vec3(screen->rotation[0], screen->rotation[1], screen->rotation[2]),
+            glm::vec3(screen->scale[0],    screen->scale[1],    screen->scale[2]),
+            reinterpret_cast<ImTextureID>(texID), false, mesh);
+
+        if (m_showWireframe && mesh) {
+            // Match Stage3DRenderer::drawScreen exactly — including the screenElevation Y offset.
+            glm::vec3 pos(screen->position[0],
+                          screen->position[1] + m_renderer.screenElevation,
+                          screen->position[2]);
+            glm::vec3 rot(screen->rotation[0], screen->rotation[1], screen->rotation[2]);
+            glm::vec3 scl(screen->scale[0],    screen->scale[1],    screen->scale[2]);
+            glm::mat4 m(1.0f);
+            m = glm::translate(m, pos);
+            m = glm::rotate(m, glm::radians(rot.y), glm::vec3(0,1,0));
+            m = glm::rotate(m, glm::radians(rot.x), glm::vec3(1,0,0));
+            m = glm::rotate(m, glm::radians(rot.z), glm::vec3(0,0,1));
+            m = glm::scale(m, scl);
+            vis.push_back({mesh, m});
         }
     }
     m_renderer.endRender(dl, panePos, paneSize);
 
     glm::mat4 vp = m_sceneCamera.getViewProjectionMatrix();
 
-    // Wireframe overlay — draw mesh triangle edges in cyan
-    if (meshForOverlay) {
+    // Wireframe overlay — draw mesh triangle edges in cyan, per target.
+    if (!vis.empty()) {
         const ImU32 wireCol = IM_COL32(80, 200, 230, 200);
-        glm::mat4 mvp = vp * meshModel;
-        const auto& verts   = meshForOverlay->vertices;
-        const auto& indices = meshForOverlay->indices;
-        for (size_t t = 0; t + 2 < indices.size(); t += 3) {
-            const auto& v0 = verts[indices[t]];
-            const auto& v1 = verts[indices[t+1]];
-            const auto& v2 = verts[indices[t+2]];
-            glm::vec3 p0(v0.position[0], v0.position[1], v0.position[2]);
-            glm::vec3 p1(v1.position[0], v1.position[1], v1.position[2]);
-            glm::vec3 p2(v2.position[0], v2.position[1], v2.position[2]);
-            ImVec2 s0 = projectPoint(p0, mvp, panePos, paneSize);
-            ImVec2 s1 = projectPoint(p1, mvp, panePos, paneSize);
-            ImVec2 s2 = projectPoint(p2, mvp, panePos, paneSize);
-            if (s0.x > -1e8f && s1.x > -1e8f) dl->AddLine(s0, s1, wireCol, 1.0f);
-            if (s1.x > -1e8f && s2.x > -1e8f) dl->AddLine(s1, s2, wireCol, 1.0f);
-            if (s2.x > -1e8f && s0.x > -1e8f) dl->AddLine(s2, s0, wireCol, 1.0f);
+        for (const auto& v : vis) {
+            glm::mat4 mvp = vp * v.model;
+            const auto& verts   = v.mesh->vertices;
+            const auto& indices = v.mesh->indices;
+            for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+                const auto& v0 = verts[indices[t]];
+                const auto& v1 = verts[indices[t+1]];
+                const auto& v2 = verts[indices[t+2]];
+                glm::vec3 p0(v0.position[0], v0.position[1], v0.position[2]);
+                glm::vec3 p1(v1.position[0], v1.position[1], v1.position[2]);
+                glm::vec3 p2(v2.position[0], v2.position[1], v2.position[2]);
+                ImVec2 s0 = projectPoint(p0, mvp, panePos, paneSize);
+                ImVec2 s1 = projectPoint(p1, mvp, panePos, paneSize);
+                ImVec2 s2 = projectPoint(p2, mvp, panePos, paneSize);
+                if (s0.x > -1e8f && s1.x > -1e8f) dl->AddLine(s0, s1, wireCol, 1.0f);
+                if (s1.x > -1e8f && s2.x > -1e8f) dl->AddLine(s1, s2, wireCol, 1.0f);
+                if (s2.x > -1e8f && s0.x > -1e8f) dl->AddLine(s2, s0, wireCol, 1.0f);
+            }
         }
     }
 
@@ -472,12 +525,28 @@ void ProjectorCalibrationWindow::renderScenePane(ImVec2 panePos, ImVec2 paneSize
                            hovered ? ImGui::GetIO().MouseWheel : 0.0f);
     m_sceneCamera = m_renderer.getCamera();
 
-    // Left click → pick 3D mesh point (single click, not the start of a drag)
+    // Left click → pick 3D mesh point (single click, not the start of a drag).
+    // Multi-screen: raycast against every target, keep the hit nearest to the
+    // scene camera so overlapping meshes resolve to the surface the user can
+    // actually see.
     if (clickedInPane && !ImGui::IsMouseDragging(0, 4.0f)) {
-        glm::vec3 hit;
-        if (pickMeshPoint(mouse, panePos, paneSize, m_screenEntity, hit)) {
-            m_pendingWorldPos = hit;
-            m_hasPending      = true;
+        glm::vec3   bestHit{};
+        entt::entity bestScreen = entt::null;
+        float       bestDist   = std::numeric_limits<float>::max();
+        for (auto e : targets) {
+            glm::vec3 hit;
+            if (!pickMeshPoint(mouse, panePos, paneSize, e, hit)) continue;
+            const float d = glm::length(hit - m_sceneCamera.position);
+            if (d < bestDist) {
+                bestDist   = d;
+                bestHit    = hit;
+                bestScreen = e;
+            }
+        }
+        if (bestScreen != entt::null) {
+            m_pendingWorldPos     = bestHit;
+            m_pendingSourceScreen = bestScreen;
+            m_hasPending          = true;
         }
     }
 
@@ -593,24 +662,27 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
     m_renderer.beginRender(dl, viewPos, viewSize);
 
     auto& reg = m_engine->getRegistry();
-    if (reg.valid(m_screenEntity)) {
-        const auto* screen = reg.try_get<Screen>(m_screenEntity);
-        if (screen) {
-            const MeshData* mesh = nullptr;
-            if (reg.valid(screen->modelEntity)) {
-                if (const auto* model = reg.try_get<Model>(screen->modelEntity))
-                    mesh = model->mesh.isValid() ? &model->mesh : nullptr;
-            }
-            void* texID = nullptr;
-            if (auto* renderer = m_engine->getRenderer())
-                texID = renderer->getComposeTargetTextureID(screen->renderTargetSlot);
-
-            m_renderer.drawScreen(dl, viewPos, viewSize,
-                glm::vec3(screen->position[0], screen->position[1], screen->position[2]),
-                glm::vec3(screen->rotation[0], screen->rotation[1], screen->rotation[2]),
-                glm::vec3(screen->scale[0],    screen->scale[1],    screen->scale[2]),
-                reinterpret_cast<ImTextureID>(texID), false, mesh);
+    // Render every target screen from the projector's POV. Lens distortion +
+    // optional IDW residual warp are applied by Stage3DRenderer::projectPoint
+    // (set up above on m_renderer.lensK1/lensK2/warpResiduals), so all targets
+    // share the same projector-global lens model — one physical lens.
+    for (auto e : getTargetScreens()) {
+        const auto* screen = reg.try_get<Screen>(e);
+        if (!screen) continue;
+        const MeshData* mesh = nullptr;
+        if (reg.valid(screen->modelEntity)) {
+            if (const auto* model = reg.try_get<Model>(screen->modelEntity))
+                mesh = model->mesh.isValid() ? &model->mesh : nullptr;
         }
+        void* texID = nullptr;
+        if (auto* renderer = m_engine->getRenderer())
+            texID = renderer->getComposeTargetTextureID(screen->renderTargetSlot);
+
+        m_renderer.drawScreen(dl, viewPos, viewSize,
+            glm::vec3(screen->position[0], screen->position[1], screen->position[2]),
+            glm::vec3(screen->rotation[0], screen->rotation[1], screen->rotation[2]),
+            glm::vec3(screen->scale[0],    screen->scale[1],    screen->scale[2]),
+            reinterpret_cast<ImTextureID>(texID), false, mesh);
     }
     m_renderer.endRender(dl, viewPos, viewSize);
 
@@ -773,10 +845,28 @@ void ProjectorCalibrationWindow::renderPointsTable() {
         perPtErr = CalibrationSolver::perPointResiduals(pairs, m_outputSize, m_lastResult);
     }
 
-    if (ImGui::BeginTable("##CalibPts", 5,
+    // For the Screen column + orphan detection, build a set of currently-valid
+    // target entities. A point's sourceScreen is "orphaned" if its target is
+    // gone (Screen deleted, or removed from Projector::targetSurfaces). Legacy
+    // points with sourceScreen == entt::null aren't orphans — they predate the
+    // tagging and the solver doesn't need the field.
+    auto& reg = m_engine->getRegistry();
+    const auto targetList = getTargetScreens();
+    auto isCurrentTarget = [&](entt::entity e) {
+        for (auto t : targetList) if (t == e) return true;
+        return false;
+    };
+    int orphanCount = 0;
+    for (const auto& pt : m_points) {
+        if (pt.sourceScreen != entt::null && !isCurrentTarget(pt.sourceScreen))
+            ++orphanCount;
+    }
+
+    if (ImGui::BeginTable("##CalibPts", 6,
                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                            ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("#",       ImGuiTableColumnFlags_WidthFixed, 22);
+        ImGui::TableSetupColumn("Screen",             ImGuiTableColumnFlags_WidthFixed, 110);
         ImGui::TableSetupColumn("3D World (X, Y, Z)", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Proj UV (u, v)",     ImGuiTableColumnFlags_WidthFixed, 130);
         ImGui::TableSetupColumn("Error",              ImGuiTableColumnFlags_WidthFixed, 70);
@@ -790,12 +880,27 @@ void ProjectorCalibrationWindow::renderPointsTable() {
             ImGui::Text("%d", i + 1);
 
             ImGui::TableSetColumnIndex(1);
-            ImGui::Text("(%.2f, %.2f, %.2f)", pt.worldPos.x, pt.worldPos.y, pt.worldPos.z);
+            if (pt.sourceScreen == entt::null) {
+                ImGui::TextDisabled("—");
+            } else if (reg.valid(pt.sourceScreen) &&
+                       reg.all_of<Screen>(pt.sourceScreen)) {
+                const auto& sname = reg.get<Screen>(pt.sourceScreen).name;
+                if (isCurrentTarget(pt.sourceScreen))
+                    ImGui::TextUnformatted(sname.c_str());
+                else
+                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f),
+                                       "%s (orphan)", sname.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f), "(removed)");
+            }
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("(%.3f, %.3f)", pt.projectorUV.x, pt.projectorUV.y);
+            ImGui::Text("(%.2f, %.2f, %.2f)", pt.worldPos.x, pt.worldPos.y, pt.worldPos.z);
 
             ImGui::TableSetColumnIndex(3);
+            ImGui::Text("(%.3f, %.3f)", pt.projectorUV.x, pt.projectorUV.y);
+
+            ImGui::TableSetColumnIndex(4);
             if (i < static_cast<int>(perPtErr.size())) {
                 float e = perPtErr[i];
                 // Disguise-style traffic light. Tight thresholds so the user
@@ -808,7 +913,7 @@ void ProjectorCalibrationWindow::renderPointsTable() {
                 ImGui::TextDisabled("--");
             }
 
-            ImGui::TableSetColumnIndex(4);
+            ImGui::TableSetColumnIndex(5);
             ImGui::PushID(i);
             if (ImGui::SmallButton("Select")) activatePoint(i);
             ImGui::SameLine();
@@ -823,6 +928,28 @@ void ProjectorCalibrationWindow::renderPointsTable() {
             ImGui::PopID();
         }
         ImGui::EndTable();
+    }
+
+    // Orphan cleanup affordance — manual, no confirm dialog. The user removed
+    // a screen from the projector (here or in PropertyWindow) and the points
+    // that referenced it are now stale; one click drops them.
+    if (orphanCount > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+                           "%d orphan point%s — source screen no longer targeted.",
+                           orphanCount, orphanCount == 1 ? "" : "s");
+        ImGui::SameLine();
+        char btn[48];
+        snprintf(btn, sizeof(btn), "Remove orphans##cleanup");
+        if (ImGui::SmallButton(btn)) {
+            m_points.erase(std::remove_if(m_points.begin(), m_points.end(),
+                [&](const CorrespondencePointEx& pt) {
+                    return pt.sourceScreen != entt::null &&
+                           !isCurrentTarget(pt.sourceScreen);
+                }), m_points.end());
+            if (m_activePointIdx >= static_cast<int>(m_points.size()))
+                m_activePointIdx = static_cast<int>(m_points.size()) - 1;
+            syncOverlayPoints();
+        }
     }
 }
 
@@ -1088,6 +1215,7 @@ void ProjectorCalibrationWindow::persistPoints() {
         cp.projectorUV[0] = pt.projectorUV.x;
         cp.projectorUV[1] = pt.projectorUV.y;
         cp.isAligned      = pt.isAligned;
+        cp.sourceScreen   = pt.sourceScreen;
         p->calibrationPoints.push_back(cp);
     }
 }
@@ -1162,11 +1290,13 @@ void ProjectorCalibrationWindow::activatePoint(int idx) {
 void ProjectorCalibrationWindow::addCorrespondencePoint() {
     if (!m_hasPending) return;
     CorrespondencePointEx pt;
-    pt.worldPos    = m_pendingWorldPos;
-    pt.projectorUV = projectThroughProjector(m_pendingWorldPos); // initial guess
-    pt.isAligned   = false;
+    pt.worldPos     = m_pendingWorldPos;
+    pt.projectorUV  = projectThroughProjector(m_pendingWorldPos); // initial guess
+    pt.isAligned    = false;
+    pt.sourceScreen = m_pendingSourceScreen;
     m_points.push_back(pt);
-    m_hasPending     = false;
+    m_hasPending          = false;
+    m_pendingSourceScreen = entt::null;
     activatePoint(static_cast<int>(m_points.size()) - 1);
 }
 

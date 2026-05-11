@@ -469,6 +469,15 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 cpj["worldPos"]    = { cp.worldPos[0], cp.worldPos[1], cp.worldPos[2] };
                 cpj["projectorUV"] = { cp.projectorUV[0], cp.projectorUV[1] };
                 cpj["isAligned"]   = cp.isAligned;
+                // sourceScreen → Screen name (same indirection targetSurfaces uses).
+                // Empty string = legacy / untagged point.
+                std::string sourceScreenName;
+                if (cp.sourceScreen != entt::null &&
+                    registry.valid(cp.sourceScreen) &&
+                    registry.all_of<Screen>(cp.sourceScreen)) {
+                    sourceScreenName = registry.get<Screen>(cp.sourceScreen).name;
+                }
+                cpj["sourceScreenName"] = sourceScreenName;
                 cpsJson.push_back(cpj);
             }
             pj["calibrationPoints"] = cpsJson;
@@ -1203,6 +1212,23 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                                cpJson["projectorUV"][1].get<float>() };
                         }
                         cp.isAligned = cpJson.value("isAligned", false);
+                        // sourceScreen resolves by Screen name. Missing field
+                        // or unknown name → entt::null (legacy / orphan).
+                        cp.sourceScreen = entt::null;
+                        if (cpJson.contains("sourceScreenName") &&
+                            cpJson["sourceScreenName"].is_string()) {
+                            const std::string sname =
+                                cpJson["sourceScreenName"].get<std::string>();
+                            if (!sname.empty()) {
+                                auto screenView = registry.view<Screen>();
+                                for (auto [se, s] : screenView.each()) {
+                                    if (s.name == sname) {
+                                        cp.sourceScreen = se;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         proj.calibrationPoints.push_back(cp);
                     }
                 }

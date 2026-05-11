@@ -89,12 +89,18 @@ private:
     // -----------------------------------------------------------------------
     struct CorrespondencePointEx : CorrespondencePair {
         bool isAligned{false}; // user has positioned the crosshair
+        entt::entity sourceScreen{entt::null}; // which target mesh this came from
     };
+
+    // Read the projector's current target screens from Projector::targetSurfaces.
+    // The cal window does NOT cache this — both the cal window and PropertyWindow
+    // edit targetSurfaces directly, so this is recomputed every frame so
+    // cross-window edits take effect immediately.
+    std::vector<entt::entity> getTargetScreens() const;
 
     Engine*           m_engine{nullptr};
     bool              m_isOpen{false};
     entt::entity      m_projectorEntity{entt::null};
-    entt::entity      m_screenEntity{entt::null};   // target screen to calibrate against
     entt::entity      m_routedOutputEntity{entt::null};
     entt::entity      m_savedSourceScreen{entt::null}; // restored on exit
 
@@ -108,6 +114,7 @@ private:
     int               m_activePointIdx{-1};  // index of crosshair being positioned
     bool              m_hasPending{false};   // a 3D point has been picked but not confirmed
     glm::vec3         m_pendingWorldPos{};
+    entt::entity      m_pendingSourceScreen{entt::null}; // which mesh produced the pending pick
 
     // Right pane drag state
     bool              m_rightPaneDragging{false};

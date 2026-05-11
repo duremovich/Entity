@@ -16,6 +16,12 @@ struct CalibrationPoint {
     std::array<float, 3> worldPos{0.f, 0.f, 0.f};
     std::array<float, 2> projectorUV{0.5f, 0.5f};
     bool isAligned{false}; // user has positioned the crosshair for this point
+    // Which target screen this point was picked on. The solver ignores it
+    // (worldPos is already world-space), but the calibration UI uses it to
+    // attribute points back to their source mesh — per-screen color coding,
+    // table column, orphan-detection when a screen is removed from the
+    // projector's target list. entt::null on legacy (pre-tag) projects.
+    entt::entity sourceScreen{entt::null};
 };
 
 /**
