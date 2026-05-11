@@ -324,7 +324,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             sj["height"] = screen.height;
             sj["position"] = {screen.position[0], screen.position[1], screen.position[2]};
             sj["rotation"] = {screen.rotation[0], screen.rotation[1], screen.rotation[2]};
-            sj["scale"]    = {screen.scale[0],    screen.scale[1],    screen.scale[2]};
+            sj["size"]     = {screen.size[0],     screen.size[1],     screen.size[2]};
             sj["visible"] = screen.visible;
             sj["opacity"] = screen.opacity;
             sj["zOrder"]  = screen.zOrder;
@@ -351,7 +351,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             pj["name"]     = prop.name;
             pj["position"] = {prop.position[0], prop.position[1], prop.position[2]};
             pj["rotation"] = {prop.rotation[0], prop.rotation[1], prop.rotation[2]};
-            pj["scale"]    = {prop.scale[0],    prop.scale[1],    prop.scale[2]};
+            pj["size"]     = {prop.size[0],     prop.size[1],     prop.size[2]};
             pj["visible"]  = prop.visible;
             pj["displayColor"] = {prop.displayColor[0], prop.displayColor[1],
                                   prop.displayColor[2], prop.displayColor[3]};
@@ -693,10 +693,23 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                        sj["rotation"][1].get<float>(),
                                        sj["rotation"][2].get<float>()};
                 }
-                if (sj.contains("scale") && sj["scale"].is_array() && sj["scale"].size() >= 3) {
-                    screen.scale = {sj["scale"][0].get<float>(),
-                                    sj["scale"][1].get<float>(),
-                                    sj["scale"][2].get<float>()};
+                // Size (v14+) is real-world meters. Legacy v≤13 stored "scale"
+                // as a unitless multiplier on the mesh's native bounds; we
+                // migrate it to "size" = legacyScale × nativeBounds after the
+                // model is resolved below, so the visual result matches the
+                // pre-v14 render. Either key may be absent on partial files —
+                // the component default ({4, 2.25, 0} for screens) wins.
+                bool hasLegacyScale = false;
+                std::array<float, 3> legacyScale{1.0f, 1.0f, 1.0f};
+                if (sj.contains("size") && sj["size"].is_array() && sj["size"].size() >= 3) {
+                    screen.size = {sj["size"][0].get<float>(),
+                                   sj["size"][1].get<float>(),
+                                   sj["size"][2].get<float>()};
+                } else if (sj.contains("scale") && sj["scale"].is_array() && sj["scale"].size() >= 3) {
+                    legacyScale = {sj["scale"][0].get<float>(),
+                                   sj["scale"][1].get<float>(),
+                                   sj["scale"][2].get<float>()};
+                    hasLegacyScale = true;
                 }
 
                 // Resolve modelEntity by Model name. Missing model leaves
@@ -709,6 +722,24 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     for (auto [me, m] : modelViewForLookup.each()) {
                         if (m.name == modelName) { screen.modelEntity = me; break; }
                     }
+                }
+
+                // v13→v14: convert legacy unitless scale into meters using
+                // the resolved model's native bounds (or the default 16:9
+                // plane fallback for screens with no model).
+                if (hasLegacyScale) {
+                    const MeshData* mesh = nullptr;
+                    if (screen.modelEntity != entt::null &&
+                        registry.valid(screen.modelEntity)) {
+                        if (const auto* m = registry.try_get<Model>(screen.modelEntity))
+                            if (m->mesh.isValid()) mesh = &m->mesh;
+                    }
+                    const auto bounds = meshNativeBounds(mesh);
+                    screen.size = {
+                        legacyScale[0] * bounds[0],
+                        legacyScale[1] * bounds[1],
+                        legacyScale[2] * bounds[2],
+                    };
                 }
 
                 std::cout << "[ProjectSerializer] Loaded screen: " << name
@@ -766,10 +797,19 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                      pj["rotation"][1].get<float>(),
                                      pj["rotation"][2].get<float>()};
                 }
-                if (pj.contains("scale") && pj["scale"].is_array() && pj["scale"].size() >= 3) {
-                    prop.scale = {pj["scale"][0].get<float>(),
-                                  pj["scale"][1].get<float>(),
-                                  pj["scale"][2].get<float>()};
+                // Size (v14+) is real-world meters; v≤13 stored a unitless
+                // multiplier under "scale" — migrate after model resolution.
+                bool hasLegacyPropScale = false;
+                std::array<float, 3> legacyPropScale{1.0f, 1.0f, 1.0f};
+                if (pj.contains("size") && pj["size"].is_array() && pj["size"].size() >= 3) {
+                    prop.size = {pj["size"][0].get<float>(),
+                                 pj["size"][1].get<float>(),
+                                 pj["size"][2].get<float>()};
+                } else if (pj.contains("scale") && pj["scale"].is_array() && pj["scale"].size() >= 3) {
+                    legacyPropScale = {pj["scale"][0].get<float>(),
+                                       pj["scale"][1].get<float>(),
+                                       pj["scale"][2].get<float>()};
+                    hasLegacyPropScale = true;
                 }
                 if (pj.contains("displayColor") && pj["displayColor"].is_array()
                     && pj["displayColor"].size() >= 4) {
@@ -788,6 +828,26 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     for (auto [me, m] : registry.view<Model>().each()) {
                         if (m.name == modelName) { prop.modelEntity = me; break; }
                     }
+                }
+
+                // v13→v14: convert legacy unitless scale into meters using
+                // the resolved model's native bounds. Props without a mesh
+                // fall back to a 1m³ default (same as the new defaults).
+                if (hasLegacyPropScale) {
+                    const MeshData* mesh = nullptr;
+                    if (prop.modelEntity != entt::null &&
+                        registry.valid(prop.modelEntity)) {
+                        if (const auto* m = registry.try_get<Model>(prop.modelEntity))
+                            if (m->mesh.isValid()) mesh = &m->mesh;
+                    }
+                    const auto bounds = mesh && mesh->isValid()
+                        ? meshNativeBounds(mesh)
+                        : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+                    prop.size = {
+                        legacyPropScale[0] * bounds[0],
+                        legacyPropScale[1] * bounds[1],
+                        legacyPropScale[2] * bounds[2],
+                    };
                 }
 
                 std::cout << "[ProjectSerializer] Loaded prop: " << name << std::endl;

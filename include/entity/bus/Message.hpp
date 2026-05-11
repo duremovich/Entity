@@ -37,6 +37,12 @@ struct ScreenSnapshot {
     bool          renderTargetValid{false};
     std::array<float, 3> position{0.0f, 0.0f, 0.0f};
     std::array<float, 3> rotation{0.0f, 0.0f, 0.0f};
+    // `scale` is the post-conversion vertex multiplier
+    // (Screen::size_meters / mesh native bounds), pre-computed on the editor
+    // thread in PlaybackTimeAuthority::buildSceneSnapshot. The show thread
+    // applies it directly via glm::scale; it never needs mesh bounds across
+    // the bus. Wire-key intentionally retained for ABI stability per
+    // include/entity/bus/CLAUDE.md rule 3.
     std::array<float, 3> scale{1.0f, 1.0f, 1.0f};
     std::uint64_t modelEntity{0}; // entt::entity cast to uint64; 0 = null
 };

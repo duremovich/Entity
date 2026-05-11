@@ -3390,7 +3390,9 @@ void Engine::createDefaultScreen() {
     screen.height = 1080;
     screen.position = {0.0f, 0.0f, 0.0f};
     screen.rotation = {0.0f, 0.0f, 0.0f};
-    screen.scale = {1.0f, 1.0f, 1.0f};
+    // Default Main Screen renders as a 4m × 2.25m flat panel using the
+    // default 16:9 plane mesh. Size in real-world meters per Phase 2 spec.
+    screen.size = {4.0f, 2.25f, 0.0f};
     screen.visible = true;
     screen.opacity = 1.0f;
     screen.zOrder = 0;

@@ -29,10 +29,14 @@ struct Prop {
     // props can share a model.
     entt::entity modelEntity{entt::null};
 
-    // Transform in world space.
+    // Transform in world space. `size` is the real-world bounding-box size
+    // in meters (Blender 1u = 1m); the render path divides by the mesh's
+    // native bounds (see Model.hpp::computeEffectiveScale) to get the vertex
+    // multiplier. Default 1m³ is replaced on model assign with the mesh's
+    // authored dimensions.
     std::array<float, 3> position{0.0f, 0.0f, 0.0f};
     std::array<float, 3> rotation{0.0f, 0.0f, 0.0f};  // Euler degrees
-    std::array<float, 3> scale{1.0f, 1.0f, 1.0f};
+    std::array<float, 3> size{1.0f, 1.0f, 1.0f};
 
     // Visibility in the 3D stage view.
     bool visible{true};

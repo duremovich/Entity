@@ -439,10 +439,11 @@ void ProjectorCalibrationWindow::renderScenePane(ImVec2 panePos, ImVec2 paneSize
         if (auto* renderer = m_engine->getRenderer())
             texID = renderer->getComposeTargetTextureID(screen->renderTargetSlot);
 
+        const auto eff = computeEffectiveScale(screen->size, mesh);
         m_renderer.drawScreen(dl, panePos, paneSize,
             glm::vec3(screen->position[0], screen->position[1], screen->position[2]),
             glm::vec3(screen->rotation[0], screen->rotation[1], screen->rotation[2]),
-            glm::vec3(screen->scale[0],    screen->scale[1],    screen->scale[2]),
+            glm::vec3(eff[0], eff[1], eff[2]),
             reinterpret_cast<ImTextureID>(texID), false, mesh);
 
         if (m_showWireframe && mesh) {
@@ -451,7 +452,7 @@ void ProjectorCalibrationWindow::renderScenePane(ImVec2 panePos, ImVec2 paneSize
                           screen->position[1] + m_renderer.screenElevation,
                           screen->position[2]);
             glm::vec3 rot(screen->rotation[0], screen->rotation[1], screen->rotation[2]);
-            glm::vec3 scl(screen->scale[0],    screen->scale[1],    screen->scale[2]);
+            glm::vec3 scl(eff[0], eff[1], eff[2]);
             glm::mat4 m(1.0f);
             m = glm::translate(m, pos);
             m = glm::rotate(m, glm::radians(rot.y), glm::vec3(0,1,0));
@@ -677,10 +678,11 @@ void ProjectorCalibrationWindow::renderProjectorPane(ImVec2 panePos, ImVec2 pane
         if (auto* renderer = m_engine->getRenderer())
             texID = renderer->getComposeTargetTextureID(screen->renderTargetSlot);
 
+        const auto eff = computeEffectiveScale(screen->size, mesh);
         m_renderer.drawScreen(dl, viewPos, viewSize,
             glm::vec3(screen->position[0], screen->position[1], screen->position[2]),
             glm::vec3(screen->rotation[0], screen->rotation[1], screen->rotation[2]),
-            glm::vec3(screen->scale[0],    screen->scale[1],    screen->scale[2]),
+            glm::vec3(eff[0], eff[1], eff[2]),
             reinterpret_cast<ImTextureID>(texID), false, mesh);
     }
     m_renderer.endRender(dl, viewPos, viewSize);
@@ -1075,7 +1077,8 @@ bool ProjectorCalibrationWindow::pickMeshPoint(ImVec2 mousePos,
                   screen->position[1] + m_renderer.screenElevation,
                   screen->position[2]);
     glm::vec3 rot(screen->rotation[0], screen->rotation[1], screen->rotation[2]);
-    glm::vec3 scl(screen->scale[0],    screen->scale[1],    screen->scale[2]);
+    const auto eff = computeEffectiveScale(screen->size, mesh);
+    glm::vec3 scl(eff[0], eff[1], eff[2]);
 
     // Build screen model matrix (same convention as Stage3DRenderer::drawScreen)
     glm::mat4 model(1.0f);

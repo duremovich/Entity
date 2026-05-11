@@ -5,6 +5,7 @@
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/MappingSurface.hpp"
+#include "entity/components/Model.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
@@ -650,7 +651,17 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         ss.renderTargetValid = screen.renderTargetValid;
         ss.position          = screen.position;
         ss.rotation          = screen.rotation;
-        ss.scale             = screen.scale;
+
+        // Convert Screen::size (meters) → effective vertex multiplier on the
+        // editor side so the show thread / OutputManager can multiply
+        // verts by ss.scale directly without needing mesh bounds across
+        // the bus (Model meshes are intentionally not snapshotted).
+        const MeshData* mesh = nullptr;
+        if (screen.modelEntity != entt::null && m_registry.valid(screen.modelEntity)) {
+            if (const auto* m = m_registry.try_get<Model>(screen.modelEntity))
+                if (m->mesh.isValid()) mesh = &m->mesh;
+        }
+        ss.scale             = computeEffectiveScale(screen.size, mesh);
         ss.modelEntity       = entityToU64(screen.modelEntity);
         out.screens.push_back(std::move(ss));
     }

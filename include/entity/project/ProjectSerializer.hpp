@@ -20,6 +20,14 @@ class ProjectManager;  // forward-declared; optional save/load argument
 class ProjectSerializer {
 public:
     // Project file version for forward compatibility.
+    //   v14 (2026-05-11) — Screen/Prop transform expresses real-world size
+    //                      in meters via a new "size" array, replacing the
+    //                      unitless "scale" key. v≤13 files load by reading
+    //                      "scale" and computing size = legacyScale × mesh
+    //                      native bounds after the model is resolved, so the
+    //                      rendered dimensions are byte-identical to the
+    //                      pre-migration result. First save after upgrade
+    //                      emits "size" only.
     //   v13 (2026-05-09) — adds Prop array. Each entry persists name,
     //                      transform, visibility, displayColor, modelName.
     //                      Props are pre-vis-only stage geometry (see
@@ -86,7 +94,7 @@ public:
     // v7 files load with no projectors (missing "projectors" key = empty);
     // v8 files load with no cues (missing "cues" key = empty);
     // v11 mediaLibrary entries load with no probe cache (re-index on first open).
-    static constexpr int PROJECT_VERSION = 13;
+    static constexpr int PROJECT_VERSION = 14;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

@@ -1070,14 +1070,14 @@ void PropertyWindow::renderScreenProperties() {
         ImGui::SetNextItemWidth(-1);
         ImGui::DragFloat3("##rot", screen->rotation.data(), 1.0f, -180.0f, 180.0f);
 
-        ImGui::Text("Scale");
+        ImGui::Text("Size (m)");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##scale", screen->scale.data(), 0.01f, 0.01f, 100.0f);
+        ImGui::DragFloat3("##size", screen->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
 
         if (ImGui::Button("Reset Transform")) {
             screen->position = {0.0f, 0.0f, 0.0f};
             screen->rotation = {0.0f, 0.0f, 0.0f};
-            screen->scale = {1.0f, 1.0f, 1.0f};
+            screen->size = {4.0f, 2.25f, 0.0f};
         }
     }
 
@@ -1173,14 +1173,14 @@ void PropertyWindow::renderPropProperties() {
         ImGui::SetNextItemWidth(-1);
         ImGui::DragFloat3("##prop_rot", prop->rotation.data(), 1.0f, -180.0f, 180.0f);
 
-        ImGui::Text("Scale");
+        ImGui::Text("Size (m)");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##prop_scale", prop->scale.data(), 0.01f, 0.01f, 100.0f);
+        ImGui::DragFloat3("##prop_size", prop->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
 
         if (ImGui::Button("Reset Transform")) {
             prop->position = {0.0f, 0.0f, 0.0f};
             prop->rotation = {0.0f, 0.0f, 0.0f};
-            prop->scale = {1.0f, 1.0f, 1.0f};
+            prop->size = {1.0f, 1.0f, 1.0f};
         }
     }
 

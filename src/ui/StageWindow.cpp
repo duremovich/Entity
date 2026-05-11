@@ -287,7 +287,6 @@ void StageWindow::render3DView() {
 
             glm::vec3 position(screen.position[0], screen.position[1], screen.position[2]);
             glm::vec3 rotation(screen.rotation[0], screen.rotation[1], screen.rotation[2]);
-            glm::vec3 scale(screen.scale[0], screen.scale[1], screen.scale[2]);
 
             uint32_t meshSlot = UINT32_MAX;
             const MeshData* mesh = nullptr;
@@ -304,6 +303,13 @@ void StageWindow::render3DView() {
             if (meshSlot == UINT32_MAX && d3d) {
                 meshSlot = d3d->getDefaultScreenMeshSlot();  // shared 16:9 quad
             }
+
+            // Convert real-world size (meters) to vertex multiplier given the
+            // mesh's native bounds. `mesh` is null here when the screen uses
+            // the default 16:9 plane fallback, which computeEffectiveScale
+            // handles internally.
+            const auto effScale = computeEffectiveScale(screen.size, mesh);
+            glm::vec3 scale(effScale[0], effScale[1], effScale[2]);
 
             Stage3DRenderer::StageMeshDraw draw;
             draw.meshSlot   = meshSlot;
@@ -340,7 +346,6 @@ void StageWindow::render3DView() {
 
             glm::vec3 position(prop.position[0], prop.position[1], prop.position[2]);
             glm::vec3 rotation(prop.rotation[0], prop.rotation[1], prop.rotation[2]);
-            glm::vec3 scale(prop.scale[0], prop.scale[1], prop.scale[2]);
             glm::vec4 color(prop.displayColor[0], prop.displayColor[1],
                             prop.displayColor[2], prop.displayColor[3]);
             bool isSelected = (entity == selectedProp);
@@ -352,6 +357,12 @@ void StageWindow::render3DView() {
                 if (const auto* m = registry.try_get<Model>(prop.modelEntity))
                     if (m->mesh.isValid()) { mesh = &m->mesh; model = m; }
             }
+
+            // Convert prop.size (meters) → vertex multiplier given the mesh
+            // native bounds. For props without a mesh the multiplier is
+            // unused (placeholder-cross path uses position only).
+            const auto propEff = computeEffectiveScale(prop.size, mesh);
+            glm::vec3 scale(propEff[0], propEff[1], propEff[2]);
 
             if (mesh) {
                 Stage3DRenderer::StageMeshDraw draw;
@@ -669,10 +680,11 @@ void StageWindow::frameAllScreens(ImVec2 viewSize) {
             if (const auto* model = registry.try_get<Model>(screen.modelEntity))
                 if (model->mesh.isValid()) mesh = &model->mesh;
         }
+        const auto eff = computeEffectiveScale(screen.size, mesh);
         inputs.push_back({
             glm::vec3(screen.position[0], screen.position[1], screen.position[2]),
             glm::vec3(screen.rotation[0], screen.rotation[1], screen.rotation[2]),
-            glm::vec3(screen.scale[0],    screen.scale[1],    screen.scale[2]),
+            glm::vec3(eff[0], eff[1], eff[2]),
             mesh,
         });
     }
@@ -688,10 +700,11 @@ void StageWindow::frameAllScreens(ImVec2 viewSize) {
             if (const auto* model = registry.try_get<Model>(prop.modelEntity))
                 if (model->mesh.isValid()) mesh = &model->mesh;
         }
+        const auto eff = computeEffectiveScale(prop.size, mesh);
         propInputs.push_back({
             glm::vec3(prop.position[0], prop.position[1], prop.position[2]),
             glm::vec3(prop.rotation[0], prop.rotation[1], prop.rotation[2]),
-            glm::vec3(prop.scale[0],    prop.scale[1],    prop.scale[2]),
+            glm::vec3(eff[0], eff[1], eff[2]),
             mesh,
         });
     }

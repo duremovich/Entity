@@ -32,10 +32,14 @@ struct Screen {
     uint32_t width{1920};
     uint32_t height{1080};
 
-    // Transform in world space
+    // Transform in world space. `size` is the real-world bounding-box size
+    // in meters (matching Blender's default 1 unit = 1 meter convention).
+    // The render path divides by the mesh's native bounds (see
+    // Model.hpp::computeEffectiveScale) to get the vertex multiplier. New
+    // screens with no model assigned default to a 4m × 2.25m flat panel.
     std::array<float, 3> position{0.0f, 0.0f, 0.0f};
     std::array<float, 3> rotation{0.0f, 0.0f, 0.0f};  // Euler angles (degrees)
-    std::array<float, 3> scale{1.0f, 1.0f, 1.0f};
+    std::array<float, 3> size{4.0f, 2.25f, 0.0f};
 
     // Visibility
     bool visible{true};
