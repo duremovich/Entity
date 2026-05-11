@@ -21,6 +21,35 @@ keep this file in sync.
 
 ---
 
+## Layer — Generic timeline-resident entity (Phase 3, ADR-0016)
+
+`Layer` is the component that says "this entity lives on a `TimelineTrack`."
+Every timeline-resident archetype (Clip, ObjectAnimation, future Generative)
+carries a `Layer` alongside its kind-specific data components. Single
+contract — start frame, duration, owning track, label, color, Kind enum —
+shared across kinds. See `include/entity/components/Layer.hpp`.
+
+**Kinds shipped with the abstraction**:
+- `Kind::Clip` — paired with the `Clip` archetype below
+- `Kind::ObjectAnimation` — paired with `ObjectAnimationLayer` (commit 3.3,
+  not yet present)
+- `Kind::Generative` — reserved for future generative layers
+
+**Phase 3 migration window**: for Clip-backed layer entities,
+`Clip::startFrame` / `Clip::duration` remain the source of truth and the
+`Layer` mirror is synced via `syncLayerFromClip()`. Promotion of those
+fields onto `Layer` outright is deferred to a Phase 4 cleanup PR.
+
+**Composition, not inheritance**: systems select by component
+combination (`view<Layer, Clip>` vs. `view<Layer, ObjectAnimationLayer>`),
+never by reading `Layer::kind` at runtime. The Kind enum exists for the
+UI badge, serialization disambiguation, and human-readable logs.
+
+**Created at**: commit 3.1 introduces the component. Retroattach onto
+existing `Clip` entities lands in commit 3.2.
+
+---
+
 ## Clip — Video / image source placed on the timeline
 
 | Required | Optional |
