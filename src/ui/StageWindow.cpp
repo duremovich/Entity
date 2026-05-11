@@ -240,7 +240,6 @@ void StageWindow::render3DView() {
 
     // Get selected stage primitive for highlighting (mutually exclusive
     // between screens / props / projectors at the Timeline level).
-    entt::entity selectedScreen = timeline ? timeline->getSelectedScreen() : entt::null;
     entt::entity selectedProp   = timeline ? timeline->getSelectedProp()   : entt::null;
 
     // Begin 3D rendering (draws background, grid, axes)
@@ -276,16 +275,6 @@ void StageWindow::render3DView() {
 
     std::vector<Stage3DRenderer::StageMeshDraw> meshDraws;
 
-    // AABB wireframes for mesh-bearing selected entities — drawn as ImGui
-    // overlay on top of the GPU image for selection feedback.
-    struct MeshAABB {
-        glm::mat4 transform;
-        float minB[3], maxB[3];
-        ImU32 color;
-        float thickness;
-    };
-    std::vector<MeshAABB> meshAABBs;
-
     if (m_engine) {
         auto& registry = m_engine->getRegistry();
         glm::vec3 cameraPos = m_3dRenderer->getCamera().position;
@@ -293,28 +282,20 @@ void StageWindow::render3DView() {
         // --- Screens ---
         // Every visible screen routes through the GPU mesh pass for depth-correct z-order.
         // Custom-mesh screens use their model's slot; flat screens use the shared default quad.
-        static const glm::vec3 kDefaultScreenMin{-(16.0f/9.0f)/2.0f, -0.5f, 0.0f};
-        static const glm::vec3 kDefaultScreenMax{ (16.0f/9.0f)/2.0f,  0.5f, 0.0f};
-
         for (auto [entity, screen] : registry.view<Screen>().each()) {
             if (!screen.visible) continue;
 
             glm::vec3 position(screen.position[0], screen.position[1], screen.position[2]);
             glm::vec3 rotation(screen.rotation[0], screen.rotation[1], screen.rotation[2]);
             glm::vec3 scale(screen.scale[0], screen.scale[1], screen.scale[2]);
-            bool isSelected = (entity == selectedScreen);
 
             uint32_t meshSlot = UINT32_MAX;
-            glm::vec3 aabbMin = kDefaultScreenMin;
-            glm::vec3 aabbMax = kDefaultScreenMax;
             const MeshData* mesh = nullptr;
 
             if (screen.modelEntity != entt::null && registry.valid(screen.modelEntity)) {
                 if (const auto* m = registry.try_get<Model>(screen.modelEntity)) {
                     if (m->mesh.isValid() && m->gpuResourcesValid) {
                         meshSlot = m->vertexBufferSlot;
-                        aabbMin = {m->mesh.minBounds[0], m->mesh.minBounds[1], m->mesh.minBounds[2]};
-                        aabbMax = {m->mesh.maxBounds[0], m->mesh.maxBounds[1], m->mesh.maxBounds[2]};
                         mesh = &m->mesh;
                     }
                 }
@@ -348,19 +329,6 @@ void StageWindow::render3DView() {
                 draw.renderMode = 1;  // matte
             }
             meshDraws.push_back(draw);
-
-            // AABB wireframe overlay for selection feedback.
-            glm::mat4 tf = glm::mat4(1.0f);
-            tf = glm::translate(tf, glm::vec3(position.x, position.y + m_3dRenderer->screenElevation, position.z));
-            tf = glm::rotate(tf, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-            tf = glm::rotate(tf, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-            tf = glm::rotate(tf, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-            tf = glm::scale(tf, scale);
-            ImU32 aabbColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(100, 100, 100, 200);
-            float aabbThick = isSelected ? 3.0f : 1.5f;
-            meshAABBs.push_back({tf, {aabbMin.x, aabbMin.y, aabbMin.z},
-                                      {aabbMax.x, aabbMax.y, aabbMax.z},
-                                      aabbColor, aabbThick});
 
             // Preserve hit-test data for all screens (CPU ray-test is independent of render path).
             screenHitData.push_back({entity, position, rotation, scale, mesh});
@@ -396,19 +364,6 @@ void StageWindow::render3DView() {
                 draw.renderMode = 1;
                 draw.isScreen   = false;
                 meshDraws.push_back(draw);
-
-                // AABB wireframe for selection overlay
-                glm::mat4 tf = glm::mat4(1.0f);
-                tf = glm::translate(tf, position);
-                tf = glm::rotate(tf, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-                tf = glm::rotate(tf, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-                tf = glm::rotate(tf, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-                tf = glm::scale(tf, scale);
-                ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(120, 120, 120, 200);
-                float frameThick = isSelected ? 3.0f : 1.5f;
-                meshAABBs.push_back({tf, {mesh->minBounds[0], mesh->minBounds[1], mesh->minBounds[2]},
-                                        {mesh->maxBounds[0], mesh->maxBounds[1], mesh->maxBounds[2]},
-                                        frameColor, frameThick});
             } else {
                 // No mesh → placeholder-cross bucket
                 propsToDraw.push_back({entity, position, rotation, scale, color, isSelected, dist, nullptr});
@@ -442,7 +397,7 @@ void StageWindow::render3DView() {
     }
 
     // -------------------------------------------------------------------------
-    // 2D overlay pass: placeholder props, projector gizmos, AABB wireframes.
+    // 2D overlay pass: placeholder props, projector gizmos.
     // These draw on top of the GPU image.
     // -------------------------------------------------------------------------
     if (m_engine) {
@@ -453,34 +408,6 @@ void StageWindow::render3DView() {
             m_3dRenderer->drawProp(drawList, windowPos, contentSize,
                                    propData.position, propData.rotation, propData.scale,
                                    propData.displayColor, propData.isSelected, propData.mesh);
-        }
-
-        // AABB wireframes for mesh entities (selection feedback over GPU image).
-        // Uses the public projectPoint() rather than the private drawLine3D().
-        const int kEdges[12][2] = {
-            {0,1},{1,2},{2,3},{3,0},
-            {4,5},{5,6},{6,7},{7,4},
-            {0,4},{1,5},{2,6},{3,7},
-        };
-        for (const auto& aabb : meshAABBs) {
-            const glm::vec3 bc[8] = {
-                {aabb.minB[0],aabb.minB[1],aabb.minB[2]},
-                {aabb.maxB[0],aabb.minB[1],aabb.minB[2]},
-                {aabb.maxB[0],aabb.maxB[1],aabb.minB[2]},
-                {aabb.minB[0],aabb.maxB[1],aabb.minB[2]},
-                {aabb.minB[0],aabb.minB[1],aabb.maxB[2]},
-                {aabb.maxB[0],aabb.minB[1],aabb.maxB[2]},
-                {aabb.maxB[0],aabb.maxB[1],aabb.maxB[2]},
-                {aabb.minB[0],aabb.maxB[1],aabb.maxB[2]},
-            };
-            for (const auto& e : kEdges) {
-                glm::vec3 w0 = glm::vec3(aabb.transform * glm::vec4(bc[e[0]], 1.0f));
-                glm::vec3 w1 = glm::vec3(aabb.transform * glm::vec4(bc[e[1]], 1.0f));
-                ImVec2 s0 = m_3dRenderer->projectPoint(w0, windowPos, contentSize);
-                ImVec2 s1 = m_3dRenderer->projectPoint(w1, windowPos, contentSize);
-                if ((s0.x < 0.0f && s0.y < 0.0f) || (s1.x < 0.0f && s1.y < 0.0f)) continue;
-                drawList->AddLine(s0, s1, aabb.color, aabb.thickness);
-            }
         }
 
         // Projector gizmos
