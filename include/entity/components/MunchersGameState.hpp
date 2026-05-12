@@ -94,18 +94,21 @@ struct MunchersGameState {
     // ticks. Stagger applied per-ghost in GenerativeSystem.
     static constexpr std::uint64_t kGhostDecisionTicks = 30;
 
-    // --- Pellets ---------------------------------------------------------
-    // 16×16 grid of pellets over the layer's normalized space. Each cell
-    // is 1/16 of the screen across. Bit set = pellet present; bit clear =
-    // already eaten. Packed into 4 × uint64 (256 bits = exactly 16×16).
+    // --- Maze ------------------------------------------------------------
+    // 16×16 grid of cells. Each cell is either a wall or walkable. Pellets
+    // only spawn on walkable cells. Both Muncher and ghosts are blocked by
+    // walls (axis-by-axis collision so they slide along corridors).
     //
-    // Eating: on every tick the player's current cell is cleared and
-    // score increments. When the grid is empty, GenerativeSystem
-    // re-fills it (next "level"). This is the closest analogue to
-    // classic dot-eating without a real maze — once walls land, dots
-    // will only spawn on walkable tiles.
+    // The grid is the same shape as the pellet bitset — 256 bits packed
+    // into 4 × uint64, same `cy * 16 + cx` index, low-bit-first. Bit set
+    // = wall; bit clear = walkable.
     static constexpr int kPelletGridSide = 16;
     static constexpr int kPelletCells    = kPelletGridSide * kPelletGridSide;
+    std::array<std::uint64_t, 4> wallBits{};
+
+    // Pellets on walkable cells. Bit set = pellet present; bit clear =
+    // already eaten. On full clear GenerativeSystem refills walkable
+    // cells (next "level").
     std::array<std::uint64_t, 4> pelletBits{};
 
     // --- Score / lives / lifecycle ---------------------------------------

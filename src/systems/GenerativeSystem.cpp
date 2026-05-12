@@ -43,28 +43,30 @@ void snapInputToCardinal(float inputX, float inputY, float deadzone,
     }
 }
 
-// Pellet bitset helpers. 16×16 grid packed into 4 uint64 — cell (cx, cy)
-// is bit `cy * 16 + cx` of the 256-bit set, stored low-bit-first.
-constexpr int pelletBitIndex(int cx, int cy) {
+// Bitset helpers. 16×16 grid packed into 4 uint64 — cell (cx, cy) is
+// bit `cy * 16 + cx` of the 256-bit set, stored low-bit-first. Shared
+// by the wall and pellet grids.
+constexpr int cellBitIndex(int cx, int cy) {
     return cy * MunchersGameState::kPelletGridSide + cx;
 }
 
-bool pelletGet(const std::array<std::uint64_t, 4>& bits, int cx, int cy) {
-    const int idx = pelletBitIndex(cx, cy);
+bool cellGet(const std::array<std::uint64_t, 4>& bits, int cx, int cy) {
+    const int idx = cellBitIndex(cx, cy);
     return (bits[idx / 64] >> (idx % 64)) & 1ull;
 }
 
-void pelletClear(std::array<std::uint64_t, 4>& bits, int cx, int cy) {
-    const int idx = pelletBitIndex(cx, cy);
+void cellSet(std::array<std::uint64_t, 4>& bits, int cx, int cy) {
+    const int idx = cellBitIndex(cx, cy);
+    bits[idx / 64] |= (1ull << (idx % 64));
+}
+
+void cellClear(std::array<std::uint64_t, 4>& bits, int cx, int cy) {
+    const int idx = cellBitIndex(cx, cy);
     bits[idx / 64] &= ~(1ull << (idx % 64));
 }
 
-bool pelletGridEmpty(const std::array<std::uint64_t, 4>& bits) {
+bool bitsEmpty(const std::array<std::uint64_t, 4>& bits) {
     return (bits[0] | bits[1] | bits[2] | bits[3]) == 0ull;
-}
-
-void pelletGridFillAll(std::array<std::uint64_t, 4>& bits) {
-    bits[0] = bits[1] = bits[2] = bits[3] = ~0ull;
 }
 
 // Cell index for a normalized position. Clamps to grid bounds.
@@ -76,43 +78,162 @@ int positionToCell(float p) {
     return c;
 }
 
+// Classic-ish 16×16 maze. `#` is wall, `.` is walkable (and gets a
+// pellet at init). Symmetric L-R, opening at the top corners + bottom
+// row so the player has a clean home column. Center has a horizontal
+// corridor (the "tunnel" row in real Pac-Man).
+constexpr const char* kMaze[MunchersGameState::kPelletGridSide] = {
+    "################",   // 0
+    "#......##......#",   // 1
+    "#.####.##.####.#",   // 2
+    "#..............#",   // 3
+    "#.####.##.####.#",   // 4
+    "#......##......#",   // 5
+    "###.##.##.##.###",   // 6
+    "#..............#",   // 7
+    "#..............#",   // 8
+    "#.####.##.####.#",   // 9
+    "#......##......#",   // 10
+    "###.##.##.##.###",   // 11
+    "#......##......#",   // 12
+    "#.####.##.####.#",   // 13
+    "#..............#",   // 14
+    "################",   // 15
+};
+
+// (cell-center X, cell-center Y) in normalized [0, 1] coords.
+float cellCenter(int c) {
+    return (static_cast<float>(c) + 0.5f) /
+           static_cast<float>(MunchersGameState::kPelletGridSide);
+}
+
+// Bounding-box check: would a quad at (px, py) with half-size `half`
+// overlap any wall cell?
+bool overlapsWall(const std::array<std::uint64_t, 4>& walls,
+                   float px, float py, float half) {
+    const int x0 = positionToCell(px - half);
+    const int x1 = positionToCell(px + half);
+    const int y0 = positionToCell(py - half);
+    const int y1 = positionToCell(py + half);
+    for (int cy = y0; cy <= y1; ++cy) {
+        for (int cx = x0; cx <= x1; ++cx) {
+            if (cellGet(walls, cx, cy)) return true;
+        }
+    }
+    return false;
+}
+
 void initMuncherStateIfNeeded(MunchersGameState& s) {
     if (s.initialized) return;
-    pelletGridFillAll(s.pelletBits);
-    // Spawn ghosts away from the player's starting cell. Top-left,
-    // top-right, bottom-right corners; bottom-left stays free for the
-    // player to safely start at center.
-    s.ghosts[0] = MunchersGameState::Ghost{0.05f, 0.05f, 0.0f, 0.0f};
-    s.ghosts[1] = MunchersGameState::Ghost{0.95f, 0.05f, 0.0f, 0.0f};
-    s.ghosts[2] = MunchersGameState::Ghost{0.95f, 0.95f, 0.0f, 0.0f};
+
+    // Populate wall bits from the ASCII maze.
+    s.wallBits = {0ull, 0ull, 0ull, 0ull};
+    for (int cy = 0; cy < MunchersGameState::kPelletGridSide; ++cy) {
+        for (int cx = 0; cx < MunchersGameState::kPelletGridSide; ++cx) {
+            if (kMaze[cy][cx] == '#') cellSet(s.wallBits, cx, cy);
+        }
+    }
+
+    // Pellets fill every walkable cell (i.e. not a wall).
+    s.pelletBits = {0ull, 0ull, 0ull, 0ull};
+    for (int cy = 0; cy < MunchersGameState::kPelletGridSide; ++cy) {
+        for (int cx = 0; cx < MunchersGameState::kPelletGridSide; ++cx) {
+            if (kMaze[cy][cx] == '.') cellSet(s.pelletBits, cx, cy);
+        }
+    }
+
+    // Snap Muncher to a known walkable cell — center of the bottom
+    // corridor (row 14, column 8).
+    s.muncherX = cellCenter(8);
+    s.muncherY = cellCenter(14);
+
+    // Spawn ghosts on the top corridor (row 3) so they have to traverse
+    // the maze to reach the player.
+    s.ghosts[0] = MunchersGameState::Ghost{cellCenter(2),  cellCenter(3), 0.0f, 0.0f};
+    s.ghosts[1] = MunchersGameState::Ghost{cellCenter(8),  cellCenter(3), 0.0f, 0.0f};
+    s.ghosts[2] = MunchersGameState::Ghost{cellCenter(13), cellCenter(3), 0.0f, 0.0f};
+
     s.initialized = true;
 }
 
-void tickGhost(MunchersGameState::Ghost& g, float playerX, float playerY,
-                std::uint64_t simFrame, int ghostIndex, float speedPerTick) {
-    // Re-pick a cardinal heading every kGhostDecisionTicks, staggered per
-    // ghost so they don't change direction in lockstep. Heading is the
-    // cardinal direction closest to the player vector; magnitude ties
-    // break by axis order (X wins), same as the player's snap rule.
-    const std::uint64_t cadence = MunchersGameState::kGhostDecisionTicks;
-    if ((simFrame + static_cast<std::uint64_t>(ghostIndex) * 13ull) % cadence == 0) {
-        const float dx = playerX - g.x;
-        const float dy = playerY - g.y;
-        const float ax = std::fabs(dx);
-        const float ay = std::fabs(dy);
-        if (ax >= ay) {
-            g.vx = (dx > 0.0f) ? speedPerTick : -speedPerTick;
-            g.vy = 0.0f;
-        } else {
-            g.vx = 0.0f;
-            g.vy = (dy > 0.0f) ? speedPerTick : -speedPerTick;
+// Try the four cardinals in priority order (toward-player axes first) and
+// return the first that the ghost can actually enter. Returns (vx, vy)
+// scaled by speed, or (0, 0) if every direction is blocked.
+void chooseGhostDirection(const std::array<std::uint64_t, 4>& walls,
+                           const MunchersGameState::Ghost& g,
+                           float playerX, float playerY,
+                           float speedPerTick, float halfSize,
+                           float& outVX, float& outVY) {
+    const float dx = playerX - g.x;
+    const float dy = playerY - g.y;
+    const float ax = std::fabs(dx);
+    const float ay = std::fabs(dy);
+
+    // Build a 4-entry candidate list in greedy-toward-player order.
+    struct Cand { float vx, vy; };
+    Cand candidates[4];
+    if (ax >= ay) {
+        // Prefer X-axis approach, then Y, then opposite X, then opposite Y.
+        const float sxPrimary  = (dx > 0.0f) ?  1.0f : -1.0f;
+        const float sxOpposite = -sxPrimary;
+        const float syPrimary  = (dy > 0.0f) ?  1.0f : -1.0f;
+        const float syOpposite = -syPrimary;
+        candidates[0] = { sxPrimary  * speedPerTick, 0.0f };
+        candidates[1] = { 0.0f, syPrimary  * speedPerTick };
+        candidates[2] = { sxOpposite * speedPerTick, 0.0f };
+        candidates[3] = { 0.0f, syOpposite * speedPerTick };
+    } else {
+        const float syPrimary  = (dy > 0.0f) ?  1.0f : -1.0f;
+        const float syOpposite = -syPrimary;
+        const float sxPrimary  = (dx > 0.0f) ?  1.0f : -1.0f;
+        const float sxOpposite = -sxPrimary;
+        candidates[0] = { 0.0f, syPrimary  * speedPerTick };
+        candidates[1] = { sxPrimary  * speedPerTick, 0.0f };
+        candidates[2] = { 0.0f, syOpposite * speedPerTick };
+        candidates[3] = { sxOpposite * speedPerTick, 0.0f };
+    }
+    for (const auto& c : candidates) {
+        const float tx = g.x + c.vx;
+        const float ty = g.y + c.vy;
+        if (!overlapsWall(walls, tx, ty, halfSize)) {
+            outVX = c.vx;
+            outVY = c.vy;
+            return;
         }
     }
-    g.x = std::clamp(g.x + g.vx, 0.0f, 1.0f);
-    g.y = std::clamp(g.y + g.vy, 0.0f, 1.0f);
-    // Force a re-pick next tick if we hit an edge.
-    if (g.x <= 0.0f || g.x >= 1.0f) g.vx = 0.0f;
-    if (g.y <= 0.0f || g.y >= 1.0f) g.vy = 0.0f;
+    outVX = 0.0f;
+    outVY = 0.0f;
+}
+
+void tickGhost(MunchersGameState::Ghost& g,
+                const std::array<std::uint64_t, 4>& walls,
+                float playerX, float playerY,
+                std::uint64_t simFrame, int ghostIndex,
+                float speedPerTick, float halfSize) {
+    // Re-pick a cardinal heading every kGhostDecisionTicks, staggered per
+    // ghost so they don't change direction in lockstep. Heading is the
+    // cardinal direction closest to the player vector, biased away from
+    // walls.
+    const std::uint64_t cadence = MunchersGameState::kGhostDecisionTicks;
+    const bool needRepick =
+        ((simFrame + static_cast<std::uint64_t>(ghostIndex) * 13ull) % cadence == 0) ||
+        (g.vx == 0.0f && g.vy == 0.0f) ||
+        overlapsWall(walls, g.x + g.vx, g.y + g.vy, halfSize);
+    if (needRepick) {
+        chooseGhostDirection(walls, g, playerX, playerY,
+                              speedPerTick, halfSize, g.vx, g.vy);
+    }
+    const float tx = std::clamp(g.x + g.vx, 0.0f, 1.0f);
+    const float ty = std::clamp(g.y + g.vy, 0.0f, 1.0f);
+    if (!overlapsWall(walls, tx, ty, halfSize)) {
+        g.x = tx;
+        g.y = ty;
+    } else {
+        // Blocked even though we just picked — zero velocity so next
+        // tick repicks via the (g.vx == 0 && g.vy == 0) clause above.
+        g.vx = 0.0f;
+        g.vy = 0.0f;
+    }
 }
 
 void tickMuncher(MunchersGameState& s, float inputX, float inputY) {
@@ -130,31 +251,56 @@ void tickMuncher(MunchersGameState& s, float inputX, float inputY) {
     s.muncherVelX = dirX * s.speedPerTick;
     s.muncherVelY = dirY * s.speedPerTick;
 
-    s.muncherX = std::clamp(s.muncherX + s.muncherVelX, 0.0f, 1.0f);
-    s.muncherY = std::clamp(s.muncherY + s.muncherVelY, 0.0f, 1.0f);
+    // Wall collision: try each axis independently so the player slides
+    // along corridors when commanding into a wall corner. Half-size
+    // here must match the Muncher's render half (kMuncherHalfPlay below
+    // in GenerativeSystem) — kept slightly under one cell so the player
+    // fits in a corridor.
+    constexpr float kMuncherHalfPlay = 0.022f;
+    const float tx = std::clamp(s.muncherX + s.muncherVelX, 0.0f, 1.0f);
+    if (!overlapsWall(s.wallBits, tx, s.muncherY, kMuncherHalfPlay)) {
+        s.muncherX = tx;
+    } else {
+        s.muncherVelX = 0.0f;
+    }
+    const float ty = std::clamp(s.muncherY + s.muncherVelY, 0.0f, 1.0f);
+    if (!overlapsWall(s.wallBits, s.muncherX, ty, kMuncherHalfPlay)) {
+        s.muncherY = ty;
+    } else {
+        s.muncherVelY = 0.0f;
+    }
 
     // Eat any pellet under the player's current cell. Tiny score++ per
     // pellet for now; classic Pac-Man scores 10 per dot, but the
     // absolute number is meaningless without a score display.
     const int playerCellX = positionToCell(s.muncherX);
     const int playerCellY = positionToCell(s.muncherY);
-    if (pelletGet(s.pelletBits, playerCellX, playerCellY)) {
-        pelletClear(s.pelletBits, playerCellX, playerCellY);
+    if (cellGet(s.pelletBits, playerCellX, playerCellY)) {
+        cellClear(s.pelletBits, playerCellX, playerCellY);
         if (s.score < UINT16_MAX) ++s.score;
     }
-    // Respawn the grid when emptied — keeps the demo perpetually fun.
-    // Later this advances a "level" counter and bumps ghost speed.
-    if (pelletGridEmpty(s.pelletBits)) {
-        pelletGridFillAll(s.pelletBits);
+    // Respawn pellets on every walkable cell when the grid empties.
+    // Future: bump ghost speed each level.
+    if (bitsEmpty(s.pelletBits)) {
+        for (int cy = 0; cy < MunchersGameState::kPelletGridSide; ++cy) {
+            for (int cx = 0; cx < MunchersGameState::kPelletGridSide; ++cx) {
+                if (!cellGet(s.wallBits, cx, cy)) cellSet(s.pelletBits, cx, cy);
+            }
+        }
     }
 
-    // Move ghosts and check collision. Collision = closer than half a
-    // pellet cell. On hit, recenter the player and start a short
-    // invincibility window so a clump of ghosts can't repeat-kill.
+    // Ghost half-size used by collision against walls (small enough to
+    // fit within one cell). Must match the renderer's kGhostHalf.
+    constexpr float kGhostHalfPlay = 0.020f;
+
+    // Move ghosts and check collision against the player. On hit,
+    // recenter the Muncher to the home tile + start a short invincibility
+    // window so a clump of ghosts can't instant-respawn-kill.
     constexpr float kCollisionDist = 1.0f / MunchersGameState::kPelletGridSide * 0.6f;
     for (int gi = 0; gi < MunchersGameState::kNumGhosts; ++gi) {
         auto& g = s.ghosts[gi];
-        tickGhost(g, s.muncherX, s.muncherY, s.simFrame, gi, s.ghostSpeedPerTick);
+        tickGhost(g, s.wallBits, s.muncherX, s.muncherY,
+                  s.simFrame, gi, s.ghostSpeedPerTick, kGhostHalfPlay);
         const float dx = g.x - s.muncherX;
         const float dy = g.y - s.muncherY;
         const float dist2 = dx * dx + dy * dy;
@@ -162,20 +308,25 @@ void tickMuncher(MunchersGameState& s, float inputX, float inputY) {
             s.lastHitFrame != 0 &&
             (s.simFrame - s.lastHitFrame) < MunchersGameState::kInvincibilityTicks;
         if (!stillInvincible && dist2 < kCollisionDist * kCollisionDist) {
-            s.muncherX = 0.5f;
-            s.muncherY = 0.5f;
+            s.muncherX = cellCenter(8);
+            s.muncherY = cellCenter(14);
             s.muncherVelX = 0.0f;
             s.muncherVelY = 0.0f;
             if (s.lives > 0) --s.lives;
-            // Full reset when no lives left: refill pellets, reset score,
-            // grant 3 lives, send ghosts back to corners.
+            // Full reset when no lives left: refill walkable cells with
+            // pellets, reset score, grant 3 lives, send ghosts back to
+            // the top corridor.
             if (s.lives == 0) {
-                pelletGridFillAll(s.pelletBits);
+                for (int cy = 0; cy < MunchersGameState::kPelletGridSide; ++cy) {
+                    for (int cx = 0; cx < MunchersGameState::kPelletGridSide; ++cx) {
+                        if (!cellGet(s.wallBits, cx, cy)) cellSet(s.pelletBits, cx, cy);
+                    }
+                }
                 s.score = 0;
                 s.lives = 3;
-                s.ghosts[0] = MunchersGameState::Ghost{0.05f, 0.05f, 0.0f, 0.0f};
-                s.ghosts[1] = MunchersGameState::Ghost{0.95f, 0.05f, 0.0f, 0.0f};
-                s.ghosts[2] = MunchersGameState::Ghost{0.95f, 0.95f, 0.0f, 0.0f};
+                s.ghosts[0] = MunchersGameState::Ghost{cellCenter(2),  cellCenter(3), 0.0f, 0.0f};
+                s.ghosts[1] = MunchersGameState::Ghost{cellCenter(8),  cellCenter(3), 0.0f, 0.0f};
+                s.ghosts[2] = MunchersGameState::Ghost{cellCenter(13), cellCenter(3), 0.0f, 0.0f};
             }
             s.lastHitFrame = s.simFrame;
             break;  // one collision per tick

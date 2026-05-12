@@ -201,6 +201,9 @@ struct GenerativeLayerSnapshot {
 
     // 3 ghosts × (x, y). Same coord convention as muncher_x/y.
     std::array<float, 6>          muncher_ghosts{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    // 16×16 wall bitset packed into 4 uint64. Bit set = wall cell.
+    // Pellets are only present on cleared bits of this set.
+    std::array<std::uint64_t, 4>  muncher_wallBits{0ull, 0ull, 0ull, 0ull};
     // 16×16 pellet bitset packed into 4 uint64. Bit set = pellet present.
     std::array<std::uint64_t, 4>  muncher_pelletBits{0ull, 0ull, 0ull, 0ull};
     std::uint16_t                 muncher_score{0};

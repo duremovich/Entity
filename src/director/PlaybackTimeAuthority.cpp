@@ -952,6 +952,7 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                 snap.muncher_ghosts[gi * 2 + 0] = mgs->ghosts[gi].x;
                 snap.muncher_ghosts[gi * 2 + 1] = mgs->ghosts[gi].y;
             }
+            snap.muncher_wallBits   = mgs->wallBits;
             snap.muncher_pelletBits = mgs->pelletBits;
             snap.muncher_score      = mgs->score;
             snap.muncher_lives      = mgs->lives;

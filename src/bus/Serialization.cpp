@@ -396,23 +396,25 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     auto ghostArr = ojson::array();
     for (float v : g.muncher_ghosts) ghostArr.push_back(v);
     j["muncher_ghosts"]    = std::move(ghostArr);
-    // Pack the 256-bit pellet grid as a 64-char hex string instead of an
-    // array of uint64. nlohmann's ordered_json round-trip of UINT64_MAX
+    // Pack 256-bit grids (walls + pellets) as 64-char hex strings instead
+    // of arrays of uint64. nlohmann's ordered_json round-trip of UINT64_MAX
     // values triggers a deserialization stall further down the pipeline
     // (the screenshot readback never lands when the wire payload contains
     // raw `~0ull` numbers in this codebase's ordered_json build). Hex-
-    // string encoding sidesteps the issue and is wire-stable for the
-    // bus rule 3 ("renaming a wire key is a wire-format break", but
-    // changing a never-deployed field's encoding is fine pre-v1).
-    std::string hex;
-    hex.reserve(4 * 16);
-    static const char* kHex = "0123456789abcdef";
-    for (std::uint64_t v : g.muncher_pelletBits) {
-        for (int i = 15; i >= 0; --i) {
-            hex.push_back(kHex[(v >> (i * 4)) & 0xF]);
+    // string encoding sidesteps it.
+    auto packHex = [](const std::array<std::uint64_t, 4>& bits) {
+        static const char* kHex = "0123456789abcdef";
+        std::string out;
+        out.reserve(4 * 16);
+        for (std::uint64_t v : bits) {
+            for (int i = 15; i >= 0; --i) {
+                out.push_back(kHex[(v >> (i * 4)) & 0xF]);
+            }
         }
-    }
-    j["muncher_pelletBits"] = std::move(hex);
+        return out;
+    };
+    j["muncher_wallBits"]   = packHex(g.muncher_wallBits);
+    j["muncher_pelletBits"] = packHex(g.muncher_pelletBits);
     j["muncher_score"]     = g.muncher_score;
     j["muncher_lives"]     = g.muncher_lives;
     return j;
@@ -439,26 +441,30 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
         for (std::size_t i = 0; i < g.muncher_ghosts.size() && i < arr.size(); ++i)
             g.muncher_ghosts[i] = arr[i].get<float>();
     }
-    if (j.contains("muncher_pelletBits")) {
-        // Hex-string encoded (see encode above for rationale). 16 hex
-        // chars per uint64, packed high-nibble first.
-        const auto hex = j.at("muncher_pelletBits").get<std::string>();
-        auto hexVal = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-            return 0;
-        };
-        for (std::size_t wi = 0; wi < g.muncher_pelletBits.size(); ++wi) {
+    // Hex-string encoded grids (see encode above for rationale). 16 hex
+    // chars per uint64, packed high-nibble first.
+    auto hexVal = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return 0;
+    };
+    auto unpackHex = [&hexVal](const std::string& hex,
+                                std::array<std::uint64_t, 4>& out) {
+        for (std::size_t wi = 0; wi < out.size(); ++wi) {
             std::uint64_t v = 0;
             for (int i = 0; i < 16; ++i) {
                 const std::size_t hi = wi * 16 + static_cast<std::size_t>(i);
                 if (hi >= hex.size()) break;
                 v = (v << 4) | static_cast<std::uint64_t>(hexVal(hex[hi]));
             }
-            g.muncher_pelletBits[wi] = v;
+            out[wi] = v;
         }
-    }
+    };
+    if (j.contains("muncher_wallBits"))
+        unpackHex(j.at("muncher_wallBits").get<std::string>(), g.muncher_wallBits);
+    if (j.contains("muncher_pelletBits"))
+        unpackHex(j.at("muncher_pelletBits").get<std::string>(), g.muncher_pelletBits);
     g.muncher_score     = j.value("muncher_score",     std::uint16_t{0});
     g.muncher_lives     = j.value("muncher_lives",     std::uint16_t{3});
     return g;

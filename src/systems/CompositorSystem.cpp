@@ -169,18 +169,31 @@ void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& 
                glm::scale(glm::mat4(1.0f), glm::vec3(halfSize, halfSize, 1.0f));
     };
 
-    // 1) Playfield background covering the whole compose target. Later
-    //    this becomes the maze tile draw.
-    const glm::vec4 bgColor(0.06f, 0.06f, 0.10f, 1.0f);
+    // 1) Playfield background covering the whole compose target.
+    const glm::vec4 bgColor(0.05f, 0.05f, 0.09f, 1.0f);
     m_renderer->drawColoredQuad(glm::mat4(1.0f), bgColor, drawOpacity);
 
-    // Pellets — tiny white quads on a 16×16 grid. Bits are packed
-    // little-end first within each uint64; index = cy*16 + cx.
-    // 256 max draw calls per layer; instancing comes with sprite atlas.
+    // 2) Maze walls — dark blue quads on every wall cell. Drawn before
+    //    pellets / actors so the corridors visually "carve out" the maze.
     constexpr int   kGrid       = 16;
     constexpr float kCellSize   = 1.0f / static_cast<float>(kGrid);
-    constexpr float kPelletHalf = 0.008f;
-    const glm::vec4 pelletColor(0.95f, 0.95f, 0.85f, 1.0f);
+    constexpr float kWallHalf   = kCellSize * 0.5f;
+    const glm::vec4 wallColor(0.18f, 0.22f, 0.55f, 1.0f);
+    for (int cy = 0; cy < kGrid; ++cy) {
+        for (int cx = 0; cx < kGrid; ++cx) {
+            const int idx = cy * kGrid + cx;
+            if ((gl.muncher_wallBits[idx / 64] >> (idx % 64)) & 1ull) {
+                const float px = (static_cast<float>(cx) + 0.5f) * kCellSize;
+                const float py = (static_cast<float>(cy) + 0.5f) * kCellSize;
+                m_renderer->drawColoredQuad(quadXf(px, py, kWallHalf),
+                                             wallColor, drawOpacity);
+            }
+        }
+    }
+
+    // 3) Pellets — tiny pale quads on walkable cells with bits set.
+    constexpr float kPelletHalf = 0.006f;
+    const glm::vec4 pelletColor(0.95f, 0.95f, 0.80f, 1.0f);
     for (int cy = 0; cy < kGrid; ++cy) {
         for (int cx = 0; cx < kGrid; ++cx) {
             const int idx = cy * kGrid + cx;
@@ -193,11 +206,10 @@ void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& 
         }
     }
 
-    // 3) Ghosts — three colored quads. Colors are placeholder accents
-    //    for the eventual theme-pack textures; nothing trademarked here.
-    //    Sized slightly smaller than the Muncher so the player visually
-    //    dominates when they overlap.
-    constexpr float kGhostHalf = 0.038f;
+    // 4) Ghosts — three colored quads. Sized to fit inside a cell so
+    //    the wall collision in GenerativeSystem (kGhostHalfPlay) matches
+    //    the visual.
+    constexpr float kGhostHalf = 0.020f;
     constexpr glm::vec4 ghostPalette[3] = {
         glm::vec4(0.95f, 0.35f, 0.40f, 1.0f),  // crimson
         glm::vec4(0.35f, 0.85f, 0.95f, 1.0f),  // cyan
@@ -210,13 +222,29 @@ void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& 
                                      ghostPalette[gi], drawOpacity);
     }
 
-    // 4) Muncher. Yellow square with a chomp brightness pulse.
-    constexpr float kMuncherHalf = 0.045f;
+    // 5) Muncher. Yellow square with a chomp brightness pulse. Half-size
+    //    matches kMuncherHalfPlay in GenerativeSystem so wall collision
+    //    aligns with the visual hitbox.
+    constexpr float kMuncherHalf = 0.022f;
     const float chomp = 0.85f + 0.15f *
         std::sin(static_cast<float>(gl.muncher_simFrame) * 0.20f);
     const glm::vec4 muncherColor(chomp, chomp * 0.85f, 0.10f, 1.0f);
     m_renderer->drawColoredQuad(quadXf(gl.muncher_x, gl.muncher_y, kMuncherHalf),
                                  muncherColor, drawOpacity);
+
+    // 6) Lives HUD — N tiny yellow squares along the top edge. Reads
+    //    1.0=outside-top so they sit above the maze on a 16×16 grid
+    //    that uses [0, 1] for the maze interior. Render at y=0.015 so
+    //    they hug the top edge inside the compose target.
+    constexpr float kLifeHalf = 0.010f;
+    const glm::vec4 lifeColor(0.95f, 0.85f, 0.20f, 1.0f);
+    const int liveCount = static_cast<int>(gl.muncher_lives);
+    for (int i = 0; i < liveCount; ++i) {
+        const float lx = 0.03f + 0.025f * static_cast<float>(i);
+        const float ly = 0.015f;
+        m_renderer->drawColoredQuad(quadXf(lx, ly, kLifeHalf),
+                                     lifeColor, drawOpacity);
+    }
 }
 
 
