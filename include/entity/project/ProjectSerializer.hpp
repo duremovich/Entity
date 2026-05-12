@@ -103,8 +103,11 @@ public:
     // v7 files load with no projectors (missing "projectors" key = empty);
     // v8 files load with no cues (missing "cues" key = empty);
     // v11 mediaLibrary entries load with no probe cache (re-index on first open);
-    // v14 per-track "clips[]" entries load as kind="clip" (no migration step).
-    static constexpr int PROJECT_VERSION = 15;
+    // v14 per-track "clips[]" entries load as kind="clip" (no migration step);
+    // v15 layers[] kind discriminator;
+    // v16 per-clip "effects[]" array (issue #54). Pre-v16 clips load with
+    //     no effect chain attached.
+    static constexpr int PROJECT_VERSION = 16;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

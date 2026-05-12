@@ -12,6 +12,13 @@
 #include <gtest/gtest.h>
 
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Clip.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/components/EffectChain.hpp"
+#include "entity/components/EffectParam.hpp"
+#include "entity/components/EffectParameters.hpp"
+#include "entity/effects/EffectKind.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/OutputDisplay.hpp"
@@ -952,4 +959,142 @@ TEST(ProjectSerializer, V14LegacyClipsKeyLoadsAsClipKind) {
     EXPECT_GT(clipCount, 0) << "No Clip+Layer entity loaded from v14 clips[] key";
     // Must NOT have any ObjectAnimationLayer entities.
     EXPECT_EQ(registry.view<entity::ObjectAnimationLayer>().size(), 0u);
+}
+
+TEST(ProjectSerializer, EffectChainRoundTrip) {
+    // v16 round-trip: save a clip with an EffectChain of one Effect
+    // (kind = core.gaussian_blur, enabled, params [4.5]); reload and
+    // confirm Effect + EffectParameters + chain order survive intact.
+    // Issue #54.
+    TempFile tf("effect_chain_roundtrip");
+    const std::uint32_t kBlurKindHash = entity::effects::fnv1a32("core.gaussian_blur");
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        entity::TimelineTrack* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        // Minimal clip — schema requires a Clip + Layer pair.
+        entt::entity clipEnt = registry.create();
+        auto& clip = registry.emplace<entity::Clip>(clipEnt);
+        clip.filepath  = "content/test.mov";
+        clip.mediaType = entity::MediaType::VideoProRes4444;
+        clip.startFrame = 0;
+        clip.duration   = 60;
+        clip.framerate  = 30.0;
+        auto& lay = registry.emplace<entity::Layer>(clipEnt);
+        lay.kind       = entity::Layer::Kind::Clip;
+        lay.startFrame = 0;
+        lay.duration   = 60;
+
+        // Effect entity + chain.
+        entt::entity fxEnt = registry.create();
+        auto& fx = registry.emplace<entity::Effect>(fxEnt);
+        fx.kindId  = kBlurKindHash;
+        fx.enabled = true;
+        fx.graphX  = 12.5f;
+        fx.graphY  = -7.0f;
+        auto& params = registry.emplace<entity::EffectParameters>(fxEnt);
+        params.values.push_back(entity::ParamValue::makeFloat(4.5f));
+        registry.emplace<entity::EffectAnimatedParameters>(fxEnt);
+
+        auto& chain = registry.emplace<entity::EffectChain>(clipEnt);
+        chain.nodes.push_back(fxEnt);
+        chain.outputNode = fxEnt;
+
+        track->layers.push_back(clipEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        // Find the clip entity.
+        entt::entity loadedClip = entt::null;
+        for (auto [e, lay, clip] :
+             registry.view<entity::Layer, entity::Clip>().each()) {
+            if (clip.filepath == "content/test.mov") { loadedClip = e; break; }
+        }
+        ASSERT_TRUE(registry.valid(loadedClip)) << "clip not found after load";
+
+        // Effect chain must have survived.
+        const auto* chain = registry.try_get<entity::EffectChain>(loadedClip);
+        ASSERT_NE(chain, nullptr) << "EffectChain missing after load";
+        ASSERT_EQ(chain->nodes.size(), 1u);
+
+        entt::entity fxEnt = chain->nodes[0];
+        ASSERT_TRUE(registry.valid(fxEnt));
+
+        const auto* fx = registry.try_get<entity::Effect>(fxEnt);
+        ASSERT_NE(fx, nullptr);
+        EXPECT_EQ(fx->kindId, kBlurKindHash);
+        EXPECT_TRUE(fx->enabled);
+        EXPECT_FLOAT_EQ(fx->graphX, 12.5f);
+        EXPECT_FLOAT_EQ(fx->graphY, -7.0f);
+
+        const auto* paramsLoaded = registry.try_get<entity::EffectParameters>(fxEnt);
+        ASSERT_NE(paramsLoaded, nullptr);
+        ASSERT_EQ(paramsLoaded->values.size(), 1u);
+        EXPECT_FLOAT_EQ(paramsLoaded->values[0].f4[0], 4.5f);
+    }
+}
+
+TEST(ProjectSerializer, V15ProjectLoadsWithEmptyEffectChain) {
+    // Forward compat: a v15 file (no "effects" key on clips) must load
+    // cleanly with no EffectChain attached. The loader treats a missing
+    // key as "no effects on this layer."
+    TempFile tf("v15_no_effects_key");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 15,
+  "timeline": {"duration": 600, "framerate": 30, "currentTime": 0},
+  "tracks": [
+    {
+      "index": 0,
+      "layers": [
+        {
+          "kind": "clip",
+          "filepath": "content/test.mov",
+          "mediaType": "prores4444",
+          "startFrame": 0,
+          "duration": 60,
+          "mediaStartFrame": 0,
+          "mediaOutFrame": 59,
+          "totalMediaFrames": 60,
+          "playbackMode": 0,
+          "sectionBehavior": "Normal",
+          "framerate": 30.0,
+          "width": 1920,
+          "height": 1080,
+          "hasAlpha": false,
+          "frameBlending": false,
+          "targetScreenName": ""
+        }
+      ]
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    // No EffectChain should be attached anywhere in the registry.
+    EXPECT_EQ(registry.view<entity::EffectChain>().size(), 0u);
+    // Clip is still loaded normally.
+    EXPECT_GT(registry.view<entity::Clip>().size(), 0u);
 }

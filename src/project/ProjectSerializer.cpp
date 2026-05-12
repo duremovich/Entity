@@ -8,6 +8,11 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/components/EffectChain.hpp"
+#include "entity/components/EffectParam.hpp"
+#include "entity/components/EffectParameters.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TimelineTrack.hpp"
@@ -165,6 +170,94 @@ static json serializeAnimatedProperties(const AnimatedProperties* ap) {
     return tracksJson;
 }
 
+// Serialize a layer entity's EffectChain (issue #54). Returns an empty
+// array if the layer has no chain. v16+. Each entry carries the kind's
+// stable string ID + enabled flag + graph-editor x/y + a flat array of
+// param values (all params currently typed Float; richer types arrive
+// when v1 grows beyond Float).
+static json serializeEffectChain(const entt::registry& registry,
+                                  entt::entity layerEntity) {
+    json effectsJson = json::array();
+    const auto* chain = registry.try_get<EffectChain>(layerEntity);
+    if (!chain) return effectsJson;
+
+    for (auto fxEnt : chain->nodes) {
+        if (!registry.valid(fxEnt)) continue;
+        const auto* fx     = registry.try_get<Effect>(fxEnt);
+        const auto* params = registry.try_get<EffectParameters>(fxEnt);
+        if (!fx) continue;
+
+        json fxJson;
+        // We don't have the registry-side reverse map (kindIdHash → stableId)
+        // here without an EffectKindRegistry pointer. Serializing the hash
+        // works but isn't wire-friendly. The bake side (PlaybackTimeAuthority)
+        // is the canonical place for the stableId mapping; the project
+        // serializer takes the pragmatic approach and stores the hash plus
+        // the stableId for engine-shipped kinds (lookup happens at load).
+        //
+        // Phase 6 (user-authored HLSL) will store stableId by writing it
+        // through from the SetEffect* commands that created the effect, or
+        // by threading the registry pointer in.
+        fxJson["kindIdHash"] = fx->kindId;
+        fxJson["enabled"]    = fx->enabled;
+        fxJson["graphX"]     = fx->graphX;
+        fxJson["graphY"]     = fx->graphY;
+
+        json paramsJson = json::array();
+        if (params) {
+            for (const auto& v : params->values) {
+                // v1 engine effects are all Float. Bool / Int / Vec types
+                // arrive in Phase 6 when user-authored effects can declare
+                // them — the array shape upgrades to object entries then.
+                paramsJson.push_back(v.f4[0]);
+            }
+        }
+        fxJson["params"] = paramsJson;
+
+        effectsJson.push_back(fxJson);
+    }
+    return effectsJson;
+}
+
+// Deserialize a layer's effect chain from JSON. Idempotent — skips
+// gracefully if the key is missing (pre-v16 projects). Creates new effect
+// entities, attaches Effect / EffectParameters / EffectAnimatedParameters,
+// and appends to the layer's EffectChain.
+static void deserializeEffectChain(const json& entryJson,
+                                    entt::registry& registry,
+                                    entt::entity layerEntity) {
+    if (!entryJson.contains("effects")) return;
+    const auto& effectsJson = entryJson["effects"];
+    if (!effectsJson.is_array() || effectsJson.empty()) return;
+
+    auto& chain = registry.get_or_emplace<EffectChain>(layerEntity);
+    chain.nodes.reserve(chain.nodes.size() + effectsJson.size());
+
+    for (const auto& fxJson : effectsJson) {
+        const auto fxEnt = registry.create();
+
+        Effect& fx = registry.emplace<Effect>(fxEnt);
+        fx.kindId  = fxJson.value("kindIdHash", std::uint32_t{0});
+        fx.enabled = fxJson.value("enabled",    true);
+        fx.graphX  = fxJson.value("graphX",     0.0f);
+        fx.graphY  = fxJson.value("graphY",     0.0f);
+
+        EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
+        if (fxJson.contains("params") && fxJson["params"].is_array()) {
+            for (const auto& p : fxJson["params"]) {
+                // Float-only v1 — see serializeEffectChain.
+                params.values.push_back(ParamValue::makeFloat(p.get<float>()));
+            }
+        }
+        registry.emplace<EffectAnimatedParameters>(fxEnt);
+
+        chain.nodes.push_back(fxEnt);
+    }
+    if (!chain.nodes.empty() && chain.outputNode == entt::null) {
+        chain.outputNode = chain.nodes.back();
+    }
+}
+
 // Deserialize AnimatedProperties keyframe tracks from JSON. Idempotent — can
 // be called on any entry that has an "animatedProperties" array; skips
 // gracefully if the key is missing (pre-v15 entries or entries with no
@@ -319,6 +412,11 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     // AnimatedProperties (if any keyframes exist)
                     const auto* ap = registry.try_get<AnimatedProperties>(layerEntity);
                     clipJson["animatedProperties"] = serializeAnimatedProperties(ap);
+
+                    // Effect chain (issue #54, v16+). Empty array when the
+                    // layer has no EffectChain component — forward/backward
+                    // compat free.
+                    clipJson["effects"] = serializeEffectChain(registry, layerEntity);
 
                     layersJson.push_back(clipJson);
 
@@ -1335,6 +1433,10 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             auto& ap = registry.emplace_or_replace<AnimatedProperties>(clipEntity);
                             deserializeAnimatedProperties(clipJson, ap);
                         }
+
+                        // Restore effect chain (v16+, issue #54). Pre-v16
+                        // clips have no "effects" key — no-op.
+                        deserializeEffectChain(clipJson, registry, clipEntity);
 
                         // Add layer to track
                         track->layers.push_back(clipEntity);
