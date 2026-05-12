@@ -39,6 +39,7 @@ class OcioManager;
 class PlaybackTimeAuthority;
 class SectionScheduler;
 class PlaybackPresenter;
+namespace effects { class EffectKindRegistry; }
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
                       // TranscodeManager, CommandDispatcher,
                       // AnimationSystem (subtasks 4 + 5).
@@ -715,6 +716,13 @@ private:
     // so destructor order tears the subsystems down (m_director last)
     // only after the shortcuts are no longer used.
     std::unique_ptr<Director> m_director;
+
+    // Effect kind registry (issue #54). Owned by Engine so both the editor-
+    // side bake (PlaybackTimeAuthority) and the show-side renderer
+    // (D3D12Renderer's PSO cache) can read it through a stable pointer.
+    // registerBuiltins is called once during initialize; user-effect
+    // mutation (Phase 6) happens only on the editor thread.
+    std::unique_ptr<effects::EffectKindRegistry> m_effectKindRegistry;
 
     // Raw shortcuts into m_rendererService. Set during initialize(); valid
     // for the rest of Engine's lifetime. Existing call sites use the member

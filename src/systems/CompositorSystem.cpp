@@ -26,7 +26,7 @@ void CompositorSystem::initialize(entt::registry& registry) {
     std::cout << "CompositorSystem initialized" << std::endl;
 }
 
-void CompositorSystem::update(const bus::RenderFrame& rf,
+void CompositorSystem::update(bus::RenderFrame& rf,
                                entt::registry& registry,
                                float deltaTime) {
     ZoneScopedN("CompositorSystem::update");
@@ -53,6 +53,14 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
         const bool found = std::any_of(rf.generativeLayers.begin(), rf.generativeLayers.end(),
             [id](const bus::GenerativeLayerSnapshot& g) { return g.entity == id; });
         it = found ? std::next(it) : m_pendingGenerativeAllocations.erase(it);
+    }
+    for (auto it = m_pendingEffectAllocations.begin();
+         it != m_pendingEffectAllocations.end(); )
+    {
+        const std::uint64_t id = static_cast<std::uint64_t>(it->first);
+        const bool found = std::any_of(rf.layerEffects.begin(), rf.layerEffects.end(),
+            [id](const bus::LayerEffectsSnapshot& le) { return le.entity == id; });
+        it = found ? std::next(it) : m_pendingEffectAllocations.erase(it);
     }
 
     // ------------------------------------------------------------------
@@ -93,20 +101,74 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
     // `ContentLayerSnapshot::postEffectsSlot`. PASS 2 prefers
     // postEffectsSlot over sourceSlot when set. Kind-blind: works
     // identically for Video and Compose source kinds. Issue #54.
-    //
-    // Phase 1 stub: walk the list but draw nothing. The bake site in
-    // PlaybackTimeAuthority publishes EffectSnapshot entries with empty
-    // paramBlobs while no effect kind registry is wired, so even when a
-    // chain is non-empty there's nothing to dispatch. Phase 2 wires
-    // ensureEffectPingTarget + drawEffectPass.
     // ------------------------------------------------------------------
     {
         ZoneScopedN("Compositor::pass1_5_effects");
-        for (const auto& cl : rf.contentLayers) {
+
+        // Linear scan to match each ContentLayerSnapshot to its
+        // LayerEffectsSnapshot. Counts are tiny (each <20).
+        auto findLayerEffects = [&rf](std::uint64_t entity) -> const bus::LayerEffectsSnapshot* {
+            for (const auto& le : rf.layerEffects) {
+                if (le.entity == entity) return &le;
+            }
+            return nullptr;
+        };
+
+        // Default ping-pong RT size when the source size isn't known
+        // (clip slot dims aren't on the snapshot; generative slot dims
+        // arrive on LayerEffectsSnapshot only after the first allocation
+        // ack). Matches the default used by ensureGenerativeRenderTarget.
+        constexpr std::uint32_t kDefaultEffectRtW = 1920;
+        constexpr std::uint32_t kDefaultEffectRtH = 1080;
+
+        for (auto& cl : rf.contentLayers) {
             if (cl.effects.empty()) continue;
-            // Phase 2: ensureEffectPingTarget(cl) → ping-pong slots,
-            // beginComposeTarget(slot) → drawEffectPass per effect →
-            // endComposeTarget(), then update cl.postEffectsSlot.
+            if (cl.sourceSlot < 0) continue;  // input not ready
+
+            const auto* le = findLayerEffects(cl.entity);
+            if (!le) continue;  // side-table missed → skip this frame
+
+            const std::uint32_t rtW = le->width  > 0 ? le->width  : kDefaultEffectRtW;
+            const std::uint32_t rtH = le->height > 0 ? le->height : kDefaultEffectRtH;
+
+            std::uint32_t slotA = UINT32_MAX, slotB = UINT32_MAX;
+            if (!ensureEffectPingPongTargets(*le, cl.entity, rtW, rtH,
+                                              slotA, slotB)) {
+                continue;  // R2D ack still in flight — try again next frame
+            }
+
+            // Resolve the chain's input as a TextureRef. The first effect
+            // reads from the layer's raw source (Video or Compose); each
+            // subsequent effect reads the previous output (always Compose).
+            TextureRef currentInput =
+                (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
+                    ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot))
+                    : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
+
+            std::uint32_t currentOutput = slotA;
+            std::uint32_t nextOutput    = slotB;
+
+            bool ran = false;
+            for (const auto& fx : le->effects) {
+                if (!fx.enabled) continue;
+                m_renderer->beginComposeTarget(currentOutput);
+                m_renderer->drawEffectPass(currentInput, fx.kindIdHash,
+                                            fx.paramBlob.data(),
+                                            fx.paramBlob.size(),
+                                            rtW, rtH);
+                m_renderer->endComposeTarget();
+                currentInput = TextureRef::compose(currentOutput);
+                std::swap(currentOutput, nextOutput);
+                ran = true;
+            }
+
+            // Publish the final output slot. The last write went into
+            // `currentInput`'s slot (post-swap), so PASS 2 reads from
+            // there. If no effect actually ran (all disabled), keep
+            // postEffectsSlot at -1 so PASS 2 falls back to sourceSlot.
+            if (ran) {
+                cl.postEffectsSlot = static_cast<std::int32_t>(currentInput.slot);
+            }
         }
     }
 
@@ -152,7 +214,13 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
                 TextureRef tex = TextureRef::invalid();
                 TextureColorSpace colorSpace = TextureColorSpace::Linear;
                 std::string ocioColorSpace;
-                if (cl.sourceSlot >= 0) {
+                // If PASS 1.5 produced a post-effects RT, PASS 2 reads
+                // from it (always Compose, linear). Otherwise fall back to
+                // the layer's source slot resolved by sourceKind.
+                if (cl.postEffectsSlot >= 0) {
+                    tex = m_renderer->getComposeTargetTexture(
+                        static_cast<uint32_t>(cl.postEffectsSlot));
+                } else if (cl.sourceSlot >= 0) {
                     switch (cl.sourceKind) {
                         case bus::ContentLayerSnapshot::SourceKind::Video:
                             tex = m_renderer->getVideoTexture(
@@ -364,6 +432,69 @@ std::uint32_t CompositorSystem::ensureGenerativeRenderTarget(
     }
 
     return slot;
+}
+
+bool CompositorSystem::ensureEffectPingPongTargets(const bus::LayerEffectsSnapshot& le,
+                                                    std::uint64_t layerEntity,
+                                                    std::uint32_t width,
+                                                    std::uint32_t height,
+                                                    std::uint32_t& outSlotA,
+                                                    std::uint32_t& outSlotB) {
+    if (!m_renderer) return false;
+    const auto ent = static_cast<entt::entity>(layerEntity);
+
+    // 1) Editor has both slots — reuse / resize in place.
+    if (le.slotA >= 0 && le.slotB >= 0) {
+        m_pendingEffectAllocations.erase(ent);
+        outSlotA = static_cast<std::uint32_t>(le.slotA);
+        outSlotB = static_cast<std::uint32_t>(le.slotB);
+        if (m_renderer->getComposeTargetWidth(outSlotA) != width ||
+            m_renderer->getComposeTargetHeight(outSlotA) != height) {
+            m_renderer->resizeComposeTarget(outSlotA, width, height);
+        }
+        if (m_renderer->getComposeTargetWidth(outSlotB) != width ||
+            m_renderer->getComposeTargetHeight(outSlotB) != height) {
+            m_renderer->resizeComposeTarget(outSlotB, width, height);
+        }
+        return true;
+    }
+
+    auto& cached = m_pendingEffectAllocations[ent];
+    cached.width  = width;
+    cached.height = height;
+
+    auto allocSide = [&](std::uint32_t& slot, std::uint8_t side) -> bool {
+        if (slot != UINT32_MAX) return true;
+        const std::uint32_t newSlot = m_renderer->createComposeTarget(width, height);
+        if (newSlot == UINT32_MAX) {
+            std::cerr << "[Compositor] Effect ping-pong RT alloc failed for layer "
+                      << layerEntity << " side " << int(side) << std::endl;
+            return false;
+        }
+        slot = newSlot;
+        if (m_transport) {
+            bus::EffectChainRenderTargetAllocated reply{};
+            reply.entity = layerEntity;
+            reply.slot   = newSlot;
+            reply.side   = side;
+            reply.width  = width;
+            reply.height = height;
+            m_transport->send(bus::Direction::R2D,
+                              bus::serialize(bus::Message{reply}));
+        }
+        return true;
+    };
+
+    // sideA: editor has it but B is pending → cached.slotA mirrors le.slotA
+    if (le.slotA >= 0) cached.slotA = static_cast<std::uint32_t>(le.slotA);
+    if (le.slotB >= 0) cached.slotB = static_cast<std::uint32_t>(le.slotB);
+
+    if (!allocSide(cached.slotA, 0)) return false;
+    if (!allocSide(cached.slotB, 1)) return false;
+
+    outSlotA = cached.slotA;
+    outSlotB = cached.slotB;
+    return true;
 }
 
 std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap) {

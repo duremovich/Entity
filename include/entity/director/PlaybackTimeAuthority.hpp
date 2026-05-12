@@ -2,6 +2,7 @@
 
 #include "entity/bus/Message.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
 #include <entt/entt.hpp>
 
 #include <chrono>
@@ -54,6 +55,14 @@ public:
     // ProjectManager::findEntry. Optional -- pre-init buildActiveSet
     // returns empty `ocioOverride` strings.
     void setProjectManager(ProjectManager* p) { m_projectManager = p; }
+
+    // Per-layer effects registry (issue #54). Provides ParamSchema lookups
+    // used during snapshot bake to marshal EffectParameters → paramBlob.
+    // Set once at Engine startup; the registry is read-only after
+    // registerBuiltins.
+    void setEffectKindRegistry(const effects::EffectKindRegistry* r) {
+        m_effectKindRegistry = r;
+    }
 
     // Per-tick hooks driven by Engine's main loop.
     void startTiming();
@@ -140,6 +149,7 @@ private:
     entt::registry& m_registry;
     Timeline*       m_timeline{nullptr};
     ProjectManager* m_projectManager{nullptr};
+    const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
 
     using Clock = std::chrono::high_resolution_clock;
     using TimePoint = std::chrono::time_point<Clock>;

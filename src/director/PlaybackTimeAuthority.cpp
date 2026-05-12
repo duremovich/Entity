@@ -28,6 +28,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -177,6 +178,82 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
 // stalled (and therefore not re-baking new snapshots / re-ticking
 // AnimationSystem). Math mirrors entity::KeyframeTrack::evaluate in
 // include/entity/components/AnimatedProperties.hpp — keep them in sync.
+
+// Mirror of KeyframeTrack::interpolate but operating on entity::Keyframe
+// (in-memory format). Used by the effect-bake path; the matching show-side
+// re-evaluator works on bus::BakedKeyframe via interpolateBakedKeyframes
+// below — same math, two forms of the input.
+float interpolateInMemoryKeyframes(const Keyframe& a, const Keyframe& b, float t) {
+    if (a.interpolation == InterpolationType::Step) return a.value;
+    const float delta = b.value - a.value;
+    switch (b.interpolation) {
+        case InterpolationType::Step:      return a.value + delta * t;
+        case InterpolationType::EaseIn:    return a.value + delta * (t * t);
+        case InterpolationType::EaseOut: {
+            const float inv = 1.0f - t;
+            return a.value + delta * (1.0f - inv * inv);
+        }
+        case InterpolationType::EaseInOut: {
+            const float mt  = 1.0f - t;
+            const float t2  = t * t;
+            const float t3  = t2 * t;
+            const float y   = 3.0f * mt * t2 + t3;
+            return a.value + delta * y;
+        }
+        case InterpolationType::Linear:
+        default:                           return a.value + delta * t;
+    }
+}
+
+float evaluateInMemoryKeyframes(const std::vector<Keyframe>& kfs,
+                                  FrameNumber frame,
+                                  float defaultIfEmpty) {
+    if (kfs.empty()) return defaultIfEmpty;
+    if (frame <= kfs.front().frame) return kfs.front().value;
+    if (frame >= kfs.back().frame)  return kfs.back().value;
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == frame) return it->value;
+    if (it == kfs.begin() || it == kfs.end()) return kfs.back().value;
+    const auto& prev = *(it - 1);
+    const auto& next = *it;
+    const float t = static_cast<float>(frame - prev.frame)
+                  / static_cast<float>(next.frame - prev.frame);
+    return interpolateInMemoryKeyframes(prev, next, t);
+}
+
+// Marshal one ParamValue into its 16-byte cbuffer slot. Slot layout per
+// shaders/effects/_effect_common.hlsli: Float→.x, Vec2→.xy, Vec3→.xyz,
+// Color→.xyzw, Int/Enum→asint(.x), Bool→(.x!=0).
+void marshalParamValueToSlot(const ParamValue& v, std::uint8_t* slotPtr) {
+    // Zero the slot first so unused components read as 0.0.
+    std::memset(slotPtr, 0, 16);
+    switch (v.type) {
+        case ParamValue::Type::Float:
+            std::memcpy(slotPtr, &v.f4[0], sizeof(float));
+            break;
+        case ParamValue::Type::Vec2:
+            std::memcpy(slotPtr, v.f4, sizeof(float) * 2);
+            break;
+        case ParamValue::Type::Vec3:
+            std::memcpy(slotPtr, v.f4, sizeof(float) * 3);
+            break;
+        case ParamValue::Type::Color:
+            std::memcpy(slotPtr, v.f4, sizeof(float) * 4);
+            break;
+        case ParamValue::Type::Int:
+        case ParamValue::Type::Enum: {
+            const float asF = std::bit_cast<float>(v.i);
+            std::memcpy(slotPtr, &asF, sizeof(float));
+            break;
+        }
+        case ParamValue::Type::Bool: {
+            const float asF = v.b ? 1.0f : 0.0f;
+            std::memcpy(slotPtr, &asF, sizeof(float));
+            break;
+        }
+    }
+}
 
 float interpolateBakedKeyframes(const bus::BakedKeyframe& a,
                                 const bus::BakedKeyframe& b,
@@ -987,8 +1064,16 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
     // carries an EffectChain. Show side looks this up by entity when
     // building each ContentLayerSnapshot in buildRenderFrame and folds
     // in `effects` + the ping-pong RT slots that PASS 1.5 needs.
-    // Issue #54. Phase 1: tracks are baked through; paramBlob is left
-    // empty until Phase 2 wires the EffectKindRegistry cbuffer marshal.
+    // Issue #54.
+    //
+    // paramBlob layout matches shaders/effects/_effect_common.hlsli:
+    // 14 vec4 slots of params + 16 bytes of misc (viewport size filled
+    // in by the renderer at drawEffectPass time) + padding to 256.
+    constexpr std::size_t kEffectBlobBytes = 256;
+    constexpr std::size_t kEffectSlotBytes = 16;
+
+    const FrameNumber currentFrame = m_timeline ? m_timeline->getCurrentFrame() : 0;
+
     out.layerEffects.clear();
     for (auto [layerEntity, chain] : m_registry.view<EffectChain>().each()) {
         bus::LayerEffectsSnapshot lfx;
@@ -1001,6 +1086,16 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             lfx.height = rts->height;
         }
 
+        // clip-local frame for keyframe evaluation. Mirrors AnimationSystem
+        // (track frames are clip-relative). Fall back to absolute frame for
+        // entities without a Clip component (e.g. future generative layers).
+        FrameNumber localFrame = currentFrame;
+        if (const auto* clip = m_registry.try_get<Clip>(layerEntity)) {
+            localFrame = (currentFrame >= clip->startFrame)
+                            ? (currentFrame - clip->startFrame)
+                            : FrameNumber{0};
+        }
+
         lfx.effects.reserve(chain.nodes.size());
         for (auto effectEnt : chain.nodes) {
             if (!m_registry.valid(effectEnt)) continue;
@@ -1010,35 +1105,88 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             bus::EffectSnapshot es;
             es.kindIdHash = fx->kindId;
             es.enabled    = fx->enabled;
-            // paramBlob: Phase 2 marshals static + animation-overridden
-            // values into cbuffer layout using EffectKindRegistry. Phase
-            // 1 publishes an empty blob — the wire path is exercised but
-            // PASS 1.5 stubs out drawing anyway.
+            es.paramBlob.assign(kEffectBlobBytes, std::uint8_t{0});
 
-            // Animated parameter tracks: copy across so the show side
-            // can re-evaluate per render frame (NEW-07 pattern). Wire
-            // serialisation keys on string name; in-memory uses hash.
-            if (const auto* anim = m_registry.try_get<EffectAnimatedParameters>(effectEnt)) {
-                es.tracks.reserve(anim->tracks.size());
-                for (const auto& src : anim->tracks) {
-                    if (!src.enabled || src.keyframes.empty()) continue;
-                    bus::BakedEffectTrack dst;
-                    // Phase 1: no kind registry → no param-name lookup, so
-                    // the wire `paramName` stays empty and the show side
-                    // will skip the track. Phase 2 resolves the name from
-                    // the kind's ParamSchema by matching paramKeyHash.
-                    dst.enabled = src.enabled;
-                    dst.keyframes.reserve(src.keyframes.size());
-                    for (const auto& sk : src.keyframes) {
-                        bus::BakedKeyframe k;
-                        k.frame         = sk.frame;
-                        k.value         = sk.value;
-                        k.interpolation = static_cast<int>(sk.interpolation);
-                        k.easeIn        = sk.easeIn;
-                        k.easeOut       = sk.easeOut;
-                        dst.keyframes.push_back(k);
+            // Look up the kind so we know each param's slot index +
+            // type. Missing kind = registry not bound or unknown effect
+            // → ship the snapshot with an empty blob so the renderer
+            // can log + skip.
+            const effects::EffectKind* kind = m_effectKindRegistry
+                ? m_effectKindRegistry->find(fx->kindId)
+                : nullptr;
+
+            if (kind) {
+                const auto* params =
+                    m_registry.try_get<EffectParameters>(effectEnt);
+                const auto* anim =
+                    m_registry.try_get<EffectAnimatedParameters>(effectEnt);
+
+                // 1) Marshal each schema slot from the static value
+                //    (EffectParameters.values[N] preferred, schema
+                //    defaultValue as fallback). Slot 0 → bytes 0..15,
+                //    slot N → bytes N*16..N*16+15.
+                const std::size_t maxSchemaSlots =
+                    std::min(kind->params.size(), std::size_t{14});
+                for (std::size_t slotN = 0; slotN < maxSchemaSlots; ++slotN) {
+                    const auto& schema = kind->params[slotN];
+                    ParamValue value = schema.defaultValue;
+                    if (params && slotN < params->values.size()) {
+                        value = params->values[slotN];
                     }
-                    es.tracks.push_back(std::move(dst));
+                    marshalParamValueToSlot(value,
+                        es.paramBlob.data() + slotN * kEffectSlotBytes);
+                }
+
+                // 2) Animation overrides — evaluate tracks at the editor's
+                //    clip-local frame and overwrite the matching slot.
+                //    Also copies the track into BakedEffectTrack with the
+                //    resolved paramName so the show side can re-evaluate
+                //    during editor stalls (Phase 3 polish).
+                if (anim) {
+                    es.tracks.reserve(anim->tracks.size());
+                    for (const auto& src : anim->tracks) {
+                        if (!src.enabled || src.keyframes.empty()) continue;
+
+                        // Find matching ParamSchema by hash.
+                        std::size_t slotN = SIZE_MAX;
+                        for (std::size_t i = 0; i < maxSchemaSlots; ++i) {
+                            const auto& schema = kind->params[i];
+                            if (effects::fnv1a32(schema.name) == src.paramKeyHash) {
+                                slotN = i;
+                                break;
+                            }
+                        }
+                        if (slotN == SIZE_MAX) continue;
+
+                        const auto& schema = kind->params[slotN];
+                        const float def =
+                            schema.defaultValue.type == ParamValue::Type::Float
+                                ? schema.defaultValue.f4[0]
+                                : 0.0f;
+                        const float v = evaluateInMemoryKeyframes(
+                            src.keyframes, localFrame, def);
+
+                        // v1: only Float params are animatable; write to
+                        // the slot's .x. Vec2/Vec3/Color animation lands
+                        // when component-tracks ship in Phase 3.
+                        std::memcpy(es.paramBlob.data() + slotN * kEffectSlotBytes,
+                                    &v, sizeof(float));
+
+                        bus::BakedEffectTrack dst;
+                        dst.paramName = schema.name;
+                        dst.enabled   = src.enabled;
+                        dst.keyframes.reserve(src.keyframes.size());
+                        for (const auto& sk : src.keyframes) {
+                            bus::BakedKeyframe k;
+                            k.frame         = sk.frame;
+                            k.value         = sk.value;
+                            k.interpolation = static_cast<int>(sk.interpolation);
+                            k.easeIn        = sk.easeIn;
+                            k.easeOut       = sk.easeOut;
+                            dst.keyframes.push_back(k);
+                        }
+                        es.tracks.push_back(std::move(dst));
+                    }
                 }
             }
 

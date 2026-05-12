@@ -42,7 +42,12 @@ public:
     // MappingSurface calibration data — both read-only. Screen enumeration
     // uses rf.screens (the snapshot); ensureScreenRenderTarget writes are
     // replaced by ScreenRenderTargetAllocated R2D replies (Stage 4).
-    void update(const bus::RenderFrame& rf, entt::registry& registry, float deltaTime);
+    //
+    // rf is non-const because PASS 1.5 patches `postEffectsSlot` on each
+    // ContentLayerSnapshot with the chain's final ping-pong slot before
+    // PASS 2 reads it (issue #54). The mutation is scoped to this call —
+    // nothing else reads rf during update().
+    void update(bus::RenderFrame& rf, entt::registry& registry, float deltaTime);
     void shutdown(entt::registry& registry) override;
     const char* getName() const override { return "CompositorSystem"; }
 
@@ -59,6 +64,17 @@ public:
     // GenerativeLayerRenderTargetAllocated when allocating. Returns the slot
     // ID (UINT32_MAX on failure). Called from PASS 1 of update().
     std::uint32_t ensureGenerativeRenderTarget(const bus::GenerativeLayerSnapshot& gl);
+
+    // Allocate or resize the two ping-pong compose targets used by PASS 1.5
+    // for a layer's effect chain (issue #54). Posts one
+    // EffectChainRenderTargetAllocated R2D ack per side on first allocation.
+    // Returns true when both slots are valid and ready to draw with.
+    bool ensureEffectPingPongTargets(const bus::LayerEffectsSnapshot& le,
+                                      std::uint64_t layerEntity,
+                                      std::uint32_t width,
+                                      std::uint32_t height,
+                                      std::uint32_t& outSlotA,
+                                      std::uint32_t& outSlotB);
 
     // V1 Muncher render: dim playfield + walls + pellets + ghosts + Muncher.
     // Draws in LAYER-LOCAL NDC into the active compose target — caller is
@@ -83,6 +99,18 @@ private:
     // archetype — same shape, separate keys so cache evictions don't cross.
     std::unordered_map<entt::entity, PendingAllocation> m_pendingAllocations;
     std::unordered_map<entt::entity, PendingAllocation> m_pendingGenerativeAllocations;
+
+    // Two slots per layer with effects (sideA + sideB) ping-pong through the
+    // chain. Filled in on first PASS 1.5 visit, mirrored back through the
+    // EffectChainRenderTargetAllocated R2D ack so the next snapshot carries
+    // them on the corresponding LayerEffectsSnapshot.
+    struct PendingEffectAllocation {
+        std::uint32_t slotA{UINT32_MAX};
+        std::uint32_t slotB{UINT32_MAX};
+        std::uint32_t width{0};
+        std::uint32_t height{0};
+    };
+    std::unordered_map<entt::entity, PendingEffectAllocation> m_pendingEffectAllocations;
 };
 
 } // namespace entity

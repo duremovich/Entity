@@ -172,6 +172,25 @@ public:
                                    const glm::vec2 verts[3],
                                    const glm::vec2 uvs[3]) = 0;
 
+    // ------------------------------------------------------------------------
+    // Per-layer effect chain dispatch (issue #54, PASS 1.5 of CompositorSystem).
+    //
+    // Draws a single fullscreen-triangle effect pass that samples `input` and
+    // writes to the currently-bound compose target. `kindIdHash` selects the
+    // shader (FNV-1a of the effect's stable string ID; the renderer keeps a
+    // PSO cache populated lazily from an EffectKindRegistry pointer set at
+    // startup). `paramBlob` is the 256-byte cbuffer-layout marshalled by the
+    // editor-side bake (PlaybackTimeAuthority::buildSceneSnapshot); the
+    // renderer copies it verbatim into a per-frame upload-heap ring slot bound
+    // at root parameter 1 (b0). Must be called between beginComposeTarget and
+    // endComposeTarget. ------------------------------------------------------------------------
+    virtual void drawEffectPass(TextureRef input,
+                                std::uint32_t kindIdHash,
+                                const std::uint8_t* paramBlob,
+                                std::size_t paramBlobSize,
+                                std::uint32_t viewportWidth,
+                                std::uint32_t viewportHeight) = 0;
+
     // Draws the projector calibration crosshair overlay directly onto the
     // currently-bound output RTV. Show-thread call (ADR-0014); records on the
     // show command list. pointsXY is a flat array of [x0,y0,x1,y1,...] of

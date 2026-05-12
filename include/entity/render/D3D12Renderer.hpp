@@ -8,6 +8,7 @@
  */
 
 #include "entity/core/Types.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include "entity/profile/Tracy.hpp"
 #include "entity/render/IRenderer.hpp"
@@ -221,6 +222,22 @@ public:
                               const glm::vec2 verts[3],
                               const glm::vec2 uvs[3]);
 
+    // Per-layer effect pass (issue #54). See IRenderer comment for contract.
+    void     drawEffectPass(TextureRef input,
+                            std::uint32_t kindIdHash,
+                            const std::uint8_t* paramBlob,
+                            std::size_t paramBlobSize,
+                            std::uint32_t viewportWidth,
+                            std::uint32_t viewportHeight) override;
+
+    // Set the EffectKindRegistry pointer used to resolve kindIdHash → PS .cso
+    // path. The registry is owned by Engine and outlives the renderer. The
+    // pointer is read-only — engine effects register at startup and never
+    // mutate; user effects mutate only on the editor thread (Phase 6).
+    void     setEffectKindRegistry(const effects::EffectKindRegistry* reg) {
+        m_effectKindRegistry = reg;
+    }
+
     /**
      * Phase C.12 #5 — bind the OcioManager that drives input + display
      * transform PSO selection. Pass nullptr to disable OCIO and fall back
@@ -335,6 +352,13 @@ private:
     Result createMappingSurfacePipelineState();
     Result createMappingSurfaceVertexBuffer();
     Result createMappingSurfaceConstantBuffer();
+
+    // Helper methods for per-layer effect chain rendering (issue #54).
+    // Root signature + VS bytecode are shared across every effect kind; the
+    // PS is loaded on first use from EffectKindRegistry::find(kindIdHash).
+    Result createEffectRootSignature();
+    Result createEffectConstantBufferRing();
+    ID3D12PipelineState* getOrBuildEffectPso(std::uint32_t kindIdHash);
 
     // Helper methods for ImGui
     Result initializeImGui(GLFWwindow* window);
@@ -522,6 +546,28 @@ private:
     uint32_t m_mappingSurfaceSlotSize{0};          // 256-aligned sizeof(MappingSurfaceConstants)
     uint32_t m_mappingSurfaceDrawIndex{0};         // Resets to 0 each frame
     bool m_mappingSurfaceOverflowed{false};        // Latched until next frame — prevents log spam
+
+    // --------------------------------------------------------------------
+    // Per-layer effect chain (issue #54 — PASS 1.5 of CompositorSystem).
+    //
+    // One shared root signature (SRV t0 + CBV b0 + static sampler s0). One
+    // shared VS .cso (effect_vs.cso, fullscreen triangle). One PSO per
+    // effect kind, loaded lazily on first drawEffectPass for that kind
+    // from EffectKindRegistry::find(kindIdHash)->shaderPath. CBuffer ring
+    // mirrors the mapping-surface CRIT-04 fix: 256-byte slots × per-frame
+    // budget × FRAME_COUNT, persistently mapped upload heap. --------------------------------------------------------------------
+    const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
+
+    ComPtr<ID3D12RootSignature> m_effectRootSignature;
+    ComPtr<ID3DBlob>            m_effectVsBlob;
+    std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> m_effectPsoCache;
+
+    static constexpr uint32_t MAX_EFFECT_DRAWS_PER_FRAME = 256;
+    static constexpr uint32_t EFFECT_CBUFFER_SLOT_SIZE   = 256;
+    ComPtr<ID3D12Resource> m_effectCbufferRing;
+    uint8_t*               m_effectCbufferRingMapped{nullptr};
+    uint32_t               m_effectDrawIndex{0};      // resets each frame
+    bool                   m_effectOverflowed{false}; // one-shot log
 
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {

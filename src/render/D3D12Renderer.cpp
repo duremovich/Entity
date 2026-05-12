@@ -244,6 +244,22 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
+    // Per-layer effect chain (issue #54). Shared root signature + shared VS
+    // blob + per-frame cbuffer ring. Per-kind PSOs are loaded lazily in
+    // drawEffectPass via the EffectKindRegistry pointer set by Engine.
+    if (createEffectRootSignature() != Result::Success) {
+        std::cerr << "Failed to create effect root signature!" << std::endl;
+        return Result::Failure;
+    }
+    if (loadCompiledShader(L"shaders/effect_vs.cso", &m_effectVsBlob) != Result::Success) {
+        std::cerr << "Failed to load effect_vs.cso!" << std::endl;
+        return Result::Failure;
+    }
+    if (createEffectConstantBufferRing() != Result::Success) {
+        std::cerr << "Failed to create effect constant buffer ring!" << std::endl;
+        return Result::Failure;
+    }
+
     // Phase C.12 #3: tone-mapping pass (FP16 compose → UNORM8 capture) used
     // by readComposeTargetPixels / captureComposeTargetToPNG so the goldens
     // hash a portable, machine-independent UNORM8 image. The capture
@@ -283,6 +299,11 @@ void D3D12Renderer::shutdown() {
     if (m_mappingSurfaceConstantRing && m_mappingSurfaceConstantRingMapped) {
         m_mappingSurfaceConstantRing->Unmap(0, nullptr);
         m_mappingSurfaceConstantRingMapped = nullptr;
+    }
+
+    if (m_effectCbufferRing && m_effectCbufferRingMapped) {
+        m_effectCbufferRing->Unmap(0, nullptr);
+        m_effectCbufferRingMapped = nullptr;
     }
 
     if (m_fenceEvent) {
@@ -341,6 +362,12 @@ void D3D12Renderer::shutdown() {
     m_mappingSurfaceRootSignature.Reset();
     m_mappingSurfaceVertexBuffer.Reset();
     m_mappingSurfaceConstantRing.Reset();
+
+    // Effect chain resources (issue #54)
+    m_effectPsoCache.clear();
+    m_effectRootSignature.Reset();
+    m_effectVsBlob.Reset();
+    m_effectCbufferRing.Reset();
 
     // Stage 3D render target resources
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
@@ -480,6 +507,10 @@ void D3D12Renderer::beginShowFrame() {
     // above has ensured the GPU is done with this frame's show region.
     m_mappingSurfaceDrawIndex = 0;
     m_mappingSurfaceOverflowed = false;
+
+    // Issue #54: same pattern for the per-layer effect chain CB ring.
+    m_effectDrawIndex   = 0;
+    m_effectOverflowed  = false;
 
     // Reset show-side allocator + command list
     m_showAllocators[m_showBackBufferIndex]->Reset();
@@ -2719,6 +2750,262 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
               << FRAME_COUNT << " frames, "
               << (totalSize / 1024) << " KB)" << std::endl;
     return Result::Success;
+}
+
+// ===========================================================================
+// Per-layer effect chain (issue #54, PASS 1.5 of CompositorSystem).
+// ===========================================================================
+
+Result D3D12Renderer::createEffectRootSignature() {
+    // Root parameters:
+    // [0] Descriptor table for input texture SRV (t0)
+    // [1] CBV for EffectParams (b0) — points at a slot in the per-frame ring.
+    // Static sampler at s0 (LINEAR, CLAMP).
+    //
+    // Pixel-only SRV visibility (the shared VS is pure positional math).
+
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParams[2] = {};
+    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
+    rootParams[0].DescriptorTable.pDescriptorRanges = &srvRange;
+    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[1].Descriptor.ShaderRegister = 0;  // b0
+    rootParams[1].Descriptor.RegisterSpace  = 0;
+    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;  // s0
+    sampler.RegisterSpace  = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 2;
+    desc.pParameters = rootParams;
+    desc.NumStaticSamplers = 1;
+    desc.pStaticSamplers = &sampler;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
+                 D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                 D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                 D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1,
+                                              &sig, &err);
+    if (FAILED(hr)) {
+        if (err) std::cerr << "Effect root sig serialize failed: "
+                           << (const char*)err->GetBufferPointer() << std::endl;
+        return Result::Failure;
+    }
+
+    hr = m_gpu->device()->CreateRootSignature(0, sig->GetBufferPointer(),
+                                               sig->GetBufferSize(),
+                                               IID_PPV_ARGS(&m_effectRootSignature));
+    if (FAILED(hr)) {
+        std::cerr << "Effect root sig create failed!" << std::endl;
+        return Result::Failure;
+    }
+
+    std::cout << "Effect root signature created" << std::endl;
+    return Result::Success;
+}
+
+Result D3D12Renderer::createEffectConstantBufferRing() {
+    // Same pattern as createMappingSurfaceConstantBuffer — a persistently
+    // mapped upload heap sized for FRAME_COUNT frames × per-frame budget ×
+    // 256-byte cbuffer alignment. Each drawEffectPass advances
+    // m_effectDrawIndex by one; beginShowFrame fence-syncs the previous
+    // use of the current frame's region before reusing it.
+    const UINT totalSize = EFFECT_CBUFFER_SLOT_SIZE *
+                           MAX_EFFECT_DRAWS_PER_FRAME * FRAME_COUNT;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resourceDesc.Width  = totalSize;
+    resourceDesc.Height = 1;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &resourceDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_effectCbufferRing));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create effect cbuffer ring!" << std::endl;
+        return Result::Failure;
+    }
+
+    D3D12_RANGE readRange = { 0, 0 };
+    void* mapped = nullptr;
+    hr = m_effectCbufferRing->Map(0, &readRange, &mapped);
+    if (FAILED(hr)) {
+        std::cerr << "Failed to map effect cbuffer ring!" << std::endl;
+        return Result::Failure;
+    }
+    m_effectCbufferRingMapped = static_cast<uint8_t*>(mapped);
+
+    std::cout << "Effect cbuffer ring created ("
+              << MAX_EFFECT_DRAWS_PER_FRAME << " slots/frame × "
+              << FRAME_COUNT << " frames, "
+              << (totalSize / 1024) << " KB)" << std::endl;
+    return Result::Success;
+}
+
+ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash) {
+    if (auto it = m_effectPsoCache.find(kindIdHash); it != m_effectPsoCache.end()) {
+        return it->second.Get();
+    }
+    if (!m_effectKindRegistry) {
+        std::cerr << "[drawEffectPass] No EffectKindRegistry bound on renderer; "
+                     "skipping kind 0x" << std::hex << kindIdHash << std::dec
+                  << std::endl;
+        return nullptr;
+    }
+    const effects::EffectKind* kind = m_effectKindRegistry->find(kindIdHash);
+    if (!kind) {
+        std::cerr << "[drawEffectPass] Unknown effect kind 0x"
+                  << std::hex << kindIdHash << std::dec << std::endl;
+        return nullptr;
+    }
+
+    // Load PS bytecode from disk on first reference. Engine effects ship
+    // their `.cso` artifact next to the executable; user effects (Phase 6)
+    // arrive via RuntimeShaderCompiler instead.
+    std::wstring psPathW(kind->shaderPath.begin(), kind->shaderPath.end());
+    ComPtr<ID3DBlob> psBlob;
+    if (loadCompiledShader(psPathW, &psBlob) != Result::Success) {
+        std::cerr << "[drawEffectPass] Failed to load PS '" << kind->shaderPath
+                  << "' for kind '" << kind->stableId << "'" << std::endl;
+        return nullptr;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_effectRootSignature.Get();
+    pso.VS = { m_effectVsBlob->GetBufferPointer(), m_effectVsBlob->GetBufferSize() };
+    pso.PS = { psBlob->GetBufferPointer(),         psBlob->GetBufferSize() };
+
+    // No input layout — VS reads SV_VertexID and synthesises a fullscreen
+    // triangle. Disable blending (each effect writes a full RGBA replacement)
+    // and depth (effects run before composite; no depth state in PASS 1.5).
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable   = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;   // matches ComposeTarget format
+    pso.SampleDesc.Count = 1;
+
+    ComPtr<ID3D12PipelineState> psoObj;
+    HRESULT hr = m_gpu->device()->CreateGraphicsPipelineState(
+        &pso, IID_PPV_ARGS(&psoObj));
+    if (FAILED(hr)) {
+        std::cerr << "[drawEffectPass] CreateGraphicsPipelineState failed for "
+                  << kind->stableId << " (0x" << std::hex << hr << std::dec
+                  << ")" << std::endl;
+        return nullptr;
+    }
+
+    auto* raw = psoObj.Get();
+    m_effectPsoCache.emplace(kindIdHash, std::move(psoObj));
+    return raw;
+}
+
+void D3D12Renderer::drawEffectPass(TextureRef input,
+                                    std::uint32_t kindIdHash,
+                                    const std::uint8_t* paramBlob,
+                                    std::size_t paramBlobSize,
+                                    std::uint32_t viewportWidth,
+                                    std::uint32_t viewportHeight) {
+    if (!m_initialized || !tl_activeCmdList) return;
+    if (m_effectDrawIndex >= MAX_EFFECT_DRAWS_PER_FRAME) {
+        if (!m_effectOverflowed) {
+            std::cerr << "[drawEffectPass] Effect draw limit ("
+                      << MAX_EFFECT_DRAWS_PER_FRAME
+                      << "/frame) exceeded — additional effect passes dropped"
+                      << std::endl;
+            m_effectOverflowed = true;
+        }
+        return;
+    }
+
+    auto srv = resolveTextureHandle(input);
+    if (srv.ptr == 0) return;  // Input texture not ready; skip the pass.
+
+    ID3D12PipelineState* pso = getOrBuildEffectPso(kindIdHash);
+    if (!pso) return;
+
+    // Marshal the param blob into a per-frame cbuffer ring slot. Clamp the
+    // copy to the slot size; the bake side promises ≤ 256 bytes.
+    const uint32_t frameBase = m_currentBackBufferIndex * MAX_EFFECT_DRAWS_PER_FRAME;
+    const uint32_t slotIndex = frameBase + m_effectDrawIndex;
+    const uint32_t slotOffset = slotIndex * EFFECT_CBUFFER_SLOT_SIZE;
+    const std::size_t copyBytes =
+        (paramBlobSize > EFFECT_CBUFFER_SLOT_SIZE)
+            ? EFFECT_CBUFFER_SLOT_SIZE
+            : paramBlobSize;
+    if (paramBlob && copyBytes > 0) {
+        std::memcpy(m_effectCbufferRingMapped + slotOffset, paramBlob, copyBytes);
+    }
+    if (copyBytes < EFFECT_CBUFFER_SLOT_SIZE) {
+        std::memset(m_effectCbufferRingMapped + slotOffset + copyBytes,
+                    0, EFFECT_CBUFFER_SLOT_SIZE - copyBytes);
+    }
+    // Patch viewport size into the misc region (bytes 224-231 per
+    // _effect_common.hlsli layout). The bake side doesn't know the target
+    // RT dimensions, so the renderer writes them here.
+    const float viewportFloats[2] = {
+        static_cast<float>(viewportWidth),
+        static_cast<float>(viewportHeight),
+    };
+    std::memcpy(m_effectCbufferRingMapped + slotOffset + 224,
+                viewportFloats, sizeof(viewportFloats));
+
+    const D3D12_GPU_VIRTUAL_ADDRESS cbufferGpuAddr =
+        m_effectCbufferRing->GetGPUVirtualAddress() + slotOffset;
+
+    // Bind shader-visible heap (the input SRV lives in the ImGui heap which
+    // doubles as the compose-target + video-pool descriptor heap).
+    if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        tl_activeCmdList->SetDescriptorHeaps(1, heaps);
+        tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
+
+    tl_activeCmdList->SetPipelineState(pso);
+    tl_activeCmdList->SetGraphicsRootSignature(m_effectRootSignature.Get());
+    tl_activeCmdList->SetGraphicsRootDescriptorTable(0, srv);
+    tl_activeCmdList->SetGraphicsRootConstantBufferView(1, cbufferGpuAddr);
+    tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    // No vertex / index buffer — VS synthesises positions from SV_VertexID.
+    tl_activeCmdList->IASetVertexBuffers(0, 0, nullptr);
+    tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
+
+    ++m_effectDrawIndex;
 }
 
 void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,

@@ -5,6 +5,7 @@
 #include "entity/bus/Serialization.hpp"
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/renderer/Renderer.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/director/SectionScheduler.hpp"
@@ -51,6 +52,7 @@
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/EffectChainRenderTargets.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/AnimatedProperties.hpp"
@@ -213,6 +215,19 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_generativeSystem  = m_director->getGenerativeSystem();
     m_timeAuthority     = m_director->getTimeAuthority();
     m_sectionScheduler  = m_director->getSectionScheduler();
+
+    // Per-layer effects registry (issue #54). Built once at startup with
+    // the engine-shipped effect catalog; pointers propagated to both the
+    // editor-side bake (PlaybackTimeAuthority) and the show-side renderer
+    // (D3D12Renderer PSO cache).
+    m_effectKindRegistry = std::make_unique<effects::EffectKindRegistry>();
+    m_effectKindRegistry->registerBuiltins();
+    if (m_timeAuthority) {
+        m_timeAuthority->setEffectKindRegistry(m_effectKindRegistry.get());
+    }
+    if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
+        d3d->setEffectKindRegistry(m_effectKindRegistry.get());
+    }
 
     // Cross-system input channel bus. Constructed here (before any plugin
     // worker spins up that might write to it) and handed to systems +
@@ -3850,6 +3865,26 @@ void Engine::drainRendererToDirector() {
                 if (auto* gen = m_registry.try_get<GenerativeLayer>(entity)) {
                     gen->renderTargetSlot = static_cast<int>(body.slot);
                 }
+            } else if constexpr (std::is_same_v<T, bus::EffectChainRenderTargetAllocated>) {
+                // PASS 1.5 of the compositor allocated one of the two
+                // ping-pong slots for a layer's effect chain (issue #54).
+                // Write the slot back into EffectChainRenderTargets so the
+                // next SceneSnapshot carries it; show-side PASS 1.5 reuses
+                // the slot until the layer/chain goes away.
+                const auto entity = static_cast<entt::entity>(body.entity);
+                if (!m_registry.valid(entity)) return;
+                auto& rts = m_registry.get_or_emplace<EffectChainRenderTargets>(entity);
+                if (body.side == 0) rts.slotA = static_cast<std::int32_t>(body.slot);
+                else                rts.slotB = static_cast<std::int32_t>(body.slot);
+                rts.width  = body.width;
+                rts.height = body.height;
+            } else if constexpr (std::is_same_v<T, bus::EffectCompileFailed>) {
+                // Phase 6 — user-authored HLSL compile failure. Editor-side
+                // surface (red badge on the affected node in the graph
+                // editor) is wired up in Phase 6; Phase 2 just logs.
+                std::cerr << "[Engine] EffectCompileFailed kind=0x"
+                          << std::hex << body.kindIdHash << std::dec
+                          << ": " << body.errorMessage << std::endl;
             } else if constexpr (std::is_same_v<T, bus::DeviceLost>) {
                 // Autosave-on-device-loss. The Engine already observed
                 // isDeviceLost() in the main loop and set m_running=false.

@@ -64,7 +64,9 @@ function(entity_compile_shader SHADER_FILE STAGE ENTRY SM)
             -HV 2021
             -Fo ${OUT}
             ${SRC}
-        DEPENDS ${SRC} "${ENTITY_SHADER_SOURCE_DIR}/common.hlsli"
+        DEPENDS ${SRC}
+                "${ENTITY_SHADER_SOURCE_DIR}/common.hlsli"
+                "${ENTITY_SHADER_SOURCE_DIR}/effects/_effect_common.hlsli"
         COMMENT "DXC ${SHADER_FILE} -> ${NAME_WE}.cso (${STAGE}_${SM})"
         VERBATIM
     )
@@ -113,7 +115,15 @@ entity_compile_shader(mesh_triangle_ps.hlsl       ps PSMain 6_0)
 entity_compile_shader(stage_mesh_vs.hlsl          vs VSMain 6_0)
 entity_compile_shader(stage_mesh_ps.hlsl          ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 14 shaders")
+# Per-layer effect chain shaders (issue #54, Phase 2). One shared VS that
+# generates a fullscreen triangle; one PS per engine-shipped effect.
+# `_effect_common.hlsli` carries the cbuffer + sampler bindings.
+entity_compile_shader(effects/effect_vs.hlsl                vs VSMain 6_0)
+entity_compile_shader(effects/brightness_contrast_ps.hlsl   ps PSMain 6_0)
+entity_compile_shader(effects/gaussian_blur_ps.hlsl         ps PSMain 6_0)
+entity_compile_shader(effects/hue_saturation_ps.hlsl        ps PSMain 6_0)
+
+message(STATUS "Configured offline HLSL compilation for 18 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler
