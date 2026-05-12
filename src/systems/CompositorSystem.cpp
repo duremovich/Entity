@@ -58,8 +58,10 @@ void CompositorSystem::update(bus::RenderFrame& rf,
          it != m_pendingEffectAllocations.end(); )
     {
         const std::uint64_t id = static_cast<std::uint64_t>(it->first);
-        const bool found = std::any_of(rf.layerEffects.begin(), rf.layerEffects.end(),
-            [id](const bus::LayerEffectsSnapshot& le) { return le.entity == id; });
+        const bool found = std::any_of(rf.contentLayers.begin(), rf.contentLayers.end(),
+            [id](const bus::ContentLayerSnapshot& cl) {
+                return cl.entity == id && !cl.effects.empty();
+            });
         it = found ? std::next(it) : m_pendingEffectAllocations.erase(it);
     }
 
@@ -105,19 +107,9 @@ void CompositorSystem::update(bus::RenderFrame& rf,
     {
         ZoneScopedN("Compositor::pass1_5_effects");
 
-        // Linear scan to match each ContentLayerSnapshot to its
-        // LayerEffectsSnapshot. Counts are tiny (each <20).
-        auto findLayerEffects = [&rf](std::uint64_t entity) -> const bus::LayerEffectsSnapshot* {
-            for (const auto& le : rf.layerEffects) {
-                if (le.entity == entity) return &le;
-            }
-            return nullptr;
-        };
-
-        // Default ping-pong RT size when the source size isn't known
-        // (clip slot dims aren't on the snapshot; generative slot dims
-        // arrive on LayerEffectsSnapshot only after the first allocation
-        // ack). Matches the default used by ensureGenerativeRenderTarget.
+        // Default ping-pong RT size for the effect chain. v1: hardcoded
+        // 1920x1080 — matches ensureGenerativeRenderTarget. Phase 4 can
+        // size from the target screen or input texture dimensions.
         constexpr std::uint32_t kDefaultEffectRtW = 1920;
         constexpr std::uint32_t kDefaultEffectRtH = 1080;
 
@@ -125,17 +117,17 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             if (cl.effects.empty()) continue;
             if (cl.sourceSlot < 0) continue;  // input not ready
 
-            const auto* le = findLayerEffects(cl.entity);
-            if (!le) continue;  // side-table missed → skip this frame
-
-            const std::uint32_t rtW = le->width  > 0 ? le->width  : kDefaultEffectRtW;
-            const std::uint32_t rtH = le->height > 0 ? le->height : kDefaultEffectRtH;
-
             std::uint32_t slotA = UINT32_MAX, slotB = UINT32_MAX;
-            if (!ensureEffectPingPongTargets(*le, cl.entity, rtW, rtH,
+            if (!ensureEffectPingPongTargets(cl.entity,
+                                              cl.effectChainSlotA,
+                                              cl.effectChainSlotB,
+                                              kDefaultEffectRtW,
+                                              kDefaultEffectRtH,
                                               slotA, slotB)) {
                 continue;  // R2D ack still in flight — try again next frame
             }
+            const std::uint32_t rtW = kDefaultEffectRtW;
+            const std::uint32_t rtH = kDefaultEffectRtH;
 
             // Resolve the chain's input as a TextureRef. The first effect
             // reads from the layer's raw source (Video or Compose); each
@@ -149,7 +141,7 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             std::uint32_t nextOutput    = slotB;
 
             bool ran = false;
-            for (const auto& fx : le->effects) {
+            for (const auto& fx : cl.effects) {
                 if (!fx.enabled) continue;
                 m_renderer->beginComposeTarget(currentOutput);
                 m_renderer->drawEffectPass(currentInput, fx.kindIdHash,
@@ -434,8 +426,9 @@ std::uint32_t CompositorSystem::ensureGenerativeRenderTarget(
     return slot;
 }
 
-bool CompositorSystem::ensureEffectPingPongTargets(const bus::LayerEffectsSnapshot& le,
-                                                    std::uint64_t layerEntity,
+bool CompositorSystem::ensureEffectPingPongTargets(std::uint64_t layerEntity,
+                                                    std::int32_t snapshotSlotA,
+                                                    std::int32_t snapshotSlotB,
                                                     std::uint32_t width,
                                                     std::uint32_t height,
                                                     std::uint32_t& outSlotA,
@@ -444,10 +437,10 @@ bool CompositorSystem::ensureEffectPingPongTargets(const bus::LayerEffectsSnapsh
     const auto ent = static_cast<entt::entity>(layerEntity);
 
     // 1) Editor has both slots — reuse / resize in place.
-    if (le.slotA >= 0 && le.slotB >= 0) {
+    if (snapshotSlotA >= 0 && snapshotSlotB >= 0) {
         m_pendingEffectAllocations.erase(ent);
-        outSlotA = static_cast<std::uint32_t>(le.slotA);
-        outSlotB = static_cast<std::uint32_t>(le.slotB);
+        outSlotA = static_cast<std::uint32_t>(snapshotSlotA);
+        outSlotB = static_cast<std::uint32_t>(snapshotSlotB);
         if (m_renderer->getComposeTargetWidth(outSlotA) != width ||
             m_renderer->getComposeTargetHeight(outSlotA) != height) {
             m_renderer->resizeComposeTarget(outSlotA, width, height);
@@ -485,9 +478,11 @@ bool CompositorSystem::ensureEffectPingPongTargets(const bus::LayerEffectsSnapsh
         return true;
     };
 
-    // sideA: editor has it but B is pending → cached.slotA mirrors le.slotA
-    if (le.slotA >= 0) cached.slotA = static_cast<std::uint32_t>(le.slotA);
-    if (le.slotB >= 0) cached.slotB = static_cast<std::uint32_t>(le.slotB);
+    // Mirror any side the editor has already acked into the cache so we
+    // don't reallocate it; the other side keeps going until the editor
+    // catches up.
+    if (snapshotSlotA >= 0) cached.slotA = static_cast<std::uint32_t>(snapshotSlotA);
+    if (snapshotSlotB >= 0) cached.slotB = static_cast<std::uint32_t>(snapshotSlotB);
 
     if (!allocSide(cached.slotA, 0)) return false;
     if (!allocSide(cached.slotB, 1)) return false;

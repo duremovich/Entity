@@ -144,6 +144,17 @@ public:
     Director* getDirector() { return m_director.get(); }
     const Director* getDirector() const { return m_director.get(); }
 
+    // Effect kind registry — owned by Engine, populated at initialize().
+    // Used by PropertyWindow's effects section to enumerate kinds and by
+    // command execute() to resolve kind IDs / schemas. Read-only after
+    // registerBuiltins; user-effect mutation (Phase 6) is editor-thread only.
+    effects::EffectKindRegistry* getEffectKindRegistry() {
+        return m_effectKindRegistry.get();
+    }
+    const effects::EffectKindRegistry* getEffectKindRegistry() const {
+        return m_effectKindRegistry.get();
+    }
+
     /**
      * Get the Renderer service (Phase D entry — owns D3D12Renderer,
      * OutputManager, FrameCache, OcioManager, CompositorSystem,

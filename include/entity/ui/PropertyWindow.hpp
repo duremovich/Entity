@@ -14,6 +14,7 @@ namespace entity {
 // Forward declarations
 class Timeline;
 class CommandDispatcher;
+namespace effects { class EffectKindRegistry; }
 
 /**
  * PropertyWindow - Displays and edits properties of the selected clip.
@@ -33,6 +34,13 @@ public:
     // aren't recorded on the undo stack (fallback path for headless tests
     // that construct PropertyWindow without an Engine).
     void setCommandDispatcher(CommandDispatcher* dispatcher) { m_dispatcher = dispatcher; }
+
+    // Optional — when set, the Effects section lists registered kinds in
+    // the "Add Effect" menu (issue #54). Without it, the section degrades
+    // to a read-only listing of effects already on the clip.
+    void setEffectKindRegistry(const effects::EffectKindRegistry* reg) {
+        m_effectKindRegistry = reg;
+    }
 
     void render() override;
     const char* getName() const override { return "Properties"; }
@@ -114,6 +122,13 @@ private:
     void renderGenerativeLayerProperties(entt::entity entity);
 
     /**
+     * Render the per-layer effects section (issue #54). Lists the current
+     * EffectChain entries with parameter sliders + enable/remove. Shows an
+     * "Add Effect" popup populated from the EffectKindRegistry.
+     */
+    void renderEffectsSection(entt::entity layerEntity);
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control
@@ -174,6 +189,7 @@ private:
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
     CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
+    const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};  // Non-owning, optional
 
     // Per-entity UI state (prevents static variable leak between clips)
     std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
@@ -201,6 +217,10 @@ private:
     FrameNumber m_preEditMediaStartFrame{0};
     FrameNumber m_preEditMediaOutFrame{0};
     FrameNumber m_preEditDuration{0};
+
+    // Pre-edit capture for the active Effect-parameter slider (only one
+    // slider is active in ImGui at a time, so a single scalar is enough).
+    float m_preEditEffectFloat{0.0f};
 };
 
 } // namespace entity

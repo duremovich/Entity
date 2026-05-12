@@ -13,9 +13,14 @@
 #include "entity/components/Model.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/components/EffectChain.hpp"
+#include "entity/components/EffectParameters.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/input/InputBus.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/media/ObjLoader.hpp"
@@ -3210,6 +3215,282 @@ CommandPtr AssertObjectAnimationOutputCommand::fromJson(const nlohmann::json& j)
     float tolerance = j.value("tolerance", 0.01f);
     return std::make_unique<AssertObjectAnimationOutputCommand>(
         trackIndex, layerIndex, std::move(field), expected, tolerance);
+}
+
+// ============================================================================
+// Per-layer effects (issue #54)
+// ============================================================================
+
+namespace {
+
+// Resolve a paramName to its slot index in the kind's positional schema.
+// Returns -1 if no match — caller treats that as a soft skip.
+int findParamSlotByName(const effects::EffectKind& kind, const std::string& name) {
+    for (std::size_t i = 0; i < kind.params.size(); ++i) {
+        if (kind.params[i].name == name) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+} // namespace
+
+bool AddEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) {
+        std::cerr << "[AddEffect] layerEntity invalid" << std::endl;
+        return false;
+    }
+
+    auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!kindRegistry) {
+        std::cerr << "[AddEffect] EffectKindRegistry not bound on engine" << std::endl;
+        return false;
+    }
+    const std::uint32_t kindHash = effects::fnv1a32(m_kindStableId);
+    const effects::EffectKind* kind = kindRegistry->find(kindHash);
+    if (!kind) {
+        std::cerr << "[AddEffect] Unknown effect kind: " << m_kindStableId << std::endl;
+        return false;
+    }
+
+    // Create the effect entity and attach the standard component bundle.
+    entt::entity fxEnt = registry.create();
+    Effect& fx = registry.emplace<Effect>(fxEnt);
+    fx.kindId  = kindHash;
+    fx.enabled = true;
+    fx.graphX  = 0.0f;
+    fx.graphY  = 0.0f;
+
+    EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
+    params.values.reserve(kind->params.size());
+    for (const auto& schema : kind->params) {
+        params.values.push_back(schema.defaultValue);
+    }
+
+    registry.emplace<EffectAnimatedParameters>(fxEnt);
+
+    // Append to the layer's EffectChain (create the component if absent).
+    auto& chain = registry.get_or_emplace<EffectChain>(m_layerEntity);
+    chain.nodes.push_back(fxEnt);
+    if (chain.outputNode == entt::null) {
+        chain.outputNode = fxEnt;
+    }
+
+    m_createdEffectEntity = fxEnt;
+    return true;
+}
+
+bool AddEffectCommand::undo(Engine& engine) {
+    if (!m_createdEffectEntity.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    if (auto* chain = registry.try_get<EffectChain>(m_layerEntity)) {
+        chain->nodes.erase(
+            std::remove(chain->nodes.begin(), chain->nodes.end(), *m_createdEffectEntity),
+            chain->nodes.end());
+        if (chain->outputNode == *m_createdEffectEntity) {
+            chain->outputNode = chain->nodes.empty() ? entt::null : chain->nodes.back();
+        }
+        if (chain->nodes.empty()) {
+            registry.remove<EffectChain>(m_layerEntity);
+        }
+    }
+    if (registry.valid(*m_createdEffectEntity)) {
+        registry.destroy(*m_createdEffectEntity);
+    }
+    m_createdEffectEntity.reset();
+    return true;
+}
+
+nlohmann::json AddEffectCommand::toJson() const {
+    return {{"type", "AddEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"kindStableId", m_kindStableId}};
+}
+
+std::string AddEffectCommand::getDescription() const {
+    return "Add effect " + m_kindStableId;
+}
+
+CommandPtr AddEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layerEntity = static_cast<entt::entity>(
+        j.value("layerEntity", std::uint32_t{0}));
+    auto kind = j.value("kindStableId", std::string{});
+    return std::make_unique<AddEffectCommand>(layerEntity, std::move(kind));
+}
+
+bool RemoveEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity) || !registry.valid(m_effectEntity)) {
+        return false;
+    }
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+
+    // Capture state for undo.
+    auto it = std::find(chain->nodes.begin(), chain->nodes.end(), m_effectEntity);
+    if (it == chain->nodes.end()) return false;
+    m_savedPositionInChain = static_cast<std::size_t>(it - chain->nodes.begin());
+
+    if (auto* fx = registry.try_get<Effect>(m_effectEntity)) {
+        m_savedKindId  = fx->kindId;
+        m_savedEnabled = fx->enabled;
+        m_savedGraphX  = fx->graphX;
+        m_savedGraphY  = fx->graphY;
+    }
+    if (auto* params = registry.try_get<EffectParameters>(m_effectEntity)) {
+        m_savedParams = params->values;
+    }
+
+    chain->nodes.erase(it);
+    if (chain->outputNode == m_effectEntity) {
+        chain->outputNode = chain->nodes.empty() ? entt::null : chain->nodes.back();
+    }
+    registry.destroy(m_effectEntity);
+    if (chain->nodes.empty()) {
+        registry.remove<EffectChain>(m_layerEntity);
+    }
+    m_savedExecuted = true;
+    return true;
+}
+
+bool RemoveEffectCommand::undo(Engine& engine) {
+    if (!m_savedExecuted) return false;
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) return false;
+
+    // Re-create the effect entity. EnTT may not give us the same numeric ID
+    // as before — that's fine for undo since the chain refers to the new
+    // entity. JSON-recorded references to the old ID would dangle though.
+    entt::entity fxEnt = registry.create();
+    auto& fx = registry.emplace<Effect>(fxEnt);
+    fx.kindId  = m_savedKindId;
+    fx.enabled = m_savedEnabled;
+    fx.graphX  = m_savedGraphX;
+    fx.graphY  = m_savedGraphY;
+    auto& params = registry.emplace<EffectParameters>(fxEnt);
+    params.values = m_savedParams;
+    registry.emplace<EffectAnimatedParameters>(fxEnt);
+
+    auto& chain = registry.get_or_emplace<EffectChain>(m_layerEntity);
+    const std::size_t insertAt = std::min(m_savedPositionInChain, chain.nodes.size());
+    chain.nodes.insert(chain.nodes.begin() + insertAt, fxEnt);
+    if (chain.outputNode == entt::null) chain.outputNode = fxEnt;
+    return true;
+}
+
+nlohmann::json RemoveEffectCommand::toJson() const {
+    return {{"type", "RemoveEffect"},
+            {"layerEntity",  static_cast<std::uint32_t>(m_layerEntity)},
+            {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)}};
+}
+
+std::string RemoveEffectCommand::getDescription() const {
+    return "Remove effect";
+}
+
+CommandPtr RemoveEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layerEntity  = static_cast<entt::entity>(j.value("layerEntity",  std::uint32_t{0}));
+    const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+    return std::make_unique<RemoveEffectCommand>(layerEntity, effectEntity);
+}
+
+bool SetEffectEnabledCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+    auto* fx = registry.try_get<Effect>(m_effectEntity);
+    if (!fx) return false;
+    if (!m_previousEnabled.has_value()) m_previousEnabled = fx->enabled;
+    fx->enabled = m_enabled;
+    return true;
+}
+
+bool SetEffectEnabledCommand::undo(Engine& engine) {
+    if (!m_previousEnabled.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    auto* fx = registry.try_get<Effect>(m_effectEntity);
+    if (!fx) return false;
+    fx->enabled = *m_previousEnabled;
+    return true;
+}
+
+nlohmann::json SetEffectEnabledCommand::toJson() const {
+    return {{"type", "SetEffectEnabled"},
+            {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+            {"enabled", m_enabled}};
+}
+
+std::string SetEffectEnabledCommand::getDescription() const {
+    return m_enabled ? "Enable effect" : "Disable effect";
+}
+
+CommandPtr SetEffectEnabledCommand::fromJson(const nlohmann::json& j) {
+    const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+    const bool enabled = j.value("enabled", true);
+    return std::make_unique<SetEffectEnabledCommand>(effectEntity, enabled);
+}
+
+bool SetEffectFloatParamCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+    auto* fx = registry.try_get<Effect>(m_effectEntity);
+    auto* params = registry.try_get<EffectParameters>(m_effectEntity);
+    if (!fx || !params) return false;
+
+    auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!kindRegistry) return false;
+    const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
+    if (!kind) return false;
+
+    const int slot = findParamSlotByName(*kind, m_paramName);
+    if (slot < 0) return false;
+    if (static_cast<std::size_t>(slot) >= params->values.size()) {
+        // Schema grew since the effect was created — extend with defaults.
+        const std::size_t oldSize = params->values.size();
+        params->values.resize(kind->params.size());
+        for (std::size_t i = oldSize; i < params->values.size(); ++i) {
+            params->values[i] = kind->params[i].defaultValue;
+        }
+    }
+    if (!m_previousValue.has_value()) {
+        m_previousValue = params->values[slot].f4[0];
+    }
+    params->values[slot] = ParamValue::makeFloat(m_value);
+    return true;
+}
+
+bool SetEffectFloatParamCommand::undo(Engine& engine) {
+    if (!m_previousValue.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    auto* fx = registry.try_get<Effect>(m_effectEntity);
+    auto* params = registry.try_get<EffectParameters>(m_effectEntity);
+    if (!fx || !params) return false;
+    auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!kindRegistry) return false;
+    const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
+    if (!kind) return false;
+    const int slot = findParamSlotByName(*kind, m_paramName);
+    if (slot < 0 || static_cast<std::size_t>(slot) >= params->values.size()) return false;
+    params->values[slot] = ParamValue::makeFloat(*m_previousValue);
+    return true;
+}
+
+nlohmann::json SetEffectFloatParamCommand::toJson() const {
+    return {{"type", "SetEffectFloatParam"},
+            {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+            {"paramName", m_paramName},
+            {"value", m_value}};
+}
+
+std::string SetEffectFloatParamCommand::getDescription() const {
+    return "Set effect param " + m_paramName;
+}
+
+CommandPtr SetEffectFloatParamCommand::fromJson(const nlohmann::json& j) {
+    const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    float value = j.value("value", 0.0f);
+    return std::make_unique<SetEffectFloatParamCommand>(
+        effectEntity, std::move(paramName), value);
 }
 
 } // namespace entity

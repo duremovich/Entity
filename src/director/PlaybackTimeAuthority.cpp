@@ -1317,10 +1317,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
         // for Video-source layers (per-entity cached on the show side).
         if (const auto* le = findLayerEffects(ac.entity)) {
-            c.effects = le->effects;
+            c.effects          = le->effects;
+            c.effectChainSlotA = le->slotA;
+            c.effectChainSlotB = le->slotB;
             // postEffectsSlot stays -1 here — PASS 1.5 fills it after it
-            // actually draws the chain. Phase 1: PASS 1.5 is a no-op, so
-            // -1 persists and PASS 2 reads sourceSlot.
+            // actually draws the chain.
         }
         out.contentLayers.push_back(c);
     }
@@ -1338,7 +1339,9 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.sourceSlot            = gl.renderTargetSlot;
         // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
         if (const auto* le = findLayerEffects(gl.entity)) {
-            c.effects = le->effects;
+            c.effects          = le->effects;
+            c.effectChainSlotA = le->slotA;
+            c.effectChainSlotB = le->slotB;
         }
         out.contentLayers.push_back(c);
     }

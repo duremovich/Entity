@@ -342,6 +342,14 @@ struct ContentLayerSnapshot {
     // Empty vector = no effects, PASS 2 reads sourceSlot directly.
     std::vector<EffectSnapshot> effects;
 
+    // Ping-pong compose-target slots for the effect chain (-1 = pending
+    // allocation, R2D ack still in flight). Editor side fills these from
+    // EffectChainRenderTargets on the layer entity during the buildRender-
+    // Frame fold-in step, so PASS 1.5 reads them directly off the cl
+    // entry without needing a side-table lookup.
+    std::int32_t  effectChainSlotA{-1};
+    std::int32_t  effectChainSlotB{-1};
+
     // Post-effects compose-target slot. -1 = no effects or PASS 1.5
     // hasn't produced output this frame yet (RT allocation pending).
     // Always indexes into the Compose descriptor pool when set.

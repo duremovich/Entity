@@ -69,8 +69,9 @@ public:
     // for a layer's effect chain (issue #54). Posts one
     // EffectChainRenderTargetAllocated R2D ack per side on first allocation.
     // Returns true when both slots are valid and ready to draw with.
-    bool ensureEffectPingPongTargets(const bus::LayerEffectsSnapshot& le,
-                                      std::uint64_t layerEntity,
+    bool ensureEffectPingPongTargets(std::uint64_t layerEntity,
+                                      std::int32_t snapshotSlotA,
+                                      std::int32_t snapshotSlotB,
                                       std::uint32_t width,
                                       std::uint32_t height,
                                       std::uint32_t& outSlotA,

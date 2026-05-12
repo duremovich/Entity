@@ -502,6 +502,8 @@ ojson encode(const ContentLayerSnapshot& c) {
     auto fx = ojson::array();
     for (const auto& e : c.effects) fx.push_back(encode(e));
     j["effects"]               = std::move(fx);
+    j["effectChainSlotA"]      = c.effectChainSlotA;
+    j["effectChainSlotB"]      = c.effectChainSlotB;
     j["postEffectsSlot"]       = c.postEffectsSlot;
     return j;
 }
@@ -531,6 +533,8 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
             c.effects.push_back(decodeEffectSnapshot(e));
         }
     }
+    c.effectChainSlotA      = j.value("effectChainSlotA",      std::int32_t{-1});
+    c.effectChainSlotB      = j.value("effectChainSlotB",      std::int32_t{-1});
     c.postEffectsSlot       = j.value("postEffectsSlot",       std::int32_t{-1});
     return c;
 }

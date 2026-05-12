@@ -94,6 +94,70 @@ void EffectKindRegistry::registerBuiltins() {
             makeFloatSchema("lightness",  "Lightness",  0.0f,   -1.0f,   1.0f),
         }
     ));
+
+    registerKind(makeBuiltinKind(
+        "core.vignette",
+        "Vignette",
+        "Stylize",
+        "vignette_ps.cso",
+        {
+            makeFloatSchema("radius",    "Radius",    0.6f, 0.0f, 1.0f),
+            makeFloatSchema("softness",  "Softness",  0.3f, 0.0f, 1.0f),
+            makeFloatSchema("intensity", "Intensity", 0.5f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeBuiltinKind(
+        "core.pixelate",
+        "Pixelate",
+        "Stylize",
+        "pixelate_ps.cso",
+        {
+            makeFloatSchema("pixel_size", "Pixel Size", 8.0f, 1.0f, 128.0f),
+        }
+    ));
+
+    registerKind(makeBuiltinKind(
+        "core.sharpen",
+        "Sharpen",
+        "Stylize",
+        "sharpen_ps.cso",
+        {
+            makeFloatSchema("amount", "Amount", 0.5f, 0.0f, 4.0f),
+            makeFloatSchema("radius", "Radius (px)", 1.0f, 0.1f, 4.0f),
+        }
+    ));
+
+    registerKind(makeBuiltinKind(
+        "core.chromatic_aberration",
+        "Chromatic Aberration",
+        "Stylize",
+        "chromatic_aberration_ps.cso",
+        {
+            makeFloatSchema("amount", "Amount (px)", 4.0f, -32.0f, 32.0f),
+        }
+    ));
+
+    registerKind(makeBuiltinKind(
+        "core.edge",
+        "Edge Detect",
+        "Stylize",
+        "edge_ps.cso",
+        {
+            makeFloatSchema("threshold", "Threshold", 0.1f, 0.0f, 1.0f),
+            makeFloatSchema("thickness", "Thickness (px)", 1.0f, 0.5f, 4.0f),
+        }
+    ));
+
+    registerKind(makeBuiltinKind(
+        "core.invert",
+        "Invert",
+        "Color",
+        "invert_ps.cso",
+        {
+            makeFloatSchema("amount", "Amount", 1.0f, 0.0f, 1.0f),
+        }
+    ));
 }
 
 void EffectKindRegistry::scanUserEffects(const std::filesystem::path& /*projectEffectsDir*/) {

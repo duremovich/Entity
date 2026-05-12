@@ -5,12 +5,15 @@
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
+#include "entity/components/EffectParam.hpp"  // ParamValue
 #include "entity/timeline/Timeline.hpp"  // Ripple{Insert,Delete}Result
 #include "entity/timeline/CueTag.hpp"
+#include <entt/entt.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
 #include <array>
+#include <vector>
 
 namespace entity {
 
@@ -1794,6 +1797,147 @@ private:
     std::string m_field;
     float       m_expected;
     float       m_tolerance;
+};
+
+// ============================================================================
+// Per-layer effects (issue #54)
+// ============================================================================
+
+/**
+ * Append a new effect of the given kind onto a layer's effect chain.
+ * Creates the EffectChain component on the layer if absent and the new
+ * effect entity with empty EffectParameters / EffectAnimatedParameters.
+ *
+ * JSON format:
+ * {
+ *     "type": "AddEffect",
+ *     "layerEntity": 12345,    // raw entt::entity ID (uint32)
+ *     "kindStableId": "core.gaussian_blur"
+ * }
+ *
+ * Entity IDs aren't stable across project loads — use this command for
+ * live UI / scripted sessions, not for project persistence.
+ */
+class AddEffectCommand : public UndoableCommand {
+public:
+    AddEffectCommand(entt::entity layerEntity, std::string kindStableId)
+        : m_layerEntity(layerEntity), m_kindStableId(std::move(kindStableId)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "AddEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::string  m_kindStableId;
+    std::optional<entt::entity> m_createdEffectEntity;
+};
+
+/**
+ * Remove an effect from its layer's chain and destroy the effect entity.
+ * Records enough state to recreate it on undo.
+ *
+ * JSON format:
+ * {
+ *     "type": "RemoveEffect",
+ *     "layerEntity": 12345,
+ *     "effectEntity": 67890
+ * }
+ */
+class RemoveEffectCommand : public UndoableCommand {
+public:
+    RemoveEffectCommand(entt::entity layerEntity, entt::entity effectEntity)
+        : m_layerEntity(layerEntity), m_effectEntity(effectEntity) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    entt::entity m_effectEntity;
+
+    // Captured on execute, replayed on undo.
+    bool                    m_savedExecuted{false};
+    std::uint32_t           m_savedKindId{0};
+    bool                    m_savedEnabled{true};
+    float                   m_savedGraphX{0.0f};
+    float                   m_savedGraphY{0.0f};
+    std::vector<ParamValue> m_savedParams;
+    std::size_t             m_savedPositionInChain{0};
+};
+
+/**
+ * Toggle an effect's enabled flag.
+ *
+ * JSON format:
+ * { "type": "SetEffectEnabled", "effectEntity": 67890, "enabled": true }
+ */
+class SetEffectEnabledCommand : public UndoableCommand {
+public:
+    SetEffectEnabledCommand(entt::entity effectEntity, bool enabled)
+        : m_effectEntity(effectEntity), m_enabled(enabled) {}
+
+    void setPreviousEnabled(bool v) { m_previousEnabled = v; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetEffectEnabled"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_effectEntity;
+    bool         m_enabled;
+    std::optional<bool> m_previousEnabled;
+};
+
+/**
+ * Update a Float parameter on an effect, identified by parameter name.
+ * Slot index is resolved at execute time via EffectKindRegistry so the
+ * command stays wire-stable across schema reordering.
+ *
+ * Only Float params are supported in v1; non-Float types arrive when
+ * the UI grows color pickers / vec2 inputs in Phase 3+.
+ *
+ * JSON format:
+ * { "type": "SetEffectFloatParam", "effectEntity": 67890,
+ *   "paramName": "radius", "value": 4.5 }
+ */
+class SetEffectFloatParamCommand : public UndoableCommand {
+public:
+    SetEffectFloatParamCommand(entt::entity effectEntity,
+                                std::string paramName,
+                                float value)
+        : m_effectEntity(effectEntity),
+          m_paramName(std::move(paramName)),
+          m_value(value) {}
+
+    void setPreviousValue(float prev) { m_previousValue = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetEffectFloatParam"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_effectEntity;
+    std::string  m_paramName;
+    float        m_value;
+    std::optional<float> m_previousValue;
 };
 
 } // namespace entity

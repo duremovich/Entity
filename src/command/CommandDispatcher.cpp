@@ -253,6 +253,12 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AddSyntheticModel", AddSyntheticModelCommand::fromJson);
     registerFactory("AssertMeshUploadCount", AssertMeshUploadCountCommand::fromJson);
 
+    // Per-layer effects (issue #54)
+    registerFactory("AddEffect", AddEffectCommand::fromJson);
+    registerFactory("RemoveEffect", RemoveEffectCommand::fromJson);
+    registerFactory("SetEffectEnabled", SetEffectEnabledCommand::fromJson);
+    registerFactory("SetEffectFloatParam", SetEffectFloatParamCommand::fromJson);
+
     // Object Animation Layer commands (Phase 3.3 + 3.4)
     registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);
     registerFactory("AssertObjectAnimationOutput", AssertObjectAnimationOutputCommand::fromJson);

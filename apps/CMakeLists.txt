@@ -122,8 +122,14 @@ entity_compile_shader(effects/effect_vs.hlsl                vs VSMain 6_0)
 entity_compile_shader(effects/brightness_contrast_ps.hlsl   ps PSMain 6_0)
 entity_compile_shader(effects/gaussian_blur_ps.hlsl         ps PSMain 6_0)
 entity_compile_shader(effects/hue_saturation_ps.hlsl        ps PSMain 6_0)
+entity_compile_shader(effects/vignette_ps.hlsl              ps PSMain 6_0)
+entity_compile_shader(effects/pixelate_ps.hlsl              ps PSMain 6_0)
+entity_compile_shader(effects/sharpen_ps.hlsl               ps PSMain 6_0)
+entity_compile_shader(effects/chromatic_aberration_ps.hlsl  ps PSMain 6_0)
+entity_compile_shader(effects/edge_ps.hlsl                  ps PSMain 6_0)
+entity_compile_shader(effects/invert_ps.hlsl                ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 18 shaders")
+message(STATUS "Configured offline HLSL compilation for 24 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler

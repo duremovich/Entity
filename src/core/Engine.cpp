@@ -504,6 +504,9 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     {
         auto propertyWindow = std::make_unique<PropertyWindow>(m_timeline);
         propertyWindow->setCommandDispatcher(m_commandDispatcher);
+        if (m_effectKindRegistry) {
+            propertyWindow->setEffectKindRegistry(m_effectKindRegistry.get());
+        }
         m_windowManager->registerWindow(std::move(propertyWindow));
     }
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));

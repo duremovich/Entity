@@ -16,6 +16,11 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/components/EffectChain.hpp"
+#include "entity/components/EffectParameters.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
@@ -184,6 +189,12 @@ void PropertyWindow::render() {
     // Clip Info section
     if (ImGui::CollapsingHeader("Clip Info")) {
         renderClipInfo();
+    }
+
+    // Effects section (issue #54). Always rendered so the user can
+    // discover the "Add Effect" affordance even when the chain is empty.
+    if (ImGui::CollapsingHeader("Effects", ImGuiTreeNodeFlags_DefaultOpen)) {
+        renderEffectsSection(selectedClip);
     }
 
     // Pop the clip-specific ID
@@ -665,6 +676,159 @@ void PropertyWindow::renderClipInfo() {
 
     // Media type (use helper function from Types.hpp)
     ImGui::Text("Media Type: %s", MediaTypeToString(clip->mediaType));
+}
+
+void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
+    if (!m_timeline || layerEntity == entt::null) return;
+    auto& registry = m_timeline->getRegistry();
+    if (!registry.valid(layerEntity)) return;
+
+    // "Add Effect" button. Opens a popup populated from the registry.
+    if (ImGui::Button("+ Add Effect", ImVec2(-1, 0))) {
+        ImGui::OpenPopup("AddEffectPopup");
+    }
+    if (ImGui::BeginPopup("AddEffectPopup")) {
+        if (!m_effectKindRegistry) {
+            ImGui::TextDisabled("(EffectKindRegistry not bound)");
+        } else {
+            // Group by category, stable order.
+            const auto& kinds = m_effectKindRegistry->kinds();
+            std::vector<const effects::EffectKind*> sorted;
+            sorted.reserve(kinds.size());
+            for (const auto& [_, k] : kinds) sorted.push_back(&k);
+            std::sort(sorted.begin(), sorted.end(),
+                [](const effects::EffectKind* a, const effects::EffectKind* b) {
+                    if (a->category != b->category) return a->category < b->category;
+                    return a->displayName < b->displayName;
+                });
+
+            std::string lastCategory;
+            for (const effects::EffectKind* k : sorted) {
+                if (k->category != lastCategory) {
+                    if (!lastCategory.empty()) ImGui::Separator();
+                    ImGui::TextDisabled("%s", k->category.c_str());
+                    lastCategory = k->category;
+                }
+                if (ImGui::MenuItem(k->displayName.c_str())) {
+                    if (m_dispatcher) {
+                        m_dispatcher->enqueue(std::make_unique<AddEffectCommand>(
+                            layerEntity, k->stableId));
+                    }
+                }
+            }
+            if (sorted.empty()) {
+                ImGui::TextDisabled("(no effect kinds registered)");
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    auto* chain = registry.try_get<EffectChain>(layerEntity);
+    if (!chain || chain->nodes.empty()) {
+        ImGui::TextDisabled("No effects on this layer.");
+        return;
+    }
+
+    ImGui::Spacing();
+
+    // Walk the chain and render one collapsible header per effect.
+    // Iterating by index so we can capture entities for delete commands
+    // without invalidating during the render pass — commands enqueue
+    // and apply on the next dispatcher tick.
+    for (std::size_t i = 0; i < chain->nodes.size(); ++i) {
+        const entt::entity fxEnt = chain->nodes[i];
+        if (!registry.valid(fxEnt)) continue;
+        auto* fx     = registry.try_get<Effect>(fxEnt);
+        auto* params = registry.try_get<EffectParameters>(fxEnt);
+        if (!fx) continue;
+
+        ImGui::PushID(static_cast<int>(fxEnt));
+
+        const effects::EffectKind* kind = m_effectKindRegistry
+            ? m_effectKindRegistry->find(fx->kindId)
+            : nullptr;
+        const char* displayName = kind ? kind->displayName.c_str()
+                                       : "Unknown effect kind";
+
+        // Per-effect header row: enable checkbox + name + remove button.
+        bool enabled = fx->enabled;
+        if (ImGui::Checkbox("##fx_enabled", &enabled) && m_dispatcher) {
+            auto cmd = std::make_unique<SetEffectEnabledCommand>(fxEnt, enabled);
+            cmd->setPreviousEnabled(fx->enabled);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+        ImGui::SameLine();
+        const bool open = ImGui::CollapsingHeader(displayName,
+                                                   ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 28.0f);
+        const bool deleteClicked = ImGui::SmallButton("X");
+
+        if (open) {
+            if (!kind) {
+                ImGui::TextDisabled("Kind 0x%08x not registered", fx->kindId);
+            } else if (!params) {
+                ImGui::TextDisabled("No EffectParameters component");
+            } else {
+                // Param sliders, positional w.r.t. the kind's schema.
+                for (std::size_t slot = 0; slot < kind->params.size(); ++slot) {
+                    const auto& schema = kind->params[slot];
+
+                    // Only Float params are editable in v1 (the only type
+                    // ParamSchema-defines for built-in effects today). When
+                    // other types ship the dispatch widens here.
+                    if (schema.type != ParamValue::Type::Float) {
+                        ImGui::TextDisabled("%s: (non-Float types not editable yet)",
+                                            schema.displayName.c_str());
+                        continue;
+                    }
+
+                    float v = (slot < params->values.size())
+                                  ? params->values[slot].f4[0]
+                                  : schema.defaultValue.f4[0];
+                    ImGui::PushID(static_cast<int>(slot));
+                    ImGui::SetNextItemWidth(-1);
+                    const bool changed = ImGui::SliderFloat(schema.displayName.c_str(),
+                                                            &v, schema.min, schema.max, "%.3f");
+                    if (ImGui::IsItemActivated()) {
+                        m_preEditEffectFloat = (slot < params->values.size())
+                            ? params->values[slot].f4[0]
+                            : schema.defaultValue.f4[0];
+                    }
+                    if (changed) {
+                        // Live-update local state so the slider tracks the
+                        // user's drag without waiting for the dispatched
+                        // command to land on next tick.
+                        if (slot >= params->values.size()) {
+                            params->values.resize(kind->params.size(), {});
+                            for (std::size_t i = 0; i < kind->params.size(); ++i) {
+                                if (params->values[i].type == ParamValue::Type::Float &&
+                                    params->values[i].f4[0] == 0.0f &&
+                                    params->values[i].i == 0)
+                                {
+                                    params->values[i] = kind->params[i].defaultValue;
+                                }
+                            }
+                        }
+                        params->values[slot] = ParamValue::makeFloat(v);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+                        auto cmd = std::make_unique<SetEffectFloatParamCommand>(
+                            fxEnt, schema.name, v);
+                        cmd->setPreviousValue(m_preEditEffectFloat);
+                        m_dispatcher->enqueue(std::move(cmd));
+                    }
+                    ImGui::PopID();
+                }
+            }
+        }
+
+        if (deleteClicked && m_dispatcher) {
+            m_dispatcher->enqueue(
+                std::make_unique<RemoveEffectCommand>(layerEntity, fxEnt));
+        }
+
+        ImGui::PopID();
+    }
 }
 
 void PropertyWindow::renderTimelineProperties() {
