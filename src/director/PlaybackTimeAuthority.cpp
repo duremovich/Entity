@@ -944,6 +944,10 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         if (const auto* mgs = m_registry.try_get<MunchersGameState>(entity)) {
             snap.kind             = bus::GenerativeLayerSnapshot::Kind::Muncher;
             snap.muncher_simFrame = mgs->simFrame;
+            snap.muncher_x        = mgs->muncherX;
+            snap.muncher_y        = mgs->muncherY;
+            snap.muncher_inputX   = mgs->inputX;
+            snap.muncher_inputY   = mgs->inputY;
         } else {
             // No kind-specific state component → skip (defensive — the
             // editor-side creation paths always attach one).

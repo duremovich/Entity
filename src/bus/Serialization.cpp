@@ -389,6 +389,10 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["blendMode"]         = g.blendMode;
     j["zOrder"]            = g.zOrder;
     j["muncher_simFrame"]  = g.muncher_simFrame;
+    j["muncher_x"]         = g.muncher_x;
+    j["muncher_y"]         = g.muncher_y;
+    j["muncher_inputX"]    = g.muncher_inputX;
+    j["muncher_inputY"]    = g.muncher_inputY;
     return j;
 }
 
@@ -404,6 +408,10 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     g.blendMode         = j.value("blendMode",         0);
     g.zOrder            = j.value("zOrder",            std::uint32_t{0});
     g.muncher_simFrame  = j.value("muncher_simFrame",  std::uint64_t{0});
+    g.muncher_x         = j.value("muncher_x",         0.5f);
+    g.muncher_y         = j.value("muncher_y",         0.5f);
+    g.muncher_inputX    = j.value("muncher_inputX",    0.0f);
+    g.muncher_inputY    = j.value("muncher_inputY",    0.0f);
     return g;
 }
 

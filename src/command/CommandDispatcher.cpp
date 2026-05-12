@@ -260,6 +260,9 @@ void CommandDispatcher::registerBuiltinFactories() {
 
     // Generative layer commands (Muncher is the first kind)
     registerFactory("CreateMuncherLayer", CreateMuncherLayerCommand::fromJson);
+
+    // Input bus commands
+    registerFactory("SetInputChannel", SetInputChannelCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {

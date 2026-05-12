@@ -32,6 +32,7 @@ class DecodeSystem;
 class AnimationSystem;
 class GenerativeSystem;
 class CommandDispatcher;
+class InputBus;
 class OutputManager;
 class FrameCache;
 class OcioManager;
@@ -174,6 +175,16 @@ public:
      * before initialize() and after shutdown().
      */
     bus::IMessageTransport* getBusTransport() { return m_transport.get(); }
+
+    /**
+     * Get the cross-system input channel bus. Input sources (OSC plugins,
+     * editor keyboard handler, MIDI plugins, script `SetInputChannel`)
+     * write to it; gameplay systems (GenerativeSystem) read from it.
+     * Lives for Engine's lifetime; returned pointer is valid between
+     * initialize() and shutdown().
+     */
+    InputBus* getInputBus() { return m_inputBus.get(); }
+    const InputBus* getInputBus() const { return m_inputBus.get(); }
 
     /**
      * Register a plugin shutdown hook. Hooks fire at the start of
@@ -779,6 +790,17 @@ private:
     // Raw shortcut into m_director->getGenerativeSystem(). Director owns
     // GenerativeSystem (first generative layer kind: Muncher).
     GenerativeSystem* m_generativeSystem{nullptr};
+
+    // Engine-owned input channel bus. Constructed in initialize(),
+    // destroyed in shutdown(). Plumbed into GenerativeSystem so the
+    // Muncher kind can read its X/Y axes each editor tick.
+    std::unique_ptr<InputBus> m_inputBus;
+
+    // True while at least one Muncher movement key is held. Used by the
+    // per-tick keyboard poller to know when to stop writing
+    // `muncher.input.*` channels (so scripts / OSC / MIDI can drive them
+    // without the keyboard zeroing them out every tick).
+    bool m_muncherKeyboardActive{false};
 
     // Machine-global settings (frame-cache budget etc). Loaded from
     // settingsPath() at construction; persisted by saveSettings() whenever

@@ -1,0 +1,89 @@
+{
+    "version": 1,
+    "description": "Phase 3 smoke: Muncher player moves in response to input bus channels. Captures the layer's compose target at four positions (center / right / upper-right / lower-left) to confirm the yellow square is in different places.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "MuncherScreen",
+            "width": 256,
+            "height": 256
+        },
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 5000
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 20
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v3_pos1_center.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.x",
+            "value": 1.0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 80
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v3_pos2_right.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.x",
+            "value": 0.0
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.y",
+            "value": -1.0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 80
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v3_pos3_upper_right.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.x",
+            "value": -1.0
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.y",
+            "value": 1.0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 160
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v3_pos4_lower_left.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

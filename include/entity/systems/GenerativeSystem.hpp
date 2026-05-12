@@ -5,6 +5,7 @@
 namespace entity {
 
 class Timeline;
+class InputBus;
 
 /**
  * GenerativeSystem — ticks procedural-content layers (GenerativeLayer-marked
@@ -37,8 +38,14 @@ public:
     // AnimationSystem. update() is a no-op until set.
     void setTimeline(Timeline* timeline) { m_timeline = timeline; }
 
+    // Optional — wire the cross-system input bus so the Muncher kind can
+    // read its player axes ("muncher.input.x" / ".y") each tick. Without
+    // it, the Muncher just sits still.
+    void setInputBus(InputBus* inputBus) { m_inputBus = inputBus; }
+
 private:
     Timeline* m_timeline{nullptr};
+    InputBus* m_inputBus{nullptr};
 };
 
 } // namespace entity

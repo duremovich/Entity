@@ -16,6 +16,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
+#include "entity/input/InputBus.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <imgui.h>
@@ -2998,6 +2999,37 @@ CommandPtr CreateMuncherLayerCommand::fromJson(const nlohmann::json& j) {
     FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
     FrameNumber duration = j.value("duration", static_cast<FrameNumber>(300));
     return std::make_unique<CreateMuncherLayerCommand>(trackIndex, start, duration);
+}
+
+// ============================================================================
+// SetInputChannelCommand
+// ============================================================================
+
+bool SetInputChannelCommand::execute(Engine& engine) {
+    auto* bus = engine.getInputBus();
+    if (!bus) {
+        std::cerr << "[SetInputChannel] FAIL: no InputBus on engine" << std::endl;
+        return false;
+    }
+    bus->setFloat(m_channel, m_value);
+    std::cout << "[SetInputChannel] " << m_channel << " = " << m_value << std::endl;
+    return true;
+}
+
+nlohmann::json SetInputChannelCommand::toJson() const {
+    return {{"type", "SetInputChannel"},
+            {"channel", m_channel},
+            {"value", m_value}};
+}
+
+std::string SetInputChannelCommand::getDescription() const {
+    return "Set input channel " + m_channel + " = " + std::to_string(m_value);
+}
+
+CommandPtr SetInputChannelCommand::fromJson(const nlohmann::json& j) {
+    std::string channel = j.value("channel", std::string{});
+    float       value   = j.value("value",   0.0f);
+    return std::make_unique<SetInputChannelCommand>(std::move(channel), value);
 }
 
 // ============================================================================

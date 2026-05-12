@@ -218,6 +218,9 @@ target_sources(EntityMediaCore
         src/systems/AnimationSystem.cpp
         src/systems/GenerativeSystem.cpp
         src/systems/CameraControlSystem.cpp
+
+        # Input
+        src/input/InputBus.cpp
         # src/systems/RenderSystem.cpp
         # src/systems/TimelineSystem.cpp
 

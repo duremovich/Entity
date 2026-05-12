@@ -30,6 +30,7 @@
 #include "entity/systems/AnimationSystem.hpp"
 #include "entity/systems/GenerativeSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
+#include "entity/input/InputBus.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include "entity/color/OcioManager.hpp"
@@ -212,6 +213,16 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_generativeSystem  = m_director->getGenerativeSystem();
     m_timeAuthority     = m_director->getTimeAuthority();
     m_sectionScheduler  = m_director->getSectionScheduler();
+
+    // Cross-system input channel bus. Constructed here (before any plugin
+    // worker spins up that might write to it) and handed to systems +
+    // plugins that need it. Plugins access it via EnginePluginContext
+    // (future hook); the editor keyboard handler and SetInputChannel
+    // command write to it directly.
+    m_inputBus = std::make_unique<InputBus>();
+    if (m_generativeSystem) {
+        m_generativeSystem->setInputBus(m_inputBus.get());
+    }
     std::cout << "  Director initialized (Timeline + ProjectManager + "
                  "TranscodeManager + CommandDispatcher + AnimationSystem + "
                  "PlaybackTimeAuthority)" << std::endl;
@@ -629,6 +640,7 @@ void Engine::shutdown() {
     m_animationSystem    = nullptr;
     m_generativeSystem   = nullptr;
     m_commandDispatcher  = nullptr;
+    m_inputBus.reset();
     m_transcodeManager   = nullptr;
     m_projectManager     = nullptr;
     m_timeline           = nullptr;
@@ -1456,6 +1468,42 @@ void Engine::update() {
     // renderer.tick() split (subtask 8).
     if (m_animationSystem) {
         m_animationSystem->update(m_registry, static_cast<float>(deltaTime));
+    }
+    // Editor keyboard → Muncher input bus. Polled once per editor tick
+    // (rather than driven from onKeyEvent) so held-key state drives the
+    // analog axes reliably across alt-tab / focus changes. Gated on
+    // WantTextInput so typing in MediaBin / Properties text fields
+    // doesn't smear into player movement.
+    //
+    // Critically, the handler only WRITES the channel while a key is
+    // held (or for one tick after the last key releases). Otherwise it
+    // leaves the channel alone — so scripts and OSC plugins can drive
+    // `muncher.input.x/.y` without the keyboard poller overwriting them
+    // with 0 every tick. Future controllers (joystick, OSC, MIDI) write
+    // to the same two channels with the same single-source convention.
+    if (m_inputBus && m_window && !ImGui::GetIO().WantTextInput) {
+        const bool w     = glfwGetKey(m_window, GLFW_KEY_W)     == GLFW_PRESS;
+        const bool s     = glfwGetKey(m_window, GLFW_KEY_S)     == GLFW_PRESS;
+        const bool a     = glfwGetKey(m_window, GLFW_KEY_A)     == GLFW_PRESS;
+        const bool d     = glfwGetKey(m_window, GLFW_KEY_D)     == GLFW_PRESS;
+        const bool up    = glfwGetKey(m_window, GLFW_KEY_UP)    == GLFW_PRESS;
+        const bool down  = glfwGetKey(m_window, GLFW_KEY_DOWN)  == GLFW_PRESS;
+        const bool left  = glfwGetKey(m_window, GLFW_KEY_LEFT)  == GLFW_PRESS;
+        const bool right = glfwGetKey(m_window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+        const float ix = ((d || right) ? 1.0f : 0.0f) - ((a || left) ? 1.0f : 0.0f);
+        const float iy = ((s || down)  ? 1.0f : 0.0f) - ((w || up)   ? 1.0f : 0.0f);
+        const bool anyHeld = (ix != 0.0f) || (iy != 0.0f);
+        if (anyHeld) {
+            m_inputBus->setFloat("muncher.input.x", ix);
+            m_inputBus->setFloat("muncher.input.y", iy);
+            m_muncherKeyboardActive = true;
+        } else if (m_muncherKeyboardActive) {
+            // One-shot zero-out the tick after the last key releases, then
+            // stop touching the channels until a key is pressed again.
+            m_inputBus->setFloat("muncher.input.x", 0.0f);
+            m_inputBus->setFloat("muncher.input.y", 0.0f);
+            m_muncherKeyboardActive = false;
+        }
     }
     // GenerativeSystem ticks after AnimationSystem so any animated parameter
     // on a generative layer (e.g. a future opacity track) is settled before

@@ -190,7 +190,14 @@ struct GenerativeLayerSnapshot {
     int           blendMode{0};
     std::uint32_t zOrder{0};
 
+    // Muncher-specific baked state. Show thread reads these to draw the
+    // player and (future) game entities. The kind field above gates
+    // whether they're meaningful — for Kind::Muncher all four are live.
     std::uint64_t muncher_simFrame{0};
+    float         muncher_x{0.5f};   // normalized [0, 1], origin top-left
+    float         muncher_y{0.5f};
+    float         muncher_inputX{0.0f};  // last-read external axes, debug overlays
+    float         muncher_inputY{0.0f};
 };
 
 // Director → Renderer per-tick state snapshot. Becomes the only data path

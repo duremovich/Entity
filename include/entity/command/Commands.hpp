@@ -1660,6 +1660,39 @@ private:
 };
 
 // ============================================================================
+// Input Bus commands
+// ============================================================================
+
+/**
+ * SetInputChannelCommand — write a float to a named InputBus channel.
+ *
+ * Lets scripts drive gameplay inputs (Muncher player axes, future
+ * controllers) without a real joystick / OSC / MIDI source attached.
+ * Same path OSC/MIDI plugins will eventually use, just with the value
+ * arriving from a script line instead of a network packet.
+ *
+ * Params:
+ *   channel — channel name, e.g. "muncher.input.x"
+ *   value   — float; for axis channels keep in [-1, 1]
+ */
+class SetInputChannelCommand : public Command {
+public:
+    SetInputChannelCommand(std::string channel, float value)
+        : m_channel(std::move(channel)), m_value(value) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetInputChannel"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_channel;
+    float       m_value;
+};
+
+// ============================================================================
 // Generative Layer commands (Muncher)
 // ============================================================================
 

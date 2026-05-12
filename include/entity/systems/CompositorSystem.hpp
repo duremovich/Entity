@@ -54,11 +54,11 @@ public:
     // SceneSnapshot. Returns the slot ID (UINT32_MAX on failure).
     std::uint32_t ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap);
 
-    // V1 placeholder colour for a generative layer — HSV cycle driven by the
-    // layer's Muncher simFrame. Replace with real procedural draws (sprite
-    // atlas, ghost positions, …) in Muncher v2.
-    static glm::vec4 computeGenerativePlaceholderColor(
-        const bus::GenerativeLayerSnapshot& gl);
+    // V1 Muncher render: dim playfield + yellow square at the baked
+    // (muncher_x, muncher_y). Every "game entity" is a transformed
+    // colored quad until sprite-atlas rendering lands.
+    void drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& gl,
+                              float drawOpacity);
 
 private:
     struct PendingAllocation {

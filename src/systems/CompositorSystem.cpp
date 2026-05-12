@@ -7,6 +7,7 @@
 #include "entity/components/Screen.hpp"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
@@ -134,46 +135,54 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
 
         // Generative layers (Muncher v1). The editor-side bake already
         // filtered to active timeline frames; here we only filter by
-        // targetScreen and skip layers with no kind-specific data. The v1
-        // draw is a hue-cycling solid color quad driven by Muncher's
-        // simFrame — replace with real procedural content (sprite atlas,
-        // pellet grid, ghost positions, …) in Muncher v2.
+        // targetScreen and skip layers with no kind-specific data.
+        //
+        // V1 procedural draw: dim playfield background + a yellow square
+        // for the Muncher at its (x, y) position. Real maze + ghosts +
+        // pellets land once sprite-atlas rendering exists; for now every
+        // game entity is a transformed colored quad through the existing
+        // drawColoredQuad path (no new HLSL / PSO work).
         for (const auto& gl : rf.generativeLayers) {
             if (gl.targetScreen != UINT64_MAX && gl.targetScreen != screenId) continue;
 
             const float drawOpacity = gl.opacity;
             if (drawOpacity <= 0.0f) continue;
 
-            glm::vec4 color = computeGenerativePlaceholderColor(gl);
-
-            // Identity transform → quad covers the whole compose target.
-            // Once per-layer render targets land (Phase 2b), this changes
-            // to a textured quad sampling the layer's RT.
-            glm::mat4 identity(1.0f);
-            m_renderer->drawColoredQuad(identity, color, drawOpacity);
+            drawMuncherPlayfield(gl, drawOpacity);
         }
 
         m_renderer->endComposeTarget();
     }
 }
 
-glm::vec4 CompositorSystem::computeGenerativePlaceholderColor(
-    const bus::GenerativeLayerSnapshot& gl) {
-    // HSV → RGB hue cycle driven by Muncher's simFrame so the user can
-    // see the procedural pipeline is alive. ~720 sim ticks per full cycle.
-    const float hue6 = std::fmod(static_cast<float>(gl.muncher_simFrame) * 0.5f, 360.0f) / 60.0f;
-    const float c    = 0.85f;
-    const float x    = c * (1.0f - std::fabs(std::fmod(hue6, 2.0f) - 1.0f));
-    float r = 0.0f, g = 0.0f, b = 0.0f;
-    if      (hue6 < 1.0f) { r = c; g = x; }
-    else if (hue6 < 2.0f) { r = x; g = c; }
-    else if (hue6 < 3.0f) {        g = c; b = x; }
-    else if (hue6 < 4.0f) {        g = x; b = c; }
-    else if (hue6 < 5.0f) { r = x;        b = c; }
-    else                  { r = c;        b = x; }
-    constexpr float kValueOffset = 0.10f;
-    return glm::vec4(r + kValueOffset, g + kValueOffset, b + kValueOffset, 1.0f);
+void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& gl,
+                                             float drawOpacity) {
+    // 1) Dim playfield background covering the whole compose target. Keeps
+    //    the layer visible even when the Muncher is in a corner; later
+    //    this becomes the maze tile draw.
+    const glm::vec4 bgColor(0.06f, 0.06f, 0.10f, 1.0f);
+    m_renderer->drawColoredQuad(glm::mat4(1.0f), bgColor, drawOpacity);
+
+    // 2) Muncher: yellow square at (muncher_x, muncher_y). Convert from
+    //    [0, 1] image-coords (origin top-left, Y-down) to NDC (-1..1,
+    //    Y-up). The unit quad is 2 NDC units wide, so a `kHalfSize` scale
+    //    yields a `2 * kHalfSize` × NDC-units quad — i.e. that fraction
+    //    of the full screen size.
+    constexpr float kHalfSize = 0.045f;  // ≈ 9% of screen per side
+    const float ndcX = gl.muncher_x * 2.0f - 1.0f;
+    const float ndcY = 1.0f - gl.muncher_y * 2.0f;
+    const glm::mat4 muncherXf =
+        glm::translate(glm::mat4(1.0f), glm::vec3(ndcX, ndcY, 0.0f)) *
+        glm::scale(glm::mat4(1.0f), glm::vec3(kHalfSize, kHalfSize, 1.0f));
+
+    // Chomp pulse so the player reads as alive even when stationary —
+    // simFrame % 30 cycles brightness between ~0.75 and ~1.0.
+    const float chomp = 0.85f + 0.15f *
+        std::sin(static_cast<float>(gl.muncher_simFrame) * 0.20f);
+    const glm::vec4 muncherColor(chomp, chomp * 0.85f, 0.10f, 1.0f);
+    m_renderer->drawColoredQuad(muncherXf, muncherColor, drawOpacity);
 }
+
 
 void CompositorSystem::shutdown(entt::registry& registry) {
     std::cout << "CompositorSystem shutdown" << std::endl;
