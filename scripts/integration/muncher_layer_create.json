@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "V1 skeleton smoke test: CreateMuncherLayer places a Generative layer on track 0, the editor ticks GenerativeSystem during playback, no crash on shutdown.",
+    "commands": [
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 600
+        },
+        {
+            "type": "Pause"
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

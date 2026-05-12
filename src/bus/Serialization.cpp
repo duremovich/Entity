@@ -380,6 +380,33 @@ OutputSnapshot decodeOutputSnapshot(const json& j) {
     return o;
 }
 
+ojson encode(const GenerativeLayerSnapshot& g) {
+    ojson j = ojson::object();
+    j["entity"]            = g.entity;
+    j["kind"]              = static_cast<int>(g.kind);
+    j["targetScreen"]      = g.targetScreen;
+    j["opacity"]           = g.opacity;
+    j["blendMode"]         = g.blendMode;
+    j["zOrder"]            = g.zOrder;
+    j["muncher_simFrame"]  = g.muncher_simFrame;
+    return j;
+}
+
+GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
+    GenerativeLayerSnapshot g;
+    g.entity            = j.value("entity",            std::uint64_t{0});
+    int kindInt         = j.value("kind",              0);
+    g.kind              = (kindInt == 0)
+                            ? GenerativeLayerSnapshot::Kind::Muncher
+                            : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
+    g.targetScreen      = j.value("targetScreen",      std::uint64_t{UINT64_MAX});
+    g.opacity           = j.value("opacity",           1.0f);
+    g.blendMode         = j.value("blendMode",         0);
+    g.zOrder            = j.value("zOrder",            std::uint32_t{0});
+    g.muncher_simFrame  = j.value("muncher_simFrame",  std::uint64_t{0});
+    return g;
+}
+
 ojson encode(const RenderFrame& m) {
     ojson j = ojson::object();
     j["frameNumber"] = m.frameNumber;
@@ -403,6 +430,9 @@ ojson encode(const RenderFrame& m) {
     auto outputs = ojson::array();
     for (const auto& o : m.outputs) outputs.push_back(encode(o));
     j["outputs"] = std::move(outputs);
+    auto gens = ojson::array();
+    for (const auto& g : m.generativeLayers) gens.push_back(encode(g));
+    j["generativeLayers"] = std::move(gens);
     return j;
 }
 
@@ -423,6 +453,9 @@ RenderFrame decodeRenderFrame(const json& j) {
         for (const auto& p : j.at("projectors")) m.projectors.push_back(decodeProjectorSnapshot(p));
     if (j.contains("outputs"))
         for (const auto& o : j.at("outputs")) m.outputs.push_back(decodeOutputSnapshot(o));
+    if (j.contains("generativeLayers"))
+        for (const auto& g : j.at("generativeLayers"))
+            m.generativeLayers.push_back(decodeGenerativeLayerSnapshot(g));
     return m;
 }
 
@@ -596,6 +629,9 @@ ojson encode(const SceneSnapshot& s) {
     auto oaCatalog = ojson::array();
     for (const auto& oa : s.objectAnimationLayers) oaCatalog.push_back(encode(oa));
     j["objectAnimationLayers"] = std::move(oaCatalog);
+    auto genCatalog = ojson::array();
+    for (const auto& gl : s.generativeLayers) genCatalog.push_back(encode(gl));
+    j["generativeLayers"] = std::move(genCatalog);
     return j;
 }
 
@@ -614,6 +650,9 @@ SceneSnapshot decodeSceneSnapshot(const json& j) {
     if (j.contains("objectAnimationLayers"))
         for (const auto& oa : j.at("objectAnimationLayers"))
             s.objectAnimationLayers.push_back(decodeObjectAnimationLayerSnapshot(oa));
+    if (j.contains("generativeLayers"))
+        for (const auto& gl : j.at("generativeLayers"))
+            s.generativeLayers.push_back(decodeGenerativeLayerSnapshot(gl));
     return s;
 }
 

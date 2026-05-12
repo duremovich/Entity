@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 #include <iostream>
 
@@ -131,8 +132,47 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
             m_renderer->drawColoredQuad(transformMatrix, color, drawOpacity);
         }
 
+        // Generative layers (Muncher v1). The editor-side bake already
+        // filtered to active timeline frames; here we only filter by
+        // targetScreen and skip layers with no kind-specific data. The v1
+        // draw is a hue-cycling solid color quad driven by Muncher's
+        // simFrame — replace with real procedural content (sprite atlas,
+        // pellet grid, ghost positions, …) in Muncher v2.
+        for (const auto& gl : rf.generativeLayers) {
+            if (gl.targetScreen != UINT64_MAX && gl.targetScreen != screenId) continue;
+
+            const float drawOpacity = gl.opacity;
+            if (drawOpacity <= 0.0f) continue;
+
+            glm::vec4 color = computeGenerativePlaceholderColor(gl);
+
+            // Identity transform → quad covers the whole compose target.
+            // Once per-layer render targets land (Phase 2b), this changes
+            // to a textured quad sampling the layer's RT.
+            glm::mat4 identity(1.0f);
+            m_renderer->drawColoredQuad(identity, color, drawOpacity);
+        }
+
         m_renderer->endComposeTarget();
     }
+}
+
+glm::vec4 CompositorSystem::computeGenerativePlaceholderColor(
+    const bus::GenerativeLayerSnapshot& gl) {
+    // HSV → RGB hue cycle driven by Muncher's simFrame so the user can
+    // see the procedural pipeline is alive. ~720 sim ticks per full cycle.
+    const float hue6 = std::fmod(static_cast<float>(gl.muncher_simFrame) * 0.5f, 360.0f) / 60.0f;
+    const float c    = 0.85f;
+    const float x    = c * (1.0f - std::fabs(std::fmod(hue6, 2.0f) - 1.0f));
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if      (hue6 < 1.0f) { r = c; g = x; }
+    else if (hue6 < 2.0f) { r = x; g = c; }
+    else if (hue6 < 3.0f) {        g = c; b = x; }
+    else if (hue6 < 4.0f) {        g = x; b = c; }
+    else if (hue6 < 5.0f) { r = x;        b = c; }
+    else                  { r = c;        b = x; }
+    constexpr float kValueOffset = 0.10f;
+    return glm::vec4(r + kValueOffset, g + kValueOffset, b + kValueOffset, 1.0f);
 }
 
 void CompositorSystem::shutdown(entt::registry& registry) {

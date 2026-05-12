@@ -1659,6 +1659,43 @@ private:
     entt::entity    m_createdEntity{entt::null};
 };
 
+// ============================================================================
+// Generative Layer commands (Muncher)
+// ============================================================================
+
+/**
+ * CreateMuncherLayerCommand — script / UI command for creating a Muncher
+ * generative layer on the timeline.
+ *
+ * Mirrors CreateObjectAnimationLayerCommand. Targets the first Screen
+ * entity found in the registry; the user retargets via the Properties
+ * panel once that surfaces for generative layers.
+ *
+ * Params:
+ *   trackIndex — 0-based index into timeline tracks
+ *   startFrame — first frame of the layer on the timeline
+ *   duration   — length in timeline frames
+ */
+class CreateMuncherLayerCommand : public Command {
+public:
+    CreateMuncherLayerCommand(int trackIndex, FrameNumber startFrame,
+                              FrameNumber duration)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreateMuncherLayer"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int          m_trackIndex;
+    FrameNumber  m_startFrame;
+    FrameNumber  m_duration;
+    entt::entity m_createdEntity{entt::null};
+};
+
 /**
  * AssertScreenSnapshotCommand — integration-test assertion.
  *

@@ -1,0 +1,46 @@
+{
+    "version": 1,
+    "description": "Phase 2 smoke: create a Muncher generative layer, let it tick, capture the screen's compose target. PNG should show a solid hue-cycled color (placeholder for the future procedural draw).",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "MuncherScreen",
+            "width": 256,
+            "height": 256
+        },
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 600
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 120
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v1_frame_120.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 200
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v1_frame_320.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

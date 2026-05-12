@@ -8,6 +8,7 @@
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/systems/AnimationSystem.hpp"
+#include "entity/systems/GenerativeSystem.hpp"
 #include "entity/timeline/Timeline.hpp"
 
 namespace entity {
@@ -22,6 +23,7 @@ Director::Director(entt::registry& registry,
     , m_transcodeManager(std::make_unique<TranscodeManager>())
     , m_commandDispatcher(std::make_unique<CommandDispatcher>())
     , m_animationSystem(std::make_unique<AnimationSystem>())
+    , m_generativeSystem(std::make_unique<GenerativeSystem>())
     , m_timeAuthority(std::make_unique<PlaybackTimeAuthority>(registry, m_timeline.get()))
     , m_sectionScheduler(std::make_unique<SectionScheduler>(registry, m_timeline.get()))
     , m_captureBroker(std::make_unique<CaptureBroker>())
@@ -37,6 +39,12 @@ Director::Director(entt::registry& registry,
     m_animationSystem->setTimeline(m_timeline.get());
     m_animationSystem->initialize(registry);
 
+    // GenerativeSystem ticks GenerativeLayer-marked entities. Same lifecycle
+    // shape as AnimationSystem: needs the Timeline pointer to check
+    // active-frame windows, and initialize() against the registry.
+    m_generativeSystem->setTimeline(m_timeline.get());
+    m_generativeSystem->initialize(registry);
+
     // Wire ProjectManager into the time authority so the per-tick
     // active-set tuples carry the per-clip MediaBin OCIO override
     // (Phase C.12 #9). Done after ProjectManager::initialize so the
@@ -50,8 +58,11 @@ Director::Director(entt::registry& registry,
 }
 
 Director::~Director() {
-    // Tear down AnimationSystem against the registry before its unique_ptr
-    // runs. Mirrors System lifecycle contracts elsewhere in the codebase.
+    // Tear down systems against the registry before their unique_ptrs run.
+    // Mirrors System lifecycle contracts elsewhere in the codebase.
+    if (m_generativeSystem) {
+        m_generativeSystem->shutdown(m_registry);
+    }
     if (m_animationSystem) {
         m_animationSystem->shutdown(m_registry);
     }

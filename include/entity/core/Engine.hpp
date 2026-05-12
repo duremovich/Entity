@@ -30,6 +30,7 @@ class WindowManager;
 class Decoder;
 class DecodeSystem;
 class AnimationSystem;
+class GenerativeSystem;
 class CommandDispatcher;
 class OutputManager;
 class FrameCache;
@@ -775,6 +776,10 @@ private:
     // AnimationSystem (Phase D entry, subtask 5).
     AnimationSystem* m_animationSystem{nullptr};
 
+    // Raw shortcut into m_director->getGenerativeSystem(). Director owns
+    // GenerativeSystem (first generative layer kind: Muncher).
+    GenerativeSystem* m_generativeSystem{nullptr};
+
     // Machine-global settings (frame-cache budget etc). Loaded from
     // settingsPath() at construction; persisted by saveSettings() whenever
     // the user clicks OK in the Preferences dialog. Per-project state lives
@@ -895,6 +900,18 @@ public:
     entt::entity createEmptyClipLayer(int trackIndex,
                                       FrameNumber startFrame,
                                       FrameNumber duration);
+
+    /**
+     * Create a Generative layer entity of the "Muncher" kind. The layer is
+     * attached to `trackIndex` at `startFrame` with `duration` timeline frames.
+     * `targetScreen` may be `entt::null`; the command path picks the first
+     * available Screen at creation time. Returns the new entity, or
+     * `entt::null` on failure.
+     */
+    entt::entity createMuncherLayer(entt::entity targetScreen,
+                                    int trackIndex,
+                                    FrameNumber startFrame,
+                                    FrameNumber duration);
 
 private:
 

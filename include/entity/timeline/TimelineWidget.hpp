@@ -29,6 +29,12 @@ using OALayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 // Parameters: track index, start frame (timeline), duration in frames
 using ClipLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
+// Callback for when a Generative layer kind is dropped onto a track.
+// V1 only ships the Muncher kind; future kinds either reuse this callback
+// with a sub-kind argument or add their own typedef.
+// Parameters: track index, start frame (timeline), duration in frames
+using GenerativeLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
 /**
  * Clip edge for trimming operations
  */
@@ -112,6 +118,7 @@ public:
 
     void setOALayerDropCallback(OALayerDropCallback callback) { m_oaLayerDropCallback = std::move(callback); }
     void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
+    void setGenerativeLayerDropCallback(GenerativeLayerDropCallback callback) { m_generativeLayerDropCallback = std::move(callback); }
 
     /**
      * Optional — wire the CommandDispatcher so ruler-context-menu actions
@@ -469,6 +476,7 @@ private:
     MediaDropCallback m_mediaDropCallback;
     OALayerDropCallback m_oaLayerDropCallback;
     ClipLayerDropCallback m_clipLayerDropCallback;
+    GenerativeLayerDropCallback m_generativeLayerDropCallback;
 
     // Track expansion state. Track twirl now drives property-panel display
     // for the clip currently under the playhead on that track — no separate

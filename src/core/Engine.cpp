@@ -28,6 +28,7 @@
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
+#include "entity/systems/GenerativeSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
@@ -49,6 +50,8 @@
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/MunchersGameState.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Screen.hpp"
@@ -206,6 +209,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_transcodeManager  = m_director->getTranscodeManager();
     m_commandDispatcher = m_director->getCommandDispatcher();
     m_animationSystem   = m_director->getAnimationSystem();
+    m_generativeSystem  = m_director->getGenerativeSystem();
     m_timeAuthority     = m_director->getTimeAuthority();
     m_sectionScheduler  = m_director->getSectionScheduler();
     std::cout << "  Director initialized (Timeline + ProjectManager + "
@@ -397,6 +401,18 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         });
         timelineWidget->setClipLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
             entt::entity created = this->createEmptyClipLayer(trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
+        timelineWidget->setGenerativeLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            // Resolve target screen: first Screen entity in the registry, same
+            // policy as the OA drop callback. The user retargets via Properties
+            // once the panel for generative layers exists.
+            entt::entity target = entt::null;
+            auto screenView = m_registry.view<Screen>();
+            if (!screenView.empty()) target = *screenView.begin();
+            entt::entity created = this->createMuncherLayer(target, trackIndex, startFrame, duration);
             if (created != entt::null && m_timeline) {
                 m_timeline->setSelectedClip(created);
             }
@@ -611,6 +627,7 @@ void Engine::shutdown() {
     // order bugs early instead of at process exit.)
     m_timeAuthority      = nullptr;
     m_animationSystem    = nullptr;
+    m_generativeSystem   = nullptr;
     m_commandDispatcher  = nullptr;
     m_transcodeManager   = nullptr;
     m_projectManager     = nullptr;
@@ -1439,6 +1456,13 @@ void Engine::update() {
     // renderer.tick() split (subtask 8).
     if (m_animationSystem) {
         m_animationSystem->update(m_registry, static_cast<float>(deltaTime));
+    }
+    // GenerativeSystem ticks after AnimationSystem so any animated parameter
+    // on a generative layer (e.g. a future opacity track) is settled before
+    // the sim reads it. Same threading constraint as AnimationSystem — editor
+    // thread only; show thread reads the baked snapshot (Phase 2 wiring).
+    if (m_generativeSystem) {
+        m_generativeSystem->update(m_registry, static_cast<float>(deltaTime));
     }
     // #27 — drain ContentScanner deltas just before DecodeSystem so any
     // freshly-discovered file is decoder-ready this same frame.
@@ -2874,6 +2898,52 @@ entt::entity Engine::createEmptyClipLayer(int trackIndex,
     track->sortLayers(m_registry);
 
     std::cout << "[Engine] Created empty clip layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
+}
+
+entt::entity Engine::createMuncherLayer(entt::entity targetScreen,
+                                        int trackIndex,
+                                        FrameNumber startFrame,
+                                        FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createMuncherLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::Generative;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    // Yellow-green: nods to the lower-case-"e" Muncher mascot and reads
+    // distinctly against the Clip (blue) and OA (purple) timeline colors.
+    lay.color      = {0.85f, 0.78f, 0.20f, 1.0f};
+    lay.name       = "Muncher";
+
+    auto& gl = m_registry.emplace<GenerativeLayer>(layerEntity);
+    gl.targetScreen = targetScreen;
+    // renderWidth / renderHeight default 1920x1080; show thread will allocate
+    // the matching render target on first use.
+
+    m_registry.emplace<MunchersGameState>(layerEntity);
+    m_registry.emplace<MediaLayer>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created Muncher generative layer entity="
               << static_cast<uint32_t>(layerEntity)
               << " track=" << trackIndex
               << " start=" << startFrame

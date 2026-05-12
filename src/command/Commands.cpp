@@ -2948,6 +2948,59 @@ CommandPtr CreateObjectAnimationLayerCommand::fromJson(const nlohmann::json& j) 
 }
 
 // ============================================================================
+// CreateMuncherLayerCommand (first generative layer kind)
+// ============================================================================
+
+bool CreateMuncherLayerCommand::execute(Engine& engine) {
+    // Resolve target: first Screen entity in the registry. Same policy as
+    // CreateObjectAnimationLayerCommand — the user retargets via Properties.
+    auto& registry = engine.getRegistry();
+    entt::entity targetEntity = entt::null;
+    auto screenView = registry.view<Screen>();
+    if (!screenView.empty()) {
+        targetEntity = *screenView.begin();
+    }
+
+    m_createdEntity = engine.createMuncherLayer(targetEntity,
+                                                m_trackIndex,
+                                                m_startFrame,
+                                                m_duration);
+    if (m_createdEntity == entt::null) {
+        std::cerr << "[CreateMuncherLayer] FAIL: createMuncherLayer returned null" << std::endl;
+        return false;
+    }
+    std::cout << "[CreateMuncherLayer] OK track=" << m_trackIndex
+              << " start=" << m_startFrame
+              << " duration=" << m_duration
+              << " entity=" << static_cast<uint32_t>(m_createdEntity)
+              << " target=" << (targetEntity != entt::null
+                                  ? std::to_string(static_cast<uint32_t>(targetEntity))
+                                  : "none")
+              << std::endl;
+    return true;
+}
+
+nlohmann::json CreateMuncherLayerCommand::toJson() const {
+    return {{"type", "CreateMuncherLayer"},
+            {"trackIndex", m_trackIndex},
+            {"startFrame", m_startFrame},
+            {"duration", m_duration}};
+}
+
+std::string CreateMuncherLayerCommand::getDescription() const {
+    return "Create Muncher generative layer on track " + std::to_string(m_trackIndex) +
+           " at " + std::to_string(m_startFrame) +
+           " dur=" + std::to_string(m_duration);
+}
+
+CommandPtr CreateMuncherLayerCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex       = j.value("trackIndex", 0);
+    FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
+    FrameNumber duration = j.value("duration", static_cast<FrameNumber>(300));
+    return std::make_unique<CreateMuncherLayerCommand>(trackIndex, start, duration);
+}
+
+// ============================================================================
 // AssertObjectAnimationOutputCommand (Phase 3.3)
 // ============================================================================
 

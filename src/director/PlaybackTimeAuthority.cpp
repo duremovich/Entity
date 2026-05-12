@@ -5,6 +5,8 @@
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/MunchersGameState.hpp"
 #include "entity/components/MappingSurface.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
@@ -914,6 +916,42 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         if (!oas.tracks.empty())
             out.objectAnimationLayers.push_back(std::move(oas));
     }
+
+    // Generative layer catalog — Muncher and (eventually) other procedural
+    // kinds. Filter to currently-active timeline frames here so the show
+    // thread doesn't need to re-check start/duration. ADR-0014: editor
+    // thread is the sole reader of GenerativeLayer / MunchersGameState.
+    out.generativeLayers.clear();
+    for (auto [entity, layer, gen] :
+            m_registry.view<Layer, GenerativeLayer>().each()) {
+        if (currentFrameForOA < layer.startFrame ||
+            currentFrameForOA >= layer.startFrame + layer.duration) continue;
+
+        bus::GenerativeLayerSnapshot snap;
+        snap.entity       = static_cast<std::uint64_t>(entity);
+        snap.targetScreen = (gen.targetScreen == entt::null)
+                              ? std::uint64_t{UINT64_MAX}
+                              : static_cast<std::uint64_t>(gen.targetScreen);
+
+        if (const auto* ml = m_registry.try_get<MediaLayer>(entity)) {
+            snap.opacity   = ml->opacity;
+            snap.blendMode = static_cast<int>(ml->blendMode);
+            snap.zOrder    = ml->zOrder;
+        }
+
+        // Sub-kind dispatch by component composition (ADR-0016) — same rule
+        // GenerativeSystem uses on the editor side.
+        if (const auto* mgs = m_registry.try_get<MunchersGameState>(entity)) {
+            snap.kind             = bus::GenerativeLayerSnapshot::Kind::Muncher;
+            snap.muncher_simFrame = mgs->simFrame;
+        } else {
+            // No kind-specific state component → skip (defensive — the
+            // editor-side creation paths always attach one).
+            continue;
+        }
+
+        out.generativeLayers.push_back(std::move(snap));
+    }
 }
 
 void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
@@ -925,10 +963,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
     out.playState   = TransportState::Stopped;
 
     // Merge scene snapshot (captured editor-side) into the RenderFrame.
-    out.screens    = scene.screens;
-    out.surfaces   = scene.surfaces;
-    out.projectors = scene.projectors;
-    out.outputs    = scene.outputs;
+    out.screens          = scene.screens;
+    out.surfaces         = scene.surfaces;
+    out.projectors       = scene.projectors;
+    out.outputs          = scene.outputs;
+    out.generativeLayers = scene.generativeLayers;
 
     if (!m_timeline) return;
 

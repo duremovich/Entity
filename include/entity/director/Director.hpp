@@ -12,6 +12,7 @@ class ProjectManager;
 class TranscodeManager;
 class CommandDispatcher;
 class AnimationSystem;
+class GenerativeSystem;
 class SceneState;
 class PlaybackTimeAuthority;
 class SectionScheduler;
@@ -48,6 +49,7 @@ public:
     TranscodeManager* getTranscodeManager() noexcept { return m_transcodeManager.get(); }
     CommandDispatcher* getCommandDispatcher() noexcept { return m_commandDispatcher.get(); }
     AnimationSystem* getAnimationSystem()   noexcept { return m_animationSystem.get(); }
+    GenerativeSystem* getGenerativeSystem() noexcept { return m_generativeSystem.get(); }
     PlaybackTimeAuthority* getTimeAuthority() noexcept { return m_timeAuthority.get(); }
     SectionScheduler* getSectionScheduler()   noexcept { return m_sectionScheduler.get(); }
     CaptureBroker* getCaptureBroker()       noexcept { return m_captureBroker.get(); }
@@ -57,6 +59,7 @@ public:
     const TranscodeManager* getTranscodeManager() const noexcept { return m_transcodeManager.get(); }
     const CommandDispatcher* getCommandDispatcher() const noexcept { return m_commandDispatcher.get(); }
     const AnimationSystem* getAnimationSystem()   const noexcept { return m_animationSystem.get(); }
+    const GenerativeSystem* getGenerativeSystem() const noexcept { return m_generativeSystem.get(); }
     const PlaybackTimeAuthority* getTimeAuthority() const noexcept { return m_timeAuthority.get(); }
     const SectionScheduler* getSectionScheduler() const noexcept { return m_sectionScheduler.get(); }
     const CaptureBroker* getCaptureBroker()       const noexcept { return m_captureBroker.get(); }
@@ -76,6 +79,10 @@ private:
     std::unique_ptr<TranscodeManager>  m_transcodeManager;
     std::unique_ptr<CommandDispatcher> m_commandDispatcher;
     std::unique_ptr<AnimationSystem>   m_animationSystem;
+    // Ticks GenerativeLayer-marked entities each editor frame. V1 just
+    // advances per-kind sim counters; future commits add real per-kind
+    // logic (Muncher gameplay, particles, ...). See systems/GenerativeSystem.hpp.
+    std::unique_ptr<GenerativeSystem>  m_generativeSystem;
     // Owns frame timing + clip-frame math + per-tick active-set
     // computation (Phase D entry, subtask 6 -- replaces the Director
     // half of the old PlaybackController). Declared after Timeline +

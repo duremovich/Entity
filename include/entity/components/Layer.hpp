@@ -35,7 +35,7 @@ struct Layer {
     enum class Kind : std::uint8_t {
         Clip            = 0,
         ObjectAnimation = 1,
-        Generative      = 2,  // reserved — not yet implemented
+        Generative      = 2,  // procedural texture source (Muncher mini-game, future particles, ...)
     };
 
     FrameNumber startFrame{0};

@@ -6,6 +6,7 @@
 #include "entity/core/Types.hpp"
 #include "entity/render/IRenderer.hpp"
 #include <entt/entt.hpp>
+#include <glm/glm.hpp>
 #include <cstdint>
 #include <unordered_map>
 
@@ -52,6 +53,12 @@ public:
     // thread can write the slot back into the Screen component for the next
     // SceneSnapshot. Returns the slot ID (UINT32_MAX on failure).
     std::uint32_t ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap);
+
+    // V1 placeholder colour for a generative layer — HSV cycle driven by the
+    // layer's Muncher simFrame. Replace with real procedural draws (sprite
+    // atlas, ghost positions, …) in Muncher v2.
+    static glm::vec4 computeGenerativePlaceholderColor(
+        const bus::GenerativeLayerSnapshot& gl);
 
 private:
     struct PendingAllocation {

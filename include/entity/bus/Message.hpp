@@ -163,6 +163,36 @@ struct WantedFrame {
     int lookahead{0};
 };
 
+// One-frame snapshot of a Generative layer (Muncher v1; future kinds add
+// optional fields here, never rename existing ones — bus rule 3). Baked by
+// the editor thread in buildSceneSnapshot; consumed by CompositorSystem on
+// the show thread to draw the procedural content. ADR-0014 path: the show
+// thread never reads GenerativeLayer / MunchersGameState from the registry.
+//
+// kind: discriminator for future generative kinds (Particles, Visualizer,
+//       …). v1 only ships Muncher. Encoded as an int on the wire so adding
+//       a new kind doesn't break old payloads; serialization clamps unknown
+//       values to Muncher.
+// targetScreen: uint64 cast of the target Screen entity (UINT64_MAX = all).
+// opacity / blendMode / zOrder: routing — pulled from the layer's MediaLayer
+//       so the compositor can interleave generative draws with clips.
+// muncher_simFrame: per-tick state from MunchersGameState. Show thread reads
+//       this each render frame to drive the placeholder hue-cycle. Real
+//       game state (Muncher pos, ghosts, pellets, score) lands here in v2.
+struct GenerativeLayerSnapshot {
+    enum class Kind : int { Muncher = 0 };
+
+    std::uint64_t entity{0};
+    Kind          kind{Kind::Muncher};
+    std::uint64_t targetScreen{UINT64_MAX};
+
+    float         opacity{1.0f};
+    int           blendMode{0};
+    std::uint32_t zOrder{0};
+
+    std::uint64_t muncher_simFrame{0};
+};
+
 // Director → Renderer per-tick state snapshot. Becomes the only data path
 // from Director to Renderer once subtask 8 lands.
 struct RenderFrame {
@@ -176,6 +206,9 @@ struct RenderFrame {
     std::vector<MappingSurfaceSnapshot> surfaces;
     std::vector<ProjectorSnapshot>      projectors;
     std::vector<OutputSnapshot>         outputs;
+    // Active generative layers (Muncher etc.) for this tick. Editor-baked,
+    // already filtered to currently-active timeline frames.
+    std::vector<GenerativeLayerSnapshot> generativeLayers;
 };
 
 // One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
@@ -310,6 +343,11 @@ struct SceneSnapshot {
     // Show thread re-evaluates tracks per render frame in buildRenderFrame and
     // folds results into the corresponding ScreenSnapshot position/rotation/scale.
     std::vector<ObjectAnimationLayerSnapshot>  objectAnimationLayers;
+    // Generative layer catalog: all *active* generative layers (Muncher etc.).
+    // PlaybackTimeAuthority::buildSceneSnapshot filters by current frame, so
+    // the show thread iterates this list directly without re-checking start/
+    // duration. CompositorSystem walks it per screen for procedural draws.
+    std::vector<GenerativeLayerSnapshot>       generativeLayers;
 };
 
 // Director → Renderer. Triggers the existing capture-pass pipeline; reply

@@ -14,6 +14,7 @@
 #include "entity/components/Clip.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include <sstream>
 #include <iomanip>
@@ -451,6 +452,10 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     if (m_clipLayerDropCallback) {
                         m_clipLayerDropCallback(trackIndex, startFrame, defaultDuration);
                     }
+                } else if (static_cast<Layer::Kind>(kind) == Layer::Kind::Generative) {
+                    if (m_generativeLayerDropCallback) {
+                        m_generativeLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                    }
                 }
             }
         }
@@ -468,10 +473,14 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     auto& registry = m_timeline->getRegistry();
     const auto* clip = registry.try_get<Clip>(clipEntity);
 
-    // OA layer path: no Clip component — use Layer for timing, Layer::color for display
+    // Layer-only path: no Clip component, just Layer + a discriminator
+    // component (ObjectAnimationLayer or GenerativeLayer). Renders a
+    // colored rectangle using Layer::color + Layer::name. Same hit-test
+    // and selection as Clip rendering.
     const auto* layer = registry.try_get<Layer>(clipEntity);
     const auto* oal   = registry.try_get<ObjectAnimationLayer>(clipEntity);
-    if (!clip && oal && layer) {
+    const auto* gen   = registry.try_get<GenerativeLayer>(clipEntity);
+    if (!clip && layer && (oal || gen)) {
         float trackY = baseWindowPos.y;
         double timelineFrameRate = m_timeline->getFrameRate();
         float startSeconds   = static_cast<float>(layer->startFrame) / static_cast<float>(timelineFrameRate);
@@ -487,7 +496,9 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
 
         bool isSelected = (clipEntity == m_selectedClip) || (clipEntity == m_timeline->getSelectedClip());
 
-        // Color swatch from Layer::color; brighten on selection
+        // Color swatch from Layer::color; brighten on selection. Border tints
+        // from the same color (lightened) so OA / Generative / future kinds
+        // each get a coherent palette without hard-coding a per-kind border.
         const auto& c = layer->color;
         ImU32 fillColor = isSelected
             ? IM_COL32(static_cast<int>(std::min(c[0] * 1.35f, 1.0f) * 255),
@@ -495,14 +506,20 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
                        static_cast<int>(std::min(c[2] * 1.35f, 1.0f) * 255), 255)
             : IM_COL32(static_cast<int>(c[0] * 255), static_cast<int>(c[1] * 255),
                        static_cast<int>(c[2] * 255), 255);
+        ImU32 borderColor = isSelected
+            ? IM_COL32(static_cast<int>(std::min(c[0] * 1.6f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[1] * 1.6f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[2] * 1.6f, 1.0f) * 255), 255)
+            : IM_COL32(static_cast<int>(std::min(c[0] * 1.25f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[1] * 1.25f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[2] * 1.25f, 1.0f) * 255), 255);
 
         drawList->AddRectFilled(clipMin, clipMax, fillColor, 3.0f);
-        drawList->AddRect(clipMin, clipMax,
-                          isSelected ? IM_COL32(220, 180, 255, 255) : IM_COL32(160, 120, 200, 255),
-                          3.0f, 0, 2.0f);
+        drawList->AddRect(clipMin, clipMax, borderColor, 3.0f, 0, 2.0f);
 
-        // Label: layer name or "OA" badge
-        const std::string& label = layer->name.empty() ? std::string("Object Animation") : layer->name;
+        // Label: Layer::name if set, otherwise a kind-default fallback.
+        const char* defaultLabel = oal ? "Object Animation" : "Generative";
+        const std::string& label = layer->name.empty() ? std::string(defaultLabel) : layer->name;
         constexpr float kPad = 5.0f;
         float availW = (clipMax.x - clipMin.x) - kPad * 2.0f;
         if (availW > 0.0f) {
@@ -524,7 +541,7 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
         // Hit-test + selection (reuse the same invisible button pattern as Clip)
         ImGui::SetCursorScreenPos(clipMin);
         char hitId[32];
-        std::snprintf(hitId, sizeof(hitId), "##oalayer%u", static_cast<uint32_t>(clipEntity));
+        std::snprintf(hitId, sizeof(hitId), "##layeronly%u", static_cast<uint32_t>(clipEntity));
         ImGui::SetNextItemAllowOverlap();
         if (ImGui::InvisibleButton(hitId, ImVec2(clipWidth, TRACK_HEIGHT - CLIP_PADDING * 2))) {
             m_selectedClip = clipEntity;

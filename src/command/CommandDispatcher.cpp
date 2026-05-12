@@ -257,6 +257,9 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);
     registerFactory("AssertObjectAnimationOutput", AssertObjectAnimationOutputCommand::fromJson);
     registerFactory("AssertScreenSnapshot", AssertScreenSnapshotCommand::fromJson);
+
+    // Generative layer commands (Muncher is the first kind)
+    registerFactory("CreateMuncherLayer", CreateMuncherLayerCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {
