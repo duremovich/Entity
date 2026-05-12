@@ -12,6 +12,9 @@
 #include "entity/command/Commands.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include <sstream>
 #include <cmath>
@@ -152,15 +155,31 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
 
         // Check if mouse Y is within this track (including expanded area)
         if (mousePos.y >= trackY && mousePos.y <= trackY + trackHeight) {
-            // Check each clip in this track
+            // Check each clip in this track. Both Clip-backed entities and
+            // layer-only entities (OA / Generative) are hit-tested using
+            // (startFrame, duration) in timeline frames — for layer-only
+            // entities those come from the Layer component. Drag/trim code
+            // downstream gates on `Clip` so layer-only entities are
+            // selection-only.
             for (entt::entity clipEntity : track->layers) {
-                const auto* clip = registry.try_get<Clip>(clipEntity);
-                if (!clip) continue;
+                FrameNumber startFrame = 0;
+                FrameNumber durationFrames = 0;
+                if (const auto* clip = registry.try_get<Clip>(clipEntity)) {
+                    startFrame = clip->startFrame;
+                    durationFrames = clip->duration;
+                } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
+                           lay && (registry.all_of<ObjectAnimationLayer>(clipEntity) ||
+                                   registry.all_of<GenerativeLayer>(clipEntity))) {
+                    startFrame = lay->startFrame;
+                    durationFrames = lay->duration;
+                } else {
+                    continue;
+                }
 
                 // Calculate clip bounds (use timeline frame rate, not clip source rate)
                 double timelineFrameRate = m_timeline->getFrameRate();
-                float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
-                float durationSeconds = clip->duration / static_cast<float>(timelineFrameRate);
+                float startSeconds = startFrame / static_cast<float>(timelineFrameRate);
+                float durationSeconds = durationFrames / static_cast<float>(timelineFrameRate);
                 Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                 Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 

@@ -417,6 +417,10 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["muncher_pelletBits"] = packHex(g.muncher_pelletBits);
     j["muncher_score"]     = g.muncher_score;
     j["muncher_lives"]     = g.muncher_lives;
+    auto xfArr = ojson::array();
+    for (float v : g.transformMatrix) xfArr.push_back(v);
+    j["transformMatrix"]   = std::move(xfArr);
+    j["renderTargetSlot"]  = g.renderTargetSlot;
     return j;
 }
 
@@ -467,7 +471,54 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
         unpackHex(j.at("muncher_pelletBits").get<std::string>(), g.muncher_pelletBits);
     g.muncher_score     = j.value("muncher_score",     std::uint16_t{0});
     g.muncher_lives     = j.value("muncher_lives",     std::uint16_t{3});
+    if (j.contains("transformMatrix")) {
+        const auto& arr = j.at("transformMatrix");
+        for (std::size_t i = 0; i < g.transformMatrix.size() && i < arr.size(); ++i)
+            g.transformMatrix[i] = arr[i].get<float>();
+    }
+    g.renderTargetSlot  = j.value("renderTargetSlot",  std::int32_t{-1});
     return g;
+}
+
+ojson encode(const ContentLayerSnapshot& c) {
+    ojson j = ojson::object();
+    j["entity"]                = c.entity;
+    j["targetScreen"]          = c.targetScreen;
+    auto xfArr = ojson::array();
+    for (float v : c.transformMatrix) xfArr.push_back(v);
+    j["transformMatrix"]       = std::move(xfArr);
+    j["opacity"]               = c.opacity;
+    j["sectionFadeMultiplier"] = c.sectionFadeMultiplier;
+    j["blendMode"]             = c.blendMode;
+    j["zOrder"]                = c.zOrder;
+    j["sourceKind"]            = static_cast<int>(c.sourceKind);
+    j["sourceSlot"]            = c.sourceSlot;
+    j["colorSpace"]            = c.colorSpace;
+    j["ocioColorSpace"]        = c.ocioColorSpace;
+    return j;
+}
+
+ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
+    ContentLayerSnapshot c;
+    c.entity                = j.value("entity",                std::uint64_t{0});
+    c.targetScreen          = j.value("targetScreen",          std::uint64_t{UINT64_MAX});
+    if (j.contains("transformMatrix")) {
+        const auto& arr = j.at("transformMatrix");
+        for (std::size_t i = 0; i < c.transformMatrix.size() && i < arr.size(); ++i)
+            c.transformMatrix[i] = arr[i].get<float>();
+    }
+    c.opacity               = j.value("opacity",               1.0f);
+    c.sectionFadeMultiplier = j.value("sectionFadeMultiplier", 1.0f);
+    c.blendMode             = j.value("blendMode",             0);
+    c.zOrder                = j.value("zOrder",                std::uint32_t{0});
+    int sk                  = j.value("sourceKind",            0);
+    c.sourceKind            = (sk == static_cast<int>(ContentLayerSnapshot::SourceKind::Compose))
+                                ? ContentLayerSnapshot::SourceKind::Compose
+                                : ContentLayerSnapshot::SourceKind::Video;
+    c.sourceSlot            = j.value("sourceSlot",            std::int32_t{-1});
+    c.colorSpace            = j.value("colorSpace",            0);
+    c.ocioColorSpace        = j.value("ocioColorSpace",        std::string{});
+    return c;
 }
 
 ojson encode(const RenderFrame& m) {
@@ -496,6 +547,9 @@ ojson encode(const RenderFrame& m) {
     auto gens = ojson::array();
     for (const auto& g : m.generativeLayers) gens.push_back(encode(g));
     j["generativeLayers"] = std::move(gens);
+    auto contents = ojson::array();
+    for (const auto& c : m.contentLayers) contents.push_back(encode(c));
+    j["contentLayers"] = std::move(contents);
     return j;
 }
 
@@ -519,6 +573,9 @@ RenderFrame decodeRenderFrame(const json& j) {
     if (j.contains("generativeLayers"))
         for (const auto& g : j.at("generativeLayers"))
             m.generativeLayers.push_back(decodeGenerativeLayerSnapshot(g));
+    if (j.contains("contentLayers"))
+        for (const auto& c : j.at("contentLayers"))
+            m.contentLayers.push_back(decodeContentLayerSnapshot(c));
     return m;
 }
 
@@ -695,6 +752,9 @@ ojson encode(const SceneSnapshot& s) {
     auto genCatalog = ojson::array();
     for (const auto& gl : s.generativeLayers) genCatalog.push_back(encode(gl));
     j["generativeLayers"] = std::move(genCatalog);
+    auto contentCatalog = ojson::array();
+    for (const auto& cl : s.contentLayers) contentCatalog.push_back(encode(cl));
+    j["contentLayers"] = std::move(contentCatalog);
     return j;
 }
 
@@ -716,6 +776,9 @@ SceneSnapshot decodeSceneSnapshot(const json& j) {
     if (j.contains("generativeLayers"))
         for (const auto& gl : j.at("generativeLayers"))
             s.generativeLayers.push_back(decodeGenerativeLayerSnapshot(gl));
+    if (j.contains("contentLayers"))
+        for (const auto& cl : j.at("contentLayers"))
+            s.contentLayers.push_back(decodeContentLayerSnapshot(cl));
     return s;
 }
 
@@ -876,6 +939,24 @@ ScreenRenderTargetAllocated decodeScreenRenderTargetAllocated(const json& j) {
     return m;
 }
 
+ojson encode(const GenerativeLayerRenderTargetAllocated& m) {
+    ojson j = ojson::object();
+    j["entity"] = m.entity;
+    j["slot"]   = m.slot;
+    j["width"]  = m.width;
+    j["height"] = m.height;
+    return j;
+}
+
+GenerativeLayerRenderTargetAllocated decodeGenerativeLayerRenderTargetAllocated(const json& j) {
+    GenerativeLayerRenderTargetAllocated m;
+    m.entity = j.at("entity").get<std::uint64_t>();
+    m.slot   = j.at("slot").get<std::uint32_t>();
+    m.width  = j.at("width").get<std::uint32_t>();
+    m.height = j.at("height").get<std::uint32_t>();
+    return m;
+}
+
 ojson encode(const CreateOutputWindowRequest& m) {
     ojson j = ojson::object();
     j["entity"]     = m.entity;
@@ -930,6 +1011,7 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, ProvisionClipResources>) return "ProvisionClipResources";
         else if constexpr (std::is_same_v<T, ResourcesProvisioned>)          return "ResourcesProvisioned";
         else if constexpr (std::is_same_v<T, ScreenRenderTargetAllocated>) return "ScreenRenderTargetAllocated";
+        else if constexpr (std::is_same_v<T, GenerativeLayerRenderTargetAllocated>) return "GenerativeLayerRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, SetOutputEnabled>)            return "SetOutputEnabled";
         else if constexpr (std::is_same_v<T, ApplySettings>)               return "ApplySettings";
         else if constexpr (std::is_same_v<T, DeviceLost>)                  return "DeviceLost";
@@ -972,6 +1054,7 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "DeviceLost")                    return Message{decodeDeviceLost(data)};
         if (type == "FrameDropped")                  return Message{decodeFrameDropped(data)};
         if (type == "ScreenRenderTargetAllocated")   return Message{decodeScreenRenderTargetAllocated(data)};
+        if (type == "GenerativeLayerRenderTargetAllocated") return Message{decodeGenerativeLayerRenderTargetAllocated(data)};
         if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
     } catch (const std::exception&) {

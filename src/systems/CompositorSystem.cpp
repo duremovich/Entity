@@ -33,135 +33,161 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
     if (!m_renderer || !m_renderer->isInitialized()) {
         return;
     }
+    (void)registry;  // Show thread: registry untouched (ADR-0014).
+    (void)deltaTime;
 
-    // Sort the active-clip list by z-order once per frame (stable so ties
-    // keep their arrival order from PlaybackTimeAuthority).
-    std::vector<const bus::ClipRenderState*> sorted;
-    sorted.reserve(rf.activeClips.size());
-    for (const auto& crs : rf.activeClips) sorted.push_back(&crs);
-    std::stable_sort(sorted.begin(), sorted.end(),
-        [](const bus::ClipRenderState* a, const bus::ClipRenderState* b) {
-            return a->zOrder < b->zOrder;
-        });
-
-    // GC: remove pending-allocation cache entries for screens that no longer
-    // exist in the snapshot. releaseComposeTarget is not available on IRenderer,
-    // so leaked slots are bounded by MAX_COMPOSE_TARGETS (8); screen destroy is rare.
+    // GC: drop pending-allocation cache entries for screens / generatives
+    // that have left the active set. releaseComposeTarget isn't on
+    // IRenderer, so leaked slots are bounded by MAX_COMPOSE_TARGETS; both
+    // archetypes destroy rarely.
     for (auto it = m_pendingAllocations.begin(); it != m_pendingAllocations.end(); ) {
         const std::uint64_t id = static_cast<std::uint64_t>(it->first);
         const bool found = std::any_of(rf.screens.begin(), rf.screens.end(),
             [id](const bus::ScreenSnapshot& s) { return s.entity == id; });
         it = found ? std::next(it) : m_pendingAllocations.erase(it);
     }
+    for (auto it = m_pendingGenerativeAllocations.begin();
+         it != m_pendingGenerativeAllocations.end(); )
+    {
+        const std::uint64_t id = static_cast<std::uint64_t>(it->first);
+        const bool found = std::any_of(rf.generativeLayers.begin(), rf.generativeLayers.end(),
+            [id](const bus::GenerativeLayerSnapshot& g) { return g.entity == id; });
+        it = found ? std::next(it) : m_pendingGenerativeAllocations.erase(it);
+    }
 
-    // Iterate all visible screens from the RenderFrame snapshot. Screen
-    // enumeration and slot lookup use the snapshot exclusively; registry is
-    // never written here. If a slot hasn't been allocated yet, allocate it
-    // now and post an R2D ScreenRenderTargetAllocated reply so the editor
-    // thread writes the slot back into Screen for the next SceneSnapshot.
-    for (const auto& screenSnap : rf.screens) {
-        if (!screenSnap.visible) continue;
+    // ------------------------------------------------------------------
+    // PASS 1 — Render each active generative layer's procedural content
+    // into its own compose target (allocated lazily). After this pass
+    // every generative layer has a usable TextureRef::compose(slot) the
+    // PASS 2 unified composite loop can blit onto a screen.
+    //
+    // ECS contract: kind dispatch by composition (the presence of
+    // MunchersGameState on the snapshot's wire-side `Kind` enum is the
+    // discriminator). Adding a new generative kind = new case here.
+    // ------------------------------------------------------------------
+    {
+        ZoneScopedN("Compositor::pass1_generative");
+        for (const auto& gl : rf.generativeLayers) {
+            if (gl.opacity <= 0.0f) continue;
 
-        const std::uint32_t slot = ensureScreenRenderTarget(screenSnap);
-        if (slot == UINT32_MAX) continue;
+            const std::uint32_t slot = ensureGenerativeRenderTarget(gl);
+            if (slot == UINT32_MAX) continue;
 
-        const std::uint64_t screenId = screenSnap.entity;
-
-        m_renderer->beginComposeTarget(slot);
-
-        for (const auto* crs : sorted) {
-            // Filter by target screen (UINT64_MAX = all screens).
-            if (crs->targetScreen != UINT64_MAX && crs->targetScreen != screenId) {
-                continue;
+            m_renderer->beginComposeTarget(slot);
+            // Caller draws into the layer's RT in layer-local NDC; the
+            // UV-space transform travels separately on the matching
+            // ContentLayerSnapshot and is applied in PASS 2.
+            switch (gl.kind) {
+                case bus::GenerativeLayerSnapshot::Kind::Muncher:
+                    drawMuncherPlayfield(gl, 1.0f);
+                    break;
             }
+            m_renderer->endComposeTarget();
+        }
+    }
 
-            const entt::entity entity = static_cast<entt::entity>(crs->entity);
+    // ------------------------------------------------------------------
+    // PASS 2 — For each visible screen, composite every content layer
+    // targeting it. One uniform draw path for every kind: bind the
+    // layer's texture (Video slot for clips, Compose slot for
+    // generatives), apply its UV-space transform, apply opacity ×
+    // section-fade, submit via drawTexturedQuad. No kind dispatch in the
+    // per-entry loop — that's the whole point of the unification.
+    // ------------------------------------------------------------------
+    {
+        ZoneScopedN("Compositor::pass2_screens");
+        for (const auto& screenSnap : rf.screens) {
+            if (!screenSnap.visible) continue;
 
-            // Section-fade × bus opacity — both sourced from the RenderFrame.
-            // No registry read needed; fadeMul is already baked into
-            // sectionFadeMultiplier by PlaybackTimeAuthority.
-            const float drawOpacity = crs->opacity * crs->sectionFadeMultiplier;
+            const std::uint32_t screenSlot = ensureScreenRenderTarget(screenSnap);
+            if (screenSlot == UINT32_MAX) continue;
 
-            // [SBG] diag — REMOVE after section-break-glitch fix lands.
-            std::cout << "[SBG][compose] entity=" << crs->entity
-                      << " opacity=" << crs->opacity
-                      << " sectionFadeMul=" << crs->sectionFadeMultiplier
-                      << " drawOpacity=" << drawOpacity
-                      << std::endl;
+            const std::uint64_t screenId = screenSnap.entity;
+            m_renderer->beginComposeTarget(screenSlot);
 
-            // transformMatrix is column-major float[16] — map directly to glm.
-            glm::mat4 transformMatrix;
-            std::memcpy(glm::value_ptr(transformMatrix),
-                        crs->transformMatrix.data(),
-                        sizeof(float) * 16);
+            // rf.contentLayers is pre-sorted by zOrder ascending in
+            // PlaybackTimeAuthority::buildRenderFrame.
+            for (const auto& cl : rf.contentLayers) {
+                if (cl.targetScreen != UINT64_MAX && cl.targetScreen != screenId) continue;
 
-            // Gate on the snapshot slot (baked on editor thread into ClipCatalogEntry
-            // then forwarded into ClipRenderState). Avoids reading descriptorSlot from
-            // the registry component (data race: editor writes it in drainRendererToDirector).
-            if (crs->slot >= 0) {
-                TextureRef tex = m_renderer->getVideoTexture(
-                    static_cast<uint32_t>(crs->slot));
-                if (tex.valid()) {
-                    // Per ADR-0014 the show thread must not read the registry —
-                    // editor's `registry.destroy()` on clip delete races any
-                    // try_get<VideoTexture>. PlaybackPresenter caches the
-                    // colour-space tags show-thread-locally and exposes them
-                    // via `displayState()`; on a miss the default
-                    // (Linear / empty OCIO) reproduces the prior fallback.
-                    TextureColorSpace colorSpace = TextureColorSpace::Linear;
-                    std::string ocioColorSpace;
-                    if (m_playbackPresenter) {
-                        const auto& display = m_playbackPresenter->displayState(entity);
-                        colorSpace     = display.colorSpace;
-                        ocioColorSpace = display.ocioColorSpace;
+                const float drawOpacity = cl.opacity * cl.sectionFadeMultiplier;
+                if (drawOpacity <= 0.0f) continue;
+
+                glm::mat4 transformMatrix;
+                std::memcpy(glm::value_ptr(transformMatrix),
+                            cl.transformMatrix.data(),
+                            sizeof(float) * 16);
+
+                // Bind the right texture pool by source kind. Bad / unready
+                // slots produce TextureRef::invalid() → drawTexturedQuad
+                // drops the call silently. Fall back to a tinted colored
+                // quad only for the Video kind (clip-decode underrun feedback);
+                // an unallocated Compose slot just means PASS 1 hasn't
+                // produced output yet for that layer, so we skip rather
+                // than flash a debug color over the screen.
+                TextureRef tex = TextureRef::invalid();
+                TextureColorSpace colorSpace = TextureColorSpace::Linear;
+                std::string ocioColorSpace;
+                if (cl.sourceSlot >= 0) {
+                    switch (cl.sourceKind) {
+                        case bus::ContentLayerSnapshot::SourceKind::Video:
+                            tex = m_renderer->getVideoTexture(
+                                static_cast<uint32_t>(cl.sourceSlot));
+                            if (m_playbackPresenter) {
+                                const auto& d = m_playbackPresenter->displayState(
+                                    static_cast<entt::entity>(cl.entity));
+                                colorSpace     = d.colorSpace;
+                                ocioColorSpace = d.ocioColorSpace;
+                            }
+                            break;
+                        case bus::ContentLayerSnapshot::SourceKind::Compose:
+                            tex = m_renderer->getComposeTargetTexture(
+                                static_cast<uint32_t>(cl.sourceSlot));
+                            // Generative RT is written in linear-light, no OCIO.
+                            break;
                     }
+                }
+
+                if (tex.valid()) {
                     m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
-                                                 crs->blendMode, colorSpace,
-                                                 ocioColorSpace);
+                                                 static_cast<BlendMode>(cl.blendMode),
+                                                 colorSpace, ocioColorSpace);
                     continue;
                 }
+
+                if (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video) {
+                    // Fallback colored quad for video slots not yet uploaded —
+                    // gives the user *something* to see while the decoder warms.
+                    const uint32_t entityId = static_cast<uint32_t>(cl.entity);
+                    glm::vec4 color(
+                        ((entityId * 137) % 256) / 255.0f,
+                        ((entityId * 211) % 256) / 255.0f,
+                        ((entityId * 97)  % 256) / 255.0f,
+                        1.0f
+                    );
+                    m_renderer->drawColoredQuad(transformMatrix, color, drawOpacity);
+                }
+                // Compose-source with no texture = PASS 1 hasn't rendered
+                // this frame yet (RT allocation pending the R2D ack). Skip.
             }
 
-            // Fallback colored quad for slots not yet uploaded.
-            const uint32_t entityId = static_cast<uint32_t>(crs->entity);
-            glm::vec4 color(
-                ((entityId * 137) % 256) / 255.0f,
-                ((entityId * 211) % 256) / 255.0f,
-                ((entityId * 97)  % 256) / 255.0f,
-                1.0f
-            );
-            m_renderer->drawColoredQuad(transformMatrix, color, drawOpacity);
+            m_renderer->endComposeTarget();
         }
-
-        // Generative layers (Muncher v1). The editor-side bake already
-        // filtered to active timeline frames; here we only filter by
-        // targetScreen and skip layers with no kind-specific data.
-        //
-        // V1 procedural draw: dim playfield background + a yellow square
-        // for the Muncher at its (x, y) position. Real maze + ghosts +
-        // pellets land once sprite-atlas rendering exists; for now every
-        // game entity is a transformed colored quad through the existing
-        // drawColoredQuad path (no new HLSL / PSO work).
-        for (const auto& gl : rf.generativeLayers) {
-            if (gl.targetScreen != UINT64_MAX && gl.targetScreen != screenId) continue;
-
-            const float drawOpacity = gl.opacity;
-            if (drawOpacity <= 0.0f) continue;
-
-            drawMuncherPlayfield(gl, drawOpacity);
-        }
-
-        m_renderer->endComposeTarget();
     }
 }
 
 void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& gl,
                                              float drawOpacity) {
+    // Draws in LAYER-LOCAL NDC into the generative layer's own compose
+    // target (allocated in PASS 1). The layer's UV-space Transform is
+    // applied in PASS 2 by drawTexturedQuad when this RT is blitted onto
+    // the target screen — this function does not see the layer transform.
+
     // Helper: build a translate+scale matrix for a quad at normalized
     // image-coords (x, y) ∈ [0, 1] (origin top-left, Y-down) with NDC
     // half-extent `halfSize`. Converts to NDC (-1..1, Y-up). Unit quad is
     // 2 NDC units wide, so the resulting quad covers `2 * halfSize`
-    // fraction of the screen.
+    // fraction of the layer's render target.
     auto quadXf = [](float x, float y, float halfSize) {
         const float ndcX = x * 2.0f - 1.0f;
         const float ndcY = 1.0f - y * 2.0f;
@@ -169,7 +195,7 @@ void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& 
                glm::scale(glm::mat4(1.0f), glm::vec3(halfSize, halfSize, 1.0f));
     };
 
-    // 1) Playfield background covering the whole compose target.
+    // 1) Playfield background fills the entire layer RT.
     const glm::vec4 bgColor(0.05f, 0.05f, 0.09f, 1.0f);
     m_renderer->drawColoredQuad(glm::mat4(1.0f), bgColor, drawOpacity);
 
@@ -250,6 +276,70 @@ void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& 
 
 void CompositorSystem::shutdown(entt::registry& registry) {
     std::cout << "CompositorSystem shutdown" << std::endl;
+}
+
+std::uint32_t CompositorSystem::ensureGenerativeRenderTarget(
+    const bus::GenerativeLayerSnapshot& gl)
+{
+    if (!m_renderer) return UINT32_MAX;
+
+    const auto entity = static_cast<entt::entity>(gl.entity);
+    const uint32_t width  = 1920;  // GenerativeLayer default — kind-specific
+    const uint32_t height = 1080;  // override could plumb through later
+    // (renderWidth/renderHeight live on the editor-side component; not yet
+    // mirrored on the snapshot since the playfield draw is fixed-grid).
+
+    // 1. Editor has acknowledged a slot — reuse, resize in place if dims drifted.
+    if (gl.renderTargetSlot >= 0) {
+        m_pendingGenerativeAllocations.erase(entity);
+        const std::uint32_t slot = static_cast<std::uint32_t>(gl.renderTargetSlot);
+        const uint32_t curW = m_renderer->getComposeTargetWidth(slot);
+        const uint32_t curH = m_renderer->getComposeTargetHeight(slot);
+        if (curW != width || curH != height) {
+            m_renderer->resizeComposeTarget(slot, width, height);
+        }
+        return slot;
+    }
+
+    // 2. Pending allocation — reuse cached slot to avoid double-allocating.
+    if (auto it = m_pendingGenerativeAllocations.find(entity);
+        it != m_pendingGenerativeAllocations.end())
+    {
+        auto& cached = it->second;
+        if (cached.width != width || cached.height != height) {
+            if (m_renderer->resizeComposeTarget(cached.slot, width, height)) {
+                cached.width  = width;
+                cached.height = height;
+            }
+        }
+        return cached.slot;
+    }
+
+    // 3. Genuinely new — allocate, cache, post R2D ack so editor writes back.
+    const std::uint32_t slot = m_renderer->createComposeTarget(width, height);
+    if (slot == UINT32_MAX) {
+        std::cerr << "[Compositor] Failed to create render target for generative layer "
+                  << gl.entity << std::endl;
+        return UINT32_MAX;
+    }
+
+    std::cout << "[Compositor] Created render target slot " << slot
+              << " for generative layer entity " << gl.entity
+              << " (" << width << "x" << height << ")" << std::endl;
+
+    m_pendingGenerativeAllocations[entity] = { slot, width, height };
+
+    if (m_transport) {
+        bus::GenerativeLayerRenderTargetAllocated reply{};
+        reply.entity = gl.entity;
+        reply.slot   = slot;
+        reply.width  = width;
+        reply.height = height;
+        m_transport->send(bus::Direction::R2D,
+                          bus::serialize(bus::Message{reply}));
+    }
+
+    return slot;
 }
 
 std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap) {

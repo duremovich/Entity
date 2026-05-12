@@ -61,6 +61,16 @@ existing `Clip` entities lands in commit 3.2.
 **Invariant**: `startFrame ≤ currentFrame < startFrame + duration` (in
 timeline frames) → clip is *active* and will appear in `SceneSnapshot::activeClips`.
 
+**Content-layer principle** (ADR-0018): Clip is one instance of the
+broader *content-layer* archetype — `Layer + Transform + MediaLayer + one
+kind-specific component that contributes a texture`. The kind-specific
+piece for Clip is `Clip + VideoTexture` (decoder produces a texture in a
+video-pool slot); for Generative it's `GenerativeLayer +
+<kind state>` (PASS 1 procedural draw populates a compose-target slot).
+CompositorSystem PASS 2 is kind-blind — it walks
+`RenderFrame::contentLayers` regardless of which kind produced the
+texture.
+
 **Created at**:
 - `src/timeline/Timeline.cpp` (drag-onto-timeline, split, duplicate)
 - `src/project/ProjectSerializer.cpp` (project load)
@@ -120,6 +130,50 @@ lets the show thread re-evaluate tracks per render frame during editor stalls
 - This archetype is not included in `SceneSnapshot::activeClips` and is never
   visible to `CompositorSystem` directly. The compositor only sees the
   downstream effect via screen position/rotation/scale in the render frame.
+
+---
+
+## Generative — Procedural content layer (Muncher, future kinds)
+
+| Required | Optional |
+|---|---|
+| `Layer` (Kind::Generative) | — |
+| `GenerativeLayer` | |
+| `Transform` | |
+| `MediaLayer` | |
+| `<kind-specific state>` (e.g. `MunchersGameState`) | |
+
+**Invariant**: `Layer::startFrame ≤ currentFrame < Layer::startFrame + Layer::duration`
+→ the layer is *active*. `GenerativeSystem` ticks the kind-specific state
+component (`MunchersGameState` for Muncher). On the show thread,
+`CompositorSystem` PASS 1 renders the procedural content into the layer's
+own compose target (allocated lazily via the same R2D-ack pattern Screen
+uses); PASS 2 then composites that texture onto the target screen via
+`drawTexturedQuad(layerRT, transformMatrix, opacity, blendMode, ...)`.
+
+**Sub-kind dispatch is by component composition** (ADR-0016 / 0017):
+`MunchersGameState` presence ⇒ Muncher; future `ParticlesState` ⇒ Particles;
+etc. The compositor's PASS 2 is *kind-blind* — it only sees the unified
+`ContentLayerSnapshot`. See ADR-0018.
+
+**Created at**:
+- `src/core/Engine.cpp` (`createMuncherLayer`) — used by
+  `CreateMuncherLayerCommand` and the LayersWindow "Muncher" drag-source.
+
+**Notes**:
+- `GenerativeLayer::targetScreen` routes the produced texture to a single
+  screen (`entt::null` means "no target — output dropped" per the
+  PropertyWindow warning).
+- `GenerativeLayer::renderTargetSlot` is `-1` until CompositorSystem PASS 1
+  allocates a compose target and the R2D ack
+  (`GenerativeLayerRenderTargetAllocated`) writes the slot back on the
+  editor thread.
+- `Transform` is the layer's UV-space transform in the **target screen's
+  NDC**, same semantics as Clip — `scale=1` fills the screen,
+  `position=(0,0)` centers it. ADR-0018.
+- `MunchersGameState` is ~120 bytes — exceeds the components/CLAUDE.md
+  <64-byte soft rule, documented exception in ADR-0017 (one Muncher per
+  layer, not iterated in a tight view).
 
 ---
 

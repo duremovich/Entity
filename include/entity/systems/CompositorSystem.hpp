@@ -54,9 +54,16 @@ public:
     // SceneSnapshot. Returns the slot ID (UINT32_MAX on failure).
     std::uint32_t ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap);
 
-    // V1 Muncher render: dim playfield + yellow square at the baked
-    // (muncher_x, muncher_y). Every "game entity" is a transformed
-    // colored quad until sprite-atlas rendering lands.
+    // Allocate or resize a compose target for a generative layer. Same R2D
+    // ack pattern as ensureScreenRenderTarget — posts
+    // GenerativeLayerRenderTargetAllocated when allocating. Returns the slot
+    // ID (UINT32_MAX on failure). Called from PASS 1 of update().
+    std::uint32_t ensureGenerativeRenderTarget(const bus::GenerativeLayerSnapshot& gl);
+
+    // V1 Muncher render: dim playfield + walls + pellets + ghosts + Muncher.
+    // Draws in LAYER-LOCAL NDC into the active compose target — caller is
+    // expected to have called beginComposeTarget on the layer's own RT
+    // already. PASS 2 applies the UV-space transform via drawTexturedQuad.
     void drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& gl,
                               float drawOpacity);
 
@@ -72,8 +79,10 @@ private:
     PlaybackPresenter* m_playbackPresenter{nullptr};
     bool m_debugLogging{false};
     // Show-thread-only; no synchronization needed (CompositorSystem::update
-    // runs exclusively on the show thread per ADR-0014).
+    // runs exclusively on the show thread per ADR-0014). One map per RT-owning
+    // archetype — same shape, separate keys so cache evictions don't cross.
     std::unordered_map<entt::entity, PendingAllocation> m_pendingAllocations;
+    std::unordered_map<entt::entity, PendingAllocation> m_pendingGenerativeAllocations;
 };
 
 } // namespace entity

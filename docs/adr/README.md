@@ -25,6 +25,9 @@ that have moved on.
 | 0013 | [Control-plane plugins route via CommandDispatcher (defer bus-routing to Phase E)](0013-control-plane-plugins-route-via-command-dispatcher.md) | Accepted | 2026-05-08 |
 | 0014 | [Editor/Show thread split — snapshot-driven show thread with zero registry writes](0014-editor-show-thread-split.md) | Accepted | 2026-05-08 |
 | 0015 | [Profiling with Tracy — live CPU/GPU instrumentation](0015-profiling-with-tracy.md) | Accepted | 2026-05-10 |
+| 0016 | [Timeline Layer abstraction](0016-timeline-layer-abstraction.md) | Accepted | 2026-05-11 |
+| 0017 | [Generative layers — procedural-content timeline layers](0017-generative-layers.md) | Accepted (amended by 0018) | 2026-05-11 |
+| 0018 | [Content-layer unification — one compositor path for clip + generative + future kinds](0018-content-layer-unification.md) | Accepted | 2026-05-12 |
 
 ## Format
 

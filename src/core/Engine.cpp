@@ -3015,6 +3015,12 @@ entt::entity Engine::createMuncherLayer(entt::entity targetScreen,
     m_registry.emplace<MunchersGameState>(layerEntity);
     m_registry.emplace<MediaLayer>(layerEntity);
 
+    // UV-space transform — same semantics as Clip. Position in compose-target
+    // NDC, scale=1 fills the screen. Default identity = playfield fills the
+    // target screen, matching pre-Transform Muncher behavior. CompositorSystem
+    // pre-multiplies this onto every procedural cell-quad in drawMuncherPlayfield.
+    m_registry.emplace<Transform>(layerEntity);
+
     track->addLayer(layerEntity);
     track->sortLayers(m_registry);
 
@@ -3834,6 +3840,15 @@ void Engine::drainRendererToDirector() {
                 if (auto* screen = m_registry.try_get<Screen>(entity)) {
                     screen->renderTargetSlot  = body.slot;
                     screen->renderTargetValid = (body.slot != UINT32_MAX);
+                }
+            } else if constexpr (std::is_same_v<T, bus::GenerativeLayerRenderTargetAllocated>) {
+                // Mirror of ScreenRenderTargetAllocated for generative
+                // layers. The PASS 1 compositor draws into this slot;
+                // PASS 2 blits it onto the target screen via the unified
+                // ContentLayerSnapshot path.
+                const auto entity = static_cast<entt::entity>(body.entity);
+                if (auto* gen = m_registry.try_get<GenerativeLayer>(entity)) {
+                    gen->renderTargetSlot = static_cast<int>(body.slot);
                 }
             } else if constexpr (std::is_same_v<T, bus::DeviceLost>) {
                 // Autosave-on-device-loss. The Engine already observed

@@ -104,12 +104,24 @@ framerate (typically vsync on the primary output, 60 Hz).
        └─ Uploads decoded frames to GPU textures; caches color-space
           tags show-thread-locally (no registry reads in hot path).
 
-6.  CompositorSystem::update(renderFrame)
-       └─ Walks rf.activeClips (snapshot, not registry). Sorts by zOrder.
-       └─ Per visible screen: ensureScreenRenderTarget(); for each
-          clip with matching targetScreen, draw textured quad.
-       └─ Posts R2D ScreenRenderTargetAllocated when allocating a new
-          compose target slot.
+6.  CompositorSystem::update(renderFrame)         [two-pass — ADR-0018]
+       PASS 1 (producer):
+         └─ Per active GenerativeLayerSnapshot:
+            ensureGenerativeRenderTarget(); beginComposeTarget(slot);
+            drawMuncherPlayfield(gl) in layer-local NDC; endComposeTarget().
+            Posts R2D GenerativeLayerRenderTargetAllocated on first
+            allocation per layer entity.
+       PASS 2 (unified composite):
+         └─ Per visible screen: ensureScreenRenderTarget(); for each
+            ContentLayerSnapshot in rf.contentLayers (pre-sorted by
+            zOrder) matching this screen, drawTexturedQuad with
+            sourceKind dispatching the descriptor pool
+            (Video → video texture, Compose → generative layer RT).
+         └─ Posts R2D ScreenRenderTargetAllocated on first
+            allocation per screen entity.
+       └─ rf.contentLayers is built show-side by
+          PlaybackTimeAuthority::buildRenderFrame from activeClips +
+          generativeLayers.
 
 7.  OutputManager::renderOutputs()
        └─ Per enabled OutputDisplay: composite the assigned Screen's

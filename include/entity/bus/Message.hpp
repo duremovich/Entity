@@ -190,6 +190,22 @@ struct GenerativeLayerSnapshot {
     int           blendMode{0};
     std::uint32_t zOrder{0};
 
+    // UV-space affine transform of the layer in the target screen's NDC.
+    // Identity by default. Used by PASS 2 compositor when blitting the
+    // layer's compose-target RT onto the target screen (mirrors how
+    // ClipCatalogEntry::transformMatrix is consumed for clips).
+    std::array<float, 16> transformMatrix{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+
+    // Compose-target slot allocated by CompositorSystem PASS 1 (R2D ack
+    // writes GenerativeLayer::renderTargetSlot on the editor thread).
+    // -1 = not yet allocated; PASS 2 skips the blit until the slot exists.
+    std::int32_t  renderTargetSlot{-1};
+
     // Muncher-specific baked state. Show thread reads these to draw the
     // player + ghosts + pellets. The kind field above gates whether
     // they're meaningful — for Kind::Muncher all of them are live.
@@ -210,6 +226,44 @@ struct GenerativeLayerSnapshot {
     std::uint16_t                 muncher_lives{3};
 };
 
+// Unified content-layer snapshot — the only data the compositor's PASS 2
+// reads to composite a layer onto a screen. Kind-agnostic by design: any
+// layer that produces a texture and lands on a screen (Clip-backed,
+// Generative, future NDI/codec providers) shows up here. The editor-side
+// bake (PlaybackTimeAuthority::buildSceneSnapshot) fills in one of these
+// per active content layer, populating `sourceKind` + `sourceSlot` from
+// the kind-specific component (VideoTexture::descriptorSlot for clips,
+// GenerativeLayer::renderTargetSlot for generatives, …).
+//
+// ECS rule: composition selects the source — no Kind enum dispatch in
+// the compositor. `sourceKind` here is wire-only — it tells the renderer
+// which descriptor pool the slot indexes into (matches `TextureRef::Kind`).
+struct ContentLayerSnapshot {
+    enum class SourceKind : int { Video = 0, Compose = 1 };
+
+    std::uint64_t entity{0};
+    std::uint64_t targetScreen{UINT64_MAX};   // UINT64_MAX = all screens
+    std::array<float, 16> transformMatrix{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    float         opacity{1.0f};
+    float         sectionFadeMultiplier{1.0f};
+    int           blendMode{0};
+    std::uint32_t zOrder{0};
+
+    SourceKind    sourceKind{SourceKind::Video};
+    std::int32_t  sourceSlot{-1};       // -1 = no texture yet (skip draw)
+
+    // Optional colour-pipeline hints. PlaybackPresenter caches the
+    // authoritative tags for clips; the compositor takes a best-effort
+    // hint here and falls back to the presenter when bound to a video slot.
+    int           colorSpace{0};         // TextureColorSpace as int
+    std::string   ocioColorSpace;
+};
+
 // Director → Renderer per-tick state snapshot. Becomes the only data path
 // from Director to Renderer once subtask 8 lands.
 struct RenderFrame {
@@ -224,8 +278,14 @@ struct RenderFrame {
     std::vector<ProjectorSnapshot>      projectors;
     std::vector<OutputSnapshot>         outputs;
     // Active generative layers (Muncher etc.) for this tick. Editor-baked,
-    // already filtered to currently-active timeline frames.
+    // already filtered to currently-active timeline frames. Drives PASS 1
+    // (procedural draw into per-layer RT).
     std::vector<GenerativeLayerSnapshot> generativeLayers;
+    // Unified content-layer list — PASS 2 compositor input. Sorted by
+    // zOrder. Includes both clip-backed and generative entities; future
+    // content kinds (NDI input, codec providers) add entries here without
+    // touching the compositor's per-entry loop.
+    std::vector<ContentLayerSnapshot>    contentLayers;
 };
 
 // One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
@@ -363,8 +423,13 @@ struct SceneSnapshot {
     // Generative layer catalog: all *active* generative layers (Muncher etc.).
     // PlaybackTimeAuthority::buildSceneSnapshot filters by current frame, so
     // the show thread iterates this list directly without re-checking start/
-    // duration. CompositorSystem walks it per screen for procedural draws.
+    // duration. Drives PASS 1 (per-layer procedural draw into a private RT).
     std::vector<GenerativeLayerSnapshot>       generativeLayers;
+    // Unified content-layer catalog — PASS 2 compositor input. All *active*
+    // entities that produce a texture and composite onto a screen (clip-
+    // backed + generative + future kinds). Editor-baked, sorted by zOrder
+    // ascending at publish time.
+    std::vector<ContentLayerSnapshot>          contentLayers;
 };
 
 // Director → Renderer. Triggers the existing capture-pass pipeline; reply
@@ -421,6 +486,18 @@ struct ResourcesProvisioned {
 // `ResourcesProvisioned`. Stage 4: replaces the last show-thread registry
 // write so the narrow m_registryMutex lock can be removed.
 struct ScreenRenderTargetAllocated {
+    std::uint64_t entity{0};
+    std::uint32_t slot{UINT32_MAX};
+    std::uint32_t width{0};
+    std::uint32_t height{0};
+};
+
+// Renderer → Director. Mirror of ScreenRenderTargetAllocated for generative
+// layers — the show thread's PASS 1 procedural render allocates a compose
+// target per GenerativeLayer entity. Editor writes the slot back into
+// GenerativeLayer::renderTargetSlot so the next SceneSnapshot's
+// ContentLayerSnapshot for this layer carries the correct slot.
+struct GenerativeLayerRenderTargetAllocated {
     std::uint64_t entity{0};
     std::uint32_t slot{UINT32_MAX};
     std::uint32_t width{0};
@@ -484,6 +561,7 @@ using Message = std::variant<
     ProvisionClipResources,
     ResourcesProvisioned,
     ScreenRenderTargetAllocated,
+    GenerativeLayerRenderTargetAllocated,
     SetOutputEnabled,
     ApplySettings,
     DeviceLost,

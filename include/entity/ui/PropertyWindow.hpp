@@ -105,6 +105,15 @@ private:
     void renderOALayerProperties(entt::entity entity);
 
     /**
+     * Render Generative layer properties: identity (name/color), target
+     * screen picker, opacity, render-target size. Called when the selected
+     * entity has GenerativeLayer but no Clip. Sub-kind (Muncher, future
+     * particles, ...) is detected via composition — extra widgets get
+     * folded in here per state component.
+     */
+    void renderGenerativeLayerProperties(entt::entity entity);
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control

@@ -13,6 +13,8 @@
 #include "entity/components/Clip.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/MunchersGameState.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
@@ -138,6 +140,13 @@ void PropertyWindow::render() {
     if (registry.all_of<ObjectAnimationLayer>(selectedClip) &&
         !registry.all_of<Clip>(selectedClip)) {
         renderOALayerProperties(selectedClip);
+        return;
+    }
+
+    // Generative layer path: entity has GenerativeLayer but no Clip component
+    if (registry.all_of<GenerativeLayer>(selectedClip) &&
+        !registry.all_of<Clip>(selectedClip)) {
+        renderGenerativeLayerProperties(selectedClip);
         return;
     }
 
@@ -1748,6 +1757,184 @@ void PropertyWindow::renderOALayerProperties(entt::entity entity) {
         renderOAKeyframeControls(entity, AnimatableProperty::ScaleX,    "Scale X");
         renderOAKeyframeControls(entity, AnimatableProperty::ScaleY,    "Scale Y");
         renderOAKeyframeControls(entity, AnimatableProperty::ScaleZ,    "Scale Z");
+    }
+
+    ImGui::PopID();
+}
+
+void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
+    if (!m_timeline) return;
+    auto& registry = m_timeline->getRegistry();
+
+    auto* gen   = registry.try_get<GenerativeLayer>(entity);
+    auto* lay   = registry.try_get<Layer>(entity);
+    auto* media = registry.try_get<MediaLayer>(entity);
+    if (!gen || !lay) return;
+
+    ImGui::PushID(static_cast<int>(entity));
+
+    // Sub-kind label resolved by composition (MunchersGameState ⇒ "Muncher",
+    // future state components add their own labels here).
+    const char* subKind = "Generative";
+    if (registry.all_of<MunchersGameState>(entity)) subKind = "Muncher";
+    ImGui::Text("%s Layer", subKind);
+    ImGui::Separator();
+
+    if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char nameBuf[128];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", lay->name.c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
+            lay->name = nameBuf;
+        }
+
+        float col[4] = {lay->color[0], lay->color[1], lay->color[2], lay->color[3]};
+        if (ImGui::ColorEdit4("Color", col, ImGuiColorEditFlags_NoAlpha)) {
+            lay->color = {col[0], col[1], col[2], col[3]};
+        }
+    }
+
+    // UV-space Transform — same axes as Clip's transform (position in screen
+    // NDC, rotation Z, scale around screen center). Scalar-only for now;
+    // generative layers aren't keyframable in this codebase yet, so no
+    // AnimationSystem coupling. The same widgets as Clip's renderTransformSection
+    // minus the keyframe dots / undo plumbing.
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (auto* t = registry.try_get<Transform>(entity)) {
+            ImGui::SetNextItemWidth(-1);
+            float posX = t->position.x;
+            if (ImGui::DragFloat("Position X", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
+                t->setPosition(glm::vec3(posX, t->position.y, t->position.z));
+            }
+            ImGui::SetNextItemWidth(-1);
+            float posY = t->position.y;
+            if (ImGui::DragFloat("Position Y", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
+                t->setPosition(glm::vec3(t->position.x, posY, t->position.z));
+            }
+
+            ImGui::Spacing();
+            ImGui::SetNextItemWidth(-1);
+            float rotZ = t->rotation.z;
+            if (ImGui::DragFloat("Rotation", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
+                t->setRotation(glm::vec3(t->rotation.x, t->rotation.y, rotZ));
+            }
+
+            ImGui::Spacing();
+            auto [it, inserted] = m_uniformScaleState.try_emplace(entity, true);
+            bool& uniformScale = it->second;
+            ImGui::Checkbox("Uniform Scale", &uniformScale);
+
+            ImGui::SetNextItemWidth(-1);
+            float scaleX = t->scale.x;
+            float prevScaleX = scaleX;
+            if (ImGui::DragFloat("Scale X", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
+                if (uniformScale && prevScaleX > 0.0001f) {
+                    float ratio = scaleX / prevScaleX;
+                    t->setScale(glm::vec3(scaleX,
+                                          t->scale.y * ratio,
+                                          t->scale.z * ratio));
+                } else {
+                    t->setScale(glm::vec3(scaleX, t->scale.y, t->scale.z));
+                }
+            }
+
+            ImGui::SetNextItemWidth(-1);
+            float scaleY = t->scale.y;
+            float prevScaleY = scaleY;
+            if (ImGui::DragFloat("Scale Y", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
+                if (uniformScale && prevScaleY > 0.0001f) {
+                    float ratio = scaleY / prevScaleY;
+                    t->setScale(glm::vec3(t->scale.x * ratio,
+                                          scaleY,
+                                          t->scale.z * ratio));
+                } else {
+                    t->setScale(glm::vec3(t->scale.x, scaleY, t->scale.z));
+                }
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Reset Transform")) {
+                t->setPosition(glm::vec3(0.0f));
+                t->setRotation(glm::vec3(0.0f));
+                t->setScale(glm::vec3(1.0f));
+            }
+        } else {
+            ImGui::TextDisabled("No transform component");
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Layer", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (media) {
+            ImGui::SetNextItemWidth(-1);
+            float opacity = media->opacity;
+            if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+                media->opacity = opacity;
+            }
+
+            int zOrder = static_cast<int>(media->zOrder);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::DragInt("Z-Order", &zOrder, 1.0f, 0, 999)) {
+                media->zOrder = static_cast<uint32_t>(std::max(0, zOrder));
+            }
+        } else {
+            ImGui::TextDisabled("No layer component");
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Target", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Screen the generated output renders to:");
+
+        // Build target list: None + all Screen entities
+        std::vector<entt::entity> targets;
+        std::vector<std::string>  targetLabels;
+        targets.push_back(entt::null);
+        targetLabels.push_back("(none)");
+
+        auto screenView = registry.view<Screen>();
+        for (auto e : screenView) {
+            targets.push_back(e);
+            const auto& s = screenView.get<Screen>(e);
+            targetLabels.push_back("Screen: " + s.name);
+        }
+
+        std::vector<const char*> targetCstrs;
+        targetCstrs.reserve(targetLabels.size());
+        for (const auto& l : targetLabels) targetCstrs.push_back(l.c_str());
+
+        int currentIdx = 0;
+        for (size_t i = 0; i < targets.size(); ++i) {
+            if (targets[i] == gen->targetScreen) { currentIdx = static_cast<int>(i); break; }
+        }
+
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##gentarget", &currentIdx, targetCstrs.data(),
+                         static_cast<int>(targetCstrs.size()))) {
+            gen->targetScreen = targets[static_cast<size_t>(currentIdx)];
+        }
+
+        if (gen->targetScreen == entt::null) {
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                               "No target — generated output has no destination.");
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Render Target")) {
+        int w = static_cast<int>(gen->renderWidth);
+        int h = static_cast<int>(gen->renderHeight);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::DragInt("Width",  &w, 1.0f, 16, 7680)) {
+            gen->renderWidth  = static_cast<std::uint32_t>(std::max(16, w));
+        }
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::DragInt("Height", &h, 1.0f, 16, 4320)) {
+            gen->renderHeight = static_cast<std::uint32_t>(std::max(16, h));
+        }
+        ImGui::TextDisabled("Slot: %d", gen->renderTargetSlot);
+    }
+
+    if (ImGui::CollapsingHeader("Timing")) {
+        ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
+        ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
     }
 
     ImGui::PopID();

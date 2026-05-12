@@ -3,9 +3,68 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Layer.hpp"
 #include <imgui.h>
-#include <iostream>
 
 namespace entity {
+
+namespace {
+
+// One row in the layer palette: tinted color swatch + label, draggable.
+// Payload is a single uint8_t Layer::Kind (already the contract used by
+// TimelineWidget's accept side, "LAYER_KIND").
+void layerPaletteRow(const char* label,
+                     const char* tooltip,
+                     Layer::Kind kind,
+                     ImVec4 swatch)
+{
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    const float swatchSize = lineH * 0.55f;
+    ImVec2 cursor = ImGui::GetCursorScreenPos();
+
+    // Reserve a Selectable spanning the row width — gives us hover/click feedback
+    // and acts as the drag source. We push a unique ID per entry to disambiguate
+    // labels (future kinds may reuse a short name across categories).
+    ImGui::PushID(label);
+
+    // Indent the swatch+label by a few pixels so it doesn't kiss the category
+    // header column.
+    bool clicked = ImGui::Selectable("##row", false,
+                                     ImGuiSelectableFlags_AllowItemOverlap,
+                                     ImVec2(0.0f, lineH));
+    (void)clicked;  // selection isn't meaningful here — drag is the action
+
+    // Draw swatch + label on top of the selectable.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float swatchY = cursor.y + (lineH - swatchSize) * 0.5f;
+    float swatchX = cursor.x + 6.0f;
+    ImU32 col = ImGui::ColorConvertFloat4ToU32(swatch);
+    dl->AddRectFilled(ImVec2(swatchX, swatchY),
+                      ImVec2(swatchX + swatchSize, swatchY + swatchSize),
+                      col, 2.0f);
+    dl->AddRect(ImVec2(swatchX, swatchY),
+                ImVec2(swatchX + swatchSize, swatchY + swatchSize),
+                IM_COL32(0, 0, 0, 160), 2.0f);
+    dl->AddText(ImVec2(swatchX + swatchSize + 8.0f, cursor.y + 1.0f),
+                IM_COL32(220, 220, 220, 255), label);
+
+    if (ImGui::IsItemHovered() && tooltip) {
+        ImGui::SetTooltip("%s", tooltip);
+    }
+
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+        uint8_t payload = static_cast<uint8_t>(kind);
+        ImGui::SetDragDropPayload("LAYER_KIND", &payload, sizeof(payload));
+        ImGui::Text("%s", label);
+        ImGui::EndDragDropSource();
+    }
+
+    ImGui::PopID();
+}
+
+void categoryComingSoon(const char* note) {
+    ImGui::TextDisabled("    %s", note);
+}
+
+} // namespace
 
 LayersWindow::LayersWindow(Engine* engine)
     : m_engine(engine)
@@ -15,86 +74,44 @@ LayersWindow::LayersWindow(Engine* engine)
 void LayersWindow::render() {
     if (!m_engine) return;
 
-    ImGui::TextDisabled("Drag a layer kind onto a timeline track.");
-    ImGui::Separator();
+    ImGui::TextDisabled("Drag a layer onto a timeline track.");
     ImGui::Spacing();
 
-    // Clip layer drag source
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.31f, 0.47f, 0.70f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.41f, 0.57f, 0.80f, 1.0f));
-        ImGui::Button("Clip", ImVec2(-1.0f, 40.0f));
-        ImGui::PopStyleColor(2);
+    // === Video ===
+    if (ImGui::CollapsingHeader("Video", ImGuiTreeNodeFlags_DefaultOpen)) {
+        layerPaletteRow(
+            "Clip",
+            "Drag onto a track to create an empty clip.\n"
+            "Assign media via the Properties panel.",
+            Layer::Kind::Clip,
+            ImVec4(0.31f, 0.47f, 0.70f, 1.0f));
 
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Drag onto a track to create an empty clip.\n"
-                              "Assign media via the Properties panel.");
-        }
+        layerPaletteRow(
+            "Object Animation",
+            "Drag onto a track to create an Object Animation layer.\n"
+            "Pick a target Screen or Prop in the Properties panel,\n"
+            "then add keyframes to animate its position/rotation/scale.",
+            Layer::Kind::ObjectAnimation,
+            ImVec4(0.55f, 0.35f, 0.70f, 1.0f));
 
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            uint8_t kind = static_cast<uint8_t>(Layer::Kind::Clip);
-            ImGui::SetDragDropPayload("LAYER_KIND", &kind, sizeof(kind));
-            ImGui::Text("Clip");
-            ImGui::EndDragDropSource();
-        }
+        layerPaletteRow(
+            "Muncher",
+            "Drag onto a track to create a Muncher generative layer.\n"
+            "A maze-chase mini-game rendered into the layer's render target;\n"
+            "responds to external inputs (OSC / MIDI / keyboard) over time.",
+            Layer::Kind::Generative,
+            ImVec4(0.85f, 0.78f, 0.20f, 1.0f));
     }
 
-    ImGui::Spacing();
-
-    // Object Animation layer drag source
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.35f, 0.70f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.45f, 0.80f, 1.0f));
-        ImGui::Button("Object Animation", ImVec2(-1.0f, 40.0f));
-        ImGui::PopStyleColor(2);
-
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Drag onto a track to create an Object Animation layer.\n"
-                              "Pick a target Screen or Prop in the Properties panel,\n"
-                              "then add keyframes to animate its position/rotation/scale.");
-        }
-
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            uint8_t kind = static_cast<uint8_t>(Layer::Kind::ObjectAnimation);
-            ImGui::SetDragDropPayload("LAYER_KIND", &kind, sizeof(kind));
-            ImGui::Text("Object Animation");
-            ImGui::EndDragDropSource();
-        }
+    // === Audio ===
+    if (ImGui::CollapsingHeader("Audio")) {
+        categoryComingSoon("(no audio layer kinds yet)");
     }
 
-    ImGui::Spacing();
-
-    // Generative layer drag source — first kind is "Muncher" (Pac-Man-style
-    // maze chase with the lower-case-"e" Entity logo as the player). Future
-    // generative kinds (particles, visualizers, ...) get their own buttons
-    // here.
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78f, 0.66f, 0.18f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.88f, 0.76f, 0.28f, 1.0f));
-        ImGui::Button("Generative — Muncher", ImVec2(-1.0f, 40.0f));
-        ImGui::PopStyleColor(2);
-
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Drag onto a track to create a Muncher generative layer.\n"
-                              "A maze-chase mini-game rendered into the layer's render target;\n"
-                              "responds to external inputs (OSC / MIDI / keyboard) over time.");
-        }
-
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            uint8_t kind = static_cast<uint8_t>(Layer::Kind::Generative);
-            ImGui::SetDragDropPayload("LAYER_KIND", &kind, sizeof(kind));
-            ImGui::Text("Muncher");
-            ImGui::EndDragDropSource();
-        }
+    // === Control ===
+    if (ImGui::CollapsingHeader("Control")) {
+        categoryComingSoon("(no control layer kinds yet)");
     }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("Layer kinds:");
-    ImGui::BulletText("Clip — video or image source");
-    ImGui::BulletText("Object Animation — keyframed\ntransform on a Screen or Prop");
-    ImGui::BulletText("Generative — procedural\ntexture (Muncher, ...)");
 }
 
 } // namespace entity

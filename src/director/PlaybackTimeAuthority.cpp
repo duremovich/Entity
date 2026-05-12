@@ -939,6 +939,19 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             snap.zOrder    = ml->zOrder;
         }
 
+        // UV-space transform — same bake pattern as ClipCatalogEntry.
+        if (auto* t = m_registry.try_get<Transform>(entity)) {
+            t->updateMatrix();
+            std::memcpy(snap.transformMatrix.data(),
+                        glm::value_ptr(t->matrix),
+                        sizeof(snap.transformMatrix));
+        }
+
+        // Carry the slot the show thread previously allocated for this
+        // layer (R2D ack wrote it on the editor thread). -1 if not yet
+        // allocated — PASS 2 compositor skips the blit until then.
+        snap.renderTargetSlot = gen.renderTargetSlot;
+
         // Sub-kind dispatch by component composition (ADR-0016) — same rule
         // GenerativeSystem uses on the editor side.
         if (const auto* mgs = m_registry.try_get<MunchersGameState>(entity)) {
@@ -1052,6 +1065,49 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
             }
         }
     }
+
+    // Unified content-layer list for PASS 2 compositor. Built on the show
+    // thread from activeClips (already carries section fade + post-animation
+    // transform/opacity) and generativeLayers (carries the editor-baked
+    // transform + renderTargetSlot). Future content kinds plug in here.
+    out.contentLayers.clear();
+    out.contentLayers.reserve(out.activeClips.size() + out.generativeLayers.size());
+
+    for (const auto& ac : out.activeClips) {
+        bus::ContentLayerSnapshot c;
+        c.entity                = ac.entity;
+        c.targetScreen          = ac.targetScreen;
+        c.transformMatrix       = ac.transformMatrix;
+        c.opacity               = ac.opacity;
+        c.sectionFadeMultiplier = ac.sectionFadeMultiplier;
+        c.blendMode             = static_cast<int>(ac.blendMode);
+        c.zOrder                = ac.zOrder;
+        c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Video;
+        c.sourceSlot            = ac.slot;
+        // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
+        // for Video-source layers (per-entity cached on the show side).
+        out.contentLayers.push_back(c);
+    }
+
+    for (const auto& gl : out.generativeLayers) {
+        bus::ContentLayerSnapshot c;
+        c.entity                = gl.entity;
+        c.targetScreen          = gl.targetScreen;
+        c.transformMatrix       = gl.transformMatrix;
+        c.opacity               = gl.opacity;
+        c.sectionFadeMultiplier = 1.0f;  // SectionScheduler integration is NEW-08
+        c.blendMode             = gl.blendMode;
+        c.zOrder                = gl.zOrder;
+        c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Compose;
+        c.sourceSlot            = gl.renderTargetSlot;
+        // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
+        out.contentLayers.push_back(c);
+    }
+
+    std::sort(out.contentLayers.begin(), out.contentLayers.end(),
+              [](const bus::ContentLayerSnapshot& a, const bus::ContentLayerSnapshot& b) {
+                  return a.zOrder < b.zOrder;
+              });
 }
 
 void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out) const {

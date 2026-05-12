@@ -1,0 +1,29 @@
+{
+    "version": 1,
+    "description": "Create a Muncher generative layer, then SelectClip it by index — verifies that selection survives a frame (regression test for the findClipAtPosition layer-only fix).",
+    "commands": [
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_selected.png",
+            "region": "fullWindow"
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -1,0 +1,37 @@
+{
+    "version": 1,
+    "description": "End-to-end test of the unified content-layer Transform path: create a Muncher generative layer, rotate it 45 degrees via SetClipRotation, capture the editor window. The Main Screen stage view should show the playfield rotated 45 degrees.",
+    "commands": [
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        {
+            "type": "SetClipRotation",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "rotationX": 0,
+            "rotationY": 0,
+            "rotationZ": 45
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_rotated_45.png",
+            "region": "fullWindow"
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}
