@@ -5,6 +5,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <unordered_map>
+#include <vector>
+
+namespace entity {
+class RuntimeShaderCompiler;
+}
 
 namespace entity::effects {
 
@@ -37,12 +42,22 @@ public:
     // Registers the engine-shipped effect catalog. No-op in Phase 1.
     void registerBuiltins();
 
-    // Scans a project's effects/ directory for user HLSL + manifest
-    // pairs. No-op in Phase 1; full implementation in Phase 6.
-    void scanUserEffects(const std::filesystem::path& projectEffectsDir);
+    // Scan a project's effects/ directory for user HLSL + manifest
+    // pairs. Each `<name>.json` manifest declares a kind; the matching
+    // `<name>.hlsl` (or the file named in manifest's "shader" field) is
+    // compiled in-process via the passed RuntimeShaderCompiler. Failed
+    // compiles are logged and skipped (the kind doesn't appear in the
+    // registry). Previously-scanned user kinds are dropped before
+    // re-scanning so the call is idempotent.
+    //
+    // Phase 6 ships with scan-on-project-load. Hot-reload via
+    // ContentScanner is a follow-up.
+    void scanUserEffects(const std::filesystem::path& projectEffectsDir,
+                          RuntimeShaderCompiler&       compiler,
+                          const std::filesystem::path& shaderIncludeDir = {});
 
     // Re-scan a single changed file. Hot-reload entry point for the
-    // ContentScanner integration in Phase 6.
+    // ContentScanner integration follow-up.
     void hotReload(const std::filesystem::path& changedFile);
 
     // Lookup by hash. nullptr if no kind with this hash exists.
@@ -61,8 +76,31 @@ public:
         return m_kinds;
     }
 
+    // View of a user effect's compiled PS bytecode. Renderer prefers this
+    // over loading a .cso from disk when present. Returns size = 0 when
+    // there's no in-memory bytecode for this kind (engine effects always
+    // fall back to the disk path).
+    struct PsBytecodeView {
+        const std::uint8_t* data{nullptr};
+        std::size_t         size{0};
+        bool valid() const { return data != nullptr && size > 0; }
+    };
+    PsBytecodeView tryGetUserPsBytecode(std::uint32_t kindIdHash) const noexcept {
+        auto it = m_userArtifacts.find(kindIdHash);
+        if (it == m_userArtifacts.end()) return {};
+        return { it->second.psBytecode.data(), it->second.psBytecode.size() };
+    }
+
 private:
     std::unordered_map<std::uint32_t, EffectKind> m_kinds;
+
+    // Compiled-bytecode storage for user-authored kinds. Keyed by kind
+    // hash. Engine kinds aren't in here — they load `.cso` from disk on
+    // first reference.
+    struct UserArtifact {
+        std::vector<std::uint8_t> psBytecode;
+    };
+    std::unordered_map<std::uint32_t, UserArtifact> m_userArtifacts;
 };
 
 } // namespace entity::effects

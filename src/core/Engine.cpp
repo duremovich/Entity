@@ -3284,6 +3284,25 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
 
     CrashLogger::setProjectPath(m_projectManager->projectPath());
 
+    // Phase 6 (issue #54): scan the project's effects/ directory for
+    // user-authored HLSL effect kinds and compile them in-process. The
+    // engine effect catalog stays unchanged; user kinds appear in the
+    // PropertyWindow "Add Effect" menu under their declared category.
+    // Compile failures log + skip — the kind doesn't appear, no crash.
+    if (m_effectKindRegistry) {
+        if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
+            const std::filesystem::path projDir =
+                m_projectManager->projectPath().parent_path();
+            const std::filesystem::path effectsDir = projDir / "effects";
+            // shaderIncludeDir points at the exe-adjacent shaders/ dir so
+            // user HLSL can `#include "_effect_common.hlsli"` directly.
+            const std::filesystem::path exeShadersDir =
+                std::filesystem::path("shaders");
+            m_effectKindRegistry->scanUserEffects(
+                effectsDir, d3d->getRuntimeShaderCompiler(), exeShadersDir);
+        }
+    }
+
     // Drop undo/redo history — the previous project's commands point at
     // entities that the load just replaced. Without this, a Ctrl+Z
     // post-load would replay against a stale entity ID.

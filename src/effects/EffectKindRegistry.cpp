@@ -1,8 +1,64 @@
 #include "entity/effects/EffectKindRegistry.hpp"
 
+#include "entity/render/RuntimeShaderCompiler.hpp"
+
+#include <nlohmann/json.hpp>
+#include <dxcapi.h>
+#include <wrl/client.h>
+
+#include <fstream>
+#include <iostream>
+#include <sstream>
+
 namespace entity::effects {
 
 namespace {
+
+using nlohmann::json;
+
+ParamValue::Type paramTypeFromString(const std::string& s) {
+    if (s == "Float") return ParamValue::Type::Float;
+    if (s == "Int")   return ParamValue::Type::Int;
+    if (s == "Vec2")  return ParamValue::Type::Vec2;
+    if (s == "Vec3")  return ParamValue::Type::Vec3;
+    if (s == "Color") return ParamValue::Type::Color;
+    if (s == "Bool")  return ParamValue::Type::Bool;
+    if (s == "Enum")  return ParamValue::Type::Enum;
+    return ParamValue::Type::Float;
+}
+
+// Parse one ParamSchema entry from JSON. v1 only supports Float — other
+// types are accepted at parse time but the UI won't expose them yet.
+std::optional<ParamSchema> parseParamSchemaJson(const json& j) {
+    if (!j.is_object() || !j.contains("name")) return std::nullopt;
+    ParamSchema p;
+    p.name        = j.at("name").get<std::string>();
+    p.displayName = j.value("displayName", p.name);
+    p.type        = paramTypeFromString(j.value("type", std::string{"Float"}));
+    p.min         = j.value("min",  0.0f);
+    p.max         = j.value("max",  1.0f);
+    p.uiHint      = j.value("uiHint", 0);
+    switch (p.type) {
+        case ParamValue::Type::Float:
+            p.defaultValue = ParamValue::makeFloat(j.value("default", 0.0f));
+            break;
+        case ParamValue::Type::Int:
+        case ParamValue::Type::Enum:
+            p.defaultValue = ParamValue::makeInt(j.value("default", 0));
+            break;
+        case ParamValue::Type::Bool:
+            p.defaultValue = ParamValue::makeBool(j.value("default", false));
+            break;
+        default:
+            // Vec2 / Vec3 / Color initialise to schema-default zero;
+            // manifest authoring beyond Float arrives with the UI for
+            // those types.
+            p.defaultValue = {};
+            p.defaultValue.type = p.type;
+            break;
+    }
+    return p;
+}
 
 // Shared helpers to keep registerBuiltins below readable.
 ParamSchema makeFloatSchema(std::string name, std::string displayName,
@@ -160,12 +216,154 @@ void EffectKindRegistry::registerBuiltins() {
     ));
 }
 
-void EffectKindRegistry::scanUserEffects(const std::filesystem::path& /*projectEffectsDir*/) {
-    // Phase 6: read manifests + compile HLSL via RuntimeShaderCompiler.
+void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEffectsDir,
+                                          RuntimeShaderCompiler&       compiler,
+                                          const std::filesystem::path& shaderIncludeDir) {
+    namespace fs = std::filesystem;
+
+    // Drop previously-scanned user kinds so the call is idempotent.
+    // builtin=true entries stay; builtin=false get torn down. Their
+    // compiled-bytecode artifacts get evicted alongside.
+    for (auto it = m_kinds.begin(); it != m_kinds.end(); ) {
+        if (!it->second.builtin) {
+            m_userArtifacts.erase(it->first);
+            it = m_kinds.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    std::error_code ec;
+    if (!fs::exists(projectEffectsDir, ec) || !fs::is_directory(projectEffectsDir, ec)) {
+        return;  // no user effects directory — silent no-op
+    }
+
+    // Include path passed to DXC for `#include "_effect_common.hlsli"`.
+    // Engine-shipped header lives next to the executable's shaders/effects/
+    // directory; callers pass that path so user HLSL can use the shared
+    // cbuffer layout. Falls back to empty (DXC searches the source file's
+    // directory by default) when unspecified.
+    std::vector<std::wstring> includeDirs;
+    if (!shaderIncludeDir.empty()) {
+        includeDirs.push_back(shaderIncludeDir.wstring());
+        // Also add the effects/ subdir explicitly so #include resolves the
+        // header whether it's referenced as `_effect_common.hlsli` or
+        // `effects/_effect_common.hlsli`.
+        const fs::path subdir = shaderIncludeDir / "effects";
+        if (fs::exists(subdir, ec)) {
+            includeDirs.push_back(subdir.wstring());
+        }
+    }
+
+    int scanned = 0;
+    int registered = 0;
+    for (const auto& entry : fs::directory_iterator(projectEffectsDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec)) continue;
+        if (entry.path().extension() != ".json") continue;
+        ++scanned;
+
+        json manifest;
+        try {
+            std::ifstream f(entry.path());
+            manifest = json::parse(f);
+        } catch (const std::exception& e) {
+            std::cerr << "[scanUserEffects] Manifest parse failed: "
+                      << entry.path().string() << " (" << e.what() << ")"
+                      << std::endl;
+            continue;
+        }
+
+        if (!manifest.contains("stableId") || !manifest.contains("shader")) {
+            std::cerr << "[scanUserEffects] Manifest missing required field "
+                         "(stableId / shader): "
+                      << entry.path().string() << std::endl;
+            continue;
+        }
+
+        const auto stableId   = manifest.value("stableId", std::string{});
+        const auto displayName = manifest.value("displayName", stableId);
+        const auto category   = manifest.value("category",  std::string{"User"});
+        const auto shaderRel  = manifest.value("shader",    std::string{});
+        const auto entryPoint = manifest.value("entryPoint", std::string{"PSMain"});
+        const int  passCount  = manifest.value("passCount", 1);
+
+        const fs::path shaderPath = projectEffectsDir / shaderRel;
+        if (!fs::exists(shaderPath, ec)) {
+            std::cerr << "[scanUserEffects] Shader not found: "
+                      << shaderPath.string() << " (referenced by "
+                      << entry.path().string() << ")" << std::endl;
+            continue;
+        }
+
+        std::string source;
+        try {
+            std::ifstream f(shaderPath, std::ios::in | std::ios::binary);
+            std::stringstream ss;
+            ss << f.rdbuf();
+            source = ss.str();
+        } catch (const std::exception& e) {
+            std::cerr << "[scanUserEffects] Failed to read shader: "
+                      << shaderPath.string() << " (" << e.what() << ")"
+                      << std::endl;
+            continue;
+        }
+
+        auto result = compiler.compile(source, entryPoint, "ps_6_0", includeDirs);
+        if (!result.success || !result.blob) {
+            std::cerr << "[scanUserEffects] HLSL compile failed for "
+                      << stableId << ":\n" << result.errors << std::endl;
+            continue;
+        }
+
+        EffectKind kind;
+        kind.stableId    = stableId;
+        kind.kindIdHash  = fnv1a32(stableId);
+        kind.displayName = displayName;
+        kind.category    = category;
+        kind.backend     = EffectKind::Backend::HLSLPixel;
+        kind.shaderPath  = shaderPath.string();  // informational
+        kind.passCount   = passCount;
+        kind.builtin     = false;
+        if (manifest.contains("params") && manifest["params"].is_array()) {
+            for (const auto& pj : manifest["params"]) {
+                if (auto ps = parseParamSchemaJson(pj)) {
+                    kind.params.push_back(std::move(*ps));
+                }
+            }
+        }
+        // v1 socket schema: one TextureInput + one TextureOutput. Custom
+        // sockets arrive with the node graph editor (Phase 4).
+        kind.sockets = {
+            { "in",  SocketSchema::Kind::Texture, SocketSchema::Direction::Input },
+            { "out", SocketSchema::Kind::Texture, SocketSchema::Direction::Output },
+        };
+
+        // Snapshot bytecode into an owned byte vector so the IDxcBlob
+        // can be dropped without dangling pointers in the renderer's
+        // PSO creation path later.
+        UserArtifact artifact;
+        const std::uint8_t* bytes = static_cast<const std::uint8_t*>(
+            result.blob->GetBufferPointer());
+        const std::size_t bytesLen = result.blob->GetBufferSize();
+        artifact.psBytecode.assign(bytes, bytes + bytesLen);
+        m_userArtifacts.emplace(kind.kindIdHash, std::move(artifact));
+
+        registerKind(std::move(kind));
+        ++registered;
+    }
+
+    if (scanned > 0) {
+        std::cout << "[scanUserEffects] " << projectEffectsDir.string()
+                  << ": scanned " << scanned << " manifest(s), registered "
+                  << registered << " kind(s)" << std::endl;
+    }
 }
 
 void EffectKindRegistry::hotReload(const std::filesystem::path& /*changedFile*/) {
-    // Phase 6: re-scan the single changed file.
+    // Follow-up: re-scan the single changed file. Until ContentScanner
+    // integration lands, callers re-invoke scanUserEffects() for a full
+    // rescan of the project's effects dir.
 }
 
 void EffectKindRegistry::registerKind(EffectKind kind) {

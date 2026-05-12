@@ -21,6 +21,7 @@ add_executable(EntityMediaTests
     unit/OcioManagerTests.cpp
     unit/OcioGpuProcessorTests.cpp
     unit/RuntimeShaderCompilerTests.cpp
+    unit/EffectKindRegistryTests.cpp
     unit/DecoderColorSpaceTests.cpp
     unit/ProjectSerializerTests.cpp
     unit/ProjectManagerPathTests.cpp

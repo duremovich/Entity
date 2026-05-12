@@ -2890,21 +2890,33 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
         return nullptr;
     }
 
-    // Load PS bytecode from disk on first reference. Engine effects ship
-    // their `.cso` artifact next to the executable; user effects (Phase 6)
-    // arrive via RuntimeShaderCompiler instead.
-    std::wstring psPathW(kind->shaderPath.begin(), kind->shaderPath.end());
-    ComPtr<ID3DBlob> psBlob;
-    if (loadCompiledShader(psPathW, &psBlob) != Result::Success) {
-        std::cerr << "[drawEffectPass] Failed to load PS '" << kind->shaderPath
-                  << "' for kind '" << kind->stableId << "'" << std::endl;
-        return nullptr;
+    // Load PS bytecode. User-authored kinds register their compiled
+    // bytecode in-memory via RuntimeShaderCompiler (Phase 6 — see
+    // EffectKindRegistry::scanUserEffects); engine kinds load their
+    // `.cso` artifact from disk next to the executable.
+    const std::uint8_t* psBytes = nullptr;
+    std::size_t         psSize  = 0;
+    ComPtr<ID3DBlob>    psBlob;  // owns the bytes when loaded from disk
+
+    auto userView = m_effectKindRegistry->tryGetUserPsBytecode(kindIdHash);
+    if (userView.valid()) {
+        psBytes = userView.data;
+        psSize  = userView.size;
+    } else {
+        std::wstring psPathW(kind->shaderPath.begin(), kind->shaderPath.end());
+        if (loadCompiledShader(psPathW, &psBlob) != Result::Success) {
+            std::cerr << "[drawEffectPass] Failed to load PS '" << kind->shaderPath
+                      << "' for kind '" << kind->stableId << "'" << std::endl;
+            return nullptr;
+        }
+        psBytes = static_cast<const std::uint8_t*>(psBlob->GetBufferPointer());
+        psSize  = psBlob->GetBufferSize();
     }
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = m_effectRootSignature.Get();
     pso.VS = { m_effectVsBlob->GetBufferPointer(), m_effectVsBlob->GetBufferSize() };
-    pso.PS = { psBlob->GetBufferPointer(),         psBlob->GetBufferSize() };
+    pso.PS = { psBytes, psSize };
 
     // No input layout — VS reads SV_VertexID and synthesises a fullscreen
     // triangle. Disable blending (each effect writes a full RGBA replacement)

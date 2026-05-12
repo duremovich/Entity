@@ -238,6 +238,12 @@ public:
         m_effectKindRegistry = reg;
     }
 
+    // Expose the runtime DXC compiler so callers outside the renderer
+    // (notably Engine, for EffectKindRegistry::scanUserEffects) can
+    // compile HLSL through the same DLL load + cache. Read-only access;
+    // the compiler is thread-safe.
+    RuntimeShaderCompiler& getRuntimeShaderCompiler() { return m_runtimeCompiler; }
+
     /**
      * Phase C.12 #5 — bind the OcioManager that drives input + display
      * transform PSO selection. Pass nullptr to disable OCIO and fall back
