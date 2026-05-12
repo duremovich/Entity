@@ -1469,37 +1469,64 @@ void Engine::update() {
     if (m_animationSystem) {
         m_animationSystem->update(m_registry, static_cast<float>(deltaTime));
     }
-    // Editor keyboard → Muncher input bus. Polled once per editor tick
-    // (rather than driven from onKeyEvent) so held-key state drives the
-    // analog axes reliably across alt-tab / focus changes. Gated on
-    // WantTextInput so typing in MediaBin / Properties text fields
-    // doesn't smear into player movement.
-    //
-    // Critically, the handler only WRITES the channel while a key is
-    // held (or for one tick after the last key releases). Otherwise it
-    // leaves the channel alone — so scripts and OSC plugins can drive
-    // `muncher.input.x/.y` without the keyboard poller overwriting them
-    // with 0 every tick. Future controllers (joystick, OSC, MIDI) write
-    // to the same two channels with the same single-source convention.
-    if (m_inputBus && m_window && !ImGui::GetIO().WantTextInput) {
-        const bool w     = glfwGetKey(m_window, GLFW_KEY_W)     == GLFW_PRESS;
-        const bool s     = glfwGetKey(m_window, GLFW_KEY_S)     == GLFW_PRESS;
-        const bool a     = glfwGetKey(m_window, GLFW_KEY_A)     == GLFW_PRESS;
-        const bool d     = glfwGetKey(m_window, GLFW_KEY_D)     == GLFW_PRESS;
-        const bool up    = glfwGetKey(m_window, GLFW_KEY_UP)    == GLFW_PRESS;
-        const bool down  = glfwGetKey(m_window, GLFW_KEY_DOWN)  == GLFW_PRESS;
-        const bool left  = glfwGetKey(m_window, GLFW_KEY_LEFT)  == GLFW_PRESS;
-        const bool right = glfwGetKey(m_window, GLFW_KEY_RIGHT) == GLFW_PRESS;
-        const float ix = ((d || right) ? 1.0f : 0.0f) - ((a || left) ? 1.0f : 0.0f);
-        const float iy = ((s || down)  ? 1.0f : 0.0f) - ((w || up)   ? 1.0f : 0.0f);
-        const bool anyHeld = (ix != 0.0f) || (iy != 0.0f);
-        if (anyHeld) {
-            m_inputBus->setFloat("muncher.input.x", ix);
-            m_inputBus->setFloat("muncher.input.y", iy);
+    // Local input sources → Muncher input bus. Joystick takes priority
+    // over keyboard; both share the same "only WRITE while active"
+    // guard so scripts / OSC plugins can drive the channels when no
+    // local input source is engaged. Single namespace (muncher.input.x/.y)
+    // means a gameplay system never cares which source produced the
+    // value.
+    if (m_inputBus) {
+        // 1) Joystick. Polled every tick on slot 1 only (every-slot scans
+        //    every tick triggered enough per-tick overhead to destabilize
+        //    the screenshot pipeline under heavy compositor load). GLFW's
+        //    stick-Y is -1=up / +1=down, matching the image-coord
+        //    convention used by the show-side render — no flip needed.
+        //    Small deadzone on top of the gameplay-side deadzone so
+        //    noisy sticks don't dribble input.
+        float jx = 0.0f, jy = 0.0f;
+        bool  joystickActive = false;
+        if (glfwJoystickPresent(GLFW_JOYSTICK_1)) {
+            int axesCount = 0;
+            const float* axes = glfwGetJoystickAxes(GLFW_JOYSTICK_1, &axesCount);
+            if (axes && axesCount >= 2) {
+                constexpr float kJoyDeadzone = 0.15f;
+                jx = (std::fabs(axes[0]) > kJoyDeadzone) ? axes[0] : 0.0f;
+                jy = (std::fabs(axes[1]) > kJoyDeadzone) ? axes[1] : 0.0f;
+                joystickActive = (jx != 0.0f || jy != 0.0f);
+            }
+        }
+
+        // 2) Keyboard. Gated on ImGui WantTextInput so typing in fields
+        //    doesn't smear into movement.
+        float kx = 0.0f, ky = 0.0f;
+        bool  keyboardActive = false;
+        if (m_window && !ImGui::GetIO().WantTextInput) {
+            const bool w     = glfwGetKey(m_window, GLFW_KEY_W)     == GLFW_PRESS;
+            const bool s     = glfwGetKey(m_window, GLFW_KEY_S)     == GLFW_PRESS;
+            const bool a     = glfwGetKey(m_window, GLFW_KEY_A)     == GLFW_PRESS;
+            const bool d     = glfwGetKey(m_window, GLFW_KEY_D)     == GLFW_PRESS;
+            const bool up    = glfwGetKey(m_window, GLFW_KEY_UP)    == GLFW_PRESS;
+            const bool down  = glfwGetKey(m_window, GLFW_KEY_DOWN)  == GLFW_PRESS;
+            const bool left  = glfwGetKey(m_window, GLFW_KEY_LEFT)  == GLFW_PRESS;
+            const bool right = glfwGetKey(m_window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+            kx = ((d || right) ? 1.0f : 0.0f) - ((a || left) ? 1.0f : 0.0f);
+            ky = ((s || down)  ? 1.0f : 0.0f) - ((w || up)   ? 1.0f : 0.0f);
+            keyboardActive = (kx != 0.0f) || (ky != 0.0f);
+        }
+
+        // 3) Merge + write. Joystick > keyboard. While neither is active,
+        //    issue one trailing zero-write (so the player stops cleanly
+        //    when the local source releases) and then stop writing — leaves
+        //    the channel free for scripts / OSC to drive.
+        if (joystickActive) {
+            m_inputBus->setFloat("muncher.input.x", jx);
+            m_inputBus->setFloat("muncher.input.y", jy);
+            m_muncherKeyboardActive = true;  // re-used to track "any local source active"
+        } else if (keyboardActive) {
+            m_inputBus->setFloat("muncher.input.x", kx);
+            m_inputBus->setFloat("muncher.input.y", ky);
             m_muncherKeyboardActive = true;
         } else if (m_muncherKeyboardActive) {
-            // One-shot zero-out the tick after the last key releases, then
-            // stop touching the channels until a key is pressed again.
             m_inputBus->setFloat("muncher.input.x", 0.0f);
             m_inputBus->setFloat("muncher.input.y", 0.0f);
             m_muncherKeyboardActive = false;
