@@ -19,6 +19,7 @@
 #include "entity/ui/TimelineWindow.hpp"
 #include "entity/ui/StageWindow.hpp"
 #include "entity/ui/MediaBinWindow.hpp"
+#include "entity/ui/EffectGraphWindow.hpp"
 #include "entity/ui/PropertyWindow.hpp"
 #include "entity/ui/MappingWindow.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
@@ -508,6 +509,17 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             propertyWindow->setEffectKindRegistry(m_effectKindRegistry.get());
         }
         m_windowManager->registerWindow(std::move(propertyWindow));
+    }
+    {
+        // Phase 4 of issue #54 — node graph view of the selected layer's
+        // effect chain. v1: passive visualisation + node-position
+        // persistence; drag-connect lands in a follow-up.
+        auto graphWindow = std::make_unique<EffectGraphWindow>(m_timeline);
+        graphWindow->setCommandDispatcher(m_commandDispatcher);
+        if (m_effectKindRegistry) {
+            graphWindow->setEffectKindRegistry(m_effectKindRegistry.get());
+        }
+        m_windowManager->registerWindow(std::move(graphWindow));
     }
     m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));

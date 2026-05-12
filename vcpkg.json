@@ -8,6 +8,7 @@
     "glfw3",
     "gtest",
     "imgui",
+    "imgui-node-editor",
     "nlohmann-json",
     {
       "name": "imgui",

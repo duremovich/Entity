@@ -207,6 +207,7 @@ target_sources(EntityMediaCore
         src/ui/ProjectorCalibrationWindow.cpp
         src/ui/CueListWindow.cpp
         src/ui/LayersWindow.cpp
+        src/ui/EffectGraphWindow.cpp
         src/ui/WorkspaceStore.cpp
 
         # Calibration
@@ -275,6 +276,7 @@ if(HAVE_FFMPEG)
 endif()
 
 find_package(Snappy CONFIG REQUIRED)
+find_package(unofficial-imgui-node-editor CONFIG REQUIRED)
 
 target_link_libraries(EntityMediaCore
     PUBLIC
@@ -289,6 +291,7 @@ target_link_libraries(EntityMediaCore
         OpenColorIO::OpenColorIO
         Snappy::snappy
         Eigen3::Eigen
+        unofficial::imgui-node-editor::imgui-node-editor
 )
 
 # Windows-specific libraries
