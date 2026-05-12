@@ -157,30 +157,66 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
 
 void CompositorSystem::drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& gl,
                                              float drawOpacity) {
-    // 1) Dim playfield background covering the whole compose target. Keeps
-    //    the layer visible even when the Muncher is in a corner; later
+    // Helper: build a translate+scale matrix for a quad at normalized
+    // image-coords (x, y) ∈ [0, 1] (origin top-left, Y-down) with NDC
+    // half-extent `halfSize`. Converts to NDC (-1..1, Y-up). Unit quad is
+    // 2 NDC units wide, so the resulting quad covers `2 * halfSize`
+    // fraction of the screen.
+    auto quadXf = [](float x, float y, float halfSize) {
+        const float ndcX = x * 2.0f - 1.0f;
+        const float ndcY = 1.0f - y * 2.0f;
+        return glm::translate(glm::mat4(1.0f), glm::vec3(ndcX, ndcY, 0.0f)) *
+               glm::scale(glm::mat4(1.0f), glm::vec3(halfSize, halfSize, 1.0f));
+    };
+
+    // 1) Playfield background covering the whole compose target. Later
     //    this becomes the maze tile draw.
     const glm::vec4 bgColor(0.06f, 0.06f, 0.10f, 1.0f);
     m_renderer->drawColoredQuad(glm::mat4(1.0f), bgColor, drawOpacity);
 
-    // 2) Muncher: yellow square at (muncher_x, muncher_y). Convert from
-    //    [0, 1] image-coords (origin top-left, Y-down) to NDC (-1..1,
-    //    Y-up). The unit quad is 2 NDC units wide, so a `kHalfSize` scale
-    //    yields a `2 * kHalfSize` × NDC-units quad — i.e. that fraction
-    //    of the full screen size.
-    constexpr float kHalfSize = 0.045f;  // ≈ 9% of screen per side
-    const float ndcX = gl.muncher_x * 2.0f - 1.0f;
-    const float ndcY = 1.0f - gl.muncher_y * 2.0f;
-    const glm::mat4 muncherXf =
-        glm::translate(glm::mat4(1.0f), glm::vec3(ndcX, ndcY, 0.0f)) *
-        glm::scale(glm::mat4(1.0f), glm::vec3(kHalfSize, kHalfSize, 1.0f));
+    // Pellets — tiny white quads on a 16×16 grid. Bits are packed
+    // little-end first within each uint64; index = cy*16 + cx.
+    // 256 max draw calls per layer; instancing comes with sprite atlas.
+    constexpr int   kGrid       = 16;
+    constexpr float kCellSize   = 1.0f / static_cast<float>(kGrid);
+    constexpr float kPelletHalf = 0.008f;
+    const glm::vec4 pelletColor(0.95f, 0.95f, 0.85f, 1.0f);
+    for (int cy = 0; cy < kGrid; ++cy) {
+        for (int cx = 0; cx < kGrid; ++cx) {
+            const int idx = cy * kGrid + cx;
+            if ((gl.muncher_pelletBits[idx / 64] >> (idx % 64)) & 1ull) {
+                const float px = (static_cast<float>(cx) + 0.5f) * kCellSize;
+                const float py = (static_cast<float>(cy) + 0.5f) * kCellSize;
+                m_renderer->drawColoredQuad(quadXf(px, py, kPelletHalf),
+                                             pelletColor, drawOpacity);
+            }
+        }
+    }
 
-    // Chomp pulse so the player reads as alive even when stationary —
-    // simFrame % 30 cycles brightness between ~0.75 and ~1.0.
+    // 3) Ghosts — three colored quads. Colors are placeholder accents
+    //    for the eventual theme-pack textures; nothing trademarked here.
+    //    Sized slightly smaller than the Muncher so the player visually
+    //    dominates when they overlap.
+    constexpr float kGhostHalf = 0.038f;
+    constexpr glm::vec4 ghostPalette[3] = {
+        glm::vec4(0.95f, 0.35f, 0.40f, 1.0f),  // crimson
+        glm::vec4(0.35f, 0.85f, 0.95f, 1.0f),  // cyan
+        glm::vec4(0.95f, 0.75f, 0.95f, 1.0f),  // pink
+    };
+    for (int gi = 0; gi < 3; ++gi) {
+        const float gx = gl.muncher_ghosts[gi * 2 + 0];
+        const float gy = gl.muncher_ghosts[gi * 2 + 1];
+        m_renderer->drawColoredQuad(quadXf(gx, gy, kGhostHalf),
+                                     ghostPalette[gi], drawOpacity);
+    }
+
+    // 4) Muncher. Yellow square with a chomp brightness pulse.
+    constexpr float kMuncherHalf = 0.045f;
     const float chomp = 0.85f + 0.15f *
         std::sin(static_cast<float>(gl.muncher_simFrame) * 0.20f);
     const glm::vec4 muncherColor(chomp, chomp * 0.85f, 0.10f, 1.0f);
-    m_renderer->drawColoredQuad(muncherXf, muncherColor, drawOpacity);
+    m_renderer->drawColoredQuad(quadXf(gl.muncher_x, gl.muncher_y, kMuncherHalf),
+                                 muncherColor, drawOpacity);
 }
 
 

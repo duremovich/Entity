@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace entity {
@@ -69,13 +70,58 @@ struct MunchersGameState {
     // from cheap analog sticks from creeping the player.
     float inputDeadzone{0.20f};
 
-    // TODO(muncher v3): ghosts, pellet grid, score / lives / phase. Sketch:
-    //   struct Ghost { float x, y, vx, vy; uint8_t mode; uint16_t frightenedFramesLeft; };
-    //   Ghost    ghosts[3];
-    //   uint8_t  pelletsBits[16 * 16 / 8];   // small bitset over maze tiles
-    //   uint16_t score;
-    //   uint8_t  lives;
-    //   uint8_t  phase;                       // Start / Playing / Death / Win
+    // --- Ghosts ----------------------------------------------------------
+    // Three chasers spawn from the corners (skipping the bottom-right,
+    // which is where the Muncher starts moving toward by default). AI is
+    // re-picked every kGhostDecisionTicks ticks, staggered across ghosts
+    // so they don't move in lockstep. Future: per-ghost behavior modes
+    // (scatter / chase / frightened) and a personality bias so each
+    // ghost picks its target differently.
+    struct Ghost {
+        float x{0.5f};
+        float y{0.5f};
+        float vx{0.0f};
+        float vy{0.0f};
+    };
+    static constexpr int kNumGhosts = 3;
+    std::array<Ghost, kNumGhosts> ghosts{};
+
+    // Ghost movement speed (slower than the player so the Muncher can
+    // outrun them on a straightaway).
+    float ghostSpeedPerTick{0.0030f};
+
+    // Decision cadence — ghosts re-pick their cardinal heading every N
+    // ticks. Stagger applied per-ghost in GenerativeSystem.
+    static constexpr std::uint64_t kGhostDecisionTicks = 30;
+
+    // --- Pellets ---------------------------------------------------------
+    // 16×16 grid of pellets over the layer's normalized space. Each cell
+    // is 1/16 of the screen across. Bit set = pellet present; bit clear =
+    // already eaten. Packed into 4 × uint64 (256 bits = exactly 16×16).
+    //
+    // Eating: on every tick the player's current cell is cleared and
+    // score increments. When the grid is empty, GenerativeSystem
+    // re-fills it (next "level"). This is the closest analogue to
+    // classic dot-eating without a real maze — once walls land, dots
+    // will only spawn on walkable tiles.
+    static constexpr int kPelletGridSide = 16;
+    static constexpr int kPelletCells    = kPelletGridSide * kPelletGridSide;
+    std::array<std::uint64_t, 4> pelletBits{};
+
+    // --- Score / lives / lifecycle ---------------------------------------
+    std::uint16_t score{0};
+    std::uint16_t lives{3};
+    // Tick of the last ghost-Muncher collision. Used for a short
+    // post-hit invincibility window so the Muncher isn't instantly
+    // re-killed by overlapping ghosts.
+    std::uint64_t lastHitFrame{0};
+    static constexpr std::uint64_t kInvincibilityTicks = 60;
+
+    // First-tick init guard. GenerativeSystem populates pelletBits +
+    // ghost spawn positions on the first tick after the layer becomes
+    // active. Keeps the component a default-initializable POD; no
+    // constructor in createMuncherLayer needs to know game-state details.
+    bool initialized{false};
 };
 
 } // namespace entity

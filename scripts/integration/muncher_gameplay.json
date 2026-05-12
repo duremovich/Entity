@@ -1,0 +1,79 @@
+{
+    "version": 1,
+    "description": "Phase 4 smoke: Muncher game with pellets + ghosts visible. Capture at start (full pellet grid, ghosts at 3 corners, Muncher at center) and after gameplay (some pellets eaten, ghosts moved).",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "MuncherScreen",
+            "width": 256,
+            "height": 256
+        },
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 10000
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 80
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v4_start.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.x",
+            "value": 1.0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 100
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.x",
+            "value": 0.0
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.y",
+            "value": 1.0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 100
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.y",
+            "value": 0.0
+        },
+        {
+            "type": "SetInputChannel",
+            "channel": "muncher.input.x",
+            "value": -1.0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 100
+        },
+        {
+            "type": "CaptureScreenshot",
+            "filepath": "debug/muncher_v4_midgame.png",
+            "region": "composeTarget"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 30
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

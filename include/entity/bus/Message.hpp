@@ -191,13 +191,20 @@ struct GenerativeLayerSnapshot {
     std::uint32_t zOrder{0};
 
     // Muncher-specific baked state. Show thread reads these to draw the
-    // player and (future) game entities. The kind field above gates
-    // whether they're meaningful — for Kind::Muncher all four are live.
+    // player + ghosts + pellets. The kind field above gates whether
+    // they're meaningful — for Kind::Muncher all of them are live.
     std::uint64_t muncher_simFrame{0};
     float         muncher_x{0.5f};   // normalized [0, 1], origin top-left
     float         muncher_y{0.5f};
     float         muncher_inputX{0.0f};  // last-read external axes, debug overlays
     float         muncher_inputY{0.0f};
+
+    // 3 ghosts × (x, y). Same coord convention as muncher_x/y.
+    std::array<float, 6>          muncher_ghosts{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    // 16×16 pellet bitset packed into 4 uint64. Bit set = pellet present.
+    std::array<std::uint64_t, 4>  muncher_pelletBits{0ull, 0ull, 0ull, 0ull};
+    std::uint16_t                 muncher_score{0};
+    std::uint16_t                 muncher_lives{3};
 };
 
 // Director → Renderer per-tick state snapshot. Becomes the only data path

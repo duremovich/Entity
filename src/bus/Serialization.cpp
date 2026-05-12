@@ -393,6 +393,28 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["muncher_y"]         = g.muncher_y;
     j["muncher_inputX"]    = g.muncher_inputX;
     j["muncher_inputY"]    = g.muncher_inputY;
+    auto ghostArr = ojson::array();
+    for (float v : g.muncher_ghosts) ghostArr.push_back(v);
+    j["muncher_ghosts"]    = std::move(ghostArr);
+    // Pack the 256-bit pellet grid as a 64-char hex string instead of an
+    // array of uint64. nlohmann's ordered_json round-trip of UINT64_MAX
+    // values triggers a deserialization stall further down the pipeline
+    // (the screenshot readback never lands when the wire payload contains
+    // raw `~0ull` numbers in this codebase's ordered_json build). Hex-
+    // string encoding sidesteps the issue and is wire-stable for the
+    // bus rule 3 ("renaming a wire key is a wire-format break", but
+    // changing a never-deployed field's encoding is fine pre-v1).
+    std::string hex;
+    hex.reserve(4 * 16);
+    static const char* kHex = "0123456789abcdef";
+    for (std::uint64_t v : g.muncher_pelletBits) {
+        for (int i = 15; i >= 0; --i) {
+            hex.push_back(kHex[(v >> (i * 4)) & 0xF]);
+        }
+    }
+    j["muncher_pelletBits"] = std::move(hex);
+    j["muncher_score"]     = g.muncher_score;
+    j["muncher_lives"]     = g.muncher_lives;
     return j;
 }
 
@@ -412,6 +434,33 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     g.muncher_y         = j.value("muncher_y",         0.5f);
     g.muncher_inputX    = j.value("muncher_inputX",    0.0f);
     g.muncher_inputY    = j.value("muncher_inputY",    0.0f);
+    if (j.contains("muncher_ghosts")) {
+        const auto& arr = j.at("muncher_ghosts");
+        for (std::size_t i = 0; i < g.muncher_ghosts.size() && i < arr.size(); ++i)
+            g.muncher_ghosts[i] = arr[i].get<float>();
+    }
+    if (j.contains("muncher_pelletBits")) {
+        // Hex-string encoded (see encode above for rationale). 16 hex
+        // chars per uint64, packed high-nibble first.
+        const auto hex = j.at("muncher_pelletBits").get<std::string>();
+        auto hexVal = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return 0;
+        };
+        for (std::size_t wi = 0; wi < g.muncher_pelletBits.size(); ++wi) {
+            std::uint64_t v = 0;
+            for (int i = 0; i < 16; ++i) {
+                const std::size_t hi = wi * 16 + static_cast<std::size_t>(i);
+                if (hi >= hex.size()) break;
+                v = (v << 4) | static_cast<std::uint64_t>(hexVal(hex[hi]));
+            }
+            g.muncher_pelletBits[wi] = v;
+        }
+    }
+    g.muncher_score     = j.value("muncher_score",     std::uint16_t{0});
+    g.muncher_lives     = j.value("muncher_lives",     std::uint16_t{3});
     return g;
 }
 
