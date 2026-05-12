@@ -3,6 +3,11 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/components/EffectChain.hpp"
+#include "entity/components/EffectChainRenderTargets.hpp"
+#include "entity/components/EffectParameters.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
@@ -977,6 +982,71 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
 
         out.generativeLayers.push_back(std::move(snap));
     }
+
+    // Effect-chain bake — one LayerEffectsSnapshot per entity that
+    // carries an EffectChain. Show side looks this up by entity when
+    // building each ContentLayerSnapshot in buildRenderFrame and folds
+    // in `effects` + the ping-pong RT slots that PASS 1.5 needs.
+    // Issue #54. Phase 1: tracks are baked through; paramBlob is left
+    // empty until Phase 2 wires the EffectKindRegistry cbuffer marshal.
+    out.layerEffects.clear();
+    for (auto [layerEntity, chain] : m_registry.view<EffectChain>().each()) {
+        bus::LayerEffectsSnapshot lfx;
+        lfx.entity = entityToU64(layerEntity);
+
+        if (const auto* rts = m_registry.try_get<EffectChainRenderTargets>(layerEntity)) {
+            lfx.slotA  = rts->slotA;
+            lfx.slotB  = rts->slotB;
+            lfx.width  = rts->width;
+            lfx.height = rts->height;
+        }
+
+        lfx.effects.reserve(chain.nodes.size());
+        for (auto effectEnt : chain.nodes) {
+            if (!m_registry.valid(effectEnt)) continue;
+            const auto* fx = m_registry.try_get<Effect>(effectEnt);
+            if (!fx) continue;
+
+            bus::EffectSnapshot es;
+            es.kindIdHash = fx->kindId;
+            es.enabled    = fx->enabled;
+            // paramBlob: Phase 2 marshals static + animation-overridden
+            // values into cbuffer layout using EffectKindRegistry. Phase
+            // 1 publishes an empty blob — the wire path is exercised but
+            // PASS 1.5 stubs out drawing anyway.
+
+            // Animated parameter tracks: copy across so the show side
+            // can re-evaluate per render frame (NEW-07 pattern). Wire
+            // serialisation keys on string name; in-memory uses hash.
+            if (const auto* anim = m_registry.try_get<EffectAnimatedParameters>(effectEnt)) {
+                es.tracks.reserve(anim->tracks.size());
+                for (const auto& src : anim->tracks) {
+                    if (!src.enabled || src.keyframes.empty()) continue;
+                    bus::BakedEffectTrack dst;
+                    // Phase 1: no kind registry → no param-name lookup, so
+                    // the wire `paramName` stays empty and the show side
+                    // will skip the track. Phase 2 resolves the name from
+                    // the kind's ParamSchema by matching paramKeyHash.
+                    dst.enabled = src.enabled;
+                    dst.keyframes.reserve(src.keyframes.size());
+                    for (const auto& sk : src.keyframes) {
+                        bus::BakedKeyframe k;
+                        k.frame         = sk.frame;
+                        k.value         = sk.value;
+                        k.interpolation = static_cast<int>(sk.interpolation);
+                        k.easeIn        = sk.easeIn;
+                        k.easeOut       = sk.easeOut;
+                        dst.keyframes.push_back(k);
+                    }
+                    es.tracks.push_back(std::move(dst));
+                }
+            }
+
+            lfx.effects.push_back(std::move(es));
+        }
+
+        out.layerEffects.push_back(std::move(lfx));
+    }
 }
 
 void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
@@ -1073,6 +1143,18 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
     out.contentLayers.clear();
     out.contentLayers.reserve(out.activeClips.size() + out.generativeLayers.size());
 
+    // Side-table lookup for per-layer effects (issue #54). Linear scan
+    // per content layer — both vectors are tiny (<20 entries each in
+    // realistic projects). Phase 1: copies effects + tracks across; the
+    // show-side animation re-evaluation arrives in Phase 2 alongside the
+    // EffectKindRegistry that owns parameter offsets.
+    auto findLayerEffects = [&scene](std::uint64_t entity) -> const bus::LayerEffectsSnapshot* {
+        for (const auto& le : scene.layerEffects) {
+            if (le.entity == entity) return &le;
+        }
+        return nullptr;
+    };
+
     for (const auto& ac : out.activeClips) {
         bus::ContentLayerSnapshot c;
         c.entity                = ac.entity;
@@ -1086,6 +1168,12 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.sourceSlot            = ac.slot;
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
         // for Video-source layers (per-entity cached on the show side).
+        if (const auto* le = findLayerEffects(ac.entity)) {
+            c.effects = le->effects;
+            // postEffectsSlot stays -1 here — PASS 1.5 fills it after it
+            // actually draws the chain. Phase 1: PASS 1.5 is a no-op, so
+            // -1 persists and PASS 2 reads sourceSlot.
+        }
         out.contentLayers.push_back(c);
     }
 
@@ -1101,6 +1189,9 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Compose;
         c.sourceSlot            = gl.renderTargetSlot;
         // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
+        if (const auto* le = findLayerEffects(gl.entity)) {
+            c.effects = le->effects;
+        }
         out.contentLayers.push_back(c);
     }
 

@@ -104,24 +104,35 @@ framerate (typically vsync on the primary output, 60 Hz).
        └─ Uploads decoded frames to GPU textures; caches color-space
           tags show-thread-locally (no registry reads in hot path).
 
-6.  CompositorSystem::update(renderFrame)         [two-pass — ADR-0018]
+6.  CompositorSystem::update(renderFrame)         [three-pass — ADR-0018 + issue #54]
        PASS 1 (producer):
          └─ Per active GenerativeLayerSnapshot:
             ensureGenerativeRenderTarget(); beginComposeTarget(slot);
             drawMuncherPlayfield(gl) in layer-local NDC; endComposeTarget().
             Posts R2D GenerativeLayerRenderTargetAllocated on first
             allocation per layer entity.
+       PASS 1.5 (per-layer effect chains, issue #54):
+         └─ For each ContentLayerSnapshot with non-empty `effects`:
+            ensureEffectPingTarget(); ping-pong two compose targets
+            through the chain; write final slot to `postEffectsSlot`.
+            Posts R2D EffectChainRenderTargetAllocated (side 0/1) on
+            first allocation per layer entity.
+         └─ Kind-blind — works identically for Video and Compose
+            sourceKinds. PASS 1.5 is a no-op for layers without effects.
        PASS 2 (unified composite):
          └─ Per visible screen: ensureScreenRenderTarget(); for each
             ContentLayerSnapshot in rf.contentLayers (pre-sorted by
             zOrder) matching this screen, drawTexturedQuad with
             sourceKind dispatching the descriptor pool
             (Video → video texture, Compose → generative layer RT).
+            When `postEffectsSlot >= 0`, PASS 2 reads from that
+            Compose slot instead of `sourceSlot`.
          └─ Posts R2D ScreenRenderTargetAllocated on first
             allocation per screen entity.
        └─ rf.contentLayers is built show-side by
           PlaybackTimeAuthority::buildRenderFrame from activeClips +
-          generativeLayers.
+          generativeLayers, with per-layer effects folded in from
+          scene.layerEffects (issue #54).
 
 7.  OutputManager::renderOutputs()
        └─ Per enabled OutputDisplay: composite the assigned Screen's

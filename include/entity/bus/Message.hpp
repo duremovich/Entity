@@ -226,6 +226,76 @@ struct GenerativeLayerSnapshot {
     std::uint16_t                 muncher_lives{3};
 };
 
+// One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
+// entity::Keyframe. The interpolation field encodes
+// entity::InterpolationType as int (per the enum-as-string-on-wire rule
+// in bus/CLAUDE.md, serialization translates).
+struct BakedKeyframe {
+    FrameNumber frame{0};
+    float       value{0.0f};
+    int         interpolation{0};  // InterpolationType enum as int
+    float       easeIn{0.42f};
+    float       easeOut{0.58f};
+};
+
+// One snapshot of an AnimatedProperties track — bus-safe mirror of
+// entity::KeyframeTrack. `property` encodes entity::AnimatableProperty
+// as int. Show thread re-evaluates these per render frame at
+// Timeline::getCurrentFrame() so animation stays alive when the editor
+// thread stalls and stops baking new snapshots (NEW-07).
+struct BakedTrack {
+    int                        property{0};   // AnimatableProperty enum as int
+    bool                       enabled{true};
+    std::vector<BakedKeyframe> keyframes;
+};
+
+// One animated parameter track baked for show-thread re-evaluation. Mirror
+// of an EffectAnimatedParameters::NamedTrack, but keyed by parameter
+// *name* string (not the in-memory hash) per the wire-stability rule —
+// the show side rehashes once on receipt. Keyframe payload is the same
+// BakedKeyframe struct used for clip / OA animation.
+struct BakedEffectTrack {
+    std::string                paramName;
+    bool                       enabled{true};
+    std::vector<BakedKeyframe> keyframes;
+};
+
+// One effect node baked into the snapshot. Carries the kind hash, a
+// flag, the marshalled parameter blob in cbuffer layout (filled in
+// Phase 2 once an effect kind registry exists), and a parallel list of
+// animated parameter tracks the show thread re-evaluates per render
+// frame so animations stay alive during editor stalls (NEW-07 pattern).
+//
+// Editor-side bake order: static ParamValue → blob; then for each
+// animated track, evaluate at the editor's current frame and overwrite
+// the blob slot at the schema offset. The track itself is still copied
+// across so the show side can re-evaluate during a stall.
+struct EffectSnapshot {
+    std::uint32_t                  kindIdHash{0};
+    bool                           enabled{true};
+    std::vector<std::uint8_t>      paramBlob;   // cbuffer-layout bytes
+    std::vector<BakedEffectTrack>  tracks;
+};
+
+// Per-layer effects bundle. Side-table off SceneSnapshot — keyed by
+// content-layer entity. The show side looks this up when building each
+// ContentLayerSnapshot in buildRenderFrame and folds in `effects` plus
+// the ping-pong render-target slots. Layers without an EffectChain
+// component don't appear here; an absent entry on the show side means
+// "no effects" and PASS 1.5 skips the layer.
+struct LayerEffectsSnapshot {
+    std::uint64_t                  entity{0};
+    std::vector<EffectSnapshot>    effects;
+    // Ping-pong compose-target slots allocated by PASS 1.5 via the R2D
+    // ack pattern (`EffectChainRenderTargetAllocated`). -1 until both
+    // sides are allocated; PASS 1.5 holds off running effects on this
+    // layer until both are valid.
+    std::int32_t                   slotA{-1};
+    std::int32_t                   slotB{-1};
+    std::uint32_t                  width{0};
+    std::uint32_t                  height{0};
+};
+
 // Unified content-layer snapshot — the only data the compositor's PASS 2
 // reads to composite a layer onto a screen. Kind-agnostic by design: any
 // layer that produces a texture and lands on a screen (Clip-backed,
@@ -262,6 +332,20 @@ struct ContentLayerSnapshot {
     // hint here and falls back to the presenter when bound to a video slot.
     int           colorSpace{0};         // TextureColorSpace as int
     std::string   ocioColorSpace;
+
+    // Per-layer effect chain (ADR-0019 pending, issue #54). PASS 1.5 of
+    // CompositorSystem walks this list when non-empty, ping-pongs two
+    // compose targets, and writes the final result slot into
+    // `postEffectsSlot`. PASS 2 then prefers postEffectsSlot over
+    // sourceSlot when set. Effects evaluated in vector order for linear
+    // stacks; topological order baked in by the editor for graph chains.
+    // Empty vector = no effects, PASS 2 reads sourceSlot directly.
+    std::vector<EffectSnapshot> effects;
+
+    // Post-effects compose-target slot. -1 = no effects or PASS 1.5
+    // hasn't produced output this frame yet (RT allocation pending).
+    // Always indexes into the Compose descriptor pool when set.
+    std::int32_t  postEffectsSlot{-1};
 };
 
 // Director → Renderer per-tick state snapshot. Becomes the only data path
@@ -286,29 +370,6 @@ struct RenderFrame {
     // content kinds (NDI input, codec providers) add entries here without
     // touching the compositor's per-entry loop.
     std::vector<ContentLayerSnapshot>    contentLayers;
-};
-
-// One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
-// entity::Keyframe. The interpolation field encodes
-// entity::InterpolationType as int (per the enum-as-string-on-wire rule
-// in bus/CLAUDE.md, serialization translates).
-struct BakedKeyframe {
-    FrameNumber frame{0};
-    float       value{0.0f};
-    int         interpolation{0};  // InterpolationType enum as int
-    float       easeIn{0.42f};
-    float       easeOut{0.58f};
-};
-
-// One snapshot of an AnimatedProperties track — bus-safe mirror of
-// entity::KeyframeTrack. `property` encodes entity::AnimatableProperty
-// as int. Show thread re-evaluates these per render frame at
-// Timeline::getCurrentFrame() so animation stays alive when the editor
-// thread stalls and stops baking new snapshots (NEW-07).
-struct BakedTrack {
-    int                        property{0};   // AnimatableProperty enum as int
-    bool                       enabled{true};
-    std::vector<BakedKeyframe> keyframes;
 };
 
 // Per-clip catalog entry. Populated by PlaybackTimeAuthority::buildSceneSnapshot
@@ -430,6 +491,10 @@ struct SceneSnapshot {
     // backed + generative + future kinds). Editor-baked, sorted by zOrder
     // ascending at publish time.
     std::vector<ContentLayerSnapshot>          contentLayers;
+    // Per-layer effects side-table — looked up by entity when the show
+    // thread builds each ContentLayerSnapshot in buildRenderFrame. Issue
+    // #54. Absent entries = no effects.
+    std::vector<LayerEffectsSnapshot>          layerEffects;
 };
 
 // Director → Renderer. Triggers the existing capture-pass pipeline; reply
@@ -504,6 +569,30 @@ struct GenerativeLayerRenderTargetAllocated {
     std::uint32_t height{0};
 };
 
+// Renderer → Director. PASS 1.5 of CompositorSystem allocates two
+// ping-pong compose targets per layer with effects (side 0 = slotA,
+// side 1 = slotB). Editor drain writes the slot back into
+// `EffectChainRenderTargets::slotA`/`slotB` on the layer entity so the
+// next snapshot carries them. Two acks per layer-with-effects; one-time
+// cost. Issue #54.
+struct EffectChainRenderTargetAllocated {
+    std::uint64_t entity{0};
+    std::uint32_t slot{UINT32_MAX};
+    std::uint8_t  side{0};      // 0 = A, 1 = B
+    std::uint32_t width{0};
+    std::uint32_t height{0};
+};
+
+// Renderer → Director. A user-authored effect HLSL failed to compile
+// (or an engine effect's .cso failed to load). Editor surfaces the
+// error in the node graph UI (red badge on affected nodes) and falls
+// back to a passthrough PSO so the rest of the chain keeps running.
+// Issue #54, Phase 6.
+struct EffectCompileFailed {
+    std::uint32_t kindIdHash{0};
+    std::string   errorMessage;
+};
+
 // Director → Renderer. Toggles a physical output's swap chain.
 struct SetOutputEnabled {
     std::uint64_t entity{0};
@@ -562,6 +651,8 @@ using Message = std::variant<
     ResourcesProvisioned,
     ScreenRenderTargetAllocated,
     GenerativeLayerRenderTargetAllocated,
+    EffectChainRenderTargetAllocated,
+    EffectCompileFailed,
     SetOutputEnabled,
     ApplySettings,
     DeviceLost,

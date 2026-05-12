@@ -219,6 +219,9 @@ target_sources(EntityMediaCore
         src/systems/GenerativeSystem.cpp
         src/systems/CameraControlSystem.cpp
 
+        # Effects (issue #54)
+        src/effects/EffectKindRegistry.cpp
+
         # Input
         src/input/InputBus.cpp
         # src/systems/RenderSystem.cpp

@@ -47,11 +47,13 @@ class IRenderer {
 public:
     // Limits callers need to know about. Must match backend implementation.
     static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS       = 16;
-    // Compose-target pool — shared between screens and generative-layer RTs
-    // (ADR-0018). 32 is comfortable for typical shows; raise (or split into
-    // per-kind pools) when an installation pushes total active screens +
-    // generative layers past this.
-    static constexpr uint32_t MAX_COMPOSE_TARGETS           = 32;
+    // Compose-target pool — shared between screens, generative-layer RTs
+    // (ADR-0018), and per-layer effect ping-pongs (issue #54, 2 RTs per
+    // layer with effects). Bumped from 32 → 64 when the effects system
+    // landed so a show with ~6 screens + ~10 generatives + ~10 effects-
+    // enabled layers fits comfortably. Raise (or split into per-kind
+    // pools) when an installation pushes total active slots past this.
+    static constexpr uint32_t MAX_COMPOSE_TARGETS           = 64;
     // 8192 leaves room for projector-output mesh rendering with per-triangle
     // barycentric subdivision in OutputManager (each mesh triangle becomes N×N
     // sub-triangles, each a drawMappingSurface call). 256-byte aligned slots ×

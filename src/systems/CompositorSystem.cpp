@@ -87,6 +87,30 @@ void CompositorSystem::update(const bus::RenderFrame& rf,
     }
 
     // ------------------------------------------------------------------
+    // PASS 1.5 — Per-layer effect chains. For each ContentLayerSnapshot
+    // that carries non-empty `effects`, walk the chain via ping-pong
+    // compose targets and produce a post-effects texture in
+    // `ContentLayerSnapshot::postEffectsSlot`. PASS 2 prefers
+    // postEffectsSlot over sourceSlot when set. Kind-blind: works
+    // identically for Video and Compose source kinds. Issue #54.
+    //
+    // Phase 1 stub: walk the list but draw nothing. The bake site in
+    // PlaybackTimeAuthority publishes EffectSnapshot entries with empty
+    // paramBlobs while no effect kind registry is wired, so even when a
+    // chain is non-empty there's nothing to dispatch. Phase 2 wires
+    // ensureEffectPingTarget + drawEffectPass.
+    // ------------------------------------------------------------------
+    {
+        ZoneScopedN("Compositor::pass1_5_effects");
+        for (const auto& cl : rf.contentLayers) {
+            if (cl.effects.empty()) continue;
+            // Phase 2: ensureEffectPingTarget(cl) → ping-pong slots,
+            // beginComposeTarget(slot) → drawEffectPass per effect →
+            // endComposeTarget(), then update cl.postEffectsSlot.
+        }
+    }
+
+    // ------------------------------------------------------------------
     // PASS 2 — For each visible screen, composite every content layer
     // targeting it. One uniform draw path for every kind: bind the
     // layer's texture (Video slot for clips, Compose slot for

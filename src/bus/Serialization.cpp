@@ -480,6 +480,10 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     return g;
 }
 
+// Forward decls for the EffectSnapshot codec used by ContentLayerSnapshot.
+ojson encode(const EffectSnapshot& e);
+EffectSnapshot decodeEffectSnapshot(const json& j);
+
 ojson encode(const ContentLayerSnapshot& c) {
     ojson j = ojson::object();
     j["entity"]                = c.entity;
@@ -495,6 +499,10 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["sourceSlot"]            = c.sourceSlot;
     j["colorSpace"]            = c.colorSpace;
     j["ocioColorSpace"]        = c.ocioColorSpace;
+    auto fx = ojson::array();
+    for (const auto& e : c.effects) fx.push_back(encode(e));
+    j["effects"]               = std::move(fx);
+    j["postEffectsSlot"]       = c.postEffectsSlot;
     return j;
 }
 
@@ -518,6 +526,12 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     c.sourceSlot            = j.value("sourceSlot",            std::int32_t{-1});
     c.colorSpace            = j.value("colorSpace",            0);
     c.ocioColorSpace        = j.value("ocioColorSpace",        std::string{});
+    if (j.contains("effects")) {
+        for (const auto& e : j.at("effects")) {
+            c.effects.push_back(decodeEffectSnapshot(e));
+        }
+    }
+    c.postEffectsSlot       = j.value("postEffectsSlot",       std::int32_t{-1});
     return c;
 }
 
@@ -619,6 +633,91 @@ BakedTrack decodeBakedTrack(const json& j) {
         }
     }
     return t;
+}
+
+ojson encode(const BakedEffectTrack& t) {
+    ojson j = ojson::object();
+    j["paramName"] = t.paramName;
+    j["enabled"]   = t.enabled;
+    auto kfs = ojson::array();
+    for (const auto& k : t.keyframes) kfs.push_back(encode(k));
+    j["keyframes"] = std::move(kfs);
+    return j;
+}
+
+BakedEffectTrack decodeBakedEffectTrack(const json& j) {
+    BakedEffectTrack t;
+    t.paramName = j.value("paramName", std::string{});
+    t.enabled   = j.value("enabled",   true);
+    if (j.contains("keyframes")) {
+        for (const auto& kf : j.at("keyframes")) {
+            t.keyframes.push_back(decodeBakedKeyframe(kf));
+        }
+    }
+    return t;
+}
+
+ojson encode(const EffectSnapshot& e) {
+    ojson j = ojson::object();
+    j["kindIdHash"] = e.kindIdHash;
+    j["enabled"]    = e.enabled;
+    // paramBlob is a flat byte array — encoded as a JSON array of
+    // uint8 values to keep the envelope text-only. Typical effects
+    // ship ≤256-byte blobs so the overhead vs. base64 is negligible.
+    auto blob = ojson::array();
+    for (std::uint8_t b : e.paramBlob) blob.push_back(b);
+    j["paramBlob"] = std::move(blob);
+    auto tracks = ojson::array();
+    for (const auto& t : e.tracks) tracks.push_back(encode(t));
+    j["tracks"] = std::move(tracks);
+    return j;
+}
+
+EffectSnapshot decodeEffectSnapshot(const json& j) {
+    EffectSnapshot e;
+    e.kindIdHash = j.value("kindIdHash", std::uint32_t{0});
+    e.enabled    = j.value("enabled",    true);
+    if (j.contains("paramBlob")) {
+        const auto& arr = j.at("paramBlob");
+        e.paramBlob.reserve(arr.size());
+        for (const auto& b : arr) {
+            e.paramBlob.push_back(b.get<std::uint8_t>());
+        }
+    }
+    if (j.contains("tracks")) {
+        for (const auto& t : j.at("tracks")) {
+            e.tracks.push_back(decodeBakedEffectTrack(t));
+        }
+    }
+    return e;
+}
+
+ojson encode(const LayerEffectsSnapshot& l) {
+    ojson j = ojson::object();
+    j["entity"] = l.entity;
+    auto fx = ojson::array();
+    for (const auto& e : l.effects) fx.push_back(encode(e));
+    j["effects"] = std::move(fx);
+    j["slotA"]   = l.slotA;
+    j["slotB"]   = l.slotB;
+    j["width"]   = l.width;
+    j["height"]  = l.height;
+    return j;
+}
+
+LayerEffectsSnapshot decodeLayerEffectsSnapshot(const json& j) {
+    LayerEffectsSnapshot l;
+    l.entity = j.value("entity", std::uint64_t{0});
+    if (j.contains("effects")) {
+        for (const auto& e : j.at("effects")) {
+            l.effects.push_back(decodeEffectSnapshot(e));
+        }
+    }
+    l.slotA  = j.value("slotA",  std::int32_t{-1});
+    l.slotB  = j.value("slotB",  std::int32_t{-1});
+    l.width  = j.value("width",  std::uint32_t{0});
+    l.height = j.value("height", std::uint32_t{0});
+    return l;
 }
 
 ojson encode(const ClipCatalogEntry& e) {
@@ -755,6 +854,9 @@ ojson encode(const SceneSnapshot& s) {
     auto contentCatalog = ojson::array();
     for (const auto& cl : s.contentLayers) contentCatalog.push_back(encode(cl));
     j["contentLayers"] = std::move(contentCatalog);
+    auto layerFx = ojson::array();
+    for (const auto& le : s.layerEffects) layerFx.push_back(encode(le));
+    j["layerEffects"] = std::move(layerFx);
     return j;
 }
 
@@ -779,6 +881,9 @@ SceneSnapshot decodeSceneSnapshot(const json& j) {
     if (j.contains("contentLayers"))
         for (const auto& cl : j.at("contentLayers"))
             s.contentLayers.push_back(decodeContentLayerSnapshot(cl));
+    if (j.contains("layerEffects"))
+        for (const auto& le : j.at("layerEffects"))
+            s.layerEffects.push_back(decodeLayerEffectsSnapshot(le));
     return s;
 }
 
@@ -957,6 +1062,40 @@ GenerativeLayerRenderTargetAllocated decodeGenerativeLayerRenderTargetAllocated(
     return m;
 }
 
+ojson encode(const EffectChainRenderTargetAllocated& m) {
+    ojson j = ojson::object();
+    j["entity"] = m.entity;
+    j["slot"]   = m.slot;
+    j["side"]   = m.side;
+    j["width"]  = m.width;
+    j["height"] = m.height;
+    return j;
+}
+
+EffectChainRenderTargetAllocated decodeEffectChainRenderTargetAllocated(const json& j) {
+    EffectChainRenderTargetAllocated m;
+    m.entity = j.at("entity").get<std::uint64_t>();
+    m.slot   = j.at("slot").get<std::uint32_t>();
+    m.side   = j.value("side", std::uint8_t{0});
+    m.width  = j.at("width").get<std::uint32_t>();
+    m.height = j.at("height").get<std::uint32_t>();
+    return m;
+}
+
+ojson encode(const EffectCompileFailed& m) {
+    ojson j = ojson::object();
+    j["kindIdHash"]   = m.kindIdHash;
+    j["errorMessage"] = m.errorMessage;
+    return j;
+}
+
+EffectCompileFailed decodeEffectCompileFailed(const json& j) {
+    EffectCompileFailed m;
+    m.kindIdHash   = j.at("kindIdHash").get<std::uint32_t>();
+    m.errorMessage = j.value("errorMessage", std::string{});
+    return m;
+}
+
 ojson encode(const CreateOutputWindowRequest& m) {
     ojson j = ojson::object();
     j["entity"]     = m.entity;
@@ -1012,6 +1151,8 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, ResourcesProvisioned>)          return "ResourcesProvisioned";
         else if constexpr (std::is_same_v<T, ScreenRenderTargetAllocated>) return "ScreenRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, GenerativeLayerRenderTargetAllocated>) return "GenerativeLayerRenderTargetAllocated";
+        else if constexpr (std::is_same_v<T, EffectChainRenderTargetAllocated>) return "EffectChainRenderTargetAllocated";
+        else if constexpr (std::is_same_v<T, EffectCompileFailed>)        return "EffectCompileFailed";
         else if constexpr (std::is_same_v<T, SetOutputEnabled>)            return "SetOutputEnabled";
         else if constexpr (std::is_same_v<T, ApplySettings>)               return "ApplySettings";
         else if constexpr (std::is_same_v<T, DeviceLost>)                  return "DeviceLost";
@@ -1055,6 +1196,8 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "FrameDropped")                  return Message{decodeFrameDropped(data)};
         if (type == "ScreenRenderTargetAllocated")   return Message{decodeScreenRenderTargetAllocated(data)};
         if (type == "GenerativeLayerRenderTargetAllocated") return Message{decodeGenerativeLayerRenderTargetAllocated(data)};
+        if (type == "EffectChainRenderTargetAllocated") return Message{decodeEffectChainRenderTargetAllocated(data)};
+        if (type == "EffectCompileFailed")            return Message{decodeEffectCompileFailed(data)};
         if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
     } catch (const std::exception&) {

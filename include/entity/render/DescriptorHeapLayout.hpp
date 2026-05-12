@@ -38,8 +38,10 @@ public:
     // Capacity limits. Must match IRenderer's public constants.
     static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS = 16;
     // Must match IRenderer::MAX_COMPOSE_TARGETS. Compose-target pool is
-    // shared between screens and generative-layer RTs after ADR-0018.
-    static constexpr uint32_t MAX_COMPOSE_TARGETS     = 32;
+    // shared between screens, generative-layer RTs (ADR-0018), and
+    // per-layer effect ping-pongs (issue #54). Bumped to 64 with the
+    // effects system landing.
+    static constexpr uint32_t MAX_COMPOSE_TARGETS     = 64;
     static constexpr uint32_t MAX_OCIO_LUT_SLOTS      = 32;
     static constexpr uint32_t MAX_STAGE_TARGETS       = 2; // FRAME_COUNT — double-buffered color SRVs
 
