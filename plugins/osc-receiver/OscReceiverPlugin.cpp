@@ -24,9 +24,24 @@
 //   /entity/cue/{number}/go       -> FireCue{number}
 //   /entity/seek <int frame>      -> SeekToFrame{frame}
 //
+//   /entity/muncher/up            -> SetInputChannel muncher.input.x = 0, .y = -1
+//   /entity/muncher/down          -> SetInputChannel muncher.input.x = 0, .y = +1
+//   /entity/muncher/left          -> SetInputChannel muncher.input.x = -1, .y = 0
+//   /entity/muncher/right         -> SetInputChannel muncher.input.x = +1, .y = 0
+//   /entity/muncher/stop          -> SetInputChannel both axes = 0
+//   /entity/muncher/input/x <f>   -> SetInputChannel muncher.input.x = value
+//   /entity/muncher/input/y <f>   -> SetInputChannel muncher.input.y = value
+//
 // The number in `/entity/cue/{number}/go` is parsed as a double so QLab-
 // style cue numbers like 1.5 or 2.10 work. `/entity/seek` accepts any
 // numeric OSC argument type (i, h, f, d) and truncates to integer frame.
+//
+// The Muncher UDLR addresses take no arguments — fire on press; the player
+// keeps moving in that direction until another direction (or `/stop`) is
+// fired. Pattern matches a Bitfocus Companion button setup. The analog
+// `/entity/muncher/input/x` / `/y` variants accept any numeric OSC arg
+// (i/h/f/d) and clamp to [-1, 1] downstream — for TouchOSC faders, OSC-
+// over-Bluetooth controllers, audio-reactive senders, etc.
 //
 // OSC 1.0 parser is hand-rolled (no oscpack dependency). It handles
 // padded strings, the `,typetag` line, integer/float/double args, and
@@ -167,6 +182,38 @@ void buildDoubleJson(std::string& out, std::string_view key, double v) {
     out.assign(buf, n > 0 ? std::size_t(n) : 0u);
 }
 
+// {"channel":"<channel>","value":<value>} — matches SetInputChannel's
+// fromJson expectations. Keys are fixed; only value substitution.
+void buildSetInputChannelJson(std::string& out, std::string_view channel, double value) {
+    char buf[128];
+    int n = std::snprintf(buf, sizeof(buf),
+                          "{\"channel\":\"%.*s\",\"value\":%.10g}",
+                          int(channel.size()), channel.data(), value);
+    out.assign(buf, n > 0 ? std::size_t(n) : 0u);
+}
+
+// Convenience: enqueue a SetInputChannel with the given float. Caller
+// already holds `ctx`.
+void enqueueSetAxis(IPluginContext* ctx, std::string_view channel, double value) {
+    std::string body;
+    buildSetInputChannelJson(body, channel, value);
+    ctx->enqueueCommand("SetInputChannel", body);
+}
+
+bool firstNumericArgAsDouble(std::string_view typeTag,
+                              const std::uint8_t* argsBegin,
+                              const std::uint8_t* argsEnd,
+                              double& out) {
+    if (typeTag.size() < 2 || typeTag[0] != ',') return false;
+    char tag = typeTag[1];
+    auto avail = argsEnd - argsBegin;
+    if (tag == 'i' && avail >= 4) { out = static_cast<double>(readI32BE(argsBegin)); return true; }
+    if (tag == 'f' && avail >= 4) { out = static_cast<double>(readF32BE(argsBegin)); return true; }
+    if (tag == 'h' && avail >= 8) { out = static_cast<double>(readI64BE(argsBegin)); return true; }
+    if (tag == 'd' && avail >= 8) { out = readF64BE(argsBegin); return true; }
+    return false;
+}
+
 bool parseDouble(std::string_view s, double& out) {
     if (s.empty()) return false;
     std::string buf(s);
@@ -223,6 +270,56 @@ void dispatch(std::string_view address, std::string_view typeTag,
         } else {
             pluginLog(LogLevel::Warn,
                       "/entity/seek expects a numeric (i/h/f/d) frame arg");
+        }
+        return;
+    }
+
+    // --- Muncher controls -------------------------------------------------
+    // Discrete UDLR triggers (Bitfocus Companion button style). Each press
+    // sets one axis to ±1 and zeroes the other — last command wins, the
+    // player keeps moving in that direction until told otherwise. Same
+    // grid-snap semantics as the keyboard handler in Engine::update.
+    if (address == "/entity/muncher/up") {
+        enqueueSetAxis(ctx, "muncher.input.x", 0.0);
+        enqueueSetAxis(ctx, "muncher.input.y", -1.0);
+        return;
+    }
+    if (address == "/entity/muncher/down") {
+        enqueueSetAxis(ctx, "muncher.input.x", 0.0);
+        enqueueSetAxis(ctx, "muncher.input.y", 1.0);
+        return;
+    }
+    if (address == "/entity/muncher/left") {
+        enqueueSetAxis(ctx, "muncher.input.x", -1.0);
+        enqueueSetAxis(ctx, "muncher.input.y", 0.0);
+        return;
+    }
+    if (address == "/entity/muncher/right") {
+        enqueueSetAxis(ctx, "muncher.input.x", 1.0);
+        enqueueSetAxis(ctx, "muncher.input.y", 0.0);
+        return;
+    }
+    if (address == "/entity/muncher/stop") {
+        enqueueSetAxis(ctx, "muncher.input.x", 0.0);
+        enqueueSetAxis(ctx, "muncher.input.y", 0.0);
+        return;
+    }
+
+    // Analog axis variants. For TouchOSC faders, smartphone OSC apps,
+    // audio-reactive senders, etc. Value is forwarded raw; the input snap
+    // in GenerativeSystem applies its deadzone.
+    if (address == "/entity/muncher/input/x" || address == "/entity/muncher/input/y") {
+        const std::string_view channel =
+            (address == "/entity/muncher/input/x")
+                ? std::string_view{"muncher.input.x"}
+                : std::string_view{"muncher.input.y"};
+        double value = 0.0;
+        if (firstNumericArgAsDouble(typeTag, argsBegin, argsEnd, value)) {
+            enqueueSetAxis(ctx, channel, value);
+        } else {
+            std::string m{address};
+            m.append(" expects a numeric (i/h/f/d) arg in [-1, 1]");
+            pluginLog(LogLevel::Warn, m);
         }
         return;
     }

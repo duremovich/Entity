@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "OSC test fixture: spin up a Muncher layer and stay alive for a few seconds so an out-of-process OSC sender (see muncher_osc_test.py) can drive /entity/muncher/{up,down,left,right} during playback. Captures the screen state before and after the OSC traffic.",
+    "commands": [
+        {"type": "AddScreen", "name": "MuncherScreen", "width": 256, "height": 256},
+        {"type": "CreateMuncherLayer", "trackIndex": 0, "startFrame": 0, "duration": 10000},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.5},
+        {"type": "CaptureScreenshot", "filepath": "debug/muncher_osc_before.png", "region": "composeTarget"},
+        {"type": "WaitSeconds", "count": 3.0},
+        {"type": "CaptureScreenshot", "filepath": "debug/muncher_osc_after.png", "region": "composeTarget"},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}
