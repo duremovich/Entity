@@ -177,6 +177,74 @@ etc. The compositor's PASS 2 is *kind-blind* — it only sees the unified
 
 ---
 
+## Effect — One pass in a layer's effect chain (ADR-0019)
+
+| Required | Optional |
+|---|---|
+| `Effect` | `EffectAnimatedParameters` |
+| `EffectParameters` | |
+
+**Invariant**: an effect entity exists iff its `entt::entity` is
+referenced in some layer's `EffectChain.nodes`. Orphaned effect
+entities (no chain references them) are leaks — the
+`RemoveEffectCommand` always destroys both the entity and its slot
+in the chain. PASS 1.5 of the show-side compositor (ADR-0019) walks
+each layer's `EffectChain` and dispatches `drawEffectPass` per
+enabled effect.
+
+**Created at**:
+- `src/command/Commands.cpp` (`AddEffectCommand::execute`)
+- `src/project/ProjectSerializer.cpp` (`deserializeEffectChain` on
+  project load)
+
+**Notes**:
+- Effects are entities — they're not stored as `vector<EffectInstance>`
+  inside `EffectChain` because each kind's parameters live on its own
+  components, animatable via the existing keyframe infrastructure on
+  the sibling `EffectAnimatedParameters` component.
+- `Effect::kindId` is the FNV-1a hash of the kind's stable string ID
+  (e.g. `fnv1a32("core.gaussian_blur")`). Engine effects register the
+  same hash every startup — wire-stable across builds.
+- `EffectParameters::values` is positional, indexed by the kind's
+  `ParamSchema` slot order. Phase 6 user-effects must preserve schema
+  order on hot-reload or saved projects re-bind to wrong slots.
+- `EffectAnimatedParameters::tracks` are hash-keyed (FNV-1a of param
+  name) — separate from `AnimatedProperties` whose closed enum can't
+  represent open-ended effect-param sets. Both components can coexist
+  on the same effect entity if the effect's params are animated.
+
+---
+
+## EffectChain — Layer-side reference to an effect chain (ADR-0019)
+
+| Required | Optional |
+|---|---|
+| `EffectChain` | `EffectChainRenderTargets` |
+
+Attached to the layer entity (Clip, Generative, future content kinds).
+Holds the ordered list of effect-entity IDs (`nodes`), the explicit
+graph topology for the node editor (`connections`, populated in
+Phase 4 — empty in v1), and the synthetic output socket pointer
+(`outputNode`).
+
+**Invariant**: When `connections` is empty, evaluation order is
+`nodes` order (linear stack). When `connections` is non-empty, the
+chain is topologically sorted with `outputNode` as the chain sink.
+`EffectChainRenderTargets` is lazily allocated by PASS 1.5 (R2D ack
+writes the two ping-pong slot IDs).
+
+**Created at**:
+- `src/command/Commands.cpp` (`AddEffectCommand` creates the
+  component on first effect added to a layer)
+- `src/project/ProjectSerializer.cpp` (project load)
+
+**Notes**: Layer entities without an `EffectChain` are unaffected —
+PASS 1.5 short-circuits on empty effects in
+`ContentLayerSnapshot.effects`. Adding an empty `EffectChain`
+component is benign but pointless.
+
+---
+
 ## Screen — Projection surface (LED wall, projection target)
 
 | Required | Optional |
