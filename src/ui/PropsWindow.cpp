@@ -66,7 +66,7 @@ void PropsWindow::render() {
                 entt::entity modelEntity = static_cast<entt::entity>(modelEntityId);
 
                 if (registry.valid(modelEntity) && registry.all_of<Model>(modelEntity)) {
-                    prop.modelEntity = modelEntity;
+                    applyModelToProp(prop, modelEntity, registry.try_get<Model>(modelEntity));
                     std::cout << "[Props] Assigned model to " << prop.name << std::endl;
                 }
             }
@@ -121,7 +121,8 @@ entt::entity PropsWindow::createProp(const char* name) {
     // Auto-assign first available Model (mirrors ScreensWindow behavior).
     auto modelView = registry.view<Model>();
     if (modelView.size() > 0) {
-        prop.modelEntity = *modelView.begin();
+        entt::entity firstModel = *modelView.begin();
+        applyModelToProp(prop, firstModel, registry.try_get<Model>(firstModel));
     }
 
     std::cout << "[Props] Created prop: " << prop.name

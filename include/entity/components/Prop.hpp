@@ -1,5 +1,6 @@
 #pragma once
 
+#include "entity/components/Model.hpp"
 #include <string>
 #include <array>
 #include <entt/entt.hpp>
@@ -46,5 +47,22 @@ struct Prop {
     // from projection surfaces at a glance. RGBA, 0..1.
     std::array<float, 4> displayColor{0.6f, 0.6f, 0.6f, 1.0f};
 };
+
+// Assign a Model entity to a Prop and sync its size to the mesh's authored
+// bounds. Pass entt::null (or a null Model*) to reset to the 1m^3 default.
+// Use this everywhere instead of writing `prop.modelEntity = e;` directly —
+// keeps Size and the mesh in lockstep so computeEffectiveScale doesn't
+// distort a non-cubic mesh against the unit-cube default. Promised by the
+// Prop.hpp comment "Default 1m^3 is replaced on model assign with the
+// mesh's authored dimensions" — this is where that lives.
+inline void applyModelToProp(Prop& prop, entt::entity modelEntity,
+                              const Model* model) {
+    prop.modelEntity = modelEntity;
+    if (model && model->mesh.isValid()) {
+        prop.size = meshNativeBounds(&model->mesh);
+    } else {
+        prop.size = {1.0f, 1.0f, 1.0f};
+    }
+}
 
 } // namespace entity

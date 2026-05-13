@@ -1305,16 +1305,16 @@ void PropertyWindow::renderScreenProperties() {
                 if (const Model* m = registry.try_get<Model>(screen->modelEntity))
                     currentModelName = m->name;
                 else
-                    screen->modelEntity = entt::null;  // stale reference — clear it
+                    applyModelToScreen(*screen, entt::null, nullptr);  // stale reference — clear it
             }
             ImGui::SetNextItemWidth(-1);
             if (ImGui::BeginCombo("##model_picker", currentModelName.c_str())) {
                 if (ImGui::Selectable("None (flat quad)", screen->modelEntity == entt::null))
-                    screen->modelEntity = entt::null;
+                    applyModelToScreen(*screen, entt::null, nullptr);
                 for (auto [e, model] : registry.view<Model>().each()) {
                     bool sel = (screen->modelEntity == e);
                     if (ImGui::Selectable(model.name.c_str(), sel))
-                        screen->modelEntity = e;
+                        applyModelToScreen(*screen, e, &model);
                 }
                 ImGui::EndCombo();
             }
@@ -1328,7 +1328,7 @@ void PropertyWindow::renderScreenProperties() {
                 ImGui::TextDisabled("%zu verts  %zu tris",
                     model->mesh.vertices.size(), model->mesh.indices.size() / 3);
                 if (ImGui::SmallButton("Clear")) {
-                    screen->modelEntity = entt::null;
+                    applyModelToScreen(*screen, entt::null, nullptr);
                 }
             }
         } else {
@@ -1337,7 +1337,11 @@ void PropertyWindow::renderScreenProperties() {
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MODEL_ENTITY")) {
                     uint32_t modelEntityId = *static_cast<const uint32_t*>(payload->Data);
-                    screen->modelEntity = static_cast<entt::entity>(modelEntityId);
+                    auto droppedEntity = static_cast<entt::entity>(modelEntityId);
+                    const Model* droppedModel = registry.valid(droppedEntity)
+                        ? registry.try_get<Model>(droppedEntity)
+                        : nullptr;
+                    applyModelToScreen(*screen, droppedEntity, droppedModel);
                 }
                 ImGui::EndDragDropTarget();
             }
@@ -1385,7 +1389,13 @@ void PropertyWindow::renderScreenProperties() {
         if (ImGui::Button("Reset Transform")) {
             screen->position = {0.0f, 0.0f, 0.0f};
             screen->rotation = {0.0f, 0.0f, 0.0f};
-            screen->size = {4.0f, 2.25f, 0.0f};
+            // Size reset honors the current model — resetting a screen with a
+            // 3D mesh to {4, 2.25, 0} would flatten the mesh's Z to zero.
+            const Model* resetModel = nullptr;
+            if (screen->modelEntity != entt::null && registry.valid(screen->modelEntity)) {
+                resetModel = registry.try_get<Model>(screen->modelEntity);
+            }
+            applyModelToScreen(*screen, screen->modelEntity, resetModel);
         }
     }
 
@@ -1436,16 +1446,16 @@ void PropertyWindow::renderPropProperties() {
             if (const Model* m = registry.try_get<Model>(prop->modelEntity))
                 currentModelName = m->name;
             else
-                prop->modelEntity = entt::null;  // stale reference
+                applyModelToProp(*prop, entt::null, nullptr);  // stale reference
         }
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##prop_model_picker", currentModelName.c_str())) {
             if (ImGui::Selectable("None", prop->modelEntity == entt::null))
-                prop->modelEntity = entt::null;
+                applyModelToProp(*prop, entt::null, nullptr);
             for (auto [e, model] : registry.view<Model>().each()) {
                 bool sel = (prop->modelEntity == e);
                 if (ImGui::Selectable(model.name.c_str(), sel))
-                    prop->modelEntity = e;
+                    applyModelToProp(*prop, e, &model);
             }
             ImGui::EndCombo();
         }
@@ -1457,7 +1467,7 @@ void PropertyWindow::renderPropProperties() {
                 ImGui::TextDisabled("%zu verts  %zu tris",
                     model->mesh.vertices.size(), model->mesh.indices.size() / 3);
                 if (ImGui::SmallButton("Clear")) {
-                    prop->modelEntity = entt::null;
+                    applyModelToProp(*prop, entt::null, nullptr);
                 }
             }
         } else {
@@ -1465,7 +1475,11 @@ void PropertyWindow::renderPropProperties() {
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MODEL_ENTITY")) {
                     uint32_t modelEntityId = *static_cast<const uint32_t*>(payload->Data);
-                    prop->modelEntity = static_cast<entt::entity>(modelEntityId);
+                    auto droppedEntity = static_cast<entt::entity>(modelEntityId);
+                    const Model* droppedModel = registry.valid(droppedEntity)
+                        ? registry.try_get<Model>(droppedEntity)
+                        : nullptr;
+                    applyModelToProp(*prop, droppedEntity, droppedModel);
                 }
                 ImGui::EndDragDropTarget();
             }

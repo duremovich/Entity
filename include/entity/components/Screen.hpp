@@ -1,5 +1,6 @@
 #pragma once
 
+#include "entity/components/Model.hpp"
 #include "entity/core/Types.hpp"
 #include <string>
 #include <array>
@@ -55,6 +56,21 @@ struct Screen {
     // Screen type — determines rendering/output path
     ScreenType type{ScreenType::LEDWall};
 };
+
+// Assign a Model entity to a Screen and sync its size to the mesh's authored
+// bounds. Pass entt::null (or a null Model*) to reset to the flat 16:9 panel
+// default. Use this everywhere instead of writing `screen.modelEntity = e;`
+// directly — keeps Size and the mesh in lockstep so computeEffectiveScale
+// doesn't squash a 3D mesh's Z to 0 against the flat-panel default.
+inline void applyModelToScreen(Screen& screen, entt::entity modelEntity,
+                                const Model* model) {
+    screen.modelEntity = modelEntity;
+    if (model && model->mesh.isValid()) {
+        screen.size = meshNativeBounds(&model->mesh);
+    } else {
+        screen.size = {4.0f, 2.25f, 0.0f};
+    }
+}
 
 /**
  * Feed mapping types (inspired by disguise)

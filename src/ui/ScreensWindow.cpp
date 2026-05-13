@@ -67,7 +67,7 @@ void ScreensWindow::render() {
                 entt::entity modelEntity = static_cast<entt::entity>(modelEntityId);
 
                 if (registry.valid(modelEntity) && registry.all_of<Model>(modelEntity)) {
-                    screen.modelEntity = modelEntity;
+                    applyModelToScreen(screen, modelEntity, registry.try_get<Model>(modelEntity));
                     std::cout << "[Screens] Assigned model to " << screen.name << std::endl;
                 }
             }
@@ -184,7 +184,8 @@ entt::entity ScreensWindow::createScreen(const char* name) {
     // Use first available model if any exist
     auto modelView = registry.view<Model>();
     if (modelView.size() > 0) {
-        screen.modelEntity = *modelView.begin();
+        entt::entity firstModel = *modelView.begin();
+        applyModelToScreen(screen, firstModel, registry.try_get<Model>(firstModel));
     }
 
     std::cout << "[Screens] Created screen: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
