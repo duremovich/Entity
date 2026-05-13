@@ -4,6 +4,9 @@
 
 #include <entt/entt.hpp>
 
+#include <cstdint>
+#include <unordered_set>
+
 namespace entity {
 
 class Timeline;
@@ -51,6 +54,15 @@ public:
     void render() override;
     const char* getName() const override { return "Effect Graph"; }
 
+    // imgui-node-editor needs the mouse wheel; without these flags the
+    // host ImGui window scrolls on wheel and competes with the editor's
+    // zoom. Do NOT override WindowPadding here — pushing it to (0,0)
+    // misaligns the editor's content-rect computation inside a docked
+    // tab and the canvas ends up rendered into a sub-rect of the panel.
+    ImGuiWindowFlags getWindowFlags() const override {
+        return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    }
+
 private:
     Timeline*                              m_timeline{nullptr};
     CommandDispatcher*                     m_dispatcher{nullptr};
@@ -60,6 +72,15 @@ private:
     // an opaque void* so the header doesn't drag imgui-node-editor into
     // every translation unit that includes this. The .cpp casts back.
     void* m_editorContext{nullptr};
+
+    // Tracks which node IDs we've already handed to ed::SetNodePosition.
+    // imgui-node-editor treats SetNodePosition as an authoritative
+    // override; calling it every frame fights the editor's drag state
+    // and viewport math, so we place each node exactly once. Entity
+    // values include EnTT version bits, so a destroyed-then-recreated
+    // effect at the same numeric ID gets a fresh placement.
+    std::unordered_set<std::uint64_t> m_placedNodes;
+    entt::entity                      m_lastSelectedClip{entt::null};
 };
 
 } // namespace entity

@@ -52,6 +52,12 @@ EffectGraphWindow::EffectGraphWindow(Timeline* timeline)
 {
     ed::Config cfg;
     cfg.SettingsFile = nullptr;  // don't persist editor state to disk
+    // Default FitVerticalView re-fits the view on every canvas-size
+    // change, which combined with docking/floating size jitter drifts
+    // the editor's persistent view until content lands in the top-left
+    // and eventually clips out. CenterOnly only re-centers pan; scale
+    // is preserved.
+    cfg.CanvasSizeMode = ed::CanvasSizeMode::CenterOnly;
     m_editorContext = ed::CreateEditor(&cfg);
 }
 
@@ -83,29 +89,59 @@ void EffectGraphWindow::render() {
         return;
     }
 
+    // When the user switches to a different layer, the previous chain's
+    // node IDs are no longer relevant. Drop them so the set stays bounded
+    // across a session.
+    if (selected != m_lastSelectedClip) {
+        m_placedNodes.clear();
+        m_lastSelectedClip = selected;
+    }
+
+    // imgui-node-editor's canvas miscomputes its widget rect (renders
+    // into a tiny sub-rect at the panel's top-left, with the rest of
+    // the panel showing the app background) when ed::Begin is the first
+    // ImGui item emitted after the host ImGui::Begin. Emitting any item
+    // beforehand resolves it — the canvas then fills the panel and
+    // tracks resize / undock / drag correctly. Found empirically; using
+    // a hint line so it doubles as UX guidance instead of an invisible
+    // spacer.
+    ImGui::TextDisabled("Pan: right-click drag.  Zoom: mouse wheel.");
+
     ed::SetCurrentEditor(static_cast<ed::EditorContext*>(m_editorContext));
+    // No explicit size — the library samples GetContentRegionAvail()
+    // itself with ImFloor for stability, matching the upstream
+    // simple-example / blueprints-example wrappers.
     ed::Begin("EffectGraphCanvas");
+
+    // SetNodePosition is an authoritative override in imgui-node-editor —
+    // it must only be called for the *initial* placement of each node.
+    // Calling it every frame overwrites the editor's drag state and
+    // destabilises the viewport's zoom transform.
+    auto placeOnce = [this](std::uint64_t key, ed::NodeId id, ImVec2 initialPos) {
+        if (m_placedNodes.insert(key).second) {
+            ed::SetNodePosition(id, initialPos);
+        }
+    };
 
     // ----------------------------------------------------------------
     // Nodes
     // ----------------------------------------------------------------
-    auto drawSyntheticNode = [](ed::NodeId id,
-                                const char* label,
-                                bool hasOutput, bool hasInput,
-                                ImVec2 hint)
+    auto drawSyntheticNode = [&](std::uint64_t key,
+                                 const char* label,
+                                 bool hasOutput, bool hasInput,
+                                 ImVec2 hint)
     {
-        ed::SetNodePosition(id, hint);
+        ed::NodeId id{static_cast<uintptr_t>(key)};
+        placeOnce(key, id, hint);
         ed::BeginNode(id);
         ImGui::TextUnformatted(label);
         if (hasInput) {
-            ed::BeginPin(pinIn(static_cast<std::uint64_t>(reinterpret_cast<uintptr_t>(id.AsPointer()))),
-                          ed::PinKind::Input);
+            ed::BeginPin(pinIn(key), ed::PinKind::Input);
             ImGui::Text("-> in");
             ed::EndPin();
         }
         if (hasOutput) {
-            ed::BeginPin(pinOut(static_cast<std::uint64_t>(reinterpret_cast<uintptr_t>(id.AsPointer()))),
-                          ed::PinKind::Output);
+            ed::BeginPin(pinOut(key), ed::PinKind::Output);
             ImGui::Text("out ->");
             ed::EndPin();
         }
@@ -113,27 +149,28 @@ void EffectGraphWindow::render() {
     };
 
     // Synthetic "Layer Source" — the chain's input feed.
-    drawSyntheticNode(ed::NodeId{static_cast<uintptr_t>(kSyntheticLayerSourceNode)},
+    drawSyntheticNode(kSyntheticLayerSourceNode,
                       "Layer Source", true, false, ImVec2(40, 80));
 
     // One node per effect.
-    int    idx     = 0;
     ImVec2 nextPos(220, 80);
     for (auto fxEnt : chain->nodes) {
-        if (!registry.valid(fxEnt)) { ++idx; continue; }
+        if (!registry.valid(fxEnt)) continue;
         auto* fx = registry.try_get<Effect>(fxEnt);
-        if (!fx) { ++idx; continue; }
+        if (!fx) continue;
 
-        // Initial layout: lay out left-to-right if the user hasn't placed
-        // the node yet (graphX == 0 && graphY == 0 is treated as "no
-        // saved position").
         const std::uint64_t nodeIdU64 = static_cast<std::uint64_t>(fxEnt);
         ed::NodeId nid{static_cast<uintptr_t>(nodeIdU64)};
-        if (fx->graphX == 0.0f && fx->graphY == 0.0f) {
-            ed::SetNodePosition(nid, nextPos);
+
+        // Initial position: saved (graphX/Y) if non-zero, else the
+        // left-to-right auto-layout cursor. Only advance the cursor when
+        // we actually consume it, so a mixed saved/unsaved chain still
+        // spaces the unsaved nodes correctly.
+        const bool hasSavedPos = (fx->graphX != 0.0f || fx->graphY != 0.0f);
+        ImVec2 initialPos = hasSavedPos ? ImVec2(fx->graphX, fx->graphY) : nextPos;
+        placeOnce(nodeIdU64, nid, initialPos);
+        if (!hasSavedPos) {
             nextPos.x += 200;
-        } else {
-            ed::SetNodePosition(nid, ImVec2(fx->graphX, fx->graphY));
         }
 
         ed::BeginNode(nid);
@@ -177,19 +214,19 @@ void EffectGraphWindow::render() {
 
         ed::EndNode();
 
-        // After the layout pass, read back the canvas position and
-        // persist it onto Effect so the next session restores it.
-        // (Round-trip via project save happens through serialization;
-        // the in-memory write keeps the view stable in-session.)
+        // Read back the live position and mirror it onto the Effect
+        // component so project save persists where the user dragged it.
+        // Guard the write so we don't dirty the project every frame when
+        // nothing has moved.
         const ImVec2 livePos = ed::GetNodePosition(nid);
-        fx->graphX = livePos.x;
-        fx->graphY = livePos.y;
-
-        ++idx;
+        if (livePos.x != fx->graphX || livePos.y != fx->graphY) {
+            fx->graphX = livePos.x;
+            fx->graphY = livePos.y;
+        }
     }
 
     // Synthetic "To Screen" — final output sink.
-    drawSyntheticNode(ed::NodeId{static_cast<uintptr_t>(kSyntheticToScreenNode)},
+    drawSyntheticNode(kSyntheticToScreenNode,
                       "To Screen", false, true, ImVec2(nextPos.x + 60, 80));
 
     // ----------------------------------------------------------------
