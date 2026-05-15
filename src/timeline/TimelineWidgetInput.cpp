@@ -7,6 +7,7 @@
  */
 
 #include "entity/timeline/TimelineWidget.hpp"
+#include "entity/timeline/Timeline.hpp"
 #include "entity/timeline/CueTag.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
@@ -23,6 +24,49 @@
 #include <limits>
 
 namespace entity {
+
+namespace {
+
+// Read placement (start frame + duration in timeline frames) from a
+// timeline-resident entity. Clip-backed entities still source truth from
+// the Clip component (Layer mirror is synced via syncLayerFromClip).
+// Layer-only entities (ObjectAnimation / Generative) read directly from
+// Layer. Returns valid=false for entities that aren't on a track.
+struct TimelinePlacement {
+    FrameNumber startFrame{0};
+    FrameNumber duration{0};
+    bool valid{false};
+};
+
+TimelinePlacement readPlacement(entt::registry& registry, entt::entity e) {
+    if (const auto* clip = registry.try_get<Clip>(e)) {
+        return {clip->startFrame, clip->duration, true};
+    }
+    if (const auto* lay = registry.try_get<Layer>(e);
+        lay && (registry.all_of<ObjectAnimationLayer>(e) ||
+                registry.all_of<GenerativeLayer>(e))) {
+        return {lay->startFrame, lay->duration, true};
+    }
+    return {};
+}
+
+// Write a new start frame to a timeline-resident entity. Clip-backed
+// entities write to Clip and sync the Layer mirror; Layer-only entities
+// write Layer::startFrame directly.
+void writeStartFrame(entt::registry& registry, entt::entity e, FrameNumber f) {
+    if (auto* clip = registry.try_get<Clip>(e)) {
+        clip->startFrame = f;
+        Timeline::syncLayerFromClip(registry, e);
+        return;
+    }
+    if (auto* lay = registry.try_get<Layer>(e);
+        lay && (registry.all_of<ObjectAnimationLayer>(e) ||
+                registry.all_of<GenerativeLayer>(e))) {
+        lay->startFrame = f;
+    }
+}
+
+} // namespace
 
 void TimelineWidget::handleInteraction() {
     if (!m_timeline) return;
@@ -149,8 +193,12 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
         float trackHeight = TRACK_HEIGHT;
         bool trackExpanded = m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
                              m_timeline->isTrackExpanded(trackEntity);
-        if (trackExpanded && findClipAtPlayhead(trackEntity) != entt::null) {
-            trackHeight = TRACK_HEIGHT + 6 * PROPERTY_ROW_HEIGHT;
+        if (trackExpanded) {
+            entt::entity atPlayhead = findClipAtPlayhead(trackEntity);
+            if (atPlayhead != entt::null) {
+                trackHeight = TRACK_HEIGHT +
+                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
+            }
         }
 
         // Check if mouse Y is within this track (including expanded area)
@@ -811,13 +859,15 @@ void TimelineWidget::handleTracksInteraction() {
 
             // Snap to playhead and other clips if enabled
             m_isSnapping = false;  // Reset snap state
-            if (m_snappingEnabled && registry.valid(m_selectedClip)) {
-                auto* clip = registry.try_get<Clip>(m_selectedClip);
-                if (clip) {
+            TimelinePlacement movingPlace = registry.valid(m_selectedClip)
+                ? readPlacement(registry, m_selectedClip)
+                : TimelinePlacement{};
+            if (m_snappingEnabled && movingPlace.valid) {
+                {
                     Timecode playheadTime = m_timeline->getCurrentTime();
                     // Use timeline frame rate since duration is in timeline frames
                     double timelineFrameRate = m_timeline->getFrameRate();
-                    float durationSeconds = clip->duration / static_cast<float>(timelineFrameRate);
+                    float durationSeconds = movingPlace.duration / static_cast<float>(timelineFrameRate);
                     Timecode clipDuration = static_cast<Timecode>(durationSeconds * 1000000.0f);
                     Timecode desiredEndTime = desiredStartTime + clipDuration;
 
@@ -872,7 +922,9 @@ void TimelineWidget::handleTracksInteraction() {
                     considerCandidate(snapTimeToBest(desiredEndTime),   false);
 
                     // Other clips on the same track — their edges, both
-                    // matched against our start and our end.
+                    // matched against our start and our end. Both Clip-backed
+                    // and Layer-only (OA / Generative) entities contribute
+                    // snap targets, read uniformly via readPlacement().
                     if (m_selectedClipTrackIndex >= 0) {
                         const auto& tracks = m_timeline->getTracks();
                         if (m_selectedClipTrackIndex < static_cast<int>(tracks.size())) {
@@ -880,12 +932,11 @@ void TimelineWidget::handleTracksInteraction() {
                             if (track) {
                                 for (entt::entity otherClipEntity : track->layers) {
                                     if (otherClipEntity == m_selectedClip) continue;
+                                    TimelinePlacement otherPlace = readPlacement(registry, otherClipEntity);
+                                    if (!otherPlace.valid) continue;
 
-                                    const auto* otherClip = registry.try_get<Clip>(otherClipEntity);
-                                    if (!otherClip) continue;
-
-                                    float otherStartSec = otherClip->startFrame / static_cast<float>(otherClip->framerate);
-                                    float otherDurSec = otherClip->duration / static_cast<float>(otherClip->framerate);
+                                    float otherStartSec = otherPlace.startFrame / static_cast<float>(timelineFrameRate);
+                                    float otherDurSec   = otherPlace.duration   / static_cast<float>(timelineFrameRate);
                                     Timecode otherStartTime = static_cast<Timecode>(otherStartSec * 1000000.0f);
                                     Timecode otherEndTime = static_cast<Timecode>((otherStartSec + otherDurSec) * 1000000.0f);
 
@@ -915,15 +966,13 @@ void TimelineWidget::handleTracksInteraction() {
             // Check for collisions and snap to valid position
             Timecode newStartTime = checkClipCollision(m_selectedClip, desiredStartTime, m_selectedClipTrackIndex);
 
-            // Update clip's start frame
+            // Update placement (start frame). Routes to Clip or Layer-only
+            // storage depending on the entity's archetype.
             if (registry.valid(m_selectedClip)) {
-                auto* clip = registry.try_get<Clip>(m_selectedClip);
-                if (clip) {
-                    float newStartSeconds = newStartTime / 1000000.0f;
-                    double timelineFrameRate = m_timeline->getFrameRate();
-                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
-                    Timeline::syncLayerFromClip(registry, m_selectedClip);
-                }
+                float newStartSeconds = newStartTime / 1000000.0f;
+                double timelineFrameRate = m_timeline->getFrameRate();
+                FrameNumber newStartFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
+                writeStartFrame(registry, m_selectedClip, newStartFrame);
             }
         } else {
             // Mouse released - stop dragging
@@ -987,12 +1036,15 @@ void TimelineWidget::handleTracksInteraction() {
                 m_timeline->setSelectedClip(clipUnderMouse);
                 m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
 
-                // Calculate drag offset (where in the clip the user clicked)
+                // Calculate drag offset (where in the clip the user clicked).
+                // Reads placement uniformly so OA/Generative Layer-only
+                // entities pick up a correct offset (without this, the offset
+                // stays at its previous value and the layer doesn't track).
                 if (registry.valid(clipUnderMouse)) {
-                    auto* clip = registry.try_get<Clip>(clipUnderMouse);
-                    if (clip) {
+                    TimelinePlacement place = readPlacement(registry, clipUnderMouse);
+                    if (place.valid) {
                         double timelineFrameRate = m_timeline->getFrameRate();
-                        float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
+                        float startSeconds = place.startFrame / static_cast<float>(timelineFrameRate);
                         Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
                         float clipX = windowPos.x + timeToPixel(clipStartTime) - m_syncScrollX;
                         m_dragOffsetX = mousePos.x - clipX;

@@ -417,10 +417,26 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             this->onMediaDroppedOnTimeline(filepath, trackIndex, position);
         });
         timelineWidget->setOALayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
-            // Find the first Screen entity to use as default target (user can change in Properties)
+            // Pre-target the OA layer to the currently-selected Screen or
+            // Prop in Stage. Matches the operator's mental model: "select
+            // the thing I want to animate, then drop an OA layer for it."
+            // Falls back to the first Screen if nothing is selected — and
+            // null if no Screens exist at all (the no-target warning in the
+            // OA panel telegraphs that case).
             entt::entity target = entt::null;
-            auto screenView = m_registry.view<Screen>();
-            if (!screenView.empty()) target = *screenView.begin();
+            if (m_timeline) {
+                if (entt::entity sel = m_timeline->getSelectedScreen();
+                    sel != entt::null && m_registry.valid(sel)) {
+                    target = sel;
+                } else if (entt::entity selProp = m_timeline->getSelectedProp();
+                           selProp != entt::null && m_registry.valid(selProp)) {
+                    target = selProp;
+                }
+            }
+            if (target == entt::null) {
+                auto screenView = m_registry.view<Screen>();
+                if (!screenView.empty()) target = *screenView.begin();
+            }
             entt::entity created = this->createObjectAnimationLayer(target, trackIndex, startFrame, duration);
             if (created != entt::null && m_timeline) {
                 m_timeline->setSelectedClip(created);

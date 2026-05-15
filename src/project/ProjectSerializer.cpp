@@ -108,6 +108,7 @@ static std::string animatablePropertyToJson(AnimatableProperty p) {
         case AnimatableProperty::RotationX: return "RotationX";
         case AnimatableProperty::RotationY: return "RotationY";
         case AnimatableProperty::ScaleZ:    return "ScaleZ";
+        case AnimatableProperty::RotationZ: return "RotationZ";
         default: return "PositionX";
     }
 }
@@ -123,6 +124,7 @@ static AnimatableProperty jsonToAnimatableProperty(const std::string& s) {
     if (s == "RotationX") return AnimatableProperty::RotationX;
     if (s == "RotationY") return AnimatableProperty::RotationY;
     if (s == "ScaleZ")    return AnimatableProperty::ScaleZ;
+    if (s == "RotationZ") return AnimatableProperty::RotationZ;
     return AnimatableProperty::PositionX;
 }
 
@@ -438,6 +440,14 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
 
                     oaJson["sectionBehavior"] =
                         (oal->sectionBehavior == SectionBehavior::Locked) ? "Locked" : "Normal";
+
+                    // ADR-0020 / v17: what happens to the target Screen/Prop
+                    // when the playhead leaves the layer window. Default Hold
+                    // (last evaluated values keep applying); operator can
+                    // opt-in to Reset (snap back to Stage-configured base).
+                    oaJson["endBehavior"] =
+                        (oal->endBehavior == ObjectAnimationLayer::EndBehavior::Reset)
+                            ? "Reset" : "Hold";
 
                     // target: persist by Screen name (or Prop name if the
                     // target entity has a Prop component). entt::entity
@@ -1242,6 +1252,17 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                                                 std::string{"Normal"});
                                 oal.sectionBehavior = (sb == "Locked")
                                     ? SectionBehavior::Locked : SectionBehavior::Normal;
+                            }
+                            {
+                                // ADR-0020 / v17. Pre-v17 projects without the
+                                // key load with the new Hold default — the
+                                // explicit choice for older projects is the
+                                // show-friendly behavior, not legacy snap-back.
+                                const auto eb = entryJson.value("endBehavior",
+                                                                std::string{"Hold"});
+                                oal.endBehavior = (eb == "Reset")
+                                    ? ObjectAnimationLayer::EndBehavior::Reset
+                                    : ObjectAnimationLayer::EndBehavior::Hold;
                             }
 
                             // Resolve target by name. Try Screen first, then

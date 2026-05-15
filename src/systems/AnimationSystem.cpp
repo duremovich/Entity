@@ -148,6 +148,7 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
                 case AnimatableProperty::RotationX:
                 case AnimatableProperty::RotationY:
                 case AnimatableProperty::ScaleZ:
+                case AnimatableProperty::RotationZ:
                     break;
             }
         }
@@ -166,14 +167,25 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
         const auto& oal   = oaView.get<ObjectAnimationLayer>(entity);
         const auto& layer = oaView.get<Layer>(entity);
 
-        // If inactive, reset any existing output so stale has* flags don't bleed
-        // into buildSceneSnapshot's fold-in (phase 3.4). Belt-and-suspenders with
-        // the active-frame guard in buildSceneSnapshot itself.
-        if (currentFrame < layer.startFrame ||
-            currentFrame >= layer.startFrame + layer.duration) {
-            if (auto* out = registry.try_get<ObjectAnimationOutput>(entity)) {
-                *out = ObjectAnimationOutput{};
+        // Inactive-window handling honors the per-layer EndBehavior (ADR-0020).
+        // beforeStart: always reset — no last-evaluated value exists to hold.
+        // afterEnd + Hold:  leave ObjectAnimationOutput populated so the target
+        //                   stays parked where the animation left it. The flags
+        //                   keep flowing into buildSceneSnapshot's fold-in, which
+        //                   keeps overriding the Screen's base position.
+        // afterEnd + Reset: today's pre-ADR-0020 behavior — clear so the screen
+        //                   snaps back to its Stage-configured base.
+        const bool beforeStart = currentFrame < layer.startFrame;
+        const bool afterEnd    = currentFrame >= layer.startFrame + layer.duration;
+        if (beforeStart || afterEnd) {
+            const bool resetNow = beforeStart ||
+                (afterEnd && oal.endBehavior == ObjectAnimationLayer::EndBehavior::Reset);
+            if (resetNow) {
+                if (auto* out = registry.try_get<ObjectAnimationOutput>(entity)) {
+                    *out = ObjectAnimationOutput{};
+                }
             }
+            // Hold mode leaves ObjectAnimationOutput untouched.
             continue;
         }
 
@@ -213,19 +225,21 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
                     break;
                 case AnimatableProperty::Rotation:
                 case AnimatableProperty::RotationY:
-                    // NOTE (3.5): AnimatableProperty::Rotation is documented as
-                    // "Z rotation for 2D clips" in AnimatedProperties.hpp:34, but
-                    // here it maps to rotationOverride[1] (Y-axis) — the natural
-                    // "turning" axis for a Screen in 3D space. A user who adds a
-                    // "Rotation" keyframe to an OA layer will see Y-rotation, not Z.
-                    // Phase 3.5 should either rename the OA-side display label to
-                    // "Rotation Y" or introduce a dedicated RotationZ enum value and
-                    // map it consistently across both Clip and OA branches.
+                    // Legacy: AnimatableProperty::Rotation is documented as "Z
+                    // rotation for 2D clips" in AnimatedProperties.hpp, but on
+                    // an OA layer it has always mapped to Y (the natural turning
+                    // axis for a screen). New OA work uses RotationZ explicitly
+                    // (case below); the legacy Rotation→Y mapping stays here so
+                    // pre-RotationZ projects keep behaving the same.
                     out.rotationOverride[1] = value;
                     out.hasRotation = true;
                     break;
                 case AnimatableProperty::RotationX:
                     out.rotationOverride[0] = value;
+                    out.hasRotation = true;
+                    break;
+                case AnimatableProperty::RotationZ:
+                    out.rotationOverride[2] = value;
                     out.hasRotation = true;
                     break;
                 case AnimatableProperty::ScaleX:

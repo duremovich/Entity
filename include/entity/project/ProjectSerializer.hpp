@@ -107,7 +107,10 @@ public:
     // v15 layers[] kind discriminator;
     // v16 per-clip "effects[]" array (issue #54). Pre-v16 clips load with
     //     no effect chain attached.
-    static constexpr int PROJECT_VERSION = 16;
+    // v17 ObjectAnimationLayer "endBehavior" ("Hold" | "Reset"). Pre-v17 OA
+    //     layers load with the new "Hold" default per ADR-0020 — the
+    //     explicit show-friendly choice, not pre-ADR snap-back.
+    static constexpr int PROJECT_VERSION = 17;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

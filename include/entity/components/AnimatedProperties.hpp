@@ -31,15 +31,18 @@ enum class InterpolationType {
 enum class AnimatableProperty {
     PositionX,
     PositionY,
-    Rotation,      // Z rotation for 2D clips (alias for RotationZ)
+    Rotation,      // Z rotation for 2D clips. Legacy: on OA layers this enum
+                   // historically maps to Y-axis rotation. New OA work uses
+                   // RotationZ explicitly. Don't reorder — wire-stable index.
     ScaleX,
     ScaleY,
     Opacity,
-    // 3D axes for ObjectAnimationLayer
+    // 3D axes for ObjectAnimationLayer. Appended in order — wire-stable indices.
     PositionZ,
     RotationX,
     RotationY,
     ScaleZ,
+    RotationZ,     // Z-axis (roll) for OA layers. No-op on Clip's 2D branch.
 };
 
 /**
@@ -57,6 +60,7 @@ inline const char* getPropertyName(AnimatableProperty prop) {
         case AnimatableProperty::RotationX: return "Rotation X";
         case AnimatableProperty::RotationY: return "Rotation Y";
         case AnimatableProperty::ScaleZ:    return "Scale Z";
+        case AnimatableProperty::RotationZ: return "Rotation Z";
         default: return "Unknown";
     }
 }
@@ -213,6 +217,7 @@ private:
             case AnimatableProperty::Rotation:
             case AnimatableProperty::RotationX:
             case AnimatableProperty::RotationY:
+            case AnimatableProperty::RotationZ:
                 return 0.0f;
             case AnimatableProperty::ScaleX:
             case AnimatableProperty::ScaleY:

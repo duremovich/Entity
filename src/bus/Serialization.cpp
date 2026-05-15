@@ -815,6 +815,7 @@ ojson encode(const ObjectAnimationLayerSnapshot& oa) {
     j["startFrame"]   = oa.startFrame;
     j["duration"]     = oa.duration;
     j["trackIndex"]   = oa.trackIndex;
+    j["endBehavior"]  = (oa.endBehavior == OAEndBehavior::Reset) ? "Reset" : "Hold";
     auto tracks = ojson::array();
     for (const auto& t : oa.tracks) tracks.push_back(encode(t));
     j["tracks"] = std::move(tracks);
@@ -827,6 +828,8 @@ ObjectAnimationLayerSnapshot decodeObjectAnimationLayerSnapshot(const json& j) {
     oa.startFrame   = j.value("startFrame",   FrameNumber{0});
     oa.duration     = j.value("duration",     FrameNumber{0});
     oa.trackIndex   = j.value("trackIndex",   std::uint32_t{UINT32_MAX});
+    const std::string eb = j.value("endBehavior", std::string{"Hold"});
+    oa.endBehavior = (eb == "Reset") ? OAEndBehavior::Reset : OAEndBehavior::Hold;
     if (j.contains("tracks"))
         for (const auto& t : j.at("tracks")) oa.tracks.push_back(decodeBakedTrack(t));
     return oa;

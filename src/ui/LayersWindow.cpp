@@ -87,20 +87,25 @@ void LayersWindow::render() {
             ImVec4(0.31f, 0.47f, 0.70f, 1.0f));
 
         layerPaletteRow(
-            "Object Animation",
-            "Drag onto a track to create an Object Animation layer.\n"
-            "Pick a target Screen or Prop in the Properties panel,\n"
-            "then add keyframes to animate its position/rotation/scale.",
-            Layer::Kind::ObjectAnimation,
-            ImVec4(0.55f, 0.35f, 0.70f, 1.0f));
-
-        layerPaletteRow(
             "Muncher",
             "Drag onto a track to create a Muncher generative layer.\n"
             "A maze-chase mini-game rendered into the layer's render target;\n"
             "responds to external inputs (OSC / MIDI / keyboard) over time.",
             Layer::Kind::Generative,
             ImVec4(0.85f, 0.78f, 0.20f, 1.0f));
+    }
+
+    // === Previz ===
+    // Layer kinds that drive the pre-vis stage (Screen / Prop transforms,
+    // camera moves, etc.) rather than producing on-output texture content.
+    if (ImGui::CollapsingHeader("Previz", ImGuiTreeNodeFlags_DefaultOpen)) {
+        layerPaletteRow(
+            "Object Animation",
+            "Drag onto a track to create an Object Animation layer.\n"
+            "Pick a target Screen or Prop in the Properties panel,\n"
+            "then add keyframes to animate its position/rotation/scale.",
+            Layer::Kind::ObjectAnimation,
+            ImVec4(0.55f, 0.35f, 0.70f, 1.0f));
     }
 
     // === Audio ===

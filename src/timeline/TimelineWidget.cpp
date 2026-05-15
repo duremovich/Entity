@@ -13,6 +13,9 @@
 #include "entity/timeline/TimelineWidget.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
 #include <sstream>
 #include <cmath>
 #include <cstdio>
@@ -117,11 +120,15 @@ void TimelineWidget::render() {
         bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
         tracksContentHeight += TRACK_HEIGHT + TRACK_PADDING;
 
-        // Expanded track adds room for the playhead clip's property panel
-        // (6 rows × PROPERTY_ROW_HEIGHT). When no clip overlaps the playhead
-        // on this track, no extra height — expansion is empty.
-        if (trackExpanded && findClipAtPlayhead(tracks[i]) != entt::null) {
-            tracksContentHeight += 6 * PROPERTY_ROW_HEIGHT;
+        // Expanded track adds room for the playhead layer's property panel.
+        // Row count varies by archetype: 6 for Clip-backed, 9 for OA layers.
+        // When no layer overlaps the playhead on this track, no extra height.
+        if (trackExpanded) {
+            entt::entity atPlayhead = findClipAtPlayhead(tracks[i]);
+            if (atPlayhead != entt::null) {
+                tracksContentHeight +=
+                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
+            }
         }
     }
     (void)registry;
@@ -342,10 +349,22 @@ entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const 
 
     FrameNumber currentFrame = m_timeline->getCurrentFrame();
     for (entt::entity clipEntity : track->layers) {
-        const auto* clip = registry.try_get<Clip>(clipEntity);
-        if (!clip) continue;
-        if (currentFrame >= clip->startFrame &&
-            currentFrame <  clip->startFrame + clip->duration) {
+        FrameNumber startFrame = 0;
+        FrameNumber duration   = 0;
+        // Both Clip-backed and Layer-only (OA / Generative) entities are
+        // valid track expansions. Clip is the source of truth for Clip-backed
+        // entities; Layer is the source of truth for layer-only entities.
+        if (const auto* clip = registry.try_get<Clip>(clipEntity)) {
+            startFrame = clip->startFrame;
+            duration   = clip->duration;
+        } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
+                   lay && registry.all_of<ObjectAnimationLayer>(clipEntity)) {
+            startFrame = lay->startFrame;
+            duration   = lay->duration;
+        } else {
+            continue;
+        }
+        if (currentFrame >= startFrame && currentFrame < startFrame + duration) {
             return clipEntity;
         }
     }
@@ -382,11 +401,42 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
     if (!m_timeline) return newStartTime;
 
     auto& registry = m_timeline->getRegistry();
-    const auto* movingClip = registry.try_get<Clip>(clipEntity);
-    if (!movingClip) return newStartTime;
+
+    // Read placement for both Clip-backed entities (source of truth: Clip)
+    // and Layer-only entities (ObjectAnimation / Generative). Durations
+    // throughout are in timeline frames, so the timeline frame rate is
+    // the correct denominator regardless of source media frame rate.
+    auto readDuration = [&](entt::entity e) -> std::pair<FrameNumber, bool> {
+        if (const auto* clip = registry.try_get<Clip>(e)) {
+            return {clip->duration, true};
+        }
+        if (const auto* lay = registry.try_get<Layer>(e);
+            lay && (registry.all_of<ObjectAnimationLayer>(e) ||
+                    registry.all_of<GenerativeLayer>(e))) {
+            return {lay->duration, true};
+        }
+        return {0, false};
+    };
+    auto readStartAndDuration = [&](entt::entity e) -> std::tuple<FrameNumber, FrameNumber, bool> {
+        if (const auto* clip = registry.try_get<Clip>(e)) {
+            return {clip->startFrame, clip->duration, true};
+        }
+        if (const auto* lay = registry.try_get<Layer>(e);
+            lay && (registry.all_of<ObjectAnimationLayer>(e) ||
+                    registry.all_of<GenerativeLayer>(e))) {
+            return {lay->startFrame, lay->duration, true};
+        }
+        return {0, 0, false};
+    };
+
+    auto [movingDur, movingValid] = readDuration(clipEntity);
+    if (!movingValid) return newStartTime;
+
+    const double timelineFps = m_timeline->getFrameRate();
+    if (timelineFps <= 0.0) return newStartTime;
 
     // Calculate moving clip's time range at new position
-    float durationSeconds = movingClip->duration / movingClip->framerate;
+    float durationSeconds = movingDur / static_cast<float>(timelineFps);
     Timecode newEndTime = newStartTime + static_cast<Timecode>(durationSeconds * 1000000.0f);
 
     // Get the track
@@ -407,12 +457,12 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
         // Skip the clip we're moving
         if (otherClipEntity == clipEntity) continue;
 
-        const auto* otherClip = registry.try_get<Clip>(otherClipEntity);
-        if (!otherClip) continue;
+        auto [otherStart, otherDur, otherValid] = readStartAndDuration(otherClipEntity);
+        if (!otherValid) continue;
 
-        // Calculate other clip's time range
-        float otherStartSeconds = otherClip->startFrame / otherClip->framerate;
-        float otherDurationSeconds = otherClip->duration / otherClip->framerate;
+        // Calculate other clip's time range (timeline frames -> seconds)
+        float otherStartSeconds = otherStart / static_cast<float>(timelineFps);
+        float otherDurationSeconds = otherDur / static_cast<float>(timelineFps);
         Timecode otherStartTime = static_cast<Timecode>(otherStartSeconds * 1000000.0f);
         Timecode otherEndTime = otherStartTime + static_cast<Timecode>(otherDurationSeconds * 1000000.0f);
 

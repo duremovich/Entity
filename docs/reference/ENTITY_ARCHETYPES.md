@@ -121,12 +121,29 @@ lets the show thread re-evaluate tracks per render frame during editor stalls
   `AnimationSystem` skips the entity if `!animProps.hasAnyKeyframes()`.
 - `ObjectAnimationOutput` is emplace'd lazily by `AnimationSystem` on the first
   active tick. Cleared to default on every tick the layer is active, then
-  repopulated from the evaluated tracks. Reset to default (all `has*` flags
-  false) when the layer is inactive, so stale values don't bleed into the fold-in.
+  repopulated from the evaluated tracks. After-end behavior depends on
+  `endBehavior` (see next bullet). Always reset before the layer's start frame
+  (no last-evaluated value exists to hold).
+- `ObjectAnimationLayer::endBehavior` (ADR-0020) — `Hold` (default) keeps
+  `ObjectAnimationOutput` populated past the layer's active window so the
+  target stays parked where the animation left it. `Reset` clears the output
+  on the first frame past `startFrame + duration`, falling back to the
+  Stage-configured base position. Persisted in `.entity` schema v17; pre-v17
+  OA layers load with `Hold`. Bake site:
+  `PlaybackTimeAuthority::buildSceneSnapshot` filters after-end-Reset layers
+  out of `bus::SceneSnapshot::objectAnimationLayers` entirely; after-end-Hold
+  layers ride the bus so the show thread re-eval keeps applying them during
+  editor stalls.
 - `ObjectAnimationLayer::sectionBehavior` mirrors the same enum used by `Clip`
   (ADR-0012 / ADR-0016). `Locked` layers freeze at a section break
   (`frozen = true` set by `SectionScheduler::seedContinuationAt`; cleared by
   `clearAllContinuation` on GO / Stop). `Normal` layers continue evaluating.
+  Independent of `endBehavior` — section-freeze and end-of-layer Hold are
+  separate concerns.
+- Animatable channels (per `AnimatableProperty` enum): `PositionX/Y/Z`,
+  `RotationX/Y/Z`, `ScaleX/Y/Z` (9 axes). The legacy `Rotation` enum value
+  maps to Y-axis rotation on OA layers — kept for back-compat with pre-ADR-0020
+  projects; new authoring uses `RotationZ` for roll explicitly.
 - This archetype is not included in `SceneSnapshot::activeClips` and is never
   visible to `CompositorSystem` directly. The compositor only sees the
   downstream effect via screen position/rotation/scale in the render frame.

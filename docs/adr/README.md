@@ -29,6 +29,7 @@ that have moved on.
 | 0017 | [Generative layers — procedural-content timeline layers](0017-generative-layers.md) | Accepted (amended by 0018) | 2026-05-11 |
 | 0018 | [Content-layer unification — one compositor path for clip + generative + future kinds](0018-content-layer-unification.md) | Accepted | 2026-05-12 |
 | 0019 | [Per-layer effects — ordered shader chain with stack + graph editors over one data model](0019-per-layer-effects.md) | Accepted | 2026-05-12 |
+| 0020 | [Object Animation layers — absolute values + Hold-by-default end behavior](0020-object-animation-end-behavior.md) | Accepted | 2026-05-15 |
 
 ## Format
 

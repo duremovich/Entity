@@ -11,6 +11,9 @@
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Prop.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/systems/CameraControlSystem.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -19,6 +22,79 @@
 #include <vector>
 
 namespace entity {
+
+namespace {
+
+// Stage 3D pulls position/rotation/size directly from Screen / Prop
+// components, but those don't reflect the live OA-layer overrides that
+// AnimationSystem writes to ObjectAnimationOutput (the editor-side fold-in
+// only happens in PlaybackTimeAuthority::buildSceneSnapshot, which feeds
+// the projector output path — not the editor's Stage viewport). Without
+// this fold-in here, dragging a PositionX slider on an OA layer would
+// move the projector output but the Stage 3D preview would stay frozen
+// at the screen's base position, which is exactly what the operator
+// reports as "nothing happens."
+//
+// Precedence mirrors PlaybackTimeAuthority::buildSceneSnapshot's screens
+// loop and ADR-0020: an active OA layer wins over an after-end-Hold OA
+// layer; lower trackIndex wins within either category. AnimationSystem
+// has already populated ObjectAnimationOutput correctly for both
+// scenarios — we just pick the right one. Keep this in lockstep with the
+// canonical fold-in if precedence ever changes.
+void applyOAOverridesForTarget(entt::registry& registry,
+                                FrameNumber currentFrame,
+                                entt::entity targetEntity,
+                                glm::vec3& position,
+                                glm::vec3& rotation,
+                                std::array<float, 3>& sizeOverride,
+                                bool& sizeWasOverridden) {
+    sizeWasOverridden = false;
+    if (targetEntity == entt::null) return;
+
+    const ObjectAnimationOutput* winningActive = nullptr;
+    uint32_t winningActiveIdx = UINT32_MAX;
+    const ObjectAnimationOutput* winningHold = nullptr;
+    uint32_t winningHoldIdx = UINT32_MAX;
+
+    auto view = registry.view<ObjectAnimationLayer, ObjectAnimationOutput, Layer>();
+    for (auto [oaEntity, oal, oaOut, oaLayer] : view.each()) {
+        if (oal.target != targetEntity) continue;
+        const bool active   = currentFrame >= oaLayer.startFrame &&
+                              currentFrame <  oaLayer.startFrame + oaLayer.duration;
+        const bool afterEnd = currentFrame >= oaLayer.startFrame + oaLayer.duration;
+        if (active) {
+            if (oaLayer.trackIndex < winningActiveIdx) {
+                winningActiveIdx = oaLayer.trackIndex;
+                winningActive    = &oaOut;
+            }
+        } else if (afterEnd &&
+                   oal.endBehavior == ObjectAnimationLayer::EndBehavior::Hold) {
+            if (oaLayer.trackIndex < winningHoldIdx) {
+                winningHoldIdx = oaLayer.trackIndex;
+                winningHold    = &oaOut;
+            }
+        }
+    }
+    const ObjectAnimationOutput* winning = winningActive ? winningActive : winningHold;
+    if (!winning) return;
+
+    if (winning->hasPosition) {
+        position.x = winning->positionOverride[0];
+        position.y = winning->positionOverride[1];
+        position.z = winning->positionOverride[2];
+    }
+    if (winning->hasRotation) {
+        rotation.x = winning->rotationOverride[0];
+        rotation.y = winning->rotationOverride[1];
+        rotation.z = winning->rotationOverride[2];
+    }
+    if (winning->hasSize) {
+        sizeOverride      = winning->sizeOverride;
+        sizeWasOverridden = true;
+    }
+}
+
+} // namespace
 
 StageWindow::StageWindow(Engine* engine)
     : m_engine(engine)
@@ -279,6 +355,11 @@ void StageWindow::render3DView() {
         auto& registry = m_engine->getRegistry();
         glm::vec3 cameraPos = m_3dRenderer->getCamera().position;
 
+        // Current frame snapshot for OA-override resolution. Read once per
+        // render so all per-entity calls see a consistent value.
+        const FrameNumber currentFrame =
+            (m_engine->getTimeline() ? m_engine->getTimeline()->getCurrentFrame() : 0);
+
         // --- Screens ---
         // Every visible screen routes through the GPU mesh pass for depth-correct z-order.
         // Custom-mesh screens use their model's slot; flat screens use the shared default quad.
@@ -287,6 +368,16 @@ void StageWindow::render3DView() {
 
             glm::vec3 position(screen.position[0], screen.position[1], screen.position[2]);
             glm::vec3 rotation(screen.rotation[0], screen.rotation[1], screen.rotation[2]);
+
+            // OA fold-in for Stage preview — see applyOAOverridesForTarget
+            // for the precedence rule. Without this, dragging an OA value
+            // slider would update ObjectAnimationOutput correctly but the
+            // Stage 3D viewport would keep showing the screen's base
+            // position, making the layer feel broken.
+            std::array<float, 3> oaSize{1.0f, 1.0f, 1.0f};
+            bool oaSizeOverridden = false;
+            applyOAOverridesForTarget(registry, currentFrame, entity,
+                                      position, rotation, oaSize, oaSizeOverridden);
 
             uint32_t meshSlot = UINT32_MAX;
             const MeshData* mesh = nullptr;
@@ -307,8 +398,10 @@ void StageWindow::render3DView() {
             // Convert real-world size (meters) to vertex multiplier given the
             // mesh's native bounds. `mesh` is null here when the screen uses
             // the default 16:9 plane fallback, which computeEffectiveScale
-            // handles internally.
-            const auto effScale = computeEffectiveScale(screen.size, mesh);
+            // handles internally. OA size override (when present) substitutes
+            // for screen.size — same semantics as buildSceneSnapshot.
+            const auto baseSize = oaSizeOverridden ? oaSize : screen.size;
+            const auto effScale = computeEffectiveScale(baseSize, mesh);
             glm::vec3 scale(effScale[0], effScale[1], effScale[2]);
 
             Stage3DRenderer::StageMeshDraw draw;
@@ -348,6 +441,14 @@ void StageWindow::render3DView() {
             glm::vec3 rotation(prop.rotation[0], prop.rotation[1], prop.rotation[2]);
             glm::vec4 color(prop.displayColor[0], prop.displayColor[1],
                             prop.displayColor[2], prop.displayColor[3]);
+
+            // OA fold-in for Stage preview (props animate the same way
+            // screens do — see the screens loop above).
+            std::array<float, 3> oaSize{1.0f, 1.0f, 1.0f};
+            bool oaSizeOverridden = false;
+            applyOAOverridesForTarget(registry, currentFrame, entity,
+                                      position, rotation, oaSize, oaSizeOverridden);
+
             bool isSelected = (entity == selectedProp);
             float dist = glm::length(position - cameraPos);
 
@@ -361,7 +462,8 @@ void StageWindow::render3DView() {
             // Convert prop.size (meters) → vertex multiplier given the mesh
             // native bounds. For props without a mesh the multiplier is
             // unused (placeholder-cross path uses position only).
-            const auto propEff = computeEffectiveScale(prop.size, mesh);
+            const auto baseSize = oaSizeOverridden ? oaSize : prop.size;
+            const auto propEff = computeEffectiveScale(baseSize, mesh);
             glm::vec3 scale(propEff[0], propEff[1], propEff[2]);
 
             if (mesh) {

@@ -463,11 +463,20 @@ struct ClipCatalogEntry {
 // tracks: keyframe tracks copied from AnimatedProperties (same BakedTrack shape
 //         used by the clip catalog). Show thread evaluates these at
 //         (currentFrame - startFrame) clamped to [0, duration).
+// EndBehavior wire-format enum, mirrored from ObjectAnimationLayer::EndBehavior
+// to avoid an entity-bus → core component dep. Serialized as a string ("Hold" /
+// "Reset") per bus rule #2 (enums on the wire are strings).
+enum class OAEndBehavior : std::uint8_t {
+    Hold  = 0,
+    Reset = 1,
+};
+
 struct ObjectAnimationLayerSnapshot {
     std::uint64_t            targetScreen{0};
     FrameNumber              startFrame{0};
     FrameNumber              duration{0};
     std::uint32_t            trackIndex{UINT32_MAX};
+    OAEndBehavior            endBehavior{OAEndBehavior::Hold};
     std::vector<BakedTrack>  tracks;
 };
 

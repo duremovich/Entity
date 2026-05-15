@@ -1048,6 +1048,94 @@ void PropertyWindow::renderOAKeyframeControls(entt::entity oaEntity,
     ImGui::PopID();
 }
 
+void PropertyWindow::renderOAValueRow(entt::entity oaEntity,
+                                      AnimatableProperty property,
+                                      const char* label,
+                                      float dragStep,
+                                      float minVal, float maxVal,
+                                      const char* format) {
+    if (!m_timeline) return;
+    auto& registry = m_timeline->getRegistry();
+
+    // Stopwatch + nav buttons + label (reuses the existing 4-button helper).
+    // Pushes its own ID stack frame internally.
+    renderOAKeyframeControls(oaEntity, property, label);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+
+    // Push a unique ID so DragFloat widgets across the 9 OA channels don't
+    // share ImGui state.
+    ImGui::PushID(static_cast<int>(property) + 20000);
+
+    const int oaFrame = getCurrentOAFrame(oaEntity);
+
+    // Read current evaluated value. The DragFloat shows what the operator
+    // is *editing* — the value at the current layer-local frame.
+    const auto* animProps = registry.try_get<AnimatedProperties>(oaEntity);
+    const KeyframeTrack* track = animProps ? animProps->getTrack(property) : nullptr;
+    float currentVal;
+    if (track && track->hasKeyframes()) {
+        const FrameNumber f = (oaFrame >= 0) ? static_cast<FrameNumber>(oaFrame) : FrameNumber{0};
+        currentVal = track->evaluate(f);
+    } else {
+        const bool isScale = (property == AnimatableProperty::ScaleX ||
+                              property == AnimatableProperty::ScaleY ||
+                              property == AnimatableProperty::ScaleZ);
+        currentVal = isScale ? 1.0f : 0.0f;
+    }
+
+    // Playhead outside the OA window → drag is disabled. Mirrors the
+    // diamond's behavior in renderOAKeyframeControls and telegraphs why
+    // editing has no effect there.
+    const bool dragEnabled = (oaFrame >= 0);
+    if (!dragEnabled) ImGui::BeginDisabled();
+
+    const bool changed = ImGui::DragFloat("##oa_val", &currentVal, dragStep,
+                                          minVal, maxVal, format);
+
+    // Capture pre-edit state on activation so the drag-end deactivate
+    // branch can emit an UpsertKeyframeCommand keyed to the original
+    // (frame, prior value) pair. Mirrors the Clip Rotation/Opacity pattern.
+    if (ImGui::IsItemActivated() && dragEnabled) {
+        m_preEditOA.property = property;
+        m_preEditOA.frame    = static_cast<FrameNumber>(oaFrame);
+        m_preEditOA.keyframeValue.reset();
+        if (track) {
+            if (const Keyframe* existing = track->getKeyframeAt(m_preEditOA.frame)) {
+                m_preEditOA.keyframeValue = existing->value;
+            }
+        }
+        m_preEditOA.valid = true;
+    }
+
+    if (changed && dragEnabled) {
+        // Auto-create / upsert keyframe at the current layer-local frame
+        // (ADR-0020): OA layers have no static value — every value is a
+        // keyframe, so dragging is *always* a keyframe write.
+        auto& animPropsMut = registry.get_or_emplace<AnimatedProperties>(oaEntity);
+        KeyframeTrack& mutableTrack = animPropsMut.getOrCreateTrack(property);
+        mutableTrack.addKeyframe(static_cast<FrameNumber>(oaFrame), currentVal);
+    }
+
+    // On drag-end, commit one undoable UpsertKeyframeCommand. The command
+    // re-applies the same write its own execute() path performs, so the
+    // intermediate drag-frame writes are coalesced into a single undo step.
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_preEditOA.valid && m_dispatcher) {
+        if (auto idx = findClipIndices(m_timeline, oaEntity)) {
+            auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                idx->first, idx->second,
+                property, m_preEditOA.frame, currentVal);
+            cmd->setPreviousValue(m_preEditOA.keyframeValue);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+        m_preEditOA.valid = false;
+    }
+
+    if (!dragEnabled) ImGui::EndDisabled();
+
+    ImGui::PopID();
+}
+
 void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
     if (!m_timeline) return;
 
@@ -1849,6 +1937,44 @@ void PropertyWindow::renderOALayerProperties(entt::entity entity) {
     ImGui::Text("Object Animation Layer");
     ImGui::Separator();
 
+    // Prominent no-target banner. Sits above every other section so it can't
+    // be hidden by a collapsed Target header — the most common reason
+    // "dragging a slider does nothing" is the layer not pointing at the
+    // screen the operator thinks it is.
+    if (oal->target == entt::null) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.20f, 1.0f));
+        ImGui::TextWrapped("WARNING: No target assigned. Pick a Screen or Prop "
+                           "in the Target section below — keyframes have no "
+                           "visible effect until a target is set.");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+    } else if (!registry.valid(oal->target)) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.20f, 1.0f));
+        ImGui::TextWrapped("WARNING: Target entity is gone (deleted?). Pick a "
+                           "new Screen or Prop in the Target section below.");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+    } else {
+        // Show what the layer is actually driving — answers the operator's
+        // "is this animating what I expect?" question without scrolling.
+        std::string targetLabel = "Target: ";
+        if (registry.all_of<Screen>(oal->target)) {
+            targetLabel += "Screen \"";
+            targetLabel += registry.get<Screen>(oal->target).name;
+            targetLabel += "\"";
+        } else if (registry.all_of<Prop>(oal->target)) {
+            targetLabel += "Prop \"";
+            targetLabel += registry.get<Prop>(oal->target).name;
+            targetLabel += "\"";
+        } else {
+            targetLabel += "(unknown kind)";
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
+        ImGui::TextUnformatted(targetLabel.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+    }
+
     // Identity
     if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
         char nameBuf[128];
@@ -1909,15 +2035,33 @@ void PropertyWindow::renderOALayerProperties(entt::entity entity) {
         }
     }
 
-    // Timing info (read-only — driven by Layer::startFrame/duration)
-    if (ImGui::CollapsingHeader("Timing")) {
+    // Timing info (read-only — driven by Layer::startFrame/duration) plus
+    // the ADR-0020 End behavior toggle.
+    if (ImGui::CollapsingHeader("Timing", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
         ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
+
+        const char* kEndBehaviorLabels[] = {"Hold last value", "Reset to base"};
+        int ebIdx = static_cast<int>(oal->endBehavior);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("End behavior", &ebIdx, kEndBehaviorLabels, 2)) {
+            oal->endBehavior =
+                static_cast<ObjectAnimationLayer::EndBehavior>(ebIdx);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Hold: target stays at last evaluated values after the\n"
+                "layer ends (recommended).\n\n"
+                "Reset: target snaps back to its Stage-configured base\n"
+                "the frame the layer ends.");
+        }
     }
 
-    // Interactive keyframe controls for each animatable OA axis.
-    // Stopwatch toggles, add-at-current-frame diamond, and prev/next navigation
-    // all use getCurrentOAFrame() which returns -1 when playhead is outside the layer.
+    // Interactive keyframe + value-edit controls for each animatable OA axis.
+    // Each row pairs renderOAKeyframeControls (stopwatch / prev / diamond /
+    // next) with a DragFloat that auto-creates a keyframe at the current
+    // layer-local frame on drag. Playhead outside the layer window disables
+    // the slider — telegraphs why the drag has no effect.
     if (ImGui::CollapsingHeader("Keyframes", ImGuiTreeNodeFlags_DefaultOpen)) {
         int oaFrame = getCurrentOAFrame(entity);
         if (oaFrame < 0) {
@@ -1927,14 +2071,24 @@ void PropertyWindow::renderOALayerProperties(entt::entity entity) {
         }
         ImGui::Spacing();
 
-        renderOAKeyframeControls(entity, AnimatableProperty::PositionX, "Position X");
-        renderOAKeyframeControls(entity, AnimatableProperty::PositionY, "Position Y");
-        renderOAKeyframeControls(entity, AnimatableProperty::PositionZ, "Position Z");
-        renderOAKeyframeControls(entity, AnimatableProperty::Rotation,  "Rotation Y (yaw)");
-        renderOAKeyframeControls(entity, AnimatableProperty::RotationX, "Rotation X");
-        renderOAKeyframeControls(entity, AnimatableProperty::ScaleX,    "Scale X");
-        renderOAKeyframeControls(entity, AnimatableProperty::ScaleY,    "Scale Y");
-        renderOAKeyframeControls(entity, AnimatableProperty::ScaleZ,    "Scale Z");
+        renderOAValueRow(entity, AnimatableProperty::PositionX, "Position X",
+                         0.01f, -50.0f, 50.0f, "%.3f");
+        renderOAValueRow(entity, AnimatableProperty::PositionY, "Position Y",
+                         0.01f, -50.0f, 50.0f, "%.3f");
+        renderOAValueRow(entity, AnimatableProperty::PositionZ, "Position Z",
+                         0.01f, -50.0f, 50.0f, "%.3f");
+        renderOAValueRow(entity, AnimatableProperty::RotationX, "Rotation X",
+                         0.5f,  -360.0f, 360.0f, "%.1f deg");
+        renderOAValueRow(entity, AnimatableProperty::RotationY, "Rotation Y",
+                         0.5f,  -360.0f, 360.0f, "%.1f deg");
+        renderOAValueRow(entity, AnimatableProperty::RotationZ, "Rotation Z",
+                         0.5f,  -360.0f, 360.0f, "%.1f deg");
+        renderOAValueRow(entity, AnimatableProperty::ScaleX,    "Scale X",
+                         0.01f, 0.01f, 10.0f, "%.3f");
+        renderOAValueRow(entity, AnimatableProperty::ScaleY,    "Scale Y",
+                         0.01f, 0.01f, 10.0f, "%.3f");
+        renderOAValueRow(entity, AnimatableProperty::ScaleZ,    "Scale Z",
+                         0.01f, 0.01f, 10.0f, "%.3f");
     }
 
     ImGui::PopID();

@@ -823,6 +823,10 @@ TEST(ProjectSerializer, OALayerRoundTrip) {
         auto& oal = registry.emplace<entity::ObjectAnimationLayer>(oaEntity);
         oal.target          = screenEntity;
         oal.sectionBehavior = entity::SectionBehavior::Locked;
+        // ADR-0020: Reset is the non-default; verify it round-trips. Hold is
+        // the loader's default for missing keys, so using Reset here proves the
+        // serializer actually emits + parses the field instead of defaulting.
+        oal.endBehavior     = entity::ObjectAnimationLayer::EndBehavior::Reset;
 
         auto& ap = registry.emplace<entity::AnimatedProperties>(oaEntity);
         ap.addKeyframe(entity::AnimatableProperty::PositionX, 0,   2.5f);
@@ -840,6 +844,11 @@ TEST(ProjectSerializer, OALayerRoundTrip) {
             posZTrack.keyframes[0].easeIn  = 0.25f;
             posZTrack.keyframes[0].easeOut = 0.75f;
         }
+
+        // ADR-0020: RotationZ — exercises the new enum string mapping in
+        // animatablePropertyToJson / jsonToAnimatableProperty.
+        ap.addKeyframe(entity::AnimatableProperty::RotationZ, 0,   0.0f);
+        ap.addKeyframe(entity::AnimatableProperty::RotationZ, 200, 270.0f);
 
         track->layers.push_back(oaEntity);
 
@@ -870,6 +879,8 @@ TEST(ProjectSerializer, OALayerRoundTrip) {
 
         const auto& oal = registry.get<entity::ObjectAnimationLayer>(loaded);
         EXPECT_EQ(oal.sectionBehavior, entity::SectionBehavior::Locked);
+        EXPECT_EQ(oal.endBehavior,
+                  entity::ObjectAnimationLayer::EndBehavior::Reset);
 
         // Target is resolved by Screen name — must point at "TestScreen".
         ASSERT_TRUE(registry.valid(oal.target)) << "OA layer target is null after load";
@@ -901,6 +912,15 @@ TEST(ProjectSerializer, OALayerRoundTrip) {
         EXPECT_EQ(pzTrack->keyframes[1].frame, 100);
         EXPECT_NEAR(pzTrack->keyframes[1].value, 5.0f, 0.001f);
         EXPECT_EQ(pzTrack->keyframes[1].interpolation, entity::InterpolationType::EaseInOut);
+
+        // RotationZ (ADR-0020) — exercises the new enum string mapping.
+        const auto* rzTrack = ap->getTrack(entity::AnimatableProperty::RotationZ);
+        ASSERT_NE(rzTrack, nullptr) << "RotationZ track missing after load";
+        ASSERT_EQ(rzTrack->keyframes.size(), 2u);
+        EXPECT_EQ(rzTrack->keyframes[0].frame, 0);
+        EXPECT_NEAR(rzTrack->keyframes[0].value, 0.0f, 0.001f);
+        EXPECT_EQ(rzTrack->keyframes[1].frame, 200);
+        EXPECT_NEAR(rzTrack->keyframes[1].value, 270.0f, 0.001f);
     }
 }
 

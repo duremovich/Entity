@@ -762,21 +762,33 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         ss.scale = computeEffectiveScale(effectiveSize, mesh);
         ss.modelEntity = entityToU64(screen.modelEntity);
 
-        // Fold in ObjectAnimationOutput from active OA layers targeting this screen.
-        // Multiple layers may target the same screen; lower trackIndex wins (v1 policy).
-        // Belt-and-suspenders active-frame guard here mirrors AnimationSystem's reset.
-        const ObjectAnimationOutput* winningOA = nullptr;
-        uint32_t winningTrackIndex = UINT32_MAX;
+        // Fold in ObjectAnimationOutput from active OA layers targeting this
+        // screen. Precedence per ADR-0020: active layer beats after-end-Hold
+        // layer; within either category, lower trackIndex wins.
+        const ObjectAnimationOutput* winningActiveOA = nullptr;
+        uint32_t winningActiveIdx = UINT32_MAX;
+        const ObjectAnimationOutput* winningHoldOA = nullptr;
+        uint32_t winningHoldIdx = UINT32_MAX;
         for (auto [oaEntity, oal, oaOut, oaLayer] : oaScan.each()) {
             if (oal.target != entity) continue;
-            if (currentFrameForOA < oaLayer.startFrame ||
-                currentFrameForOA >= oaLayer.startFrame + oaLayer.duration) continue;
-            // Equal trackIndex: first-creation-order wins. Create OA layers in priority order to avoid ambiguity.
-            if (oaLayer.trackIndex < winningTrackIndex) {
-                winningTrackIndex = oaLayer.trackIndex;
-                winningOA = &oaOut;
+            const bool active   = currentFrameForOA >= oaLayer.startFrame &&
+                                  currentFrameForOA <  oaLayer.startFrame + oaLayer.duration;
+            const bool afterEnd = currentFrameForOA >= oaLayer.startFrame + oaLayer.duration;
+            if (active) {
+                if (oaLayer.trackIndex < winningActiveIdx) {
+                    winningActiveIdx = oaLayer.trackIndex;
+                    winningActiveOA  = &oaOut;
+                }
+            } else if (afterEnd &&
+                       oal.endBehavior == ObjectAnimationLayer::EndBehavior::Hold) {
+                if (oaLayer.trackIndex < winningHoldIdx) {
+                    winningHoldIdx = oaLayer.trackIndex;
+                    winningHoldOA  = &oaOut;
+                }
             }
         }
+        const ObjectAnimationOutput* winningOA =
+            winningActiveOA ? winningActiveOA : winningHoldOA;
         if (winningOA) {
             if (winningOA->hasPosition) ss.position = winningOA->positionOverride;
             if (winningOA->hasRotation) ss.rotation = winningOA->rotationOverride;
@@ -961,11 +973,20 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
     // stalls (mirrors the NEW-07 clip-animation fix via applyBakedAnimation).
     // Layers without keyframes are omitted — the static fold-in above via
     // ObjectAnimationOutput is sufficient for those.
+    //
+    // ADR-0020: layers in their after-end window with EndBehavior::Hold also
+    // ride the bus so the show thread can keep holding the last-evaluated
+    // values during editor stalls. The Reset case is a no-op (output cleared
+    // editor-side) and stays off the bus.
     out.objectAnimationLayers.clear();
     for (auto [oaEntity, oal, oaLayer] : m_registry.view<ObjectAnimationLayer, Layer>().each()) {
-        // Mirror the 3.4 fold-in gate: only active layers go on the bus.
-        if (currentFrameForOA < oaLayer.startFrame ||
-            currentFrameForOA >= oaLayer.startFrame + oaLayer.duration) continue;
+        const bool isActive = currentFrameForOA >= oaLayer.startFrame &&
+                              currentFrameForOA <  oaLayer.startFrame + oaLayer.duration;
+        const bool isAfterEnd = currentFrameForOA >= oaLayer.startFrame + oaLayer.duration;
+        const bool holdAfterEnd = isAfterEnd &&
+            oal.endBehavior == ObjectAnimationLayer::EndBehavior::Hold;
+        if (!isActive && !holdAfterEnd) continue;
+
         const auto* anim = m_registry.try_get<AnimatedProperties>(oaEntity);
         if (!anim || !anim->hasAnyKeyframes()) continue;
 
@@ -976,6 +997,9 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         oas.startFrame  = oaLayer.startFrame;
         oas.duration    = oaLayer.duration;
         oas.trackIndex  = oaLayer.trackIndex;
+        oas.endBehavior = (oal.endBehavior == ObjectAnimationLayer::EndBehavior::Reset)
+            ? bus::OAEndBehavior::Reset
+            : bus::OAEndBehavior::Hold;
 
         oas.tracks.reserve(anim->tracks.size());
         for (const auto& src : anim->tracks) {
@@ -1250,15 +1274,34 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
     // what buildSceneSnapshot does on the editor side via ObjectAnimationOutput,
     // but runs on the show thread so animation survives editor stalls.
     //
-    // Priority: lower trackIndex wins when multiple OA layers target the same
-    // screen — matches the editor-side fold-in policy.
+    // Priority within a target screen (ADR-0020):
+    //   1. Active layers (currentFrame inside [startFrame, startFrame+duration))
+    //      beat after-end-Hold layers. Among multiple active layers, lower
+    //      trackIndex wins.
+    //   2. If no active layer targets this screen, an after-end-Hold layer wins
+    //      (KeyframeTrack::evaluate clamps to last keyframe value beyond
+    //      duration). Lower trackIndex still wins among multiple.
+    //   3. Reset-mode layers never appear in scene.objectAnimationLayers after
+    //      their active window — they're filtered out editor-side in
+    //      buildSceneSnapshot.
     for (auto& ss : out.screens) {
-        const bus::ObjectAnimationLayerSnapshot* winning = nullptr;
+        const bus::ObjectAnimationLayerSnapshot* winningActive    = nullptr;
+        const bus::ObjectAnimationLayerSnapshot* winningHoldAfter = nullptr;
         for (const auto& oa : scene.objectAnimationLayers) {
             if (oa.targetScreen != ss.entity) continue;
-            if (currentFrame < oa.startFrame || currentFrame >= oa.startFrame + oa.duration) continue;
-            if (!winning || oa.trackIndex < winning->trackIndex) winning = &oa;
+            const bool active   = currentFrame >= oa.startFrame &&
+                                  currentFrame <  oa.startFrame + oa.duration;
+            const bool afterEnd = currentFrame >= oa.startFrame + oa.duration;
+            if (active) {
+                if (!winningActive || oa.trackIndex < winningActive->trackIndex)
+                    winningActive = &oa;
+            } else if (afterEnd && oa.endBehavior == bus::OAEndBehavior::Hold) {
+                if (!winningHoldAfter || oa.trackIndex < winningHoldAfter->trackIndex)
+                    winningHoldAfter = &oa;
+            }
         }
+        const bus::ObjectAnimationLayerSnapshot* winning =
+            winningActive ? winningActive : winningHoldAfter;
         if (!winning) continue;
 
         const FrameNumber localFrame =
@@ -1276,6 +1319,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
                 case AnimatableProperty::Rotation:
                 case AnimatableProperty::RotationY: ss.rotation[1] = v; break;
                 case AnimatableProperty::RotationX: ss.rotation[0] = v; break;
+                case AnimatableProperty::RotationZ: ss.rotation[2] = v; break;
                 case AnimatableProperty::ScaleX:    ss.scale[0]    = v; break;
                 case AnimatableProperty::ScaleY:    ss.scale[1]    = v; break;
                 case AnimatableProperty::ScaleZ:    ss.scale[2]    = v; break;

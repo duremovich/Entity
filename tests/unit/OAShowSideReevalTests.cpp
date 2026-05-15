@@ -32,7 +32,8 @@ bus::SceneSnapshot makeOASnapshot(std::uint64_t screenEntity,
                                   FrameNumber    layerDuration,
                                   float          startVal,
                                   float          endVal,
-                                  AnimatableProperty prop = AnimatableProperty::PositionX) {
+                                  AnimatableProperty prop = AnimatableProperty::PositionX,
+                                  bus::OAEndBehavior endBehavior = bus::OAEndBehavior::Hold) {
     bus::SceneSnapshot scene;
 
     bus::ScreenSnapshot ss;
@@ -67,6 +68,7 @@ bus::SceneSnapshot makeOASnapshot(std::uint64_t screenEntity,
     oas.startFrame   = layerStart;
     oas.duration     = layerDuration;
     oas.trackIndex   = 0;
+    oas.endBehavior  = endBehavior;
     oas.tracks.push_back(std::move(track));
 
     scene.objectAnimationLayers.push_back(std::move(oas));
@@ -126,17 +128,55 @@ TEST_F(OAShowSideReevalTest, PositionX_AtMidpoint_IsLinearlyInterpolated) {
     EXPECT_NEAR(rf.screens[0].position[0], 5.0f, 0.05f);
 }
 
-// When currentFrame is outside [layerStart, layerStart + duration), the OA
-// layer must not fold into the screen snapshot — position stays at default 0.
-TEST_F(OAShowSideReevalTest, InactiveLayer_DoesNotOverrideScreen) {
+// ADR-0020 Reset mode: when currentFrame is past the layer end window, the
+// override is cleared and the screen falls back to its base position. This
+// is opt-in via OAEndBehavior::Reset; the new default is Hold.
+TEST_F(OAShowSideReevalTest, EndBehavior_Reset_AfterEnd_DoesNotOverrideScreen) {
     timeline.seekToFrame(200);  // well past duration=100
     auto scene = makeOASnapshot(kScreenId, /*layerStart*/0, /*duration*/100,
-                                /*startVal*/3.0f, /*endVal*/9.0f);
+                                /*startVal*/3.0f, /*endVal*/9.0f,
+                                AnimatableProperty::PositionX,
+                                bus::OAEndBehavior::Reset);
+    // The editor-side bake skips after-end-Reset layers from the bus entirely.
+    // Mimic that here so the show-side re-eval has nothing to fold from.
+    scene.objectAnimationLayers.clear();
+
     bus::RenderFrame rf;
     auth.buildRenderFrame(rf, scene);
 
     ASSERT_EQ(rf.screens.size(), 1u);
-    // No OA override applied — should remain at the snapshot default of 0.0.
+    EXPECT_NEAR(rf.screens[0].position[0], 0.0f, 0.001f);
+}
+
+// ADR-0020 Hold mode (default): past the layer end window, the show thread
+// continues to apply the last evaluated value so the screen stays parked.
+TEST_F(OAShowSideReevalTest, EndBehavior_Hold_AfterEnd_KeepsLastValue) {
+    timeline.seekToFrame(200);  // well past duration=100
+    auto scene = makeOASnapshot(kScreenId, /*layerStart*/0, /*duration*/100,
+                                /*startVal*/3.0f, /*endVal*/9.0f,
+                                AnimatableProperty::PositionX,
+                                bus::OAEndBehavior::Hold);
+    bus::RenderFrame rf;
+    auth.buildRenderFrame(rf, scene);
+
+    ASSERT_EQ(rf.screens.size(), 1u);
+    // Hold keeps the last evaluated value (KeyframeTrack::evaluate clamps to
+    // last keyframe value when frame >= last frame).
+    EXPECT_NEAR(rf.screens[0].position[0], 9.0f, 0.001f);
+}
+
+// Before the layer's start frame there's no "last evaluated value" to hold,
+// so neither Hold nor Reset should fold anything into the screen.
+TEST_F(OAShowSideReevalTest, EndBehavior_BeforeStart_AlwaysNoOverride) {
+    timeline.seekToFrame(0);  // before layerStart=50
+    auto scene = makeOASnapshot(kScreenId, /*layerStart*/50, /*duration*/100,
+                                /*startVal*/3.0f, /*endVal*/9.0f,
+                                AnimatableProperty::PositionX,
+                                bus::OAEndBehavior::Hold);
+    bus::RenderFrame rf;
+    auth.buildRenderFrame(rf, scene);
+
+    ASSERT_EQ(rf.screens.size(), 1u);
     EXPECT_NEAR(rf.screens[0].position[0], 0.0f, 0.001f);
 }
 
@@ -162,6 +202,23 @@ TEST_F(OAShowSideReevalTest, PositionZ_Track_FoldsIntoScreenPositionZ) {
 
     ASSERT_EQ(rf.screens.size(), 1u);
     EXPECT_NEAR(rf.screens[0].position[2], 7.0f, 0.01f);
+}
+
+// ADR-0020: RotationZ is the new dedicated Z-axis (roll) channel for OA layers.
+// Legacy `Rotation` continues to map to Y on OA (yaw), but RotationZ goes
+// where it should — index [2] of the rotation array.
+TEST_F(OAShowSideReevalTest, RotationZ_Track_FoldsIntoScreenRotationZ) {
+    timeline.seekToFrame(0);
+    auto scene = makeOASnapshot(kScreenId, 0, 100, /*startVal*/30.0f, 60.0f,
+                                AnimatableProperty::RotationZ);
+    bus::RenderFrame rf;
+    auth.buildRenderFrame(rf, scene);
+
+    ASSERT_EQ(rf.screens.size(), 1u);
+    EXPECT_NEAR(rf.screens[0].rotation[2], 30.0f, 0.01f);
+    // Sanity: the legacy yaw channel must remain untouched by a RotationZ
+    // track (it's a separate axis), so screen base rotation[1] stays at 0.
+    EXPECT_NEAR(rf.screens[0].rotation[1], 0.0f, 0.001f);
 }
 
 // Layer with a non-zero startFrame: currentFrame=50, layerStart=30,

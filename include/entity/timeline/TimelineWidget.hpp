@@ -235,7 +235,9 @@ private:
      * Render the property panel (per-property name + nav arrows + keyframe
      * diamond + value) for the given clip directly under an expanded track.
      * Called once per expanded track with the clip currently at the playhead.
-     * @return Height consumed (always 6 * PROPERTY_ROW_HEIGHT).
+     * @return Height consumed (rowCount × PROPERTY_ROW_HEIGHT). 6 rows for
+     *         Clip-backed layers (2D set + Opacity), 9 rows for OA layers
+     *         (full 3D Pos/Rot/Scale).
      */
     float renderClipPropertyPanel(entt::entity clipEntity, float rowY);
 
@@ -492,6 +494,13 @@ private:
      *  current playhead frame. Returns entt::null if no clip overlaps. Used
      *  to populate the property panel under an expanded track. */
     entt::entity findClipAtPlayhead(entt::entity trackEntity) const;
+
+    /** Number of animatable channels shown when the layer at the playhead is
+     *  expanded. 6 for Clip-backed layers (Pos X/Y, Scale X/Y, Rotation,
+     *  Opacity), 9 for OA layers (Pos/Rot/Scale × X/Y/Z). Drives the
+     *  expanded-track height computation in handleInteraction +
+     *  findClipAtPosition. */
+    std::size_t expandedPropertyRowCount(entt::entity layerEntity) const;
 
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};

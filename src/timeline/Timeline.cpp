@@ -207,11 +207,8 @@ Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipE
     if (!m_registry.valid(clipEntity)) {
         return snap;
     }
-    const auto* clip = m_registry.try_get<Clip>(clipEntity);
-    if (!clip) {
-        return snap;
-    }
 
+    // Resolve the containing track first — both archetypes go through this.
     // findTrackForClip is non-const; recreate its (small) lookup here so we
     // can keep snapshotClipForDelete const-qualified.
     auto trackView = m_registry.view<TimelineTrack>();
@@ -223,39 +220,66 @@ Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipE
         }
     }
     if (snap.trackEntity == entt::null) {
+        return snap;  // Entity isn't on any track — nothing to snapshot.
+    }
+
+    // Capture the Layer metadata first — both archetypes carry one and we
+    // restore name/color from the snapshot so delete+undo round-trips them.
+    if (const auto* lay = m_registry.try_get<Layer>(clipEntity)) {
+        snap.layerName  = lay->name;
+        snap.layerColor = lay->color;
+    }
+
+    const auto* clip = m_registry.try_get<Clip>(clipEntity);
+    const auto* oal  = m_registry.try_get<ObjectAnimationLayer>(clipEntity);
+
+    if (clip) {
+        snap.kind             = DeletedLayerKind::Clip;
+        snap.filepath         = clip->filepath;
+        snap.mediaType        = clip->mediaType;
+        snap.startFrame       = clip->startFrame;
+        snap.duration         = clip->duration;
+        snap.mediaStartFrame  = clip->mediaStartFrame;
+        snap.mediaOutFrame    = clip->mediaOutFrame;
+        snap.totalMediaFrames = clip->totalMediaFrames;
+        snap.framerate        = clip->framerate;
+        snap.playbackMode     = clip->playbackMode;
+        snap.sectionBehavior  = clip->sectionBehavior;
+        snap.width            = clip->width;
+        snap.height           = clip->height;
+        snap.hasAlpha         = clip->hasAlpha;
+        snap.frameBlending    = clip->frameBlending;
+        snap.targetScreen     = clip->targetScreen;
+
+        if (const auto* tr = m_registry.try_get<Transform>(clipEntity)) {
+            snap.hadTransform = true;
+            snap.transform    = *tr;
+        }
+        if (const auto* ml = m_registry.try_get<MediaLayer>(clipEntity)) {
+            snap.hadMediaLayer = true;
+            snap.mediaLayer    = *ml;
+        }
+        if (const auto* vt = m_registry.try_get<VideoTexture>(clipEntity)) {
+            snap.hadVideoTexture = true;
+            snap.videoTexWidth   = vt->width;
+            snap.videoTexHeight  = vt->height;
+        }
+        snap.hadFrameBuffer = m_registry.all_of<FrameBuffer>(clipEntity);
+    } else if (oal) {
+        snap.kind              = DeletedLayerKind::ObjectAnimation;
+        snap.oaTarget          = oal->target;
+        snap.oaSectionBehavior = oal->sectionBehavior;
+        snap.oaEndBehavior     = oal->endBehavior;
+        if (const auto* lay = m_registry.try_get<Layer>(clipEntity)) {
+            snap.startFrame = lay->startFrame;
+            snap.duration   = lay->duration;
+        }
+    } else {
+        // Unknown archetype — clear track entity to mark invalid.
+        snap.trackEntity = entt::null;
         return snap;
     }
 
-    snap.filepath         = clip->filepath;
-    snap.mediaType        = clip->mediaType;
-    snap.startFrame       = clip->startFrame;
-    snap.duration         = clip->duration;
-    snap.mediaStartFrame  = clip->mediaStartFrame;
-    snap.mediaOutFrame    = clip->mediaOutFrame;
-    snap.totalMediaFrames = clip->totalMediaFrames;
-    snap.framerate        = clip->framerate;
-    snap.playbackMode     = clip->playbackMode;
-    snap.sectionBehavior  = clip->sectionBehavior;
-    snap.width            = clip->width;
-    snap.height           = clip->height;
-    snap.hasAlpha         = clip->hasAlpha;
-    snap.frameBlending    = clip->frameBlending;
-    snap.targetScreen     = clip->targetScreen;
-
-    if (const auto* tr = m_registry.try_get<Transform>(clipEntity)) {
-        snap.hadTransform = true;
-        snap.transform    = *tr;
-    }
-    if (const auto* ml = m_registry.try_get<MediaLayer>(clipEntity)) {
-        snap.hadMediaLayer = true;
-        snap.mediaLayer    = *ml;
-    }
-    if (const auto* vt = m_registry.try_get<VideoTexture>(clipEntity)) {
-        snap.hadVideoTexture = true;
-        snap.videoTexWidth   = vt->width;
-        snap.videoTexHeight  = vt->height;
-    }
-    snap.hadFrameBuffer = m_registry.all_of<FrameBuffer>(clipEntity);
     if (const auto* ap = m_registry.try_get<AnimatedProperties>(clipEntity)) {
         snap.hadAnimatedProperties = true;
         snap.animatedProperties    = *ap;
@@ -276,6 +300,46 @@ entt::entity Timeline::restoreDeletedClip(const DeletedClipSnapshot& snap) {
 
     entt::entity newEntity = m_registry.create();
 
+    if (snap.kind == DeletedLayerKind::ObjectAnimation) {
+        // --- OA layer restore --------------------------------------------
+        // No Clip / Transform / MediaLayer / VideoTexture / FrameBuffer.
+        // Layer placement comes directly from the snapshot (no Clip mirror).
+        auto& lay = m_registry.emplace<Layer>(newEntity);
+        lay.kind       = Layer::Kind::ObjectAnimation;
+        lay.startFrame = snap.startFrame;
+        lay.duration   = snap.duration;
+        lay.name       = snap.layerName;
+        lay.color      = snap.layerColor;
+        if (auto* tt = m_registry.try_get<TimelineTrack>(snap.trackEntity)) {
+            lay.trackIndex = tt->trackIndex;
+        }
+
+        auto& oal = m_registry.emplace<ObjectAnimationLayer>(newEntity);
+        // Restored target entity stays valid within the same session — the
+        // undo stack is cleared on project save/load (see DeleteClipCommand)
+        // so we don't need to round-trip target by name here.
+        oal.target          = m_registry.valid(snap.oaTarget) ? snap.oaTarget : entt::null;
+        oal.sectionBehavior = snap.oaSectionBehavior;
+        oal.endBehavior     = snap.oaEndBehavior;
+
+        if (snap.hadAnimatedProperties) {
+            m_registry.emplace<AnimatedProperties>(newEntity) = snap.animatedProperties;
+        }
+
+        track->layers.push_back(newEntity);
+        track->sortLayers(m_registry);
+        m_selectedClip = newEntity;
+
+        std::cout << "[Timeline] Restored OA layer entity="
+                  << static_cast<uint32_t>(newEntity)
+                  << " on track=" << static_cast<uint32_t>(snap.trackEntity)
+                  << " at frame=" << snap.startFrame << std::endl;
+        // No clip-created callback for OA — there's no decoder / GPU slot to
+        // provision. AnimationSystem picks up the entity on the next tick.
+        return newEntity;
+    }
+
+    // --- Clip restore ----------------------------------------------------
     auto& clip = m_registry.emplace<Clip>(newEntity);
     clip.filepath         = snap.filepath;
     clip.mediaType        = snap.mediaType;
@@ -318,7 +382,12 @@ entt::entity Timeline::restoreDeletedClip(const DeletedClipSnapshot& snap) {
 
     {
         auto& lay = m_registry.emplace<Layer>(newEntity);
-        lay.kind = Layer::Kind::Clip;
+        lay.kind  = Layer::Kind::Clip;
+        // Restore Layer name/color too — previously lost on delete+undo
+        // because the snapshot didn't carry them. layerName/layerColor are
+        // always populated by snapshotClipForDelete now.
+        lay.name  = snap.layerName;
+        lay.color = snap.layerColor;
     }
     syncLayerFromClip(m_registry, newEntity);
     track->layers.push_back(newEntity);

@@ -194,3 +194,108 @@ TEST_F(OALayerTest, ClipEntityNotTouchedByOABranch) {
     // No ObjectAnimationOutput should be created on a Clip entity
     EXPECT_EQ(registry.try_get<ObjectAnimationOutput>(clipEntity), nullptr);
 }
+
+// --- ADR-0020 EndBehavior ----------------------------------------------------
+
+// Hold mode (default): after the playhead leaves the layer window, the last
+// evaluated ObjectAnimationOutput stays populated so buildSceneSnapshot keeps
+// folding the target in place.
+TEST_F(OALayerTest, EndBehavior_Hold_KeepsOutputAfterLayerEnd) {
+    auto e = addOALayer(/*start*/10, /*duration*/20);  // active [10, 30)
+    registry.get<ObjectAnimationLayer>(e).endBehavior =
+        ObjectAnimationLayer::EndBehavior::Hold;
+
+    auto& ap = registry.get<AnimatedProperties>(e);
+    ap.addKeyframe(AnimatableProperty::PositionX, 0,  0.0f);
+    ap.addKeyframe(AnimatableProperty::PositionX, 19, 7.0f);
+
+    // Tick at the last frame of the active window → output populated with 7.
+    timeline->seekToFrame(29);
+    animSystem->update(registry, 0.0f);
+    {
+        const auto* out = registry.try_get<ObjectAnimationOutput>(e);
+        ASSERT_NE(out, nullptr);
+        EXPECT_TRUE(out->hasPosition);
+        EXPECT_NEAR(out->positionOverride[0], 7.0f, 0.01f);
+    }
+
+    // Tick past the end of the window with Hold mode → output is untouched.
+    timeline->seekToFrame(50);
+    animSystem->update(registry, 0.0f);
+
+    const auto* out = registry.try_get<ObjectAnimationOutput>(e);
+    ASSERT_NE(out, nullptr);
+    EXPECT_TRUE(out->hasPosition);
+    EXPECT_NEAR(out->positionOverride[0], 7.0f, 0.01f);
+}
+
+// Reset mode: after the playhead leaves the layer window, ObjectAnimationOutput
+// is cleared so buildSceneSnapshot falls back to the screen's base position.
+TEST_F(OALayerTest, EndBehavior_Reset_ClearsOutputAfterLayerEnd) {
+    auto e = addOALayer(/*start*/10, /*duration*/20);
+    registry.get<ObjectAnimationLayer>(e).endBehavior =
+        ObjectAnimationLayer::EndBehavior::Reset;
+
+    auto& ap = registry.get<AnimatedProperties>(e);
+    ap.addKeyframe(AnimatableProperty::PositionX, 0,  0.0f);
+    ap.addKeyframe(AnimatableProperty::PositionX, 19, 7.0f);
+
+    // Prime the output with a tick inside the window.
+    timeline->seekToFrame(29);
+    animSystem->update(registry, 0.0f);
+    ASSERT_TRUE(registry.try_get<ObjectAnimationOutput>(e)->hasPosition);
+
+    // Past the end with Reset mode → output cleared.
+    timeline->seekToFrame(50);
+    animSystem->update(registry, 0.0f);
+
+    const auto* out = registry.try_get<ObjectAnimationOutput>(e);
+    ASSERT_NE(out, nullptr);
+    EXPECT_FALSE(out->hasPosition);
+    EXPECT_NEAR(out->positionOverride[0], 0.0f, 0.001f);
+}
+
+// Hold mode at frames *before* the layer's start window: there's no last
+// evaluated value to hold, so the output must always reset.
+TEST_F(OALayerTest, EndBehavior_BeforeStart_AlwaysResets) {
+    auto e = addOALayer(/*start*/50, /*duration*/20);
+    registry.get<ObjectAnimationLayer>(e).endBehavior =
+        ObjectAnimationLayer::EndBehavior::Hold;
+
+    auto& ap = registry.get<AnimatedProperties>(e);
+    ap.addKeyframe(AnimatableProperty::PositionX, 0, 9.0f);
+
+    // Pre-populate output to a non-zero state (simulating a stale tick) so we
+    // can detect that the before-start branch actively clears.
+    auto& out = registry.emplace_or_replace<ObjectAnimationOutput>(e);
+    out.positionOverride = {5.0f, 5.0f, 5.0f};
+    out.hasPosition      = true;
+
+    timeline->seekToFrame(10);  // well before start=50
+    animSystem->update(registry, 0.0f);
+
+    const auto* outAfter = registry.try_get<ObjectAnimationOutput>(e);
+    ASSERT_NE(outAfter, nullptr);
+    EXPECT_FALSE(outAfter->hasPosition);
+    EXPECT_NEAR(outAfter->positionOverride[0], 0.0f, 0.001f);
+}
+
+// --- ADR-0020 RotationZ ------------------------------------------------------
+
+// New dedicated Z-axis (roll) channel maps to rotationOverride[2], distinct
+// from the legacy Rotation/RotationY → [1] mapping kept for back-compat.
+TEST_F(OALayerTest, RotationZ_Keyframe_FoldsIntoOutput) {
+    auto e = addOALayer(0, 60);
+    auto& ap = registry.get<AnimatedProperties>(e);
+    ap.addKeyframe(AnimatableProperty::RotationZ, 0, 33.0f);
+
+    timeline->seekToFrame(0);
+    animSystem->update(registry, 0.0f);
+
+    const auto* out = registry.try_get<ObjectAnimationOutput>(e);
+    ASSERT_NE(out, nullptr);
+    EXPECT_TRUE(out->hasRotation);
+    EXPECT_NEAR(out->rotationOverride[2], 33.0f, 0.01f);
+    // Legacy yaw axis must stay at default — RotationZ is a separate channel.
+    EXPECT_NEAR(out->rotationOverride[1], 0.0f, 0.001f);
+}

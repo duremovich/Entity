@@ -161,6 +161,25 @@ private:
                                   const char* propertyName);
 
     /**
+     * Render a full OA value row: stopwatch+nav buttons (via
+     * renderOAKeyframeControls) followed by a DragFloat that reads the
+     * track's evaluated value at the current layer-local frame and, on drag,
+     * upserts a keyframe at that frame. Drag is disabled when the playhead
+     * is outside the layer window (getCurrentOAFrame() returns -1).
+     *
+     * Unlike the Clip pattern (renderTransformSection), there is no static
+     * value to update — OA layers have no own Transform; every value *is*
+     * a keyframe. Dragging at a frame inside the layer auto-creates the
+     * track + keyframe on first edit. ADR-0020.
+     */
+    void renderOAValueRow(entt::entity oaEntity,
+                          AnimatableProperty property,
+                          const char* label,
+                          float dragStep,
+                          float minVal, float maxVal,
+                          const char* format);
+
+    /**
      * Navigate to the previous keyframe for a property.
      */
     void goToPreviousKeyframe(AnimatableProperty property);
@@ -209,6 +228,21 @@ private:
     };
     PreEditState m_preEditOpacity;
     PreEditState m_preEditRotZ;
+
+    // Pre-edit snapshot for the active OA value-row DragFloat. OA layers
+    // have nine animatable channels (PositionX/Y/Z, RotationX/Y/Z, ScaleX/Y/Z)
+    // but only one slider is active in ImGui at any moment, so a single
+    // struct is enough. Captures which property + frame the drag opened on
+    // so the IsItemDeactivatedAfterEdit branch can emit the right undo
+    // command without re-deriving from current state (which has already
+    // mutated by then).
+    struct OAPreEditState {
+        AnimatableProperty   property{AnimatableProperty::PositionX};
+        FrameNumber          frame{0};
+        std::optional<float> keyframeValue;  // nullopt = no keyframe existed before drag
+        bool                 valid{false};
+    };
+    OAPreEditState m_preEditOA;
 
     // Simple scalar pre-edit captures for the In/Out point DragInts in
     // renderClipInfo. mediaStartFrame, mediaOutFrame, and duration aren't

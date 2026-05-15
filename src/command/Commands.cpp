@@ -1207,9 +1207,14 @@ const char* animatablePropertyName(AnimatableProperty p) {
     switch (p) {
         case AnimatableProperty::PositionX: return "PositionX";
         case AnimatableProperty::PositionY: return "PositionY";
+        case AnimatableProperty::PositionZ: return "PositionZ";
         case AnimatableProperty::Rotation:  return "Rotation";
+        case AnimatableProperty::RotationX: return "RotationX";
+        case AnimatableProperty::RotationY: return "RotationY";
+        case AnimatableProperty::RotationZ: return "RotationZ";
         case AnimatableProperty::ScaleX:    return "ScaleX";
         case AnimatableProperty::ScaleY:    return "ScaleY";
+        case AnimatableProperty::ScaleZ:    return "ScaleZ";
         case AnimatableProperty::Opacity:   return "Opacity";
     }
     return "Opacity";
@@ -1218,9 +1223,14 @@ const char* animatablePropertyName(AnimatableProperty p) {
 std::optional<AnimatableProperty> parseAnimatableProperty(const std::string& s) {
     if (s == "PositionX") return AnimatableProperty::PositionX;
     if (s == "PositionY") return AnimatableProperty::PositionY;
+    if (s == "PositionZ") return AnimatableProperty::PositionZ;
     if (s == "Rotation")  return AnimatableProperty::Rotation;
+    if (s == "RotationX") return AnimatableProperty::RotationX;
+    if (s == "RotationY") return AnimatableProperty::RotationY;
+    if (s == "RotationZ") return AnimatableProperty::RotationZ;
     if (s == "ScaleX")    return AnimatableProperty::ScaleX;
     if (s == "ScaleY")    return AnimatableProperty::ScaleY;
+    if (s == "ScaleZ")    return AnimatableProperty::ScaleZ;
     if (s == "Opacity")   return AnimatableProperty::Opacity;
     return std::nullopt;
 }
