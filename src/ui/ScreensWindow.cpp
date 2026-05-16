@@ -4,9 +4,26 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
+#include <algorithm>
+#include <cctype>
 #include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace entity {
+
+namespace {
+bool lessNameCaseInsensitive(const std::string& a, const std::string& b) {
+    const size_t n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i) {
+        int ca = std::tolower(static_cast<unsigned char>(a[i]));
+        int cb = std::tolower(static_cast<unsigned char>(b[i]));
+        if (ca != cb) return ca < cb;
+    }
+    return a.size() < b.size();
+}
+}  // namespace
 
 ScreensWindow::ScreensWindow(Engine* engine)
     : m_engine(engine)
@@ -38,11 +55,19 @@ void ScreensWindow::render() {
     // Get selected screen from timeline
     entt::entity selectedScreen = timeline ? timeline->getSelectedScreen() : entt::null;
 
-    // List all screens
+    // List all screens (sorted alphabetically by name, case-insensitive)
     auto view = registry.view<Screen>();
+    std::vector<entt::entity> sortedScreens;
+    sortedScreens.reserve(view.size());
+    for (auto e : view) sortedScreens.push_back(e);
+    std::sort(sortedScreens.begin(), sortedScreens.end(),
+        [&view](entt::entity a, entt::entity b) {
+            return lessNameCaseInsensitive(view.get<Screen>(a).name,
+                                           view.get<Screen>(b).name);
+        });
     int screenIndex = 0;
 
-    for (auto entity : view) {
+    for (auto entity : sortedScreens) {
         Screen& screen = view.get<Screen>(entity);
 
         ImGui::PushID(static_cast<int>(entity));
@@ -126,9 +151,17 @@ void ScreensWindow::render() {
 
     entt::entity selectedProjector = timeline ? timeline->getSelectedProjector() : entt::null;
     auto projView = registry.view<Projector>();
+    std::vector<entt::entity> sortedProjectors;
+    sortedProjectors.reserve(projView.size());
+    for (auto e : projView) sortedProjectors.push_back(e);
+    std::sort(sortedProjectors.begin(), sortedProjectors.end(),
+        [&projView](entt::entity a, entt::entity b) {
+            return lessNameCaseInsensitive(projView.get<Projector>(a).name,
+                                           projView.get<Projector>(b).name);
+        });
     int projIndex = 0;
 
-    for (auto projEntity : projView) {
+    for (auto projEntity : sortedProjectors) {
         Projector& proj = projView.get<Projector>(projEntity);
 
         ImGui::PushID(static_cast<int>(projEntity) + 100000);
