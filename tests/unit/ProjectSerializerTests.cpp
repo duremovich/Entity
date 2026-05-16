@@ -23,6 +23,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
+#include "entity/components/Prop.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -1226,4 +1227,88 @@ TEST(ProjectSerializer, V15ProjectLoadsWithEmptyEffectChain) {
     EXPECT_EQ(registry.view<entity::EffectChain>().size(), 0u);
     // Clip is still loaded normally.
     EXPECT_GT(registry.view<entity::Clip>().size(), 0u);
+}
+
+// --- v19 stage-view opacity for Screen / Prop ----------------------------
+
+TEST(ProjectSerializer, ScreenAndPropStageOpacityRoundTrip) {
+    // Screen.opacity has always been persisted, but pre-v19 it was wired to
+    // nothing. Prop.opacity is new in v19. Both must survive a round trip.
+    TempFile tf("stage_opacity_roundtrip");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity se = registry.create();
+        auto& screen = registry.emplace<entity::Screen>(se);
+        screen.name    = "Front Wall";
+        screen.opacity = 0.5f;
+
+        entt::entity pe = registry.create();
+        auto& prop = registry.emplace<entity::Prop>(pe);
+        prop.name    = "Riser";
+        prop.opacity = 0.25f;
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        const entity::Screen* loadedScreen = nullptr;
+        for (auto [e, s] : registry.view<entity::Screen>().each()) {
+            if (s.name == "Front Wall") { loadedScreen = &s; break; }
+        }
+        ASSERT_NE(loadedScreen, nullptr);
+        EXPECT_FLOAT_EQ(loadedScreen->opacity, 0.5f);
+
+        const entity::Prop* loadedProp = nullptr;
+        for (auto [e, p] : registry.view<entity::Prop>().each()) {
+            if (p.name == "Riser") { loadedProp = &p; break; }
+        }
+        ASSERT_NE(loadedProp, nullptr);
+        EXPECT_FLOAT_EQ(loadedProp->opacity, 0.25f);
+    }
+}
+
+TEST(ProjectSerializer, PreV19PropLoadsWithOpacityOne) {
+    // A v18 project file (no "opacity" on props) must default the new field
+    // to 1.0 (fully opaque) so legacy projects don't suddenly go transparent.
+    TempFile tf("prop_pre_v19_opacity_default");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 18,
+  "props": [
+    {
+      "name": "LegacyProp",
+      "visible": true,
+      "position": [0.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "size": [1.0, 1.0, 1.0],
+      "displayColor": [0.6, 0.6, 0.6, 1.0],
+      "modelName": ""
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    const entity::Prop* loaded = nullptr;
+    for (auto [e, p] : registry.view<entity::Prop>().each()) {
+        if (p.name == "LegacyProp") { loaded = &p; break; }
+    }
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_FLOAT_EQ(loaded->opacity, 1.0f);
 }

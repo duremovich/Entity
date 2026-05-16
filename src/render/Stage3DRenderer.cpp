@@ -308,28 +308,64 @@ ImTextureID Stage3DRenderer::renderMeshes(D3D12Renderer* renderer,
     }
     if (!hasAny) return 0;
 
+    // ensureStageTarget returns the straight-alpha sibling RT's SRV — that's
+    // what ImGui samples downstream. The premul accumulation RT stays a
+    // renderer-internal buffer; applyStageDePremul (below) copies premul →
+    // straight via a fullscreen-triangle pass.
     ImTextureID texId = static_cast<ImTextureID>(renderer->ensureStageTarget(viewportWidth, viewportHeight));
     if (!texId) return 0;
 
     glm::mat4 viewProj = camera.getViewProjectionMatrix();
 
+    // Partition into opaque vs. transparent by tint alpha. 0.999 threshold
+    // keeps a user-typed 1.0 (and the default) on the depth-writing path;
+    // anything under that goes through the no-depth-write premul-over PSO.
+    std::vector<const StageMeshDraw*> opaque;
+    std::vector<const StageMeshDraw*> transparent;
+    opaque.reserve(draws.size());
+    transparent.reserve(draws.size());
+    for (const auto& d : draws) {
+        if (d.meshSlot == UINT32_MAX) continue;
+        (d.tint.a >= 0.999f ? opaque : transparent).push_back(&d);
+    }
+
+    // Back-to-front painter's sort by camera distance. Editor-grade only —
+    // not OIT-correct for transparent meshes that physically intersect each
+    // other, which is fine for the scrim use case the operator described.
+    const glm::vec3 camPos = camera.position;
+    std::sort(transparent.begin(), transparent.end(),
+              [camPos](const StageMeshDraw* a, const StageMeshDraw* b) {
+                  const glm::vec3 da = a->position - camPos;
+                  const glm::vec3 db = b->position - camPos;
+                  return glm::dot(da, da) > glm::dot(db, db);
+              });
+
+    auto buildModel = [](const StageMeshDraw& d) {
+        glm::mat4 m = glm::mat4(1.0f);
+        m = glm::translate(m, glm::vec3(d.position.x, d.position.y, d.position.z));
+        m = glm::rotate(m, glm::radians(d.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        m = glm::rotate(m, glm::radians(d.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        m = glm::rotate(m, glm::radians(d.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        m = glm::scale(m, d.scale);
+        return m;
+    };
+
     renderer->beginStageTarget();
     renderer->setStageCamera(viewProj);
 
-    for (const auto& d : draws) {
-        if (d.meshSlot == UINT32_MAX) continue;
-
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(d.position.x, d.position.y, d.position.z));
-        model = glm::rotate(model, glm::radians(d.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(d.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(d.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, d.scale);
-
-        renderer->drawStageMesh(d.meshSlot, model, d.tint, d.renderMode, d.srvSlot);
+    for (const auto* d : opaque) {
+        renderer->drawStageMesh(d->meshSlot, buildModel(*d), d->tint,
+                                d->renderMode, d->srvSlot, /*transparent=*/false);
+    }
+    for (const auto* d : transparent) {
+        renderer->drawStageMesh(d->meshSlot, buildModel(*d), d->tint,
+                                d->renderMode, d->srvSlot, /*transparent=*/true);
     }
 
     renderer->endStageTarget();
+    // De-premul the premul accumulation RT into the straight-alpha sibling
+    // that texId points at, so ImGui's downstream composite is correct.
+    renderer->applyStageDePremul();
     return texId;
 }
 
@@ -671,13 +707,22 @@ void Stage3DRenderer::drawProp(ImDrawList* drawList, ImVec2 screenPos, ImVec2 sc
                                 const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
                                 const glm::vec4& displayColor, bool isSelected,
                                 const MeshData* mesh) {
-    const ImU32 frameColor = isSelected ? IM_COL32(255, 180, 50, 255) : IM_COL32(120, 120, 120, 200);
-    const float frameThickness = isSelected ? 3.0f : 1.5f;
-
     // Prop meshes are rendered via the GPU pass (renderMeshes). This path handles
     // the no-mesh placeholder only.
-    (void)rotation; (void)scale; (void)displayColor;
+    (void)rotation; (void)scale;
     if (mesh && mesh->isValid()) return;
+
+    // Stage-view opacity rides on displayColor.a (StageWindow folds it in
+    // before calling). Modulate the placeholder colors by that alpha so the
+    // cross + label fade in step with the prop's opacity slider.
+    const float a = std::clamp(displayColor.a, 0.0f, 1.0f);
+    const auto fadeAlpha = [a](int baseAlpha) -> int {
+        return static_cast<int>(static_cast<float>(baseAlpha) * a + 0.5f);
+    };
+    const ImU32 frameColor = isSelected
+        ? IM_COL32(255, 180, 50, fadeAlpha(255))
+        : IM_COL32(120, 120, 120, fadeAlpha(200));
+    const float frameThickness = isSelected ? 3.0f : 1.5f;
 
     // No mesh: draw a small placeholder cross at the prop's origin so the
     // user can still see and click an empty prop slot.
@@ -691,7 +736,7 @@ void Stage3DRenderer::drawProp(ImDrawList* drawList, ImVec2 screenPos, ImVec2 sc
         const char* txt = "(no mesh)";
         ImVec2 ts = ImGui::CalcTextSize(txt);
         drawList->AddText(ImVec2(origin.x - ts.x * 0.5f, origin.y + r + 2.0f),
-                          IM_COL32(150, 150, 150, 200), txt);
+                          IM_COL32(150, 150, 150, fadeAlpha(200)), txt);
     }
 }
 

@@ -44,6 +44,11 @@ struct Screen {
 
     // Visibility
     bool visible{true};
+
+    // Stage-view opacity. Fades the screen in the editor's 3D stage view only;
+    // does not affect any output path because Screen::opacity is not baked
+    // into bus::ScreenSnapshot. Folded into StageMeshDraw::tint.a at the
+    // call site.
     float opacity{1.0f};
 
     // Display order (for overlapping screens)

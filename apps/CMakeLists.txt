@@ -114,6 +114,10 @@ entity_compile_shader(mesh_triangle_ps.hlsl       ps PSMain 6_0)
 # Stage mesh PSO — depth-buffered GPU rendering for the editor 3D stage view.
 entity_compile_shader(stage_mesh_vs.hlsl          vs VSMain 6_0)
 entity_compile_shader(stage_mesh_ps.hlsl          ps PSMain 6_0)
+# Stage de-premul pass — converts the premul stage RT back to straight
+# alpha so ImGui's downstream composite reads the right pixels.
+entity_compile_shader(stage_depremul_vs.hlsl      vs VSMain 6_0)
+entity_compile_shader(stage_depremul_ps.hlsl      ps PSMain 6_0)
 
 # Per-layer effect chain shaders (issue #54, Phase 2). One shared VS that
 # generates a fullscreen triangle; one PS per engine-shipped effect.
@@ -129,7 +133,7 @@ entity_compile_shader(effects/chromatic_aberration_ps.hlsl  ps PSMain 6_0)
 entity_compile_shader(effects/edge_ps.hlsl                  ps PSMain 6_0)
 entity_compile_shader(effects/invert_ps.hlsl                ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 24 shaders")
+message(STATUS "Configured offline HLSL compilation for 26 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler

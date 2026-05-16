@@ -417,13 +417,19 @@ void StageWindow::render3DView() {
             if (d3d && screen.renderTargetValid && screen.renderTargetSlot != UINT32_MAX) {
                 stableSrv = d3d->getComposeTargetStableSrvSlot(screen.renderTargetSlot);
             }
+            // Stage-view-only opacity. Folded into tint.a; the stage RT
+            // composites alpha-blended onto the editor window via ImGui's
+            // AddImage, so a faded screen ghosts over the floor grid.
+            // Does NOT touch the output path — Screen::opacity is not in
+            // bus::ScreenSnapshot.
+            const float stageAlpha = std::clamp(screen.opacity, 0.0f, 1.0f);
             if (stableSrv != UINT32_MAX) {
                 draw.srvSlot    = stableSrv;
-                draw.tint       = glm::vec4(1.0f);
+                draw.tint       = glm::vec4(1.0f, 1.0f, 1.0f, stageAlpha);
                 draw.renderMode = 0;  // textured
             } else {
                 draw.srvSlot    = 0;  // unused in renderMode=1
-                draw.tint       = glm::vec4(0.16f, 0.16f, 0.18f, 1.0f);  // dark gray no-signal
+                draw.tint       = glm::vec4(0.16f, 0.16f, 0.18f, stageAlpha);  // dark gray no-signal
                 draw.renderMode = 1;  // matte
             }
             meshDraws.push_back(draw);
@@ -438,8 +444,12 @@ void StageWindow::render3DView() {
 
             glm::vec3 position(prop.position[0], prop.position[1], prop.position[2]);
             glm::vec3 rotation(prop.rotation[0], prop.rotation[1], prop.rotation[2]);
+            // Stage-view-only opacity multiplied into displayColor.a — same
+            // ghosting story as Screen::opacity above. Props are excluded
+            // from SceneSnapshot, so this can never leak into output.
+            const float propStageAlpha = std::clamp(prop.opacity, 0.0f, 1.0f);
             glm::vec4 color(prop.displayColor[0], prop.displayColor[1],
-                            prop.displayColor[2], prop.displayColor[3]);
+                            prop.displayColor[2], prop.displayColor[3] * propStageAlpha);
 
             // OA fold-in for Stage preview (props animate the same way
             // screens do — see the screens loop above).

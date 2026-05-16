@@ -1491,8 +1491,10 @@ void PropertyWindow::renderScreenProperties() {
     // Display
     if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Visible", &screen->visible);
+        ImGui::Text("Opacity");
         ImGui::SetNextItemWidth(-1);
-        entity::ui::SliderFloat("Opacity", &screen->opacity, 0.0f, 1.0f);
+        entity::ui::SliderFloat("##screen_opacity", &screen->opacity, 0.0f, 1.0f);
+        ImGui::TextDisabled("Stage view only; does not affect output.");
         ImGui::SetNextItemWidth(-1);
         entity::ui::DragInt("Z-Order", &screen->zOrder);
     }
@@ -1597,6 +1599,10 @@ void PropertyWindow::renderPropProperties() {
 
     if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Visible", &prop->visible);
+        ImGui::Text("Opacity");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::SliderFloat("##prop_opacity", &prop->opacity, 0.0f, 1.0f);
+        ImGui::TextDisabled("Stage view only; does not affect output.");
         ImGui::SetNextItemWidth(-1);
         ImGui::ColorEdit4("Tint", prop->displayColor.data(),
                           ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);

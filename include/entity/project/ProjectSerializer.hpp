@@ -115,7 +115,11 @@ public:
     //     scanner can hot-reload changed meshes. Pre-v18 projects load
     //     with an empty object library; existing Model.filepath entries
     //     keep working as Linked paths.
-    static constexpr int PROJECT_VERSION = 18;
+    // v19 Prop "opacity" — stage-view-only fade for props, matching the
+    //     existing Screen.opacity. Pre-v19 props default to opacity=1.0.
+    //     Screen.opacity was already persisted; only the wiring into the
+    //     stage view is new in this version.
+    static constexpr int PROJECT_VERSION = 19;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

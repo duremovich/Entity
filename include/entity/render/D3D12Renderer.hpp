@@ -170,11 +170,21 @@ public:
     void  beginStageTarget();
     void  endStageTarget();
     void  setStageCamera(const glm::mat4& viewProj);
+    // `transparent=true` selects the no-depth-write premul-over PSO used
+    // for back-to-front sorted transparent meshes (stage-view scrims).
+    // Default false uses the opaque depth-writing PSO.
     void  drawStageMesh(uint32_t meshSlot,
                         const glm::mat4& model,
                         const glm::vec4& tint,
                         uint32_t renderMode,
-                        uint32_t textureSrvSlot);
+                        uint32_t textureSrvSlot,
+                        bool     transparent = false);
+    // Fullscreen pass that converts the premul stage RT into the straight-
+    // alpha sibling RT. Called by Stage3DRenderer::renderMeshes between
+    // endStageTarget() and handing the SRV to ImGui. Without this, ImGui's
+    // straight-alpha composite would double-multiply alpha and darken
+    // transparent meshes against the editor background.
+    void  applyStageDePremul();
 
     // -----------------------------------------------------------------------
     // Mesh lifecycle — editor thread only (ADR-0014).
@@ -687,10 +697,39 @@ private:
     StageRenderTarget m_stageTarget;
     bool createStageRenderTarget(uint32_t width, uint32_t height);
 
-    // Stage mesh PSO + root signature (depth-enabled, cull-none).
+    // Straight-alpha sibling of m_stageTarget. The 3D mesh pass writes
+    // premultiplied RGBA into m_stageTarget; applyStageDePremul() then
+    // runs a fullscreen pass that samples the premul RT (via t0) and
+    // writes straight-alpha RGBA into this sibling. ImGui samples THIS
+    // RT, so its straight-alpha composite is mathematically correct.
+    // Color only — no depth, no per-frame CB. RTV in own heap; SRVs in
+    // m_imguiSrvHeap at DescriptorHeapLayout::stageTargetStraightSlot().
+    struct StageRenderTargetStraight {
+        ComPtr<ID3D12Resource>       color[FRAME_COUNT];
+        ComPtr<ID3D12DescriptorHeap> rtvHeap;
+        uint32_t srvSlots[FRAME_COUNT]{UINT32_MAX, UINT32_MAX};
+        uint32_t width{0};
+        uint32_t height{0};
+        bool ready{false};
+    };
+    StageRenderTargetStraight m_stageTargetStraight;
+    bool createStageRenderTargetStraight(uint32_t width, uint32_t height);
+
+    // Stage mesh PSO + root signature (depth-enabled, cull-none). Two
+    // PSOs share the root signature: the opaque one writes depth and
+    // does no blending; the transparent one does premul-over blending
+    // and disables depth-write for back-to-front sorting.
     ComPtr<ID3D12RootSignature> m_stageMeshRootSignature;
     ComPtr<ID3D12PipelineState> m_stageMeshPipelineState;
+    ComPtr<ID3D12PipelineState> m_stageMeshPipelineStateTransparent;
     bool createStageMeshPSO();
+
+    // De-premultiply fullscreen pass — its own root signature (single
+    // SRV table + static sampler, no CBV) so it stays independent of
+    // the effect-chain root sig.
+    ComPtr<ID3D12RootSignature> m_stageDePremulRootSignature;
+    ComPtr<ID3D12PipelineState> m_stageDePremulPipelineState;
+    bool createStageDePremulPSO();
 
     /**
      * Lazily allocate the FP16 snapshot resource for a compose target and

@@ -383,6 +383,18 @@ void D3D12Renderer::shutdown() {
     m_stageTarget.dsvHeap.Reset();
     m_stageTarget.ready = false;
 
+    // Stage 3D straight-alpha sibling + stage PSOs
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        m_stageTargetStraight.color[i].Reset();
+    }
+    m_stageTargetStraight.rtvHeap.Reset();
+    m_stageTargetStraight.ready = false;
+    m_stageMeshPipelineState.Reset();
+    m_stageMeshPipelineStateTransparent.Reset();
+    m_stageMeshRootSignature.Reset();
+    m_stageDePremulPipelineState.Reset();
+    m_stageDePremulRootSignature.Reset();
+
     // Phase C.12 #3 capture-pass resources
     m_capturePipelineState.Reset();
     m_captureRootSignature.Reset();
@@ -5286,6 +5298,102 @@ bool D3D12Renderer::createStageRenderTarget(uint32_t width, uint32_t height) {
     return true;
 }
 
+bool D3D12Renderer::createStageRenderTargetStraight(uint32_t width, uint32_t height) {
+    auto* device = m_gpu->device();
+
+    // Release any existing resources (resize path)
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        m_stageTargetStraight.color[i].Reset();
+    }
+    m_stageTargetStraight.rtvHeap.Reset();
+    m_stageTargetStraight.ready  = false;
+    m_stageTargetStraight.width  = 0;
+    m_stageTargetStraight.height = 0;
+
+    // RTV heap (FRAME_COUNT RTVs, not shader-visible)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC desc{};
+        desc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        desc.NumDescriptors = FRAME_COUNT;
+        desc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        HRESULT hr = device->CreateDescriptorHeap(
+            &desc, IID_PPV_ARGS(&m_stageTargetStraight.rtvHeap));
+        if (FAILED(hr)) {
+            std::cerr << "[Stage3D-Straight] Failed to create RTV heap HRESULT 0x"
+                      << std::hex << hr << std::dec << "\n";
+            return false;
+        }
+    }
+
+    const uint32_t rtvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        rd.Width            = width;
+        rd.Height           = height;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels        = 1;
+        rd.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        rd.SampleDesc.Count = 1;
+        rd.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        // The de-premul PS unconditionally writes every pixel of the RT
+        // (fullscreen triangle), so the clear color doesn't matter visually
+        // — but D3D12 requires the optimized clear-value to match any
+        // ClearRenderTargetView calls; we never call clear here, but the
+        // value still has to be set for validation.
+        D3D12_CLEAR_VALUE cv{};
+        cv.Format   = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        cv.Color[0] = 0.0f; cv.Color[1] = 0.0f;
+        cv.Color[2] = 0.0f; cv.Color[3] = 0.0f;
+
+        HRESULT hr = device->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &rd,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &cv, IID_PPV_ARGS(&m_stageTargetStraight.color[i]));
+        if (FAILED(hr)) {
+            std::cerr << "[Stage3D-Straight] Failed to create color[" << i << "] HRESULT 0x"
+                      << std::hex << hr << std::dec << "\n";
+            return false;
+        }
+
+        // RTV
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu =
+            m_stageTargetStraight.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        rtvCpu.ptr += static_cast<SIZE_T>(i) * rtvSize;
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+        rtvDesc.Format             = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        rtvDesc.ViewDimension      = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = 0;
+        device->CreateRenderTargetView(m_stageTargetStraight.color[i].Get(), &rtvDesc, rtvCpu);
+
+        // SRV in main heap
+        const uint32_t heapSlot = DescriptorHeapLayout::stageTargetStraightSlot(i);
+        m_stageTargetStraight.srvSlots[i] = heapSlot;
+        D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = DescriptorHeapLayout::cpuHandle(
+            m_imguiSrvHeap.Get(), heapSlot, m_srvDescriptorSize);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+        srvDesc.Format                    = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping   = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels       = 1;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        device->CreateShaderResourceView(m_stageTargetStraight.color[i].Get(), &srvDesc, srvCpu);
+    }
+
+    m_stageTargetStraight.width  = width;
+    m_stageTargetStraight.height = height;
+    m_stageTargetStraight.ready  = true;
+
+    std::cout << "[Stage3D-Straight] RT created: " << width << "x" << height << "\n";
+    return true;
+}
+
 void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
     if (!m_initialized || !m_gpu || width == 0 || height == 0) return nullptr;
 
@@ -5294,6 +5402,14 @@ void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
         m_stageTarget.height != height) {
         waitForGpu();
         if (!createStageRenderTarget(width, height)) return nullptr;
+    }
+
+    // Sibling straight-alpha RT — fed by applyStageDePremul, sampled by
+    // ImGui. Created / resized in lockstep with the premul RT.
+    if (!m_stageTargetStraight.ready ||
+        m_stageTargetStraight.width  != width ||
+        m_stageTargetStraight.height != height) {
+        if (!createStageRenderTargetStraight(width, height)) return nullptr;
     }
 
     // Lazily upload the shared default 16:9 screen quad once the GPU is ready.
@@ -5305,8 +5421,10 @@ void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
         }
     }
 
-    // Return the GPU handle for the current back-buffer's color SRV as ImTextureID.
-    const uint32_t slot = m_stageTarget.srvSlots[m_currentBackBufferIndex];
+    // Return the straight-alpha sibling's SRV — ImGui composites this with
+    // its standard SRC_ALPHA / INV_SRC_ALPHA pipeline. The premul RT stays
+    // a renderer-internal accumulation buffer.
+    const uint32_t slot = m_stageTargetStraight.srvSlots[m_currentBackBufferIndex];
     D3D12_GPU_DESCRIPTOR_HANDLE gpu = DescriptorHeapLayout::gpuHandle(
         m_imguiSrvHeap.Get(), slot, m_srvDescriptorSize);
     return reinterpret_cast<void*>(gpu.ptr);
@@ -5514,7 +5632,131 @@ bool D3D12Renderer::createStageMeshPSO() {
         std::cerr << "[StageMesh] CreateGraphicsPipelineState hr=0x" << std::hex << hr << "\n";
         return false;
     }
-    std::cout << "[StageMesh] PSO created\n";
+
+    // --- Transparent variant: premultiplied "over" blend, no depth write ---
+    // Used for back-to-front sorted transparent meshes so multiple scrims
+    // (or a scrim in front of an opaque set piece) blend correctly within
+    // the stage RT. Depth-test stays LESS_EQUAL so a transparent mesh
+    // hidden behind an opaque one depth-fails; depth-write off so multiple
+    // transparent meshes don't occlude each other.
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC tDesc = psoDesc;
+        auto& rt = tDesc.BlendState.RenderTarget[0];
+        rt.BlendEnable           = TRUE;
+        rt.SrcBlend              = D3D12_BLEND_ONE;            // shader outputs premul RGB
+        rt.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOp               = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        tDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        hr = m_gpu->device()->CreateGraphicsPipelineState(
+            &tDesc, IID_PPV_ARGS(&m_stageMeshPipelineStateTransparent));
+        if (FAILED(hr)) {
+            std::cerr << "[StageMesh] CreateGraphicsPipelineState (transparent) hr=0x"
+                      << std::hex << hr << "\n";
+            return false;
+        }
+    }
+
+    std::cout << "[StageMesh] PSOs created (opaque + transparent)\n";
+    return true;
+}
+
+// =============================================================================
+// Stage de-premultiply pass — fullscreen-triangle pass that samples the
+// premul stage RT and writes straight-alpha RGBA into the sibling straight
+// RT (m_stageTargetStraight). ImGui samples the straight RT so its standard
+// SRC_ALPHA / INV_SRC_ALPHA blend produces the right composite.
+// =============================================================================
+
+bool D3D12Renderer::createStageDePremulPSO() {
+    auto* device = m_gpu->device();
+
+    // --- Root signature: one SRV table (t0) + static sampler (s0). No CBV. ---
+    D3D12_DESCRIPTOR_RANGE srvRange{};
+    srvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors                    = 1;
+    srvRange.BaseShaderRegister                = 0; // t0
+    srvRange.RegisterSpace                     = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParam{};
+    rootParam.ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParam.DescriptorTable.NumDescriptorRanges = 1;
+    rootParam.DescriptorTable.pDescriptorRanges   = &srvRange;
+    rootParam.ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler{};
+    sampler.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MaxLOD           = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister   = 0; // s0
+    sampler.RegisterSpace    = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc{};
+    rsDesc.NumParameters     = 1;
+    rsDesc.pParameters       = &rootParam;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers   = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
+                   D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS   |
+                   D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                   D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) {
+        if (err) std::cerr << "[StageDePremul] root sig: "
+                           << static_cast<const char*>(err->GetBufferPointer()) << "\n";
+        return false;
+    }
+    hr = device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+                                     IID_PPV_ARGS(&m_stageDePremulRootSignature));
+    if (FAILED(hr)) {
+        std::cerr << "[StageDePremul] CreateRootSignature hr=0x" << std::hex << hr << "\n";
+        return false;
+    }
+
+    // --- Shaders ---
+    ComPtr<ID3DBlob> vs, ps;
+    if (loadCompiledShader(L"shaders/stage_depremul_vs.cso", &vs) != Result::Success) {
+        std::cerr << "[StageDePremul] missing stage_depremul_vs.cso\n"; return false;
+    }
+    if (loadCompiledShader(L"shaders/stage_depremul_ps.cso", &ps) != Result::Success) {
+        std::cerr << "[StageDePremul] missing stage_depremul_ps.cso\n"; return false;
+    }
+
+    // --- PSO: fullscreen triangle, no vertex buffer, no depth, no blend ---
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+    psoDesc.pRootSignature        = m_stageDePremulRootSignature.Get();
+    psoDesc.VS                    = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS                    = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    psoDesc.RasterizerState.FillMode              = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode              = D3D12_CULL_MODE_NONE;
+    psoDesc.RasterizerState.DepthClipEnable       = TRUE;
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    psoDesc.DepthStencilState.DepthEnable   = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.SampleMask                = UINT_MAX;
+    psoDesc.PrimitiveTopologyType     = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets          = 1;
+    psoDesc.RTVFormats[0]             = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    psoDesc.SampleDesc.Count          = 1;
+
+    hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_stageDePremulPipelineState));
+    if (FAILED(hr)) {
+        std::cerr << "[StageDePremul] CreateGraphicsPipelineState hr=0x" << std::hex << hr << "\n";
+        return false;
+    }
+
+    std::cout << "[StageDePremul] PSO created\n";
     return true;
 }
 
@@ -5529,10 +5771,12 @@ void D3D12Renderer::drawStageMesh(uint32_t meshSlot,
                                    const glm::mat4& model,
                                    const glm::vec4& tint,
                                    uint32_t renderMode,
-                                   uint32_t textureSrvSlot) {
+                                   uint32_t textureSrvSlot,
+                                   bool     transparent) {
     if (!m_initialized || !m_stageTarget.ready) return;
 
-    if (!m_stageMeshRootSignature || !m_stageMeshPipelineState) {
+    if (!m_stageMeshRootSignature || !m_stageMeshPipelineState
+                                  || !m_stageMeshPipelineStateTransparent) {
         if (!createStageMeshPSO()) return;
     }
 
@@ -5557,7 +5801,9 @@ void D3D12Renderer::drawStageMesh(uint32_t meshSlot,
     auto* cmdList = tl_activeCmdList;
 
     cmdList->SetGraphicsRootSignature(m_stageMeshRootSignature.Get());
-    cmdList->SetPipelineState(m_stageMeshPipelineState.Get());
+    cmdList->SetPipelineState(transparent
+        ? m_stageMeshPipelineStateTransparent.Get()
+        : m_stageMeshPipelineState.Get());
 
     // [0] CBV root descriptor — FrameCB (viewProj), per-frame slot avoids write-while-read
     cmdList->SetGraphicsRootConstantBufferView(0, m_stageTarget.frameCB[m_currentBackBufferIndex]->GetGPUVirtualAddress());
@@ -5579,6 +5825,88 @@ void D3D12Renderer::drawStageMesh(uint32_t meshSlot,
     cmdList->IASetVertexBuffers(0, 1, &handle.vbv);
     cmdList->IASetIndexBuffer(&handle.ibv);
     cmdList->DrawIndexedInstanced(handle.indexCount, 1, 0, 0, 0);
+}
+
+void D3D12Renderer::applyStageDePremul() {
+    if (!m_initialized) return;
+    if (!m_stageTarget.ready || !m_stageTargetStraight.ready) return;
+
+    // Lazy PSO creation — first stage frame after init.
+    if (!m_stageDePremulRootSignature || !m_stageDePremulPipelineState) {
+        if (!createStageDePremulPSO()) return;
+    }
+
+    const uint32_t fi = m_currentBackBufferIndex;
+    auto* cmdList = tl_activeCmdList;
+    if (!cmdList) return;
+
+    // endStageTarget() already transitioned the premul color RT from
+    // RENDER_TARGET → PIXEL_SHADER_RESOURCE for sampling — no barrier
+    // needed here for the source.
+    //
+    // Move the straight sibling to RENDER_TARGET so we can write to it.
+    D3D12_RESOURCE_BARRIER toRT{};
+    toRT.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toRT.Transition.pResource   = m_stageTargetStraight.color[fi].Get();
+    toRT.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toRT.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toRT.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &toRT);
+
+    const uint32_t rtvSize =
+        m_gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu =
+        m_stageTargetStraight.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvCpu.ptr += static_cast<SIZE_T>(fi) * rtvSize;
+
+    cmdList->OMSetRenderTargets(1, &rtvCpu, FALSE, nullptr);
+
+    // Viewport + scissor = straight RT dimensions (matches premul RT).
+    D3D12_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(m_stageTargetStraight.width);
+    vp.Height   = static_cast<float>(m_stageTargetStraight.height);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    D3D12_RECT scissor{};
+    scissor.right  = static_cast<LONG>(m_stageTargetStraight.width);
+    scissor.bottom = static_cast<LONG>(m_stageTargetStraight.height);
+    cmdList->RSSetViewports(1, &vp);
+    cmdList->RSSetScissorRects(1, &scissor);
+
+    // Bind heap + PSO + root sig + premul SRV table.
+    if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
+        ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+        tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
+    }
+    cmdList->SetGraphicsRootSignature(m_stageDePremulRootSignature.Get());
+    cmdList->SetPipelineState(m_stageDePremulPipelineState.Get());
+
+    const uint32_t premulSlot = DescriptorHeapLayout::stageTargetSlot(fi);
+    D3D12_GPU_DESCRIPTOR_HANDLE premulGpu = DescriptorHeapLayout::gpuHandle(
+        m_imguiSrvHeap.Get(), premulSlot, m_srvDescriptorSize);
+    cmdList->SetGraphicsRootDescriptorTable(0, premulGpu);
+
+    // Fullscreen triangle — no vertex / index buffer.
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmdList->IASetVertexBuffers(0, 0, nullptr);
+    cmdList->DrawInstanced(3, 1, 0, 0);
+
+    // Straight RT back to PIXEL_SHADER_RESOURCE so ImGui can sample it.
+    D3D12_RESOURCE_BARRIER toSRV{};
+    toSRV.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toSRV.Transition.pResource   = m_stageTargetStraight.color[fi].Get();
+    toSRV.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toSRV.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toSRV.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &toSRV);
+
+    // Restore the editor back-buffer RTV (same restore endStageTarget does,
+    // so ImGui's next draw command targets the right place).
+    D3D12_CPU_DESCRIPTOR_HANDLE backRtv =
+        m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    backRtv.ptr += m_currentBackBufferIndex * m_rtvDescriptorSize;
+    cmdList->OMSetRenderTargets(1, &backRtv, FALSE, nullptr);
 }
 
 uint32_t D3D12Renderer::uploadMeshImmediate(const std::vector<MeshVertex>& vertices,

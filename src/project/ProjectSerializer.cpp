@@ -636,6 +636,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             pj["rotation"] = {prop.rotation[0], prop.rotation[1], prop.rotation[2]};
             pj["size"]     = {prop.size[0],     prop.size[1],     prop.size[2]};
             pj["visible"]  = prop.visible;
+            pj["opacity"]  = prop.opacity;  // v19+, stage-view-only fade
             pj["displayColor"] = {prop.displayColor[0], prop.displayColor[1],
                                   prop.displayColor[2], prop.displayColor[3]};
 
@@ -1078,6 +1079,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
 
                 prop.name    = name;
                 prop.visible = pj.value("visible", true);
+                prop.opacity = pj.value("opacity", 1.0f);  // v19+; pre-v19 defaults to fully opaque
 
                 if (pj.contains("position") && pj["position"].is_array() && pj["position"].size() >= 3) {
                     prop.position = {pj["position"][0].get<float>(),

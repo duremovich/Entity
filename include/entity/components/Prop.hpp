@@ -42,6 +42,11 @@ struct Prop {
     // Visibility in the 3D stage view.
     bool visible{true};
 
+    // Stage-view opacity. Fades the prop in the editor's 3D stage view only;
+    // does not affect any output path because props are excluded from
+    // SceneSnapshot. Multiplied into displayColor.a at the StageMeshDraw site.
+    float opacity{1.0f};
+
     // Matte tint used by Stage3DRenderer to fill triangles. Distinct from
     // Screen's video-textured fill so designers can tell set geometry apart
     // from projection surfaces at a glance. RGBA, 0..1.

@@ -43,7 +43,14 @@ public:
     // effects system landing.
     static constexpr uint32_t MAX_COMPOSE_TARGETS     = 64;
     static constexpr uint32_t MAX_OCIO_LUT_SLOTS      = 32;
-    static constexpr uint32_t MAX_STAGE_TARGETS       = 2; // FRAME_COUNT — double-buffered color SRVs
+    // Two parallel stage targets, each FRAME_COUNT (=2) deep:
+    //   slots [STAGE_TARGET_BASE         , STAGE_TARGET_BASE+2): premul accumulation
+    //   slots [STAGE_TARGET_BASE+2       , STAGE_TARGET_BASE+4): straight-alpha output
+    //                                                            (sampled by ImGui)
+    // De-premul pass reads premul SRV → writes straight RT. See ADR-0014
+    // for the stage view threading and the stage-view opacity work that
+    // introduced the second target.
+    static constexpr uint32_t MAX_STAGE_TARGETS       = 4;
 
     // Fixed layout — changing these shifts runtime descriptor references,
     // so validate carefully if you need to.
@@ -88,8 +95,14 @@ public:
         return COMPOSE_TARGET_TRIPLE_BASE + composeIndex * 2 + (subIndex - 1);
     }
     // Stage render target SRV slot for the editor 3D offscreen color buffer.
+    // This is the *premul* RT — what the 3D mesh pass writes into.
     static constexpr uint32_t stageTargetSlot(uint32_t frameIndex) {
         return STAGE_TARGET_BASE + frameIndex;
+    }
+    // Straight-alpha sibling slot — the de-premul fullscreen pass writes
+    // here and ImGui samples here. One per FRAME_COUNT slot.
+    static constexpr uint32_t stageTargetStraightSlot(uint32_t frameIndex) {
+        return STAGE_TARGET_BASE + 2 + frameIndex;
     }
 
     // Bounds checks (useful in allocation paths)
