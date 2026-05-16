@@ -2,7 +2,7 @@
 // Reads 3 NDC vertex positions + 3 UVs from root constants and emits them
 // keyed by SV_VertexID. The standard GPU triangle rasterizer then does
 // proper barycentric interpolation of UVs across the triangle interior —
-// no bilinear-vs-barycentric distortion like drawMappingSurface has.
+// no bilinear-vs-barycentric distortion like drawOutputSurface has.
 
 cbuffer MeshTriangleConstants : register(b0)
 {

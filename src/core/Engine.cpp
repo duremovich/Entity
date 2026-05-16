@@ -21,7 +21,8 @@
 #include "entity/ui/MediaBinWindow.hpp"
 #include "entity/ui/EffectGraphWindow.hpp"
 #include "entity/ui/PropertyWindow.hpp"
-#include "entity/ui/MappingWindow.hpp"
+#include "entity/ui/ContentRoutingWindow.hpp"
+#include "entity/ui/OutputsWindow.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
 #include "entity/ui/ScreensWindow.hpp"
 #include "entity/ui/PropsWindow.hpp"
@@ -563,7 +564,12 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         }
         m_windowManager->registerWindow(std::move(graphWindow));
     }
-    m_windowManager->registerWindow(std::make_unique<MappingWindow>(this));
+    m_windowManager->registerWindow(std::make_unique<OutputsWindow>(this));
+    {
+        auto routingWindow = std::make_unique<ContentRoutingWindow>(m_timeline);
+        routingWindow->setCommandDispatcher(m_commandDispatcher);
+        m_windowManager->registerWindow(std::move(routingWindow));
+    }
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));
     m_windowManager->registerWindow(std::make_unique<ScreensWindow>(this));
     m_windowManager->registerWindow(std::make_unique<PropsWindow>(this));
@@ -4013,7 +4019,7 @@ void Engine::closeProject() {
     //    would otherwise wipe on its way to loading new state.
     {
         std::vector<entt::entity> toDestroy;
-        auto mappingView = m_registry.view<MappingSurface>();
+        auto mappingView = m_registry.view<OutputSurface>();
         for (auto e : mappingView) toDestroy.push_back(e);
         auto outputView  = m_registry.view<OutputDisplay>();
         for (auto e : outputView)  toDestroy.push_back(e);

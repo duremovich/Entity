@@ -105,8 +105,8 @@ public:
 
     void drawColoredQuad(const glm::mat4&, const glm::vec4&, float) override {}
     void drawTexturedQuad(TextureRef, const glm::mat4&, float, BlendMode,
-                          TextureColorSpace, const std::string&) override {}
-    void drawMappingSurface(TextureRef, const glm::vec2[4], const glm::vec2[4],
+                          TextureColorSpace, const std::string&, const glm::vec4&) override {}
+    void drawOutputSurface(TextureRef, const glm::vec2[4], const glm::vec2[4],
                             const glm::vec4&, float, float, float) override {}
     void drawMeshTriangle(TextureRef, const glm::vec2[3], const glm::vec2[3]) override {}
     void drawEffectPass(TextureRef, std::uint32_t, const std::uint8_t*, std::size_t,

@@ -1261,12 +1261,13 @@ Result D3D12Renderer::createRootSignature() {
     // SetGraphicsRoot32BitConstants copies data into the command buffer
     // at record time, unlike CBV which just stores a pointer.
     //
-    // LayerConstants = 24 floats = 96 bytes (transform 16 + color 4 + opacity+padding 4)
+    // LayerConstants = 28 dwords = 112 bytes (transform 16 + color 4 + opacity+blendMode+colorSpace+pad 4 + uvRect 4).
+    // M3 (ADR-0021) added uvRect for Tiled source cropping.
     D3D12_ROOT_PARAMETER rootParameter = {};
     rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     rootParameter.Constants.ShaderRegister = 0; // b0
     rootParameter.Constants.RegisterSpace = 0;
-    rootParameter.Constants.Num32BitValues = 24; // sizeof(LayerConstants) / 4
+    rootParameter.Constants.Num32BitValues = 28; // sizeof(LayerConstants) / 4
     rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Define root signature
@@ -1512,7 +1513,7 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
     tl_activeCmdList->SetGraphicsRootSignature(m_rootSignature.Get());
 
     // Set root constants (copies data into command buffer - each draw gets its own values!)
-    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 28, &constants, 0);
 
     // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginShowFrame) sets these
     // This allows drawColoredQuad to work correctly with both main window and offscreen targets
@@ -1977,7 +1978,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
 
 Result D3D12Renderer::createTexturedRootSignature() {
     // Root parameters:
-    // [0] Root constants for LayerConstants (b0) - 24 floats = 96 bytes
+    // [0] Root constants for LayerConstants (b0) - 28 dwords = 112 bytes (M3 added uvRect)
     // [1] Descriptor table for texture SRV (t0)
     // Static sampler for texture sampling
 
@@ -1987,7 +1988,7 @@ Result D3D12Renderer::createTexturedRootSignature() {
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     rootParameters[0].Constants.ShaderRegister = 0; // b0
     rootParameters[0].Constants.RegisterSpace = 0;
-    rootParameters[0].Constants.Num32BitValues = 24; // sizeof(LayerConstants) / 4
+    rootParameters[0].Constants.Num32BitValues = 28; // sizeof(LayerConstants) / 4 (M3 ADR-0021)
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Parameter 1: Descriptor table for texture
@@ -2202,11 +2203,11 @@ Result D3D12Renderer::createTexturedPipelineState() {
 Result D3D12Renderer::createBlendRootSignature() {
     D3D12_ROOT_PARAMETER rootParameters[3] = {};
 
-    // [0] Root constants (b0)
+    // [0] Root constants (b0) — LayerConstants, 28 dwords (M3 ADR-0021)
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     rootParameters[0].Constants.ShaderRegister = 0;
     rootParameters[0].Constants.RegisterSpace = 0;
-    rootParameters[0].Constants.Num32BitValues = 24;
+    rootParameters[0].Constants.Num32BitValues = 28;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // [1] fg SRV (t0)
@@ -2358,7 +2359,8 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                      float opacity,
                                      BlendMode blendMode,
                                      TextureColorSpace colorSpace,
-                                     const std::string& ocioColorSpace) {
+                                     const std::string& ocioColorSpace,
+                                     const DirectX::XMFLOAT4& uvRect) {
     if (!m_initialized || textureSrv.ptr == 0) {
         return;
     }
@@ -2381,6 +2383,7 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     constants.blendMode = static_cast<uint32_t>(blendMode);  // Pass blend mode to shader
     constants.colorSpace = static_cast<uint32_t>(colorSpace); // 0=Linear, 1=YCoCg_scaled
     constants.padding3 = 0.0f;
+    constants.uvRect = uvRect;  // ADR-0021 M3 Tiled source crop; identity = pre-M3 behavior
 
     // Ensure the shader-visible heap is bound regardless of which path we take.
     if (tl_currentDescriptorHeap != m_imguiSrvHeap.Get()) {
@@ -2446,7 +2449,7 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
         }
         tl_activeCmdList->SetPipelineState(blendPso);
         tl_activeCmdList->SetGraphicsRootSignature(m_blendRootSignature.Get());
-        tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+        tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 28, &constants, 0);
         tl_activeCmdList->SetGraphicsRootDescriptorTable(1, textureSrv);            // fg (t0)
         tl_activeCmdList->SetGraphicsRootDescriptorTable(2, target.snapshotSrvHandle); // bg (t1)
 
@@ -2485,7 +2488,7 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
 
     tl_activeCmdList->SetPipelineState(pipelineState);
     tl_activeCmdList->SetGraphicsRootSignature(m_texturedRootSignature.Get());
-    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 24, &constants, 0);
+    tl_activeCmdList->SetGraphicsRoot32BitConstants(0, 28, &constants, 0);
     tl_activeCmdList->SetGraphicsRootDescriptorTable(1, textureSrv);
 
     // NOTE: Don't override viewport/scissor - caller (beginComposeTarget or beginShowFrame) sets these
@@ -3032,7 +3035,7 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
     ++m_effectDrawIndex;
 }
 
-void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
+void D3D12Renderer::drawOutputSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                         const DirectX::XMFLOAT2 corners[4],
                                         const DirectX::XMFLOAT2 sourceUVs[4],
                                         const DirectX::XMFLOAT4& softEdges,
@@ -3044,13 +3047,13 @@ void D3D12Renderer::drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     }
 
     // CRIT-04 fix: write to a unique per-draw slot in the ring buffer. Within a
-    // single frame, each drawMappingSurface() call gets its own CB region so the
+    // single frame, each drawOutputSurface() call gets its own CB region so the
     // GPU reads consistent data at execute time even with multiple surfaces. Across
     // frames, the fence in moveToNextFrame() guarantees the CPU doesn't overwrite a
     // slot the GPU is still reading.
     if (m_mappingSurfaceDrawIndex >= MAX_MAPPING_SURFACES_PER_FRAME) {
         if (!m_mappingSurfaceOverflowed) {
-            std::cerr << "[drawMappingSurface] Surface limit ("
+            std::cerr << "[drawOutputSurface] Surface limit ("
                       << MAX_MAPPING_SURFACES_PER_FRAME
                       << "/frame) exceeded — additional surfaces dropped this frame" << std::endl;
             m_mappingSurfaceOverflowed = true;
@@ -4106,13 +4109,15 @@ void D3D12Renderer::drawTexturedQuad(TextureRef texture,
                                       float opacity,
                                       BlendMode blendMode,
                                       TextureColorSpace colorSpace,
-                                      const std::string& ocioColorSpace) {
+                                      const std::string& ocioColorSpace,
+                                      const glm::vec4& uvRect) {
     const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveTextureHandle(texture);
     if (srv.ptr == 0) return;  // Invalid or unready texture — drop silently
-    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode, colorSpace, ocioColorSpace);
+    const DirectX::XMFLOAT4 xmUvRect{uvRect.x, uvRect.y, uvRect.z, uvRect.w};
+    drawTexturedQuad(srv, glmToXm(transform), opacity, blendMode, colorSpace, ocioColorSpace, xmUvRect);
 }
 
-void D3D12Renderer::drawMappingSurface(TextureRef texture,
+void D3D12Renderer::drawOutputSurface(TextureRef texture,
                                         const glm::vec2 corners[4],
                                         const glm::vec2 sourceUVs[4],
                                         const glm::vec4& softEdges,
@@ -4130,7 +4135,7 @@ void D3D12Renderer::drawMappingSurface(TextureRef texture,
     }
     const DirectX::XMFLOAT4 xmSoft(softEdges.x, softEdges.y, softEdges.z, softEdges.w);
 
-    drawMappingSurface(srv, xmCorners, xmUVs, xmSoft, brightness, gamma, opacity);
+    drawOutputSurface(srv, xmCorners, xmUVs, xmSoft, brightness, gamma, opacity);
 }
 
 // =============================================================================

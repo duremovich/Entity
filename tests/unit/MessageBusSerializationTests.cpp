@@ -310,7 +310,7 @@ TEST(MessageBusSerialization, TransformMatrixWrongLengthRejected) {
 }
 
 // ----------------------------------------------------------------------------
-// Stage 2: scene snapshot round-trips (ScreenSnapshot, MappingSurfaceSnapshot,
+// Stage 2: scene snapshot round-trips (ScreenSnapshot, OutputSurfaceSnapshot,
 // ProjectorSnapshot, OutputSnapshot) carried on RenderFrame.
 // ----------------------------------------------------------------------------
 
@@ -347,9 +347,9 @@ TEST(MessageBusSerialization, ScreenSnapshotRoundTrip) {
     expectByteStable(rf);
 }
 
-TEST(MessageBusSerialization, MappingSurfaceSnapshotRoundTrip) {
+TEST(MessageBusSerialization, OutputSurfaceSnapshotRoundTrip) {
     RenderFrame rf;
-    MappingSurfaceSnapshot m;
+    OutputSurfaceSnapshot m;
     m.entity        = 202ull;
     m.visible       = true;
     m.outputIndex   = 1;
@@ -496,7 +496,7 @@ TEST(MessageBusSerialization, RenderFrameWithAllSnapshotTypes) {
     RenderFrame rf;
     rf.frameNumber = 100;
     rf.screens.push_back(ScreenSnapshot{101ull, "S1", true, 1920, 1080, 0, true});
-    rf.surfaces.push_back(MappingSurfaceSnapshot{202ull, true, 0, 0});
+    rf.surfaces.push_back(OutputSurfaceSnapshot{202ull, true, 0, 0});
     rf.projectors.push_back(ProjectorSnapshot{303ull});
     rf.outputs.push_back(OutputSnapshot{404ull, "Out1", 0, true, true});
     auto out = roundTripExpect(rf);
@@ -509,4 +509,97 @@ TEST(MessageBusSerialization, RenderFrameWithAllSnapshotTypes) {
     EXPECT_EQ(out.projectors[0].entity, 303ull);
     EXPECT_EQ(out.outputs[0].outputIndex, 0u);
     expectByteStable(rf);
+}
+
+// ADR-0021 M3: ContentLayerSnapshot carries a `routes` vector + `mode` int.
+// Verify a Tiled-mode payload with multiple routes (each its own uvRect)
+// survives the JSON encode/decode round-trip byte-stably.
+TEST(MessageBusSerialization, ContentLayerSnapshotTiledRoutesRoundTrip) {
+    RenderFrame rf;
+    rf.frameNumber = 7;
+
+    ContentLayerSnapshot cl;
+    cl.entity                = 808ull;
+    cl.targetScreen          = 0;             // Tiled doesn't use the alias
+    cl.mode                  = 1;             // Tiled
+    cl.opacity               = 0.75f;
+    cl.sectionFadeMultiplier = 1.0f;
+    cl.blendMode             = 0;
+    cl.zOrder                = 5;
+    cl.sourceKind            = ContentLayerSnapshot::SourceKind::Video;
+    cl.sourceSlot            = 3;
+    cl.routes.push_back({1001ull, {0.0f,   0.0f, 0.333f, 1.0f}});
+    cl.routes.push_back({1002ull, {0.333f, 0.0f, 0.333f, 1.0f}});
+    cl.routes.push_back({1003ull, {0.666f, 0.0f, 0.334f, 1.0f}});
+    rf.contentLayers.push_back(cl);
+
+    auto out = roundTripExpect(rf);
+    ASSERT_EQ(out.contentLayers.size(), 1u);
+    const auto& r = out.contentLayers[0];
+    EXPECT_EQ(r.mode, 1);
+    ASSERT_EQ(r.routes.size(), 3u);
+    EXPECT_EQ(r.routes[0].screen, 1001ull);
+    EXPECT_FLOAT_EQ(r.routes[0].uvRect[0], 0.0f);
+    EXPECT_FLOAT_EQ(r.routes[0].uvRect[2], 0.333f);
+    EXPECT_EQ(r.routes[1].screen, 1002ull);
+    EXPECT_FLOAT_EQ(r.routes[1].uvRect[0], 0.333f);
+    EXPECT_EQ(r.routes[2].screen, 1003ull);
+    EXPECT_FLOAT_EQ(r.routes[2].uvRect[2], 0.334f);
+    expectByteStable(rf);
+}
+
+// ADR-0021 M3 forward-compat: a payload that predates the `routes` field
+// (carries only `targetScreen`) deserializes with one synthesized route
+// from that single screen ID. The decoder fills `routes` so PASS 2 sees
+// an explicit list in every case.
+TEST(MessageBusSerialization, ContentLayerSnapshotLegacyTargetScreenSynthesizesRoute) {
+    using nlohmann::json;
+    // Hand-craft a legacy ContentLayerSnapshot JSON without `routes` /
+    // `mode` keys. Embed it inside a minimal RenderFrame envelope so it
+    // travels through deserialize().
+    json legacy;
+    legacy["type"] = "RenderFrame";
+    json& d = legacy["data"];
+    d["frameNumber"] = 0;
+    d["deltaTime"]   = 0.0;
+    d["playState"]   = "Stopped";
+    d["activeClips"] = json::array();
+    d["wantedFrames"] = json::array();
+    d["screens"] = json::array();
+    d["surfaces"] = json::array();
+    d["projectors"] = json::array();
+    d["outputs"] = json::array();
+    d["generativeLayers"] = json::array();
+    json clJson;
+    clJson["entity"] = 909;
+    clJson["targetScreen"] = 7777;
+    clJson["transformMatrix"] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    clJson["opacity"] = 1.0;
+    clJson["sectionFadeMultiplier"] = 1.0;
+    clJson["blendMode"] = 0;
+    clJson["zOrder"] = 0;
+    clJson["sourceKind"] = 0;
+    clJson["sourceSlot"] = 1;
+    clJson["colorSpace"] = 0;
+    clJson["ocioColorSpace"] = "";
+    clJson["effects"] = json::array();
+    clJson["effectChainSlotA"] = -1;
+    clJson["effectChainSlotB"] = -1;
+    clJson["postEffectsSlot"]  = -1;
+    d["contentLayers"] = json::array({clJson});
+
+    const std::string serialized = legacy.dump();
+    std::vector<std::uint8_t> bytes(serialized.begin(), serialized.end());
+    auto decoded = deserialize(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(std::holds_alternative<RenderFrame>(*decoded));
+    const auto& rf = std::get<RenderFrame>(*decoded);
+    ASSERT_EQ(rf.contentLayers.size(), 1u);
+    const auto& cl = rf.contentLayers[0];
+    EXPECT_EQ(cl.targetScreen, 7777ull);   // alias preserved
+    EXPECT_EQ(cl.mode, 0);                  // default Direct
+    ASSERT_EQ(cl.routes.size(), 1u);        // synthesized from alias
+    EXPECT_EQ(cl.routes[0].screen, 7777ull);
+    EXPECT_FLOAT_EQ(cl.routes[0].uvRect[0], 0.0f);
+    EXPECT_FLOAT_EQ(cl.routes[0].uvRect[2], 1.0f);
 }

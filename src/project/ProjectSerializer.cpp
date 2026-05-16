@@ -13,12 +13,13 @@
 #include "entity/components/EffectChain.hpp"
 #include "entity/components/EffectParam.hpp"
 #include "entity/components/EffectParameters.hpp"
+#include "entity/components/ContentRouting.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
-#include "entity/components/MappingSurface.hpp"
+#include "entity/components/OutputSurface.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
@@ -371,16 +372,35 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     clipJson["hasAlpha"] = clip->hasAlpha;
                     clipJson["frameBlending"] = clip->frameBlending;
 
-                    // targetScreen: persist by Screen name since entt::entity
-                    // values aren't stable across sessions. Empty string = null
-                    // (clip renders to all screens), matching the default.
-                    std::string targetScreenName;
-                    if (clip->targetScreen != entt::null &&
-                        registry.valid(clip->targetScreen) &&
-                        registry.all_of<Screen>(clip->targetScreen)) {
-                        targetScreenName = registry.get<Screen>(clip->targetScreen).name;
+                    // Plane A content routing (ADR-0021). Canonical
+                    // serialization — empty targets array means "render on
+                    // all visible screens" (matches the legacy empty-name
+                    // semantic). Direct mode = single Direct target; Tiled
+                    // = multi-target with per-screen uvRect.
+                    //
+                    // The legacy `targetScreenName` key is no longer
+                    // written (M4 dropped it). The reader still recognizes
+                    // it for one more release as a graceful fallback for
+                    // projects saved by M2/M3 before this flip.
+                    if (const auto* cr = registry.try_get<ContentRouting>(layerEntity)) {
+                        json crJson;
+                        crJson["mode"] = (cr->mode == RouteMode::Tiled) ? "Tiled" : "Direct";
+                        json targetsArr = json::array();
+                        for (const auto& t : cr->targets) {
+                            json tJson;
+                            std::string screenName;
+                            if (t.screen != entt::null &&
+                                registry.valid(t.screen) &&
+                                registry.all_of<Screen>(t.screen)) {
+                                screenName = registry.get<Screen>(t.screen).name;
+                            }
+                            tJson["screenName"] = screenName;
+                            tJson["uvRect"] = { t.uvRect[0], t.uvRect[1], t.uvRect[2], t.uvRect[3] };
+                            targetsArr.push_back(tJson);
+                        }
+                        crJson["targets"] = std::move(targetsArr);
+                        clipJson["contentRouting"] = std::move(crJson);
                     }
-                    clipJson["targetScreenName"] = targetScreenName;
 
                     // Transform component (if exists)
                     const auto* transform = registry.try_get<Transform>(layerEntity);
@@ -546,7 +566,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
 
         // Serialize mapping surfaces
         json surfacesJson = json::array();
-        auto surfaceView = registry.view<MappingSurface>();
+        auto surfaceView = registry.view<OutputSurface>();
         for (auto [entity, surface] : surfaceView.each()) {
             json surfaceJson;
             surfaceJson["name"] = surface.name;
@@ -862,7 +882,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
         // attached worth preserving.
         {
             std::vector<entt::entity> toDestroy;
-            auto clearView = registry.view<MappingSurface>();
+            auto clearView = registry.view<OutputSurface>();
             for (auto e : clearView) toDestroy.push_back(e);
             auto clearOutView = registry.view<OutputDisplay>();
             for (auto e : clearOutView) toDestroy.push_back(e);
@@ -1371,7 +1391,10 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         clip.decoding = false;
 
                         // Resolve targetScreen by name. Empty/missing = null
-                        // (renders to all screens).
+                        // (renders to all screens). Legacy alias kept in sync
+                        // with the new ContentRouting component for one
+                        // project-format version (ADR-0021 § Backward
+                        // compatibility).
                         std::string targetScreenName = clipJson.value("targetScreenName", "");
                         clip.targetScreen = entt::null;
                         if (!targetScreenName.empty()) {
@@ -1382,6 +1405,53 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                     break;
                                 }
                             }
+                        }
+
+                        // Plane A content routing (ADR-0021). Prefer the new
+                        // `contentRouting` JSON object when present; fall back
+                        // to migrating from the legacy `targetScreenName`
+                        // alias otherwise. Mode names that aren't recognized
+                        // (e.g. a future Cylindrical from a forward-rolled
+                        // project) clamp to Direct.
+                        auto& cr = registry.emplace<ContentRouting>(clipEntity);
+                        cr.mode = RouteMode::Direct;
+                        if (clipJson.contains("contentRouting")
+                            && clipJson["contentRouting"].is_object()) {
+                            const auto& crJson = clipJson["contentRouting"];
+                            const std::string modeStr = crJson.value("mode", std::string{"Direct"});
+                            cr.mode = (modeStr == "Tiled") ? RouteMode::Tiled : RouteMode::Direct;
+                            if (crJson.contains("targets") && crJson["targets"].is_array()) {
+                                auto screenView = registry.view<Screen>();
+                                for (const auto& tJson : crJson["targets"]) {
+                                    RouteTarget t;
+                                    const std::string screenName = tJson.value("screenName", std::string{});
+                                    if (!screenName.empty()) {
+                                        for (auto [se, s] : screenView.each()) {
+                                            if (s.name == screenName) {
+                                                t.screen = se;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (tJson.contains("uvRect") && tJson["uvRect"].is_array()) {
+                                        const auto& uv = tJson["uvRect"];
+                                        for (std::size_t i = 0; i < t.uvRect.size() && i < uv.size(); ++i)
+                                            t.uvRect[i] = uv[i].get<float>();
+                                    }
+                                    cr.targets.push_back(t);
+                                }
+                            }
+                            // Keep the legacy alias in sync so any code that
+                            // hasn't yet migrated reads a coherent value.
+                            clip.targetScreen = (cr.targets.size() == 1)
+                                ? cr.targets[0].screen
+                                : entt::null;
+                        } else if (clip.targetScreen != entt::null) {
+                            // Legacy migration: derive ContentRouting from
+                            // the single-screen alias.
+                            RouteTarget t;
+                            t.screen = clip.targetScreen;
+                            cr.targets.push_back(t);
                         }
 
                         // Load totalMediaFrames and duration
@@ -1519,7 +1589,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
         if (project.contains("mappingSurfaces")) {
             for (const auto& surfaceJson : project["mappingSurfaces"]) {
                 entt::entity surfaceEntity = registry.create();
-                auto& surface = registry.emplace<MappingSurface>(surfaceEntity);
+                auto& surface = registry.emplace<OutputSurface>(surfaceEntity);
 
                 surface.name = surfaceJson.value("name", "Surface");
                 surface.surfaceIndex = surfaceJson.value("surfaceIndex", 0);

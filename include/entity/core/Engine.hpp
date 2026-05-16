@@ -689,7 +689,7 @@ public:
      * ADR-0009 — close the current project and return to the launcher.
      * Tears down physical output windows, joins in-flight transcodes,
      * clears the timeline (clips + tracks + sections + selection),
-     * destroys project-scoped entities (MappingSurface, OutputDisplay,
+     * destroys project-scoped entities (OutputSurface, OutputDisplay,
      * Model, ClipDecodeState), drops undo/redo history, and clears
      * ProjectManager state. Then `showLauncher()` so the next render
      * shows Recent / New / Open. Safe to call when no project is open.

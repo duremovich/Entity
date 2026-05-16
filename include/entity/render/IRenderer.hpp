@@ -56,7 +56,7 @@ public:
     static constexpr uint32_t MAX_COMPOSE_TARGETS           = 64;
     // 8192 leaves room for projector-output mesh rendering with per-triangle
     // barycentric subdivision in OutputManager (each mesh triangle becomes N×N
-    // sub-triangles, each a drawMappingSurface call). 256-byte aligned slots ×
+    // sub-triangles, each a drawOutputSurface call). 256-byte aligned slots ×
     // FRAME_COUNT ≈ 6 MB, negligible.
     static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 8192;
 
@@ -149,14 +149,21 @@ public:
                                   const glm::vec4& color,
                                   float opacity) = 0;
 
+    // uvRect (ADR-0021 M3 Tiled mode) crops the source texture to a sub-region
+    // before sampling. xy = uv offset, zw = uv size. Default identity
+    // (0,0,1,1) samples the full source frame — bit-identical to pre-M3
+    // behavior. Per-route uvRect values drive feed-map slicing where one
+    // content source carves across multiple screens (`composite_vs.hlsl`
+    // applies `texCoord = texCoord * uvRect.zw + uvRect.xy`).
     virtual void drawTexturedQuad(TextureRef texture,
                                    const glm::mat4& transform,
                                    float opacity,
                                    BlendMode blendMode = BlendMode::Normal,
                                    TextureColorSpace colorSpace = TextureColorSpace::Linear,
-                                   const std::string& ocioColorSpace = std::string()) = 0;
+                                   const std::string& ocioColorSpace = std::string(),
+                                   const glm::vec4& uvRect = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)) = 0;
 
-    virtual void drawMappingSurface(TextureRef texture,
+    virtual void drawOutputSurface(TextureRef texture,
                                      const glm::vec2 corners[4],
                                      const glm::vec2 sourceUVs[4],
                                      const glm::vec4& softEdges,
@@ -166,7 +173,7 @@ public:
 
     // Draws one textured triangle (3 NDC verts + 3 UVs) with proper hardware
     // barycentric UV interpolation. Use for mesh rendering where bilinear
-    // approximation in drawMappingSurface causes texture seams. Must be called
+    // approximation in drawOutputSurface causes texture seams. Must be called
     // between beginOutputFrame / endOutputFrame.
     virtual void drawMeshTriangle(TextureRef texture,
                                    const glm::vec2 verts[3],

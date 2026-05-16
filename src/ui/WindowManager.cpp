@@ -1203,15 +1203,18 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow("Layers", dockLeft);
     ImGui::DockBuilderDockWindow("Media Bin", dockLeft);  // Docked last = active tab
 
-    // Center: Stage and Mapping as tabs (Stage = active)
-    ImGui::DockBuilderDockWindow("Mapping", dockCenter);
+    // Center: Stage and Outputs as tabs (Stage = active)
+    ImGui::DockBuilderDockWindow("Outputs", dockCenter);
     ImGui::DockBuilderDockWindow("Stage", dockCenter);
 
-    // Right panel: Properties + Cues as tabs (Properties = active).
-    // Cues is docked AFTER Properties so it would normally win the
-    // last-docked-wins active-tab heuristic; SetWindowFocus("Properties")
-    // below pins Properties as the active tab on first run.
+    // Right panel: Properties + Content Routing + Cues as tabs (Properties = active).
+    // Content Routing (ADR-0021 M3) is the Plane A authoring window; placing
+    // it next to Properties means the "Multi-target..." button just brings it
+    // to focus on the same dock node. Cues is docked AFTER so it would
+    // normally win the last-docked-wins active-tab heuristic; SetWindowFocus
+    // ("Properties") below pins Properties as the active tab on first run.
     ImGui::DockBuilderDockWindow("Properties", dockRight);
+    ImGui::DockBuilderDockWindow("Content Routing", dockRight);
     ImGui::DockBuilderDockWindow("Cues", dockRight);
 
     ImGui::DockBuilderFinish(dockspaceId);
@@ -1223,7 +1226,7 @@ void WindowManager::createDefaultLayout(ImGuiID dockspaceId) {
     ImGui::SetWindowFocus("Stage");
     ImGui::SetWindowFocus("Properties");
 
-    std::cout << "Default layout created: Timeline (bottom), Media Bin/Model Bin/Screens (left tabs), Stage/Mapping (center tabs), Properties (right)" << std::endl;
+    std::cout << "Default layout created: Timeline (bottom), Media Bin/Model Bin/Screens (left tabs), Stage/Outputs (center tabs), Properties/Content Routing (right)" << std::endl;
 }
 
 namespace {

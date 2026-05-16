@@ -8,7 +8,7 @@
 namespace entity {
 
 /**
- * Corner indices for mapping surfaces.
+ * Corner indices for output surfaces.
  */
 enum class SurfaceCorner {
     TopLeft = 0,
@@ -18,15 +18,23 @@ enum class SurfaceCorner {
 };
 
 /**
- * MappingSurface component for projection mapping.
+ * OutputSurface component — Plane B per-output warp quad (ADR-0021).
  *
- * Defines a quadrilateral surface that maps video content to arbitrary
- * 4-corner positions. Used for corner-pin warping in projection mapping.
+ * Defines a quadrilateral surface that warps the output's source raster to
+ * arbitrary 4-corner positions on a physical display. Multiple OutputSurfaces
+ * may attach to the same OutputDisplay (keyed by outputIndex) — used for
+ * corner-pin projector alignment, edge-blend regions, and pack-layouts on a
+ * single output's raster.
+ *
+ * Renamed from `MappingSurface` in Phase M1 of the two-tier mapping work to
+ * remove the Plane A / Plane B vocabulary conflation. Content routing
+ * (Plane A) lives on `ContentRouting` (M2+); the warp-quad role this struct
+ * fills is strictly Plane B.
  *
  * Coordinates are in normalized device coordinates (-1 to 1) or
  * pixel coordinates depending on the coordinate mode.
  */
-struct MappingSurface {
+struct OutputSurface {
     // Surface identification
     std::string name{"Surface"};
     uint32_t surfaceIndex{0};

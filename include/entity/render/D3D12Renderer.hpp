@@ -111,9 +111,10 @@ public:
                            float opacity,
                            BlendMode blendMode = BlendMode::Normal,
                            TextureColorSpace colorSpace = TextureColorSpace::Linear,
-                           const std::string& ocioColorSpace = std::string()) override;
+                           const std::string& ocioColorSpace = std::string(),
+                           const glm::vec4& uvRect = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)) override;
 
-    void drawMappingSurface(TextureRef texture,
+    void drawOutputSurface(TextureRef texture,
                              const glm::vec2 corners[4],
                              const glm::vec2 sourceUVs[4],
                              const glm::vec4& softEdges,
@@ -317,10 +318,11 @@ public:
                           float opacity,
                           BlendMode blendMode = BlendMode::Normal,
                           TextureColorSpace colorSpace = TextureColorSpace::Linear,
-                          const std::string& ocioColorSpace = std::string());
+                          const std::string& ocioColorSpace = std::string(),
+                          const DirectX::XMFLOAT4& uvRect = DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f));
 
     /** Draw a mapping surface with D3D12 SRV + XMFLOAT args. Legacy. */
-    void drawMappingSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
+    void drawOutputSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                             const DirectX::XMFLOAT2 corners[4],
                             const DirectX::XMFLOAT2 sourceUVs[4],
                             const DirectX::XMFLOAT4& softEdges,
@@ -553,7 +555,7 @@ private:
     D3D12_VERTEX_BUFFER_VIEW m_mappingSurfaceVertexBufferView;
 
     // Per-frame ring buffer of constant buffer slots (CRIT-04 fix).
-    // One slot per drawMappingSurface call. Reset each frame at beginShowFrame().
+    // One slot per drawOutputSurface call. Reset each frame at beginShowFrame().
     // Fence sync (moveToNextFrame) ensures the GPU has finished reading the
     // previous use of the current frame's region before we overwrite.
     static constexpr uint32_t MAX_MAPPING_SURFACES_PER_FRAME = 8192;
@@ -599,7 +601,10 @@ private:
         float padding1;
     };
 
-    // Constant buffer structure (must match HLSL)
+    // Constant buffer structure (must match HLSL common.hlsli LayerConstants).
+    // 28 dwords (112 bytes) after ADR-0021 M3 added uvRect for Tiled source
+    // cropping. Three root signatures (1269 / 1990 / 2209) bumped 24 → 28 to
+    // match; three send sites (1515 / 2449 / 2488) match.
     struct LayerConstants {
         DirectX::XMFLOAT4X4 transform;
         DirectX::XMFLOAT4 color;
@@ -607,6 +612,11 @@ private:
         uint32_t blendMode;    // 0=Normal, 1=Add, 2=Multiply, 3=Screen, ...
         uint32_t colorSpace;   // 0=Linear, 1=YCoCg_scaled (matches TextureColorSpace + COLOR_SPACE_* in common.hlsli)
         float padding3;
+        // Source-UV crop for content-routing Tiled mode (ADR-0021 M3). Identity
+        // (0,0,1,1) = full source; non-identity sub-region carves a feed-map
+        // slice. Applied in composite_vs.hlsl as
+        // `texCoord = texCoord * uvRect.zw + uvRect.xy`.
+        DirectX::XMFLOAT4 uvRect{0.0f, 0.0f, 1.0f, 1.0f};
     };
 
     // Offscreen compose targets (for multi-clip compositing, one per screen).

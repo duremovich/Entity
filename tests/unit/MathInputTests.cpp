@@ -187,7 +187,7 @@ TEST(MathInputParser, NonFiniteResult) {
     expectFail("1e500 * 1e500");
 }
 
-// ---- Real-world examples from PropertyWindow / MappingWindow ------------
+// ---- Real-world examples from PropertyWindow / OutputsWindow ------------
 
 TEST(MathInputParser, PropertyWindowExamples) {
     // Halving a value (a common motivation for this feature).
@@ -200,7 +200,7 @@ TEST(MathInputParser, PropertyWindowExamples) {
     expectClose("180 - 45", 135.0);
 }
 
-TEST(MathInputParser, MappingWindowCornerExamples) {
+TEST(MathInputParser, OutputsWindowCornerExamples) {
     // Corner positions are in NDC roughly [-1, 1].
     expectClose("-1 + 0.05", -0.95);
     expectClose("(0.5 + 0.3) / 2", 0.4);

@@ -22,8 +22,10 @@ PSInput VSMain(VSInput input) {
 
     output.position = worldPos;
 
-    // Pass through texture coordinates
-    output.texCoord = input.texCoord;
+    // Apply source-UV crop (ADR-0021 M3 Tiled mode). Identity uvRect is
+    // (0, 0, 1, 1) which passes texCoord through unchanged; non-identity
+    // sub-rect samples a region of the source texture for feed-map slicing.
+    output.texCoord = input.texCoord * uvRect.zw + uvRect.xy;
 
     return output;
 }

@@ -98,7 +98,7 @@ public:
     // Stage 3 split of buildRenderFrame.
     //
     // Editor half (called once per editor frame from Engine::run()):
-    // Walks Screen / MappingSurface / Projector / OutputDisplay registry
+    // Walks Screen / OutputSurface / Projector / OutputDisplay registry
     // views and fills `out`. Published latest-wins on D2R as a
     // bus::SceneSnapshot so the show thread never reads the registry.
     void buildSceneSnapshot(bus::SceneSnapshot& out) const;

@@ -35,7 +35,7 @@ _(none)_
 | CRIT-01 | 525b700 | FrameRingBuffer race fix with count validation + wraparound safety checks |
 | CRIT-02 | d854aec | DecodeWorker use-after-free fixed via `std::shared_ptr<DecodeWorker>` |
 | CRIT-03 | e102aca | Static `firstUpload` replaced with per-instance member |
-| CRIT-04 | (Phase A, 2026-04-19) | Replaced single mapped constant buffer with per-frame ring of 64 slot × FRAME_COUNT. `beginFrame()` resets the cursor; each `drawMappingSurface()` gets a unique 256-byte slot. Fence sync in `moveToNextFrame()` guarantees no CPU/GPU overlap. Also fixes the prior multi-surface-per-frame overwrite (all draws saw the last memcpy). D3D12Renderer.cpp:2023-2135. |
+| CRIT-04 | (Phase A, 2026-04-19) | Replaced single mapped constant buffer with per-frame ring of 64 slot × FRAME_COUNT. `beginFrame()` resets the cursor; each `drawOutputSurface()` call (formerly `drawMappingSurface()`, renamed in ADR-0021 M4) gets a unique 256-byte slot. Fence sync in `moveToNextFrame()` guarantees no CPU/GPU overlap. Also fixes the prior multi-surface-per-frame overwrite (all draws saw the last memcpy). D3D12Renderer.cpp:2023-2135. |
 | CRIT-05 | 92456b1 | `m_currentFrame` now reuses buffer when dimensions match |
 | CRIT-06 | 9c4df69 | `Clip` destructor + move semantics + deleted copy operators (Clip.hpp:70-152) |
 | CRIT-07 | c1311d9 | `ProResDecoder::convertToRGBA()` buffer overflow protection added |
@@ -105,7 +105,7 @@ Not individually re-verified in this pass. The original list (MED-02, MED-03, ME
 
 - **MED-05** (Engine.cpp) — Three separate maps for per-clip data. Fragmentation; consolidate into a single per-clip struct. Touches Phase B Engine decomposition.
 - ~~**MED-13** (D3D12Renderer.cpp:561-577) — `moveToNextFrame()` has INFINITE GPU wait. Real hang risk on device loss; pair with Phase A crash-recovery work.~~ **Fixed 2026-05-08 (commit 1c5ccb4, Phase A2 of #42)** — replaced `WaitForSingleObject(INFINITE)` with a 2-second timeout that delegates to `handleDeviceLost` on timeout/failure. Two remaining INFINITE waits in `D3D12Renderer::waitForGpu()` (lines 731 / 750) are tracked under the NEW-06 robust-recovery follow-up.
-- **MED-23** (MappingWindow.cpp:112-127) — UI selection state mixed with domain. Phase B UI/domain split should address.
+- **MED-23** (OutputsWindow.cpp:112-127, renamed from MappingWindow in ADR-0021 M4) — UI selection state mixed with domain. Phase B UI/domain split should address.
 - **MED-03** (VideoTexture.hpp:30-32) — Dangling `currentFrame` pointer risk. Audit ownership before Phase C output work.
 
 ---

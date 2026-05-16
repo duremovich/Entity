@@ -193,7 +193,7 @@ ScreenSnapshot decodeScreenSnapshot(const json& j) {
     return s;
 }
 
-ojson encode(const MappingSurfaceSnapshot& s) {
+ojson encode(const OutputSurfaceSnapshot& s) {
     ojson j = ojson::object();
     j["entity"]         = s.entity;
     j["visible"]        = s.visible;
@@ -214,8 +214,8 @@ ojson encode(const MappingSurfaceSnapshot& s) {
     return j;
 }
 
-MappingSurfaceSnapshot decodeMappingSurfaceSnapshot(const json& j) {
-    MappingSurfaceSnapshot s;
+OutputSurfaceSnapshot decodeOutputSurfaceSnapshot(const json& j) {
+    OutputSurfaceSnapshot s;
     s.entity       = j.at("entity").get<std::uint64_t>();
     s.visible      = j.at("visible").get<bool>();
     s.outputIndex  = j.at("outputIndex").get<std::uint32_t>();
@@ -385,6 +385,17 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["entity"]            = g.entity;
     j["kind"]              = static_cast<int>(g.kind);
     j["targetScreen"]      = g.targetScreen;
+    j["mode"]              = g.mode;
+    auto routesArr = ojson::array();
+    for (const auto& r : g.routes) {
+        ojson routeJ = ojson::object();
+        routeJ["screen"] = r.screen;
+        auto uvArr = ojson::array();
+        for (float v : r.uvRect) uvArr.push_back(v);
+        routeJ["uvRect"] = std::move(uvArr);
+        routesArr.push_back(std::move(routeJ));
+    }
+    j["routes"]            = std::move(routesArr);
     j["opacity"]           = g.opacity;
     j["blendMode"]         = g.blendMode;
     j["zOrder"]            = g.zOrder;
@@ -432,6 +443,20 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
                             ? GenerativeLayerSnapshot::Kind::Muncher
                             : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
     g.targetScreen      = j.value("targetScreen",      std::uint64_t{UINT64_MAX});
+    int gModeRaw        = j.value("mode",              0);
+    g.mode              = (gModeRaw == 1) ? 1 : 0;
+    if (j.contains("routes")) {
+        for (const auto& rj : j.at("routes")) {
+            ContentLayerRoute r;
+            r.screen = rj.value("screen", std::uint64_t{UINT64_MAX});
+            if (rj.contains("uvRect")) {
+                const auto& uv = rj.at("uvRect");
+                for (std::size_t i = 0; i < r.uvRect.size() && i < uv.size(); ++i)
+                    r.uvRect[i] = uv[i].get<float>();
+            }
+            g.routes.push_back(r);
+        }
+    }
     g.opacity           = j.value("opacity",           1.0f);
     g.blendMode         = j.value("blendMode",         0);
     g.zOrder            = j.value("zOrder",            std::uint32_t{0});
@@ -488,6 +513,17 @@ ojson encode(const ContentLayerSnapshot& c) {
     ojson j = ojson::object();
     j["entity"]                = c.entity;
     j["targetScreen"]          = c.targetScreen;
+    j["mode"]                  = c.mode;
+    auto routesArr = ojson::array();
+    for (const auto& r : c.routes) {
+        ojson routeJ = ojson::object();
+        routeJ["screen"] = r.screen;
+        auto uvArr = ojson::array();
+        for (float v : r.uvRect) uvArr.push_back(v);
+        routeJ["uvRect"] = std::move(uvArr);
+        routesArr.push_back(std::move(routeJ));
+    }
+    j["routes"]                = std::move(routesArr);
     auto xfArr = ojson::array();
     for (float v : c.transformMatrix) xfArr.push_back(v);
     j["transformMatrix"]       = std::move(xfArr);
@@ -512,6 +548,31 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     ContentLayerSnapshot c;
     c.entity                = j.value("entity",                std::uint64_t{0});
     c.targetScreen          = j.value("targetScreen",          std::uint64_t{UINT64_MAX});
+    // Plane A routing (ADR-0021). Prefer `routes` when present; clamp
+    // unknown mode values to Direct (0) per bus rule 2 — wire is
+    // forward-compatible across new RouteMode values.
+    int modeRaw             = j.value("mode",                  0);
+    c.mode                  = (modeRaw == 1) ? 1 : 0;
+    if (j.contains("routes")) {
+        for (const auto& rj : j.at("routes")) {
+            ContentLayerRoute r;
+            r.screen = rj.value("screen", std::uint64_t{UINT64_MAX});
+            if (rj.contains("uvRect")) {
+                const auto& uv = rj.at("uvRect");
+                for (std::size_t i = 0; i < r.uvRect.size() && i < uv.size(); ++i)
+                    r.uvRect[i] = uv[i].get<float>();
+            }
+            c.routes.push_back(r);
+        }
+    } else if (c.targetScreen != UINT64_MAX) {
+        // Legacy payload with no `routes` field: materialize one route
+        // from `targetScreen` so PASS 2 sees an explicit destination.
+        // UINT64_MAX = "all visible screens" stays as the empty-routes
+        // sentinel; the show-side bake expands it at SceneSnapshot time.
+        ContentLayerRoute r;
+        r.screen = c.targetScreen;
+        c.routes.push_back(r);
+    }
     if (j.contains("transformMatrix")) {
         const auto& arr = j.at("transformMatrix");
         for (std::size_t i = 0; i < c.transformMatrix.size() && i < arr.size(); ++i)
@@ -583,7 +644,7 @@ RenderFrame decodeRenderFrame(const json& j) {
     if (j.contains("screens"))
         for (const auto& s : j.at("screens")) m.screens.push_back(decodeScreenSnapshot(s));
     if (j.contains("surfaces"))
-        for (const auto& s : j.at("surfaces")) m.surfaces.push_back(decodeMappingSurfaceSnapshot(s));
+        for (const auto& s : j.at("surfaces")) m.surfaces.push_back(decodeOutputSurfaceSnapshot(s));
     if (j.contains("projectors"))
         for (const auto& p : j.at("projectors")) m.projectors.push_back(decodeProjectorSnapshot(p));
     if (j.contains("outputs"))
@@ -740,6 +801,17 @@ ojson encode(const ClipCatalogEntry& e) {
     j["blendMode"]            = e.blendMode;
     j["zOrder"]               = e.zOrder;
     j["targetScreen"]         = e.targetScreen;
+    j["mode"]                 = e.mode;
+    auto ceRoutesArr = ojson::array();
+    for (const auto& r : e.routes) {
+        ojson routeJ = ojson::object();
+        routeJ["screen"] = r.screen;
+        auto uvArr = ojson::array();
+        for (float v : r.uvRect) uvArr.push_back(v);
+        routeJ["uvRect"] = std::move(uvArr);
+        ceRoutesArr.push_back(std::move(routeJ));
+    }
+    j["routes"]               = std::move(ceRoutesArr);
     j["ocioOverride"]         = e.ocioOverride;
     j["hasPhase"]             = e.hasPhase;
     j["phase_inContinuation"]     = e.phase_inContinuation;
@@ -775,6 +847,20 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     e.blendMode       = j.at("blendMode").get<int>();
     e.zOrder          = j.at("zOrder").get<std::uint32_t>();
     e.targetScreen    = j.at("targetScreen").get<std::uint64_t>();
+    int ceModeRaw     = j.value("mode", 0);
+    e.mode            = (ceModeRaw == 1) ? 1 : 0;
+    if (j.contains("routes")) {
+        for (const auto& rj : j.at("routes")) {
+            ContentLayerRoute r;
+            r.screen = rj.value("screen", std::uint64_t{UINT64_MAX});
+            if (rj.contains("uvRect")) {
+                const auto& uv = rj.at("uvRect");
+                for (std::size_t i = 0; i < r.uvRect.size() && i < uv.size(); ++i)
+                    r.uvRect[i] = uv[i].get<float>();
+            }
+            e.routes.push_back(r);
+        }
+    }
     e.ocioOverride    = j.at("ocioOverride").get<std::string>();
     e.hasPhase        = j.at("hasPhase").get<bool>();
     e.phase_inContinuation     = j.at("phase_inContinuation").get<bool>();
@@ -872,7 +958,7 @@ SceneSnapshot decodeSceneSnapshot(const json& j) {
     if (j.contains("screens"))
         for (const auto& ss : j.at("screens")) s.screens.push_back(decodeScreenSnapshot(ss));
     if (j.contains("surfaces"))
-        for (const auto& ms : j.at("surfaces")) s.surfaces.push_back(decodeMappingSurfaceSnapshot(ms));
+        for (const auto& ms : j.at("surfaces")) s.surfaces.push_back(decodeOutputSurfaceSnapshot(ms));
     if (j.contains("projectors"))
         for (const auto& ps : j.at("projectors")) s.projectors.push_back(decodeProjectorSnapshot(ps));
     if (j.contains("outputs"))

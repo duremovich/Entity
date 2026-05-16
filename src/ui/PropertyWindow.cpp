@@ -12,6 +12,7 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/ContentRouting.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
@@ -528,6 +529,20 @@ void PropertyWindow::renderPlaybackSection() {
             : std::string(screenNames[currentScreenIdx]);
 
         clip->targetScreen = screens[currentScreenIdx];
+        // Mirror into ContentRouting (Plane A canonical state, ADR-0021).
+        // SetClipTargetScreenCommand will idempotently re-apply both fields
+        // when it executes; this optimistic write keeps the next snapshot
+        // bake coherent before the dispatcher drains.
+        {
+            auto& cr = registry.get_or_emplace<ContentRouting>(selectedClip);
+            cr.mode = RouteMode::Direct;
+            cr.targets.clear();
+            if (clip->targetScreen != entt::null) {
+                RouteTarget t;
+                t.screen = clip->targetScreen;
+                cr.targets.push_back(t);
+            }
+        }
         std::cout << "[PropertyWindow] Target screen changed to: "
                   << (clip->targetScreen == entt::null ? "ALL" : std::to_string(static_cast<uint32_t>(clip->targetScreen)))
                   << " (" << screenNames[currentScreenIdx] << ")" << std::endl;
@@ -538,6 +553,24 @@ void PropertyWindow::renderPlaybackSection() {
                 cmd->setPreviousScreenName(prevName);
                 m_dispatcher->enqueue(std::move(cmd));
             }
+        }
+    }
+
+    // Multi-target entry point (ADR-0021 M3). The dropdown above edits a
+    // single Direct target — for Tiled (one clip carved across N screens
+    // with per-screen UV crops), open the dedicated Content Routing window.
+    {
+        const auto* cr = registry.try_get<ContentRouting>(selectedClip);
+        const bool isTiled = cr && (cr->mode == RouteMode::Tiled || cr->targets.size() > 1);
+        const size_t routeCount = cr ? cr->targets.size() : 0;
+        if (ImGui::Button(isTiled ? "Multi-target..." : "Multi-target...##open")) {
+            ImGui::SetWindowFocus("Content Routing");
+        }
+        if (isTiled) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                                "Tiled across %zu screen%s",
+                                routeCount, routeCount == 1 ? "" : "s");
         }
     }
 
@@ -2249,11 +2282,36 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         if (ImGui::Combo("##gentarget", &currentIdx, targetCstrs.data(),
                          static_cast<int>(targetCstrs.size()))) {
             gen->targetScreen = targets[static_cast<size_t>(currentIdx)];
+            // Mirror into ContentRouting (Plane A canonical state, ADR-0021).
+            // No undoable command for generative-layer routing yet — this is
+            // a direct mutation. M2 single-target only; Tiled lives in M3.
+            auto& cr = registry.get_or_emplace<ContentRouting>(entity);
+            cr.mode = RouteMode::Direct;
+            cr.targets.clear();
+            if (gen->targetScreen != entt::null) {
+                RouteTarget t;
+                t.screen = gen->targetScreen;
+                cr.targets.push_back(t);
+            }
         }
 
         if (gen->targetScreen == entt::null) {
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
                                "No target — generated output has no destination.");
+        }
+
+        // Multi-target entry point — same as clip-side (ADR-0021 M3).
+        const auto* cr = registry.try_get<ContentRouting>(entity);
+        const bool isTiled = cr && (cr->mode == RouteMode::Tiled || cr->targets.size() > 1);
+        const size_t routeCount = cr ? cr->targets.size() : 0;
+        if (ImGui::Button("Multi-target...##gen")) {
+            ImGui::SetWindowFocus("Content Routing");
+        }
+        if (isTiled) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                                "Tiled across %zu screen%s",
+                                routeCount, routeCount == 1 ? "" : "s");
         }
     }
 

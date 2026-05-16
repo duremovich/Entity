@@ -1,4 +1,4 @@
-#include "entity/ui/MappingWindow.hpp"
+#include "entity/ui/OutputsWindow.hpp"
 #include "entity/ui/MathInput.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/color/OcioManager.hpp"
@@ -14,12 +14,12 @@
 
 namespace entity {
 
-MappingWindow::MappingWindow(Engine* engine)
+OutputsWindow::OutputsWindow(Engine* engine)
     : m_engine(engine)
 {
 }
 
-void MappingWindow::render() {
+void OutputsWindow::render() {
     if (!m_engine) return;
 
     ImVec2 windowSize = ImGui::GetContentRegionAvail();
@@ -65,7 +65,7 @@ void MappingWindow::render() {
     ImGui::EndGroup();
 }
 
-void MappingWindow::renderToolbar() {
+void OutputsWindow::renderToolbar() {
     ImGui::BeginGroup();
 
     // Add surface button
@@ -73,7 +73,7 @@ void MappingWindow::renderToolbar() {
         // Find highest existing surface number
         int maxSurfaceNum = 0;
         auto& registry = m_engine->getRegistry();
-        auto surfaceView = registry.view<MappingSurface>();
+        auto surfaceView = registry.view<OutputSurface>();
         for (auto [entity, surface] : surfaceView.each()) {
             if (surface.name.find("Surface ") == 0) {
                 try {
@@ -113,7 +113,7 @@ void MappingWindow::renderToolbar() {
     ImGui::EndGroup();
 }
 
-void MappingWindow::renderCanvas() {
+void OutputsWindow::renderCanvas() {
     ImVec2 canvasPos = ImGui::GetCursorScreenPos();
     ImVec2 canvasSize = ImGui::GetContentRegionAvail();
 
@@ -151,7 +151,7 @@ void MappingWindow::renderCanvas() {
 
     // Render all mapping surfaces
     auto& registry = m_engine->getRegistry();
-    auto view = registry.view<MappingSurface>();
+    auto view = registry.view<OutputSurface>();
 
     for (auto [entity, surface] : view.each()) {
         renderSurface(entity, surface, drawList, canvasPos, canvasSize);
@@ -161,7 +161,7 @@ void MappingWindow::renderCanvas() {
     handleInteraction(canvasPos, canvasSize);
 }
 
-void MappingWindow::renderSurface(entt::entity entity, MappingSurface& surface,
+void OutputsWindow::renderSurface(entt::entity entity, OutputSurface& surface,
                                    ImDrawList* drawList, const ImVec2& canvasPos,
                                    const ImVec2& canvasSize) {
     if (!surface.visible) return;
@@ -200,7 +200,7 @@ void MappingWindow::renderSurface(entt::entity entity, MappingSurface& surface,
                       IM_COL32(255, 255, 255, 200), surface.name.c_str());
 }
 
-void MappingWindow::renderCornerHandles(MappingSurface& surface, ImDrawList* drawList,
+void OutputsWindow::renderCornerHandles(OutputSurface& surface, ImDrawList* drawList,
                                          const ImVec2& canvasPos, const ImVec2& canvasSize) {
     const char* cornerLabels[] = {"TL", "TR", "BR", "BL"};
 
@@ -223,7 +223,7 @@ void MappingWindow::renderCornerHandles(MappingSurface& surface, ImDrawList* dra
     }
 }
 
-void MappingWindow::renderPropertiesPanel() {
+void OutputsWindow::renderPropertiesPanel() {
     if (m_selectedSurface == entt::null) {
         ImGui::TextDisabled("No surface selected");
         ImGui::TextDisabled("Click 'Add Surface' to create one");
@@ -231,7 +231,7 @@ void MappingWindow::renderPropertiesPanel() {
     }
 
     auto& registry = m_engine->getRegistry();
-    auto* surface = registry.try_get<MappingSurface>(m_selectedSurface);
+    auto* surface = registry.try_get<OutputSurface>(m_selectedSurface);
     if (!surface) {
         m_selectedSurface = entt::null;
         return;
@@ -382,7 +382,7 @@ void MappingWindow::renderPropertiesPanel() {
     ImGui::Columns(1);
 }
 
-void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& canvasSize) {
+void OutputsWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& canvasSize) {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 mousePos = io.MousePos;
 
@@ -400,7 +400,7 @@ void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
     // Handle dragging
     if (m_draggingCorner >= 0 && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         if (m_selectedSurface != entt::null) {
-            auto* surface = registry.try_get<MappingSurface>(m_selectedSurface);
+            auto* surface = registry.try_get<OutputSurface>(m_selectedSurface);
             if (surface) {
                 surface->corners[m_draggingCorner] = normalizedMouse;
             }
@@ -410,7 +410,7 @@ void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
     // Handle surface dragging
     if (m_isDraggingSurface && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         if (m_selectedSurface != entt::null) {
-            auto* surface = registry.try_get<MappingSurface>(m_selectedSurface);
+            auto* surface = registry.try_get<OutputSurface>(m_selectedSurface);
             if (surface) {
                 glm::vec2 newCenter = normalizedMouse - m_dragOffset;
                 glm::vec2 currentCenter = surface->getCenter();
@@ -431,7 +431,7 @@ void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
 
         // First check if clicking a corner handle of selected surface
         if (m_selectedSurface != entt::null && m_showHandles) {
-            auto* surface = registry.try_get<MappingSurface>(m_selectedSurface);
+            auto* surface = registry.try_get<OutputSurface>(m_selectedSurface);
             if (surface) {
                 for (int i = 0; i < 4; ++i) {
                     ImVec2 cornerPos = normalizedToCanvas(surface->corners[i], canvasPos, canvasSize);
@@ -449,7 +449,7 @@ void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
         // If not clicking a corner, check for surface selection
         if (!foundCorner) {
             entt::entity clickedSurface = entt::null;
-            auto view = registry.view<MappingSurface>();
+            auto view = registry.view<OutputSurface>();
 
             for (auto [entity, surface] : view.each()) {
                 if (surface.visible && surface.containsPoint(normalizedMouse)) {
@@ -462,7 +462,7 @@ void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
                 // Check if we're clicking the already selected surface
                 if (clickedSurface == m_selectedSurface) {
                     // Start dragging the whole surface
-                    auto* surface = registry.try_get<MappingSurface>(clickedSurface);
+                    auto* surface = registry.try_get<OutputSurface>(clickedSurface);
                     if (surface) {
                         m_isDraggingSurface = true;
                         m_dragOffset = normalizedMouse - surface->getCenter();
@@ -479,7 +479,7 @@ void MappingWindow::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
     }
 }
 
-ImVec2 MappingWindow::normalizedToCanvas(const glm::vec2& pos, const ImVec2& canvasPos,
+ImVec2 OutputsWindow::normalizedToCanvas(const glm::vec2& pos, const ImVec2& canvasPos,
                                           const ImVec2& canvasSize) const {
     // Map from [-1, 1] to canvas pixel coordinates
     // Flip Y because ImGui Y is down, normalized Y is up
@@ -488,7 +488,7 @@ ImVec2 MappingWindow::normalizedToCanvas(const glm::vec2& pos, const ImVec2& can
     return ImVec2(x, y);
 }
 
-glm::vec2 MappingWindow::canvasToNormalized(const ImVec2& pos, const ImVec2& canvasPos,
+glm::vec2 OutputsWindow::canvasToNormalized(const ImVec2& pos, const ImVec2& canvasPos,
                                              const ImVec2& canvasSize) const {
     // Map from canvas pixel coordinates to [-1, 1]
     float x = ((pos.x - canvasPos.x) / canvasSize.x) * 2.0f - 1.0f;
@@ -496,15 +496,15 @@ glm::vec2 MappingWindow::canvasToNormalized(const ImVec2& pos, const ImVec2& can
     return glm::vec2(x, y);
 }
 
-entt::entity MappingWindow::createSurface(const std::string& name) {
+entt::entity OutputsWindow::createSurface(const std::string& name) {
     auto& registry = m_engine->getRegistry();
 
     entt::entity entity = registry.create();
-    auto& surface = registry.emplace<MappingSurface>(entity);
+    auto& surface = registry.emplace<OutputSurface>(entity);
     surface.name = name;
 
     // Count existing surfaces for index
-    auto view = registry.view<MappingSurface>();
+    auto view = registry.view<OutputSurface>();
     surface.surfaceIndex = static_cast<uint32_t>(std::distance(view.begin(), view.end())) - 1;
 
     // Auto-associate with the currently-selected output so dragging corners
@@ -514,28 +514,28 @@ entt::entity MappingWindow::createSurface(const std::string& name) {
         auto* out = registry.try_get<OutputDisplay>(m_selectedOutput);
         if (out) {
             surface.outputIndex = out->outputIndex;
-            std::cout << "[MappingWindow] Surface '" << name << "' assigned to output '"
+            std::cout << "[OutputsWindow] Surface '" << name << "' assigned to output '"
                       << out->name << "' (index " << out->outputIndex << ")" << std::endl;
         }
     } else {
-        std::cout << "[MappingWindow] Surface '" << name
+        std::cout << "[OutputsWindow] Surface '" << name
                   << "' has no selected output — defaulting to output 0" << std::endl;
     }
 
-    std::cout << "[MappingWindow] Created surface: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
+    std::cout << "[OutputsWindow] Created surface: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
 
     return entity;
 }
 
-void MappingWindow::deleteSelectedSurface() {
+void OutputsWindow::deleteSelectedSurface() {
     if (m_selectedSurface == entt::null) return;
 
     auto& registry = m_engine->getRegistry();
 
     if (registry.valid(m_selectedSurface)) {
-        auto* surface = registry.try_get<MappingSurface>(m_selectedSurface);
+        auto* surface = registry.try_get<OutputSurface>(m_selectedSurface);
         if (surface) {
-            std::cout << "[MappingWindow] Deleted surface: " << surface->name << std::endl;
+            std::cout << "[OutputsWindow] Deleted surface: " << surface->name << std::endl;
         }
         registry.destroy(m_selectedSurface);
     }
@@ -544,7 +544,7 @@ void MappingWindow::deleteSelectedSurface() {
     m_draggingCorner = -1;
 }
 
-void MappingWindow::renderOutputsPanel() {
+void OutputsWindow::renderOutputsPanel() {
     auto& registry = m_engine->getRegistry();
 
     // Header
@@ -583,7 +583,7 @@ void MappingWindow::renderOutputsPanel() {
         // drag corners or hit a preset button without first clicking
         // "Add Surface".
         int maxSurfaceNum = 0;
-        auto surfCountView = registry.view<MappingSurface>();
+        auto surfCountView = registry.view<OutputSurface>();
         for (auto [se, existingSurf] : surfCountView.each()) {
             if (existingSurf.name.find("Surface ") == 0) {
                 try {
@@ -594,7 +594,7 @@ void MappingWindow::renderOutputsPanel() {
         }
         std::string surfName = "Surface " + std::to_string(maxSurfaceNum + 1);
         entt::entity newSurf = createSurface(surfName);
-        if (auto* s = registry.try_get<MappingSurface>(newSurf)) {
+        if (auto* s = registry.try_get<OutputSurface>(newSurf)) {
             s->corners = {{
                 {-1.0f,  1.0f}, { 1.0f,  1.0f},
                 { 1.0f, -1.0f}, {-1.0f, -1.0f}
@@ -602,7 +602,7 @@ void MappingWindow::renderOutputsPanel() {
         }
         m_selectedSurface = newSurf;
 
-        std::cout << "[MappingWindow] Created physical output: " << output.name
+        std::cout << "[OutputsWindow] Created physical output: " << output.name
                   << " (disabled, no display assigned, 1 fullscreen surface)" << std::endl;
     }
     ImGui::SameLine();
@@ -628,7 +628,7 @@ void MappingWindow::renderOutputsPanel() {
         output.width = 1280;
         output.height = 720;
         m_selectedOutput = newOutput;
-        std::cout << "[MappingWindow] Created preview output: " << output.name << std::endl;
+        std::cout << "[OutputsWindow] Created preview output: " << output.name << std::endl;
     }
 
     ImGui::Spacing();
@@ -908,7 +908,7 @@ void MappingWindow::renderOutputsPanel() {
     }
 }
 
-void MappingWindow::renderInputRegionConfig(OutputDisplay& output) {
+void OutputsWindow::renderInputRegionConfig(OutputDisplay& output) {
     // Show input region as normalized values
     bool regionChanged = false;
 

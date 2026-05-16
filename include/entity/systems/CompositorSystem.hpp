@@ -39,7 +39,7 @@ public:
     void update(entt::registry& registry, float deltaTime) override {}
     // Primary render path: walks rf.activeClips instead of the registry.
     // Registry is touched only for VideoTexture colorSpace reads and
-    // MappingSurface calibration data — both read-only. Screen enumeration
+    // OutputSurface calibration data — both read-only. Screen enumeration
     // uses rf.screens (the snapshot); ensureScreenRenderTarget writes are
     // replaced by ScreenRenderTargetAllocated R2D replies (Stage 4).
     //
@@ -51,7 +51,7 @@ public:
     void shutdown(entt::registry& registry) override;
     const char* getName() const override { return "CompositorSystem"; }
 
-    void renderMappingSurfaces(entt::registry& registry, TextureRef texture);
+    void renderOutputSurfaces(entt::registry& registry, TextureRef texture);
 
     // Allocate or resize a compose target for a screen. When a new slot is
     // allocated, posts a ScreenRenderTargetAllocated R2D reply so the editor

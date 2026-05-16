@@ -13,6 +13,7 @@
 
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/ContentRouting.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -1311,4 +1312,299 @@ TEST(ProjectSerializer, PreV19PropLoadsWithOpacityOne) {
     }
     ASSERT_NE(loaded, nullptr);
     EXPECT_FLOAT_EQ(loaded->opacity, 1.0f);
+}
+
+// ADR-0021 M2: project round-trip preserves ContentRouting on a clip with a
+// single Direct target. Legacy `targetScreen` alias stays in sync. The
+// canonical `contentRouting` JSON object is emitted on save and preferred on
+// load over the legacy `targetScreenName` field.
+TEST(ProjectSerializer, ContentRoutingDirectRoundTrip) {
+    TempFile tf("content_routing_direct_roundtrip");
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        // Create a target Screen.
+        entt::entity screenEnt = registry.create();
+        auto& screen = registry.emplace<entity::Screen>(screenEnt);
+        screen.name   = "TargetScreen";
+        screen.width  = 1920;
+        screen.height = 1080;
+
+        // Create a track + clip.
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        entt::entity clipEnt = registry.create();
+        auto& clip = registry.emplace<entity::Clip>(clipEnt);
+        clip.filepath  = "content/test.mov";
+        clip.mediaType = entity::MediaType::VideoProRes4444;
+        clip.startFrame = 0;
+        clip.duration   = 60;
+        clip.framerate  = 30.0;
+        clip.targetScreen = screenEnt;
+
+        auto& lay = registry.emplace<entity::Layer>(clipEnt);
+        lay.kind       = entity::Layer::Kind::Clip;
+        lay.startFrame = 0;
+        lay.duration   = 60;
+
+        // The canonical Plane A state.
+        auto& cr = registry.emplace<entity::ContentRouting>(clipEnt);
+        cr.mode = entity::RouteMode::Direct;
+        entity::RouteTarget rt;
+        rt.screen = screenEnt;
+        rt.uvRect = {0.0f, 0.0f, 1.0f, 1.0f};
+        cr.targets.push_back(rt);
+
+        track->layers.push_back(clipEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load ---
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    // The screen entity is re-created with the same name.
+    entt::entity loadedScreen = entt::null;
+    for (auto [e, s] : registry.view<entity::Screen>().each()) {
+        if (s.name == "TargetScreen") { loadedScreen = e; break; }
+    }
+    ASSERT_TRUE(loadedScreen != entt::null);
+
+    // The clip entity carries ContentRouting with one Direct target
+    // pointing at the loaded screen, and the legacy alias stays in sync.
+    int routedClipCount = 0;
+    for (auto [e, clip, cr] : registry.view<entity::Clip, entity::ContentRouting>().each()) {
+        if (clip.filepath != "content/test.mov") continue;
+        ++routedClipCount;
+        EXPECT_EQ(cr.mode, entity::RouteMode::Direct);
+        ASSERT_EQ(cr.targets.size(), 1u);
+        EXPECT_EQ(cr.targets[0].screen, loadedScreen);
+        EXPECT_FLOAT_EQ(cr.targets[0].uvRect[0], 0.0f);
+        EXPECT_FLOAT_EQ(cr.targets[0].uvRect[2], 1.0f);
+        EXPECT_EQ(clip.targetScreen, loadedScreen);
+    }
+    EXPECT_EQ(routedClipCount, 1) << "Expected exactly one ContentRouting-bearing clip";
+}
+
+// ADR-0021 M2: a pre-M2 project with only the legacy `targetScreenName`
+// field loads as a ContentRouting with one Direct target. The legacy alias
+// and the new canonical state must agree.
+TEST(ProjectSerializer, ContentRoutingLegacyTargetScreenMigration) {
+    TempFile tf("content_routing_legacy_migration");
+
+    // Hand-written pre-M2 JSON (no `contentRouting` key, only legacy
+    // `targetScreenName`). Mirrors the v15 layers[] shape; the version
+    // check inside the loader is tolerant of the explicit field omission.
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 17,
+  "timeline": {"duration": 1800, "framerate": 30, "currentTime": 0},
+  "screens": [
+    {"name": "MainWall", "width": 1920, "height": 1080,
+     "position": [0,0,0], "rotation": [0,0,0], "size": [4.0, 2.25, 0.0],
+     "visible": true, "opacity": 1.0, "zOrder": 0, "type": "LEDWall"}
+  ],
+  "tracks": [
+    {
+      "index": 0,
+      "layers": [
+        {
+          "kind": "clip",
+          "filepath": "content/test.mov",
+          "mediaType": "prores4444",
+          "startFrame": 0,
+          "duration": 60,
+          "mediaStartFrame": 0,
+          "mediaOutFrame": 59,
+          "totalMediaFrames": 60,
+          "playbackMode": 0,
+          "sectionBehavior": "Normal",
+          "framerate": 30.0,
+          "width": 1920,
+          "height": 1080,
+          "hasAlpha": false,
+          "frameBlending": false,
+          "targetScreenName": "MainWall"
+        }
+      ]
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    entt::entity wall = entt::null;
+    for (auto [e, s] : registry.view<entity::Screen>().each()) {
+        if (s.name == "MainWall") { wall = e; break; }
+    }
+    ASSERT_TRUE(wall != entt::null);
+
+    int routedClipCount = 0;
+    for (auto [e, clip, cr] : registry.view<entity::Clip, entity::ContentRouting>().each()) {
+        if (clip.filepath != "content/test.mov") continue;
+        ++routedClipCount;
+        EXPECT_EQ(cr.mode, entity::RouteMode::Direct);
+        ASSERT_EQ(cr.targets.size(), 1u);
+        EXPECT_EQ(cr.targets[0].screen, wall);
+        EXPECT_EQ(clip.targetScreen, wall);
+    }
+    EXPECT_EQ(routedClipCount, 1) << "Expected legacy targetScreenName to materialize one Direct route";
+}
+
+// ADR-0021 M2: a clip with no targetScreen (null / empty name) loads as a
+// ContentRouting with `mode=Direct, targets=[]` (empty), preserving the
+// legacy "render on all visible screens" semantic.
+TEST(ProjectSerializer, ContentRoutingNullTargetIsEmptyTargets) {
+    TempFile tf("content_routing_null_target");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        entt::entity clipEnt = registry.create();
+        auto& clip = registry.emplace<entity::Clip>(clipEnt);
+        clip.filepath  = "content/all_screens.mov";
+        clip.mediaType = entity::MediaType::VideoProRes4444;
+        clip.startFrame = 0;
+        clip.duration   = 60;
+        clip.framerate  = 30.0;
+        // clip.targetScreen stays entt::null — "render on all".
+
+        auto& lay = registry.emplace<entity::Layer>(clipEnt);
+        lay.kind       = entity::Layer::Kind::Clip;
+        lay.startFrame = 0;
+        lay.duration   = 60;
+
+        // ContentRouting with empty targets.
+        auto& cr = registry.emplace<entity::ContentRouting>(clipEnt);
+        cr.mode = entity::RouteMode::Direct;
+
+        track->layers.push_back(clipEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    int routedClipCount = 0;
+    for (auto [e, clip, cr] : registry.view<entity::Clip, entity::ContentRouting>().each()) {
+        if (clip.filepath != "content/all_screens.mov") continue;
+        ++routedClipCount;
+        EXPECT_EQ(cr.mode, entity::RouteMode::Direct);
+        EXPECT_EQ(cr.targets.size(), 0u);
+        EXPECT_TRUE(clip.targetScreen == entt::null);
+    }
+    EXPECT_EQ(routedClipCount, 1);
+}
+
+// ADR-0021 M3: project round-trip preserves a Tiled ContentRouting with
+// multiple per-screen UV crops — the headline feed-map authoring scenario.
+TEST(ProjectSerializer, ContentRoutingTiledRoundTrip) {
+    TempFile tf("content_routing_tiled_roundtrip");
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        // Three target Screens — left, middle, right LED-wall panels.
+        entt::entity sLeft = registry.create();
+        registry.emplace<entity::Screen>(sLeft).name   = "LeftLED";
+        entt::entity sMid = registry.create();
+        registry.emplace<entity::Screen>(sMid).name    = "MiddleLED";
+        entt::entity sRight = registry.create();
+        registry.emplace<entity::Screen>(sRight).name  = "RightLED";
+
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        // Panoramic clip carved across the three screens.
+        entt::entity clipEnt = registry.create();
+        auto& clip = registry.emplace<entity::Clip>(clipEnt);
+        clip.filepath  = "content/panorama_5760x1080.mov";
+        clip.mediaType = entity::MediaType::VideoProRes4444;
+        clip.startFrame = 0;
+        clip.duration   = 120;
+        clip.framerate  = 30.0;
+        // targetScreen alias is left null — Tiled doesn't map to a single
+        // screen, so the legacy field reads as "all visible" if anything
+        // ever falls back to it.
+        clip.targetScreen = entt::null;
+
+        auto& lay = registry.emplace<entity::Layer>(clipEnt);
+        lay.kind       = entity::Layer::Kind::Clip;
+        lay.startFrame = 0;
+        lay.duration   = 120;
+
+        auto& cr = registry.emplace<entity::ContentRouting>(clipEnt);
+        cr.mode = entity::RouteMode::Tiled;
+        cr.targets.push_back({sLeft,  {0.0f,    0.0f, 0.3333f, 1.0f}});
+        cr.targets.push_back({sMid,   {0.3333f, 0.0f, 0.3334f, 1.0f}});
+        cr.targets.push_back({sRight, {0.6667f, 0.0f, 0.3333f, 1.0f}});
+
+        track->layers.push_back(clipEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load ---
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    entt::entity sLeft = entt::null, sMid = entt::null, sRight = entt::null;
+    for (auto [e, s] : registry.view<entity::Screen>().each()) {
+        if (s.name == "LeftLED")   sLeft  = e;
+        if (s.name == "MiddleLED") sMid   = e;
+        if (s.name == "RightLED")  sRight = e;
+    }
+    ASSERT_TRUE(sLeft  != entt::null);
+    ASSERT_TRUE(sMid   != entt::null);
+    ASSERT_TRUE(sRight != entt::null);
+
+    int tiledClipCount = 0;
+    for (auto [e, clip, cr] : registry.view<entity::Clip, entity::ContentRouting>().each()) {
+        if (clip.filepath != "content/panorama_5760x1080.mov") continue;
+        ++tiledClipCount;
+        EXPECT_EQ(cr.mode, entity::RouteMode::Tiled);
+        ASSERT_EQ(cr.targets.size(), 3u);
+        EXPECT_EQ(cr.targets[0].screen, sLeft);
+        EXPECT_FLOAT_EQ(cr.targets[0].uvRect[0], 0.0f);
+        EXPECT_FLOAT_EQ(cr.targets[0].uvRect[2], 0.3333f);
+        EXPECT_EQ(cr.targets[1].screen, sMid);
+        EXPECT_FLOAT_EQ(cr.targets[1].uvRect[0], 0.3333f);
+        EXPECT_FLOAT_EQ(cr.targets[1].uvRect[2], 0.3334f);
+        EXPECT_EQ(cr.targets[2].screen, sRight);
+        EXPECT_FLOAT_EQ(cr.targets[2].uvRect[0], 0.6667f);
+        // The legacy alias stays null for Tiled (it can't represent multi-
+        // target); the ContentRouting component is the source of truth.
+        EXPECT_TRUE(clip.targetScreen == entt::null);
+    }
+    EXPECT_EQ(tiledClipCount, 1) << "Expected one Tiled-routed clip after reload";
 }

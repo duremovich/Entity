@@ -3,6 +3,7 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
+#include "entity/components/ContentRouting.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -12,7 +13,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
-#include "entity/components/MappingSurface.hpp"
+#include "entity/components/OutputSurface.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
@@ -51,6 +52,52 @@ constexpr TransportState toTransportState(PlaybackState s) {
 // representation is stable regardless of EnTT's internal sentinel.
 constexpr std::uint64_t entityToU64(entt::entity e) {
     return (e == entt::null) ? 0ull : static_cast<std::uint64_t>(e);
+}
+
+// Resolve a content layer's effective single-screen target for the bake
+// (ADR-0021). ContentRouting is the source of truth when attached; fall back
+// to the legacy single-entity field otherwise. Multi-target (Tiled) layers
+// land their full route list via bakeRoutes() below; this helper is for
+// the legacy `targetScreen` alias the bus snapshots still carry.
+inline std::uint64_t resolveTargetScreen(const entt::registry& reg,
+                                          entt::entity layerEntity,
+                                          entt::entity legacyTargetScreen) {
+    if (const auto* cr = reg.try_get<ContentRouting>(layerEntity)) {
+        if (cr->targets.empty()) {
+            return UINT64_MAX;  // empty = "render on all visible screens"
+        }
+        const entt::entity screen = cr->targets.front().screen;
+        return (screen == entt::null) ? UINT64_MAX : entityToU64(screen);
+    }
+    return (legacyTargetScreen == entt::null)
+        ? UINT64_MAX
+        : entityToU64(legacyTargetScreen);
+}
+
+// Bake a layer's full ContentRouting → bus route list (ADR-0021 M3+).
+// `mode` mirrors entity::RouteMode (0=Direct, 1=Tiled). Empty `targets`
+// vector is left empty so the show-side bake can expand it to "render on
+// every visible screen" using out.screens. When no ContentRouting is
+// attached (legacy entities not yet migrated), returns an empty vector
+// and mode=0 — the show side then falls back to the legacy targetScreen
+// alias on the snapshot. Tiled in M2 emitted only a single route from
+// the first target; M3 emits the full list.
+inline void bakeRoutes(const entt::registry& reg,
+                        entt::entity layerEntity,
+                        std::vector<bus::ContentLayerRoute>& outRoutes,
+                        int& outMode) {
+    outRoutes.clear();
+    outMode = 0;
+    const auto* cr = reg.try_get<ContentRouting>(layerEntity);
+    if (!cr) return;
+    outMode = static_cast<int>(cr->mode);
+    outRoutes.reserve(cr->targets.size());
+    for (const auto& t : cr->targets) {
+        bus::ContentLayerRoute r;
+        r.screen = (t.screen == entt::null) ? UINT64_MAX : entityToU64(t.screen);
+        r.uvRect = t.uvRect;
+        outRoutes.push_back(r);
+    }
 }
 
 // Reconstruct a Clip value from a ClipCatalogEntry for use with the pure
@@ -724,7 +771,7 @@ void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
 }
 
 void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
-    // Stage primitives baked here: Screens, MappingSurfaces, Projectors,
+    // Stage primitives baked here: Screens, OutputSurfaces, Projectors,
     // OutputDisplays, ClipCatalog. Props (Prop component) are intentionally
     // NOT baked — they exist only for editor pre-vis (see Prop.hpp). The
     // show thread never reads them, so they can't drift the output.
@@ -802,8 +849,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
     }
 
     out.surfaces.clear();
-    for (auto [entity, surf] : m_registry.view<MappingSurface>().each()) {
-        bus::MappingSurfaceSnapshot ms;
+    for (auto [entity, surf] : m_registry.view<OutputSurface>().each()) {
+        bus::OutputSurfaceSnapshot ms;
         ms.entity       = static_cast<std::uint64_t>(entity);
         ms.visible      = surf.visible;
         ms.outputIndex  = surf.outputIndex;
@@ -949,9 +996,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             }
         }
 
-        ce.targetScreen = (clip.targetScreen == entt::null)
-            ? UINT64_MAX
-            : entityToU64(clip.targetScreen);
+        ce.targetScreen = resolveTargetScreen(m_registry, entity, clip.targetScreen);
+        bakeRoutes(m_registry, entity, ce.routes, ce.mode);
 
         ce.ocioOverride = lookupInputColorSpaceOverride(clip);
 
@@ -1035,9 +1081,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
 
         bus::GenerativeLayerSnapshot snap;
         snap.entity       = static_cast<std::uint64_t>(entity);
-        snap.targetScreen = (gen.targetScreen == entt::null)
-                              ? std::uint64_t{UINT64_MAX}
-                              : static_cast<std::uint64_t>(gen.targetScreen);
+        snap.targetScreen = resolveTargetScreen(m_registry, entity, gen.targetScreen);
+        bakeRoutes(m_registry, entity, snap.routes, snap.mode);
 
         if (const auto* ml = m_registry.try_get<MediaLayer>(entity)) {
             snap.opacity   = ml->opacity;
@@ -1347,10 +1392,96 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         return nullptr;
     };
 
+    // Build the route list for one content layer. ADR-0021 M3: prefer the
+    // editor-baked `bakedRoutes` (carried on ClipCatalogEntry / GenerativeLayer
+    // Snapshot) when non-empty — that's the canonical Tiled multi-target case
+    // and any Direct single-target Plane A authoring. When the bake produced
+    // no routes (legacy clip without ContentRouting or empty-targets
+    // ContentRouting), fall back to deriving a route from the single-screen
+    // `targetScreen` alias; UINT64_MAX there expands to one route per visible
+    // screen so PASS 2 sees an explicit destination list with no implicit
+    // "all visible" case. When `out.screens` is empty (mid-project-load,
+    // no Screens authored yet), an unbound UINT64_MAX route is emitted so
+    // the snapshot stays self-describing.
+    auto fillRoutes = [&](bus::ContentLayerSnapshot& c,
+                           const std::vector<bus::ContentLayerRoute>& bakedRoutes,
+                           int bakedMode,
+                           std::uint64_t targetScreen) {
+        c.routes.clear();
+        if (!bakedRoutes.empty()) {
+            // Editor-baked Plane A path. Pass through the route list as-is;
+            // UINT64_MAX in a baked route still expands to per-visible-screen
+            // below to keep PASS 2 explicit-list semantics.
+            c.mode = bakedMode;
+            for (const auto& br : bakedRoutes) {
+                if (br.screen == UINT64_MAX) {
+                    if (out.screens.empty()) {
+                        c.routes.push_back(br);  // no screens yet — keep sentinel
+                    } else {
+                        for (const auto& s : out.screens) {
+                            if (!s.visible) continue;
+                            bus::ContentLayerRoute r = br;
+                            r.screen = s.entity;
+                            c.routes.push_back(r);
+                        }
+                    }
+                } else {
+                    c.routes.push_back(br);
+                }
+            }
+            if (c.routes.empty()) {
+                bus::ContentLayerRoute r;
+                r.screen = UINT64_MAX;
+                c.routes.push_back(r);
+            }
+            return;
+        }
+        c.mode = 0;  // legacy fallback is always Direct
+        if (targetScreen == UINT64_MAX) {
+            if (out.screens.empty()) {
+                bus::ContentLayerRoute r;
+                r.screen = UINT64_MAX;
+                c.routes.push_back(r);
+            } else {
+                c.routes.reserve(out.screens.size());
+                for (const auto& s : out.screens) {
+                    if (!s.visible) continue;
+                    bus::ContentLayerRoute r;
+                    r.screen = s.entity;
+                    c.routes.push_back(r);
+                }
+                if (c.routes.empty()) {
+                    bus::ContentLayerRoute r;
+                    r.screen = UINT64_MAX;
+                    c.routes.push_back(r);
+                }
+            }
+        } else {
+            bus::ContentLayerRoute r;
+            r.screen = targetScreen;
+            c.routes.push_back(r);
+        }
+    };
+
+    // Catalog lookup for clip's editor-baked routes (linear scan, N tiny).
+    auto findCatalog = [&scene](std::uint64_t entity) -> const bus::ClipCatalogEntry* {
+        for (const auto& ce : scene.clipCatalog) {
+            if (ce.entity == entity) return &ce;
+        }
+        return nullptr;
+    };
+
     for (const auto& ac : out.activeClips) {
         bus::ContentLayerSnapshot c;
         c.entity                = ac.entity;
         c.targetScreen          = ac.targetScreen;
+        const auto* ce = findCatalog(ac.entity);
+        if (ce) {
+            fillRoutes(c, ce->routes, ce->mode, ac.targetScreen);
+        } else {
+            static const std::vector<bus::ContentLayerRoute> kEmpty;
+            fillRoutes(c, kEmpty, 0, ac.targetScreen);
+        }
         c.transformMatrix       = ac.transformMatrix;
         c.opacity               = ac.opacity;
         c.sectionFadeMultiplier = ac.sectionFadeMultiplier;
@@ -1374,6 +1505,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         bus::ContentLayerSnapshot c;
         c.entity                = gl.entity;
         c.targetScreen          = gl.targetScreen;
+        fillRoutes(c, gl.routes, gl.mode, gl.targetScreen);
         c.transformMatrix       = gl.transformMatrix;
         c.opacity               = gl.opacity;
         c.sectionFadeMultiplier = 1.0f;  // SectionScheduler integration is NEW-08

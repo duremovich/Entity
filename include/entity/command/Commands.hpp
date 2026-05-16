@@ -498,7 +498,7 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
-    std::string m_tabName;  // "Stage" or "Mapping"
+    std::string m_tabName;  // "Stage" or "Outputs"
 };
 
 class SetClipRotationCommand : public UndoableCommand {
@@ -709,6 +709,67 @@ private:
     int m_clipIndex;
     std::string m_screenName;
     std::optional<std::string> m_previousScreenName;
+};
+
+/**
+ * Replace a clip's full ContentRouting (Plane A per ADR-0021 M3).
+ *
+ * Carries the routing as `{ "mode": "Direct" | "Tiled", "targets": [ ... ] }`
+ * where each target is `{ "screenName": "...", "uvRect": [x, y, w, h] }`.
+ * Screen names — not entt::entity values — match SetClipTargetScreen's
+ * cross-session-stable convention. Empty targets array means "render on
+ * all visible screens" (the legacy null-target semantic).
+ *
+ * Used by ContentRoutingWindow to author multi-screen feed maps and by
+ * PropertyWindow when the user picks a single target (the command falls
+ * back to the same path as SetClipTargetScreen in that case). Full-
+ * component replace gives trivial undo.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetContentRouting",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "mode": "Tiled",
+ *     "targets": [
+ *         {"screenName": "Left LED",   "uvRect": [0.0, 0.0, 0.333, 1.0]},
+ *         {"screenName": "Middle LED", "uvRect": [0.333, 0.0, 0.333, 1.0]},
+ *         {"screenName": "Right LED",  "uvRect": [0.666, 0.0, 0.334, 1.0]}
+ *     ]
+ * }
+ */
+class SetContentRoutingCommand : public UndoableCommand {
+public:
+    struct TargetSpec {
+        std::string screenName;
+        std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};
+    };
+
+    SetContentRoutingCommand(int trackIndex, int clipIndex,
+                              const std::string& mode,
+                              std::vector<TargetSpec> targets)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_mode(mode), m_targets(std::move(targets)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetContentRouting"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    std::string m_mode;                // "Direct" or "Tiled"
+    std::vector<TargetSpec> m_targets;
+
+    // Captured on first execute for undo. Use the same TargetSpec/mode
+    // shape so undo restores name-based routing across project reloads.
+    bool m_previousCaptured{false};
+    std::string m_previousMode;
+    std::vector<TargetSpec> m_previousTargets;
 };
 
 /**

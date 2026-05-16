@@ -355,17 +355,22 @@ than fold props into screens.
 
 ---
 
-## MappingSurface — Projection warp quadrilateral
+## OutputSurface — Projection warp quadrilateral (Plane B per ADR-0021)
 
 | Required | Optional |
 |---|---|
-| `MappingSurface` | — |
+| `OutputSurface` | — |
 
-**Invariant**: `visible == true` → drawn by `renderMappingSurfaces`. Its
+**Invariant**: `visible == true` → drawn by `renderOutputSurfaces`. Its
 `outputIndex` ties it to a specific `OutputDisplay` for raster routing.
 
+Renamed from `MappingSurface` in Phase M1 of the two-tier mapping work
+(ADR-0021). The struct is Plane B — a per-output warp quad — and never
+participated in Plane A content routing despite the old name's
+implication.
+
 **Created at**:
-- `src/ui/MappingWindow.cpp`
+- `src/ui/OutputsWindow.cpp`
 
 **Notes**:
 - Self-contained quad + soft edges + source-region UV state. Carries
@@ -413,17 +418,24 @@ matrices.
 
 ---
 
-## FeedMapping — Advanced clip-to-screen routing (defined but minimally used)
+## Content Routing — Plane A mapping (ADR-0021, M2+)
 
-| Required | Optional |
-|---|---|
-| `FeedMapping` | — |
+Multi-screen content routing arrives as a `ContentRouting` component
+on Clip / GenerativeLayer entities in Phase M2; the Tiled mode that
+slices one source across N screens with per-screen UV crops lands in
+M3. The legacy `Clip.targetScreen` / `GenerativeLayer.targetScreen`
+single-entity fields are migrated into `ContentRouting.targets[0]`
+on project load and remain as deprecated aliases for one project-
+format version.
 
-**Invariant**: Defined in `Screen.hpp`. Allows clips to be mapped to
-screens with custom UV transforms (Direct / Perspective / Cylindrical /
-Spherical / Custom). Currently the default `Direct` mapping is what
-real projects use; the other modes are scaffolded for future feature
-work.
+See ADR-0021 (Two-tier mapping) for the contract; the
+`~/.claude/plans/i-think-we-need-shimmying-pond.md` working plan
+carries the implementation sequence.
+
+The previously-declared `FeedMapping` struct (Screen.hpp, dead
+code) was removed in M1. Its name conflated Plane A with Plane B
+("feed" reads as hardware-output in industry vocabulary); the
+replacement `ContentRouting` lives in Plane A unambiguously.
 
 ---
 

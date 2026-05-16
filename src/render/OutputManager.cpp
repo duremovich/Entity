@@ -549,7 +549,7 @@ static glm::mat4 buildProjectorVP(const bus::ProjectorSnapshot& proj, float aspe
 // When the screen has a mesh, uses the mesh's local-space XY bounds; otherwise
 // falls back to Stage3DRenderer's default 16:9 × 1 quad. This matches what the
 // user actually sees in the calibration window's right pane.
-// Order: [0]=TL, [1]=TR, [2]=BR, [3]=BL (drawMappingSurface convention).
+// Order: [0]=TL, [1]=TR, [2]=BR, [3]=BL (drawOutputSurface convention).
 static void computeScreenWorldCorners(const bus::ScreenSnapshot& screen,
                                       const MeshData* mesh,
                                       glm::vec3 corners[4]) {
@@ -672,7 +672,7 @@ void OutputManager::renderToOutput(
         const bus::OutputSnapshot& output,
         uint32_t windowSlot,
         TextureRef compositedTexture,
-        const std::vector<bus::MappingSurfaceSnapshot>& surfaces,
+        const std::vector<bus::OutputSurfaceSnapshot>& surfaces,
         const std::vector<bus::ProjectorSnapshot>& projectors,
         const std::vector<bus::ScreenSnapshot>& screens) {
     if (!m_renderer || !compositedTexture.valid()) return;
@@ -682,7 +682,7 @@ void OutputManager::renderToOutput(
 
     // Projector-linked output: render the screen content as seen from the projector's
     // camera. Project the screen's 3D corners through the projector VP to get NDC
-    // positions, then use drawMappingSurface for perspective-correct warping.
+    // positions, then use drawOutputSurface for perspective-correct warping.
     if (output.sourceProjector != 0) {
         // Find projector snapshot
         const bus::ProjectorSnapshot* projPtr = nullptr;
@@ -931,7 +931,7 @@ void OutputManager::renderToOutput(
                     if (allInFront) {
                         const glm::vec2 uvs[4] = {{0.0f,0.0f},{1.0f,0.0f},{1.0f,1.0f},{0.0f,1.0f}};
                         const glm::vec4 noEdge(0.0f);
-                        m_renderer->drawMappingSurface(screenTexture, ndcCorners, uvs, noEdge,
+                        m_renderer->drawOutputSurface(screenTexture, ndcCorners, uvs, noEdge,
                                                        output.brightness, output.gamma, 1.0f);
                     }
                 }
@@ -965,7 +965,7 @@ void OutputManager::renderToOutput(
     // Projection-mapping render order (Disguise model):
     //   compose target -> InputRegion pre-crop -> per-surface warp + source UVs
     //
-    // If any MappingSurface is assigned to this output, draw each one with
+    // If any OutputSurface is assigned to this output, draw each one with
     // its own corner warp. sourceUVs on the surface are normalized within
     // the output's InputRegion, so we combine them here. If no surfaces are
     // assigned, fall back to a fullscreen InputRegion quad so the output
@@ -996,7 +996,7 @@ void OutputManager::renderToOutput(
             surf.softEdgeLeft, surf.softEdgeRight,
             surf.softEdgeTop,  surf.softEdgeBottom);
 
-        m_renderer->drawMappingSurface(
+        m_renderer->drawOutputSurface(
             compositedTexture,
             corners, combinedUVs,
             softEdges,
@@ -1024,7 +1024,7 @@ void OutputManager::renderToOutput(
             {u0, v0}, {u1, v0}, {u1, v1}, {u0, v1},
         };
         const glm::vec4 softEdges(0.0f, 0.0f, 0.0f, 0.0f);
-        m_renderer->drawMappingSurface(
+        m_renderer->drawOutputSurface(
             compositedTexture, corners, sourceUVs, softEdges,
             output.brightness, output.gamma, 1.0f);
     }

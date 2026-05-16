@@ -149,7 +149,7 @@ void ProjectorCalibrationWindow::open(entt::entity projectorEntity) {
             auto& proj = reg.get<Projector>(m_projectorEntity);
 
             entt::entity targetOutput = entt::null;
-            // 1. Explicit link from a previous session / MappingWindow assignment.
+            // 1. Explicit link from a previous session / OutputsWindow assignment.
             if (reg.valid(proj.linkedOutput) && reg.all_of<OutputDisplay>(proj.linkedOutput))
                 targetOutput = proj.linkedOutput;
             // 2. An output already configured with this projector as its source.

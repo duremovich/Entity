@@ -8,6 +8,7 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/ContentRouting.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Model.hpp"
@@ -1382,6 +1383,24 @@ std::string screenNameForEntity(entt::registry& registry, entt::entity screen) {
     return s->name;
 }
 
+// Apply a single-screen Direct target to a clip's ContentRouting + legacy
+// alias. ADR-0021 M2: ContentRouting is the new source of truth; the
+// legacy `Clip::targetScreen` field stays in sync for one project-format
+// version. `screen == entt::null` clears the targets vector (renders on
+// all visible screens).
+void applyClipTargetScreen(entt::registry& registry, entt::entity clipEntity,
+                            Clip& clip, entt::entity screen) {
+    clip.targetScreen = screen;
+    auto& cr = registry.get_or_emplace<ContentRouting>(clipEntity);
+    cr.mode = RouteMode::Direct;
+    cr.targets.clear();
+    if (screen != entt::null) {
+        RouteTarget t;
+        t.screen = screen;
+        cr.targets.push_back(t);
+    }
+}
+
 } // namespace
 
 bool SetClipTargetScreenCommand::execute(Engine& engine) {
@@ -1418,7 +1437,7 @@ bool SetClipTargetScreenCommand::execute(Engine& engine) {
 
     // Find screen by name
     if (m_screenName == "All Screens" || m_screenName.empty()) {
-        clip->targetScreen = entt::null;
+        applyClipTargetScreen(registry, clipEntity, *clip, entt::null);
         std::cout << "[SetClipTargetScreen] Track " << m_trackIndex << ", Clip " << m_clipIndex
                   << " -> All Screens" << std::endl;
     } else {
@@ -1438,7 +1457,7 @@ bool SetClipTargetScreenCommand::execute(Engine& engine) {
             return false;
         }
 
-        clip->targetScreen = foundScreen;
+        applyClipTargetScreen(registry, clipEntity, *clip, foundScreen);
         std::cout << "[SetClipTargetScreen] Track " << m_trackIndex << ", Clip " << m_clipIndex
                   << " -> " << m_screenName << " (entity=" << static_cast<uint32_t>(foundScreen) << ")" << std::endl;
     }
@@ -1459,15 +1478,16 @@ bool SetClipTargetScreenCommand::undo(Engine& engine) {
     if (!clip) return false;
 
     const std::string& name = *m_previousScreenName;
+    entt::entity clipEntity = track->layers[m_clipIndex];
     if (name == "All Screens" || name.empty()) {
-        clip->targetScreen = entt::null;
+        applyClipTargetScreen(registry, clipEntity, *clip, entt::null);
     } else {
         entt::entity found = entt::null;
         for (auto [e, s] : registry.view<Screen>().each()) {
             if (s.name == name) { found = e; break; }
         }
         if (found == entt::null) return false;
-        clip->targetScreen = found;
+        applyClipTargetScreen(registry, clipEntity, *clip, found);
     }
     return true;
 }
@@ -1491,6 +1511,175 @@ CommandPtr SetClipTargetScreenCommand::fromJson(const nlohmann::json& j) {
     int clipIndex = j.value("clipIndex", 0);
     std::string screenName = j.value("screenName", "All Screens");
     return std::make_unique<SetClipTargetScreenCommand>(trackIndex, clipIndex, screenName);
+}
+
+// ============================================================================
+// SetContentRoutingCommand (ADR-0021 M3)
+// ============================================================================
+
+namespace {
+
+// Resolve a Screen entity from its name. Returns entt::null if absent —
+// caller decides whether to reject or fall back. Mirrors the lookup in
+// SetClipTargetScreenCommand for cross-session stability.
+entt::entity findScreenByName(entt::registry& registry, const std::string& name) {
+    if (name.empty()) return entt::null;
+    auto view = registry.view<Screen>();
+    for (auto [e, s] : view.each()) {
+        if (s.name == name) return e;
+    }
+    return entt::null;
+}
+
+// Capture a clip's current ContentRouting into the command's "previous"
+// snapshot fields. Screen entities are read out by name so undo survives
+// project reloads. Missing component is captured as an empty-targets
+// Direct routing (the legacy "render on all" semantic).
+void captureCurrentRouting(entt::registry& registry, entt::entity clipEntity,
+                            std::string& outMode,
+                            std::vector<SetContentRoutingCommand::TargetSpec>& outTargets) {
+    outTargets.clear();
+    outMode = "Direct";
+    const auto* cr = registry.try_get<ContentRouting>(clipEntity);
+    if (!cr) return;
+    outMode = (cr->mode == RouteMode::Tiled) ? "Tiled" : "Direct";
+    for (const auto& t : cr->targets) {
+        SetContentRoutingCommand::TargetSpec spec;
+        spec.uvRect = t.uvRect;
+        if (t.screen != entt::null &&
+            registry.valid(t.screen) &&
+            registry.all_of<Screen>(t.screen)) {
+            spec.screenName = registry.get<Screen>(t.screen).name;
+        }
+        outTargets.push_back(std::move(spec));
+    }
+}
+
+// Apply a `(mode, targets)` spec to a clip. Looks up screens by name,
+// emplaces/replaces the ContentRouting component, and keeps the legacy
+// `Clip::targetScreen` alias in sync (set to the sole target for Direct +
+// single-target, entt::null otherwise). Returns false if any named screen
+// cannot be resolved — the command rejects rather than silently dropping
+// a target.
+bool applyContentRoutingSpec(entt::registry& registry, entt::entity clipEntity, Clip& clip,
+                              const std::string& mode,
+                              const std::vector<SetContentRoutingCommand::TargetSpec>& targets) {
+    auto& cr = registry.get_or_emplace<ContentRouting>(clipEntity);
+    cr.mode = (mode == "Tiled") ? RouteMode::Tiled : RouteMode::Direct;
+    cr.targets.clear();
+    cr.targets.reserve(targets.size());
+    for (const auto& spec : targets) {
+        RouteTarget t;
+        t.uvRect = spec.uvRect;
+        if (!spec.screenName.empty()) {
+            t.screen = findScreenByName(registry, spec.screenName);
+            if (t.screen == entt::null) {
+                std::cerr << "[SetContentRouting] Screen not found: "
+                          << spec.screenName << std::endl;
+                return false;
+            }
+        }
+        cr.targets.push_back(t);
+    }
+    // Legacy alias mirror — single-target Direct sticks the one screen on
+    // the clip; everything else (Tiled, empty targets) clears the alias
+    // since it can't represent multi-target.
+    if (cr.mode == RouteMode::Direct && cr.targets.size() == 1) {
+        clip.targetScreen = cr.targets[0].screen;
+    } else {
+        clip.targetScreen = entt::null;
+    }
+    return true;
+}
+
+} // namespace
+
+bool SetContentRoutingCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[SetContentRouting] No timeline!" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[SetContentRouting] Invalid track index: " << m_trackIndex << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
+        std::cerr << "[SetContentRouting] Invalid clip index: " << m_clipIndex << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[SetContentRouting] Clip component not found!" << std::endl;
+        return false;
+    }
+    if (!m_previousCaptured) {
+        captureCurrentRouting(registry, clipEntity, m_previousMode, m_previousTargets);
+        m_previousCaptured = true;
+    }
+    return applyContentRoutingSpec(registry, clipEntity, *clip, m_mode, m_targets);
+}
+
+bool SetContentRoutingCommand::undo(Engine& engine) {
+    if (!m_previousCaptured) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    auto* clip = registry.try_get<Clip>(track->layers[m_clipIndex]);
+    if (!clip) return false;
+    return applyContentRoutingSpec(registry, track->layers[m_clipIndex], *clip,
+                                    m_previousMode, m_previousTargets);
+}
+
+nlohmann::json SetContentRoutingCommand::toJson() const {
+    nlohmann::json targetsArr = nlohmann::json::array();
+    for (const auto& t : m_targets) {
+        targetsArr.push_back({
+            {"screenName", t.screenName},
+            {"uvRect", {t.uvRect[0], t.uvRect[1], t.uvRect[2], t.uvRect[3]}}
+        });
+    }
+    return {
+        {"type", "SetContentRouting"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"mode", m_mode},
+        {"targets", std::move(targetsArr)}
+    };
+}
+
+std::string SetContentRoutingCommand::getDescription() const {
+    return "Set content routing for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex) +
+           " to " + m_mode + " with " + std::to_string(m_targets.size()) + " target(s)";
+}
+
+CommandPtr SetContentRoutingCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string mode = j.value("mode", std::string{"Direct"});
+    std::vector<SetContentRoutingCommand::TargetSpec> targets;
+    if (j.contains("targets") && j["targets"].is_array()) {
+        for (const auto& tj : j["targets"]) {
+            SetContentRoutingCommand::TargetSpec spec;
+            spec.screenName = tj.value("screenName", std::string{});
+            if (tj.contains("uvRect") && tj["uvRect"].is_array()) {
+                const auto& uv = tj["uvRect"];
+                for (std::size_t i = 0; i < spec.uvRect.size() && i < uv.size(); ++i)
+                    spec.uvRect[i] = uv[i].get<float>();
+            }
+            targets.push_back(std::move(spec));
+        }
+    }
+    return std::make_unique<SetContentRoutingCommand>(trackIndex, clipIndex, mode, std::move(targets));
 }
 
 // ============================================================================

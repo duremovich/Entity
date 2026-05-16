@@ -3,7 +3,7 @@
 #include "entity/bus/Serialization.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/renderer/PlaybackPresenter.hpp"
-#include "entity/components/MappingSurface.hpp"
+#include "entity/components/OutputSurface.hpp"
 #include "entity/components/Screen.hpp"
 
 #include <glm/glm.hpp>
@@ -185,8 +185,31 @@ void CompositorSystem::update(bus::RenderFrame& rf,
 
             // rf.contentLayers is pre-sorted by zOrder ascending in
             // PlaybackTimeAuthority::buildRenderFrame.
+            //
+            // Route lookup per ADR-0021 M3. `routes` is the canonical
+            // destination list (Plane A). For Tiled mode a layer can match
+            // a single screen via multiple routes — each its own UV crop —
+            // so we collect all matches and emit one drawTexturedQuad per
+            // match below. `targetScreen` (the deprecated single-field
+            // alias) is honored as a one-route fallback for any payload
+            // that predates ADR-0021's route list.
             for (const auto& cl : rf.contentLayers) {
-                if (cl.targetScreen != UINT64_MAX && cl.targetScreen != screenId) continue;
+                static constexpr bus::ContentLayerRoute kAliasRoute{
+                    UINT64_MAX, {0.0f, 0.0f, 1.0f, 1.0f}};
+                std::array<const bus::ContentLayerRoute*, 8> matchedRoutes{};
+                size_t matchedCount = 0;
+                if (!cl.routes.empty()) {
+                    for (const auto& r : cl.routes) {
+                        if (r.screen == UINT64_MAX || r.screen == screenId) {
+                            if (matchedCount < matchedRoutes.size()) {
+                                matchedRoutes[matchedCount++] = &r;
+                            }
+                        }
+                    }
+                } else if (cl.targetScreen == UINT64_MAX || cl.targetScreen == screenId) {
+                    matchedRoutes[matchedCount++] = &kAliasRoute;
+                }
+                if (matchedCount == 0) continue;
 
                 const float drawOpacity = cl.opacity * cl.sectionFadeMultiplier;
                 if (drawOpacity <= 0.0f) continue;
@@ -233,15 +256,28 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 }
 
                 if (tex.valid()) {
-                    m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
-                                                 static_cast<BlendMode>(cl.blendMode),
-                                                 colorSpace, ocioColorSpace);
+                    // ADR-0021 M3: emit one draw per matched route. The
+                    // texture, transform, opacity, blend, and OCIO are
+                    // layer-wide; only `uvRect` differs per route. For
+                    // Direct mode there's exactly one matched route with
+                    // identity uvRect — pixel-identical to pre-M3 behavior.
+                    // For Tiled, each route's uvRect crops the source to a
+                    // different sub-region of the same screen.
+                    for (size_t mi = 0; mi < matchedCount; ++mi) {
+                        const auto* r = matchedRoutes[mi];
+                        const glm::vec4 uvRect{r->uvRect[0], r->uvRect[1],
+                                                r->uvRect[2], r->uvRect[3]};
+                        m_renderer->drawTexturedQuad(tex, transformMatrix, drawOpacity,
+                                                     static_cast<BlendMode>(cl.blendMode),
+                                                     colorSpace, ocioColorSpace, uvRect);
+                    }
                     continue;
                 }
 
                 if (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video) {
                     // Fallback colored quad for video slots not yet uploaded —
                     // gives the user *something* to see while the decoder warms.
+                    // Fallback ignores uvRect — it's a debug-color placeholder.
                     const uint32_t entityId = static_cast<uint32_t>(cl.entity);
                     glm::vec4 color(
                         ((entityId * 137) % 256) / 255.0f,
@@ -554,13 +590,13 @@ std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapsh
     return slot;
 }
 
-void CompositorSystem::renderMappingSurfaces(entt::registry& registry, TextureRef texture) {
+void CompositorSystem::renderOutputSurfaces(entt::registry& registry, TextureRef texture) {
     if (!m_renderer || !m_renderer->isInitialized() || !texture.valid()) {
         return;
     }
 
     // Query all mapping surfaces
-    auto view = registry.view<MappingSurface>();
+    auto view = registry.view<OutputSurface>();
 
     // Collect visible surfaces sorted by index
     std::vector<std::pair<entt::entity, uint32_t>> sortedSurfaces;
@@ -587,7 +623,7 @@ void CompositorSystem::renderMappingSurfaces(entt::registry& registry, TextureRe
 
     // Render texture through each visible mapping surface (glm types all the way)
     for (const auto& [entity, index] : sortedSurfaces) {
-        auto& surface = registry.get<MappingSurface>(entity);
+        auto& surface = registry.get<OutputSurface>(entity);
 
         const glm::vec4 softEdges(
             surface.softEdge.left,
@@ -596,7 +632,7 @@ void CompositorSystem::renderMappingSurfaces(entt::registry& registry, TextureRe
             surface.softEdge.bottom
         );
 
-        m_renderer->drawMappingSurface(
+        m_renderer->drawOutputSurface(
             texture,
             surface.corners.data(),
             surface.sourceUVs.data(),

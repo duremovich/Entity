@@ -77,48 +77,4 @@ inline void applyModelToScreen(Screen& screen, entt::entity modelEntity,
     }
 }
 
-/**
- * Feed mapping types (inspired by disguise)
- */
-enum class FeedMappingType {
-    Direct,         // Direct UV mapping from model
-    Perspective,    // Perspective projection onto surface
-    Cylindrical,    // Cylindrical unwrap
-    Spherical,      // Spherical unwrap
-    Custom          // Custom UV coordinates
-};
-
-/**
- * Feed mapping for advanced clip-to-screen routing
- *
- * Allows clips to be mapped to screens with custom transformations,
- * similar to disguise's feed mapping system.
- */
-struct FeedMapping {
-    std::string name{"Feed 1"};
-
-    // Source clip entity (or null for any clip targeting this feed)
-    entt::entity sourceClip{entt::null};
-
-    // Target screen entity
-    entt::entity targetScreen{entt::null};
-
-    // Mapping type
-    FeedMappingType type{FeedMappingType::Direct};
-
-    // UV transform (offset and scale within the screen)
-    std::array<float, 2> uvOffset{0.0f, 0.0f};
-    std::array<float, 2> uvScale{1.0f, 1.0f};
-    float uvRotation{0.0f};  // Degrees
-
-    // Soft edge blending
-    bool softEdgeEnabled{false};
-    std::array<float, 4> softEdge{0.0f, 0.0f, 0.0f, 0.0f};  // Left, Right, Top, Bottom (0-1)
-
-    // Color correction per-feed
-    float brightness{1.0f};
-    float contrast{1.0f};
-    float gamma{1.0f};
-};
-
 } // namespace entity

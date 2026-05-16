@@ -200,7 +200,8 @@ target_sources(EntityMediaCore
         src/ui/StageWindow.cpp
         src/ui/MediaBinWindow.cpp
         src/ui/PropertyWindow.cpp
-        src/ui/MappingWindow.cpp
+        src/ui/OutputsWindow.cpp
+        src/ui/ContentRoutingWindow.cpp
         src/ui/ModelBinWindow.cpp
         src/ui/ScreensWindow.cpp
         src/ui/PropsWindow.cpp

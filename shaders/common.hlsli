@@ -23,6 +23,10 @@ cbuffer LayerConstants : register(b0) {
     uint blendMode;         // Blend mode: 0=Normal, 1=Add, 2=Multiply, 3=Screen, ...
     uint colorSpace;        // Texture colour space: 0=Linear, 1=YCoCg_scaled (HAP Q)
     float padding3;
+    // Source-UV crop (ADR-0021 M3 Tiled mode). xy = uv offset, zw = uv size.
+    // Identity (0,0,1,1) = full source frame. Applied in composite_vs as
+    // `output.texCoord = input.texCoord * uvRect.zw + uvRect.xy`.
+    float4 uvRect;
 };
 
 // Blend mode enumeration (must match C++ BlendMode enum)

@@ -38,7 +38,7 @@ struct DisplayInfo {
  *
  * Architecture:
  * - Each output has an InputRegion that selects which part of the composited raster to use
- * - MappingSurfaces within an output define how that input is warped/mapped
+ * - OutputSurfaces within an output define how that input is warped/mapped
  * - Physical outputs go to full-screen windows on specific displays
  * - Virtual outputs can be preview windows or NDI streams
  */
@@ -178,7 +178,7 @@ private:
     void renderToOutput(const bus::OutputSnapshot& output,
                         uint32_t windowSlot,
                         TextureRef compositedTexture,
-                        const std::vector<bus::MappingSurfaceSnapshot>& surfaces,
+                        const std::vector<bus::OutputSurfaceSnapshot>& surfaces,
                         const std::vector<bus::ProjectorSnapshot>& projectors,
                         const std::vector<bus::ScreenSnapshot>& screens);
 

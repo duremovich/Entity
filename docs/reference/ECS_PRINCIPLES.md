@@ -73,7 +73,7 @@ three?" Usually that's where the answer is.
 
 - Target **<64 bytes** per component (one cache line). Bigger is fine
   for components that aren't iterated in the hot path — `OutputDisplay`
-  and `MappingSurface` are deliberately large because there are tens of
+  and `OutputSurface` are deliberately large because there are tens of
   them, not thousands.
 - Avoid `std::string` in components iterated per-frame. It's a heap
   allocation per assignment and 24-32 bytes for the SSO buffer even

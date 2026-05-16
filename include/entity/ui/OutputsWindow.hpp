@@ -1,7 +1,7 @@
 #pragma once
 
 #include "EditorWindow.hpp"
-#include "entity/components/MappingSurface.hpp"
+#include "entity/components/OutputSurface.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include <imgui.h>
 #include <entt/entt.hpp>
@@ -14,22 +14,26 @@ class Engine;
 class OutputManager;
 
 /**
- * MappingWindow - Projection mapping surface editor.
+ * OutputsWindow - Plane B feed-output editor (ADR-0021 M4).
  *
- * Provides interactive editing of mapping surfaces:
- * - Corner manipulation (drag corners)
- * - Surface selection
- * - Add/delete surfaces
- * - Soft edge adjustment
- * - Grid preview
+ * Renamed from `MappingWindow` to match the two-tier mapping vocabulary —
+ * this window is Plane B (screens/projectors → physical outputs + warp),
+ * not Plane A (content → screens). Plane A authoring lives in
+ * `ContentRoutingWindow`.
+ *
+ * Provides interactive editing of:
+ * - OutputDisplay enable / physical-display assignment / source routing
+ * - Per-output InputRegion crop + OCIO / brightness / gamma calibration
+ * - OutputSurface corner-pin warp quads (one or many per output)
+ * - Surface soft-edge feather + source-region sub-UVs
  */
-class MappingWindow : public EditorWindow {
+class OutputsWindow : public EditorWindow {
 public:
-    explicit MappingWindow(Engine* engine);
-    ~MappingWindow() override = default;
+    explicit OutputsWindow(Engine* engine);
+    ~OutputsWindow() override = default;
 
     void render() override;
-    const char* getName() const override { return "Mapping"; }
+    const char* getName() const override { return "Outputs"; }
 
     ImGuiWindowFlags getWindowFlags() const override {
         return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
@@ -52,13 +56,13 @@ private:
     /**
      * Render a single mapping surface.
      */
-    void renderSurface(entt::entity entity, MappingSurface& surface, ImDrawList* drawList,
+    void renderSurface(entt::entity entity, OutputSurface& surface, ImDrawList* drawList,
                        const ImVec2& canvasPos, const ImVec2& canvasSize);
 
     /**
      * Render corner handles for a surface.
      */
-    void renderCornerHandles(MappingSurface& surface, ImDrawList* drawList,
+    void renderCornerHandles(OutputSurface& surface, ImDrawList* drawList,
                              const ImVec2& canvasPos, const ImVec2& canvasSize);
 
     /**

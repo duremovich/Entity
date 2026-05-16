@@ -16,7 +16,7 @@ namespace entity {
  * OcioManager — owns the project's active OpenColorIO config.
  *
  * Phase C.12 entrypoint. Subtasks 1-3 only expose read-only accessors used
- * by the Settings + MappingWindow UIs; subtask 4 extends this class with
+ * by the Settings + OutputsWindow UIs; subtask 4 extends this class with
  * GPU processor caches that drive the renderer's input + display transforms.
  *
  * Lifecycle:

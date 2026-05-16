@@ -47,8 +47,12 @@ struct ScreenSnapshot {
     std::uint64_t modelEntity{0}; // entt::entity cast to uint64; 0 = null
 };
 
-// One-frame snapshot of a MappingSurface entity.
-struct MappingSurfaceSnapshot {
+// One-frame snapshot of an OutputSurface entity (renamed from MappingSurface
+// in Phase M1 of the two-tier mapping work, ADR-0021). The JSON wire keys
+// inside this struct (entity, visible, corners, sourceUVs, softEdge*, …) and
+// the array field name "surfaces" in SceneSnapshot / RenderFrame are pinned
+// per bus rule 3 — only the C++ identifier moved.
+struct OutputSurfaceSnapshot {
     std::uint64_t entity{0};
     bool          visible{true};
     std::uint32_t outputIndex{0};
@@ -163,6 +167,17 @@ struct WantedFrame {
     int lookahead{0};
 };
 
+// One destination inside a content layer's routing (Plane A per ADR-0021).
+// Mirrors entity::RouteTarget on the wire — screen ID + UV-space rectangle
+// of the source content that lands on that screen. Wire-stable per bus
+// rule 3 — new fields here must be optional with defaults. Declared early
+// so both GenerativeLayerSnapshot and ClipCatalogEntry can carry vectors
+// of these without forward-decl gymnastics.
+struct ContentLayerRoute {
+    std::uint64_t screen{UINT64_MAX};                                // UINT64_MAX = all screens
+    std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};              // x, y, w, h in source UV
+};
+
 // One-frame snapshot of a Generative layer (Muncher v1; future kinds add
 // optional fields here, never rename existing ones — bus rule 3). Baked by
 // the editor thread in buildSceneSnapshot; consumed by CompositorSystem on
@@ -185,6 +200,13 @@ struct GenerativeLayerSnapshot {
     std::uint64_t entity{0};
     Kind          kind{Kind::Muncher};
     std::uint64_t targetScreen{UINT64_MAX};
+
+    // Plane A content routing (ADR-0021). Same contract as
+    // ClipCatalogEntry: editor-baked from the GenerativeLayer entity's
+    // ContentRouting component. Empty `routes` means fall back to
+    // `targetScreen` above. Decoders default to empty/0 when absent.
+    std::vector<ContentLayerRoute> routes;
+    int                            mode{0};
 
     float         opacity{1.0f};
     int           blendMode{0};
@@ -312,6 +334,26 @@ struct ContentLayerSnapshot {
     enum class SourceKind : int { Video = 0, Compose = 1 };
 
     std::uint64_t entity{0};
+
+    // Plane A content routing (ADR-0021). `routes` is the canonical
+    // destination list — size 1 with identity uvRect for the M2 Direct
+    // case (one screen, full-frame); size > 1 for the M3 Tiled case (one
+    // source carved across N screens, each with its own UV crop). The
+    // bake site expands the legacy "all visible screens" semantic into
+    // one synthetic route per visible screen so PASS 2 sees an explicit
+    // list with no special cases.
+    //
+    // `mode` matches entity::RouteMode (0=Direct, 1=Tiled). Cylindrical
+    // / Spherical / Perspective are reserved (ADR-0021); decoders that
+    // see unknown values must clamp to Direct rather than throwing.
+    std::vector<ContentLayerRoute> routes;
+    int                            mode{0};
+
+    // Deprecated alias retained for one project-format / wire version
+    // (ADR-0021 § Backward compatibility). Editor writes routes[0].screen
+    // here when routes.size()==1, UINT64_MAX otherwise. Decoders prefer
+    // `routes` if non-empty and fall back to materializing one route
+    // from this field. Drop on Phase M4+1.
     std::uint64_t targetScreen{UINT64_MAX};   // UINT64_MAX = all screens
     std::array<float, 16> transformMatrix{
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -366,7 +408,7 @@ struct RenderFrame {
     std::vector<WantedFrame> wantedFrames;
     // Stage 2: scene snapshot. Show thread reads these instead of registry.
     std::vector<ScreenSnapshot>         screens;
-    std::vector<MappingSurfaceSnapshot> surfaces;
+    std::vector<OutputSurfaceSnapshot> surfaces;
     std::vector<ProjectorSnapshot>      projectors;
     std::vector<OutputSnapshot>         outputs;
     // Active generative layers (Muncher etc.) for this tick. Editor-baked,
@@ -429,6 +471,15 @@ struct ClipCatalogEntry {
     std::uint32_t zOrder{0};
     std::uint64_t targetScreen{UINT64_MAX};
 
+    // Plane A content routing (ADR-0021). `routes` is the canonical
+    // destination list — populated by the editor bake from each clip's
+    // ContentRouting component. `mode` matches entity::RouteMode (0=Direct,
+    // 1=Tiled). Empty `routes` means the show-side bake should fall back to
+    // the legacy single-target `targetScreen` field above. Wire-stable per
+    // bus rule 3: decoders default to empty/0 when the keys are absent.
+    std::vector<ContentLayerRoute> routes;
+    int                            mode{0};
+
     // Resolved OCIO override (from ProjectManager, empty = use decoder default)
     std::string   ocioOverride;
 
@@ -487,7 +538,7 @@ struct ObjectAnimationLayerSnapshot {
 // per-tick RenderFrame alongside the show-derived activeClips / playState.
 struct SceneSnapshot {
     std::vector<ScreenSnapshot>                screens;
-    std::vector<MappingSurfaceSnapshot>        surfaces;
+    std::vector<OutputSurfaceSnapshot>        surfaces;
     std::vector<ProjectorSnapshot>             projectors;
     std::vector<OutputSnapshot>                outputs;
     // Clip catalog: all allocated + potentially-active clips snapshotted from

@@ -30,6 +30,7 @@ that have moved on.
 | 0018 | [Content-layer unification — one compositor path for clip + generative + future kinds](0018-content-layer-unification.md) | Accepted | 2026-05-12 |
 | 0019 | [Per-layer effects — ordered shader chain with stack + graph editors over one data model](0019-per-layer-effects.md) | Accepted | 2026-05-12 |
 | 0020 | [Object Animation layers — absolute values + Hold-by-default end behavior](0020-object-animation-end-behavior.md) | Accepted | 2026-05-15 |
+| 0021 | [Two-tier mapping — Content Routing vs Feed Output](0021-two-tier-mapping.md) | Accepted | 2026-05-16 |
 
 ## Format
 

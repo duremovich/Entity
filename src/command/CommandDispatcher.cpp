@@ -235,6 +235,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Screen commands
     registerFactory("AddScreen", AddScreenCommand::fromJson);
     registerFactory("SetClipTargetScreen", SetClipTargetScreenCommand::fromJson);
+    registerFactory("SetContentRouting", SetContentRoutingCommand::fromJson);
     registerFactory("AssertScreenExists", AssertScreenExistsCommand::fromJson);
     registerFactory("AssertScreenCount", AssertScreenCountCommand::fromJson);
     registerFactory("AssertFrameCached", AssertFrameCachedCommand::fromJson);
