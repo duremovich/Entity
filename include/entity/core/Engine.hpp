@@ -324,6 +324,21 @@ public:
                            double srcFps = 0.0);
 
     /**
+     * How to resolve a name collision when Copy-importing into a
+     * directory that already has a file with the same name. Shared
+     * across media and object imports.
+     *
+     *  - `Replace`  overwrites the existing file.
+     *  - `KeepBoth` appends "(1)", "(2)", … to the new file's stem
+     *               (the silent-fallback behavior on auto-discovery
+     *               paths and pinned policies).
+     */
+    enum class DuplicateResolution {
+        Replace,
+        KeepBoth,
+    };
+
+    /**
      * Apply the current import mode to a source file and return the
      * canonical originalPath that should be used as the clip / media
      * library identity. For `Copy`, this physically copies the file
@@ -336,14 +351,34 @@ public:
      * Both surface a console warning.
      *
      * `outKind` receives the resolved kind so callers can register
-     * the entry correctly.
+     * the entry correctly. `resolution` controls behavior when the
+     * target path already has a file: defaults to KeepBoth so silent
+     * paths (pinned policy / auto-discovery) don't surprise-overwrite;
+     * modal flows route collisions through `PendingMediaDuplicate` and
+     * pass the user's chosen resolution back here.
      *
      * Returns empty string on copy failure.
      */
     std::string applyImportMode(const std::string& sourceAbsolutePath,
                                 ImportMode mode,
                                 const std::string& subfolder,
-                                ProjectManager::PathKind* outKind);
+                                ProjectManager::PathKind* outKind,
+                                DuplicateResolution resolution =
+                                    DuplicateResolution::KeepBoth);
+
+    /**
+     * Same as applyImportMode but for 3D object imports. Copies into
+     * `objects/<subfolder>/`; returns a project-relative path
+     * (forward-slashed) for Managed mode, or the absolute source path
+     * for Linked. `resolution` controls collision behavior; modal
+     * flows resolve through `PendingObjectDuplicate`.
+     */
+    std::string applyObjectImportMode(const std::string& sourceAbsolutePath,
+                                      ImportMode mode,
+                                      const std::string& subfolder,
+                                      ProjectManager::PathKind* outKind,
+                                      DuplicateResolution resolution =
+                                          DuplicateResolution::KeepBoth);
 
     // --- Project Launcher (ADR-0009) ----------------------------------------
 
@@ -390,6 +425,14 @@ public:
      * Get list of loaded media files.
      */
     const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
+
+    /**
+     * Get the ProjectManager pointer for UI windows that need richer
+     * access than the narrow forwarding accessors (e.g. the object
+     * library + version grouping in ModelBinWindow). May be nullptr
+     * before initialization.
+     */
+    ProjectManager* getProjectManager() const { return m_projectManager; }
 
     /**
      * Resolve a stored media path (Managed = relative under content/,
@@ -473,6 +516,119 @@ public:
                                bool transcode,
                                bool rememberStorage,
                                bool rememberTranscode);
+
+    // --- Pending media duplicate (file-already-exists prompt) -----------
+    //
+    // When resolvePendingImport notices that the chosen Copy target
+    // already exists at `content/<subfolder>/<filename>`, it stashes a
+    // PendingMediaDuplicate here instead of silently suffixing.
+    // MediaBinWindow renders a second modal with the user's three
+    // options; resolvePendingMediaDuplicate finalizes (the transcode
+    // decision the user already made in the first modal rides along).
+    struct PendingMediaDuplicate {
+        std::string sourceFilePath;   // pre-copy source the user picked
+        std::string subfolder;        // chosen subfolder under content/
+        std::string targetFilename;   // colliding filename
+        std::string suggestedRenamed; // pre-computed auto-suffix preview
+        MediaType   mediaType{MediaType::Unknown};
+        bool        transcodeEligible{false};
+        bool        transcode{false}; // user's transcode decision from modal 1
+    };
+    const PendingMediaDuplicate* pendingMediaDuplicate() const;
+
+    /**
+     * Resolve the file-already-exists prompt for media. Completes the
+     * import using the user's chosen resolution + the transcode
+     * decision already captured in the pending state.
+     */
+    void resolvePendingMediaDuplicate(DuplicateResolution resolution);
+
+    /** Abandon a pending media duplicate import (Cancel button / ESC). */
+    void cancelPendingMediaDuplicate();
+
+    // --- Pending object import (3D models) -------------------------------
+    //
+    // Same Ask / AlwaysCopy / AlwaysLink mechanism as the media import,
+    // but stripped down: objects have no transcode equivalent so the
+    // modal only asks the storage question. The Settings.importStoragePolicy
+    // value is *shared* with media — "Don't ask Storage again" carries
+    // across both kinds (matches the "should act the same as media"
+    // framing). The transcode pieces of PendingImport are absent here.
+    struct PendingObjectImport {
+        std::string sourceFilePath;  // user-picked source, pre-copy
+        bool        storageDecided{false};
+        ImportMode  resolvedMode{ImportMode::Link};
+    };
+    const PendingObjectImport* pendingObjectImport() const;
+
+    /**
+     * Called by the object import modal when the user picks a choice.
+     *
+     * @param mode             chosen storage mode
+     * @param subfolder        target subfolder under objects/ (Copy mode
+     *                         only, empty = root)
+     * @param rememberStorage  persist storage choice to Settings as
+     *                         AlwaysCopy / AlwaysLink (shared with media)
+     */
+    void resolvePendingObjectImport(ImportMode mode,
+                                    const std::string& subfolder,
+                                    bool rememberStorage);
+
+    // --- Pending object duplicate (file-already-exists prompt) ----------
+    //
+    // When resolvePendingObjectImport notices that the chosen Copy
+    // target already exists at `objects/<subfolder>/<filename>`, it
+    // stashes a PendingObjectDuplicate here instead of silently
+    // suffixing. ModelBinWindow renders a second modal with the user's
+    // three options; resolvePendingObjectDuplicate finalizes the copy
+    // with their chosen resolution.
+    //
+    // Only Copy imports hit this — Link mode doesn't write anywhere
+    // new, so there's nothing to collide with.
+    struct PendingObjectDuplicate {
+        std::string sourceFilePath;   // pre-copy source the user picked
+        std::string subfolder;        // chosen subfolder under objects/
+        std::string targetFilename;   // colliding filename (e.g. "chair.obj")
+        std::string suggestedRenamed; // pre-computed auto-suffix preview
+    };
+    const PendingObjectDuplicate* pendingObjectDuplicate() const;
+
+    /**
+     * Resolve the file-already-exists prompt. Passing `Replace`
+     * completes the import by overwriting; `KeepBoth` completes by
+     * auto-suffixing the new file's name; clearing without a resolve
+     * (handled separately as Cancel via `cancelPendingObjectDuplicate`)
+     * abandons the import entirely.
+     */
+    void resolvePendingObjectDuplicate(DuplicateResolution resolution);
+
+    /** Abandon a pending duplicate import (Cancel button / ESC). */
+    void cancelPendingObjectDuplicate();
+
+    /**
+     * Handle 3D model file selection from ModelBinWindow's Import OBJ
+     * button or external drag-drop onto the model bin. Routes through
+     * the unified storage modal (or applies the pinned policy silently
+     * if `Settings::importStoragePolicy != Ask`).
+     */
+    void onModelFileSelected(const std::string& filePath);
+
+    /**
+     * Register a model file in the ProjectManager's object library and
+     * create-or-update the Model entity for its logical group.
+     *
+     * `canonicalPath` is the lookup key — project-relative for Managed,
+     * absolute for Linked. The mesh is parsed via `ObjLoader::load` on
+     * the editor thread; cached size is recorded for hot-reload.
+     *
+     * If a Model entity already exists for the file's logical group
+     * (same `groupKeyOf`), it is updated in place — its mesh is reloaded
+     * from the now-latest version and GPU resources are invalidated so
+     * the renderer re-uploads next tick. Otherwise a new Model entity
+     * is created with the logical path as its `filepath`.
+     */
+    void ingestObjectFile(const std::string& canonicalPath,
+                          ProjectManager::PathKind kind);
 
     /**
      * Get the current decoder (for metadata access).
@@ -984,6 +1140,25 @@ private:
     // Set when onVideoFileSelected runs into a non-HAP source with policy =
     // Ask. MediaBinWindow renders a modal; resolvePendingImport() clears it.
     std::optional<PendingImport> m_pendingImport;
+
+    // Set when resolvePendingImport notices the chosen Copy target
+    // collides with an existing file. MediaBinWindow renders the
+    // file-already-exists modal; resolvePendingMediaDuplicate /
+    // cancelPendingMediaDuplicate clear it.
+    std::optional<PendingMediaDuplicate> m_pendingMediaDuplicate;
+
+    // Set when onModelFileSelected sees Settings::importStoragePolicy = Ask.
+    // ModelBinWindow renders the unified Copy/Link modal;
+    // resolvePendingObjectImport() clears it. Same single-pending-decision
+    // pattern as PendingImport — additional drops while one is pending are
+    // dropped with a log line.
+    std::optional<PendingObjectImport> m_pendingObjectImport;
+
+    // Set when resolvePendingObjectImport notices the chosen Copy target
+    // collides with an existing file. ModelBinWindow renders the second
+    // modal (Replace / Keep both / Cancel); resolvePendingObjectDuplicate
+    // or cancelPendingObjectDuplicate clears it.
+    std::optional<PendingObjectDuplicate> m_pendingObjectDuplicate;
 
     // Background HAP-transcode workers for imported media. Owned by
     // Director (Phase D entry); raw shortcut keeps existing call sites

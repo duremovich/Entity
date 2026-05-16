@@ -188,6 +188,10 @@ entt::entity ScreensWindow::createScreen(const char* name) {
         applyModelToScreen(screen, firstModel, registry.try_get<Model>(firstModel));
     }
 
+    // Sit the screen on the floor by default — position.y is the center of
+    // the quad, so size.y/2 puts the bottom edge at world Y=0.
+    screen.position[1] = screen.size[1] * 0.5f;
+
     std::cout << "[Screens] Created screen: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
     return entity;
 }

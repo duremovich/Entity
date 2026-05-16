@@ -1,4 +1,5 @@
 #include "entity/ui/MappingWindow.hpp"
+#include "entity/ui/MathInput.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/color/OcioManager.hpp"
 #include "entity/core/Engine.hpp"
@@ -284,7 +285,7 @@ void MappingWindow::renderPropertiesPanel() {
         ImGui::Text("%s:", cornerNames[i]);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120);
-        ImGui::DragFloat2("##corner", &surface->corners[i].x, 0.01f, -2.0f, 2.0f);
+        entity::ui::DragFloat2("##corner", &surface->corners[i].x, 0.01f, -2.0f, 2.0f);
         ImGui::PopID();
     }
 
@@ -367,16 +368,16 @@ void MappingWindow::renderPropertiesPanel() {
 
     // Surface properties
     ImGui::Text("Properties");
-    ImGui::SliderFloat("Brightness", &surface->brightness, 0.0f, 2.0f);
-    ImGui::SliderFloat("Gamma", &surface->gamma, 0.5f, 2.5f);
-    ImGui::SliderInt("Grid Subdivisions", reinterpret_cast<int*>(&surface->gridSubdivisions), 1, 10);
+    entity::ui::SliderFloat("Brightness", &surface->brightness, 0.0f, 2.0f);
+    entity::ui::SliderFloat("Gamma", &surface->gamma, 0.5f, 2.5f);
+    entity::ui::SliderInt("Grid Subdivisions", reinterpret_cast<int*>(&surface->gridSubdivisions), 1, 10);
 
     ImGui::Spacing();
     ImGui::Text("Soft Edges (Blend)");
-    ImGui::SliderFloat("Left##edge", &surface->softEdge.left, 0.0f, 0.5f);
-    ImGui::SliderFloat("Right##edge", &surface->softEdge.right, 0.0f, 0.5f);
-    ImGui::SliderFloat("Top##edge", &surface->softEdge.top, 0.0f, 0.5f);
-    ImGui::SliderFloat("Bottom##edge", &surface->softEdge.bottom, 0.0f, 0.5f);
+    entity::ui::SliderFloat("Left##edge", &surface->softEdge.left, 0.0f, 0.5f);
+    entity::ui::SliderFloat("Right##edge", &surface->softEdge.right, 0.0f, 0.5f);
+    entity::ui::SliderFloat("Top##edge", &surface->softEdge.top, 0.0f, 0.5f);
+    entity::ui::SliderFloat("Bottom##edge", &surface->softEdge.bottom, 0.0f, 0.5f);
 
     ImGui::Columns(1);
 }
@@ -698,7 +699,7 @@ void MappingWindow::renderOutputsPanel() {
 
             // Resolution
             int resolution[2] = {output->width, output->height};
-            if (ImGui::InputInt2("Resolution", resolution)) {
+            if (entity::ui::InputInt2("Resolution", resolution)) {
                 output->width = std::max(1, resolution[0]);
                 output->height = std::max(1, resolution[1]);
             }
@@ -822,7 +823,7 @@ void MappingWindow::renderOutputsPanel() {
             // tuning workflows; not a colorimetric knob).
             ImGui::Separator();
             ImGui::Text("Calibration");
-            ImGui::SliderFloat("Brightness##out", &output->brightness, 0.0f, 2.0f);
+            entity::ui::SliderFloat("Brightness##out", &output->brightness, 0.0f, 2.0f);
 
             // OCIO display + view dropdowns. Empty string = use the active
             // config's default at draw time. When OcioManager isn't bound
@@ -900,7 +901,7 @@ void MappingWindow::renderOutputsPanel() {
                 ImGui::TextDisabled("OCIO config not loaded — dropdowns disabled.");
             }
 
-            ImGui::SliderFloat("Gamma trim##out", &output->gamma, 0.5f, 2.5f);
+            entity::ui::SliderFloat("Gamma trim##out", &output->gamma, 0.5f, 2.5f);
         }
     } else {
         ImGui::TextDisabled("Select an output to edit");
@@ -919,12 +920,12 @@ void MappingWindow::renderInputRegionConfig(OutputDisplay& output) {
     };
 
     ImGui::SetNextItemWidth(120);
-    if (ImGui::DragFloat2("Position##region", regionValues, 0.01f, 0.0f, 1.0f, "%.2f")) {
+    if (entity::ui::DragFloat2("Position##region", regionValues, 0.01f, 0.0f, 1.0f, "%.2f")) {
         regionChanged = true;
     }
 
     ImGui::SetNextItemWidth(120);
-    if (ImGui::DragFloat2("Size##region", &regionValues[2], 0.01f, 0.01f, 1.0f, "%.2f")) {
+    if (entity::ui::DragFloat2("Size##region", &regionValues[2], 0.01f, 0.01f, 1.0f, "%.2f")) {
         regionChanged = true;
     }
 

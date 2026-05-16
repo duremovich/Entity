@@ -1,4 +1,5 @@
 #include "entity/ui/SettingsWindow.hpp"
+#include "entity/ui/MathInput.hpp"
 #include "entity/color/OcioManager.hpp"
 
 #include <imgui.h>
@@ -23,7 +24,7 @@ void renderFrameCacheRow(uint64_t& bytes) {
     // pre-loading the entire show — different problem, different setting).
     constexpr int kMinMiB = 64;
     constexpr int kMaxMiB = 16 * 1024;
-    if (ImGui::SliderInt("Frame Cache (MiB)##frameCache", &mib,
+    if (entity::ui::SliderInt("Frame Cache (MiB)##frameCache", &mib,
                          kMinMiB, kMaxMiB,
                          "%d MiB",
                          ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
@@ -162,7 +163,7 @@ void renderOscReceiverSection(Settings& staged) {
 
     int port = static_cast<int>(staged.oscReceiverPort);
     if (!staged.oscReceiverEnabled) ImGui::BeginDisabled();
-    if (ImGui::InputInt("Listener port##oscPort", &port, 1, 100,
+    if (entity::ui::InputInt("Listener port##oscPort", &port, 1, 100,
                         ImGuiInputTextFlags_EnterReturnsTrue)) {
         port = std::clamp(port, 1, 65535);
         staged.oscReceiverPort = static_cast<uint16_t>(port);

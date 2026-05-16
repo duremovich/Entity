@@ -9,14 +9,26 @@
 namespace entity {
 
 /**
- * Model component - holds 3D mesh data loaded from OBJ files
+ * Model component - holds 3D mesh data loaded from OBJ files.
  *
  * Models are used as geometry for screens (projection surfaces)
  * and can be reused across multiple screens.
+ *
+ * `filepath` is a *logical reference* to a file in the project's
+ * object library (same convention as Clip.filepath in ADR-0010):
+ *   - Managed entries store a project-relative path
+ *     (e.g. `objects/props/chair.obj`); the resolver joins it with
+ *     the current project root via `ProjectManager::meshPathFor`.
+ *   - Linked entries store an absolute path and the resolver
+ *     returns it unchanged.
+ * If the stem carries no `_v<tag>` suffix, the resolver auto-rolls
+ * to the latest version in the group. Built-in / default models
+ * leave `filepath` empty and render as the 16:9 plane via
+ * `createDefaultScreenMesh`.
  */
 struct Model {
     std::string name;           // Display name
-    std::string filepath;       // Original file path (empty if built-in)
+    std::string filepath;       // Logical reference (see header comment)
     MeshData mesh;              // Loaded mesh data
 
     // GPU resource handles (set by renderer)

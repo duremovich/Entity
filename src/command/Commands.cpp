@@ -1337,6 +1337,8 @@ bool AddScreenCommand::execute(Engine& engine) {
     screen.visible = true;
     screen.renderTargetSlot = UINT32_MAX;
     screen.renderTargetValid = false;
+    // Sit on floor by default — position.y is quad center.
+    screen.position[1] = screen.size[1] * 0.5f;
 
     std::cout << "[AddScreen] Created screen: " << m_name
               << " (entity=" << static_cast<uint32_t>(entity)

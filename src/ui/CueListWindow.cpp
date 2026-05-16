@@ -1,4 +1,5 @@
 #include "entity/ui/CueListWindow.hpp"
+#include "entity/ui/MathInput.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/timeline/CueTag.hpp"
@@ -170,13 +171,13 @@ void CueListWindow::render() {
         ImGui::Text(m_isEditMode ? "Edit Cue" : "Add Cue");
         ImGui::Separator();
 
-        ImGui::InputDouble("Number", &m_editNumber, 0.1, 1.0, "%.2f");
+        entity::ui::InputDouble("Number", &m_editNumber, 0.1, 1.0, "%.2f");
         ImGui::InputText("Label", m_editLabelBuf, sizeof(m_editLabelBuf));
 
         // Timestamp shown as SMPTE; editable through frame number.
         FrameNumber frame = timeline->timeToFrame(m_editTimestamp);
         long long frameLL = static_cast<long long>(frame);
-        if (ImGui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
+        if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
             if (frameLL < 0) frameLL = 0;
             m_editTimestamp = timeline->frameToTime(static_cast<FrameNumber>(frameLL));
         }

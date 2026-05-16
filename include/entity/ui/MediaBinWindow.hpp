@@ -32,6 +32,7 @@ public:
 
 private:
     void renderPendingImportModal();
+    void renderPendingDuplicateModal();
 
     Engine* m_engine{nullptr};
 
@@ -44,6 +45,10 @@ private:
     int         m_modalChosenTranscode{1}; // 0=as-is, 1=transcode (RadioButton wants int*)
     bool        m_modalDontAskStorage{false};
     bool        m_modalDontAskTranscode{false};
+
+    // Tracks which duplicate prompt we've already opened so we don't
+    // re-open it every frame while it's modal.
+    std::string m_dupModalLastSource;
 
     // Substring filter applied to the bin's logical path. Empty = show all.
     char        m_filterBuf[128]{0};

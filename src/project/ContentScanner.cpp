@@ -29,6 +29,16 @@ const std::unordered_set<std::string>& defaultMediaExts() {
     return kExts;
 }
 
+// Whitelist of 3D model extensions. Today: OBJ only. glTF/GLB/FBX/STL
+// expansion is a planned follow-up — the set is centralized so adding
+// extensions is one-line.
+const std::unordered_set<std::string>& defaultObjectExts() {
+    static const std::unordered_set<std::string> kExts = {
+        ".obj",
+    };
+    return kExts;
+}
+
 std::string lowerExt(const fs::path& p) {
     std::string s = p.extension().string();
     std::transform(s.begin(), s.end(), s.begin(),
@@ -36,12 +46,12 @@ std::string lowerExt(const fs::path& p) {
     return s;
 }
 
-// Convert a path under contentDir to forward-slashed relative form so
-// it matches the convention used by ProjectManager's Managed paths
-// (consistent across save/load).
-std::string toRelativeForward(const fs::path& abs, const fs::path& root) {
+// Convert a path under a watched root to forward-slashed relative form
+// against the *project root* so it matches the convention used by
+// ProjectManager's Managed paths (consistent across save/load).
+std::string toRelativeForward(const fs::path& abs, const fs::path& projectRoot) {
     std::error_code ec;
-    fs::path rel = fs::relative(abs, root, ec);
+    fs::path rel = fs::relative(abs, projectRoot, ec);
     if (ec) return {};
     std::string s = rel.generic_string();  // forward slashes
     return s;
@@ -54,9 +64,14 @@ std::int64_t toUnix(fs::file_time_type ftt) {
     return duration_cast<seconds>(sys.time_since_epoch()).count();
 }
 
+bool extInSet(const std::string& lowerWithDot,
+              const std::unordered_set<std::string>& set) {
+    return set.find(lowerWithDot) != set.end();
+}
+
 }  // namespace
 
-ContentScanner::ContentScanner() : m_mediaExts(defaultMediaExts()) {}
+ContentScanner::ContentScanner() = default;
 
 ContentScanner::~ContentScanner() {
     stop();
@@ -67,7 +82,17 @@ void ContentScanner::start(const fs::path& projectRoot) {
     if (projectRoot.empty()) return;
 
     m_projectRoot = projectRoot;
-    m_contentDir  = projectRoot / "content";
+    m_roots.clear();
+    m_roots.push_back(WatchRoot{
+        DeltaSource::Media,
+        projectRoot / "content",
+        &defaultMediaExts(),
+    });
+    m_roots.push_back(WatchRoot{
+        DeltaSource::Object,
+        projectRoot / "objects",
+        &defaultObjectExts(),
+    });
     m_files.clear();
     {
         std::lock_guard<std::mutex> lk(m_queueMutex);
@@ -128,10 +153,6 @@ bool ContentScanner::shouldSkipFile(const fs::path& filename) const {
     return shouldSkipFileStatic(filename);
 }
 
-bool ContentScanner::isMediaExtension(const fs::path& ext) const {
-    return isMediaExtensionStatic(ext);
-}
-
 bool ContentScanner::shouldSkipDirStatic(const fs::path& dirname) {
     const std::string s = dirname.filename().string();
     if (s.empty()) return false;
@@ -152,8 +173,14 @@ bool ContentScanner::isMediaExtensionStatic(const fs::path& ext) {
     std::string s = ext.string();
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    const auto& exts = defaultMediaExts();
-    return exts.find(s) != exts.end();
+    return extInSet(s, defaultMediaExts());
+}
+
+bool ContentScanner::isObjectExtensionStatic(const fs::path& ext) {
+    std::string s = ext.string();
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extInSet(s, defaultObjectExts());
 }
 
 bool ContentScanner::isOpenableForRead(const fs::path& absolute) const {
@@ -181,37 +208,24 @@ bool ContentScanner::isOpenableForRead(const fs::path& absolute) const {
 #endif
 }
 
-void ContentScanner::doScan() {
-    if (m_contentDir.empty()) return;
-
+void ContentScanner::scanRoot(const WatchRoot& root,
+                              std::unordered_map<std::string, FileState>& seen) {
     std::error_code ec;
-    if (!fs::exists(m_contentDir, ec) || !fs::is_directory(m_contentDir, ec)) {
-        // Content dir missing — drop all known state, emit Removed for
-        // anything previously reported. This handles the project-closed
-        // case as well; Engine should call stop() before that, but
-        // defense-in-depth.
-        for (auto& [rel, st] : m_files) {
-            if (st.reported) {
-                enqueue({DeltaKind::Removed, rel});
-            }
-        }
-        m_files.clear();
-        return;
+    if (!fs::exists(root.absoluteDir, ec) || !fs::is_directory(root.absoluteDir, ec)) {
+        return;  // root missing — caller's Pass 3 will emit Removed for stale entries
     }
 
-    // Pass 1 — walk the tree, build a set of currently-present files.
-    std::unordered_map<std::string, FileState> seen;
     fs::recursive_directory_iterator it(
-        m_contentDir,
+        root.absoluteDir,
         fs::directory_options::skip_permission_denied,
         ec);
     if (ec) {
-        std::cerr << "[ContentScanner] iterate failed: " << ec.message() << std::endl;
+        std::cerr << "[ContentScanner] iterate failed (" << root.absoluteDir
+                  << "): " << ec.message() << std::endl;
         return;
     }
     for (; it != fs::recursive_directory_iterator{}; it.increment(ec)) {
         if (ec) {
-            // Single-entry error — log and continue.
             std::cerr << "[ContentScanner] entry error: " << ec.message() << std::endl;
             ec.clear();
             continue;
@@ -225,12 +239,13 @@ void ContentScanner::doScan() {
         }
         if (!entry.is_regular_file(ec)) continue;
         if (shouldSkipFile(entry.path())) continue;
-        if (!isMediaExtension(lowerExt(entry.path()))) continue;
+        if (!extInSet(lowerExt(entry.path()), *root.extensions)) continue;
 
         const std::string rel = toRelativeForward(entry.path(), m_projectRoot);
         if (rel.empty()) continue;
 
         FileState st;
+        st.source = root.source;
         std::error_code statEc;
         st.sizeBytes  = static_cast<std::int64_t>(fs::file_size(entry.path(), statEc));
         if (statEc) continue;
@@ -239,8 +254,21 @@ void ContentScanner::doScan() {
         st.mtimeUnix = toUnix(ftt);
         seen.emplace(rel, st);
     }
+}
 
-    // Pass 2 — diff against m_files.
+void ContentScanner::doScan() {
+    if (m_projectRoot.empty() || m_roots.empty()) return;
+
+    // Pass 1 — walk every watch root, build a set of currently-present
+    // files. The map is keyed by project-relative path; roots are
+    // sibling directories so keys can't collide across roots.
+    std::unordered_map<std::string, FileState> seen;
+    for (const auto& root : m_roots) {
+        scanRoot(root, seen);
+    }
+
+    // Pass 2 — diff against m_files. Stability + openable gates unchanged
+    // from the single-root version.
     for (auto& [rel, currentStat] : seen) {
         auto knownIt = m_files.find(rel);
         if (knownIt == m_files.end()) {
@@ -259,7 +287,7 @@ void ContentScanner::doScan() {
                 // Third signal: try opening exclusively.
                 fs::path absolute = m_projectRoot / rel;
                 if (isOpenableForRead(absolute)) {
-                    enqueue({DeltaKind::Added, rel});
+                    enqueue({DeltaKind::Added, known.source, rel});
                     known.reported = true;
                 }
                 // If not openable, leave stableTicks where it is and
@@ -282,7 +310,7 @@ void ContentScanner::doScan() {
     for (auto it2 = m_files.begin(); it2 != m_files.end(); ) {
         if (seen.find(it2->first) == seen.end()) {
             if (it2->second.reported) {
-                enqueue({DeltaKind::Removed, it2->first});
+                enqueue({DeltaKind::Removed, it2->second.source, it2->first});
             }
             it2 = m_files.erase(it2);
         } else {

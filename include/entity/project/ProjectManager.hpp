@@ -433,6 +433,84 @@ public:
 
     const std::vector<MediaLibraryEntry>& loadedMediaFiles() const { return m_loadedMediaFiles; }
 
+    // --- Object library (3D models) -----------------------------------------
+
+    /**
+     * One entry per imported 3D-model file. Mirror of MediaLibraryEntry
+     * for the `objects/` tree: stripped down because models have no
+     * transcode/archive equivalent — they're just files that get parsed
+     * into vertex buffers.
+     *
+     * `originalPath` is the canonical identity: project-relative for
+     * `Managed` entries (e.g. `objects/props/chair.obj`), absolute for
+     * `Linked`. Resolution flows through `resolveObjectPath` / the
+     * auto-roll-aware `meshPathFor`, mirroring the media pair.
+     *
+     * `lastProbeSizeBytes` gates mesh re-parse on project load (same
+     * "size, not mtime" rule the media probe cache uses): if the size
+     * matches what we recorded last time, we trust the cached parse;
+     * if not, ObjLoader re-runs.
+     */
+    struct ObjectLibraryEntry {
+        std::string originalPath;
+        PathKind    pathKind{PathKind::Linked};
+
+        // Validity gate for the cached mesh data (vertex/index counts,
+        // bounds). Mirrors MediaLibraryEntry::lastProbeSizeBytes.
+        // `lastProbeSizeBytes == 0` means "never parsed". mtime is kept
+        // as a diagnostic, never as the validity gate (per project
+        // memory `feedback_media_cache_size_not_mtime.md`).
+        std::int64_t lastProbeSizeBytes{0};
+        std::int64_t lastProbeMtimeUnix{0};
+
+        // Transient — set by ContentScanner when the file's no longer on
+        // disk. NOT serialized; reset to false on every load.
+        bool missingOnDisk{false};
+    };
+
+    /**
+     * Register `originalPath` in the object library. Idempotent — if an
+     * entry exists it is not touched. Returns a reference to the
+     * (possibly-existing) entry.
+     */
+    ObjectLibraryEntry& addObjectFile(const std::string& originalPath,
+                                      PathKind kind = PathKind::Linked);
+
+    /** Find an object entry by original path. Returns nullptr if none. */
+    const ObjectLibraryEntry* findObjectEntry(const std::string& originalPath) const;
+    ObjectLibraryEntry*       findObjectEntry(const std::string& originalPath);
+
+    /**
+     * Find the latest version in the same `_v<tag>` group as `storedPath`,
+     * scoped to the same `pathKind`. Returns nullptr if the group is
+     * empty. Mirrors `findLatestInGroup` for objects.
+     */
+    const ObjectLibraryEntry* findLatestObjectInGroup(const std::string& storedPath) const;
+
+    /** Remove an object entry. */
+    void removeObjectFile(const std::string& originalPath);
+
+    /**
+     * Resolve a stored object path to an absolute filesystem path
+     * ObjLoader can open. Same routing rules as `resolveMediaPath`:
+     * Linked = return absolute as-is, Managed = join against project
+     * root.
+     */
+    std::string resolveObjectPath(const std::string& storedPath) const;
+
+    /**
+     * Resolve which file path ObjLoader should actually open for a
+     * Model whose stored `filepath` is `originalPath`. Auto-rolls to
+     * the latest version in the group when `originalPath` carries no
+     * `_v<tag>` suffix; otherwise requires an exact-match entry
+     * (pinned mode). Analog of `decoderPathFor` for objects.
+     */
+    std::string meshPathFor(const std::string& originalPath) const;
+
+    const std::vector<ObjectLibraryEntry>& loadedObjectFiles() const {
+        return m_loadedObjectFiles;
+    }
+
     // --- Import preferences -------------------------------------------------
 
     /**
@@ -465,9 +543,10 @@ private:
     entt::registry*  m_registry{nullptr};
     IRenderer*       m_renderer{nullptr};
 
-    std::filesystem::path           m_projectPath;
-    std::vector<MediaLibraryEntry>  m_loadedMediaFiles;
-    NonHapImportPolicy              m_nonHapImportPolicy{NonHapImportPolicy::Ask};
+    std::filesystem::path             m_projectPath;
+    std::vector<MediaLibraryEntry>    m_loadedMediaFiles;
+    std::vector<ObjectLibraryEntry>   m_loadedObjectFiles;
+    NonHapImportPolicy                m_nonHapImportPolicy{NonHapImportPolicy::Ask};
 
     double m_autosaveInterval{30.0};
     double m_autosaveAccumulator{0.0};

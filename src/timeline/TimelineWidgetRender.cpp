@@ -8,6 +8,7 @@
 
 #include "entity/timeline/TimelineWidget.hpp"
 #include "entity/timeline/CueTag.hpp"
+#include "entity/ui/MathInput.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
 #include "entity/components/TimelineTrack.hpp"
@@ -1387,12 +1388,12 @@ void TimelineWidget::renderCueModal() {
     ImGui::Text(m_cueModalMode == CueModalMode::Edit ? "Edit Cue" : "Add Cue");
     ImGui::Separator();
 
-    ImGui::InputDouble("Number", &m_cueModalNumber, 0.1, 1.0, "%.2f");
+    entity::ui::InputDouble("Number", &m_cueModalNumber, 0.1, 1.0, "%.2f");
     ImGui::InputText("Label", m_cueModalLabelBuf, sizeof(m_cueModalLabelBuf));
 
     FrameNumber frame = m_timeline->timeToFrame(m_cueModalTimestamp);
     long long frameLL = static_cast<long long>(frame);
-    if (ImGui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
+    if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
         if (frameLL < 0) frameLL = 0;
         m_cueModalTimestamp = m_timeline->frameToTime(static_cast<FrameNumber>(frameLL));
     }
@@ -1446,7 +1447,7 @@ void TimelineWidget::renderSectionBreakModal() {
 
     FrameNumber frame = m_timeline->timeToFrame(m_sectionBreakModalFrame);
     long long frameLL = static_cast<long long>(frame);
-    if (ImGui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
+    if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
         if (frameLL < 0) frameLL = 0;
         m_sectionBreakModalFrame = m_timeline->frameToTime(static_cast<FrameNumber>(frameLL));
     }
@@ -1469,7 +1470,7 @@ void TimelineWidget::renderSectionBreakModal() {
         }
     }
 
-    ImGui::InputDouble("Fade (seconds)", &m_sectionBreakModalFadeSeconds, 0.05, 0.5, "%.2f");
+    entity::ui::InputDouble("Fade (seconds)", &m_sectionBreakModalFadeSeconds, 0.05, 0.5, "%.2f");
     if (m_sectionBreakModalFadeSeconds < 0.0) m_sectionBreakModalFadeSeconds = 0.0;
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Auto-fade duration applied to clips that start or end at this break.");

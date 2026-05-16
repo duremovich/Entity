@@ -5,6 +5,7 @@
  */
 
 #include "entity/ui/PropertyWindow.hpp"
+#include "entity/ui/MathInput.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/timeline/CueTag.hpp"
 #include "entity/core/Types.hpp"
@@ -219,7 +220,7 @@ void PropertyWindow::renderTransformSection() {
     ImGui::Text("Position X");
     ImGui::SetNextItemWidth(-1);
     float posX = transform->position.x;
-    if (ImGui::DragFloat("##posX", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
+    if (entity::ui::DragFloat("##posX", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
         transform->setPosition(glm::vec3(posX, transform->position.y, transform->position.z));
         updateKeyframeOnValueChange(AnimatableProperty::PositionX, posX);
     }
@@ -230,7 +231,7 @@ void PropertyWindow::renderTransformSection() {
     ImGui::Text("Position Y");
     ImGui::SetNextItemWidth(-1);
     float posY = transform->position.y;
-    if (ImGui::DragFloat("##posY", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
+    if (entity::ui::DragFloat("##posY", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
         transform->setPosition(glm::vec3(transform->position.x, posY, transform->position.z));
         updateKeyframeOnValueChange(AnimatableProperty::PositionY, posY);
     }
@@ -243,7 +244,7 @@ void PropertyWindow::renderTransformSection() {
     ImGui::Text("Rotation");
     ImGui::SetNextItemWidth(-1);
     float rotZ = transform->rotation.z;
-    bool rotChanged = ImGui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg");
+    bool rotChanged = entity::ui::DragFloat("##rotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg");
     if (ImGui::IsItemActivated()) {
         m_preEditRotZ.scalarValue = transform->rotation.z;
         m_preEditRotZ.wasKeyframed = false;
@@ -305,7 +306,7 @@ void PropertyWindow::renderTransformSection() {
     ImGui::SetNextItemWidth(-1);
     float scaleX = transform->scale.x;
     float prevScaleX = scaleX;
-    if (ImGui::DragFloat("##scaleX", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
+    if (entity::ui::DragFloat("##scaleX", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
         if (uniformScale && prevScaleX > 0.0001f) {
             float ratio = scaleX / prevScaleX;
             float newScaleY = transform->scale.y * ratio;
@@ -325,7 +326,7 @@ void PropertyWindow::renderTransformSection() {
     ImGui::SetNextItemWidth(-1);
     float scaleY = transform->scale.y;
     float prevScaleY = scaleY;
-    if (ImGui::DragFloat("##scaleY", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
+    if (entity::ui::DragFloat("##scaleY", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
         if (uniformScale && prevScaleY > 0.0001f) {
             float ratio = scaleY / prevScaleY;
             float newScaleX = transform->scale.x * ratio;
@@ -366,7 +367,7 @@ void PropertyWindow::renderLayerSection() {
     ImGui::Text("Opacity");
     ImGui::SetNextItemWidth(-1);
     float opacity = layer->opacity;
-    bool opacityChanged = ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f");
+    bool opacityChanged = entity::ui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f");
     if (ImGui::IsItemActivated()) {
         m_preEditOpacity.scalarValue = layer->opacity;
         m_preEditOpacity.wasKeyframed = false;
@@ -610,7 +611,7 @@ void PropertyWindow::renderClipInfo() {
     const int inPointMin = 0;
     const int inPointMax = totalMediaInt > 0 ? totalMediaInt - 1 : 0;
     int inPoint = static_cast<int>(clip->mediaStartFrame);
-    bool inPointChanged = ImGui::DragInt("In Point", &inPoint, 1.0f, inPointMin, inPointMax,
+    bool inPointChanged = entity::ui::DragInt("In Point", &inPoint, 1.0f, inPointMin, inPointMax,
                                          "%d frames", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemActivated()) {
         m_preEditMediaStartFrame = clip->mediaStartFrame;
@@ -643,7 +644,7 @@ void PropertyWindow::renderClipInfo() {
         : outPointMax;
     if (outPoint < outPointMin) outPoint = outPointMin;
     if (outPoint > outPointMax) outPoint = outPointMax;
-    bool outPointChanged = ImGui::DragInt("Out Point", &outPoint, 1.0f, outPointMin, outPointMax,
+    bool outPointChanged = entity::ui::DragInt("Out Point", &outPoint, 1.0f, outPointMin, outPointMax,
                                           "%d frames", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemActivated()) {
         m_preEditMediaOutFrame = clip->mediaOutFrame;
@@ -787,7 +788,7 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
                                   : schema.defaultValue.f4[0];
                     ImGui::PushID(static_cast<int>(slot));
                     ImGui::SetNextItemWidth(-1);
-                    const bool changed = ImGui::SliderFloat(schema.displayName.c_str(),
+                    const bool changed = entity::ui::SliderFloat(schema.displayName.c_str(),
                                                             &v, schema.min, schema.max, "%.3f");
                     if (ImGui::IsItemActivated()) {
                         m_preEditEffectFloat = (slot < params->values.size())
@@ -849,7 +850,7 @@ void PropertyWindow::renderTimelineProperties() {
     float durationMinutes = static_cast<float>(currentDuration) / 60000000.0f;  // 60 * 1,000,000
 
     ImGui::SetNextItemWidth(100);
-    if (ImGui::DragFloat("##duration_minutes", &durationMinutes, 0.1f, 0.5f, 120.0f, "%.1f min")) {
+    if (entity::ui::DragFloat("##duration_minutes", &durationMinutes, 0.1f, 0.5f, 120.0f, "%.1f min")) {
         // Convert back to microseconds
         Timecode newDuration = static_cast<Timecode>(durationMinutes * 60000000.0);
         m_timeline->setDuration(newDuration);
@@ -1090,7 +1091,7 @@ void PropertyWindow::renderOAValueRow(entt::entity oaEntity,
     const bool dragEnabled = (oaFrame >= 0);
     if (!dragEnabled) ImGui::BeginDisabled();
 
-    const bool changed = ImGui::DragFloat("##oa_val", &currentVal, dragStep,
+    const bool changed = entity::ui::DragFloat("##oa_val", &currentVal, dragStep,
                                           minVal, maxVal, format);
 
     // Capture pre-edit state on activation so the drag-end deactivate
@@ -1446,7 +1447,7 @@ void PropertyWindow::renderScreenProperties() {
         // landing in this same fix that's no longer corrupting state but
         // it is still wasteful (waitForGpu + texture realloc per
         // keystroke).
-        ImGui::InputInt2("Size", resolution, ImGuiInputTextFlags_EnterReturnsTrue);
+        entity::ui::InputInt2("Size", resolution, ImGuiInputTextFlags_EnterReturnsTrue);
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             screen->width  = static_cast<uint32_t>(std::max(1, resolution[0]));
             screen->height = static_cast<uint32_t>(std::max(1, resolution[1]));
@@ -1464,15 +1465,15 @@ void PropertyWindow::renderScreenProperties() {
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Position");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##pos", screen->position.data(), 0.1f);
+        entity::ui::DragFloat3("##pos", screen->position.data(), 0.1f);
 
         ImGui::Text("Rotation");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##rot", screen->rotation.data(), 1.0f, -180.0f, 180.0f);
+        entity::ui::DragFloat3("##rot", screen->rotation.data(), 1.0f, -180.0f, 180.0f);
 
         ImGui::Text("Size (m)");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##size", screen->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
+        entity::ui::DragFloat3("##size", screen->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
 
         if (ImGui::Button("Reset Transform")) {
             screen->position = {0.0f, 0.0f, 0.0f};
@@ -1491,9 +1492,9 @@ void PropertyWindow::renderScreenProperties() {
     if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Visible", &screen->visible);
         ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("Opacity", &screen->opacity, 0.0f, 1.0f);
+        entity::ui::SliderFloat("Opacity", &screen->opacity, 0.0f, 1.0f);
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragInt("Z-Order", &screen->zOrder);
+        entity::ui::DragInt("Z-Order", &screen->zOrder);
     }
 
     ImGui::PopID();
@@ -1577,15 +1578,15 @@ void PropertyWindow::renderPropProperties() {
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Position");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##prop_pos", prop->position.data(), 0.1f);
+        entity::ui::DragFloat3("##prop_pos", prop->position.data(), 0.1f);
 
         ImGui::Text("Rotation");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##prop_rot", prop->rotation.data(), 1.0f, -180.0f, 180.0f);
+        entity::ui::DragFloat3("##prop_rot", prop->rotation.data(), 1.0f, -180.0f, 180.0f);
 
         ImGui::Text("Size (m)");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##prop_size", prop->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
+        entity::ui::DragFloat3("##prop_size", prop->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
 
         if (ImGui::Button("Reset Transform")) {
             prop->position = {0.0f, 0.0f, 0.0f};
@@ -1635,11 +1636,11 @@ void PropertyWindow::renderProjectorProperties() {
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Position");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##ppos", proj->position.data(), 0.1f);
+        entity::ui::DragFloat3("##ppos", proj->position.data(), 0.1f);
 
         ImGui::Text("Rotation  (pitch X, yaw Y, roll Z)");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat3("##prot", proj->rotation.data(), 1.0f, -180.0f, 180.0f);
+        entity::ui::DragFloat3("##prot", proj->rotation.data(), 1.0f, -180.0f, 180.0f);
 
         if (ImGui::Button("Reset Transform")) {
             proj->position = {0.f, 3.f, 5.f};
@@ -1650,11 +1651,11 @@ void PropertyWindow::renderProjectorProperties() {
     // Optics
     if (ImGui::CollapsingHeader("Optics", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("FOV##fov", &proj->fovDegrees, 5.0f, 120.0f, "%.1f°");
+        entity::ui::SliderFloat("FOV##fov", &proj->fovDegrees, 5.0f, 120.0f, "%.1f°");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat("Near Clip##near", &proj->nearClip, 0.01f, 0.01f, 10.0f, "%.2f");
+        entity::ui::DragFloat("Near Clip##near", &proj->nearClip, 0.01f, 0.01f, 10.0f, "%.2f");
         ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat("Far Clip##far",  &proj->farClip,  1.0f,  1.0f,  500.0f, "%.1f");
+        entity::ui::DragFloat("Far Clip##far",  &proj->farClip,  1.0f,  1.0f,  500.0f, "%.1f");
         if (ImGui::SmallButton("Reset Optics")) {
             proj->fovDegrees = 50.f;
             proj->nearClip   = 0.1f;
@@ -1779,7 +1780,7 @@ void PropertyWindow::renderCueProperties() {
         }
     };
 
-    ImGui::InputDouble("Number", &editNumber, 0.1, 1.0, "%.2f");
+    entity::ui::InputDouble("Number", &editNumber, 0.1, 1.0, "%.2f");
     if (ImGui::IsItemActivated()) captureSnapshot();
     if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
 
@@ -1787,7 +1788,7 @@ void PropertyWindow::renderCueProperties() {
     if (ImGui::IsItemActivated()) captureSnapshot();
     if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
 
-    ImGui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
+    entity::ui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
     if (ImGui::IsItemActivated()) captureSnapshot();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (editFrame < 0) editFrame = 0;
@@ -1888,7 +1889,7 @@ void PropertyWindow::renderSectionBreakProperties() {
         }
     };
 
-    ImGui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
+    entity::ui::InputScalar("Frame", ImGuiDataType_S64, &editFrame);
     if (ImGui::IsItemActivated()) captureSnapshot();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (editFrame < 0) editFrame = 0;
@@ -1900,7 +1901,7 @@ void PropertyWindow::renderSectionBreakProperties() {
     }
     if (ImGui::IsItemDeactivatedAfterEdit()) commitEdit();
 
-    ImGui::InputDouble("Fade (seconds)", &editFadeSeconds, 0.05, 0.5, "%.2f");
+    entity::ui::InputDouble("Fade (seconds)", &editFadeSeconds, 0.05, 0.5, "%.2f");
     if (ImGui::IsItemActivated()) captureSnapshot();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (editFadeSeconds < 0.0) editFadeSeconds = 0.0;
@@ -2135,19 +2136,19 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         if (auto* t = registry.try_get<Transform>(entity)) {
             ImGui::SetNextItemWidth(-1);
             float posX = t->position.x;
-            if (ImGui::DragFloat("Position X", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
+            if (entity::ui::DragFloat("Position X", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
                 t->setPosition(glm::vec3(posX, t->position.y, t->position.z));
             }
             ImGui::SetNextItemWidth(-1);
             float posY = t->position.y;
-            if (ImGui::DragFloat("Position Y", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
+            if (entity::ui::DragFloat("Position Y", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
                 t->setPosition(glm::vec3(t->position.x, posY, t->position.z));
             }
 
             ImGui::Spacing();
             ImGui::SetNextItemWidth(-1);
             float rotZ = t->rotation.z;
-            if (ImGui::DragFloat("Rotation", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
+            if (entity::ui::DragFloat("Rotation", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
                 t->setRotation(glm::vec3(t->rotation.x, t->rotation.y, rotZ));
             }
 
@@ -2159,7 +2160,7 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             ImGui::SetNextItemWidth(-1);
             float scaleX = t->scale.x;
             float prevScaleX = scaleX;
-            if (ImGui::DragFloat("Scale X", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
+            if (entity::ui::DragFloat("Scale X", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
                 if (uniformScale && prevScaleX > 0.0001f) {
                     float ratio = scaleX / prevScaleX;
                     t->setScale(glm::vec3(scaleX,
@@ -2173,7 +2174,7 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             ImGui::SetNextItemWidth(-1);
             float scaleY = t->scale.y;
             float prevScaleY = scaleY;
-            if (ImGui::DragFloat("Scale Y", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
+            if (entity::ui::DragFloat("Scale Y", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
                 if (uniformScale && prevScaleY > 0.0001f) {
                     float ratio = scaleY / prevScaleY;
                     t->setScale(glm::vec3(t->scale.x * ratio,
@@ -2199,13 +2200,13 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         if (media) {
             ImGui::SetNextItemWidth(-1);
             float opacity = media->opacity;
-            if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+            if (entity::ui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
                 media->opacity = opacity;
             }
 
             int zOrder = static_cast<int>(media->zOrder);
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::DragInt("Z-Order", &zOrder, 1.0f, 0, 999)) {
+            if (entity::ui::DragInt("Z-Order", &zOrder, 1.0f, 0, 999)) {
                 media->zOrder = static_cast<uint32_t>(std::max(0, zOrder));
             }
         } else {
@@ -2254,11 +2255,11 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         int w = static_cast<int>(gen->renderWidth);
         int h = static_cast<int>(gen->renderHeight);
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::DragInt("Width",  &w, 1.0f, 16, 7680)) {
+        if (entity::ui::DragInt("Width",  &w, 1.0f, 16, 7680)) {
             gen->renderWidth  = static_cast<std::uint32_t>(std::max(16, w));
         }
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::DragInt("Height", &h, 1.0f, 16, 4320)) {
+        if (entity::ui::DragInt("Height", &h, 1.0f, 16, 4320)) {
             gen->renderHeight = static_cast<std::uint32_t>(std::max(16, h));
         }
         ImGui::TextDisabled("Slot: %d", gen->renderTargetSlot);

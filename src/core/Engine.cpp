@@ -61,6 +61,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/media/ObjLoader.hpp"
+#include "entity/project/MediaVersioning.hpp"
 #include "entity/core/CrashLogger.hpp"
 #include <GLFW/glfw3.h>
 #include <cmath>
@@ -75,6 +76,31 @@
 #include <thread>
 
 namespace entity {
+
+namespace {
+
+// Compute the next collision-free auto-suffix candidate under `dir` for
+// a file named like `source.filename()`. Returns the original target if
+// no file exists there. Caps the suffix loop at 1000 to bound the worst
+// case if the dir is wildly full. Shared by media + object import flows
+// and by their respective resolvePending* collision-detection paths.
+std::filesystem::path nextNonCollidingPath(const std::filesystem::path& dir,
+                                           const std::filesystem::path& source) {
+    namespace fs = std::filesystem;
+    fs::path target = dir / source.filename();
+    std::error_code ec;
+    if (!fs::exists(target, ec)) return target;
+
+    const std::string stem = source.stem().string();
+    const std::string ext  = source.extension().string();
+    for (int i = 1; i < 1000; ++i) {
+        fs::path candidate = dir / (stem + " (" + std::to_string(i) + ")" + ext);
+        if (!fs::exists(candidate, ec)) return candidate;
+    }
+    return target;  // give up — caller's copy will overwrite
+}
+
+}  // namespace
 
 // Static callback for GLFW framebuffer resize events
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
@@ -1406,6 +1432,8 @@ void Engine::resolvePendingImport(ImportMode mode,
                                    bool transcode,
                                    bool rememberStorage,
                                    bool rememberTranscode) {
+    namespace fs = std::filesystem;
+
     if (!m_pendingImport) return;
     PendingImport p = *m_pendingImport;   // copy before clearing
     m_pendingImport.reset();
@@ -1426,11 +1454,50 @@ void Engine::resolvePendingImport(ImportMode mode,
                       : ProjectManager::NonHapImportPolicy::NeverTranscode);
     }
 
-    // Now that storage is resolved, actually copy/link the file. Up to
-    // this point p.sourceFilePath is still the user-picked source.
+    // Collision detection — Copy mode only, and only when a project is
+    // loaded. Without one, applyImportMode falls back to Link and
+    // there's no target to collide with.
+    if (mode == ImportMode::Copy
+        && m_projectManager
+        && !m_projectManager->projectPath().empty()) {
+        const fs::path projectRoot =
+            m_projectManager->projectPath().parent_path();
+        const fs::path contentDir =
+            projectRoot / ProjectManager::kContentDir;
+        const fs::path targetDir = subfolder.empty()
+            ? contentDir
+            : (contentDir / subfolder);
+        const fs::path source(p.sourceFilePath);
+        const fs::path target = targetDir / source.filename();
+
+        std::error_code ec;
+        if (fs::exists(target, ec)) {
+            // Stash the duplicate prompt and surface the second modal.
+            // Carry the transcode decision so resolvePendingMediaDuplicate
+            // can re-route through scheduleTranscode / ingestVideoClip
+            // without re-asking the user.
+            const fs::path suggested = nextNonCollidingPath(targetDir, source);
+            PendingMediaDuplicate dup;
+            dup.sourceFilePath    = p.sourceFilePath;
+            dup.subfolder         = subfolder;
+            dup.targetFilename    = source.filename().string();
+            dup.suggestedRenamed  = suggested.filename().string();
+            dup.mediaType         = p.mediaType;
+            dup.transcodeEligible = p.transcodeEligible;
+            dup.transcode         = transcode;
+            m_pendingMediaDuplicate = std::move(dup);
+            std::cout << "[Engine] Media import collision at "
+                      << target.string() << "; awaiting user decision."
+                      << std::endl;
+            return;
+        }
+    }
+
+    // No collision (or Link mode) — proceed straight through.
     ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
     const std::string canonicalPath =
-        applyImportMode(p.sourceFilePath, mode, subfolder, &importedKind);
+        applyImportMode(p.sourceFilePath, mode, subfolder, &importedKind,
+                        DuplicateResolution::KeepBoth);
     if (canonicalPath.empty()) {
         std::cerr << "[Engine] resolvePendingImport: import failed for "
                   << p.sourceFilePath << std::endl;
@@ -1447,6 +1514,44 @@ void Engine::resolvePendingImport(ImportMode mode,
     } else {
         ingestVideoClip(canonicalPath, p.mediaType);
     }
+}
+
+const Engine::PendingMediaDuplicate* Engine::pendingMediaDuplicate() const {
+    return m_pendingMediaDuplicate ? &*m_pendingMediaDuplicate : nullptr;
+}
+
+void Engine::resolvePendingMediaDuplicate(DuplicateResolution resolution) {
+    if (!m_pendingMediaDuplicate) return;
+    PendingMediaDuplicate p = *m_pendingMediaDuplicate;
+    m_pendingMediaDuplicate.reset();
+
+    ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    const std::string canonicalPath = applyImportMode(
+        p.sourceFilePath, ImportMode::Copy, p.subfolder, &importedKind,
+        resolution);
+    if (canonicalPath.empty()) {
+        std::cerr << "[Engine] resolvePendingMediaDuplicate: import failed for "
+                  << p.sourceFilePath << std::endl;
+        return;
+    }
+
+    if (m_projectManager) {
+        m_projectManager->addMediaFile(canonicalPath, importedKind);
+    }
+    if (m_probeWorker) m_probeWorker->enqueue(canonicalPath);
+
+    if (p.transcodeEligible && p.transcode) {
+        scheduleTranscode(canonicalPath, p.mediaType);
+    } else {
+        ingestVideoClip(canonicalPath, p.mediaType);
+    }
+}
+
+void Engine::cancelPendingMediaDuplicate() {
+    if (!m_pendingMediaDuplicate) return;
+    std::cout << "[Engine] Media import cancelled: "
+              << m_pendingMediaDuplicate->sourceFilePath << std::endl;
+    m_pendingMediaDuplicate.reset();
 }
 
 const std::filesystem::path& Engine::getProjectPath() const {
@@ -2574,7 +2679,8 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
 std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
                                      ImportMode mode,
                                      const std::string& subfolder,
-                                     ProjectManager::PathKind* outKind) {
+                                     ProjectManager::PathKind* outKind,
+                                     DuplicateResolution resolution) {
     namespace fs = std::filesystem;
 
     auto setKind = [&](ProjectManager::PathKind k) {
@@ -2631,19 +2737,16 @@ std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
     const fs::path source(sourceAbsolutePath);
     fs::path target = targetDir / source.filename();
 
-    // If target already exists with the same name, suffix to avoid silent
-    // overwrite. "intro.mov" -> "intro (1).mov", "intro (2).mov", ...
+    // Collision handling per resolution. The modal path checks for the
+    // collision upfront and routes through PendingMediaDuplicate, so
+    // by the time we reach here the resolution is the user's choice.
+    // Silent paths (pinned policy + auto-discovery) pass KeepBoth.
     if (fs::exists(target, ec)) {
-        const std::string stem = source.stem().string();
-        const std::string ext  = source.extension().string();
-        for (int i = 1; i < 1000; ++i) {
-            fs::path candidate = targetDir /
-                (stem + " (" + std::to_string(i) + ")" + ext);
-            if (!fs::exists(candidate, ec)) {
-                target = candidate;
-                break;
-            }
+        if (resolution == DuplicateResolution::KeepBoth) {
+            target = nextNonCollidingPath(targetDir, source);
         }
+        // Replace: leave `target` pointing at the existing file; the
+        // copy below uses overwrite_existing.
     }
 
     fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
@@ -2661,10 +2764,339 @@ std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
     fs::path relative = fs::relative(target, projectRoot, ec);
     std::string canonical = ec ? target.string() : relative.generic_string();
 
-    std::cout << "[Engine] Imported (Copy) " << source.filename().string()
+    std::cout << "[Engine] Imported (Copy"
+              << (resolution == DuplicateResolution::Replace ? ", Replace" : "")
+              << ") " << source.filename().string()
               << " -> " << canonical << std::endl;
     setKind(ProjectManager::PathKind::Managed);
     return canonical;
+}
+
+std::string Engine::applyObjectImportMode(const std::string& sourceAbsolutePath,
+                                          ImportMode mode,
+                                          const std::string& subfolder,
+                                          ProjectManager::PathKind* outKind,
+                                          DuplicateResolution resolution) {
+    namespace fs = std::filesystem;
+
+    auto setKind = [&](ProjectManager::PathKind k) {
+        if (outKind) *outKind = k;
+    };
+
+    if (mode == ImportMode::Link) {
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    if (!m_projectManager || m_projectManager->projectPath().empty()) {
+        std::cerr << "[Engine] Object copy requested but no project loaded; "
+                     "falling back to Link." << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    const fs::path projectRoot = m_projectManager->projectPath().parent_path();
+    const fs::path objectsDir  = projectRoot / ProjectManager::kObjectsDir;
+
+    std::error_code ec;
+    if (!fs::exists(objectsDir, ec)) {
+        // Legacy project missing the objects/ tree. Idempotent mkdir
+        // brings it up to spec; if that fails fall back to Link.
+        fs::create_directories(objectsDir, ec);
+        if (ec) {
+            std::cerr << "[Engine] Project has no objects/ directory and "
+                         "create failed (" << ec.message() << "); falling "
+                         "back to Link for " << sourceAbsolutePath << std::endl;
+            setKind(ProjectManager::PathKind::Linked);
+            return sourceAbsolutePath;
+        }
+    }
+
+    const fs::path targetDir = subfolder.empty() ? objectsDir
+                                                  : (objectsDir / subfolder);
+    fs::create_directories(targetDir, ec);
+    if (ec) {
+        std::cerr << "[Engine] Failed to create object subfolder "
+                  << targetDir.string() << ": " << ec.message()
+                  << "; falling back to Link." << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    const fs::path source(sourceAbsolutePath);
+    fs::path target = targetDir / source.filename();
+
+    // Collision handling per resolution. The modal path checks for the
+    // collision upfront and routes through PendingObjectDuplicate, so
+    // by the time we reach here the resolution is the user's choice.
+    // Silent paths (pinned policy + auto-discovery) pass KeepBoth.
+    if (fs::exists(target, ec)) {
+        if (resolution == DuplicateResolution::KeepBoth) {
+            target = nextNonCollidingPath(targetDir, source);
+        }
+        // Replace: leave `target` pointing at the existing file; the
+        // copy below uses overwrite_existing.
+    }
+
+    fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[Engine] Failed to copy object " << source.string()
+                  << " -> " << target.string() << ": " << ec.message()
+                  << "; falling back to Link." << std::endl;
+        setKind(ProjectManager::PathKind::Linked);
+        return sourceAbsolutePath;
+    }
+
+    fs::path relative = fs::relative(target, projectRoot, ec);
+    std::string canonical = ec ? target.string() : relative.generic_string();
+
+    std::cout << "[Engine] Imported object (Copy"
+              << (resolution == DuplicateResolution::Replace ? ", Replace" : "")
+              << ") " << source.filename().string()
+              << " -> " << canonical << std::endl;
+    setKind(ProjectManager::PathKind::Managed);
+    return canonical;
+}
+
+const Engine::PendingObjectImport* Engine::pendingObjectImport() const {
+    return m_pendingObjectImport ? &*m_pendingObjectImport : nullptr;
+}
+
+const Engine::PendingObjectDuplicate* Engine::pendingObjectDuplicate() const {
+    return m_pendingObjectDuplicate ? &*m_pendingObjectDuplicate : nullptr;
+}
+
+void Engine::resolvePendingObjectImport(ImportMode mode,
+                                        const std::string& subfolder,
+                                        bool rememberStorage) {
+    namespace fs = std::filesystem;
+
+    if (!m_pendingObjectImport) return;
+    PendingObjectImport p = *m_pendingObjectImport;
+    m_pendingObjectImport.reset();
+
+    if (rememberStorage) {
+        m_settings.importStoragePolicy =
+            (mode == ImportMode::Copy)
+                ? Settings::ImportStoragePolicy::AlwaysCopy
+                : Settings::ImportStoragePolicy::AlwaysLink;
+        publishActiveSettings(m_settings);
+        saveSettings(m_settings);  // shared with media imports
+    }
+
+    // Collision detection — Copy mode only, and only when a project is
+    // loaded (without one, applyObjectImportMode falls back to Link
+    // and there's no target to collide with).
+    if (mode == ImportMode::Copy
+        && m_projectManager
+        && !m_projectManager->projectPath().empty()) {
+        const fs::path projectRoot =
+            m_projectManager->projectPath().parent_path();
+        const fs::path objectsDir =
+            projectRoot / ProjectManager::kObjectsDir;
+        const fs::path targetDir = subfolder.empty()
+            ? objectsDir
+            : (objectsDir / subfolder);
+        const fs::path source(p.sourceFilePath);
+        const fs::path target = targetDir / source.filename();
+
+        std::error_code ec;
+        if (fs::exists(target, ec)) {
+            // Stash the duplicate decision and let the second modal
+            // ask the user what to do. ModelBinWindow renders it on
+            // the next frame.
+            const fs::path suggested = nextNonCollidingPath(targetDir, source);
+            PendingObjectDuplicate dup;
+            dup.sourceFilePath   = p.sourceFilePath;
+            dup.subfolder        = subfolder;
+            dup.targetFilename   = source.filename().string();
+            dup.suggestedRenamed = suggested.filename().string();
+            m_pendingObjectDuplicate = std::move(dup);
+            std::cout << "[Engine] Object import collision at "
+                      << target.string() << "; awaiting user decision."
+                      << std::endl;
+            return;
+        }
+    }
+
+    // No collision (or Link mode) — proceed straight through.
+    ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    const std::string canonicalPath =
+        applyObjectImportMode(p.sourceFilePath, mode, subfolder, &importedKind,
+                              DuplicateResolution::KeepBoth);
+    if (canonicalPath.empty()) {
+        std::cerr << "[Engine] resolvePendingObjectImport: import failed for "
+                  << p.sourceFilePath << std::endl;
+        return;
+    }
+    ingestObjectFile(canonicalPath, importedKind);
+}
+
+void Engine::resolvePendingObjectDuplicate(DuplicateResolution resolution) {
+    if (!m_pendingObjectDuplicate) return;
+    PendingObjectDuplicate p = *m_pendingObjectDuplicate;
+    m_pendingObjectDuplicate.reset();
+
+    ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    const std::string canonicalPath = applyObjectImportMode(
+        p.sourceFilePath, ImportMode::Copy, p.subfolder, &importedKind,
+        resolution);
+    if (canonicalPath.empty()) {
+        std::cerr << "[Engine] resolvePendingObjectDuplicate: import failed for "
+                  << p.sourceFilePath << std::endl;
+        return;
+    }
+    ingestObjectFile(canonicalPath, importedKind);
+}
+
+void Engine::cancelPendingObjectDuplicate() {
+    if (!m_pendingObjectDuplicate) return;
+    std::cout << "[Engine] Object import cancelled: "
+              << m_pendingObjectDuplicate->sourceFilePath << std::endl;
+    m_pendingObjectDuplicate.reset();
+}
+
+void Engine::onModelFileSelected(const std::string& filePath) {
+    std::cout << "[Engine] Model file selected: " << filePath << std::endl;
+
+    // Only OBJ today. The scanner's extension whitelist matches.
+    const std::string ext = std::filesystem::path(filePath).extension().string();
+    std::string extLower = ext;
+    std::transform(extLower.begin(), extLower.end(), extLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extLower != ".obj") {
+        std::cerr << "[Engine] Unsupported model format: " << filePath
+                  << " (only .obj for now)" << std::endl;
+        return;
+    }
+
+    const auto storagePolicy = m_settings.importStoragePolicy;
+    bool storageDecided = (storagePolicy != Settings::ImportStoragePolicy::Ask);
+    ImportMode resolvedMode = ImportMode::Link;
+    if (storagePolicy == Settings::ImportStoragePolicy::AlwaysCopy) {
+        resolvedMode = ImportMode::Copy;
+    }
+
+    if (!storageDecided) {
+        if (m_pendingObjectImport) {
+            std::cerr << "[Engine] Object import already awaiting user decision ("
+                      << m_pendingObjectImport->sourceFilePath
+                      << "); dropping " << filePath << std::endl;
+            return;
+        }
+        PendingObjectImport p;
+        p.sourceFilePath = filePath;
+        p.storageDecided = false;
+        p.resolvedMode   = resolvedMode;
+        m_pendingObjectImport = std::move(p);
+        std::cout << "[Engine] Awaiting user storage decision for object: "
+                  << filePath << std::endl;
+        return;
+    }
+
+    // Storage policy pinned — apply silently. Subfolder = root.
+    ProjectManager::PathKind importedKind = ProjectManager::PathKind::Linked;
+    const std::string canonicalPath =
+        applyObjectImportMode(filePath, resolvedMode, /*subfolder*/ "", &importedKind);
+    if (canonicalPath.empty()) {
+        std::cerr << "[Engine] Object import failed for " << filePath << std::endl;
+        return;
+    }
+    ingestObjectFile(canonicalPath, importedKind);
+}
+
+void Engine::ingestObjectFile(const std::string& canonicalPath,
+                              ProjectManager::PathKind kind) {
+    namespace fs = std::filesystem;
+    if (!m_projectManager) return;
+    if (canonicalPath.empty()) return;
+
+    auto& libEntry = m_projectManager->addObjectFile(canonicalPath, kind);
+    libEntry.missingOnDisk = false;
+
+    // Resolve to an absolute path the loader can read. For Managed
+    // entries we just registered, the resolver joins against project
+    // root; for Linked, returns canonicalPath as-is.
+    const std::string resolved = m_projectManager->resolveObjectPath(canonicalPath);
+    if (resolved.empty()) {
+        std::cerr << "[Engine] ingestObjectFile: cannot resolve "
+                  << canonicalPath << std::endl;
+        return;
+    }
+
+    std::error_code ec;
+    if (!fs::exists(resolved, ec)) {
+        std::cerr << "[Engine] ingestObjectFile: file missing on disk: "
+                  << resolved << std::endl;
+        return;
+    }
+
+    // Record size for the hot-reload validity gate (size, not mtime —
+    // see project memory feedback_media_cache_size_not_mtime.md).
+    libEntry.lastProbeSizeBytes =
+        static_cast<std::int64_t>(fs::file_size(resolved, ec));
+    {
+        auto ftt = fs::last_write_time(resolved, ec);
+        if (!ec) {
+            using namespace std::chrono;
+            auto sys = time_point_cast<system_clock::duration>(
+                ftt - fs::file_time_type::clock::now() + system_clock::now());
+            libEntry.lastProbeMtimeUnix =
+                duration_cast<seconds>(sys.time_since_epoch()).count();
+        }
+    }
+
+    // Compute the logical path (strip `_v<tag>`). The Model entity is
+    // keyed by this — one Model per logical group, auto-rolling to the
+    // latest version member at parse time.
+    const std::string logicalPath = toLogicalPath(canonicalPath);
+    const std::string logicalStem =
+        fs::path(logicalPath).stem().string();
+
+    // Find or create the Model entity for this group.
+    entt::entity modelEntity = entt::null;
+    auto view = m_registry.view<Model>();
+    for (auto [e, m] : view.each()) {
+        if (m.filepath == logicalPath) {
+            modelEntity = e;
+            break;
+        }
+    }
+
+    // Parse the mesh from the resolved (latest-version) file.
+    MeshData mesh = ObjLoader::load(resolved);
+
+    if (modelEntity == entt::null) {
+        modelEntity = m_registry.create();
+        auto& model = m_registry.emplace<Model>(modelEntity);
+        model.name     = logicalStem;
+        model.filepath = logicalPath;
+        model.mesh     = std::move(mesh);
+        model.gpuResourcesValid = false;  // editor tick uploads next frame
+        std::cout << "[Engine] Created Model '" << model.name
+                  << "' (filepath=" << model.filepath << ", source="
+                  << resolved << ")" << std::endl;
+    } else {
+        // Existing Model for this group — hot-reload the mesh. Schedule
+        // the old GPU slot for deferred free (fence-gated so in-flight
+        // draws keep working) and invalidate so the editor-tick
+        // uploader allocates a fresh slot next frame.
+        auto& model = m_registry.get<Model>(modelEntity);
+        if (model.gpuResourcesValid && model.vertexBufferSlot != UINT32_MAX) {
+            if (auto* d3d = m_rendererService
+                                ? m_rendererService->getD3D12Renderer()
+                                : nullptr) {
+                d3d->scheduleMeshSlotFree(model.vertexBufferSlot);
+            }
+            model.vertexBufferSlot = UINT32_MAX;
+            model.indexBufferSlot  = UINT32_MAX;
+        }
+        model.mesh              = std::move(mesh);
+        model.gpuResourcesValid = false;
+        model.gpuUploadFailed   = false;
+        std::cout << "[Engine] Reloaded Model '" << model.name
+                  << "' from " << resolved << std::endl;
+    }
 }
 
 void Engine::onVideoFileSelected(const std::string& filePath) {
@@ -3420,12 +3852,12 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         }
     }
 
-    // Initial sync scan of <projectDir>/content/ — picks up files the
-    // user dropped in while the app was closed. Bypasses the polling
-    // scanner's 2-tick stability gate (those files have been on disk
-    // for a while; they're not mid-write) so the bin is fully populated
-    // by the time the editor renders. ContentScanner still starts below
-    // and handles drops that happen later.
+    // Initial sync scan of <projectDir>/content/ and <projectDir>/objects/
+    // — picks up files the user dropped in while the app was closed.
+    // Bypasses the polling scanner's 2-tick stability gate (those files
+    // have been on disk for a while; they're not mid-write) so the bins
+    // are fully populated by the time the editor renders. ContentScanner
+    // still starts below and handles drops that happen later.
     if (!filepath.empty() && m_projectManager) {
         const std::filesystem::path projectRoot = filepath.parent_path();
         const std::filesystem::path contentDir = projectRoot / "content";
@@ -3470,6 +3902,56 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
                                                  libEntry.cachedProbe);
                 }
                 std::cout << "[Engine] initial scan discovered " << relStr << std::endl;
+            }
+        }
+
+        // Same pass for the objects/ tree. ingestObjectFile is idempotent
+        // — repeat visits during a project that's already been loaded
+        // hit the "library entry already exists" branch and only
+        // hot-reload on size change.
+        const std::filesystem::path objectsDir = projectRoot / "objects";
+        std::error_code oec;
+        if (std::filesystem::exists(objectsDir, oec) &&
+            std::filesystem::is_directory(objectsDir, oec)) {
+            std::filesystem::recursive_directory_iterator it(
+                objectsDir,
+                std::filesystem::directory_options::skip_permission_denied,
+                oec);
+            for (; !oec && it != std::filesystem::recursive_directory_iterator{};
+                 it.increment(oec)) {
+                const auto& entry = *it;
+                if (entry.is_directory(oec)) {
+                    if (ContentScanner::shouldSkipDirStatic(entry.path())) {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
+                if (!entry.is_regular_file(oec)) continue;
+                if (ContentScanner::shouldSkipFileStatic(entry.path())) continue;
+                if (!ContentScanner::isObjectExtensionStatic(entry.path().extension())) continue;
+
+                std::error_code relEc;
+                std::filesystem::path rel =
+                    std::filesystem::relative(entry.path(), projectRoot, relEc);
+                if (relEc) continue;
+                const std::string relStr = rel.generic_string();
+
+                // ProjectSerializer may have populated the library from
+                // the saved `objectLibrary` — skip if so, but hot-reload
+                // when disk size diverges from the cached probe.
+                if (auto* e = m_projectManager->findObjectEntry(relStr)) {
+                    std::error_code sec;
+                    const auto diskSize = static_cast<std::int64_t>(
+                        std::filesystem::file_size(entry.path(), sec));
+                    if (!sec && diskSize != e->lastProbeSizeBytes) {
+                        ingestObjectFile(relStr, ProjectManager::PathKind::Managed);
+                    }
+                    e->missingOnDisk = false;
+                    continue;
+                }
+                ingestObjectFile(relStr, ProjectManager::PathKind::Managed);
+                std::cout << "[Engine] initial scan discovered object "
+                          << relStr << std::endl;
             }
         }
     }
@@ -3576,8 +4058,37 @@ void Engine::drainContentScannerDeltas() {
     if (deltas.empty()) return;
 
     for (const auto& d : deltas) {
+        const bool isObject = (d.source == ContentScanner::DeltaSource::Object);
+
         switch (d.kind) {
             case ContentScanner::DeltaKind::Added: {
+                if (isObject) {
+                    // 3D model auto-discovery. The library is the dedupe
+                    // gate — if we already have an entry (manual import
+                    // got here first), just clear missingOnDisk. Otherwise
+                    // ingest the file: register it and create-or-update
+                    // the Model entity for its logical group.
+                    if (auto* e = m_projectManager->findObjectEntry(d.relativePath); e) {
+                        e->missingOnDisk = false;
+                        // Size-change → hot-reload mesh. Compare the disk
+                        // file size against the cached value; mismatch
+                        // means an external write replaced the file.
+                        std::error_code ec;
+                        const auto absPath = m_projectManager->resolveObjectPath(d.relativePath);
+                        const auto diskSize = static_cast<std::int64_t>(
+                            std::filesystem::file_size(absPath, ec));
+                        if (!ec && diskSize != e->lastProbeSizeBytes) {
+                            ingestObjectFile(d.relativePath,
+                                             ProjectManager::PathKind::Managed);
+                        }
+                        continue;
+                    }
+                    ingestObjectFile(d.relativePath,
+                                     ProjectManager::PathKind::Managed);
+                    std::cout << "[ContentScanner] discovered object "
+                              << d.relativePath << std::endl;
+                    break;
+                }
                 // Discovered files are Managed by definition (they live
                 // under the project's content/ tree). addMediaFile is
                 // idempotent so it's safe even if a Linked entry happens
@@ -3603,6 +4114,14 @@ void Engine::drainContentScannerDeltas() {
                 // Soft-mark missing — never erase. Brief unlink-then-rename
                 // windows during external sync would otherwise nuke user
                 // state.
+                if (isObject) {
+                    if (auto* e = m_projectManager->findObjectEntry(d.relativePath); e) {
+                        e->missingOnDisk = true;
+                        std::cout << "[ContentScanner] missing object "
+                                  << d.relativePath << std::endl;
+                    }
+                    break;
+                }
                 if (auto* e = m_projectManager->findEntry(d.relativePath); e) {
                     e->missingOnDisk = true;
                     std::cout << "[ContentScanner] missing " << d.relativePath << std::endl;
@@ -3724,11 +4243,13 @@ void Engine::createDefaultScreen() {
     screen.modelEntity = modelEntity;
     screen.width = 1920;
     screen.height = 1080;
-    screen.position = {0.0f, 0.0f, 0.0f};
-    screen.rotation = {0.0f, 0.0f, 0.0f};
     // Default Main Screen renders as a 4m × 2.25m flat panel using the
     // default 16:9 plane mesh. Size in real-world meters per Phase 2 spec.
     screen.size = {4.0f, 2.25f, 0.0f};
+    // Seat the screen on the floor by default: position.y = size.y/2 puts
+    // the bottom edge at world Y=0. position.y is the center of the quad.
+    screen.position = {0.0f, screen.size[1] * 0.5f, 0.0f};
+    screen.rotation = {0.0f, 0.0f, 0.0f};
     screen.visible = true;
     screen.opacity = 1.0f;
     screen.zOrder = 0;

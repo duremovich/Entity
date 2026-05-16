@@ -149,18 +149,15 @@ void Stage3DRenderer::drawFloorGrid(ImDrawList* drawList, ImVec2 screenPos, ImVe
 
 void Stage3DRenderer::drawScreenQuad(ImDrawList* drawList, ImVec2 screenPos, ImVec2 screenSize,
                                       ImTextureID textureID) {
-    // Screen quad in world space
-    // Screen is centered at origin, elevated above floor
+    // Screen quad in world space. The quad is centered on its origin —
+    // position.y is the world Y of the screen's center.
     float hw = screenWidth * 0.5f * screenScale.x;
     float hh = screenHeight * 0.5f * screenScale.y;
-    float baseY = screenElevation;
 
     // Build transformation matrix from screen transform
     // Order: Scale -> Rotate -> Translate
     glm::mat4 transform = glm::mat4(1.0f);
-
-    // Translation (position offset + base elevation)
-    transform = glm::translate(transform, glm::vec3(screenPosition.x, screenPosition.y + baseY, screenPosition.z));
+    transform = glm::translate(transform, glm::vec3(screenPosition.x, screenPosition.y, screenPosition.z));
 
     // Rotation (degrees to radians) - apply in Y, X, Z order (yaw, pitch, roll)
     transform = glm::rotate(transform, glm::radians(screenRotation.y), glm::vec3(0.0f, 1.0f, 0.0f));  // Yaw
@@ -323,8 +320,7 @@ ImTextureID Stage3DRenderer::renderMeshes(D3D12Renderer* renderer,
         if (d.meshSlot == UINT32_MAX) continue;
 
         glm::mat4 model = glm::mat4(1.0f);
-        const float yLift = d.isScreen ? screenElevation : 0.0f;
-        model = glm::translate(model, glm::vec3(d.position.x, d.position.y + yLift, d.position.z));
+        model = glm::translate(model, glm::vec3(d.position.x, d.position.y, d.position.z));
         model = glm::rotate(model, glm::radians(d.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
         model = glm::rotate(model, glm::radians(d.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
         model = glm::rotate(model, glm::radians(d.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -385,7 +381,7 @@ void Stage3DRenderer::drawScreen(ImDrawList* drawList, ImVec2 screenPos, ImVec2 
     float hh = screenHeight * 0.5f * scale.y;
 
     glm::mat4 transform = glm::mat4(1.0f);
-    transform = glm::translate(transform, glm::vec3(position.x, position.y + screenElevation, position.z));
+    transform = glm::translate(transform, glm::vec3(position.x, position.y, position.z));
     transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
     transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
     transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -498,7 +494,7 @@ void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens,
     for (const auto& s : screens) {
         glm::mat4 transform = glm::mat4(1.0f);
         transform = glm::translate(transform,
-            glm::vec3(s.position.x, s.position.y + screenElevation, s.position.z));
+            glm::vec3(s.position.x, s.position.y, s.position.z));
         transform = glm::rotate(transform, glm::radians(s.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
         transform = glm::rotate(transform, glm::radians(s.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
         transform = glm::rotate(transform, glm::radians(s.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -527,8 +523,8 @@ void Stage3DRenderer::frameScreens(const std::vector<ScreenFrameInput>& screens,
         }
     }
 
-    // Props: same chain minus the screenElevation lift, and require a mesh
-    // (props without geometry contribute nothing to the AABB).
+    // Props: same chain, require a mesh (props without geometry contribute
+    // nothing to the AABB).
     for (const auto& p : props) {
         if (!p.mesh || !p.mesh->isValid()) continue;
         glm::mat4 transform = glm::mat4(1.0f);
@@ -614,7 +610,7 @@ bool Stage3DRenderer::hitTestScreen(ImVec2 mousePos, ImVec2 renderPos, ImVec2 re
                                      const glm::vec3& position, const glm::vec3& rotation,
                                      const glm::vec3& scale, const MeshData* mesh) const {
     glm::mat4 transform = glm::mat4(1.0f);
-    transform = glm::translate(transform, glm::vec3(position.x, position.y + screenElevation, position.z));
+    transform = glm::translate(transform, glm::vec3(position.x, position.y, position.z));
     transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
     transform = glm::rotate(transform, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
     transform = glm::rotate(transform, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -704,7 +700,7 @@ bool Stage3DRenderer::hitTestProp(ImVec2 mousePos, ImVec2 renderPos, ImVec2 rend
                                    const glm::vec3& scale, const MeshData* mesh) const {
     if (!mesh || !mesh->isValid()) return false;
 
-    // Same transform chain as drawProp (no screenElevation).
+    // Same transform chain as drawProp.
     glm::mat4 transform = glm::mat4(1.0f);
     transform = glm::translate(transform, position);
     transform = glm::rotate(transform, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));

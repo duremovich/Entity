@@ -447,9 +447,10 @@ void ProjectorCalibrationWindow::renderScenePane(ImVec2 panePos, ImVec2 paneSize
             reinterpret_cast<ImTextureID>(texID), false, mesh);
 
         if (m_showWireframe && mesh) {
-            // Match Stage3DRenderer::drawScreen exactly — including the screenElevation Y offset.
+            // Match Stage3DRenderer::drawScreen exactly — screen position is
+            // already in world coords, no extra Y offset.
             glm::vec3 pos(screen->position[0],
-                          screen->position[1] + m_renderer.screenElevation,
+                          screen->position[1],
                           screen->position[2]);
             glm::vec3 rot(screen->rotation[0], screen->rotation[1], screen->rotation[2]);
             glm::vec3 scl(eff[0], eff[1], eff[2]);
@@ -1072,9 +1073,10 @@ bool ProjectorCalibrationWindow::pickMeshPoint(ImVec2 mousePos,
     }
     if (!mesh) return false;
 
-    // Match Stage3DRenderer::drawScreen exactly — including screenElevation Y offset.
+    // Match Stage3DRenderer::drawScreen exactly — screen position is in
+    // world coords directly.
     glm::vec3 pos(screen->position[0],
-                  screen->position[1] + m_renderer.screenElevation,
+                  screen->position[1],
                   screen->position[2]);
     glm::vec3 rot(screen->rotation[0], screen->rotation[1], screen->rotation[2]);
     const auto eff = computeEffectiveScale(screen->size, mesh);

@@ -526,6 +526,22 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             }
             project["mediaLibrary"] = libJson;
             project["nonHapImportPolicy"] = static_cast<int>(projectMgr->nonHapImportPolicy());
+
+            // v18 — object library (parallel of mediaLibrary for 3D models).
+            // Same pathKind + size-validity convention; no transcode /
+            // archive fields because models don't have those flows.
+            json objLibJson = json::array();
+            for (const auto& entry : projectMgr->loadedObjectFiles()) {
+                json ej;
+                ej["originalPath"] = entry.originalPath;
+                ej["pathKind"]     = pathKindToJson(entry.pathKind);
+                if (entry.lastProbeSizeBytes > 0) {
+                    ej["lastProbeSizeBytes"] = entry.lastProbeSizeBytes;
+                    ej["lastProbeMtimeUnix"] = entry.lastProbeMtimeUnix;
+                }
+                objLibJson.push_back(ej);
+            }
+            project["objectLibrary"] = objLibJson;
         }
 
         // Serialize mapping surfaces
@@ -896,13 +912,22 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     auto& model = registry.emplace<Model>(modelEntity);
                     model.name = name;
                     model.filepath = modelFilepath;
-                    if (!modelFilepath.empty() && std::filesystem::exists(modelFilepath)) {
-                        model.mesh = ObjLoader::load(modelFilepath);
+                    // Resolve through ProjectManager so Managed (project-
+                    // relative) paths land at the project root and the
+                    // `_v<tag>` auto-roll picks the latest. Falls back to
+                    // the path-as-stored for pre-v18 projects with no
+                    // object library and Linked absolute paths.
+                    std::string resolved = modelFilepath;
+                    if (projectMgr && !modelFilepath.empty()) {
+                        resolved = projectMgr->meshPathFor(modelFilepath);
+                    }
+                    if (!resolved.empty() && std::filesystem::exists(resolved)) {
+                        model.mesh = ObjLoader::load(resolved);
                     } else {
                         model.mesh = createDefaultScreenMesh();
                     }
                     std::cout << "[ProjectSerializer] Loaded model: " << name
-                              << " (from " << (modelFilepath.empty() ? "built-in plane" : modelFilepath) << ")" << std::endl;
+                              << " (from " << (modelFilepath.empty() ? "built-in plane" : resolved) << ")" << std::endl;
                 }
                 // Existing matches keep their mesh + GPU handles as-is.
             }
@@ -1184,6 +1209,23 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     }
                 }
             }
+            // v18 — object library. Pre-v18 projects don't carry this
+            // key; the library starts empty and any existing Model
+            // entities load via their stored filepath as Linked.
+            if (project.contains("objectLibrary")) {
+                for (const auto& ej : project["objectLibrary"]) {
+                    const std::string original = ej.value("originalPath", "");
+                    if (original.empty()) continue;
+                    const std::string pathKindStr = ej.value("pathKind", "linked");
+                    auto& entry = projectMgr->addObjectFile(original);
+                    entry.pathKind = jsonToPathKind(pathKindStr);
+                    entry.lastProbeSizeBytes = ej.value("lastProbeSizeBytes",
+                                                       static_cast<std::int64_t>(0));
+                    entry.lastProbeMtimeUnix = ej.value("lastProbeMtimeUnix",
+                                                       static_cast<std::int64_t>(0));
+                }
+            }
+
             // Prefer v5 field. Fall back to v4 autoTranscodeOnImport if present
             // (true → AlwaysTranscode, false → NeverTranscode — matches the
             // boolean semantics the user had set).

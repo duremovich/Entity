@@ -110,7 +110,12 @@ public:
     // v17 ObjectAnimationLayer "endBehavior" ("Hold" | "Reset"). Pre-v17 OA
     //     layers load with the new "Hold" default per ADR-0020 — the
     //     explicit show-friendly choice, not pre-ADR snap-back.
-    static constexpr int PROJECT_VERSION = 17;
+    // v18 objectLibrary[] — parallel to mediaLibrary[] but for 3D models in
+    //     `objects/`. Persists pathKind + size validity gate so the
+    //     scanner can hot-reload changed meshes. Pre-v18 projects load
+    //     with an empty object library; existing Model.filepath entries
+    //     keep working as Linked paths.
+    static constexpr int PROJECT_VERSION = 18;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

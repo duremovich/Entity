@@ -291,6 +291,115 @@ TEST(ProjectSerializer, MediaLibraryDefaultPathKindIsLinked) {
     }
 }
 
+TEST(ProjectSerializer, ObjectLibraryManagedRoundTrip) {
+    // v18 — ObjectLibraryEntry persistence. A Managed entry with a
+    // probe-size validity gate must survive save+load with all fields
+    // intact, parallel to the MediaLibrary tests above.
+    TempFile tf("v18_object_managed");
+    const std::string kPath = "objects/props/chair.obj";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        auto& entry = pm.addObjectFile(kPath,
+                                       entity::ProjectManager::PathKind::Managed);
+        entry.lastProbeSizeBytes = 12345;
+        entry.lastProbeMtimeUnix = 999000111;
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+            << entity::ProjectSerializer::getLastError();
+
+        const auto* loaded = pm.findObjectEntry(kPath);
+        ASSERT_NE(loaded, nullptr);
+        EXPECT_EQ(loaded->pathKind, entity::ProjectManager::PathKind::Managed);
+        EXPECT_EQ(loaded->lastProbeSizeBytes, 12345);
+        EXPECT_EQ(loaded->lastProbeMtimeUnix, 999000111);
+        // missingOnDisk is transient — never serialized, always resets to false.
+        EXPECT_FALSE(loaded->missingOnDisk);
+    }
+}
+
+TEST(ProjectSerializer, ObjectLibraryLinkedDefault) {
+    // Default-constructed ObjectLibraryEntry round-trips as Linked.
+    TempFile tf("v18_object_linked");
+    const std::string kPath = "C:/external/chair.obj";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        pm.addObjectFile(kPath);  // no overrides — Linked default
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm));
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm));
+
+        const auto* loaded = pm.findObjectEntry(kPath);
+        ASSERT_NE(loaded, nullptr);
+        EXPECT_EQ(loaded->pathKind, entity::ProjectManager::PathKind::Linked);
+        EXPECT_EQ(loaded->lastProbeSizeBytes, 0);
+    }
+}
+
+TEST(ProjectSerializer, ObjectLibraryVersionGroupAutoRoll) {
+    // meshPathFor("objects/props/chair.obj") with chair_v01 + chair_v02
+    // entries in the library should resolve to chair_v02 (latest in
+    // group). The auto-roll is purely string-based; we don't need the
+    // files to actually exist on disk for the resolver to return them.
+    entity::ProjectManager pm;
+    pm.setProjectPath(fs::temp_directory_path() / "fake_proj.entity");
+
+    pm.addObjectFile("objects/props/chair_v01.obj",
+                     entity::ProjectManager::PathKind::Managed);
+    pm.addObjectFile("objects/props/chair_v02.obj",
+                     entity::ProjectManager::PathKind::Managed);
+
+    // Logical reference (no _v tag) — resolver picks the latest.
+    const std::string resolved = pm.meshPathFor("objects/props/chair.obj");
+    EXPECT_NE(resolved.find("chair_v02.obj"), std::string::npos)
+        << "Expected chair_v02 to be the auto-rolled latest, got: " << resolved;
+
+    // Pinned reference (explicit v01) — resolver returns the exact match.
+    const std::string pinned = pm.meshPathFor("objects/props/chair_v01.obj");
+    EXPECT_NE(pinned.find("chair_v01.obj"), std::string::npos)
+        << "Expected pinned chair_v01 to be returned, got: " << pinned;
+}
+
+TEST(ProjectSerializer, PreV18ProjectLoadsWithEmptyObjectLibrary) {
+    // Forward-compat: a v17 .entity file has no objectLibrary key. The
+    // loader accepts the absence and the library starts empty.
+    TempFile tf("v17_no_object_lib");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 17,
+  "timeline": { "framerate": 30.0 },
+  "tracks": []
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    entity::ProjectManager pm;
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm));
+    EXPECT_TRUE(pm.loadedObjectFiles().empty());
+}
+
 TEST(ProjectSerializer, V6ProjectLoadsWithLinkedPathKind) {
     // Forward-compatibility gate: a v6 project file pre-dates pathKind /
     // archivedOriginal / originalCodec entirely. The loader must accept the

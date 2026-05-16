@@ -40,6 +40,7 @@ add_executable(EntityMediaTests
     unit/OAShowSideReevalTests.cpp
     unit/DirectorRendererRoundtripTests.cpp
     unit/AssetIdTests.cpp
+    unit/MathInputTests.cpp
     unit/DecodeBufferPoolTests.cpp
     unit/CalibrationSolverTests.cpp
     unit/WaitForGpuEarlyOutTests.cpp

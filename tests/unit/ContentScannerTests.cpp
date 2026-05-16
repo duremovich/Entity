@@ -183,6 +183,89 @@ TEST_F(ContentScannerTest, MissingContentDirEmitsNothing) {
     EXPECT_TRUE(deltas.empty());
 }
 
+TEST_F(ContentScannerTest, ObjectsRootIsScannedForObjFiles) {
+    // Drop an .obj into <root>/objects/props/ — should surface as a
+    // DeltaSource::Object Added delta, not Media.
+    fs::create_directories(m_root / "objects" / "props");
+    {
+        std::ofstream f(m_root / "objects" / "props" / "chair.obj", std::ios::binary);
+        std::string blob(64, 'o');
+        f.write(blob.data(), static_cast<std::streamsize>(blob.size()));
+    }
+
+    ContentScanner s;
+    s.start(m_root);
+    s.stop();
+    s.tickForTesting();
+    s.tickForTesting();
+    auto deltas = s.drain();
+    ASSERT_EQ(deltas.size(), 1u);
+    EXPECT_EQ(deltas[0].kind, ContentScanner::DeltaKind::Added);
+    EXPECT_EQ(deltas[0].source, ContentScanner::DeltaSource::Object);
+    EXPECT_EQ(deltas[0].relativePath, "objects/props/chair.obj");
+}
+
+TEST_F(ContentScannerTest, ContentRootStillEmitsMediaSource) {
+    // Sanity: existing content/ behavior carries the Media source tag.
+    writeFile("unsorted/intro.mov");
+
+    ContentScanner s;
+    s.start(m_root);
+    s.stop();
+    s.tickForTesting();
+    s.tickForTesting();
+    auto deltas = s.drain();
+    ASSERT_EQ(deltas.size(), 1u);
+    EXPECT_EQ(deltas[0].source, ContentScanner::DeltaSource::Media);
+}
+
+TEST_F(ContentScannerTest, ObjectsRootIgnoresNonObjExtensions) {
+    fs::create_directories(m_root / "objects");
+    {
+        std::ofstream f(m_root / "objects" / "notes.txt");
+        f << "txt";
+    }
+    {
+        std::ofstream f(m_root / "objects" / "scene.fbx");  // FBX not in v1 whitelist
+        f << "fbx";
+    }
+
+    ContentScanner s;
+    s.start(m_root);
+    s.stop();
+    s.tickForTesting();
+    s.tickForTesting();
+    auto deltas = s.drain();
+    EXPECT_TRUE(deltas.empty());
+}
+
+TEST_F(ContentScannerTest, BothRootsScannedInSamePass) {
+    writeFile("unsorted/intro.mov");
+    fs::create_directories(m_root / "objects");
+    {
+        std::ofstream f(m_root / "objects" / "table.obj", std::ios::binary);
+        std::string blob(48, 'o');
+        f.write(blob.data(), static_cast<std::streamsize>(blob.size()));
+    }
+
+    ContentScanner s;
+    s.start(m_root);
+    s.stop();
+    s.tickForTesting();
+    s.tickForTesting();
+    auto deltas = s.drain();
+    ASSERT_EQ(deltas.size(), 2u);
+
+    int mediaCount  = 0;
+    int objectCount = 0;
+    for (const auto& d : deltas) {
+        if (d.source == ContentScanner::DeltaSource::Media)  ++mediaCount;
+        if (d.source == ContentScanner::DeltaSource::Object) ++objectCount;
+    }
+    EXPECT_EQ(mediaCount, 1);
+    EXPECT_EQ(objectCount, 1);
+}
+
 TEST_F(ContentScannerTest, StartStopLifecycle) {
     ContentScanner s;
     EXPECT_FALSE(s.isRunning());

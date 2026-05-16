@@ -192,6 +192,7 @@ target_sources(EntityMediaCore
         # src/timeline/TimeMapping.cpp (to be implemented later)
 
         # UI
+        src/ui/MathInput.cpp
         src/ui/WindowManager.cpp
         src/ui/FileDialog.cpp
         src/ui/ProjectLauncher.cpp

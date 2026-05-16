@@ -102,7 +102,6 @@ public:
         uint32_t  srvSlot{0};      // SRV heap index for video texture
         glm::vec4 tint{1.0f};      // per-draw tint / matte color
         uint32_t  renderMode{0};   // 0=textured, 1=Lambert matte
-        bool      isScreen{true};  // true → apply screenElevation lift
     };
 
     /**
@@ -139,9 +138,8 @@ public:
     };
 
     /**
-     * Per-prop transform for content-aware framing. Mirrors ScreenFrameInput
-     * but without the implicit screenElevation offset, since drawProp()
-     * doesn't apply that lift (props live at their actual world position).
+     * Per-prop transform for content-aware framing. Mirrors ScreenFrameInput;
+     * both screens and props now live at their actual world position.
      */
     struct PropFrameInput {
         glm::vec3 position;
@@ -189,9 +187,8 @@ public:
 
     /**
      * Test whether a 2D mouse position falls within a projected prop mesh.
-     * Same semantics as hitTestScreen() but without the screenElevation
-     * offset (props sit at their honest world position). A null/invalid
-     * mesh always misses — props without geometry can't be clicked.
+     * Same semantics as hitTestScreen(). A null/invalid mesh always misses
+     * — props without geometry can't be clicked.
      */
     bool hitTestProp(ImVec2 mousePos, ImVec2 renderPos, ImVec2 renderSize,
                      const glm::vec3& position, const glm::vec3& rotation,
@@ -234,7 +231,6 @@ public:
     // Screen settings (base size, transform is applied on top)
     float screenWidth{16.0f / 9.0f};   // Screen width in world units (16:9 aspect at height 1)
     float screenHeight{1.0f};           // Screen height in world units
-    float screenElevation{0.5f};        // Height of screen center above floor (default)
 
     // Screen transform (set from Screen component)
     glm::vec3 screenPosition{0.0f, 0.0f, 0.0f};   // Position offset (x, y, z)

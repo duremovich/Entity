@@ -388,6 +388,91 @@ void MediaBinWindow::renderPendingImportModal() {
     }
 }
 
+void MediaBinWindow::renderPendingDuplicateModal() {
+    const Engine::PendingMediaDuplicate* dup = m_engine->pendingMediaDuplicate();
+
+    if (dup) {
+        if (dup->sourceFilePath != m_dupModalLastSource) {
+            m_dupModalLastSource = dup->sourceFilePath;
+            ImGui::OpenPopup("Media Already Exists");
+        }
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(540, 0));
+
+    if (ImGui::BeginPopupModal("Media Already Exists", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        const std::string subfolderDisplay =
+            (dup ? dup->subfolder : std::string{});
+        const std::string targetDir = subfolderDisplay.empty()
+            ? std::string("content/")
+            : ("content/" + subfolderDisplay + "/");
+
+        ImGui::TextUnformatted("A file with this name already exists in the");
+        ImGui::Text("project at %s", targetDir.c_str());
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.5f, 1.0f), "%s",
+                           dup ? dup->targetFilename.c_str() : "");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextUnformatted("What would you like to do?");
+        ImGui::Spacing();
+
+        const float btnWidth = 150.0f;
+
+        if (ImGui::Button("Replace", ImVec2(btnWidth, 0))) {
+            m_engine->resolvePendingMediaDuplicate(
+                Engine::DuplicateResolution::Replace);
+            m_dupModalLastSource.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Overwrite the existing file. The previous media is lost;\n"
+                "any clip pinned to this exact filename picks up the new\n"
+                "content on the next decoder open. Any cached transcode\n"
+                "for the old file becomes invalid.");
+        }
+
+        ImGui::SameLine();
+        const std::string keepBothLabel = std::string("Keep both (") +
+            (dup ? dup->suggestedRenamed : std::string("...")) + ")";
+        if (ImGui::Button(keepBothLabel.c_str(), ImVec2(0, 0))) {
+            m_engine->resolvePendingMediaDuplicate(
+                Engine::DuplicateResolution::KeepBoth);
+            m_dupModalLastSource.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Auto-suffix the new file's name so both versions live\n"
+                "side-by-side under content/. The existing file is untouched.");
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(btnWidth, 0))) {
+            m_engine->cancelPendingMediaDuplicate();
+            m_dupModalLastSource.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Abandon the import. Nothing is written to disk.");
+        }
+
+        ImGui::EndPopup();
+    } else if (dup && m_dupModalLastSource == dup->sourceFilePath) {
+        // Popup dismissed externally (ESC etc.) — treat as Cancel so the
+        // pending state doesn't strand on Engine.
+        m_engine->cancelPendingMediaDuplicate();
+        m_dupModalLastSource.clear();
+    }
+}
+
 void MediaBinWindow::render() {
     const auto& mediaFiles = m_engine->getLoadedMediaFiles();
     TranscodeManager* tmgr = m_engine->getTranscodeManager();
@@ -437,6 +522,9 @@ void MediaBinWindow::render() {
 
     // --- Unified per-import modal (#32) -----------------------------------
     renderPendingImportModal();
+
+    // --- File-already-exists prompt (Copy-mode collisions) ----------------
+    renderPendingDuplicateModal();
 
     if (mediaFiles.empty()) {
         ImGui::TextDisabled("No media loaded");

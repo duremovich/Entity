@@ -409,7 +409,6 @@ void StageWindow::render3DView() {
             draw.position   = position;
             draw.rotation   = rotation;
             draw.scale      = scale;
-            draw.isScreen   = true;
 
             // Triple-buffered compose targets: must read from the *stable*
             // sub-resource the show thread last finished, never the base slot
@@ -475,7 +474,6 @@ void StageWindow::render3DView() {
                 draw.srvSlot    = 0;  // renderMode=1: PS ignores the texture SRV
                 draw.tint       = color;
                 draw.renderMode = 1;
-                draw.isScreen   = false;
                 meshDraws.push_back(draw);
             } else {
                 // No mesh → placeholder-cross bucket

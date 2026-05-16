@@ -11,11 +11,14 @@ class Engine;
 class WindowManager;
 
 /**
- * ModelBinWindow - Displays imported 3D models (OBJ files) for use as screens.
+ * ModelBinWindow - Displays imported 3D models for use as screens / props.
  *
- * Shows a list of all models that have been imported into the project.
- * Models can be dragged onto the Screens window to create new screens,
- * or assigned to existing screens.
+ * Mirrors the MediaBinWindow flow: external file drops + an Import button
+ * route through Engine::onModelFileSelected, which either pins the
+ * storage decision from Settings or stashes a PendingObjectImport that
+ * this window renders as a Copy/Link modal. Model entities are keyed by
+ * logical path (one per `_v<tag>` group); the tooltip lists the version
+ * members the underlying ObjectLibraryEntry list carries.
  */
 class ModelBinWindow : public EditorWindow {
 public:
@@ -25,14 +28,24 @@ public:
     void render() override;
     const char* getName() const override { return "Model Bin"; }
 
-    /**
-     * Import an OBJ file as a model
-     */
-    void importModel(const std::string& filepath);
-
 private:
+    void renderPendingImportModal();
+    void renderPendingDuplicateModal();
+
     Engine* m_engine{nullptr};
     WindowManager* m_windowManager{nullptr};
+
+    // Unified object-import modal state. Storage mode stored as int to
+    // avoid pulling Engine.hpp into this header. Transcode question is
+    // not part of the object modal (objects have no transcode flow).
+    std::string m_modalLastFilepath;
+    int         m_modalChosenMode{1};      // 0=Link, 1=Copy
+    char        m_modalSubfolderBuf[128]{0};
+    bool        m_modalDontAskStorage{false};
+
+    // Tracks which duplicate prompt we've already opened so we don't
+    // re-open it every frame while it's modal.
+    std::string m_dupModalLastSource;
 };
 
 } // namespace entity

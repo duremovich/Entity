@@ -274,6 +274,7 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
 
 void ProjectManager::closeProject() {
     m_loadedMediaFiles.clear();
+    m_loadedObjectFiles.clear();
     m_projectPath.clear();
     m_nonHapImportPolicy = NonHapImportPolicy::Ask;
     m_autosaveAccumulator = 0.0;
@@ -302,6 +303,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
     // Clear existing clip decode state (destructors release decoders + frames).
     m_registry->clear<ClipDecodeState>();
     m_loadedMediaFiles.clear();
+    m_loadedObjectFiles.clear();
 
     // Per-clip callback: detect media type, open a decoder, attach the
     // ECS components a fully-loaded clip needs (VideoTexture, FrameBuffer,
@@ -895,6 +897,113 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
         std::cout << std::endl;
     }
     return result;
+}
+
+// --- Object library (3D models) --------------------------------------------
+
+ProjectManager::ObjectLibraryEntry&
+ProjectManager::addObjectFile(const std::string& originalPath, PathKind kind) {
+    if (auto* existing = findObjectEntry(originalPath)) return *existing;
+    ObjectLibraryEntry entry;
+    entry.originalPath = originalPath;
+    entry.pathKind = kind;
+    m_loadedObjectFiles.push_back(std::move(entry));
+    return m_loadedObjectFiles.back();
+}
+
+const ProjectManager::ObjectLibraryEntry*
+ProjectManager::findObjectEntry(const std::string& originalPath) const {
+    auto it = std::find_if(m_loadedObjectFiles.begin(), m_loadedObjectFiles.end(),
+        [&](const ObjectLibraryEntry& e) { return e.originalPath == originalPath; });
+    return (it != m_loadedObjectFiles.end()) ? &(*it) : nullptr;
+}
+
+ProjectManager::ObjectLibraryEntry*
+ProjectManager::findObjectEntry(const std::string& originalPath) {
+    auto it = std::find_if(m_loadedObjectFiles.begin(), m_loadedObjectFiles.end(),
+        [&](const ObjectLibraryEntry& e) { return e.originalPath == originalPath; });
+    return (it != m_loadedObjectFiles.end()) ? &(*it) : nullptr;
+}
+
+const ProjectManager::ObjectLibraryEntry*
+ProjectManager::findLatestObjectInGroup(const std::string& storedPath) const {
+    if (storedPath.empty()) return nullptr;
+
+    const std::string targetGroup = groupKeyOf(storedPath);
+    PathKind scopeKind = PathKind::Linked;
+    bool kindKnown = false;
+    if (auto* exact = findObjectEntry(storedPath); exact) {
+        scopeKind = exact->pathKind;
+        kindKnown = true;
+    }
+
+    const ObjectLibraryEntry* best = nullptr;
+    std::string bestTag;
+    for (const auto& e : m_loadedObjectFiles) {
+        if (groupKeyOf(e.originalPath) != targetGroup) continue;
+        if (kindKnown && e.pathKind != scopeKind) continue;
+        if (e.missingOnDisk) continue;
+        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string tag  = parseVersion(stem).tag;
+        if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
+            best    = &e;
+            bestTag = tag;
+        }
+    }
+
+    if (best) return best;
+
+    // Fall back to highest-tag regardless of missingOnDisk so callers
+    // get *some* path to surface as "missing" downstream.
+    for (const auto& e : m_loadedObjectFiles) {
+        if (groupKeyOf(e.originalPath) != targetGroup) continue;
+        if (kindKnown && e.pathKind != scopeKind) continue;
+        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string tag  = parseVersion(stem).tag;
+        if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
+            best    = &e;
+            bestTag = tag;
+        }
+    }
+    return best;
+}
+
+void ProjectManager::removeObjectFile(const std::string& originalPath) {
+    m_loadedObjectFiles.erase(
+        std::remove_if(m_loadedObjectFiles.begin(), m_loadedObjectFiles.end(),
+            [&](const ObjectLibraryEntry& e) { return e.originalPath == originalPath; }),
+        m_loadedObjectFiles.end());
+}
+
+std::string ProjectManager::resolveObjectPath(const std::string& storedPath) const {
+    if (storedPath.empty()) return storedPath;
+
+    const auto* entry = findObjectEntry(storedPath);
+    if (!entry) return storedPath;
+    if (entry->pathKind == PathKind::Linked) return storedPath;
+    if (m_projectPath.empty()) return storedPath;
+    return (m_projectPath.parent_path() /
+            std::filesystem::path(storedPath)).string();
+}
+
+std::string ProjectManager::meshPathFor(const std::string& originalPath) const {
+    if (originalPath.empty()) return originalPath;
+
+    const std::string stem = std::filesystem::path(originalPath).stem().string();
+    const ParsedVersion pv = parseVersion(stem);
+
+    if (pv.tag.empty()) {
+        // Auto-roll: latest version in group.
+        if (auto* latest = findLatestObjectInGroup(originalPath); latest) {
+            return resolveObjectPath(latest->originalPath);
+        }
+        return resolveObjectPath(originalPath);
+    }
+    // Pinned mode — exact match.
+    if (auto* e = findObjectEntry(originalPath); e) {
+        return resolveObjectPath(e->originalPath);
+    }
+    return resolveObjectPath(originalPath);
 }
 
 std::string ProjectManager::decoderPathFor(const std::string& originalPath) const {
