@@ -6,6 +6,98 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Content Routing Library + Feed Maps (2026-05-17)
+
+ADR-0022 (six commits, L1-L5 + docs). Promotes Plane A content routing
+from inline `ContentRouting` component (ADR-0021) to a **library of
+named, reusable `ContentRoutingAsset` entities** that clips reference
+via `ContentRoutingRef`. Adds a third routing kind, **Feed Map**, for
+named-region authoring of LED-wall content.
+
+**Data model.** New components in `include/entity/components/`:
+`ContentRoutingAsset` (library entity with `kind`, `targets`,
+`autoBoundScreen`, source size, autosync bookkeeping),
+`ContentRoutingRef` (per-layer pointer to an asset). Helpers in
+`ContentRoutingAssetOps.hpp` (`ensureAutoDirectAsset`,
+`setLayerTargetScreen`, `setLayerCustomRouting`, `tryGetAsset`).
+`RouteMode` extends to `{Direct, Tiled, FeedMap}`; `RouteTarget` gains
+optional `name` for Feed Map region labels.
+
+**System.** New `RoutingLibrarySystem` (editor-thread only) reconciles
+the library every tick: creates one auto-direct asset per Screen,
+name-syncs from `Screen::name` until the user diverges it
+(`lastSyncedScreenName` bookkeeping), cascade-deletes orphan auto-direct
+entries when a Screen is destroyed, clears any `ContentRoutingRef::asset`
+that points at the deleted entry. Wired into `Director` alongside
+`AnimationSystem`; ticked from `Engine::update` right after animation.
+
+**Snapshot bake.** `PlaybackTimeAuthority::buildSceneSnapshot` resolves
+`ContentRoutingRef → ContentRoutingAsset` on the editor thread before
+populating `bus::ContentLayerSnapshot.routes`. The bus wire format
+from ADR-0021 is unchanged — the show thread has zero awareness of the
+asset library.
+
+**UI.** `PropertyWindow`'s "Target Screen" relabels to "Content Routing"
+and sources its dropdown from the library (auto-direct entries
+alphabetical by Screen name, then user-created; "Default (All visible)"
+sentinel at top). `ContentRoutingWindow` is a two-pane library
+browser: "+ Add" with Direct / Tiled / Feed Map options, right-click
+Delete with usage-count confirm dialog, per-kind detail editor on the
+right with name input, kind dropdown, kind-specific authoring extras
+(Tiled count/axis wizard; Feed Map source canvas size + Export
+Template), targets table, and an interactive canvas.
+
+**Feed Map.** Source canvas resolution + named per-target regions.
+"Export Template..." writes an SVG to `<cwd>/.feed-templates/<name>.svg`
+with outlined rects + region/screen labels — the deliverable for
+content creators authoring matching source content. Targets table
+displays pixel coordinates when kind = FeedMap (DragInt scaled by
+`sourceWidth`/`Height`); UV storage and wire format unchanged.
+
+**Canvas preview (L5).** When a clip is selected in the timeline, the
+canvas background renders the clip's most-recently-uploaded video
+frame. New `IRenderer::getVideoTextureIDForSlot(slot)` exposes the
+per-slot SRV via `TextureUploader::gpuHandle`. Drag any region body
+on the canvas to move it; drag any of four corner handles to resize.
+Overlapping regions are allowed by design (content that repeats one
+source slice to multiple screens). Hover tooltip shows pixel
+coordinates for Feed Map, UV for Tiled.
+
+**Persistence.** Project schema v19 → v20. New top-level
+`contentRoutingAssets` array; per-layer `contentRoutingAssetName`
+reference. v19 inline `contentRouting` JSON still read for one-version
+backward compat. Migration on load: single-target Direct → existing
+auto-direct asset; multi-target → fresh "Custom Routing N" asset;
+empty targets → null ref ("all visible"). All four existing
+`ContentRouting*` round-trip tests still pass.
+
+**Files.** New: `ContentRoutingAsset.hpp`, `ContentRoutingRef.hpp`,
+`ContentRoutingAssetOps.hpp`, `RoutingLibrarySystem.{hpp,cpp}`. Touched:
+`PlaybackTimeAuthority.cpp` (bake), `PropertyWindow.cpp` (dropdown +
+kind badge), `ContentRoutingWindow.{hpp,cpp}` (full rewrite to library
+browser + canvas authoring), `Commands.cpp`
+(`applyClipTargetScreen` + `applyContentRoutingSpec` route through
+helpers), `ProjectSerializer.cpp` (v20 schema + v19 migration),
+`Director.{hpp,cpp}` + `Engine.{hpp,cpp}` (system wiring),
+`IRenderer.hpp` + `D3D12Renderer.{hpp,cpp}` (poster-frame slot
+accessor), CMakeLists.txt, mock IRenderer in
+`DirectorRendererRoundtripTests.cpp`. ADR `docs/adr/0022-...md` and
+`ENTITY_ARCHETYPES.md` updated.
+
+**Known deferred / out-of-scope** (not filed as roadmap cards):
+`UndoableCommand` subclasses for library mutations (currently direct
+registry writes — no undo for Create/Delete/Rename/SetField); drag-on-
+empty-canvas to *create* regions ("+ Add Region" + table is the
+authoring entry today); custom-font load to support real Unicode
+glyphs in ImGui labels; region-overlap warnings (intentionally
+allowed); off-canvas warnings.
+
+**Commits:** `3ba7be0` (L1) → `229183f` (L2) → `af1c5f6` (L3) →
+`f30ae12` (L4-minimal) → `b4de33a` (docs) → `9f6a44a` (L5).
+510/510 ctest green.
+
+---
+
 ### Editor/Show Thread Split (2026-05-08)
 
 Issue #42 (five stages). Editor thread is now the **sole registry writer**.
