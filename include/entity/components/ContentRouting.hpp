@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <entt/entt.hpp>
 
@@ -25,8 +26,9 @@ namespace entity {
  *           payload struct.
  */
 enum class RouteMode : uint8_t {
-    Direct = 0,
-    Tiled  = 1,
+    Direct  = 0,
+    Tiled   = 1,
+    FeedMap = 2,  // ADR-0022 L3 — named regions of an authored canvas
 };
 
 /**
@@ -40,6 +42,11 @@ enum class RouteMode : uint8_t {
 struct RouteTarget {
     entt::entity screen{entt::null};
     std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};
+    // Per-region label for FeedMap routings (ADR-0022 L3). Empty for
+    // Direct and Tiled — those don't surface authored names. Editor-
+    // local field; not on the bus wire today (the show side has no use
+    // for region names yet).
+    std::string name;
 };
 
 /**

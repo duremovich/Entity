@@ -608,6 +608,10 @@ void PropertyWindow::renderPlaybackSection() {
                     kindLabel = "Tiled";
                     kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
                     break;
+                case RouteMode::FeedMap:
+                    kindLabel = "Feed Map";
+                    kindColor = ImVec4(0.6f, 0.7f, 1.0f, 1.0f);
+                    break;
             }
         }
         ImGui::TextColored(kindColor, "%s", kindLabel);
@@ -2372,6 +2376,10 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
                 case RouteMode::Tiled:
                     kindLabel = "Tiled";
                     kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+                    break;
+                case RouteMode::FeedMap:
+                    kindLabel = "Feed Map";
+                    kindColor = ImVec4(0.6f, 0.7f, 1.0f, 1.0f);
                     break;
             }
         }

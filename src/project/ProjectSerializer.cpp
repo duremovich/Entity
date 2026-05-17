@@ -691,7 +691,19 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                 }
                 json aJson;
                 aJson["name"] = asset.name;
-                aJson["kind"] = (asset.kind == RouteMode::Tiled) ? "Tiled" : "Direct";
+                switch (asset.kind) {
+                    case RouteMode::Direct:  aJson["kind"] = "Direct";  break;
+                    case RouteMode::Tiled:   aJson["kind"] = "Tiled";   break;
+                    case RouteMode::FeedMap: aJson["kind"] = "FeedMap"; break;
+                }
+                if (asset.kind == RouteMode::Tiled) {
+                    aJson["tiledCount"] = asset.tiledCount;
+                    aJson["tiledAxis"]  = asset.tiledAxis;
+                }
+                if (asset.kind == RouteMode::FeedMap) {
+                    aJson["sourceWidth"]  = asset.sourceWidth;
+                    aJson["sourceHeight"] = asset.sourceHeight;
+                }
                 if (asset.autoBoundScreen != entt::null &&
                     registry.valid(asset.autoBoundScreen) &&
                     registry.all_of<Screen>(asset.autoBoundScreen)) {
@@ -711,6 +723,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     }
                     tj["screenName"] = sn;
                     tj["uvRect"] = { t.uvRect[0], t.uvRect[1], t.uvRect[2], t.uvRect[3] };
+                    if (!t.name.empty()) tj["name"] = t.name;
                     targetsArr.push_back(tj);
                 }
                 aJson["targets"] = std::move(targetsArr);
@@ -1170,8 +1183,19 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     auto assetEntity = registry.create();
                     auto& asset = registry.emplace<ContentRoutingAsset>(assetEntity);
                     asset.name = aJson.value("name", std::string{});
-                    asset.kind = (aJson.value("kind", std::string{"Direct"}) == "Tiled")
-                        ? RouteMode::Tiled : RouteMode::Direct;
+                    {
+                        const std::string kindStr =
+                            aJson.value("kind", std::string{"Direct"});
+                        if (kindStr == "Tiled")        asset.kind = RouteMode::Tiled;
+                        else if (kindStr == "FeedMap") asset.kind = RouteMode::FeedMap;
+                        else                           asset.kind = RouteMode::Direct;
+                    }
+                    asset.tiledCount   = static_cast<std::uint8_t>(
+                        aJson.value("tiledCount", 1));
+                    asset.tiledAxis    = static_cast<std::uint8_t>(
+                        aJson.value("tiledAxis", 0));
+                    asset.sourceWidth  = aJson.value("sourceWidth",  1920u);
+                    asset.sourceHeight = aJson.value("sourceHeight", 1080u);
                     asset.autoBoundScreen = findScreenByName(
                         aJson.value("autoBoundScreenName", std::string{}));
                     asset.lastSyncedScreenName = aJson.value("lastSyncedScreenName",
@@ -1180,6 +1204,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         for (const auto& tj : aJson["targets"]) {
                             RouteTarget t;
                             t.screen = findScreenByName(tj.value("screenName", std::string{}));
+                            t.name = tj.value("name", std::string{});
                             if (tj.contains("uvRect") && tj["uvRect"].is_array() &&
                                 tj["uvRect"].size() >= 4) {
                                 t.uvRect = {

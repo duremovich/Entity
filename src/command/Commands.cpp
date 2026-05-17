@@ -1654,7 +1654,11 @@ void captureCurrentRouting(entt::registry& registry, entt::entity clipEntity,
     outMode = "Direct";
     const auto* asset = routing::tryGetAsset(registry, clipEntity);
     if (!asset) return;
-    outMode = (asset->kind == RouteMode::Tiled) ? "Tiled" : "Direct";
+    switch (asset->kind) {
+        case RouteMode::Direct:  outMode = "Direct";  break;
+        case RouteMode::Tiled:   outMode = "Tiled";   break;
+        case RouteMode::FeedMap: outMode = "FeedMap"; break;
+    }
     for (const auto& t : asset->targets) {
         SetContentRoutingCommand::TargetSpec spec;
         spec.uvRect = t.uvRect;
@@ -1677,7 +1681,9 @@ void captureCurrentRouting(entt::registry& registry, entt::entity clipEntity,
 bool applyContentRoutingSpec(entt::registry& registry, entt::entity clipEntity, Clip& clip,
                               const std::string& mode,
                               const std::vector<SetContentRoutingCommand::TargetSpec>& targets) {
-    const RouteMode kindMode = (mode == "Tiled") ? RouteMode::Tiled : RouteMode::Direct;
+    RouteMode kindMode = RouteMode::Direct;
+    if (mode == "Tiled")        kindMode = RouteMode::Tiled;
+    else if (mode == "FeedMap") kindMode = RouteMode::FeedMap;
 
     // Resolve each TargetSpec → RouteTarget by looking up screen names.
     std::vector<RouteTarget> resolved;

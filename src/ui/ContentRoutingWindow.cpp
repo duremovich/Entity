@@ -15,6 +15,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -95,6 +98,87 @@ std::string pickUniqueName(entt::registry& reg, const char* base) {
     return std::string(base);  // shouldn't happen but bail safely
 }
 
+// Write an SVG template for a Feed Map asset (ADR-0022 L3). The SVG's
+// viewBox matches the source canvas; one outlined <rect> per region
+// with the region name + screen name as <text> labels inside. Returns
+// true if the file was written; sets `outPath` to the resolved output
+// path (best-effort: defaults under <cwd>/.feed-templates/ when no
+// project directory is available).
+bool exportFeedMapSvg(entt::registry& reg, const ContentRoutingAsset& asset,
+                       std::string& outPath) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::path(".feed-templates");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+
+    std::string safeName = asset.name;
+    for (char& c : safeName) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+            c == '"' || c == '<' || c == '>' || c == '|') c = '_';
+    }
+    fs::path path = dir / (safeName + ".svg");
+    outPath = path.string();
+
+    std::ofstream out(path);
+    if (!out.is_open()) return false;
+
+    const auto w = std::max<std::uint32_t>(1, asset.sourceWidth);
+    const auto h = std::max<std::uint32_t>(1, asset.sourceHeight);
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 "
+        << w << " " << h << "\" width=\"" << w << "\" height=\"" << h
+        << "\">\n";
+    out << "  <rect x=\"0\" y=\"0\" width=\"" << w << "\" height=\"" << h
+        << "\" fill=\"#202028\" stroke=\"#606070\" stroke-width=\"2\"/>\n";
+    out << "  <text x=\"12\" y=\"24\" font-family=\"sans-serif\" font-size=\"18\""
+           " fill=\"#aaaaaa\">" << asset.name
+        << " &#x2014; " << w << "&#xd7;" << h << "</text>\n";
+
+    // Deterministic per-index hue, mirrors drawSchematic.
+    static const char* fills[] = {
+        "rgba(220,100,100,0.18)", "rgba(100,200,130,0.18)",
+        "rgba(100,140,220,0.18)", "rgba(230,200,100,0.18)",
+        "rgba(200,110,220,0.18)", "rgba(120,220,220,0.18)",
+    };
+    static const char* strokes[] = {
+        "#dc6464", "#64c882", "#6488dc", "#e6c864",
+        "#c870dc", "#78dcdc",
+    };
+    constexpr int kHueCount = 6;
+
+    for (std::size_t i = 0; i < asset.targets.size(); ++i) {
+        const auto& t = asset.targets[i];
+        const float x = t.uvRect[0] * static_cast<float>(w);
+        const float y = t.uvRect[1] * static_cast<float>(h);
+        const float rw = t.uvRect[2] * static_cast<float>(w);
+        const float rh = t.uvRect[3] * static_cast<float>(h);
+
+        std::string regionName = t.name;
+        std::string screenName = "(all visible)";
+        if (t.screen != entt::null && reg.valid(t.screen) &&
+            reg.all_of<Screen>(t.screen)) {
+            screenName = reg.get<Screen>(t.screen).name;
+        }
+        if (regionName.empty()) regionName = "Region " + std::to_string(i + 1);
+
+        out << "  <rect x=\"" << x << "\" y=\"" << y
+            << "\" width=\"" << rw << "\" height=\"" << rh
+            << "\" fill=\"" << fills[i % kHueCount]
+            << "\" stroke=\"" << strokes[i % kHueCount]
+            << "\" stroke-width=\"3\"/>\n";
+        out << "  <text x=\"" << (x + 12.0f) << "\" y=\"" << (y + 32.0f)
+            << "\" font-family=\"sans-serif\" font-size=\"24\""
+               " fill=\"#ffffff\" font-weight=\"bold\">"
+            << regionName << "</text>\n";
+        out << "  <text x=\"" << (x + 12.0f) << "\" y=\"" << (y + 56.0f)
+            << "\" font-family=\"sans-serif\" font-size=\"16\""
+               " fill=\"#dddddd\">\xe2\x86\x92 "
+            << screenName << "</text>\n";
+    }
+    out << "</svg>\n";
+    return out.good();
+}
+
 // Draw a small schematic of the asset's routes inside the current
 // ImGui draw list. Rectangles drawn proportionally to a canvas; each
 // route's uvRect is rendered as a translucent filled rect with the
@@ -136,14 +220,24 @@ void drawSchematic(entt::registry& reg, const ContentRoutingAsset& asset) {
         dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
                     IM_COL32(220, 220, 220, 180));
 
-        std::string label = "(all visible)";
+        std::string screenName = "(all visible)";
         if (t.screen != entt::null && reg.valid(t.screen) &&
             reg.all_of<Screen>(t.screen)) {
-            label = reg.get<Screen>(t.screen).name;
+            screenName = reg.get<Screen>(t.screen).name;
         }
-        dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
-                    IM_COL32(255, 255, 255, 230),
-                    label.c_str());
+        if (!t.name.empty()) {
+            dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
+                        IM_COL32(255, 255, 255, 240),
+                        t.name.c_str());
+            std::string sub = std::string("\xe2\x86\x92 ") + screenName;
+            dl->AddText(ImVec2(x0 + 4.0f, y0 + 20.0f),
+                        IM_COL32(220, 220, 220, 200),
+                        sub.c_str());
+        } else {
+            dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
+                        IM_COL32(255, 255, 255, 230),
+                        screenName.c_str());
+        }
     }
     ImGui::Dummy(ImVec2(canvasW, canvasH));
 }
@@ -171,6 +265,21 @@ void renderLeftPane(entt::registry& reg, entt::entity& selected,
             a.tiledCount = 2;
             a.tiledAxis = 0;
             regenerateTiledFromParams(reg, a);
+            selected = e;
+        }
+        if (ImGui::Selectable("Feed Map")) {
+            auto e = reg.create();
+            auto& a = reg.emplace<ContentRoutingAsset>(e);
+            a.name = pickUniqueName(reg, "New Feed Map");
+            a.kind = RouteMode::FeedMap;
+            a.sourceWidth  = 1920;
+            a.sourceHeight = 1080;
+            // Start with a single full-frame region so the table isn't
+            // empty on first edit; user adds + names regions from there.
+            RouteTarget t;
+            t.uvRect = kIdentityUV;
+            t.name   = "Region 1";
+            a.targets.push_back(t);
             selected = e;
         }
         ImGui::EndPopup();
@@ -254,23 +363,70 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
     // Kind selector.
     ImGui::Spacing();
     ImGui::Text("Kind");
-    int kindIdx = (asset.kind == RouteMode::Tiled) ? 1 : 0;
-    const char* kindLabels[] = {"Direct", "Tiled"};
+    int kindIdx = 0;
+    if      (asset.kind == RouteMode::Tiled)   kindIdx = 1;
+    else if (asset.kind == RouteMode::FeedMap) kindIdx = 2;
+    const char* kindLabels[] = {"Direct", "Tiled", "Feed Map"};
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::Combo("##assetkind", &kindIdx, kindLabels, IM_ARRAYSIZE(kindLabels))) {
-        const RouteMode newKind = (kindIdx == 1) ? RouteMode::Tiled : RouteMode::Direct;
+        RouteMode newKind = RouteMode::Direct;
+        if      (kindIdx == 1) newKind = RouteMode::Tiled;
+        else if (kindIdx == 2) newKind = RouteMode::FeedMap;
         if (newKind != asset.kind) {
             asset.kind = newKind;
-            if (newKind == RouteMode::Direct) {
-                if (asset.targets.size() > 1) asset.targets.resize(1);
-                if (asset.targets.empty())
-                    asset.targets.push_back({entt::null, kIdentityUV});
-                asset.targets[0].uvRect = kIdentityUV;
-            } else {
-                if (asset.tiledCount < 2) asset.tiledCount = 2;
-                regenerateTiledFromParams(reg, asset);
+            switch (newKind) {
+                case RouteMode::Direct:
+                    if (asset.targets.size() > 1) asset.targets.resize(1);
+                    if (asset.targets.empty())
+                        asset.targets.push_back({entt::null, kIdentityUV});
+                    asset.targets[0].uvRect = kIdentityUV;
+                    break;
+                case RouteMode::Tiled:
+                    if (asset.tiledCount < 2) asset.tiledCount = 2;
+                    regenerateTiledFromParams(reg, asset);
+                    break;
+                case RouteMode::FeedMap:
+                    // Preserve existing targets — Feed Map just unlocks
+                    // per-region names + source-canvas authoring. Start
+                    // with one full-frame region if the asset had no
+                    // targets at all.
+                    if (asset.targets.empty()) {
+                        RouteTarget t;
+                        t.uvRect = kIdentityUV;
+                        t.name = "Region 1";
+                        asset.targets.push_back(t);
+                    }
+                    break;
             }
         }
+    }
+
+    // Feed Map extras.
+    if (asset.kind == RouteMode::FeedMap) {
+        ImGui::Spacing();
+        ImGui::Text("Source canvas");
+        int sw = static_cast<int>(asset.sourceWidth);
+        int sh = static_cast<int>(asset.sourceHeight);
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::InputInt("Width##fmw", &sw, 0, 0)) {
+            asset.sourceWidth = static_cast<std::uint32_t>(std::max(1, sw));
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::InputInt("Height##fmh", &sh, 0, 0)) {
+            asset.sourceHeight = static_cast<std::uint32_t>(std::max(1, sh));
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Export Template...##fmexp")) {
+            std::string outPath;
+            if (exportFeedMapSvg(reg, asset, outPath)) {
+                std::printf("[ContentRoutingWindow] exported feed-map template -> %s\n",
+                             outPath.c_str());
+            } else {
+                std::printf("[ContentRoutingWindow] failed to write feed-map template\n");
+            }
+        }
+        ImGui::TextDisabled("SVG written under <cwd>/.feed-templates/");
     }
 
     // Tiled extras.
@@ -319,8 +475,13 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
     for (const auto& l : screenLabels) screenLabelCstrs.push_back(l.c_str());
 
     int removeIdx = -1;
-    if (ImGui::BeginTable("##routestable", 6,
+    const bool isFeedMap = (asset.kind == RouteMode::FeedMap);
+    const int columnCount = isFeedMap ? 7 : 6;
+    if (ImGui::BeginTable("##routestable", columnCount,
                            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
+        if (isFeedMap) {
+            ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+        }
         ImGui::TableSetupColumn("Screen", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthFixed, 64.0f);
         ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthFixed, 64.0f);
@@ -329,14 +490,33 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
         ImGui::TableSetupColumn(" ", ImGuiTableColumnFlags_WidthFixed, 28.0f);
         ImGui::TableHeadersRow();
 
-        const bool uvEditable = (asset.kind == RouteMode::Tiled);
+        const bool uvEditable = (asset.kind == RouteMode::Tiled ||
+                                   asset.kind == RouteMode::FeedMap);
+        const int colScreen = isFeedMap ? 1 : 0;
+        const int colX = colScreen + 1;
+        const int colY = colScreen + 2;
+        const int colW = colScreen + 3;
+        const int colH = colScreen + 4;
+        const int colDel = colScreen + 5;
+
         for (std::size_t i = 0; i < asset.targets.size(); ++i) {
             auto& t = asset.targets[i];
             ImGui::PushID(static_cast<int>(i));
             ImGui::TableNextRow();
 
+            // Region name (Feed Map only).
+            if (isFeedMap) {
+                ImGui::TableSetColumnIndex(0);
+                char nameBuf[128];
+                std::snprintf(nameBuf, sizeof(nameBuf), "%s", t.name.c_str());
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::InputText("##rname", nameBuf, sizeof(nameBuf))) {
+                    t.name = nameBuf;
+                }
+            }
+
             // Screen picker.
-            ImGui::TableSetColumnIndex(0);
+            ImGui::TableSetColumnIndex(colScreen);
             int screenIdx = 0;
             for (std::size_t k = 0; k < screenEntities.size(); ++k) {
                 if (screenEntities[k] == t.screen) {
@@ -358,12 +538,12 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
                 ImGui::DragFloat(label, &t.uvRect[axis], 0.005f, -2.0f, 2.0f, "%.3f");
                 if (!uvEditable) ImGui::EndDisabled();
             };
-            editAxis(1, 0, "##x");
-            editAxis(2, 1, "##y");
-            editAxis(3, 2, "##w");
-            editAxis(4, 3, "##h");
+            editAxis(colX, 0, "##x");
+            editAxis(colY, 1, "##y");
+            editAxis(colW, 2, "##w");
+            editAxis(colH, 3, "##h");
 
-            ImGui::TableSetColumnIndex(5);
+            ImGui::TableSetColumnIndex(colDel);
             if (ImGui::Button("X", ImVec2(-1, 0))) {
                 removeIdx = static_cast<int>(i);
             }
@@ -376,8 +556,16 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
     }
 
     if (asset.kind != RouteMode::Direct || asset.targets.empty()) {
-        if (ImGui::Button("+ Add Target##routerow")) {
-            asset.targets.push_back({entt::null, kIdentityUV});
+        const char* addLabel = (asset.kind == RouteMode::FeedMap)
+            ? "+ Add Region##routerow"
+            : "+ Add Target##routerow";
+        if (ImGui::Button(addLabel)) {
+            RouteTarget t;
+            t.uvRect = kIdentityUV;
+            if (asset.kind == RouteMode::FeedMap) {
+                t.name = "Region " + std::to_string(asset.targets.size() + 1);
+            }
+            asset.targets.push_back(t);
         }
         if (asset.kind == RouteMode::Direct) {
             ImGui::SameLine();
