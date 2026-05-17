@@ -31,6 +31,7 @@ that have moved on.
 | 0019 | [Per-layer effects — ordered shader chain with stack + graph editors over one data model](0019-per-layer-effects.md) | Accepted | 2026-05-12 |
 | 0020 | [Object Animation layers — absolute values + Hold-by-default end behavior](0020-object-animation-end-behavior.md) | Accepted | 2026-05-15 |
 | 0021 | [Two-tier mapping — Content Routing vs Feed Output](0021-two-tier-mapping.md) | Accepted | 2026-05-16 |
+| 0022 | [Content Routing library + Feed Maps](0022-content-routing-library-and-feedmaps.md) | Accepted | 2026-05-17 |
 
 ## Format
 

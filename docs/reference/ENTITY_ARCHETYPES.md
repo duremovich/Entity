@@ -418,24 +418,76 @@ matrices.
 
 ---
 
-## Content Routing — Plane A mapping (ADR-0021, M2+)
+## Content Routing — Plane A mapping (ADR-0021 + ADR-0022)
 
-Multi-screen content routing arrives as a `ContentRouting` component
-on Clip / GenerativeLayer entities in Phase M2; the Tiled mode that
-slices one source across N screens with per-screen UV crops lands in
-M3. The legacy `Clip.targetScreen` / `GenerativeLayer.targetScreen`
-single-entity fields are migrated into `ContentRouting.targets[0]`
-on project load and remain as deprecated aliases for one project-
-format version.
+ADR-0021 introduced `ContentRouting` as a per-layer inline component
+with Direct + Tiled modes. ADR-0022 promotes that data to a library
+of `ContentRoutingAsset` entities that Clip / GenerativeLayer
+reference via `ContentRoutingRef`, and adds a third authoring kind,
+Feed Map.
 
-See ADR-0021 (Two-tier mapping) for the contract; the
-`~/.claude/plans/i-think-we-need-shimmying-pond.md` working plan
-carries the implementation sequence.
+### `ContentRoutingAsset` — library entity (ADR-0022)
 
-The previously-declared `FeedMapping` struct (Screen.hpp, dead
-code) was removed in M1. Its name conflated Plane A with Plane B
-("feed" reads as hardware-output in industry vocabulary); the
-replacement `ContentRouting` lives in Plane A unambiguously.
+| Required | Optional |
+|---|---|
+| `ContentRoutingAsset` | — |
+
+**Invariant**: the library is editor-thread-only. Multiple Clip /
+GenerativeLayer entities can reference the same asset via
+`ContentRoutingRef`. The asset's `kind` is one of Direct / Tiled /
+FeedMap; `targets` is the materialized route list (the truth — Tiled
+authoring metadata `tiledCount` / `tiledAxis` is wizard state, not
+the snapshot source). When `autoBoundScreen != entt::null` the asset
+is the auto-direct routing for that Screen and `RoutingLibrarySystem`
+keeps `name` in sync until the user manually diverges it
+(`name != lastSyncedScreenName` indicates "autosync broken").
+
+**Created at**:
+- `src/systems/RoutingLibrarySystem.cpp` — auto-direct entries created
+  per Screen on each reconcile tick.
+- `src/ui/ContentRoutingWindow.cpp` — user "+ Add" creates Direct /
+  Tiled / Feed Map entries.
+- `src/project/ProjectSerializer.cpp` — loaded from the
+  `contentRoutingAssets` top-level array (v20+); v19 migration spins
+  up "Custom Routing N" assets per unique inline ContentRouting shape.
+
+**Notes**:
+- Soft-rule exception: carries `std::string` + `std::vector`. Library
+  assets are never iterated in a per-frame view, so the heap cost is
+  irrelevant. Documented exception alongside `Clip` / `Transform`.
+- Snapshot bake (`PlaybackTimeAuthority::buildSceneSnapshot`) reads
+  the asset only on the editor thread and copies the resolved
+  `targets` into `bus::ContentLayerSnapshot.routes` — the show
+  thread never sees the asset itself.
+
+### `ContentRoutingRef` — layer-side pointer (ADR-0022)
+
+Attached to a Clip or GenerativeLayer entity alongside its other
+components. `asset == entt::null` is the "render on all visible
+screens" semantic (equivalent to a pre-ADR-0022 empty-targets inline
+`ContentRouting`).
+
+**Created at**:
+- `src/ui/PropertyWindow.cpp` (Content Routing dropdown).
+- `src/command/Commands.cpp` (`applyClipTargetScreen`,
+  `applyContentRoutingSpec`).
+- `src/project/ProjectSerializer.cpp` (migration from v19 inline
+  `ContentRouting`).
+
+**Notes**: dangling refs (asset destroyed without
+`RoutingLibrarySystem` clearing them) are tolerated by the bake site —
+treated as null. The system handles cascade-clear on Screen destroy.
+
+### Legacy fields
+
+`Clip::targetScreen` and `GenerativeLayer::targetScreen` are kept
+readable for one project-format version (ADR-0021's backward-compat
+window) and are removed in v21.
+
+The previously-declared `FeedMapping` struct (Screen.hpp, dead code)
+was removed in ADR-0021 M1; its name conflated Plane A with Plane B
+in the industry vocabulary. The Plane A replacement is the
+`ContentRoutingAsset` library introduced by ADR-0022.
 
 ---
 
