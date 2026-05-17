@@ -580,6 +580,52 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
     drawSchematic(reg, asset);
 }
 
+// Header strip above the schematic when a clip / generative layer is
+// selected in the timeline. Surfaces enough context (filename, source
+// resolution) that the user can tell what they're routing without a
+// full poster-frame preview (that one needs per-slot video-texture
+// access on D3D12Renderer — a follow-up). Reads the timeline's current
+// selection passively; UI-only, no registry writes.
+void renderSelectionStrip(entt::registry& reg, Timeline* timeline) {
+    if (!timeline) return;
+    entt::entity sel = timeline->getSelectedClip();
+    if (sel == entt::null || !reg.valid(sel)) return;
+
+    const auto* asset = routing::tryGetAsset(reg, sel);
+    const char* kindBadge = "Default";
+    ImVec4 kindColor{0.7f, 0.7f, 0.7f, 1.0f};
+    if (asset) {
+        switch (asset->kind) {
+            case RouteMode::Direct:
+                kindBadge = "Direct";
+                kindColor = ImVec4(0.6f, 0.85f, 0.6f, 1.0f); break;
+            case RouteMode::Tiled:
+                kindBadge = "Tiled";
+                kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f); break;
+            case RouteMode::FeedMap:
+                kindBadge = "Feed Map";
+                kindColor = ImVec4(0.6f, 0.7f, 1.0f, 1.0f); break;
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextColored(kindColor, "Routed:");
+    ImGui::SameLine();
+    if (const auto* clip = reg.try_get<Clip>(sel)) {
+        ImGui::Text("%s", clip->filepath.c_str());
+        ImGui::TextDisabled("  source %ux%u  %.2f fps  %d frames",
+                             clip->width, clip->height, clip->framerate,
+                             clip->totalMediaFrames);
+    } else if (reg.all_of<GenerativeLayer>(sel)) {
+        ImGui::Text("Generative layer (entity %u)",
+                     static_cast<std::uint32_t>(sel));
+    } else {
+        ImGui::TextDisabled("(non-content layer)");
+    }
+    ImGui::SameLine();
+    ImGui::TextColored(kindColor, "[%s]", kindBadge);
+}
+
 void renderDeleteConfirm(entt::registry& reg, entt::entity& pendingDelete,
                           entt::entity& selected) {
     if (pendingDelete == entt::null) return;
@@ -652,6 +698,7 @@ void ContentRoutingWindow::render() {
     ImGui::SameLine();
     ImGui::BeginChild("##cr_right", ImVec2(0, 0), true);
     renderDetailPane(registry, m_selectedAsset);
+    renderSelectionStrip(registry, m_timeline);
     ImGui::EndChild();
 
     renderDeleteConfirm(registry, m_pendingDelete, m_selectedAsset);
