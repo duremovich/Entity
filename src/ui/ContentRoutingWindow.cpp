@@ -1,7 +1,6 @@
 #include "entity/ui/ContentRoutingWindow.hpp"
 
 #include "entity/command/CommandDispatcher.hpp"
-#include "entity/command/Commands.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ContentRouting.hpp"
 #include "entity/components/ContentRoutingAsset.hpp"
@@ -14,91 +13,460 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 namespace entity {
 
+namespace {
+
+// Identity uvRect — the "fills the whole source" sentinel.
+constexpr std::array<float, 4> kIdentityUV{0.0f, 0.0f, 1.0f, 1.0f};
+
+// Materialize the Tiled targets vector from the asset's authoring
+// metadata (tiledCount + tiledAxis). The existing targets are
+// preserved up to the new count so the user doesn't lose Screen
+// assignments when adjusting axis or count; new rows get the next
+// available Screen (or entt::null if Screens run out).
+void regenerateTiledFromParams(entt::registry& reg, ContentRoutingAsset& asset) {
+    const std::uint8_t n = std::max<std::uint8_t>(1, asset.tiledCount);
+    const bool horizontal = (asset.tiledAxis == 0);
+
+    std::vector<entt::entity> savedScreens;
+    savedScreens.reserve(asset.targets.size());
+    for (const auto& t : asset.targets) savedScreens.push_back(t.screen);
+
+    asset.targets.clear();
+    asset.targets.reserve(n);
+
+    std::vector<entt::entity> screenPool;
+    for (auto [e, _] : reg.view<Screen>().each()) screenPool.push_back(e);
+
+    const float slice = 1.0f / static_cast<float>(n);
+    for (std::uint8_t i = 0; i < n; ++i) {
+        RouteTarget t;
+        if (i < savedScreens.size()) {
+            t.screen = savedScreens[i];
+        } else if (!screenPool.empty()) {
+            t.screen = screenPool[i % screenPool.size()];
+        }
+        if (horizontal) {
+            t.uvRect = {slice * i, 0.0f, slice, 1.0f};
+        } else {
+            t.uvRect = {0.0f, slice * i, 1.0f, slice};
+        }
+        asset.targets.push_back(t);
+    }
+}
+
+// Walk every Clip / GenerativeLayer in the registry, return how many
+// have a ContentRoutingRef pointing at the given asset entity.
+int countUsage(entt::registry& reg, entt::entity assetEntity) {
+    int n = 0;
+    for (auto [_, ref] : reg.view<ContentRoutingRef>().each()) {
+        if (ref.asset == assetEntity) ++n;
+    }
+    return n;
+}
+
+// Clear every ContentRoutingRef::asset that matches `assetEntity` (used
+// before destroying the asset so dangling refs don't outlive it).
+void clearRefsTo(entt::registry& reg, entt::entity assetEntity) {
+    for (auto [_, ref] : reg.view<ContentRoutingRef>().each()) {
+        if (ref.asset == assetEntity) ref.asset = entt::null;
+    }
+}
+
+// Pick a unique asset name based on `base`. Increments a suffix until
+// no existing asset claims it: "<base> 1", "<base> 2", ...
+std::string pickUniqueName(entt::registry& reg, const char* base) {
+    auto exists = [&](const std::string& candidate) {
+        for (auto [_, a] : reg.view<ContentRoutingAsset>().each()) {
+            if (a.name == candidate) return true;
+        }
+        return false;
+    };
+    for (int i = 1; i < 10000; ++i) {
+        std::string candidate = std::string(base) + " " + std::to_string(i);
+        if (!exists(candidate)) return candidate;
+    }
+    return std::string(base);  // shouldn't happen but bail safely
+}
+
+// Draw a small schematic of the asset's routes inside the current
+// ImGui draw list. Rectangles drawn proportionally to a canvas; each
+// route's uvRect is rendered as a translucent filled rect with the
+// target Screen name labelled on top.
+void drawSchematic(entt::registry& reg, const ContentRoutingAsset& asset) {
+    const float aspect = (asset.sourceHeight > 0)
+        ? static_cast<float>(asset.sourceWidth) / static_cast<float>(asset.sourceHeight)
+        : (16.0f / 9.0f);
+    const float canvasW = std::min(ImGui::GetContentRegionAvail().x, 400.0f);
+    const float canvasH = canvasW / std::max(0.1f, aspect);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    auto* dl = ImGui::GetWindowDrawList();
+    // Background.
+    dl->AddRectFilled(origin,
+                      ImVec2(origin.x + canvasW, origin.y + canvasH),
+                      IM_COL32(40, 40, 50, 255));
+    dl->AddRect(origin,
+                ImVec2(origin.x + canvasW, origin.y + canvasH),
+                IM_COL32(120, 120, 130, 255));
+
+    // Region rectangles + labels.
+    for (std::size_t i = 0; i < asset.targets.size(); ++i) {
+        const auto& t = asset.targets[i];
+        const float x0 = origin.x + t.uvRect[0] * canvasW;
+        const float y0 = origin.y + t.uvRect[1] * canvasH;
+        const float x1 = x0 + t.uvRect[2] * canvasW;
+        const float y1 = y0 + t.uvRect[3] * canvasH;
+        // Distinct hue per region — quick deterministic colour by index.
+        const ImU32 fillHues[] = {
+            IM_COL32(220, 100, 100, 90),
+            IM_COL32(100, 200, 130, 90),
+            IM_COL32(100, 140, 220, 90),
+            IM_COL32(230, 200, 100, 90),
+            IM_COL32(200, 110, 220, 90),
+            IM_COL32(120, 220, 220, 90),
+        };
+        const ImU32 fill = fillHues[i % (sizeof(fillHues) / sizeof(fillHues[0]))];
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fill);
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
+                    IM_COL32(220, 220, 220, 180));
+
+        std::string label = "(all visible)";
+        if (t.screen != entt::null && reg.valid(t.screen) &&
+            reg.all_of<Screen>(t.screen)) {
+            label = reg.get<Screen>(t.screen).name;
+        }
+        dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
+                    IM_COL32(255, 255, 255, 230),
+                    label.c_str());
+    }
+    ImGui::Dummy(ImVec2(canvasW, canvasH));
+}
+
+void renderLeftPane(entt::registry& reg, entt::entity& selected,
+                     entt::entity& pendingDelete) {
+    // "+ Add" combo button — opens a small popup with kind options.
+    if (ImGui::Button("+ Add##routingadd", ImVec2(-1, 0))) {
+        ImGui::OpenPopup("##routing_add_kind");
+    }
+    if (ImGui::BeginPopup("##routing_add_kind")) {
+        if (ImGui::Selectable("Direct")) {
+            auto e = reg.create();
+            auto& a = reg.emplace<ContentRoutingAsset>(e);
+            a.name = pickUniqueName(reg, "New Direct");
+            a.kind = RouteMode::Direct;
+            a.targets.push_back({entt::null, kIdentityUV});
+            selected = e;
+        }
+        if (ImGui::Selectable("Tiled")) {
+            auto e = reg.create();
+            auto& a = reg.emplace<ContentRoutingAsset>(e);
+            a.name = pickUniqueName(reg, "New Tiled");
+            a.kind = RouteMode::Tiled;
+            a.tiledCount = 2;
+            a.tiledAxis = 0;
+            regenerateTiledFromParams(reg, a);
+            selected = e;
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::Separator();
+
+    // Split assets into auto-direct + user-created, sorted by name.
+    struct Row { entt::entity e; std::string name; bool autoBound; };
+    std::vector<Row> autoRows;
+    std::vector<Row> userRows;
+    for (auto [e, a] : reg.view<ContentRoutingAsset>().each()) {
+        Row r{e, a.name, a.autoBoundScreen != entt::null};
+        if (r.autoBound) autoRows.push_back(std::move(r));
+        else userRows.push_back(std::move(r));
+    }
+    auto byName = [](const Row& l, const Row& r) { return l.name < r.name; };
+    std::sort(autoRows.begin(), autoRows.end(), byName);
+    std::sort(userRows.begin(), userRows.end(), byName);
+
+    auto renderRows = [&](const std::vector<Row>& rows, const char* groupLabel) {
+        if (rows.empty()) return;
+        ImGui::TextDisabled("%s", groupLabel);
+        for (const auto& r : rows) {
+            ImGui::PushID(static_cast<int>(r.e));
+            const bool isSelected = (selected == r.e);
+            if (ImGui::Selectable(r.name.c_str(), isSelected,
+                                   ImGuiSelectableFlags_AllowItemOverlap)) {
+                selected = r.e;
+            }
+            if (r.autoBound) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("auto");
+            }
+            // Right-click: Delete (with confirm)
+            if (ImGui::BeginPopupContextItem("##rowctx")) {
+                if (ImGui::MenuItem("Delete...")) {
+                    pendingDelete = r.e;
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+    };
+
+    renderRows(autoRows, "Direct (auto)");
+    if (!autoRows.empty() && !userRows.empty()) ImGui::Spacing();
+    renderRows(userRows, "User-created");
+
+    if (autoRows.empty() && userRows.empty()) {
+        ImGui::TextDisabled("(library is empty — add a Screen to create");
+        ImGui::TextDisabled(" its auto-direct routing, or click + Add)");
+    }
+}
+
+void renderDetailPane(entt::registry& reg, entt::entity selected) {
+    if (selected == entt::null || !reg.valid(selected) ||
+        !reg.all_of<ContentRoutingAsset>(selected)) {
+        ImGui::TextDisabled("Select a routing from the library.");
+        return;
+    }
+    auto& asset = reg.get<ContentRoutingAsset>(selected);
+    const bool isAutoBound = (asset.autoBoundScreen != entt::null);
+
+    // Editable name — diverging from the bound Screen's name breaks
+    // autosync in RoutingLibrarySystem's next tick.
+    {
+        char nameBuf[256];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", asset.name.c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##assetname", nameBuf, sizeof(nameBuf))) {
+            asset.name = nameBuf;
+        }
+    }
+
+    if (isAutoBound) {
+        ImGui::TextDisabled("Auto-direct routing for a Screen — editing");
+        ImGui::TextDisabled("name or targets breaks the autosync link.");
+    }
+
+    // Kind selector.
+    ImGui::Spacing();
+    ImGui::Text("Kind");
+    int kindIdx = (asset.kind == RouteMode::Tiled) ? 1 : 0;
+    const char* kindLabels[] = {"Direct", "Tiled"};
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::Combo("##assetkind", &kindIdx, kindLabels, IM_ARRAYSIZE(kindLabels))) {
+        const RouteMode newKind = (kindIdx == 1) ? RouteMode::Tiled : RouteMode::Direct;
+        if (newKind != asset.kind) {
+            asset.kind = newKind;
+            if (newKind == RouteMode::Direct) {
+                if (asset.targets.size() > 1) asset.targets.resize(1);
+                if (asset.targets.empty())
+                    asset.targets.push_back({entt::null, kIdentityUV});
+                asset.targets[0].uvRect = kIdentityUV;
+            } else {
+                if (asset.tiledCount < 2) asset.tiledCount = 2;
+                regenerateTiledFromParams(reg, asset);
+            }
+        }
+    }
+
+    // Tiled extras.
+    if (asset.kind == RouteMode::Tiled) {
+        ImGui::Spacing();
+        ImGui::Text("Tiled layout");
+        int count = static_cast<int>(asset.tiledCount);
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::SliderInt("Count##tiledn", &count, 1, 16)) {
+            asset.tiledCount = static_cast<std::uint8_t>(std::clamp(count, 1, 16));
+            regenerateTiledFromParams(reg, asset);
+        }
+        int axisIdx = asset.tiledAxis;
+        ImGui::Text("Axis");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Horizontal##tiledax", axisIdx == 0)) {
+            asset.tiledAxis = 0;
+            regenerateTiledFromParams(reg, asset);
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Vertical##tiledax", axisIdx == 1)) {
+            asset.tiledAxis = 1;
+            regenerateTiledFromParams(reg, asset);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Regenerate##tiledregen")) {
+            regenerateTiledFromParams(reg, asset);
+        }
+    }
+
+    // Targets table.
+    ImGui::Spacing();
+    ImGui::Text("Targets");
+
+    // Build a screen-name array shared across all per-row dropdowns.
+    std::vector<entt::entity> screenEntities;
+    std::vector<std::string> screenLabels;
+    screenEntities.push_back(entt::null);
+    screenLabels.emplace_back("(all visible)");
+    for (auto [e, s] : reg.view<Screen>().each()) {
+        screenEntities.push_back(e);
+        screenLabels.push_back(s.name);
+    }
+    std::vector<const char*> screenLabelCstrs;
+    screenLabelCstrs.reserve(screenLabels.size());
+    for (const auto& l : screenLabels) screenLabelCstrs.push_back(l.c_str());
+
+    int removeIdx = -1;
+    if (ImGui::BeginTable("##routestable", 6,
+                           ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Screen", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        ImGui::TableSetupColumn("H", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        ImGui::TableSetupColumn(" ", ImGuiTableColumnFlags_WidthFixed, 28.0f);
+        ImGui::TableHeadersRow();
+
+        const bool uvEditable = (asset.kind == RouteMode::Tiled);
+        for (std::size_t i = 0; i < asset.targets.size(); ++i) {
+            auto& t = asset.targets[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TableNextRow();
+
+            // Screen picker.
+            ImGui::TableSetColumnIndex(0);
+            int screenIdx = 0;
+            for (std::size_t k = 0; k < screenEntities.size(); ++k) {
+                if (screenEntities[k] == t.screen) {
+                    screenIdx = static_cast<int>(k); break;
+                }
+            }
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##screen", &screenIdx,
+                              screenLabelCstrs.data(),
+                              static_cast<int>(screenLabelCstrs.size()))) {
+                t.screen = screenEntities[static_cast<std::size_t>(screenIdx)];
+            }
+
+            // uvRect fields.
+            auto editAxis = [&](int col, int axis, const char* label) {
+                ImGui::TableSetColumnIndex(col);
+                ImGui::SetNextItemWidth(-1);
+                if (!uvEditable) ImGui::BeginDisabled();
+                ImGui::DragFloat(label, &t.uvRect[axis], 0.005f, -2.0f, 2.0f, "%.3f");
+                if (!uvEditable) ImGui::EndDisabled();
+            };
+            editAxis(1, 0, "##x");
+            editAxis(2, 1, "##y");
+            editAxis(3, 2, "##w");
+            editAxis(4, 3, "##h");
+
+            ImGui::TableSetColumnIndex(5);
+            if (ImGui::Button("X", ImVec2(-1, 0))) {
+                removeIdx = static_cast<int>(i);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (removeIdx >= 0) {
+        asset.targets.erase(asset.targets.begin() + removeIdx);
+    }
+
+    if (asset.kind != RouteMode::Direct || asset.targets.empty()) {
+        if (ImGui::Button("+ Add Target##routerow")) {
+            asset.targets.push_back({entt::null, kIdentityUV});
+        }
+        if (asset.kind == RouteMode::Direct) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Direct mode uses the first target only.");
+        }
+    }
+
+    // Schematic preview.
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Schematic");
+    drawSchematic(reg, asset);
+}
+
+void renderDeleteConfirm(entt::registry& reg, entt::entity& pendingDelete,
+                          entt::entity& selected) {
+    if (pendingDelete == entt::null) return;
+    if (!reg.valid(pendingDelete) ||
+        !reg.all_of<ContentRoutingAsset>(pendingDelete)) {
+        pendingDelete = entt::null;
+        return;
+    }
+
+    ImGui::OpenPopup("Delete routing?");
+    if (ImGui::BeginPopupModal("Delete routing?", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        const auto& a = reg.get<ContentRoutingAsset>(pendingDelete);
+        const int usage = countUsage(reg, pendingDelete);
+        ImGui::Text("Delete \"%s\"?", a.name.c_str());
+        if (usage > 0) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                                "Used by %d clip%s — their routings will fall back to Default (All).",
+                                usage, usage == 1 ? "" : "s");
+        }
+        if (a.autoBoundScreen != entt::null) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f),
+                                "Auto-direct asset — will be regenerated on next tick.");
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Delete", ImVec2(120, 0))) {
+            clearRefsTo(reg, pendingDelete);
+            if (selected == pendingDelete) selected = entt::null;
+            reg.destroy(pendingDelete);
+            pendingDelete = entt::null;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            pendingDelete = entt::null;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+} // namespace
+
 ContentRoutingWindow::ContentRoutingWindow(Timeline* timeline)
     : m_timeline(timeline) {}
 
-// L1 placeholder (ADR-0022). The pre-ADR-0022 implementation of this
-// window edited the inline `ContentRouting` component on the selected
-// layer. After the L1 split (ContentRouting → ContentRoutingAsset +
-// ContentRoutingRef), the routing data lives on a library asset that
-// can be shared by multiple layers. Authoring that library properly is
-// L2 work; for now this window resolves the selection's
-// ContentRoutingRef and reports what asset drives the layer, leaving
-// authoring affordances disabled. PropertyWindow's Content Routing
-// dropdown is the live editor in L1.
 void ContentRoutingWindow::render() {
-    ImGui::TextWrapped(
-        "Content Routing library editor — L2 work in progress.");
-    ImGui::TextWrapped(
-        "Use Properties \xe2\x86\x92 Content Routing on a selected clip "
-        "or generative layer to bind it to a routing in the library. "
-        "Direct routings are auto-generated per Screen.");
-    ImGui::Separator();
-
     if (!m_timeline) {
         ImGui::TextDisabled("No timeline.");
         return;
     }
-
     auto& registry = m_timeline->getRegistry();
-    const entt::entity selected = m_timeline->getSelectedClip();
-    if (selected == entt::null || !registry.valid(selected)) {
-        ImGui::TextDisabled("Select a clip or generative layer to inspect");
-        ImGui::TextDisabled("its current routing.");
-        return;
+
+    // Clamp m_selectedAsset to a valid asset entity (covers asset
+    // destruction from another code path — e.g. RoutingLibrarySystem
+    // cascade-deleting an auto-direct entry when its Screen is removed).
+    if (m_selectedAsset != entt::null &&
+        (!registry.valid(m_selectedAsset) ||
+         !registry.all_of<ContentRoutingAsset>(m_selectedAsset))) {
+        m_selectedAsset = entt::null;
     }
 
-    const bool isClip       = registry.all_of<Clip>(selected);
-    const bool isGenerative = registry.all_of<GenerativeLayer>(selected);
-    if (!isClip && !isGenerative) {
-        ImGui::TextDisabled("Selected layer doesn't produce content");
-        ImGui::TextDisabled("(content routing is only available on clip");
-        ImGui::TextDisabled("and generative layers).");
-        return;
-    }
+    const float leftWidth = 240.0f;
+    ImGui::BeginChild("##cr_left", ImVec2(leftWidth, 0), true);
+    renderLeftPane(registry, m_selectedAsset, m_pendingDelete);
+    ImGui::EndChild();
 
-    if (isClip) {
-        const auto& clip = registry.get<Clip>(selected);
-        ImGui::Text("Selected clip: %s", clip.filepath.c_str());
-    } else {
-        ImGui::Text("Selected generative layer (entity %u)",
-                     static_cast<uint32_t>(selected));
-    }
+    ImGui::SameLine();
+    ImGui::BeginChild("##cr_right", ImVec2(0, 0), true);
+    renderDetailPane(registry, m_selectedAsset);
+    ImGui::EndChild();
 
-    const auto* asset = routing::tryGetAsset(registry, selected);
-    if (!asset) {
-        ImGui::TextDisabled("Routing: Default (All visible screens)");
-        return;
-    }
-
-    const char* kindLabel = "Direct";
-    if (asset->kind == RouteMode::Tiled) kindLabel = "Tiled";
-    ImGui::Text("Routing: %s  (%s)", asset->name.c_str(), kindLabel);
-    if (asset->autoBoundScreen != entt::null) {
-        ImGui::TextDisabled("Auto-direct asset (Screen-bound)");
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Targets:");
-    if (asset->targets.empty()) {
-        ImGui::TextDisabled("  (empty — renders on all visible screens)");
-    }
-    for (const auto& t : asset->targets) {
-        std::string screenName = "(all visible)";
-        if (t.screen != entt::null &&
-            registry.valid(t.screen) &&
-            registry.all_of<Screen>(t.screen)) {
-            screenName = registry.get<Screen>(t.screen).name;
-        }
-        ImGui::BulletText("%s   uv=[%.3f, %.3f, %.3f, %.3f]",
-                           screenName.c_str(),
-                           t.uvRect[0], t.uvRect[1], t.uvRect[2], t.uvRect[3]);
-    }
+    renderDeleteConfirm(registry, m_pendingDelete, m_selectedAsset);
 }
 
 } // namespace entity
