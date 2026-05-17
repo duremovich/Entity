@@ -142,6 +142,15 @@ public:
     virtual uint32_t   getComposeTargetHeight(uint32_t slot = 0) const = 0;
     virtual bool       isComposeTargetReady(uint32_t slot = 0) const = 0;
 
+    // Per-slot video-texture ImGui handle (ADR-0022 L5). Returns nullptr
+    // when the slot is unallocated or has no uploaded texture. Used by
+    // the ContentRoutingWindow preview to draw a clip's most-recent
+    // frame under the feed-map region overlay. Same threading caveat as
+    // getComposeTargetTextureID — the texture may be updated by the show
+    // thread mid-frame; D3D12 common-state promotion handles the
+    // graphics-queue sampling implicitly.
+    virtual void*      getVideoTextureIDForSlot(uint32_t slot) const = 0;
+
     // ------------------------------------------------------------------------
     // Drawing primitives (transforms use glm::mat4; colors/positions use glm vec types)
     // ------------------------------------------------------------------------

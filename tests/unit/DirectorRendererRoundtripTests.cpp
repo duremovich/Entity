@@ -102,6 +102,7 @@ public:
     uint32_t   getComposeTargetWidth(uint32_t) const override { return 0; }
     uint32_t   getComposeTargetHeight(uint32_t) const override { return 0; }
     bool       isComposeTargetReady(uint32_t) const override { return false; }
+    void*      getVideoTextureIDForSlot(uint32_t) const override { return nullptr; }
 
     void drawColoredQuad(const glm::mat4&, const glm::vec4&, float) override {}
     void drawTexturedQuad(TextureRef, const glm::mat4&, float, BlendMode,

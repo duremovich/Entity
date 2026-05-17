@@ -570,6 +570,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     {
         auto routingWindow = std::make_unique<ContentRoutingWindow>(m_timeline);
         routingWindow->setCommandDispatcher(m_commandDispatcher);
+        routingWindow->setRenderer(m_renderer);
         m_windowManager->registerWindow(std::move(routingWindow));
     }
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));

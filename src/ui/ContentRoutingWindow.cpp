@@ -8,12 +8,15 @@
 #include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/Screen.hpp"
+#include "entity/components/VideoTexture.hpp"
+#include "entity/render/IRenderer.hpp"
 #include "entity/timeline/Timeline.hpp"
 
 #include <imgui.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -179,46 +182,71 @@ bool exportFeedMapSvg(entt::registry& reg, const ContentRoutingAsset& asset,
     return out.good();
 }
 
-// Draw a small schematic of the asset's routes inside the current
-// ImGui draw list. Rectangles drawn proportionally to a canvas; each
-// route's uvRect is rendered as a translucent filled rect with the
-// target Screen name labelled on top.
-void drawSchematic(entt::registry& reg, const ContentRoutingAsset& asset) {
+// Draw the routing canvas (ADR-0022 L5). Replaces the L2 drawSchematic.
+// Background is the clip's most-recently-uploaded video frame when
+// `texId` is non-null; otherwise a flat dark-grey panel. Region
+// overlay + labels stay similar to L2, plus corner handles for FeedMap
+// and Tiled. Interaction is via a single canvas-wide InvisibleButton
+// with manual mouse hit-testing; drag state lives on the window across
+// frames. Mutates `asset.targets[i].uvRect` during drag — caller must
+// pass a mutable reference.
+void drawCanvas(entt::registry& reg,
+                ContentRoutingAsset& asset,
+                void* texId,
+                ContentRoutingWindow::CanvasDragState& dragState) {
     const float aspect = (asset.sourceHeight > 0)
         ? static_cast<float>(asset.sourceWidth) / static_cast<float>(asset.sourceHeight)
         : (16.0f / 9.0f);
     const float canvasW = std::min(ImGui::GetContentRegionAvail().x, 400.0f);
     const float canvasH = canvasW / std::max(0.1f, aspect);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 bgMax(origin.x + canvasW, origin.y + canvasH);
     auto* dl = ImGui::GetWindowDrawList();
-    // Background.
-    dl->AddRectFilled(origin,
-                      ImVec2(origin.x + canvasW, origin.y + canvasH),
-                      IM_COL32(40, 40, 50, 255));
-    dl->AddRect(origin,
-                ImVec2(origin.x + canvasW, origin.y + canvasH),
-                IM_COL32(120, 120, 130, 255));
 
-    // Region rectangles + labels.
+    // Background: poster-frame texture when available, else flat panel.
+    if (texId) {
+        dl->AddImage(reinterpret_cast<ImTextureID>(texId), origin, bgMax);
+    } else {
+        dl->AddRectFilled(origin, bgMax, IM_COL32(40, 40, 50, 255));
+    }
+    dl->AddRect(origin, bgMax, IM_COL32(120, 120, 130, 255));
+
+    // Deterministic per-index hues. Translucent fills, opaque handles.
+    static const ImU32 fillHues[] = {
+        IM_COL32(220, 100, 100, 90),
+        IM_COL32(100, 200, 130, 90),
+        IM_COL32(100, 140, 220, 90),
+        IM_COL32(230, 200, 100, 90),
+        IM_COL32(200, 110, 220, 90),
+        IM_COL32(120, 220, 220, 90),
+    };
+    static const ImU32 strokeHues[] = {
+        IM_COL32(220, 100, 100, 230),
+        IM_COL32(100, 200, 130, 230),
+        IM_COL32(100, 140, 220, 230),
+        IM_COL32(230, 200, 100, 230),
+        IM_COL32(200, 110, 220, 230),
+        IM_COL32(120, 220, 220, 230),
+    };
+    constexpr int kHueCount = static_cast<int>(sizeof(fillHues) / sizeof(fillHues[0]));
+
+    const bool handlesVisible = (asset.kind != RouteMode::Direct);
+
+    struct RegionRect { float x0, y0, x1, y1; };
+    std::vector<RegionRect> rects(asset.targets.size());
+
+    // Pass 1: per-region fill + outline + labels.
     for (std::size_t i = 0; i < asset.targets.size(); ++i) {
         const auto& t = asset.targets[i];
         const float x0 = origin.x + t.uvRect[0] * canvasW;
         const float y0 = origin.y + t.uvRect[1] * canvasH;
         const float x1 = x0 + t.uvRect[2] * canvasW;
         const float y1 = y0 + t.uvRect[3] * canvasH;
-        // Distinct hue per region — quick deterministic colour by index.
-        const ImU32 fillHues[] = {
-            IM_COL32(220, 100, 100, 90),
-            IM_COL32(100, 200, 130, 90),
-            IM_COL32(100, 140, 220, 90),
-            IM_COL32(230, 200, 100, 90),
-            IM_COL32(200, 110, 220, 90),
-            IM_COL32(120, 220, 220, 90),
-        };
-        const ImU32 fill = fillHues[i % (sizeof(fillHues) / sizeof(fillHues[0]))];
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fill);
+        rects[i] = {x0, y0, x1, y1};
+
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fillHues[i % kHueCount]);
         dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
-                    IM_COL32(220, 220, 220, 180));
+                    IM_COL32(240, 240, 240, 200), 0.0f, 0, 2.0f);
 
         std::string screenName = "(all visible)";
         if (t.screen != entt::null && reg.valid(t.screen) &&
@@ -229,9 +257,11 @@ void drawSchematic(entt::registry& reg, const ContentRoutingAsset& asset) {
             dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
                         IM_COL32(255, 255, 255, 240),
                         t.name.c_str());
-            std::string sub = std::string("\xe2\x86\x92 ") + screenName;
+            // ASCII "->" so ImGui's default font (no U+2192) doesn't
+            // render the missing-glyph "?" placeholder.
+            std::string sub = std::string("-> ") + screenName;
             dl->AddText(ImVec2(x0 + 4.0f, y0 + 20.0f),
-                        IM_COL32(220, 220, 220, 200),
+                        IM_COL32(220, 220, 220, 220),
                         sub.c_str());
         } else {
             dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
@@ -239,7 +269,121 @@ void drawSchematic(entt::registry& reg, const ContentRoutingAsset& asset) {
                         screenName.c_str());
         }
     }
-    ImGui::Dummy(ImVec2(canvasW, canvasH));
+
+    // Pass 2: corner handles on top (FeedMap + Tiled only).
+    if (handlesVisible) {
+        constexpr float radius = 5.0f;
+        for (std::size_t i = 0; i < asset.targets.size(); ++i) {
+            const auto& r = rects[i];
+            const ImU32 fill = strokeHues[i % kHueCount];
+            const ImVec2 corners[4] = {
+                {r.x0, r.y0}, {r.x1, r.y0}, {r.x0, r.y1}, {r.x1, r.y1}
+            };
+            for (const auto& c : corners) {
+                dl->AddCircleFilled(c, radius, fill);
+                dl->AddCircle(c, radius, IM_COL32(255, 255, 255, 230), 0, 1.5f);
+            }
+        }
+    }
+
+    // Canvas-wide invisible button drives mouse interaction. Drawn last
+    // so it sits on top of the schematic but accepts clicks across the
+    // whole canvas; per-region hit-testing is manual below.
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::InvisibleButton("##cr_canvas", ImVec2(canvasW, canvasH),
+                            ImGuiButtonFlags_MouseButtonLeft);
+    const bool active = ImGui::IsItemActive();
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+
+    // Hit-test: corner handles win over bodies; later-drawn (higher
+    // index) wins on body overlap so the topmost region is grabbable.
+    auto hitTest = [&](int& outRegion, int& outHandle) {
+        outRegion = -1;
+        outHandle = 0;
+        constexpr float kCornerHit = 8.0f;
+        if (handlesVisible) {
+            for (int i = static_cast<int>(asset.targets.size()) - 1; i >= 0; --i) {
+                const auto& r = rects[i];
+                auto over = [&](float cx, float cy) {
+                    return mouse.x >= cx - kCornerHit && mouse.x <= cx + kCornerHit &&
+                           mouse.y >= cy - kCornerHit && mouse.y <= cy + kCornerHit;
+                };
+                if (over(r.x0, r.y0)) { outRegion = i; outHandle = 1; return; }
+                if (over(r.x1, r.y0)) { outRegion = i; outHandle = 2; return; }
+                if (over(r.x0, r.y1)) { outRegion = i; outHandle = 3; return; }
+                if (over(r.x1, r.y1)) { outRegion = i; outHandle = 4; return; }
+            }
+        }
+        for (int i = static_cast<int>(asset.targets.size()) - 1; i >= 0; --i) {
+            const auto& r = rects[i];
+            if (mouse.x >= r.x0 && mouse.x <= r.x1 &&
+                mouse.y >= r.y0 && mouse.y <= r.y1) {
+                outRegion = i;
+                outHandle = 0;
+                return;
+            }
+        }
+    };
+
+    if (active) {
+        // Begin drag on the frame the mouse goes down.
+        if (dragState.regionIdx < 0) {
+            int r = -1, h = 0;
+            hitTest(r, h);
+            dragState.regionIdx = r;
+            dragState.handle    = h;
+        }
+        // Apply mouse delta. Handle == 0 moves the whole region;
+        // 1-4 resize from NW/NE/SW/SE respectively.
+        if (dragState.regionIdx >= 0 &&
+            dragState.regionIdx < static_cast<int>(asset.targets.size())) {
+            const ImVec2 d = ImGui::GetIO().MouseDelta;
+            const float dx = d.x / canvasW;
+            const float dy = d.y / canvasH;
+            auto& uv = asset.targets[dragState.regionIdx].uvRect;
+            switch (dragState.handle) {
+                case 0: uv[0] += dx; uv[1] += dy; break;
+                case 1: uv[0] += dx; uv[2] -= dx; uv[1] += dy; uv[3] -= dy; break;
+                case 2: uv[2] += dx;             uv[1] += dy; uv[3] -= dy; break;
+                case 3: uv[0] += dx; uv[2] -= dx;             uv[3] += dy; break;
+                case 4: uv[2] += dx;                          uv[3] += dy; break;
+            }
+            // Keep width / height positive so the rect doesn't flip.
+            uv[2] = std::max(0.01f, uv[2]);
+            uv[3] = std::max(0.01f, uv[3]);
+        }
+    } else {
+        dragState.regionIdx = -1;
+    }
+
+    // Cursor change + tooltip when hovering (not actively dragging the
+    // wrong thing — IsItemActive already covers the active case).
+    if (hovered) {
+        int hr = -1, hh = 0;
+        hitTest(hr, hh);
+        if (hr >= 0) {
+            if (hh == 0)                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            else if (hh == 1 || hh == 4) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+            else                          ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW);
+
+            const auto& t = asset.targets[hr];
+            if (asset.kind == RouteMode::FeedMap &&
+                asset.sourceWidth > 0 && asset.sourceHeight > 0) {
+                const int px = static_cast<int>(std::lround(t.uvRect[0] * asset.sourceWidth));
+                const int py = static_cast<int>(std::lround(t.uvRect[1] * asset.sourceHeight));
+                const int pw = static_cast<int>(std::lround(t.uvRect[2] * asset.sourceWidth));
+                const int ph = static_cast<int>(std::lround(t.uvRect[3] * asset.sourceHeight));
+                ImGui::SetTooltip("%s\n%d,%d  %dx%d px",
+                                   t.name.empty() ? "(region)" : t.name.c_str(),
+                                   px, py, pw, ph);
+            } else {
+                ImGui::SetTooltip("uv: %.3f,%.3f  %.3fx%.3f",
+                                   t.uvRect[0], t.uvRect[1],
+                                   t.uvRect[2], t.uvRect[3]);
+            }
+        }
+    }
 }
 
 void renderLeftPane(entt::registry& reg, entt::entity& selected,
@@ -335,7 +479,9 @@ void renderLeftPane(entt::registry& reg, entt::entity& selected,
     }
 }
 
-void renderDetailPane(entt::registry& reg, entt::entity selected) {
+void renderDetailPane(entt::registry& reg, entt::entity selected,
+                       IRenderer* renderer, Timeline* timeline,
+                       ContentRoutingWindow::CanvasDragState& dragState) {
     if (selected == entt::null || !reg.valid(selected) ||
         !reg.all_of<ContentRoutingAsset>(selected)) {
         ImGui::TextDisabled("Select a routing from the library.");
@@ -483,10 +629,18 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
             ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         }
         ImGui::TableSetupColumn("Screen", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthFixed, 64.0f);
-        ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthFixed, 64.0f);
-        ImGui::TableSetupColumn("W", ImGuiTableColumnFlags_WidthFixed, 64.0f);
-        ImGui::TableSetupColumn("H", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+        // Feed Map shows pixel coordinates so content creators can match
+        // template files directly; Tiled / Direct keep UV floats since
+        // they don't carry a source-canvas size.
+        const float colWidth = isFeedMap ? 72.0f : 64.0f;
+        ImGui::TableSetupColumn(isFeedMap ? "Px X" : "X",
+                                  ImGuiTableColumnFlags_WidthFixed, colWidth);
+        ImGui::TableSetupColumn(isFeedMap ? "Px Y" : "Y",
+                                  ImGuiTableColumnFlags_WidthFixed, colWidth);
+        ImGui::TableSetupColumn(isFeedMap ? "Px W" : "W",
+                                  ImGuiTableColumnFlags_WidthFixed, colWidth);
+        ImGui::TableSetupColumn(isFeedMap ? "Px H" : "H",
+                                  ImGuiTableColumnFlags_WidthFixed, colWidth);
         ImGui::TableSetupColumn(" ", ImGuiTableColumnFlags_WidthFixed, 28.0f);
         ImGui::TableHeadersRow();
 
@@ -530,18 +684,34 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
                 t.screen = screenEntities[static_cast<std::size_t>(screenIdx)];
             }
 
-            // uvRect fields.
-            auto editAxis = [&](int col, int axis, const char* label) {
+            // uvRect fields. Feed Map edits in pixels (DragInt scaled by
+            // sourceWidth/Height); Tiled / Direct keep UV (DragFloat).
+            // Storage stays as float uvRect either way — bus wire
+            // format is unchanged.
+            auto editAxis = [&](int col, int axis, const char* label,
+                                 std::uint32_t pixelDim) {
                 ImGui::TableSetColumnIndex(col);
                 ImGui::SetNextItemWidth(-1);
                 if (!uvEditable) ImGui::BeginDisabled();
-                ImGui::DragFloat(label, &t.uvRect[axis], 0.005f, -2.0f, 2.0f, "%.3f");
+                if (isFeedMap && pixelDim > 0) {
+                    int px = static_cast<int>(std::lround(
+                        t.uvRect[axis] * static_cast<float>(pixelDim)));
+                    const int rangeMin = -2 * static_cast<int>(pixelDim);
+                    const int rangeMax =  2 * static_cast<int>(pixelDim);
+                    if (ImGui::DragInt(label, &px, 1.0f, rangeMin, rangeMax, "%d")) {
+                        t.uvRect[axis] = static_cast<float>(px) /
+                                          static_cast<float>(pixelDim);
+                    }
+                } else {
+                    ImGui::DragFloat(label, &t.uvRect[axis], 0.005f,
+                                      -2.0f, 2.0f, "%.3f");
+                }
                 if (!uvEditable) ImGui::EndDisabled();
             };
-            editAxis(colX, 0, "##x");
-            editAxis(colY, 1, "##y");
-            editAxis(colW, 2, "##w");
-            editAxis(colH, 3, "##h");
+            editAxis(colX, 0, "##x", asset.sourceWidth);
+            editAxis(colY, 1, "##y", asset.sourceHeight);
+            editAxis(colW, 2, "##w", asset.sourceWidth);
+            editAxis(colH, 3, "##h", asset.sourceHeight);
 
             ImGui::TableSetColumnIndex(colDel);
             if (ImGui::Button("X", ImVec2(-1, 0))) {
@@ -573,11 +743,26 @@ void renderDetailPane(entt::registry& reg, entt::entity selected) {
         }
     }
 
-    // Schematic preview.
+    // Canvas preview. Drops the clip's most-recently-uploaded video
+    // frame into the background when a clip is selected on the timeline
+    // and the renderer is wired (ADR-0022 L5). Falls back to the flat
+    // schematic when no clip is selected, the renderer is missing, or
+    // the texture isn't uploaded yet.
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Text("Schematic");
-    drawSchematic(reg, asset);
+    ImGui::Text("Canvas");
+    void* texId = nullptr;
+    if (renderer && timeline) {
+        const entt::entity sel = timeline->getSelectedClip();
+        if (sel != entt::null && reg.valid(sel)) {
+            if (const auto* vt = reg.try_get<VideoTexture>(sel)) {
+                if (vt->isAllocated()) {
+                    texId = renderer->getVideoTextureIDForSlot(vt->descriptorSlot);
+                }
+            }
+        }
+    }
+    drawCanvas(reg, asset, texId, dragState);
 }
 
 // Header strip above the schematic when a clip / generative layer is
@@ -697,7 +882,7 @@ void ContentRoutingWindow::render() {
 
     ImGui::SameLine();
     ImGui::BeginChild("##cr_right", ImVec2(0, 0), true);
-    renderDetailPane(registry, m_selectedAsset);
+    renderDetailPane(registry, m_selectedAsset, m_renderer, m_timeline, m_canvasDrag);
     renderSelectionStrip(registry, m_timeline);
     ImGui::EndChild();
 

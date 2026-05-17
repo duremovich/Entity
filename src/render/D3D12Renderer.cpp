@@ -3451,6 +3451,17 @@ void* D3D12Renderer::getComposeTargetTextureID(uint32_t slot) const {
     return h.ptr ? reinterpret_cast<void*>(h.ptr) : nullptr;
 }
 
+void* D3D12Renderer::getVideoTextureIDForSlot(uint32_t slot) const {
+    // ADR-0022 L5: ContentRoutingWindow uses this to draw a clip's
+    // most-recently-uploaded frame under the feed-map region overlay.
+    // TextureUploader owns the per-slot SRV descriptor; we just relay
+    // its GPU handle. Returns nullptr until an upload has succeeded.
+    if (!m_textureUploader) return nullptr;
+    if (!m_textureUploader->hasTexture(slot)) return nullptr;
+    const D3D12_GPU_DESCRIPTOR_HANDLE h = m_textureUploader->gpuHandle(slot);
+    return h.ptr ? reinterpret_cast<void*>(h.ptr) : nullptr;
+}
+
 uint32_t D3D12Renderer::getComposeTargetStableSrvSlot(uint32_t slot) const {
     if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) return UINT32_MAX;
     const uint32_t stableIdx = m_composeTargets[slot].lastStableIndex.load(std::memory_order_acquire);
