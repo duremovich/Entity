@@ -58,6 +58,12 @@ void Timeline::play() {
 void Timeline::pause() {
     if (m_playbackState.load() == PlaybackState::Playing) {
         m_playbackState.store(PlaybackState::Paused);
+        // Playhead is frame-quantized at rest. Snap on the play->pause
+        // transition so the paused position lands exactly on a frame —
+        // keyframe diamonds and the playhead line sit at the same pixel.
+        const Timecode now = m_currentTime.load(std::memory_order_relaxed);
+        const Timecode snapped = frameToTime(timeToFrame(now));
+        m_currentTime.store(snapped, std::memory_order_relaxed);
         std::cout << "[Timeline] Paused at " << getCurrentTime() << std::endl;
     }
 }
@@ -76,7 +82,12 @@ void Timeline::seek(Timecode time) {
         std::cout << "[Timeline] Auto-paused for seek" << std::endl;
     }
 
-    const Timecode clamped = std::max<Timecode>(0, std::min(time, m_duration));
+    // Snap to nearest integer frame. The playhead has no sub-frame
+    // semantics at rest — see feedback_playhead_frame_quantized_at_rest.
+    // Per-tick playback advance in update() keeps sub-frame precision
+    // for smooth motion; only user-driven rests are quantized.
+    const Timecode snapped = frameToTime(timeToFrame(time));
+    const Timecode clamped = std::max<Timecode>(0, std::min(snapped, m_duration));
     m_currentTime.store(clamped, std::memory_order_relaxed);
 
     // At-break state is owned by SectionScheduler's park flow, not by manual

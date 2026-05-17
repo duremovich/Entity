@@ -38,7 +38,8 @@
         },
         {
             "type": "SeekToFrame",
-            "frame": 0
+            "_comment": "Pre-seek to frame 7 (not 0) and wait so AnimationSystem evaluates the OA layer once at a non-zero frame BEFORE Play. Under build-time CPU load the editor's dt can jump enough to cross the break in one tick, freezing the OA layer's ObjectAnimationOutput at whatever its previous evaluation was. Starting at frame 7 ensures that previous value is ~0.21 (inside the ±0.1 tolerance around 0.24), not 0.",
+            "frame": 7
         },
         {
             "type": "WaitFrames",
@@ -49,7 +50,8 @@
         },
         {
             "type": "WaitSeconds",
-            "count": 0.6
+            "_comment": "2.0s gives ample wall-clock margin for SectionScheduler to detect the break crossing. processQueue runs BEFORE update() in the editor loop (Engine.cpp:997 then 1000), so when WaitSeconds expires mid-frame the next command (AssertPlaybackState) fires before the same frame's Timeline tick. Under build-time CPU pressure tighter waits (0.6, 1.0) can land in the narrow window where Timeline has advanced past the break but SectionScheduler hasn't parked yet, surfacing as 'expected Paused, got Playing'.",
+            "count": 2.0
         },
         {
             "type": "AssertPlaybackState",

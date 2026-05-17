@@ -31,6 +31,7 @@
 #include "entity/systems/TimelineSystem.hpp"
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
+#include "entity/systems/RoutingLibrarySystem.hpp"
 #include "entity/systems/GenerativeSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/input/InputBus.hpp"
@@ -241,6 +242,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_commandDispatcher = m_director->getCommandDispatcher();
     m_animationSystem   = m_director->getAnimationSystem();
     m_generativeSystem  = m_director->getGenerativeSystem();
+    m_routingLibrarySystem = m_director->getRoutingLibrarySystem();
     m_timeAuthority     = m_director->getTimeAuthority();
     m_sectionScheduler  = m_director->getSectionScheduler();
 
@@ -1625,6 +1627,13 @@ void Engine::update() {
     // renderer.tick() split (subtask 8).
     if (m_animationSystem) {
         m_animationSystem->update(m_registry, static_cast<float>(deltaTime));
+    }
+    // Reconcile the ContentRouting library (auto-direct per-Screen,
+    // cascade-delete on Screen destroy, name autosync). Runs before any
+    // snapshot bake so ContentRoutingRef -> asset resolution sees a
+    // consistent library state (ADR-0022).
+    if (m_routingLibrarySystem) {
+        m_routingLibrarySystem->update(m_registry, static_cast<float>(deltaTime));
     }
     // Local input sources → Muncher input bus. Joystick takes priority
     // over keyboard; both share the same "only WRITE while active"

@@ -107,6 +107,35 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         : static_cast<Timecode>(0);
     const Timecode discontinuityThreshold = std::max(oneFrame * 2, tickAdvance * 5);
     if (delta > discontinuityThreshold) {
+        // ADR-0014: when the editor thread stalls, the show thread keeps
+        // Timeline::update ticking via the fallback path. The editor
+        // resumes and SectionScheduler sees one tick where currentTime
+        // has jumped past where m_lastTickFrame left it — sometimes
+        // straight over a section break. A user scrub looks identical
+        // to that gap from this code's point of view, EXCEPT: a scrub
+        // can go in either direction, while the editor-stall artifact
+        // is always forward (playback advances, never rewinds). If the
+        // jump is forward and a break sits in (m_lastTickFrame, currentTime],
+        // honor it as a crossing rather than discarding it as a scrub —
+        // otherwise the at-break pause silently never fires.
+        if (currentTime > m_lastTickFrame) {
+            if (const Timeline::Section* brk = m_timeline->findNextBreakAfter(m_lastTickFrame)) {
+                if (brk->breakFrame <= currentTime) {
+                    const Timecode hit = brk->breakFrame;
+                    m_timeline->seek(hit);
+                    m_timeline->pause();
+                    m_atBreak = true;
+                    m_lastBreakHitFrame = hit;
+                    m_lastTickFrame = hit;
+                    m_timeline->setSectionAtBreak(true);
+                    seedContinuationAt(hit);
+                    std::cout << "[SectionScheduler] At break frame=" << hit
+                              << " (caught crossing inside discontinuity)" << std::endl;
+                    std::cout << "[SBG][at-break] hit=" << hit << " via=jump" << std::endl;
+                    return;
+                }
+            }
+        }
         // Round-2 fixup, Phase 4 — a discontinuity here means the user
         // scrubbed (or some non-playback driver moved the playhead). Any
         // post-break anchor whose `anchorTimelineFrame > currentTimelineFrame`

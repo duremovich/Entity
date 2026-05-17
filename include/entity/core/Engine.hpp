@@ -31,6 +31,7 @@ class Decoder;
 class DecodeSystem;
 class AnimationSystem;
 class GenerativeSystem;
+class RoutingLibrarySystem;
 class CommandDispatcher;
 class InputBus;
 class OutputManager;
@@ -965,6 +966,12 @@ private:
     // Raw shortcut into m_director->getGenerativeSystem(). Director owns
     // GenerativeSystem (first generative layer kind: Muncher).
     GenerativeSystem* m_generativeSystem{nullptr};
+
+    // Raw shortcut into m_director->getRoutingLibrarySystem(). Director
+    // owns the system; Engine ticks it each editor frame to reconcile
+    // ContentRoutingAsset auto-direct entries against the Screen set
+    // (ADR-0022).
+    RoutingLibrarySystem* m_routingLibrarySystem{nullptr};
 
     // Engine-owned input channel bus. Constructed in initialize(),
     // destroyed in shutdown(). Plumbed into GenerativeSystem so the

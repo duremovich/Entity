@@ -119,7 +119,15 @@ public:
     //     existing Screen.opacity. Pre-v19 props default to opacity=1.0.
     //     Screen.opacity was already persisted; only the wiring into the
     //     stage view is new in this version.
-    static constexpr int PROJECT_VERSION = 19;
+    // v20 ContentRouting library (ADR-0022). Promotes per-layer inline
+    //     `contentRouting` to a top-level `contentRoutingAssets` array.
+    //     Each Clip / GenerativeLayer carries a `contentRoutingAssetName`
+    //     reference (named lookup so the link survives entity-ID churn
+    //     across reloads). Pre-v20 projects migrate transparently: each
+    //     legacy single-target Direct routing resolves to the Screen's
+    //     auto-direct asset; multi-target routings spin up new
+    //     "Custom Routing N" assets and the layer points at them.
+    static constexpr int PROJECT_VERSION = 20;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

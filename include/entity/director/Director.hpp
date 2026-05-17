@@ -13,6 +13,7 @@ class TranscodeManager;
 class CommandDispatcher;
 class AnimationSystem;
 class GenerativeSystem;
+class RoutingLibrarySystem;
 class SceneState;
 class PlaybackTimeAuthority;
 class SectionScheduler;
@@ -50,6 +51,7 @@ public:
     CommandDispatcher* getCommandDispatcher() noexcept { return m_commandDispatcher.get(); }
     AnimationSystem* getAnimationSystem()   noexcept { return m_animationSystem.get(); }
     GenerativeSystem* getGenerativeSystem() noexcept { return m_generativeSystem.get(); }
+    RoutingLibrarySystem* getRoutingLibrarySystem() noexcept { return m_routingLibrarySystem.get(); }
     PlaybackTimeAuthority* getTimeAuthority() noexcept { return m_timeAuthority.get(); }
     SectionScheduler* getSectionScheduler()   noexcept { return m_sectionScheduler.get(); }
     CaptureBroker* getCaptureBroker()       noexcept { return m_captureBroker.get(); }
@@ -60,6 +62,7 @@ public:
     const CommandDispatcher* getCommandDispatcher() const noexcept { return m_commandDispatcher.get(); }
     const AnimationSystem* getAnimationSystem()   const noexcept { return m_animationSystem.get(); }
     const GenerativeSystem* getGenerativeSystem() const noexcept { return m_generativeSystem.get(); }
+    const RoutingLibrarySystem* getRoutingLibrarySystem() const noexcept { return m_routingLibrarySystem.get(); }
     const PlaybackTimeAuthority* getTimeAuthority() const noexcept { return m_timeAuthority.get(); }
     const SectionScheduler* getSectionScheduler() const noexcept { return m_sectionScheduler.get(); }
     const CaptureBroker* getCaptureBroker()       const noexcept { return m_captureBroker.get(); }
@@ -83,6 +86,11 @@ private:
     // advances per-kind sim counters; future commits add real per-kind
     // logic (Muncher gameplay, particles, ...). See systems/GenerativeSystem.hpp.
     std::unique_ptr<GenerativeSystem>  m_generativeSystem;
+    // Owns the ContentRoutingAsset library lifecycle (ADR-0022): per-Screen
+    // auto-direct asset creation, name sync, and cascade-delete on Screen
+    // destroy. Reconciles each editor tick before the snapshot bake reads
+    // ContentRoutingRef.
+    std::unique_ptr<RoutingLibrarySystem> m_routingLibrarySystem;
     // Owns frame timing + clip-frame math + per-tick active-set
     // computation (Phase D entry, subtask 6 -- replaces the Director
     // half of the old PlaybackController). Declared after Timeline +

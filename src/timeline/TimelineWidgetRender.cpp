@@ -29,6 +29,95 @@
 
 namespace entity {
 
+void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
+                                       const Keyframe& kf,
+                                       float cx, float cy,
+                                       float size) const {
+    const ImU32 fillColor    = IM_COL32(255, 200, 50, 255);
+    const ImU32 outlineColor = IM_COL32(255, 255, 255, 200);
+
+    switch (kf.interpolation) {
+        case InterpolationType::Step: {
+            ImVec2 sqMin(cx - size, cy - size);
+            ImVec2 sqMax(cx + size, cy + size);
+            drawList->AddRectFilled(sqMin, sqMax, fillColor);
+            drawList->AddRect(sqMin, sqMax, outlineColor, 0.0f, 0, 1.0f);
+            break;
+        }
+
+        case InterpolationType::EaseIn: {
+            drawList->AddBezierQuadratic(
+                ImVec2(cx - size, cy - size),
+                ImVec2(cx, cy),
+                ImVec2(cx - size, cy + size),
+                fillColor, 3.0f);
+            ImVec2 rightDiamond[3] = {
+                ImVec2(cx, cy - size),
+                ImVec2(cx + size, cy),
+                ImVec2(cx, cy + size)
+            };
+            drawList->AddTriangleFilled(rightDiamond[0], rightDiamond[1], rightDiamond[2], fillColor);
+            drawList->AddLine(ImVec2(cx, cy - size), ImVec2(cx + size, cy), outlineColor, 1.0f);
+            drawList->AddLine(ImVec2(cx + size, cy), ImVec2(cx, cy + size), outlineColor, 1.0f);
+            break;
+        }
+
+        case InterpolationType::EaseOut: {
+            ImVec2 leftDiamond[3] = {
+                ImVec2(cx, cy - size),
+                ImVec2(cx - size, cy),
+                ImVec2(cx, cy + size)
+            };
+            drawList->AddTriangleFilled(leftDiamond[0], leftDiamond[1], leftDiamond[2], fillColor);
+            drawList->AddBezierQuadratic(
+                ImVec2(cx + size, cy - size),
+                ImVec2(cx, cy),
+                ImVec2(cx + size, cy + size),
+                fillColor, 3.0f);
+            drawList->AddLine(ImVec2(cx, cy - size), ImVec2(cx - size, cy), outlineColor, 1.0f);
+            drawList->AddLine(ImVec2(cx - size, cy), ImVec2(cx, cy + size), outlineColor, 1.0f);
+            break;
+        }
+
+        case InterpolationType::EaseInOut: {
+            drawList->AddTriangleFilled(
+                ImVec2(cx - size, cy - size),
+                ImVec2(cx + size, cy - size),
+                ImVec2(cx, cy),
+                fillColor);
+            drawList->AddTriangleFilled(
+                ImVec2(cx - size, cy + size),
+                ImVec2(cx + size, cy + size),
+                ImVec2(cx, cy),
+                fillColor);
+            ImVec2 hourglass[6] = {
+                ImVec2(cx - size, cy - size),
+                ImVec2(cx + size, cy - size),
+                ImVec2(cx, cy),
+                ImVec2(cx + size, cy + size),
+                ImVec2(cx - size, cy + size),
+                ImVec2(cx, cy)
+            };
+            drawList->AddPolyline(hourglass, 6, outlineColor, ImDrawFlags_Closed, 1.0f);
+            break;
+        }
+
+        case InterpolationType::Linear:
+        default: {
+            ImVec2 diamond[4] = {
+                ImVec2(cx, cy - size),
+                ImVec2(cx + size, cy),
+                ImVec2(cx, cy + size),
+                ImVec2(cx - size, cy)
+            };
+            drawList->AddConvexPolyFilled(diamond, 4, fillColor);
+            drawList->AddPolyline(diamond, 4, outlineColor, ImDrawFlags_Closed, 1.0f);
+            break;
+        }
+    }
+}
+
+
 namespace {
 
 // One animatable channel surfaced in the expanded-track view.
@@ -676,40 +765,46 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     // meaningful concept. A "this clip's working set is hot" indicator
     // could come back later by walking cache.entryCount per clip.
 
-    // Draw keyframe markers if clip has animated properties
+    // Draw keyframe markers if clip has animated properties. Iterate per
+    // track / per keyframe so each marker reflects its own interpolation
+    // shape and right-clicking targets the specific keyframe. Position
+    // uses timelineFrameRate (kf.frame is layer-local in timeline frames,
+    // matching renderPropertyTracks below).
     const auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
     if (animProps && animProps->hasAnyKeyframes()) {
-        // Keyframe diamond size
-        float diamondSize = 4.0f;
-        float keyframeY = clipMin.y + 8.0f;  // Position near top of clip
+        const float size = 4.0f;
+        const float keyframeY = clipMin.y + 8.0f;
+        // Suppress redundant overdraw when multiple tracks share both
+        // frame and shape — purely visual; data integrity is unaffected.
+        std::set<std::pair<FrameNumber, int>> drawnShapes;
 
-        // Collect all unique keyframe frames
-        std::set<FrameNumber> keyframeFrames;
-        for (const auto& track : animProps->tracks) {
-            for (const auto& kf : track.keyframes) {
-                keyframeFrames.insert(kf.frame);
-            }
-        }
+        for (const auto& trk : animProps->tracks) {
+            for (const auto& kf : trk.keyframes) {
+                const float kfSeconds =
+                    static_cast<float>(kf.frame) /
+                    static_cast<float>(timelineFrameRate);
+                const float kfX = clipMin.x + (kfSeconds * m_pixelsPerSecond);
+                if (kfX < clipMin.x || kfX > clipMax.x) continue;
 
-        // Draw diamond marker for each keyframe
-        for (FrameNumber kfFrame : keyframeFrames) {
-            // Convert keyframe frame (relative to clip) to pixel position
-            float kfSeconds = kfFrame / clip->framerate;
-            float kfX = clipMin.x + (kfSeconds * m_pixelsPerSecond);
+                auto shapeKey = std::make_pair(
+                    kf.frame, static_cast<int>(kf.interpolation));
+                if (drawnShapes.insert(shapeKey).second) {
+                    drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
+                }
 
-            // Only draw if within clip bounds
-            if (kfX >= clipMin.x && kfX <= clipMax.x) {
-                // Draw diamond shape
-                ImVec2 points[4] = {
-                    ImVec2(kfX, keyframeY - diamondSize),           // Top
-                    ImVec2(kfX + diamondSize, keyframeY),           // Right
-                    ImVec2(kfX, keyframeY + diamondSize),           // Bottom
-                    ImVec2(kfX - diamondSize, keyframeY)            // Left
-                };
-
-                // Gold color for keyframes
-                drawList->AddConvexPolyFilled(points, 4, IM_COL32(255, 200, 50, 255));
-                drawList->AddPolyline(points, 4, IM_COL32(255, 255, 255, 200), ImDrawFlags_Closed, 1.0f);
+                // Per-keyframe right-click → existing interpolation menu in
+                // TimelineWidgetInput.cpp. The hit zone is wider than the
+                // glyph to make small diamonds easier to grab.
+                if (ImGui::IsMouseClicked(1)) {
+                    const ImVec2 mousePos = ImGui::GetMousePos();
+                    if (mousePos.x >= kfX - size - 3 && mousePos.x <= kfX + size + 3 &&
+                        mousePos.y >= keyframeY - size - 3 && mousePos.y <= keyframeY + size + 3) {
+                        m_keyframeEditClip = clipEntity;
+                        m_keyframeEditProperty = trk.property;
+                        m_keyframeEditFrame = kf.frame;
+                        m_showKeyframeContextMenu = true;
+                    }
+                }
             }
         }
     }
@@ -811,8 +906,6 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
         if (track && track->hasKeyframes()) {
             float size = 5.0f;
             float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
-            ImU32 kfColor = IM_COL32(255, 200, 50, 255);  // Gold color for all keyframes
-            ImU32 outlineColor = IM_COL32(255, 255, 255, 200);
 
             for (const auto& kf : track->keyframes) {
                 // kf.frame is layer-local in *timeline* frames for both
@@ -824,101 +917,10 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
 
                 // Only draw if within clip bounds
                 if (kfX >= clipX && kfX <= clipX + clipWidth) {
-                    switch (kf.interpolation) {
-                        case InterpolationType::Step: {
-                            // Square shape for Hold
-                            ImVec2 sqMin(kfX - size, keyframeY - size);
-                            ImVec2 sqMax(kfX + size, keyframeY + size);
-                            drawList->AddRectFilled(sqMin, sqMax, kfColor);
-                            drawList->AddRect(sqMin, sqMax, outlineColor, 0.0f, 0, 1.0f);
-                            break;
-                        }
+                    drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
 
-                        case InterpolationType::EaseIn: {
-                            // Left hourglass (curved), right diamond (pointed)
-                            // Draw left side: hourglass curves
-                            drawList->AddBezierQuadratic(
-                                ImVec2(kfX - size, keyframeY - size),
-                                ImVec2(kfX, keyframeY),
-                                ImVec2(kfX - size, keyframeY + size),
-                                kfColor, 3.0f);
-                            // Draw right side: diamond point
-                            ImVec2 rightDiamond[3] = {
-                                ImVec2(kfX, keyframeY - size),
-                                ImVec2(kfX + size, keyframeY),
-                                ImVec2(kfX, keyframeY + size)
-                            };
-                            drawList->AddTriangleFilled(rightDiamond[0], rightDiamond[1], rightDiamond[2], kfColor);
-                            // Outline
-                            drawList->AddLine(ImVec2(kfX, keyframeY - size), ImVec2(kfX + size, keyframeY), outlineColor, 1.0f);
-                            drawList->AddLine(ImVec2(kfX + size, keyframeY), ImVec2(kfX, keyframeY + size), outlineColor, 1.0f);
-                            break;
-                        }
-
-                        case InterpolationType::EaseOut: {
-                            // Left diamond (pointed), right hourglass (curved)
-                            // Draw left side: diamond point
-                            ImVec2 leftDiamond[3] = {
-                                ImVec2(kfX, keyframeY - size),
-                                ImVec2(kfX - size, keyframeY),
-                                ImVec2(kfX, keyframeY + size)
-                            };
-                            drawList->AddTriangleFilled(leftDiamond[0], leftDiamond[1], leftDiamond[2], kfColor);
-                            // Draw right side: hourglass curves
-                            drawList->AddBezierQuadratic(
-                                ImVec2(kfX + size, keyframeY - size),
-                                ImVec2(kfX, keyframeY),
-                                ImVec2(kfX + size, keyframeY + size),
-                                kfColor, 3.0f);
-                            // Outline
-                            drawList->AddLine(ImVec2(kfX, keyframeY - size), ImVec2(kfX - size, keyframeY), outlineColor, 1.0f);
-                            drawList->AddLine(ImVec2(kfX - size, keyframeY), ImVec2(kfX, keyframeY + size), outlineColor, 1.0f);
-                            break;
-                        }
-
-                        case InterpolationType::EaseInOut: {
-                            // Full hourglass shape (pinched in middle)
-                            // Top triangle
-                            drawList->AddTriangleFilled(
-                                ImVec2(kfX - size, keyframeY - size),
-                                ImVec2(kfX + size, keyframeY - size),
-                                ImVec2(kfX, keyframeY),
-                                kfColor);
-                            // Bottom triangle
-                            drawList->AddTriangleFilled(
-                                ImVec2(kfX - size, keyframeY + size),
-                                ImVec2(kfX + size, keyframeY + size),
-                                ImVec2(kfX, keyframeY),
-                                kfColor);
-                            // Outline
-                            ImVec2 hourglass[6] = {
-                                ImVec2(kfX - size, keyframeY - size),
-                                ImVec2(kfX + size, keyframeY - size),
-                                ImVec2(kfX, keyframeY),
-                                ImVec2(kfX + size, keyframeY + size),
-                                ImVec2(kfX - size, keyframeY + size),
-                                ImVec2(kfX, keyframeY)
-                            };
-                            drawList->AddPolyline(hourglass, 6, outlineColor, ImDrawFlags_Closed, 1.0f);
-                            break;
-                        }
-
-                        case InterpolationType::Linear:
-                        default: {
-                            // Diamond shape for Linear
-                            ImVec2 diamond[4] = {
-                                ImVec2(kfX, keyframeY - size),
-                                ImVec2(kfX + size, keyframeY),
-                                ImVec2(kfX, keyframeY + size),
-                                ImVec2(kfX - size, keyframeY)
-                            };
-                            drawList->AddConvexPolyFilled(diamond, 4, kfColor);
-                            drawList->AddPolyline(diamond, 4, outlineColor, ImDrawFlags_Closed, 1.0f);
-                            break;
-                        }
-                    }
-
-                    // Handle right-click for context menu
+                    // Right-click pops the per-keyframe interpolation menu
+                    // wired up in TimelineWidgetInput.cpp::handleInteraction.
                     if (ImGui::IsMouseClicked(1)) {
                         ImVec2 mousePos = ImGui::GetMousePos();
                         if (mousePos.x >= kfX - size - 3 && mousePos.x <= kfX + size + 3 &&

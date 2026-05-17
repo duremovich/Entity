@@ -9,6 +9,9 @@
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ContentRouting.hpp"
+#include "entity/components/ContentRoutingAsset.hpp"
+#include "entity/components/ContentRoutingAssetOps.hpp"
+#include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Model.hpp"
@@ -1322,6 +1325,118 @@ CommandPtr UpsertKeyframeCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// SetKeyframeInterpolationCommand
+// ============================================================================
+
+namespace {
+
+const char* interpName(InterpolationType t) {
+    switch (t) {
+        case InterpolationType::Linear:    return "linear";
+        case InterpolationType::Step:      return "step";
+        case InterpolationType::EaseIn:    return "ease_in";
+        case InterpolationType::EaseOut:   return "ease_out";
+        case InterpolationType::EaseInOut: return "ease_in_out";
+    }
+    return "linear";
+}
+
+InterpolationType parseInterp(const std::string& s) {
+    if (s == "step")        return InterpolationType::Step;
+    if (s == "ease_in")     return InterpolationType::EaseIn;
+    if (s == "ease_out")    return InterpolationType::EaseOut;
+    if (s == "ease_in_out") return InterpolationType::EaseInOut;
+    return InterpolationType::Linear;
+}
+
+} // namespace
+
+bool SetKeyframeInterpolationCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack) return false;
+    Keyframe* kf = kfTrack->getKeyframeAt(m_frame);
+    if (!kf) return false;
+
+    // Auto-capture pre-edit state if not provided by the UI path.
+    if (!m_hasPreviousState) {
+        m_prevInterp  = kf->interpolation;
+        m_prevEaseIn  = kf->easeIn;
+        m_prevEaseOut = kf->easeOut;
+        m_hasPreviousState = true;
+    }
+
+    kf->interpolation = m_newInterp;
+    kf->easeIn        = m_newEaseIn;
+    kf->easeOut       = m_newEaseOut;
+    return true;
+}
+
+bool SetKeyframeInterpolationCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack) return false;
+    Keyframe* kf = kfTrack->getKeyframeAt(m_frame);
+    if (!kf) return false;
+
+    kf->interpolation = m_prevInterp;
+    kf->easeIn        = m_prevEaseIn;
+    kf->easeOut       = m_prevEaseOut;
+    return true;
+}
+
+nlohmann::json SetKeyframeInterpolationCommand::toJson() const {
+    return {
+        {"type", "SetKeyframeInterpolation"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"property", animatablePropertyName(m_property)},
+        {"frame", m_frame},
+        {"interpolation", interpName(m_newInterp)},
+        {"easeIn", m_newEaseIn},
+        {"easeOut", m_newEaseOut}
+    };
+}
+
+std::string SetKeyframeInterpolationCommand::getDescription() const {
+    return std::string("Set keyframe interp ") + animatablePropertyName(m_property) +
+           " @ frame " + std::to_string(m_frame) + " -> " + interpName(m_newInterp);
+}
+
+CommandPtr SetKeyframeInterpolationCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string propStr = j.value("property", "Opacity");
+    AnimatableProperty prop = parseAnimatableProperty(propStr).value_or(AnimatableProperty::Opacity);
+    FrameNumber frame = j.value("frame", 0);
+    InterpolationType interp = parseInterp(j.value("interpolation", "linear"));
+    float easeIn  = j.value("easeIn",  0.42f);
+    float easeOut = j.value("easeOut", 0.58f);
+    return std::make_unique<SetKeyframeInterpolationCommand>(
+        trackIndex, clipIndex, prop, frame, interp, easeIn, easeOut);
+}
+
+// ============================================================================
 // AddScreenCommand
 // ============================================================================
 
@@ -1383,22 +1498,18 @@ std::string screenNameForEntity(entt::registry& registry, entt::entity screen) {
     return s->name;
 }
 
-// Apply a single-screen Direct target to a clip's ContentRouting + legacy
-// alias. ADR-0021 M2: ContentRouting is the new source of truth; the
-// legacy `Clip::targetScreen` field stays in sync for one project-format
-// version. `screen == entt::null` clears the targets vector (renders on
-// all visible screens).
+// Apply a single-screen Direct target to a clip's ContentRoutingRef +
+// legacy alias. ADR-0022: ContentRoutingRef points at a library
+// ContentRoutingAsset; for a single-screen target we resolve to that
+// Screen's auto-direct asset (creating it on demand if the per-tick
+// RoutingLibrarySystem reconcile hasn't run yet). The legacy
+// `Clip::targetScreen` field stays in sync for one project-format
+// version. `screen == entt::null` clears the ref (renders on all
+// visible screens).
 void applyClipTargetScreen(entt::registry& registry, entt::entity clipEntity,
                             Clip& clip, entt::entity screen) {
     clip.targetScreen = screen;
-    auto& cr = registry.get_or_emplace<ContentRouting>(clipEntity);
-    cr.mode = RouteMode::Direct;
-    cr.targets.clear();
-    if (screen != entt::null) {
-        RouteTarget t;
-        t.screen = screen;
-        cr.targets.push_back(t);
-    }
+    routing::setLayerTargetScreen(registry, clipEntity, screen);
 }
 
 } // namespace
@@ -1531,19 +1642,20 @@ entt::entity findScreenByName(entt::registry& registry, const std::string& name)
     return entt::null;
 }
 
-// Capture a clip's current ContentRouting into the command's "previous"
-// snapshot fields. Screen entities are read out by name so undo survives
-// project reloads. Missing component is captured as an empty-targets
+// Capture a clip's current routing into the command's "previous"
+// snapshot fields by resolving its ContentRoutingRef → ContentRoutingAsset
+// (ADR-0022). Screen entities are read out by name so undo survives
+// project reloads. No ref / null asset is captured as an empty-targets
 // Direct routing (the legacy "render on all" semantic).
 void captureCurrentRouting(entt::registry& registry, entt::entity clipEntity,
                             std::string& outMode,
                             std::vector<SetContentRoutingCommand::TargetSpec>& outTargets) {
     outTargets.clear();
     outMode = "Direct";
-    const auto* cr = registry.try_get<ContentRouting>(clipEntity);
-    if (!cr) return;
-    outMode = (cr->mode == RouteMode::Tiled) ? "Tiled" : "Direct";
-    for (const auto& t : cr->targets) {
+    const auto* asset = routing::tryGetAsset(registry, clipEntity);
+    if (!asset) return;
+    outMode = (asset->kind == RouteMode::Tiled) ? "Tiled" : "Direct";
+    for (const auto& t : asset->targets) {
         SetContentRoutingCommand::TargetSpec spec;
         spec.uvRect = t.uvRect;
         if (t.screen != entt::null &&
@@ -1555,19 +1667,21 @@ void captureCurrentRouting(entt::registry& registry, entt::entity clipEntity,
     }
 }
 
-// Apply a `(mode, targets)` spec to a clip. Looks up screens by name,
-// emplaces/replaces the ContentRouting component, and keeps the legacy
-// `Clip::targetScreen` alias in sync (set to the sole target for Direct +
-// single-target, entt::null otherwise). Returns false if any named screen
-// cannot be resolved — the command rejects rather than silently dropping
-// a target.
+// Apply a `(mode, targets)` spec to a clip (ADR-0022). Single-screen
+// Direct routings point the layer's ContentRoutingRef at the auto-direct
+// asset for that Screen. Anything else (Tiled, multi-target) creates a
+// fresh user-named "Custom Routing N" asset and points the ref at it.
+// Looks up screens by name; the legacy `Clip::targetScreen` alias stays
+// in sync (sole target for Direct+single, entt::null otherwise). Returns
+// false if any named screen can't be resolved.
 bool applyContentRoutingSpec(entt::registry& registry, entt::entity clipEntity, Clip& clip,
                               const std::string& mode,
                               const std::vector<SetContentRoutingCommand::TargetSpec>& targets) {
-    auto& cr = registry.get_or_emplace<ContentRouting>(clipEntity);
-    cr.mode = (mode == "Tiled") ? RouteMode::Tiled : RouteMode::Direct;
-    cr.targets.clear();
-    cr.targets.reserve(targets.size());
+    const RouteMode kindMode = (mode == "Tiled") ? RouteMode::Tiled : RouteMode::Direct;
+
+    // Resolve each TargetSpec → RouteTarget by looking up screen names.
+    std::vector<RouteTarget> resolved;
+    resolved.reserve(targets.size());
     for (const auto& spec : targets) {
         RouteTarget t;
         t.uvRect = spec.uvRect;
@@ -1579,14 +1693,46 @@ bool applyContentRoutingSpec(entt::registry& registry, entt::entity clipEntity, 
                 return false;
             }
         }
-        cr.targets.push_back(t);
+        resolved.push_back(t);
     }
-    // Legacy alias mirror — single-target Direct sticks the one screen on
-    // the clip; everything else (Tiled, empty targets) clears the alias
-    // since it can't represent multi-target.
-    if (cr.mode == RouteMode::Direct && cr.targets.size() == 1) {
-        clip.targetScreen = cr.targets[0].screen;
+
+    // Direct + single screen target with identity uvRect = point at the
+    // Screen's auto-direct asset, identical to applyClipTargetScreen.
+    const bool routesToAutoDirect =
+        kindMode == RouteMode::Direct &&
+        resolved.size() == 1 &&
+        resolved[0].screen != entt::null &&
+        resolved[0].uvRect == std::array<float, 4>{0.0f, 0.0f, 1.0f, 1.0f};
+
+    if (routesToAutoDirect) {
+        routing::setLayerTargetScreen(registry, clipEntity, resolved[0].screen);
+        clip.targetScreen = resolved[0].screen;
+    } else if (resolved.empty()) {
+        // Empty targets = legacy "render on all visible".
+        auto& ref = registry.get_or_emplace<ContentRoutingRef>(clipEntity);
+        ref.asset = entt::null;
+        clip.targetScreen = entt::null;
     } else {
+        // Multi-target or non-identity uvRect: spin up a custom asset.
+        // If the layer already references a user-created asset, reuse it
+        // in place instead of leaking new "Custom Routing N" entries on
+        // every edit.
+        const auto* existingRef = registry.try_get<ContentRoutingRef>(clipEntity);
+        bool mutatedExisting = false;
+        if (existingRef && existingRef->asset != entt::null &&
+            registry.valid(existingRef->asset)) {
+            auto* existing = registry.try_get<ContentRoutingAsset>(existingRef->asset);
+            if (existing && existing->autoBoundScreen == entt::null) {
+                existing->kind = kindMode;
+                existing->targets = resolved;
+                mutatedExisting = true;
+            }
+        }
+        if (!mutatedExisting) {
+            routing::setLayerCustomRouting(registry, clipEntity, kindMode,
+                                            std::move(resolved));
+        }
+        // Legacy alias collapses to "all" for multi-target.
         clip.targetScreen = entt::null;
     }
     return true;

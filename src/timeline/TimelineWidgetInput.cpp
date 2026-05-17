@@ -27,6 +27,27 @@ namespace entity {
 
 namespace {
 
+// Locate (trackIndex, clipIndex) for an entity that lives in some
+// TimelineTrack::layers vector. Mirrors the helper in PropertyWindow.cpp
+// / ContentRoutingWindow.cpp — kept local because the consolidation
+// is a separate cleanup.
+std::optional<std::pair<int, int>>
+findClipIndices(Timeline* timeline, entt::entity entity) {
+    if (!timeline || entity == entt::null) return std::nullopt;
+    auto& registry = timeline->getRegistry();
+    const auto& tracks = timeline->getTracks();
+    for (size_t ti = 0; ti < tracks.size(); ++ti) {
+        auto* track = registry.try_get<TimelineTrack>(tracks[ti]);
+        if (!track) continue;
+        for (size_t ci = 0; ci < track->layers.size(); ++ci) {
+            if (track->layers[ci] == entity) {
+                return std::make_pair(static_cast<int>(ti), static_cast<int>(ci));
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 // Read placement (start frame + duration in timeline frames) from a
 // timeline-resident entity. Clip-backed entities still source truth from
 // the Clip component (Layer mirror is synced via syncLayerFromClip).
@@ -1171,33 +1192,140 @@ void TimelineWidget::handleContextMenus() {
                 if (track) {
                     Keyframe* kf = track->getKeyframeAt(m_keyframeEditFrame);
                     if (kf) {
+                        auto idx = findClipIndices(m_timeline, m_keyframeEditClip);
+
+                        // Emit an undoable command for any interpolation
+                        // change. The fallback direct-write path runs when
+                        // there's no dispatcher (script-driven embedding,
+                        // tests) or no clip index — preserves prior
+                        // behavior so nothing regresses.
+                        auto setInterp = [&](InterpolationType newInterp) {
+                            if (m_commandDispatcher && idx) {
+                                auto cmd = std::make_unique<SetKeyframeInterpolationCommand>(
+                                    idx->first, idx->second,
+                                    m_keyframeEditProperty, m_keyframeEditFrame,
+                                    newInterp, kf->easeIn, kf->easeOut);
+                                cmd->setPreviousState(kf->interpolation, kf->easeIn, kf->easeOut);
+                                m_commandDispatcher->enqueue(std::move(cmd));
+                            } else {
+                                kf->interpolation = newInterp;
+                            }
+                        };
+
                         ImGui::TextDisabled("Interpolation:");
 
-                        bool isLinear = (kf->interpolation == InterpolationType::Linear);
-                        bool isStep = (kf->interpolation == InterpolationType::Step);
-                        bool isEaseIn = (kf->interpolation == InterpolationType::EaseIn);
-                        bool isEaseOut = (kf->interpolation == InterpolationType::EaseOut);
+                        bool isLinear    = (kf->interpolation == InterpolationType::Linear);
+                        bool isStep      = (kf->interpolation == InterpolationType::Step);
+                        bool isEaseIn    = (kf->interpolation == InterpolationType::EaseIn);
+                        bool isEaseOut   = (kf->interpolation == InterpolationType::EaseOut);
                         bool isEaseInOut = (kf->interpolation == InterpolationType::EaseInOut);
 
                         if (ImGui::MenuItem("Linear (Diamond)", nullptr, isLinear)) {
-                            kf->interpolation = InterpolationType::Linear;
+                            setInterp(InterpolationType::Linear);
                         }
                         if (ImGui::MenuItem("Hold (Square)", nullptr, isStep)) {
-                            kf->interpolation = InterpolationType::Step;
+                            setInterp(InterpolationType::Step);
                         }
                         if (ImGui::MenuItem("Ease In", nullptr, isEaseIn)) {
-                            kf->interpolation = InterpolationType::EaseIn;
+                            setInterp(InterpolationType::EaseIn);
                         }
                         if (ImGui::MenuItem("Ease Out", nullptr, isEaseOut)) {
-                            kf->interpolation = InterpolationType::EaseOut;
+                            setInterp(InterpolationType::EaseOut);
                         }
                         if (ImGui::MenuItem("Ease In/Out (Hourglass)", nullptr, isEaseInOut)) {
-                            kf->interpolation = InterpolationType::EaseInOut;
+                            setInterp(InterpolationType::EaseInOut);
+                        }
+
+                        // Bezier-tangent UI for the Ease In/Out type. Two
+                        // DragFloats expose the cubic-bezier control points
+                        // (P1.x = easeIn, P2.x = easeOut); presets cover
+                        // the common cases. Drag-end commits one
+                        // SetKeyframeInterpolationCommand so the whole
+                        // gesture undoes as a single step.
+                        if (isEaseInOut) {
+                            ImGui::Separator();
+                            ImGui::TextDisabled("Bezier tangents:");
+
+                            float easeIn  = kf->easeIn;
+                            float easeOut = kf->easeOut;
+
+                            auto captureBezierPreEdit = [&]() {
+                                if (ImGui::IsItemActivated() && !m_kfEasingPreEdit.valid) {
+                                    m_kfEasingPreEdit.valid   = true;
+                                    m_kfEasingPreEdit.interp  = kf->interpolation;
+                                    m_kfEasingPreEdit.easeIn  = kf->easeIn;
+                                    m_kfEasingPreEdit.easeOut = kf->easeOut;
+                                }
+                            };
+                            auto commitBezierEdit = [&]() {
+                                if (ImGui::IsItemDeactivatedAfterEdit() && m_kfEasingPreEdit.valid) {
+                                    if (m_commandDispatcher && idx) {
+                                        auto cmd = std::make_unique<SetKeyframeInterpolationCommand>(
+                                            idx->first, idx->second,
+                                            m_keyframeEditProperty, m_keyframeEditFrame,
+                                            kf->interpolation, kf->easeIn, kf->easeOut);
+                                        cmd->setPreviousState(
+                                            m_kfEasingPreEdit.interp,
+                                            m_kfEasingPreEdit.easeIn,
+                                            m_kfEasingPreEdit.easeOut);
+                                        m_commandDispatcher->enqueue(std::move(cmd));
+                                    }
+                                    m_kfEasingPreEdit.valid = false;
+                                }
+                            };
+
+                            ImGui::SetNextItemWidth(140.0f);
+                            if (ImGui::DragFloat("##kfEaseIn", &easeIn, 0.005f, 0.0f, 1.0f, "in %.2f")) {
+                                kf->easeIn = easeIn;
+                            }
+                            captureBezierPreEdit();
+                            commitBezierEdit();
+
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(140.0f);
+                            if (ImGui::DragFloat("##kfEaseOut", &easeOut, 0.005f, 0.0f, 1.0f, "out %.2f")) {
+                                kf->easeOut = easeOut;
+                            }
+                            captureBezierPreEdit();
+                            commitBezierEdit();
+
+                            // Preset rows — drop a single command per click
+                            // so each preset is its own undo step. Values
+                            // mirror common easing curves: Smooth = default
+                            // AE Easy Ease (~33%), Snappy = aggressive lead
+                            // in / late out, Linear = no curve (matches
+                            // Linear interp but keeps EaseInOut math active
+                            // in case the user wants to nudge from there).
+                            struct Preset { const char* name; float in; float out; };
+                            const Preset presets[] = {
+                                {"Smooth",  0.42f, 0.58f},
+                                {"Snappy",  0.25f, 0.75f},
+                                {"Linear",  0.50f, 0.50f},
+                            };
+                            for (const auto& p : presets) {
+                                if (ImGui::SmallButton(p.name)) {
+                                    if (m_commandDispatcher && idx) {
+                                        auto cmd = std::make_unique<SetKeyframeInterpolationCommand>(
+                                            idx->first, idx->second,
+                                            m_keyframeEditProperty, m_keyframeEditFrame,
+                                            kf->interpolation, p.in, p.out);
+                                        cmd->setPreviousState(kf->interpolation, kf->easeIn, kf->easeOut);
+                                        m_commandDispatcher->enqueue(std::move(cmd));
+                                    } else {
+                                        kf->easeIn  = p.in;
+                                        kf->easeOut = p.out;
+                                    }
+                                }
+                                ImGui::SameLine();
+                            }
+                            ImGui::NewLine();
                         }
 
                         ImGui::Separator();
 
                         if (ImGui::MenuItem("Delete Keyframe")) {
+                            // Delete remains a direct write — undo for
+                            // keyframe deletion is a separate follow-up.
                             track->removeKeyframe(m_keyframeEditFrame);
                         }
                     }

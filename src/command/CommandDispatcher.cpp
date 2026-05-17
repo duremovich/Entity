@@ -61,11 +61,6 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
 
     size_t executed = 0;
 
-    // Commands that don't match `affinity` are re-queued in arrival order
-    // to be processed by the other thread's drain. Collect skipped commands
-    // into a local vector, then push them back under the lock after the loop.
-    std::vector<CommandPtr> skipped;
-
     while (true) {
         CommandPtr command;
 
@@ -74,17 +69,24 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
             if (m_commandQueue.empty()) {
                 break;
             }
+            // Peek the front. Only pop if affinity matches — otherwise the
+            // other thread will handle it. Previously we popped into a
+            // `skipped` vector and re-fronted at end of loop, but that
+            // raced with the other thread's concurrent pops: editor could
+            // grab a later command (e.g. WaitSeconds) while show was busy
+            // draining earlier Editor-affinity commands into `skipped`,
+            // then show's requeue would put the earlier ones back ahead of
+            // the WaitSeconds — visible reordering at execution. Test
+            // failure path: oa_section_freeze with WaitSeconds 2.0 hoisted
+            // ahead of Play, so AssertPlaybackState ran without giving
+            // Timeline+SectionScheduler time to park.
+            const Affinity cmdAffinity = m_commandQueue.front()->getAffinity();
+            if (cmdAffinity != affinity && cmdAffinity != Affinity::Either
+                    && affinity != Affinity::Either) {
+                break;
+            }
             command = std::move(m_commandQueue.front());
             m_commandQueue.pop();
-        }
-
-        // Skip commands that belong to a different thread. Either-affinity
-        // commands run on whichever thread reaches them first.
-        const Affinity cmdAffinity = command->getAffinity();
-        if (cmdAffinity != affinity && cmdAffinity != Affinity::Either
-                && affinity != Affinity::Either) {
-            skipped.push_back(std::move(command));
-            continue;
         }
 
         const char* typeName = command->getTypeName();
@@ -124,20 +126,6 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
         if (affinity != Affinity::Show && (m_waitFramesRemaining > 0 || m_waitUntilActive)) {
             break;
         }
-    }
-
-    // Push skipped (wrong-affinity) commands back to the front of the queue
-    // in original arrival order so the other thread sees them promptly.
-    if (!skipped.empty()) {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
-        // Move current queue contents after the skipped ones.
-        std::queue<CommandPtr> restored;
-        for (auto& cmd : skipped) restored.push(std::move(cmd));
-        while (!m_commandQueue.empty()) {
-            restored.push(std::move(m_commandQueue.front()));
-            m_commandQueue.pop();
-        }
-        m_commandQueue = std::move(restored);
     }
 
     return executed;
@@ -228,6 +216,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AddKeyframe", AddKeyframeCommand::fromJson);
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
     registerFactory("UpsertKeyframe", UpsertKeyframeCommand::fromJson);
+    registerFactory("SetKeyframeInterpolation", SetKeyframeInterpolationCommand::fromJson);
 
     // Timeline structure commands
     registerFactory("AddTrack", AddTrackCommand::fromJson);

@@ -13,6 +13,9 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ContentRouting.hpp"
+#include "entity/components/ContentRoutingAsset.hpp"
+#include "entity/components/ContentRoutingAssetOps.hpp"
+#include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
@@ -483,94 +486,134 @@ void PropertyWindow::renderPlaybackSection() {
         }
     }
 
-    // Screen mapping (which screen this clip renders to)
+    // Content Routing — Plane A library binding (ADR-0022). Replaces the
+    // legacy "Target Screen" dropdown. The dropdown surfaces every
+    // ContentRoutingAsset in the library, with the leading "Default (All
+    // visible)" sentinel for layers that should render to every screen.
+    // Auto-direct assets list first (one per Screen, alphabetical by
+    // Screen name), then user-created routings (alphabetical by name).
     ImGui::Spacing();
-    ImGui::Text("Target Screen");
+    ImGui::Text("Content Routing");
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Select which screen this clip renders to.\n"
-                          "Default renders to all screens.");
+        ImGui::SetTooltip("Select a routing from the Content Routing library.\n"
+                          "Default routes the clip to all visible screens.\n"
+                          "Each Screen auto-generates a Direct routing; create\n"
+                          "Tiled / Feed Map routings in the Content Routing window.");
     }
 
-    // Build list of available screens
-    auto screenView = registry.view<Screen>();
-    std::vector<entt::entity> screens;
-    std::vector<const char*> screenNames;
-    screenNames.push_back("Default (All)");
-    screens.push_back(entt::null);
+    // Build (entity, displayName) pairs. Auto-direct first, then user.
+    struct AssetPick { entt::entity asset; std::string display; };
+    std::vector<AssetPick> picks;
+    picks.push_back({entt::null, "Default (All visible)"});
 
-    for (auto screenEntity : screenView) {
-        const Screen& screen = screenView.get<Screen>(screenEntity);
-        screens.push_back(screenEntity);
-        screenNames.push_back(screen.name.c_str());
+    std::vector<AssetPick> autoDirect;
+    std::vector<AssetPick> userCreated;
+    for (auto [aEntity, asset] : registry.view<ContentRoutingAsset>().each()) {
+        AssetPick p{aEntity, asset.name};
+        if (asset.autoBoundScreen != entt::null) autoDirect.push_back(std::move(p));
+        else userCreated.push_back(std::move(p));
     }
+    auto byName = [](const AssetPick& a, const AssetPick& b) { return a.display < b.display; };
+    std::sort(autoDirect.begin(), autoDirect.end(), byName);
+    std::sort(userCreated.begin(), userCreated.end(), byName);
+    picks.insert(picks.end(), autoDirect.begin(), autoDirect.end());
+    picks.insert(picks.end(), userCreated.begin(), userCreated.end());
 
-    // Find current selection index
-    int currentScreenIdx = 0;
-    for (size_t i = 0; i < screens.size(); ++i) {
-        if (screens[i] == clip->targetScreen) {
-            currentScreenIdx = static_cast<int>(i);
+    std::vector<const char*> pickNameCstrs;
+    pickNameCstrs.reserve(picks.size());
+    for (const auto& p : picks) pickNameCstrs.push_back(p.display.c_str());
+
+    const auto* currentRef = registry.try_get<ContentRoutingRef>(selectedClip);
+    const entt::entity currentAsset = currentRef ? currentRef->asset : entt::null;
+
+    int currentIdx = 0;
+    for (size_t i = 0; i < picks.size(); ++i) {
+        if (picks[i].asset == currentAsset) {
+            currentIdx = static_cast<int>(i);
             break;
         }
     }
 
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("##targetScreen", &currentScreenIdx, screenNames.data(), static_cast<int>(screenNames.size()))) {
-        // Capture previous screen NAME before mutating (names are the stable
-        // identifier used by the command API — entt::entity isn't stable
-        // across project reloads).
+    if (ImGui::Combo("##contentRouting", &currentIdx,
+                      pickNameCstrs.data(),
+                      static_cast<int>(pickNameCstrs.size()))) {
+        const entt::entity newAsset = picks[currentIdx].asset;
+        const auto* newAssetData = (newAsset != entt::null)
+            ? registry.try_get<ContentRoutingAsset>(newAsset) : nullptr;
+
+        // Resolve a single-screen target for the legacy alias the
+        // SetClipTargetScreenCommand still operates on. Auto-direct
+        // asset → its bound Screen. User-created Direct asset with one
+        // target → that target's Screen. Anything else (Tiled, FeedMap,
+        // empty targets) → "All Screens" (null).
+        entt::entity legacyScreen = entt::null;
+        if (newAssetData) {
+            if (newAssetData->kind == RouteMode::Direct &&
+                newAssetData->targets.size() == 1) {
+                legacyScreen = newAssetData->targets.front().screen;
+            }
+        }
+
         std::string prevName = "All Screens";
         if (clip->targetScreen != entt::null) {
             if (auto* prev = registry.try_get<Screen>(clip->targetScreen)) {
                 prevName = prev->name;
             }
         }
-        std::string newName = (screens[currentScreenIdx] == entt::null)
-            ? std::string("All Screens")
-            : std::string(screenNames[currentScreenIdx]);
-
-        clip->targetScreen = screens[currentScreenIdx];
-        // Mirror into ContentRouting (Plane A canonical state, ADR-0021).
-        // SetClipTargetScreenCommand will idempotently re-apply both fields
-        // when it executes; this optimistic write keeps the next snapshot
-        // bake coherent before the dispatcher drains.
-        {
-            auto& cr = registry.get_or_emplace<ContentRouting>(selectedClip);
-            cr.mode = RouteMode::Direct;
-            cr.targets.clear();
-            if (clip->targetScreen != entt::null) {
-                RouteTarget t;
-                t.screen = clip->targetScreen;
-                cr.targets.push_back(t);
+        std::string newScreenName = "All Screens";
+        if (legacyScreen != entt::null) {
+            if (auto* s = registry.try_get<Screen>(legacyScreen)) {
+                newScreenName = s->name;
             }
         }
-        std::cout << "[PropertyWindow] Target screen changed to: "
-                  << (clip->targetScreen == entt::null ? "ALL" : std::to_string(static_cast<uint32_t>(clip->targetScreen)))
-                  << " (" << screenNames[currentScreenIdx] << ")" << std::endl;
 
-        if (m_dispatcher) {
+        // Optimistic write so the next snapshot bake sees a coherent state
+        // before the dispatcher drains. The command re-applies both ref
+        // and legacy alias when it executes.
+        clip->targetScreen = legacyScreen;
+        auto& ref = registry.get_or_emplace<ContentRoutingRef>(selectedClip);
+        ref.asset = newAsset;
+
+        std::cout << "[PropertyWindow] Content routing -> '"
+                  << picks[currentIdx].display << "'" << std::endl;
+
+        // For L1 we ship via the existing SetClipTargetScreenCommand so
+        // scripts and undo continue working. Non-direct asset picks (Tiled
+        // / FeedMap) currently degrade to "All Screens" on the alias but
+        // the optimistic ref write above keeps the active rendering
+        // correct. L2 lifts this to a dedicated SetContentRoutingRefCommand.
+        if (m_dispatcher && newAssetData &&
+            newAssetData->kind == RouteMode::Direct) {
             if (auto idx = findClipIndices(m_timeline, selectedClip)) {
-                auto cmd = std::make_unique<SetClipTargetScreenCommand>(idx->first, idx->second, newName);
+                auto cmd = std::make_unique<SetClipTargetScreenCommand>(idx->first, idx->second, newScreenName);
                 cmd->setPreviousScreenName(prevName);
                 m_dispatcher->enqueue(std::move(cmd));
             }
         }
     }
 
-    // Multi-target entry point (ADR-0021 M3). The dropdown above edits a
-    // single Direct target — for Tiled (one clip carved across N screens
-    // with per-screen UV crops), open the dedicated Content Routing window.
+    // Kind badge + edit link.
     {
-        const auto* cr = registry.try_get<ContentRouting>(selectedClip);
-        const bool isTiled = cr && (cr->mode == RouteMode::Tiled || cr->targets.size() > 1);
-        const size_t routeCount = cr ? cr->targets.size() : 0;
-        if (ImGui::Button(isTiled ? "Multi-target..." : "Multi-target...##open")) {
-            ImGui::SetWindowFocus("Content Routing");
+        const auto* asset = routing::tryGetAsset(registry, selectedClip);
+        const char* kindLabel = "Default (All)";
+        ImVec4 kindColor{0.7f, 0.7f, 0.7f, 1.0f};
+        if (asset) {
+            switch (asset->kind) {
+                case RouteMode::Direct:
+                    kindLabel = "Direct";
+                    kindColor = ImVec4(0.6f, 0.85f, 0.6f, 1.0f);
+                    break;
+                case RouteMode::Tiled:
+                    kindLabel = "Tiled";
+                    kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+                    break;
+            }
         }
-        if (isTiled) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-                                "Tiled across %zu screen%s",
-                                routeCount, routeCount == 1 ? "" : "s");
+        ImGui::TextColored(kindColor, "%s", kindLabel);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Edit...##contentRouting")) {
+            ImGui::SetWindowFocus("Content Routing");
         }
     }
 
@@ -2253,65 +2296,89 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         }
     }
 
-    if (ImGui::CollapsingHeader("Target", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextDisabled("Screen the generated output renders to:");
+    if (ImGui::CollapsingHeader("Content Routing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Library routing for the generated output:");
 
-        // Build target list: None + all Screen entities
-        std::vector<entt::entity> targets;
-        std::vector<std::string>  targetLabels;
-        targets.push_back(entt::null);
-        targetLabels.push_back("(none)");
+        // Mirrors the clip path: pick from the ContentRoutingAsset library
+        // (ADR-0022). Auto-direct assets list first by Screen name, then
+        // user-created routings.
+        struct AssetPick { entt::entity asset; std::string display; };
+        std::vector<AssetPick> picks;
+        picks.push_back({entt::null, "Default (All visible)"});
 
-        auto screenView = registry.view<Screen>();
-        for (auto e : screenView) {
-            targets.push_back(e);
-            const auto& s = screenView.get<Screen>(e);
-            targetLabels.push_back("Screen: " + s.name);
+        std::vector<AssetPick> autoDirect, userCreated;
+        for (auto [aEntity, asset] : registry.view<ContentRoutingAsset>().each()) {
+            AssetPick p{aEntity, asset.name};
+            if (asset.autoBoundScreen != entt::null) autoDirect.push_back(std::move(p));
+            else userCreated.push_back(std::move(p));
         }
+        auto byName = [](const AssetPick& a, const AssetPick& b) { return a.display < b.display; };
+        std::sort(autoDirect.begin(), autoDirect.end(), byName);
+        std::sort(userCreated.begin(), userCreated.end(), byName);
+        picks.insert(picks.end(), autoDirect.begin(), autoDirect.end());
+        picks.insert(picks.end(), userCreated.begin(), userCreated.end());
 
-        std::vector<const char*> targetCstrs;
-        targetCstrs.reserve(targetLabels.size());
-        for (const auto& l : targetLabels) targetCstrs.push_back(l.c_str());
+        std::vector<const char*> pickNameCstrs;
+        pickNameCstrs.reserve(picks.size());
+        for (const auto& p : picks) pickNameCstrs.push_back(p.display.c_str());
+
+        const auto* currentRef = registry.try_get<ContentRoutingRef>(entity);
+        const entt::entity currentAsset = currentRef ? currentRef->asset : entt::null;
 
         int currentIdx = 0;
-        for (size_t i = 0; i < targets.size(); ++i) {
-            if (targets[i] == gen->targetScreen) { currentIdx = static_cast<int>(i); break; }
+        for (size_t i = 0; i < picks.size(); ++i) {
+            if (picks[i].asset == currentAsset) { currentIdx = static_cast<int>(i); break; }
         }
 
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##gentarget", &currentIdx, targetCstrs.data(),
-                         static_cast<int>(targetCstrs.size()))) {
-            gen->targetScreen = targets[static_cast<size_t>(currentIdx)];
-            // Mirror into ContentRouting (Plane A canonical state, ADR-0021).
-            // No undoable command for generative-layer routing yet — this is
-            // a direct mutation. M2 single-target only; Tiled lives in M3.
-            auto& cr = registry.get_or_emplace<ContentRouting>(entity);
-            cr.mode = RouteMode::Direct;
-            cr.targets.clear();
-            if (gen->targetScreen != entt::null) {
-                RouteTarget t;
-                t.screen = gen->targetScreen;
-                cr.targets.push_back(t);
+        if (ImGui::Combo("##gencontentrouting", &currentIdx,
+                          pickNameCstrs.data(),
+                          static_cast<int>(pickNameCstrs.size()))) {
+            const entt::entity newAsset = picks[currentIdx].asset;
+            const auto* newAssetData = (newAsset != entt::null)
+                ? registry.try_get<ContentRoutingAsset>(newAsset) : nullptr;
+
+            // Resolve a single-screen target for the legacy alias.
+            entt::entity legacyScreen = entt::null;
+            if (newAssetData &&
+                newAssetData->kind == RouteMode::Direct &&
+                newAssetData->targets.size() == 1) {
+                legacyScreen = newAssetData->targets.front().screen;
             }
+
+            gen->targetScreen = legacyScreen;
+            auto& ref = registry.get_or_emplace<ContentRoutingRef>(entity);
+            ref.asset = newAsset;
         }
 
         if (gen->targetScreen == entt::null) {
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
-                               "No target — generated output has no destination.");
+            const auto* asset = routing::tryGetAsset(registry, entity);
+            if (!asset) {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                   "No target — generated output has no destination.");
+            }
         }
 
-        // Multi-target entry point — same as clip-side (ADR-0021 M3).
-        const auto* cr = registry.try_get<ContentRouting>(entity);
-        const bool isTiled = cr && (cr->mode == RouteMode::Tiled || cr->targets.size() > 1);
-        const size_t routeCount = cr ? cr->targets.size() : 0;
-        if (ImGui::Button("Multi-target...##gen")) {
-            ImGui::SetWindowFocus("Content Routing");
+        // Kind badge + edit link.
+        const auto* asset = routing::tryGetAsset(registry, entity);
+        const char* kindLabel = "Default (All)";
+        ImVec4 kindColor{0.7f, 0.7f, 0.7f, 1.0f};
+        if (asset) {
+            switch (asset->kind) {
+                case RouteMode::Direct:
+                    kindLabel = "Direct";
+                    kindColor = ImVec4(0.6f, 0.85f, 0.6f, 1.0f);
+                    break;
+                case RouteMode::Tiled:
+                    kindLabel = "Tiled";
+                    kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+                    break;
+            }
         }
-        if (isTiled) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-                                "Tiled across %zu screen%s",
-                                routeCount, routeCount == 1 ? "" : "s");
+        ImGui::TextColored(kindColor, "%s", kindLabel);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Edit...##gencontentrouting")) {
+            ImGui::SetWindowFocus("Content Routing");
         }
     }
 

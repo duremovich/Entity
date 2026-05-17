@@ -9,6 +9,7 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/systems/AnimationSystem.hpp"
 #include "entity/systems/GenerativeSystem.hpp"
+#include "entity/systems/RoutingLibrarySystem.hpp"
 #include "entity/timeline/Timeline.hpp"
 
 namespace entity {
@@ -24,6 +25,7 @@ Director::Director(entt::registry& registry,
     , m_commandDispatcher(std::make_unique<CommandDispatcher>())
     , m_animationSystem(std::make_unique<AnimationSystem>())
     , m_generativeSystem(std::make_unique<GenerativeSystem>())
+    , m_routingLibrarySystem(std::make_unique<RoutingLibrarySystem>())
     , m_timeAuthority(std::make_unique<PlaybackTimeAuthority>(registry, m_timeline.get()))
     , m_sectionScheduler(std::make_unique<SectionScheduler>(registry, m_timeline.get()))
     , m_captureBroker(std::make_unique<CaptureBroker>())
@@ -45,6 +47,13 @@ Director::Director(entt::registry& registry,
     m_generativeSystem->setTimeline(m_timeline.get());
     m_generativeSystem->initialize(registry);
 
+    // RoutingLibrarySystem reconciles ContentRoutingAsset auto-direct
+    // entries against the live Screen set each tick (ADR-0022). Initialize
+    // now so any Screens that exist at startup (none in a fresh editor,
+    // but plenty after project load) get their auto-direct assets
+    // materialized before the first snapshot bake.
+    m_routingLibrarySystem->initialize(registry);
+
     // Wire ProjectManager into the time authority so the per-tick
     // active-set tuples carry the per-clip MediaBin OCIO override
     // (Phase C.12 #9). Done after ProjectManager::initialize so the
@@ -60,6 +69,9 @@ Director::Director(entt::registry& registry,
 Director::~Director() {
     // Tear down systems against the registry before their unique_ptrs run.
     // Mirrors System lifecycle contracts elsewhere in the codebase.
+    if (m_routingLibrarySystem) {
+        m_routingLibrarySystem->shutdown(m_registry);
+    }
     if (m_generativeSystem) {
         m_generativeSystem->shutdown(m_registry);
     }

@@ -14,6 +14,9 @@
 #include "entity/components/EffectParam.hpp"
 #include "entity/components/EffectParameters.hpp"
 #include "entity/components/ContentRouting.hpp"
+#include "entity/components/ContentRoutingAsset.hpp"
+#include "entity/components/ContentRoutingAssetOps.hpp"
+#include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TimelineTrack.hpp"
@@ -372,21 +375,38 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     clipJson["hasAlpha"] = clip->hasAlpha;
                     clipJson["frameBlending"] = clip->frameBlending;
 
-                    // Plane A content routing (ADR-0021). Canonical
-                    // serialization — empty targets array means "render on
-                    // all visible screens" (matches the legacy empty-name
-                    // semantic). Direct mode = single Direct target; Tiled
-                    // = multi-target with per-screen uvRect.
-                    //
-                    // The legacy `targetScreenName` key is no longer
-                    // written (M4 dropped it). The reader still recognizes
-                    // it for one more release as a graceful fallback for
-                    // projects saved by M2/M3 before this flip.
-                    if (const auto* cr = registry.try_get<ContentRouting>(layerEntity)) {
+                    // Plane A content routing (ADR-0022). v20+ stores the
+                    // routing as a *named reference* into the top-level
+                    // `contentRoutingAssets` library; the asset itself
+                    // carries kind/targets. The legacy v19 `contentRouting`
+                    // inline JSON is still emitted for one project-format
+                    // version so older readers degrade gracefully (snapshot
+                    // bake on this build reads ContentRoutingRef, but a
+                    // hypothetical reverse-compat v19 reader would pick up
+                    // the inline data). The legacy `targetScreenName` key
+                    // is no longer written.
+                    if (const auto* ref = registry.try_get<ContentRoutingRef>(layerEntity)) {
+                        if (ref->asset != entt::null &&
+                            registry.valid(ref->asset)) {
+                            if (const auto* a =
+                                    registry.try_get<ContentRoutingAsset>(ref->asset)) {
+                                clipJson["contentRoutingAssetName"] = a->name;
+                            }
+                        }
+                    }
+                    // Emit the v19 inline `contentRouting` JSON for one
+                    // more project-format version. Prefer the ref→asset
+                    // path; fall back to a still-registered inline
+                    // ContentRouting (test fixtures, hand-built entities
+                    // that haven't migrated yet) so legacy data survives
+                    // the save-then-reload round-trip until L2 finalizes
+                    // the cutover.
+                    auto writeInlineRouting =
+                        [&](RouteMode mode, const std::vector<RouteTarget>& targets) {
                         json crJson;
-                        crJson["mode"] = (cr->mode == RouteMode::Tiled) ? "Tiled" : "Direct";
+                        crJson["mode"] = (mode == RouteMode::Tiled) ? "Tiled" : "Direct";
                         json targetsArr = json::array();
-                        for (const auto& t : cr->targets) {
+                        for (const auto& t : targets) {
                             json tJson;
                             std::string screenName;
                             if (t.screen != entt::null &&
@@ -400,6 +420,13 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         }
                         crJson["targets"] = std::move(targetsArr);
                         clipJson["contentRouting"] = std::move(crJson);
+                    };
+
+                    if (const auto* asset = routing::tryGetAsset(registry, layerEntity)) {
+                        writeInlineRouting(asset->kind, asset->targets);
+                    } else if (const auto* cr =
+                                registry.try_get<ContentRouting>(layerEntity)) {
+                        writeInlineRouting(cr->mode, cr->targets);
                     }
 
                     // Transform component (if exists)
@@ -643,6 +670,54 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             screensJson.push_back(sj);
         }
         project["screens"] = screensJson;
+
+        // Serialize ContentRoutingAsset library (ADR-0022, v20+). Auto-direct
+        // assets that haven't been customized are skipped — RoutingLibrarySystem
+        // regenerates them on load from the Screen set. Customized auto-direct
+        // assets (renamed, edited uvRect, kind promoted to Tiled) and all
+        // user-created assets are serialized so the link survives reload.
+        {
+            json assetsArr = json::array();
+            const std::array<float, 4> identityUV{0.0f, 0.0f, 1.0f, 1.0f};
+            for (auto [aEntity, asset] : registry.view<ContentRoutingAsset>().each()) {
+                if (asset.autoBoundScreen != entt::null) {
+                    const bool pristine =
+                        asset.kind == RouteMode::Direct &&
+                        asset.targets.size() == 1 &&
+                        asset.targets[0].screen == asset.autoBoundScreen &&
+                        asset.targets[0].uvRect == identityUV &&
+                        asset.name == asset.lastSyncedScreenName;
+                    if (pristine) continue;  // regenerated on load
+                }
+                json aJson;
+                aJson["name"] = asset.name;
+                aJson["kind"] = (asset.kind == RouteMode::Tiled) ? "Tiled" : "Direct";
+                if (asset.autoBoundScreen != entt::null &&
+                    registry.valid(asset.autoBoundScreen) &&
+                    registry.all_of<Screen>(asset.autoBoundScreen)) {
+                    aJson["autoBoundScreenName"] =
+                        registry.get<Screen>(asset.autoBoundScreen).name;
+                }
+                if (!asset.lastSyncedScreenName.empty()) {
+                    aJson["lastSyncedScreenName"] = asset.lastSyncedScreenName;
+                }
+                json targetsArr = json::array();
+                for (const auto& t : asset.targets) {
+                    json tj;
+                    std::string sn;
+                    if (t.screen != entt::null && registry.valid(t.screen) &&
+                        registry.all_of<Screen>(t.screen)) {
+                        sn = registry.get<Screen>(t.screen).name;
+                    }
+                    tj["screenName"] = sn;
+                    tj["uvRect"] = { t.uvRect[0], t.uvRect[1], t.uvRect[2], t.uvRect[3] };
+                    targetsArr.push_back(tj);
+                }
+                aJson["targets"] = std::move(targetsArr);
+                assetsArr.push_back(std::move(aJson));
+            }
+            project["contentRoutingAssets"] = std::move(assetsArr);
+        }
 
         // Serialize Props (v13). Pre-vis-only stage geometry — see Prop.hpp.
         // Same modelName-by-string convention as Screens since entt::entity
@@ -1060,6 +1135,67 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             }
         }
 
+        // Load ContentRoutingAsset library (ADR-0022, v20+). Done after
+        // Screens are loaded so we can resolve auto-bound + per-target
+        // Screen names to entities. Auto-direct assets for Screens not
+        // mentioned in the saved library get regenerated on demand by the
+        // routing helpers (ensureAutoDirectAsset) when a clip points at
+        // them; any remaining unreferenced ones land on the next
+        // RoutingLibrarySystem tick.
+        //
+        // Strategy: walk current ContentRoutingAsset entities, destroy any
+        // that won't be re-emplaced from the saved library (avoids stale
+        // pre-load assets persisting). Pre-v20 files have no
+        // contentRoutingAssets key — the loop is skipped and refs are
+        // materialized later from per-clip inline data.
+        {
+            std::vector<entt::entity> existingAssets;
+            for (auto [e, _] : registry.view<ContentRoutingAsset>().each()) {
+                existingAssets.push_back(e);
+            }
+            for (auto e : existingAssets) {
+                if (registry.valid(e)) registry.destroy(e);
+            }
+
+            if (project.contains("contentRoutingAssets") &&
+                project["contentRoutingAssets"].is_array()) {
+                auto findScreenByName = [&](const std::string& n) -> entt::entity {
+                    if (n.empty()) return entt::null;
+                    for (auto [e, s] : registry.view<Screen>().each()) {
+                        if (s.name == n) return e;
+                    }
+                    return entt::null;
+                };
+                for (const auto& aJson : project["contentRoutingAssets"]) {
+                    auto assetEntity = registry.create();
+                    auto& asset = registry.emplace<ContentRoutingAsset>(assetEntity);
+                    asset.name = aJson.value("name", std::string{});
+                    asset.kind = (aJson.value("kind", std::string{"Direct"}) == "Tiled")
+                        ? RouteMode::Tiled : RouteMode::Direct;
+                    asset.autoBoundScreen = findScreenByName(
+                        aJson.value("autoBoundScreenName", std::string{}));
+                    asset.lastSyncedScreenName = aJson.value("lastSyncedScreenName",
+                                                              std::string{});
+                    if (aJson.contains("targets") && aJson["targets"].is_array()) {
+                        for (const auto& tj : aJson["targets"]) {
+                            RouteTarget t;
+                            t.screen = findScreenByName(tj.value("screenName", std::string{}));
+                            if (tj.contains("uvRect") && tj["uvRect"].is_array() &&
+                                tj["uvRect"].size() >= 4) {
+                                t.uvRect = {
+                                    tj["uvRect"][0].get<float>(),
+                                    tj["uvRect"][1].get<float>(),
+                                    tj["uvRect"][2].get<float>(),
+                                    tj["uvRect"][3].get<float>()
+                                };
+                            }
+                            asset.targets.push_back(t);
+                        }
+                    }
+                }
+            }
+        }
+
         // Load Props (v13+). Same name-preservation strategy as Screens —
         // existing Props matching a saved name keep their entity; orphans
         // get destroyed; saved entries with no match get fresh entities.
@@ -1452,6 +1588,35 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             RouteTarget t;
                             t.screen = clip.targetScreen;
                             cr.targets.push_back(t);
+                        }
+
+                        // Plane A library reference (ADR-0022, v20+). v20
+                        // saves point at a named ContentRoutingAsset; older
+                        // files migrate from the inline `cr` populated
+                        // above. The library was loaded earlier in this
+                        // function so name lookups resolve now.
+                        if (clipJson.contains("contentRoutingAssetName")) {
+                            const std::string assetName = clipJson.value(
+                                "contentRoutingAssetName", std::string{});
+                            entt::entity foundAsset = entt::null;
+                            for (auto [ae, a] :
+                                 registry.view<ContentRoutingAsset>().each()) {
+                                if (a.name == assetName) { foundAsset = ae; break; }
+                            }
+                            auto& ref = registry.emplace<ContentRoutingRef>(clipEntity);
+                            ref.asset = foundAsset;
+                        } else if (cr.mode == RouteMode::Direct &&
+                                    cr.targets.size() == 1 &&
+                                    cr.targets[0].screen != entt::null) {
+                            routing::setLayerTargetScreen(registry, clipEntity,
+                                                            cr.targets[0].screen);
+                        } else if (!cr.targets.empty()) {
+                            std::vector<RouteTarget> copy = cr.targets;
+                            routing::setLayerCustomRouting(registry, clipEntity,
+                                                            cr.mode, std::move(copy));
+                        } else {
+                            auto& ref = registry.emplace<ContentRoutingRef>(clipEntity);
+                            ref.asset = entt::null;
                         }
 
                         // Load totalMediaFrames and duration

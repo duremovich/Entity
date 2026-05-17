@@ -220,6 +220,7 @@ target_sources(EntityMediaCore
         src/systems/CompositorSystem.cpp
         src/systems/AnimationSystem.cpp
         src/systems/GenerativeSystem.cpp
+        src/systems/RoutingLibrarySystem.cpp
         src/systems/CameraControlSystem.cpp
 
         # Effects (issue #54)

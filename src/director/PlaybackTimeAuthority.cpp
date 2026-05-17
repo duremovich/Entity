@@ -4,6 +4,8 @@
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/ContentRouting.hpp"
+#include "entity/components/ContentRoutingAsset.hpp"
+#include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -54,45 +56,58 @@ constexpr std::uint64_t entityToU64(entt::entity e) {
     return (e == entt::null) ? 0ull : static_cast<std::uint64_t>(e);
 }
 
-// Resolve a content layer's effective single-screen target for the bake
-// (ADR-0021). ContentRouting is the source of truth when attached; fall back
-// to the legacy single-entity field otherwise. Multi-target (Tiled) layers
-// land their full route list via bakeRoutes() below; this helper is for
-// the legacy `targetScreen` alias the bus snapshots still carry.
+// Resolve a layer's `ContentRoutingRef` → `ContentRoutingAsset` for the
+// bake (ADR-0022). Returns the first target's screen, with UINT64_MAX
+// meaning "render on all visible." `legacyTargetScreen` is the deprecated
+// `Clip::targetScreen` / `GenerativeLayer::targetScreen` alias kept on the
+// bus snapshot for one wire-format version; the live bake uses
+// ContentRoutingRef as the source of truth.
+inline const ContentRoutingAsset*
+tryResolveAsset(const entt::registry& reg, entt::entity layerEntity) {
+    const auto* ref = reg.try_get<ContentRoutingRef>(layerEntity);
+    if (!ref) return nullptr;
+    if (ref->asset == entt::null) return nullptr;
+    if (!reg.valid(ref->asset)) return nullptr;
+    return reg.try_get<ContentRoutingAsset>(ref->asset);
+}
+
 inline std::uint64_t resolveTargetScreen(const entt::registry& reg,
                                           entt::entity layerEntity,
                                           entt::entity legacyTargetScreen) {
-    if (const auto* cr = reg.try_get<ContentRouting>(layerEntity)) {
-        if (cr->targets.empty()) {
-            return UINT64_MAX;  // empty = "render on all visible screens"
+    if (const auto* asset = tryResolveAsset(reg, layerEntity)) {
+        if (asset->targets.empty()) {
+            return UINT64_MAX;
         }
-        const entt::entity screen = cr->targets.front().screen;
+        const entt::entity screen = asset->targets.front().screen;
         return (screen == entt::null) ? UINT64_MAX : entityToU64(screen);
     }
+    // No ref / null asset = legacy "render on all visible" semantic. Fall
+    // back to the deprecated single-screen alias one more time so v19
+    // projects loaded before the ContentRoutingRef migration drain still
+    // render their old single target.
     return (legacyTargetScreen == entt::null)
         ? UINT64_MAX
         : entityToU64(legacyTargetScreen);
 }
 
-// Bake a layer's full ContentRouting → bus route list (ADR-0021 M3+).
-// `mode` mirrors entity::RouteMode (0=Direct, 1=Tiled). Empty `targets`
-// vector is left empty so the show-side bake can expand it to "render on
-// every visible screen" using out.screens. When no ContentRouting is
-// attached (legacy entities not yet migrated), returns an empty vector
-// and mode=0 — the show side then falls back to the legacy targetScreen
-// alias on the snapshot. Tiled in M2 emitted only a single route from
-// the first target; M3 emits the full list.
+// Bake a layer's resolved routing → bus route list (ADR-0021 wire format,
+// ADR-0022 resolution path). `mode` mirrors entity::RouteMode (0=Direct,
+// 1=Tiled). Empty `targets` is left empty so the show side expands it to
+// "render on every visible screen" using out.screens. When no ref/asset
+// is reachable (a newly-created clip whose ref is still null, a v19
+// project loaded before migration), returns empty + mode=0 and the show
+// side falls back to the legacy targetScreen alias.
 inline void bakeRoutes(const entt::registry& reg,
                         entt::entity layerEntity,
                         std::vector<bus::ContentLayerRoute>& outRoutes,
                         int& outMode) {
     outRoutes.clear();
     outMode = 0;
-    const auto* cr = reg.try_get<ContentRouting>(layerEntity);
-    if (!cr) return;
-    outMode = static_cast<int>(cr->mode);
-    outRoutes.reserve(cr->targets.size());
-    for (const auto& t : cr->targets) {
+    const auto* asset = tryResolveAsset(reg, layerEntity);
+    if (!asset) return;
+    outMode = static_cast<int>(asset->kind);
+    outRoutes.reserve(asset->targets.size());
+    for (const auto& t : asset->targets) {
         bus::ContentLayerRoute r;
         r.screen = (t.screen == entt::null) ? UINT64_MAX : entityToU64(t.screen);
         r.uvRect = t.uvRect;

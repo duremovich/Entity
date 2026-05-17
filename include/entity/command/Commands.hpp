@@ -616,6 +616,52 @@ private:
 };
 
 /**
+ * Change a keyframe's interpolation type and bezier control points.
+ * Operates on an existing keyframe; no-op if the keyframe is missing.
+ * Carries both pickable type and the easeIn/easeOut control points so
+ * the bezier-tangent UI can commit a single command on drag-end.
+ */
+class SetKeyframeInterpolationCommand : public UndoableCommand {
+public:
+    SetKeyframeInterpolationCommand(int trackIndex, int clipIndex,
+                                    AnimatableProperty property, FrameNumber frame,
+                                    InterpolationType newInterp,
+                                    float newEaseIn, float newEaseOut)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_frame(frame),
+          m_newInterp(newInterp),
+          m_newEaseIn(newEaseIn), m_newEaseOut(newEaseOut) {}
+
+    void setPreviousState(InterpolationType prev, float prevEaseIn, float prevEaseOut) {
+        m_prevInterp = prev;
+        m_prevEaseIn = prevEaseIn;
+        m_prevEaseOut = prevEaseOut;
+        m_hasPreviousState = true;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetKeyframeInterpolation"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    FrameNumber m_frame;
+    InterpolationType m_newInterp;
+    float m_newEaseIn;
+    float m_newEaseOut;
+    bool m_hasPreviousState{false};
+    InterpolationType m_prevInterp{InterpolationType::Linear};
+    float m_prevEaseIn{0.42f};
+    float m_prevEaseOut{0.58f};
+};
+
+/**
  * Clear all keyframes from a clip.
  *
  * JSON format:

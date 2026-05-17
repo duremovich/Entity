@@ -507,6 +507,30 @@ private:
     AnimatableProperty m_keyframeEditProperty{AnimatableProperty::PositionX};
     FrameNumber m_keyframeEditFrame{0};
     bool m_showKeyframeContextMenu{false};
+
+    // Pre-edit snapshot for the bezier-tangent DragFloat sliders in the
+    // keyframe context menu. Captured on ImGui::IsItemActivated so we can
+    // emit one undoable SetKeyframeInterpolationCommand on drag-end
+    // (IsItemDeactivatedAfterEdit). m_kfEasingPreEdit.valid means a drag
+    // is in progress; the easeIn/easeOut sliders share the same record
+    // because they're co-located in the same popup pass.
+    struct KeyframeEasingPreEdit {
+        bool valid{false};
+        InterpolationType interp{InterpolationType::Linear};
+        float easeIn{0.42f};
+        float easeOut{0.58f};
+    };
+    KeyframeEasingPreEdit m_kfEasingPreEdit;
+
+    /** Draw one keyframe glyph at (cx, cy) with shape determined by the
+     *  keyframe's interpolation type. Linear=diamond, Step=square,
+     *  EaseIn=half-hourglass-left, EaseOut=half-hourglass-right,
+     *  EaseInOut=full-hourglass. Used by both the top-of-clip cluster
+     *  and the expanded property-track row so shapes stay consistent. */
+    void drawKeyframeShape(ImDrawList* drawList,
+                           const Keyframe& kf,
+                           float cx, float cy,
+                           float size) const;
 };
 
 } // namespace entity
