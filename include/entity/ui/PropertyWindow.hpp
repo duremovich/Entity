@@ -265,6 +265,15 @@ private:
     // Filter text for the Media combo dropdown. Cleared on dropdown open
     // (see IsWindowAppearing branch in renderPlaybackSection).
     char m_mediaFilterBuf[256]{0};
+
+    // Pre-edit captures for Text layer property DragFloat / InputTextMultiline.
+    // Populated on IsItemActivated; consumed on IsItemDeactivatedAfterEdit.
+    std::string m_preEditTextContent;
+    float       m_preEditTextFontSize{0.0f};
+    float       m_preEditTextColorR{0.0f};
+    float       m_preEditTextColorG{0.0f};
+    float       m_preEditTextColorB{0.0f};
+    float       m_preEditTextColorA{0.0f};
 };
 
 } // namespace entity

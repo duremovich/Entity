@@ -6,6 +6,83 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Text Generator Layer (2026-05-18)
+
+Seven-phase implementation (Phases 1-7). Adds a new Generative sub-kind
+(`TextLayerState` presence = Text) to the compositor's content-layer pipeline.
+Text layers render authored strings to a video-pool texture via DirectWrite +
+Direct2D (Windows) and composite through the existing PASS 2 path, indistinguishable
+from other content-layer kinds.
+
+**Foundation (Phases 1-2).** New `TextLayerState` component
+(`include/entity/components/TextLayerState.hpp`): `text`, `fontFamily`, `fontSize`,
+`color (vec4)`, `alignment`, `bold`, `italic`, runtime `dirty`/`textureSlot`/
+`bakedWidth`/`bakedHeight`. New `TextRasterizer` (`src/render/TextRasterizer.cpp`):
+DirectWrite factory + text format, D2D render target over a video-pool CPU-mapped
+surface. `TextSystem` (editor-thread only, step 3.5) walks
+`view<GenerativeLayer, TextLayerState>()`, rasterizes dirty entries, updates
+`textureSlot`. On-destroy observer (`on_destroy<TextLayerState>`) frees the
+video-pool slot on entity deletion. Bus snapshot extended: `TextLayerSnapshot`
+in `bus::SceneSnapshot` carries `textureSlot`; compositor PASS 2 routes it via
+the `Compose` source-kind path (same descriptor pool as Generative PASS 1 targets).
+
+**Editor integration (Phases 3-4).** `Engine::createTextLayer` + undoable
+`CreateTextLayerCommand` (JSON: `CreateTextLayer`). LayersWindow "Text" drag-source.
+PropertyWindow Text panel: live-editable text, font family, font size (with DragFloat),
+color picker, alignment radio, bold/italic checkboxes. All edits go through
+`SetTextContent` / `SetTextFont` etc. undoable commands so Ctrl+Z works per-property.
+
+**Persistence (Phase 5).** Project schema v21. `ProjectSerializer` save branch emits
+`kind="generative"`, `sub_kind="text"`, `text_state` object with all authoring fields.
+Load branch creates `Layer(Kind::Generative)` + `GenerativeLayer` + `Transform` +
+`MediaLayer` + `TextLayerState(dirty=true)` for Text entries; `MunchersGameState` for
+Muncher entries. Dead-code guard removed; clean branch structure with an explicit
+`// only 'clip' entries reach this branch` comment.
+
+**Delete / copy / paste generalization (Phase 6).** `Timeline::DeletedLayerKind` enum
+extended with `Generative=2`. `DeletedClipSnapshot` gains Generative payload
+(`genLayer`, `hadMuncher`, `munchersState`, `hadTextLayerState`, `textLayerState`).
+`snapshotClipForDelete` / `restoreDeletedClip` handle all three kinds. Clipboard
+snapshot / materialize restructured to an if/else (OA | Generative | Clip) with a
+shared tail for EffectChain deep-clone + ContentRoutingRef shallow-copy, so no ops
+silently drop those components for any kind. `TimelineWidgetInput` cut/copy gate
+changed to `isCopyable = hasIdx && !OA`, making it kind-blind for future kinds.
+
+**Integration tests + docs (Phase 7).** New script commands: `Undo`,
+`AssertTrackLayerCount`, `AssertTextLayerState`, `SetTextLayerProperties`.
+Round-trip test (`text_layer_persistence_save/load.json`): creates Text layer with all
+fields set, saves v21 project, loads and asserts every field survived.
+Generative layer ops test (`generative_layer_ops.json`): delete + undo for Muncher
+and Text, copy + paste for both (including `AssertTextLayerState` on pasted entity
+to confirm deep-copy). `ENTITY_ARCHETYPES.md` updated with Text sub-kind table and
+delete/copy-paste notes. `SYSTEM_ORDERING.md` updated with TextSystem at step 3.5
+and show-thread fallback table row. `scripts/CLAUDE.md` updated with all new commands.
+
+**Files (new).** `include/entity/components/TextLayerState.hpp`,
+`include/entity/systems/TextSystem.hpp`, `src/systems/TextSystem.cpp`,
+`src/render/TextRasterizer.hpp`, `src/render/TextRasterizer.cpp`,
+`scripts/integration/text_layer_create.json`,
+`scripts/integration/text_layer_persistence_save.json`,
+`scripts/integration/text_layer_persistence_load.json`,
+`scripts/integration/generative_delete_smoke.json`,
+`scripts/integration/generative_layer_ops.json`.
+
+**Files (modified).** `include/entity/components/CLAUDE.md`,
+`include/entity/command/Commands.hpp`, `src/command/Commands.cpp`,
+`src/command/CommandDispatcher.cpp`, `src/core/Engine.cpp`,
+`src/timeline/Timeline.cpp`, `src/timeline/TimelineWidgetInput.cpp`,
+`include/entity/timeline/Timeline.hpp`,
+`include/entity/project/ProjectSerializer.hpp`,
+`src/project/ProjectSerializer.cpp`,
+`include/entity/bus/Message.hpp`, `src/bus/Serialization.cpp`,
+`src/ui/PropertyWindow.cpp`, `src/ui/LayersWindow.cpp`,
+`tests/CMakeLists.txt`,
+`docs/reference/ENTITY_ARCHETYPES.md`,
+`docs/reference/SYSTEM_ORDERING.md`,
+`scripts/CLAUDE.md`.
+
+---
+
 ### Content Routing Library + Feed Maps (2026-05-17)
 
 ADR-0022 (six commits, L1-L5 + docs). Promotes Plane A content routing

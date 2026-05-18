@@ -582,12 +582,16 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                 ghostLabel = (slash == std::string::npos) ? path : path.substr(slash + 1);
             } else if (type == "LAYER_KIND") {
                 ghostDur = static_cast<Timecode>(10.0 * 1000000.0);  // 10s default, matches callback
-                const uint8_t kind = *static_cast<const uint8_t*>(peek->Data);
-                switch (static_cast<Layer::Kind>(kind)) {
+                const uint8_t* data    = static_cast<const uint8_t*>(peek->Data);
+                const uint8_t  kindByte = data[0];
+                const uint8_t  subKind  = (peek->DataSize >= 2) ? data[1] : 0;
+                switch (static_cast<Layer::Kind>(kindByte)) {
                     case Layer::Kind::ObjectAnimation: ghostLabel = "OA Layer"; break;
                     case Layer::Kind::Clip:            ghostLabel = "Clip Layer"; break;
-                    case Layer::Kind::Generative:      ghostLabel = "Generative Layer"; break;
-                    default:                           ghostLabel = "Layer"; break;
+                    case Layer::Kind::Generative:
+                        ghostLabel = (subKind == 1) ? "Text Layer" : "Muncher Layer";
+                        break;
+                    default: ghostLabel = "Layer"; break;
                 }
             }
 
@@ -617,7 +621,9 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
         }
 
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("LAYER_KIND")) {
-            uint8_t kind = *static_cast<const uint8_t*>(payload->Data);
+            const uint8_t* data    = static_cast<const uint8_t*>(payload->Data);
+            const uint8_t  kind    = data[0];
+            const uint8_t  subKind = (payload->DataSize >= 2) ? data[1] : 0;
 
             if (m_timeline) {
                 // Snap drop time to match the ghost the user saw.
@@ -636,8 +642,14 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                         m_clipLayerDropCallback(trackIndex, startFrame, defaultDuration);
                     }
                 } else if (static_cast<Layer::Kind>(kind) == Layer::Kind::Generative) {
-                    if (m_generativeLayerDropCallback) {
-                        m_generativeLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                    if (subKind == 1) {
+                        if (m_textLayerDropCallback) {
+                            m_textLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                        }
+                    } else {
+                        if (m_generativeLayerDropCallback) {
+                            m_generativeLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                        }
                     }
                 }
             }

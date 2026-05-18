@@ -32,6 +32,17 @@ load, thousands of Hz in `--headless --script` mode with no decode work).
           for Locked layers with frozen=true (set by SectionScheduler at a section break).
           See ADR-0016.
 
+3.5 TextSystem::update()
+       └─ For each active TextLayerState with dirty=true: rasterizes the text string
+          to a video-pool texture via TextRasterizer (DirectWrite + D2D on Windows).
+          Clears dirty flag after successful rasterize. Allocates a video-pool slot
+          on first use; slot freed by the on_destroy<TextLayerState> observer
+          (TextSystem::onTextLayerDestroyed) when the entity is deleted. Writes
+          TextLayerState::textureSlot, bakedWidth, bakedHeight.
+       └─ Static-per-frame: the last-baked texture remains valid during editor stalls,
+          so no show-thread fallback is needed (text doesn't animate — it only changes
+          on explicit authoring commands).
+
 4.  drainContentScannerDeltas()
        └─ Folds filesystem-watcher deltas into MediaBin.
 
@@ -183,11 +194,12 @@ write the registry.** That's why only some systems have fallbacks.
 
 | System | Editor-tick site | Show-thread fallback? | Notes |
 |---|---|---|---|
-| `Timeline::update` | step 1 | ✅ since `cf103bd` | Writes only atomic `m_currentTime` — show-safe. |
-| `SectionScheduler::tick` | step 2 | ❌ | Writes `ClipPlaybackPhase` + `Timeline` section state + `ObjectAnimationLayer::frozen` (Phase 3.8). See CODE_ISSUES NEW-08. |
-| `AnimationSystem::update` | step 3 | ✅ via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` (Clip branch) and `ObjectAnimationOutput` (OA branch) for UI surfaces. Clip tracks are baked into `ClipCatalogEntry`; OA tracks into `ObjectAnimationLayerSnapshot`. Show thread re-evaluates both per render frame in `buildRenderFrame`. Animation stays alive during editor stalls. NEW-07 closed. OA freeze for Locked layers at section breaks handled via `ObjectAnimationLayer::frozen` (ADR-0016). End-of-layer behavior follows `ObjectAnimationLayer::endBehavior` (ADR-0020): `Hold` keeps the last evaluated values applied past the layer's active window (default); `Reset` clears the override. After-end-Hold layers ride the snapshot to keep the show thread in sync during stalls; after-end-Reset layers are filtered out editor-side. |
-| `drainContentScannerDeltas` | step 4 | ❌ — not needed | Filesystem-watcher updates can wait until stall ends. |
-| `DecodeSystem::update` | step 5 | ✅ since `8492438` | Writes only atomic `worker->targetFrame` — show-safe. |
+| `Timeline::update` | step 1 | yes since `cf103bd` | Writes only atomic `m_currentTime` — show-safe. |
+| `SectionScheduler::tick` | step 2 | no | Writes `ClipPlaybackPhase` + `Timeline` section state + `ObjectAnimationLayer::frozen` (Phase 3.8). See CODE_ISSUES NEW-08. |
+| `AnimationSystem::update` | step 3 | yes via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` (Clip branch) and `ObjectAnimationOutput` (OA branch) for UI surfaces. Clip tracks are baked into `ClipCatalogEntry`; OA tracks into `ObjectAnimationLayerSnapshot`. Show thread re-evaluates both per render frame in `buildRenderFrame`. Animation stays alive during editor stalls. NEW-07 closed. OA freeze for Locked layers at section breaks handled via `ObjectAnimationLayer::frozen` (ADR-0016). End-of-layer behavior follows `ObjectAnimationLayer::endBehavior` (ADR-0020): `Hold` keeps the last evaluated values applied past the layer's active window (default); `Reset` clears the override. After-end-Hold layers ride the snapshot to keep the show thread in sync during stalls; after-end-Reset layers are filtered out editor-side. |
+| `TextSystem::update` | step 3.5 | no -- not needed | Rasterizes dirty Text layers to video-pool textures. Static-per-frame: text content only changes on explicit authoring commands, never on playback. The last-baked texture remains valid during editor stalls so output stays correct. Writes `TextLayerState::textureSlot`/`bakedWidth`/`bakedHeight`; clears `dirty`. |
+| `drainContentScannerDeltas` | step 4 | no -- not needed | Filesystem-watcher updates can wait until stall ends. |
+| `DecodeSystem::update` | step 5 | yes since `8492438` | Writes only atomic `worker->targetFrame` — show-safe. |
 
 NEW-08 is the remaining open gap. NEW-07 was closed 2026-05-11 by the
 snapshot-bake approach in `docs/design/animation-snapshot-bake.md`:

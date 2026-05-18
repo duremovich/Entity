@@ -127,7 +127,15 @@ public:
     //     legacy single-target Direct routing resolves to the Screen's
     //     auto-direct asset; multi-target routings spin up new
     //     "Custom Routing N" assets and the layer points at them.
-    static constexpr int PROJECT_VERSION = 20;
+    // v21 Generative layer persistence. Adds kind="generative" entries in
+    //     layers[]. Each entry carries GenerativeLayer (renderWidth/Height,
+    //     targetScreenName), MediaLayer, Transform (same as Clip), and an
+    //     optional `text_state` object for Text sub-kind layers. Pre-v21
+    //     projects load without generative layers (they were silently
+    //     skipped on save in v20 and earlier — no data loss, just re-create
+    //     from scratch). v21 files load with default-constructed TextLayerState
+    //     if `text_state` is absent on a generative layer.
+    static constexpr int PROJECT_VERSION = 21;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

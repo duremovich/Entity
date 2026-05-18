@@ -33,6 +33,7 @@ class DecodeSystem;
 class AnimationSystem;
 class GenerativeSystem;
 class RoutingLibrarySystem;
+class TextSystem;
 class CommandDispatcher;
 class InputBus;
 class OutputManager;
@@ -974,6 +975,11 @@ private:
     // (ADR-0022).
     RoutingLibrarySystem* m_routingLibrarySystem{nullptr};
 
+    // Raw shortcut into m_director->getTextSystem(). Director owns the
+    // system; Engine ticks it each editor frame to rasterize dirty
+    // TextLayerState components into video-pool slots.
+    TextSystem* m_textSystem{nullptr};
+
     // Engine-owned input channel bus. Constructed in initialize(),
     // destroyed in shutdown(). Plumbed into GenerativeSystem so the
     // Muncher kind can read its X/Y axes each editor tick.
@@ -1123,6 +1129,11 @@ public:
                                     int trackIndex,
                                     FrameNumber startFrame,
                                     FrameNumber duration);
+
+    entt::entity createTextLayer(entt::entity targetScreen,
+                                 int trackIndex,
+                                 FrameNumber startFrame,
+                                 FrameNumber duration);
 
     // --- Clipboard + clip clone (timeline ergonomics) -----------------
     //

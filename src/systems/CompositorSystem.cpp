@@ -91,6 +91,9 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 case bus::GenerativeLayerSnapshot::Kind::Muncher:
                     drawMuncherPlayfield(gl, 1.0f);
                     break;
+                case bus::GenerativeLayerSnapshot::Kind::Text:
+                    drawTextLayer(gl, 1.0f);
+                    break;
             }
             m_renderer->endComposeTarget();
         }
@@ -642,6 +645,16 @@ void CompositorSystem::renderOutputSurfaces(entt::registry& registry, TextureRef
             1.0f
         );
     }
+}
+
+void CompositorSystem::drawTextLayer(const bus::GenerativeLayerSnapshot& gl,
+                                     float drawOpacity) {
+    // Text has already been rasterized into a video-pool slot by TextSystem
+    // on the editor thread. We just blit it into the active compose target.
+    if (gl.textTextureSlot < 0) return;
+    const auto ref = TextureRef::video(static_cast<std::uint32_t>(gl.textTextureSlot));
+    m_renderer->drawTexturedQuad(ref, glm::mat4(1.0f), drawOpacity,
+                                  BlendMode::Normal, TextureColorSpace::Linear);
 }
 
 } // namespace entity

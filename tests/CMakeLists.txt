@@ -293,3 +293,49 @@ set_tests_properties(integration_oa_section_freeze PROPERTIES
     LABELS "integration"
     TIMEOUT 60
 )
+
+entity_add_integration_test(text_layer_create text_layer_create.json)
+
+# Text layer persistence round-trip (v21 schema).
+# Save creates a Text layer with all authoring fields set; load asserts every
+# field survived the serialization round-trip.
+add_test(
+    NAME integration_text_layer_persistence_save
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/text_layer_persistence_save.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_text_layer_persistence_save PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+add_test(
+    NAME integration_text_layer_persistence_load
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/text_layer_persistence_load.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_text_layer_persistence_load PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+set_tests_properties(integration_text_layer_persistence_save PROPERTIES
+    FIXTURES_SETUP text_layer_persistence_data)
+set_tests_properties(integration_text_layer_persistence_load PROPERTIES
+    FIXTURES_REQUIRED text_layer_persistence_data)
+
+# Generative layer ops: delete+undo and copy+paste for both Muncher and Text
+# sub-kinds. Exercises the Phase 6 generalized delete/restore/clipboard paths.
+# No pixel comparison; asserts track layer counts and TextLayerState fields.
+add_test(
+    NAME integration_generative_layer_ops
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/generative_layer_ops.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_generative_layer_ops PROPERTIES
+    LABELS "integration"
+    TIMEOUT 60
+)

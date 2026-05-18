@@ -10,6 +10,7 @@
 #include "entity/systems/AnimationSystem.hpp"
 #include "entity/systems/GenerativeSystem.hpp"
 #include "entity/systems/RoutingLibrarySystem.hpp"
+#include "entity/systems/TextSystem.hpp"
 #include "entity/timeline/Timeline.hpp"
 
 namespace entity {
@@ -29,6 +30,7 @@ Director::Director(entt::registry& registry,
     , m_timeAuthority(std::make_unique<PlaybackTimeAuthority>(registry, m_timeline.get()))
     , m_sectionScheduler(std::make_unique<SectionScheduler>(registry, m_timeline.get()))
     , m_captureBroker(std::make_unique<CaptureBroker>())
+    , m_textSystem(std::make_unique<TextSystem>(renderer))
 {
     // ProjectManager needs the Timeline + registry + renderer to honour
     // load/save calls (it allocates render-target slots for Screens at load
@@ -53,6 +55,7 @@ Director::Director(entt::registry& registry,
     // but plenty after project load) get their auto-direct assets
     // materialized before the first snapshot bake.
     m_routingLibrarySystem->initialize(registry);
+    m_textSystem->initialize(registry);
 
     // Wire ProjectManager into the time authority so the per-tick
     // active-set tuples carry the per-clip MediaBin OCIO override
@@ -69,6 +72,9 @@ Director::Director(entt::registry& registry,
 Director::~Director() {
     // Tear down systems against the registry before their unique_ptrs run.
     // Mirrors System lifecycle contracts elsewhere in the codebase.
+    if (m_textSystem) {
+        m_textSystem->shutdown(m_registry);
+    }
     if (m_routingLibrarySystem) {
         m_routingLibrarySystem->shutdown(m_registry);
     }

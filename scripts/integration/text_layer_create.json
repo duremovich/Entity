@@ -1,0 +1,25 @@
+{
+    "version": 1,
+    "description": "Phase 3 smoke: CreateTextLayerCommand creates an entity with Layer + GenerativeLayer + TextLayerState. Verifies the command succeeds and the timeline has the expected selection.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "TextSmokeScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

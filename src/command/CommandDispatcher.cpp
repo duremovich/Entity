@@ -258,11 +258,30 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertObjectAnimationOutput", AssertObjectAnimationOutputCommand::fromJson);
     registerFactory("AssertScreenSnapshot", AssertScreenSnapshotCommand::fromJson);
 
-    // Generative layer commands (Muncher is the first kind)
+    // Generative layer commands
     registerFactory("CreateMuncherLayer", CreateMuncherLayerCommand::fromJson);
+    registerFactory("CreateTextLayer", CreateTextLayerCommand::fromJson);
+
+    // Generative layer property commands
+    registerFactory("SetGenerativeRenderSize", SetGenerativeRenderSizeCommand::fromJson);
+
+    // Text layer property commands
+    registerFactory("SetTextContent",   SetTextContentCommand::fromJson);
+    registerFactory("SetTextFont",      SetTextFontCommand::fromJson);
+    registerFactory("SetTextFontSize",  SetTextFontSizeCommand::fromJson);
+    registerFactory("SetTextColor",     SetTextColorCommand::fromJson);
+    registerFactory("SetTextAlignment", SetTextAlignmentCommand::fromJson);
+    registerFactory("SetTextBold",      SetTextBoldCommand::fromJson);
+    registerFactory("SetTextItalic",    SetTextItalicCommand::fromJson);
 
     // Input bus commands
     registerFactory("SetInputChannel", SetInputChannelCommand::fromJson);
+
+    // Script utility commands
+    registerFactory("Undo", UndoCommand::fromJson);
+    registerFactory("AssertTrackLayerCount", AssertTrackLayerCountCommand::fromJson);
+    registerFactory("AssertTextLayerState", AssertTextLayerStateCommand::fromJson);
+    registerFactory("SetTextLayerProperties", SetTextLayerPropertiesCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {

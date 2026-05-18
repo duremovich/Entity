@@ -84,6 +84,12 @@ public:
     void drawMuncherPlayfield(const bus::GenerativeLayerSnapshot& gl,
                               float drawOpacity);
 
+    // Text layer render: blits the pre-rasterized video-pool texture
+    // (uploaded by TextSystem on the editor thread) into the active
+    // compose target. No-op if textTextureSlot < 0.
+    void drawTextLayer(const bus::GenerativeLayerSnapshot& gl,
+                       float drawOpacity);
+
 private:
     struct PendingAllocation {
         std::uint32_t slot{UINT32_MAX};

@@ -20,6 +20,8 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/TextLayerState.hpp"
+#include "entity/render/TextRasterizer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
@@ -2303,10 +2305,11 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
 
     ImGui::PushID(static_cast<int>(entity));
 
-    // Sub-kind label resolved by composition (MunchersGameState ⇒ "Muncher",
-    // future state components add their own labels here).
+    // Sub-kind label resolved by composition (MunchersGameState => "Muncher",
+    // TextLayerState => "Text", etc.).
     const char* subKind = "Generative";
     if (registry.all_of<MunchersGameState>(entity)) subKind = "Muncher";
+    if (registry.all_of<TextLayerState>(entity))    subKind = "Text";
     ImGui::Text("%s Layer", subKind);
     ImGui::Separator();
 
@@ -2502,17 +2505,199 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     }
 
     if (ImGui::CollapsingHeader("Render Target")) {
+        const std::uint32_t prevW = gen->renderWidth;
+        const std::uint32_t prevH = gen->renderHeight;
         int w = static_cast<int>(gen->renderWidth);
         int h = static_cast<int>(gen->renderHeight);
         ImGui::SetNextItemWidth(-1);
         if (entity::ui::DragInt("Width",  &w, 1.0f, 16, 7680)) {
-            gen->renderWidth  = static_cast<std::uint32_t>(std::max(16, w));
+            gen->renderWidth = static_cast<std::uint32_t>(std::max(16, w));
+            if (auto* tls = registry.try_get<TextLayerState>(entity)) tls->dirty = true;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher &&
+            gen->renderWidth != prevW) {
+            auto cmd = std::make_unique<SetGenerativeRenderSizeCommand>(
+                entity, gen->renderWidth, gen->renderHeight);
+            cmd->setPreviousSize(prevW, gen->renderHeight);
+            m_dispatcher->enqueue(std::move(cmd));
         }
         ImGui::SetNextItemWidth(-1);
         if (entity::ui::DragInt("Height", &h, 1.0f, 16, 4320)) {
             gen->renderHeight = static_cast<std::uint32_t>(std::max(16, h));
+            if (auto* tls = registry.try_get<TextLayerState>(entity)) tls->dirty = true;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher &&
+            gen->renderHeight != prevH) {
+            auto cmd = std::make_unique<SetGenerativeRenderSizeCommand>(
+                entity, gen->renderWidth, gen->renderHeight);
+            cmd->setPreviousSize(gen->renderWidth, prevH);
+            m_dispatcher->enqueue(std::move(cmd));
         }
         ImGui::TextDisabled("Slot: %d", gen->renderTargetSlot);
+    }
+
+    // ---- Text layer properties (Text sub-kind only) ----
+    if (auto* tls = registry.try_get<TextLayerState>(entity)) {
+        if (ImGui::CollapsingHeader("Text", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+            // Content
+            {
+                ImGui::TextDisabled("Content");
+                char textBuf[4096];
+                std::snprintf(textBuf, sizeof(textBuf), "%s", tls->text.c_str());
+                ImGui::SetNextItemWidth(-1);
+                const bool changed = ImGui::InputTextMultiline(
+                    "##textcontent", textBuf, sizeof(textBuf),
+                    ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * 5));
+                if (ImGui::IsItemActivated()) m_preEditTextContent = tls->text;
+                if (changed) {
+                    tls->text  = textBuf;
+                    tls->dirty = true;
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+                    auto cmd = std::make_unique<SetTextContentCommand>(entity, tls->text);
+                    cmd->setPreviousText(m_preEditTextContent);
+                    m_dispatcher->enqueue(std::move(cmd));
+                }
+            }
+
+            ImGui::Spacing();
+
+            // Font family dropdown — populated once from enumerateSystemFonts().
+            // Cache is populated on first open; ~50ms one-shot cost is acceptable.
+            static std::vector<std::string> s_fontNames;
+            static std::vector<const char*> s_fontCStrs;
+            if (s_fontNames.empty()) {
+                TextRasterizer tmpRasterizer;
+                s_fontNames = tmpRasterizer.enumerateSystemFonts();
+                s_fontCStrs.clear();
+                s_fontCStrs.reserve(s_fontNames.size());
+                for (const auto& n : s_fontNames) s_fontCStrs.push_back(n.c_str());
+            }
+
+            if (!s_fontCStrs.empty()) {
+                int fontIdx = 0;
+                for (int i = 0; i < static_cast<int>(s_fontNames.size()); ++i) {
+                    if (s_fontNames[i] == tls->fontFamily) { fontIdx = i; break; }
+                }
+                ImGui::TextDisabled("Font Family");
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::Combo("##fontfamily", &fontIdx,
+                                  s_fontCStrs.data(),
+                                  static_cast<int>(s_fontCStrs.size()))) {
+                    const std::string prevFont = tls->fontFamily;
+                    tls->fontFamily = s_fontNames[fontIdx];
+                    tls->dirty      = true;
+                    if (m_dispatcher) {
+                        auto cmd = std::make_unique<SetTextFontCommand>(
+                            entity, tls->fontFamily);
+                        cmd->setPreviousFont(prevFont);
+                        m_dispatcher->enqueue(std::move(cmd));
+                    }
+                }
+            }
+
+            ImGui::Spacing();
+
+            // Font size
+            {
+                ImGui::SetNextItemWidth(-1);
+                if (entity::ui::DragFloat("Font Size", &tls->fontSize, 1.0f, 8.0f, 512.0f, "%.1f pt")) {
+                    tls->dirty = true;
+                }
+                if (ImGui::IsItemActivated()) m_preEditTextFontSize = tls->fontSize;
+                if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+                    auto cmd = std::make_unique<SetTextFontSizeCommand>(entity, tls->fontSize);
+                    cmd->setPreviousFontSize(m_preEditTextFontSize);
+                    m_dispatcher->enqueue(std::move(cmd));
+                }
+            }
+
+            ImGui::Spacing();
+
+            // Color
+            {
+                float col[4] = {tls->color.r, tls->color.g, tls->color.b, tls->color.a};
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::ColorEdit4("##textcolor", col)) {
+                    tls->color = {col[0], col[1], col[2], col[3]};
+                    tls->dirty = true;
+                }
+                if (ImGui::IsItemActivated()) {
+                    m_preEditTextColorR = tls->color.r; m_preEditTextColorG = tls->color.g;
+                    m_preEditTextColorB = tls->color.b; m_preEditTextColorA = tls->color.a;
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+                    auto cmd = std::make_unique<SetTextColorCommand>(
+                        entity, tls->color.r, tls->color.g, tls->color.b, tls->color.a);
+                    cmd->setPreviousColor(
+                        m_preEditTextColorR, m_preEditTextColorG,
+                        m_preEditTextColorB, m_preEditTextColorA);
+                    m_dispatcher->enqueue(std::move(cmd));
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("Color");
+            }
+
+            ImGui::Spacing();
+
+            // Alignment combo
+            {
+                static const char* alignLabels[] = { "Left", "Center", "Right" };
+                int alignIdx = static_cast<int>(tls->alignment);
+                ImGui::TextDisabled("Alignment");
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::Combo("##textalign", &alignIdx, alignLabels, 3)) {
+                    const uint8_t prev = static_cast<uint8_t>(tls->alignment);
+                    tls->alignment     = static_cast<TextAlignment>(alignIdx);
+                    tls->dirty         = true;
+                    if (m_dispatcher) {
+                        auto cmd = std::make_unique<SetTextAlignmentCommand>(
+                            entity, static_cast<uint8_t>(alignIdx));
+                        cmd->setPreviousAlignment(prev);
+                        m_dispatcher->enqueue(std::move(cmd));
+                    }
+                }
+            }
+
+            ImGui::Spacing();
+
+            // Bold / Italic checkboxes
+            {
+                bool bold = tls->bold;
+                if (ImGui::Checkbox("Bold", &bold)) {
+                    tls->bold  = bold;
+                    tls->dirty = true;
+                    if (m_dispatcher) {
+                        auto cmd = std::make_unique<SetTextBoldCommand>(entity, bold);
+                        cmd->setPreviousBold(!bold);
+                        m_dispatcher->enqueue(std::move(cmd));
+                    }
+                }
+                ImGui::SameLine();
+                bool italic = tls->italic;
+                if (ImGui::Checkbox("Italic", &italic)) {
+                    tls->italic = italic;
+                    tls->dirty  = true;
+                    if (m_dispatcher) {
+                        auto cmd = std::make_unique<SetTextItalicCommand>(entity, italic);
+                        cmd->setPreviousItalic(!italic);
+                        m_dispatcher->enqueue(std::move(cmd));
+                    }
+                }
+            }
+
+            ImGui::Spacing();
+
+            // Bake info (read-only)
+            if (tls->bakedWidth > 0 && tls->bakedHeight > 0) {
+                ImGui::TextDisabled("Baked: %u x %u  slot %d",
+                                    tls->bakedWidth, tls->bakedHeight,
+                                    tls->textureSlot);
+            } else {
+                ImGui::TextDisabled("Not yet baked");
+            }
+        }
     }
 
     if (ImGui::CollapsingHeader("Timing")) {

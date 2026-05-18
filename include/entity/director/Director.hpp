@@ -18,6 +18,7 @@ class SceneState;
 class PlaybackTimeAuthority;
 class SectionScheduler;
 class CaptureBroker;
+class TextSystem;
 
 // Director owns Phase D's "logical-side" subsystems -- the half of the engine
 // that decides *what* to render this tick (timeline state, project state,
@@ -55,6 +56,7 @@ public:
     PlaybackTimeAuthority* getTimeAuthority() noexcept { return m_timeAuthority.get(); }
     SectionScheduler* getSectionScheduler()   noexcept { return m_sectionScheduler.get(); }
     CaptureBroker* getCaptureBroker()       noexcept { return m_captureBroker.get(); }
+    TextSystem* getTextSystem()             noexcept { return m_textSystem.get(); }
 
     const Timeline* getTimeline()                 const noexcept { return m_timeline.get(); }
     const ProjectManager* getProjectManager()     const noexcept { return m_projectManager.get(); }
@@ -66,6 +68,7 @@ public:
     const PlaybackTimeAuthority* getTimeAuthority() const noexcept { return m_timeAuthority.get(); }
     const SectionScheduler* getSectionScheduler() const noexcept { return m_sectionScheduler.get(); }
     const CaptureBroker* getCaptureBroker()       const noexcept { return m_captureBroker.get(); }
+    const TextSystem* getTextSystem()             const noexcept { return m_textSystem.get(); }
 
     // SceneState seam. Director writes the registry during its tick (clip
     // creation, keyframe evaluation, ProjectManager load). Subtask 8's
@@ -104,6 +107,9 @@ private:
     // capture-command request/reply pattern. Engine wires its transport +
     // dispatcher pointers post-construction.
     std::unique_ptr<CaptureBroker>     m_captureBroker;
+    // Rasterizes dirty TextLayerState components into video-pool slots each
+    // editor tick. Editor-thread only; no show-thread fallback needed.
+    std::unique_ptr<TextSystem>        m_textSystem;
 };
 
 } // namespace entity

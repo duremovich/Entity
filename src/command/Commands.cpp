@@ -24,9 +24,11 @@
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
 #include "entity/components/EffectParameters.hpp"
+#include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
+#include "entity/components/TextLayerState.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/input/InputBus.hpp"
 #include "entity/media/Decoder.hpp"
@@ -3410,6 +3412,59 @@ CommandPtr CreateMuncherLayerCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// CreateTextLayerCommand
+// ============================================================================
+
+bool CreateTextLayerCommand::execute(Engine& engine) {
+    // Resolve target: first Screen entity in the registry. Same policy as
+    // CreateMuncherLayerCommand — the user retargets via Properties.
+    auto& registry = engine.getRegistry();
+    entt::entity targetEntity = entt::null;
+    auto screenView = registry.view<Screen>();
+    if (!screenView.empty()) {
+        targetEntity = *screenView.begin();
+    }
+
+    m_createdEntity = engine.createTextLayer(targetEntity,
+                                             m_trackIndex,
+                                             m_startFrame,
+                                             m_duration);
+    if (m_createdEntity == entt::null) {
+        std::cerr << "[CreateTextLayer] FAIL: createTextLayer returned null" << std::endl;
+        return false;
+    }
+    std::cout << "[CreateTextLayer] OK track=" << m_trackIndex
+              << " start=" << m_startFrame
+              << " duration=" << m_duration
+              << " entity=" << static_cast<uint32_t>(m_createdEntity)
+              << " target=" << (targetEntity != entt::null
+                                  ? std::to_string(static_cast<uint32_t>(targetEntity))
+                                  : "none")
+              << std::endl;
+    return true;
+}
+
+nlohmann::json CreateTextLayerCommand::toJson() const {
+    return {{"type", "CreateTextLayer"},
+            {"trackIndex", m_trackIndex},
+            {"startFrame", m_startFrame},
+            {"duration", m_duration}};
+}
+
+std::string CreateTextLayerCommand::getDescription() const {
+    return "Create Text generative layer on track " + std::to_string(m_trackIndex) +
+           " at " + std::to_string(m_startFrame) +
+           " dur=" + std::to_string(m_duration);
+}
+
+CommandPtr CreateTextLayerCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex       = j.value("trackIndex", 0);
+    FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
+    FrameNumber duration = j.value("duration", static_cast<FrameNumber>(300));
+    return std::make_unique<CreateTextLayerCommand>(trackIndex, start, duration);
+}
+
+// ============================================================================
 // SetInputChannelCommand
 // ============================================================================
 
@@ -4267,6 +4322,584 @@ CommandPtr SetClipMediaCommand::fromJson(const nlohmann::json& j) {
         j.value("trackIndex", 0),
         j.value("clipIndex", 0),
         j.value("filepath", std::string{}));
+}
+
+// ============================================================================
+// Generative Layer Property Commands
+// ============================================================================
+
+bool SetGenerativeRenderSizeCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* gen = registry.try_get<GenerativeLayer>(m_layerEntity);
+    if (!gen) return false;
+    if (!m_prevWidth.has_value()) {
+        m_prevWidth  = gen->renderWidth;
+        m_prevHeight = gen->renderHeight;
+    }
+    gen->renderWidth  = m_width;
+    gen->renderHeight = m_height;
+    // For Text layers, re-bake at new resolution.
+    if (auto* tls = registry.try_get<TextLayerState>(m_layerEntity)) {
+        tls->dirty = true;
+    }
+    return true;
+}
+
+bool SetGenerativeRenderSizeCommand::undo(Engine& engine) {
+    if (!m_prevWidth.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    auto* gen = registry.try_get<GenerativeLayer>(m_layerEntity);
+    if (!gen) return false;
+    gen->renderWidth  = *m_prevWidth;
+    gen->renderHeight = *m_prevHeight;
+    if (auto* tls = registry.try_get<TextLayerState>(m_layerEntity)) {
+        tls->dirty = true;
+    }
+    return true;
+}
+
+nlohmann::json SetGenerativeRenderSizeCommand::toJson() const {
+    return {{"type", "SetGenerativeRenderSize"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"width",  m_width},
+            {"height", m_height}};
+}
+
+std::string SetGenerativeRenderSizeCommand::getDescription() const {
+    return "Set generative layer render size";
+}
+
+CommandPtr SetGenerativeRenderSizeCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const auto w = j.value("width",  std::uint32_t{1920});
+    const auto h = j.value("height", std::uint32_t{1080});
+    return std::make_unique<SetGenerativeRenderSizeCommand>(e, w, h);
+}
+
+// ============================================================================
+// Text Layer Property Commands
+// ============================================================================
+
+static TextLayerState* getTextLayerState(Engine& engine, entt::entity e) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(e)) return nullptr;
+    return registry.try_get<TextLayerState>(e);
+}
+
+bool SetTextContentCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_previousText.has_value()) m_previousText = s->text;
+    s->text  = m_text;
+    s->dirty = true;
+    return true;
+}
+
+bool SetTextContentCommand::undo(Engine& engine) {
+    if (!m_previousText.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->text  = *m_previousText;
+    s->dirty = true;
+    return true;
+}
+
+nlohmann::json SetTextContentCommand::toJson() const {
+    return {{"type", "SetTextContent"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"text", m_text}};
+}
+
+std::string SetTextContentCommand::getDescription() const { return "Set text content"; }
+
+CommandPtr SetTextContentCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextContentCommand>(e, j.value("text", std::string{}));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetTextFontCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_previousFont.has_value()) m_previousFont = s->fontFamily;
+    s->fontFamily = m_fontFamily;
+    s->dirty      = true;
+    return true;
+}
+
+bool SetTextFontCommand::undo(Engine& engine) {
+    if (!m_previousFont.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->fontFamily = *m_previousFont;
+    s->dirty      = true;
+    return true;
+}
+
+nlohmann::json SetTextFontCommand::toJson() const {
+    return {{"type", "SetTextFont"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"fontFamily", m_fontFamily}};
+}
+
+std::string SetTextFontCommand::getDescription() const { return "Set text font"; }
+
+CommandPtr SetTextFontCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextFontCommand>(e, j.value("fontFamily", std::string{"Segoe UI"}));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetTextFontSizeCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_previousFontSize.has_value()) m_previousFontSize = s->fontSize;
+    s->fontSize = m_fontSize;
+    s->dirty    = true;
+    return true;
+}
+
+bool SetTextFontSizeCommand::undo(Engine& engine) {
+    if (!m_previousFontSize.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->fontSize = *m_previousFontSize;
+    s->dirty    = true;
+    return true;
+}
+
+nlohmann::json SetTextFontSizeCommand::toJson() const {
+    return {{"type", "SetTextFontSize"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"fontSize", m_fontSize}};
+}
+
+std::string SetTextFontSizeCommand::getDescription() const { return "Set text font size"; }
+
+CommandPtr SetTextFontSizeCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextFontSizeCommand>(e, j.value("fontSize", 96.0f));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetTextColorCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_prevR.has_value()) {
+        m_prevR = s->color.r; m_prevG = s->color.g;
+        m_prevB = s->color.b; m_prevA = s->color.a;
+    }
+    s->color = {m_r, m_g, m_b, m_a};
+    s->dirty = true;
+    return true;
+}
+
+bool SetTextColorCommand::undo(Engine& engine) {
+    if (!m_prevR.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->color = {*m_prevR, *m_prevG, *m_prevB, *m_prevA};
+    s->dirty = true;
+    return true;
+}
+
+nlohmann::json SetTextColorCommand::toJson() const {
+    return {{"type", "SetTextColor"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"r", m_r}, {"g", m_g}, {"b", m_b}, {"a", m_a}};
+}
+
+std::string SetTextColorCommand::getDescription() const { return "Set text color"; }
+
+CommandPtr SetTextColorCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextColorCommand>(
+        e,
+        j.value("r", 1.0f), j.value("g", 1.0f), j.value("b", 1.0f), j.value("a", 1.0f));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetTextAlignmentCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_previousAlignment.has_value())
+        m_previousAlignment = static_cast<uint8_t>(s->alignment);
+    s->alignment = static_cast<TextAlignment>(m_alignment);
+    s->dirty     = true;
+    return true;
+}
+
+bool SetTextAlignmentCommand::undo(Engine& engine) {
+    if (!m_previousAlignment.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->alignment = static_cast<TextAlignment>(*m_previousAlignment);
+    s->dirty     = true;
+    return true;
+}
+
+nlohmann::json SetTextAlignmentCommand::toJson() const {
+    return {{"type", "SetTextAlignment"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"alignment", m_alignment}};
+}
+
+std::string SetTextAlignmentCommand::getDescription() const { return "Set text alignment"; }
+
+CommandPtr SetTextAlignmentCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextAlignmentCommand>(
+        e, static_cast<uint8_t>(j.value("alignment", 1)));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetTextBoldCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_previousBold.has_value()) m_previousBold = s->bold;
+    s->bold  = m_bold;
+    s->dirty = true;
+    return true;
+}
+
+bool SetTextBoldCommand::undo(Engine& engine) {
+    if (!m_previousBold.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->bold  = *m_previousBold;
+    s->dirty = true;
+    return true;
+}
+
+nlohmann::json SetTextBoldCommand::toJson() const {
+    return {{"type", "SetTextBold"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"bold", m_bold}};
+}
+
+std::string SetTextBoldCommand::getDescription() const {
+    return m_bold ? "Set text bold" : "Unset text bold";
+}
+
+CommandPtr SetTextBoldCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextBoldCommand>(e, j.value("bold", false));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetTextItalicCommand::execute(Engine& engine) {
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    if (!m_previousItalic.has_value()) m_previousItalic = s->italic;
+    s->italic = m_italic;
+    s->dirty  = true;
+    return true;
+}
+
+bool SetTextItalicCommand::undo(Engine& engine) {
+    if (!m_previousItalic.has_value()) return false;
+    auto* s = getTextLayerState(engine, m_layerEntity);
+    if (!s) return false;
+    s->italic = *m_previousItalic;
+    s->dirty  = true;
+    return true;
+}
+
+nlohmann::json SetTextItalicCommand::toJson() const {
+    return {{"type", "SetTextItalic"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"italic", m_italic}};
+}
+
+std::string SetTextItalicCommand::getDescription() const {
+    return m_italic ? "Set text italic" : "Unset text italic";
+}
+
+CommandPtr SetTextItalicCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetTextItalicCommand>(e, j.value("italic", false));
+}
+
+// ============================================================================
+// SetTextLayerPropertiesCommand
+// ============================================================================
+
+bool SetTextLayerPropertiesCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[SetTextLayerProperties] FAIL: no timeline" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[SetTextLayerProperties] FAIL: trackIndex " << m_trackIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    const auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_layerIndex < 0 ||
+        static_cast<size_t>(m_layerIndex) >= track->layers.size()) {
+        std::cerr << "[SetTextLayerProperties] FAIL: layerIndex " << m_layerIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity layerEntity = track->layers[m_layerIndex];
+    auto* tls = registry.try_get<TextLayerState>(layerEntity);
+    if (!tls) {
+        std::cerr << "[SetTextLayerProperties] FAIL: entity "
+                  << static_cast<uint32_t>(layerEntity)
+                  << " has no TextLayerState component" << std::endl;
+        return false;
+    }
+
+    if (m_props.contains("text"))       tls->text       = m_props["text"].get<std::string>();
+    if (m_props.contains("fontFamily")) tls->fontFamily = m_props["fontFamily"].get<std::string>();
+    if (m_props.contains("fontSize"))   tls->fontSize   = m_props["fontSize"].get<float>();
+    if (m_props.contains("colorR"))     tls->color.r    = m_props["colorR"].get<float>();
+    if (m_props.contains("colorG"))     tls->color.g    = m_props["colorG"].get<float>();
+    if (m_props.contains("colorB"))     tls->color.b    = m_props["colorB"].get<float>();
+    if (m_props.contains("colorA"))     tls->color.a    = m_props["colorA"].get<float>();
+    if (m_props.contains("bold"))       tls->bold       = m_props["bold"].get<bool>();
+    if (m_props.contains("italic"))     tls->italic     = m_props["italic"].get<bool>();
+    if (m_props.contains("alignment")) {
+        std::string a = m_props["alignment"].get<std::string>();
+        if      (a == "Left")   tls->alignment = TextAlignment::Left;
+        else if (a == "Center") tls->alignment = TextAlignment::Center;
+        else if (a == "Right")  tls->alignment = TextAlignment::Right;
+    }
+    tls->dirty = true;
+
+    std::cout << "[SetTextLayerProperties] OK entity="
+              << static_cast<uint32_t>(layerEntity) << std::endl;
+    return true;
+}
+
+nlohmann::json SetTextLayerPropertiesCommand::toJson() const {
+    nlohmann::json j = m_props;
+    j["type"]        = "SetTextLayerProperties";
+    j["trackIndex"]  = m_trackIndex;
+    j["layerIndex"]  = m_layerIndex;
+    return j;
+}
+
+std::string SetTextLayerPropertiesCommand::getDescription() const {
+    return "Set text layer properties track=" + std::to_string(m_trackIndex)
+         + " layer=" + std::to_string(m_layerIndex);
+}
+
+CommandPtr SetTextLayerPropertiesCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int layerIndex = j.value("layerIndex", 0);
+    return std::make_unique<SetTextLayerPropertiesCommand>(trackIndex, layerIndex, j);
+}
+
+// ============================================================================
+// AssertTextLayerStateCommand
+// ============================================================================
+
+bool AssertTextLayerStateCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertTextLayerState] FAIL: no timeline" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertTextLayerState] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    const auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_layerIndex < 0 ||
+        static_cast<size_t>(m_layerIndex) >= track->layers.size()) {
+        std::cerr << "[AssertTextLayerState] FAIL: layerIndex " << m_layerIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity layerEntity = track->layers[m_layerIndex];
+    const auto* tls = registry.try_get<TextLayerState>(layerEntity);
+    if (!tls) {
+        std::cerr << "[AssertTextLayerState] FAIL: entity "
+                  << static_cast<uint32_t>(layerEntity)
+                  << " has no TextLayerState component" << std::endl;
+        return false;
+    }
+
+    if (!m_isFloat) {
+        // String / enum assertion
+        std::string actual;
+        if      (m_field == "text")       actual = tls->text;
+        else if (m_field == "fontFamily") actual = tls->fontFamily;
+        else if (m_field == "alignment") {
+            switch (tls->alignment) {
+                case TextAlignment::Left:   actual = "Left";   break;
+                case TextAlignment::Center: actual = "Center"; break;
+                case TextAlignment::Right:  actual = "Right";  break;
+            }
+        }
+        else {
+            std::cerr << "[AssertTextLayerState] FAIL: unknown string field '"
+                      << m_field << "'" << std::endl;
+            return false;
+        }
+        if (actual == m_expectedStr) {
+            std::cout << "[AssertTextLayerState] OK " << m_field
+                      << "='" << actual << "'" << std::endl;
+            return true;
+        }
+        std::cerr << "[AssertTextLayerState] FAIL: " << m_field
+                  << " expected='" << m_expectedStr << "' got='" << actual << "'" << std::endl;
+        return false;
+    }
+
+    // Float / bool assertion
+    float actual = 0.f;
+    if      (m_field == "fontSize") actual = tls->fontSize;
+    else if (m_field == "colorR")   actual = tls->color.r;
+    else if (m_field == "colorG")   actual = tls->color.g;
+    else if (m_field == "colorB")   actual = tls->color.b;
+    else if (m_field == "colorA")   actual = tls->color.a;
+    else if (m_field == "bold")     actual = tls->bold   ? 1.f : 0.f;
+    else if (m_field == "italic")   actual = tls->italic ? 1.f : 0.f;
+    else {
+        std::cerr << "[AssertTextLayerState] FAIL: unknown float field '"
+                  << m_field << "'" << std::endl;
+        return false;
+    }
+    float diff = std::fabs(actual - m_expectedFloat);
+    if (diff <= m_tolerance) {
+        std::cout << "[AssertTextLayerState] OK " << m_field << "=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertTextLayerState] FAIL: " << m_field
+              << " expected=" << m_expectedFloat
+              << " got=" << actual
+              << " diff=" << diff
+              << " tol=" << m_tolerance << std::endl;
+    return false;
+}
+
+nlohmann::json AssertTextLayerStateCommand::toJson() const {
+    if (m_isFloat) {
+        return {{"type", "AssertTextLayerState"},
+                {"trackIndex", m_trackIndex},
+                {"layerIndex", m_layerIndex},
+                {"field", m_field},
+                {"expectedFloat", m_expectedFloat},
+                {"tolerance", m_tolerance}};
+    }
+    return {{"type", "AssertTextLayerState"},
+            {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex},
+            {"field", m_field},
+            {"expected", m_expectedStr}};
+}
+
+std::string AssertTextLayerStateCommand::getDescription() const {
+    return "Assert TextLayerState track=" + std::to_string(m_trackIndex)
+         + " layer=" + std::to_string(m_layerIndex)
+         + " " + m_field;
+}
+
+CommandPtr AssertTextLayerStateCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int layerIndex = j.value("layerIndex", 0);
+    std::string field = j.value("field", std::string{});
+    if (j.contains("expectedFloat") || j.contains("tolerance")) {
+        float expected  = j.value("expectedFloat", 0.f);
+        float tolerance = j.value("tolerance", 0.01f);
+        return std::make_unique<AssertTextLayerStateCommand>(
+            trackIndex, layerIndex, std::move(field), expected, tolerance);
+    }
+    std::string expected = j.value("expected", std::string{});
+    return std::make_unique<AssertTextLayerStateCommand>(
+        trackIndex, layerIndex, std::move(field), std::move(expected));
+}
+
+// ============================================================================
+// UndoCommand
+// ============================================================================
+
+bool UndoCommand::execute(Engine& engine) {
+    auto* dispatcher = engine.getCommandDispatcher();
+    if (!dispatcher) {
+        std::cerr << "[Undo] FAIL: no CommandDispatcher on engine" << std::endl;
+        return false;
+    }
+    if (dispatcher->getUndoDepth() == 0) {
+        std::cerr << "[Undo] FAIL: undo stack is empty" << std::endl;
+        return false;
+    }
+    bool ok = dispatcher->undo(engine);
+    if (ok) {
+        std::cout << "[Undo] OK, depth now=" << dispatcher->getUndoDepth() << std::endl;
+    } else {
+        std::cerr << "[Undo] FAIL: undo() returned false" << std::endl;
+    }
+    return ok;
+}
+
+CommandPtr UndoCommand::fromJson(const nlohmann::json& /*j*/) {
+    return std::make_unique<UndoCommand>();
+}
+
+// ============================================================================
+// AssertTrackLayerCountCommand
+// ============================================================================
+
+bool AssertTrackLayerCountCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertTrackLayerCount] FAIL: no timeline" << std::endl;
+        return false;
+    }
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertTrackLayerCount] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    const auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track) {
+        std::cerr << "[AssertTrackLayerCount] FAIL: track entity has no TimelineTrack component" << std::endl;
+        return false;
+    }
+    const size_t actual = track->layers.size();
+    if (actual == m_count) {
+        std::cout << "[AssertTrackLayerCount] OK track=" << m_trackIndex
+                  << " count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertTrackLayerCount] FAIL: track=" << m_trackIndex
+              << " expected=" << m_count << " got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertTrackLayerCountCommand::toJson() const {
+    return {{"type", "AssertTrackLayerCount"},
+            {"trackIndex", m_trackIndex},
+            {"count", m_count}};
+}
+
+std::string AssertTrackLayerCountCommand::getDescription() const {
+    return "Assert track " + std::to_string(m_trackIndex)
+         + " has " + std::to_string(m_count) + " layer(s)";
+}
+
+CommandPtr AssertTrackLayerCountCommand::fromJson(const nlohmann::json& j) {
+    int    trackIndex = j.value("trackIndex", 0);
+    size_t count      = j.value("count", static_cast<size_t>(0));
+    return std::make_unique<AssertTrackLayerCountCommand>(trackIndex, count);
 }
 
 } // namespace entity

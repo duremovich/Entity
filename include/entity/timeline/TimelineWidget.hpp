@@ -34,11 +34,13 @@ using OALayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 // Parameters: track index, start frame (timeline), duration in frames
 using ClipLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
-// Callback for when a Generative layer kind is dropped onto a track.
-// V1 only ships the Muncher kind; future kinds either reuse this callback
-// with a sub-kind argument or add their own typedef.
+// Callback for when a Generative layer kind is dropped onto a track (Muncher sub-kind).
 // Parameters: track index, start frame (timeline), duration in frames
 using GenerativeLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
+// Callback for when a Text generative layer is dropped onto a track.
+// Parameters: track index, start frame (timeline), duration in frames
+using TextLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
 // Lookup callback wired by Engine — given a logical media path, returns
 // the media's timeline-frame duration (seconds × timeline fps). Used to
@@ -130,6 +132,7 @@ public:
     void setOALayerDropCallback(OALayerDropCallback callback) { m_oaLayerDropCallback = std::move(callback); }
     void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
     void setGenerativeLayerDropCallback(GenerativeLayerDropCallback callback) { m_generativeLayerDropCallback = std::move(callback); }
+    void setTextLayerDropCallback(TextLayerDropCallback callback) { m_textLayerDropCallback = std::move(callback); }
 
     /**
      * Optional — Engine-supplied lookup mapping a logical media path to
@@ -551,6 +554,7 @@ private:
     OALayerDropCallback m_oaLayerDropCallback;
     ClipLayerDropCallback m_clipLayerDropCallback;
     GenerativeLayerDropCallback m_generativeLayerDropCallback;
+    TextLayerDropCallback m_textLayerDropCallback;
     MediaDurationLookup m_mediaDurationLookup;
 
     /**

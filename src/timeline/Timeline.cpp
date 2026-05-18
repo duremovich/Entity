@@ -243,6 +243,7 @@ Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipE
 
     const auto* clip = m_registry.try_get<Clip>(clipEntity);
     const auto* oal  = m_registry.try_get<ObjectAnimationLayer>(clipEntity);
+    const auto* gen  = m_registry.try_get<GenerativeLayer>(clipEntity);
 
     if (clip) {
         snap.kind             = DeletedLayerKind::Clip;
@@ -284,6 +285,29 @@ Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipE
         if (const auto* lay = m_registry.try_get<Layer>(clipEntity)) {
             snap.startFrame = lay->startFrame;
             snap.duration   = lay->duration;
+        }
+    } else if (gen) {
+        snap.kind    = DeletedLayerKind::Generative;
+        snap.genLayer = *gen;
+        if (const auto* lay = m_registry.try_get<Layer>(clipEntity)) {
+            snap.startFrame = lay->startFrame;
+            snap.duration   = lay->duration;
+        }
+        if (const auto* tr = m_registry.try_get<Transform>(clipEntity)) {
+            snap.hadTransform = true;
+            snap.transform    = *tr;
+        }
+        if (const auto* ml = m_registry.try_get<MediaLayer>(clipEntity)) {
+            snap.hadMediaLayer = true;
+            snap.mediaLayer    = *ml;
+        }
+        if (const auto* muncher = m_registry.try_get<MunchersGameState>(clipEntity)) {
+            snap.hadMuncher    = true;
+            snap.munchersState = *muncher;
+        }
+        if (const auto* tls = m_registry.try_get<TextLayerState>(clipEntity)) {
+            snap.hadTextLayerState = true;
+            snap.textLayerState    = *tls;
         }
     } else {
         // Unknown archetype — clear track entity to mark invalid.
@@ -347,6 +371,65 @@ entt::entity Timeline::restoreDeletedClip(const DeletedClipSnapshot& snap) {
                   << " at frame=" << snap.startFrame << std::endl;
         // No clip-created callback for OA — there's no decoder / GPU slot to
         // provision. AnimationSystem picks up the entity on the next tick.
+        return newEntity;
+    }
+
+    if (snap.kind == DeletedLayerKind::Generative) {
+        // --- Generative layer restore ------------------------------------
+        auto& lay = m_registry.emplace<Layer>(newEntity);
+        lay.kind       = Layer::Kind::Generative;
+        lay.startFrame = snap.startFrame;
+        lay.duration   = snap.duration;
+        lay.name       = snap.layerName;
+        lay.color      = snap.layerColor;
+        if (auto* tt = m_registry.try_get<TimelineTrack>(snap.trackEntity)) {
+            lay.trackIndex = tt->trackIndex;
+        }
+
+        // GenerativeLayer — restore except renderTargetSlot which must be
+        // re-allocated by CompositorSystem on the first show-thread tick.
+        auto& gen = m_registry.emplace<GenerativeLayer>(newEntity);
+        gen.targetScreen  = m_registry.valid(snap.genLayer.targetScreen)
+                                ? snap.genLayer.targetScreen : entt::null;
+        gen.renderWidth   = snap.genLayer.renderWidth;
+        gen.renderHeight  = snap.genLayer.renderHeight;
+        gen.renderTargetSlot = -1;  // fresh slot; show thread provisions it
+
+        if (snap.hadTransform) {
+            auto& t = m_registry.emplace<Transform>(newEntity);
+            t       = snap.transform;
+            t.dirty = true;
+        }
+        if (snap.hadMediaLayer) {
+            m_registry.emplace<MediaLayer>(newEntity) = snap.mediaLayer;
+        }
+
+        if (snap.hadTextLayerState) {
+            auto& tls = m_registry.emplace<TextLayerState>(newEntity);
+            tls             = snap.textLayerState;
+            tls.dirty       = true;  // force re-rasterize
+            tls.textureSlot = -1;    // fresh slot
+            tls.bakedWidth  = 0;
+            tls.bakedHeight = 0;
+        } else if (snap.hadMuncher) {
+            // Restore game state but reset the tick counter — session restart.
+            auto& gs = m_registry.emplace<MunchersGameState>(newEntity);
+            gs.simFrame = 0;
+        }
+
+        if (snap.hadAnimatedProperties) {
+            m_registry.emplace<AnimatedProperties>(newEntity) = snap.animatedProperties;
+        }
+
+        track->layers.push_back(newEntity);
+        track->sortLayers(m_registry);
+        m_selectedClip = newEntity;
+
+        std::cout << "[Timeline] Restored generative layer entity="
+                  << static_cast<uint32_t>(newEntity)
+                  << " on track=" << static_cast<uint32_t>(snap.trackEntity)
+                  << " at frame=" << snap.startFrame << std::endl;
+        // No clip-created callback — GenerativeSystem picks up on next tick.
         return newEntity;
     }
 

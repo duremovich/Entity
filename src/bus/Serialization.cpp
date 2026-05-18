@@ -428,6 +428,9 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["muncher_pelletBits"] = packHex(g.muncher_pelletBits);
     j["muncher_score"]     = g.muncher_score;
     j["muncher_lives"]     = g.muncher_lives;
+    j["textTextureSlot"]   = g.textTextureSlot;
+    j["textBakedWidth"]    = g.textBakedWidth;
+    j["textBakedHeight"]   = g.textBakedHeight;
     auto xfArr = ojson::array();
     for (float v : g.transformMatrix) xfArr.push_back(v);
     j["transformMatrix"]   = std::move(xfArr);
@@ -439,8 +442,8 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     GenerativeLayerSnapshot g;
     g.entity            = j.value("entity",            std::uint64_t{0});
     int kindInt         = j.value("kind",              0);
-    g.kind              = (kindInt == 0)
-                            ? GenerativeLayerSnapshot::Kind::Muncher
+    g.kind              = (kindInt == 1)
+                            ? GenerativeLayerSnapshot::Kind::Text
                             : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
     g.targetScreen      = j.value("targetScreen",      std::uint64_t{UINT64_MAX});
     int gModeRaw        = j.value("mode",              0);
@@ -496,6 +499,9 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
         unpackHex(j.at("muncher_pelletBits").get<std::string>(), g.muncher_pelletBits);
     g.muncher_score     = j.value("muncher_score",     std::uint16_t{0});
     g.muncher_lives     = j.value("muncher_lives",     std::uint16_t{3});
+    g.textTextureSlot   = j.value("textTextureSlot",   std::int32_t{-1});
+    g.textBakedWidth    = j.value("textBakedWidth",    std::uint32_t{0});
+    g.textBakedHeight   = j.value("textBakedHeight",   std::uint32_t{0});
     if (j.contains("transformMatrix")) {
         const auto& arr = j.at("transformMatrix");
         for (std::size_t i = 0; i < g.transformMatrix.size() && i < arr.size(); ++i)

@@ -1,0 +1,100 @@
+{
+    "version": 1,
+    "description": "Smoke: create Muncher + Text layers, delete each, then copy+paste Muncher. Exercises the Phase 6 generative snapshot/restore paths. No Undo script command exists yet -- undo coverage deferred to Phase 7 integration tests.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "DeleteSmokeScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "DeleteClip"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "DeleteClip"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "CopyClip"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "PasteClip"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

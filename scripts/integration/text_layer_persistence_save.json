@@ -1,0 +1,52 @@
+{
+    "version": 1,
+    "description": "Text layer round-trip (save half). Creates a Text generative layer on track 0, sets text/font/size/bold/italic/alignment, then saves to test_output/text_layer_persistence/test.entity. The load script asserts all fields survive the round-trip.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "TextPersistScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.1
+        },
+        {
+            "type": "SetTextLayerProperties",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "text": "HelloRoundtrip",
+            "fontFamily": "Segoe UI",
+            "fontSize": 72.0,
+            "colorR": 1.0,
+            "colorG": 0.5,
+            "colorB": 0.25,
+            "colorA": 1.0,
+            "alignment": "Right",
+            "bold": true,
+            "italic": true
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "SaveProject",
+            "filepath": "test_output/text_layer_persistence/test.entity"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

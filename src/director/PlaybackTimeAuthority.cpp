@@ -15,6 +15,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/TextLayerState.hpp"
 #include "entity/components/OutputSurface.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
@@ -1135,6 +1136,11 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             snap.muncher_pelletBits = mgs->pelletBits;
             snap.muncher_score      = mgs->score;
             snap.muncher_lives      = mgs->lives;
+        } else if (const auto* tls = m_registry.try_get<TextLayerState>(entity)) {
+            snap.kind            = bus::GenerativeLayerSnapshot::Kind::Text;
+            snap.textTextureSlot = tls->textureSlot;
+            snap.textBakedWidth  = tls->bakedWidth;
+            snap.textBakedHeight = tls->bakedHeight;
         } else {
             // No kind-specific state component → skip (defensive — the
             // editor-side creation paths always attach one).

@@ -100,7 +100,7 @@ if(WIN32)
     # dxcompiler.lib is the runtime DXC API (dxcapi.h) — needed by
     # RuntimeShaderCompiler for OCIO-generated shader fragments. The
     # offline shader build path uses dxc.exe from the same SDK.
-    set(D3D12_LIBRARIES d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib dxcompiler.lib)
+    set(D3D12_LIBRARIES d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib dxcompiler.lib dwrite.lib d2d1.lib windowscodecs.lib ole32.lib)
     message(STATUS "  D3D12: Using Windows SDK libraries")
 endif()
 
@@ -176,6 +176,7 @@ target_sources(EntityMediaCore
 
         # Render
         src/render/D3D12Renderer.cpp
+        src/render/TextRasterizer.cpp
         src/render/D3D12Device.cpp
         src/render/OutputManager.cpp
         src/render/RuntimeShaderCompiler.cpp
@@ -223,6 +224,7 @@ target_sources(EntityMediaCore
         src/systems/AnimationSystem.cpp
         src/systems/GenerativeSystem.cpp
         src/systems/RoutingLibrarySystem.cpp
+        src/systems/TextSystem.cpp
         src/systems/CameraControlSystem.cpp
 
         # Effects (issue #54)

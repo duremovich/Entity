@@ -150,7 +150,7 @@ lets the show thread re-evaluate tracks per render frame during editor stalls
 
 ---
 
-## Generative — Procedural content layer (Muncher, future kinds)
+## Generative — Procedural content layer (Muncher, Text, future kinds)
 
 | Required | Optional |
 |---|---|
@@ -158,24 +158,34 @@ lets the show thread re-evaluate tracks per render frame during editor stalls
 | `GenerativeLayer` | |
 | `Transform` | |
 | `MediaLayer` | |
-| `<kind-specific state>` (e.g. `MunchersGameState`) | |
+| `<kind-specific state>` (e.g. `MunchersGameState`, `TextLayerState`) | |
 
-**Invariant**: `Layer::startFrame ≤ currentFrame < Layer::startFrame + Layer::duration`
+**Invariant**: `Layer::startFrame <= currentFrame < Layer::startFrame + Layer::duration`
 → the layer is *active*. `GenerativeSystem` ticks the kind-specific state
-component (`MunchersGameState` for Muncher). On the show thread,
-`CompositorSystem` PASS 1 renders the procedural content into the layer's
-own compose target (allocated lazily via the same R2D-ack pattern Screen
-uses); PASS 2 then composites that texture onto the target screen via
-`drawTexturedQuad(layerRT, transformMatrix, opacity, blendMode, ...)`.
+component (`MunchersGameState` for Muncher; `TextLayerState` dirty-flag triggers
+`TextSystem` rasterization). On the show thread, `CompositorSystem` PASS 1 renders
+the procedural content into the layer's own compose target (allocated lazily via
+the same R2D-ack pattern Screen uses); PASS 2 then composites that texture onto the
+target screen via `drawTexturedQuad(layerRT, transformMatrix, opacity, blendMode, ...)`.
 
-**Sub-kind dispatch is by component composition** (ADR-0016 / 0017):
-`MunchersGameState` presence ⇒ Muncher; future `ParticlesState` ⇒ Particles;
-etc. The compositor's PASS 2 is *kind-blind* — it only sees the unified
+**Sub-kind dispatch is by component composition** (ADR-0016 / 0017 / 0018):
+
+| Kind-specific component | Sub-kind | Ticked by | Persistence |
+|---|---|---|---|
+| `MunchersGameState` | Muncher | `GenerativeSystem` | schema v21 `sub_kind="muncher"` |
+| `TextLayerState` | Text | `TextSystem` (dirty-flag rasterize) | schema v21 `sub_kind="text"` + `text_state` object |
+| _(none)_ | (reserved) | — | — |
+
+Presence of the kind-specific component is the sole discriminator —
+there is no Kind-enum field on the entity for runtime dispatch.
+The compositor's PASS 2 is *kind-blind*: it only reads the unified
 `ContentLayerSnapshot`. See ADR-0018.
 
 **Created at**:
-- `src/core/Engine.cpp` (`createMuncherLayer`) — used by
-  `CreateMuncherLayerCommand` and the LayersWindow "Muncher" drag-source.
+- `src/core/Engine.cpp` (`createMuncherLayer`, `createTextLayer`) — used by
+  `CreateMuncherLayerCommand` / `CreateTextLayerCommand` and the LayersWindow
+  drag-sources.
+- `src/project/ProjectSerializer.cpp` (project load, schema v21 generative branch).
 
 **Notes**:
 - `GenerativeLayer::targetScreen` routes the produced texture to a single
@@ -184,13 +194,30 @@ etc. The compositor's PASS 2 is *kind-blind* — it only sees the unified
 - `GenerativeLayer::renderTargetSlot` is `-1` until CompositorSystem PASS 1
   allocates a compose target and the R2D ack
   (`GenerativeLayerRenderTargetAllocated`) writes the slot back on the
-  editor thread.
+  editor thread. For Text layers, `TextLayerState::textureSlot` is the video-
+  pool descriptor slot; `TextSystem::onTextLayerDestroyed` frees it on entity
+  destruction.
 - `Transform` is the layer's UV-space transform in the **target screen's
   NDC**, same semantics as Clip — `scale=1` fills the screen,
   `position=(0,0)` centers it. ADR-0018.
 - `MunchersGameState` is ~120 bytes — exceeds the components/CLAUDE.md
   <64-byte soft rule, documented exception in ADR-0017 (one Muncher per
   layer, not iterated in a tight view).
+- `TextLayerState` holds std::string members (text, fontFamily) — same
+  soft-rule exception as `MunchersGameState`. One per layer, never in a
+  hot-path view. `dirty=true` triggers a re-rasterize on the next
+  `TextSystem::update` tick.
+- **Delete / copy / paste** of Generative layers is fully supported as of
+  Phase 6. `Timeline::snapshotClipForDelete` captures the full `GenerativeLayer`
+  + Transform + MediaLayer + kind-specific state into `DeletedClipSnapshot`.
+  `restoreDeletedClip` rebuilds the entity from the snapshot with a fresh
+  `renderTargetSlot=-1` and `textureSlot=-1` so the PASS 1 / TextSystem
+  allocators re-acquire resources cleanly. Copy/paste goes through
+  `Engine::snapshotClipForClipboard` / `materializeClipFromSnapshot` — the
+  same path as Clip, with EffectChain deep-clone and ContentRoutingRef
+  shallow-copy applied to both kinds from a shared tail in
+  `materializeClipFromSnapshot`. OA layers are intentionally excluded from
+  copy/paste (entity-ID cross-session validity).
 
 ---
 

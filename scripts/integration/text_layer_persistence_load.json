@@ -1,0 +1,138 @@
+{
+    "version": 1,
+    "description": "Text layer round-trip (load half). Loads test_output/text_layer_persistence/test.entity and asserts that TextLayerState fields (text, fontFamily, fontSize, colorR/G/B/A, alignment, bold, italic) all survived the serialization round-trip.",
+    "commands": [
+        {
+            "type": "LoadProject",
+            "filepath": "test_output/text_layer_persistence/test.entity"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.1
+        },
+        {
+            "type": "AssertScreenExists",
+            "name": "TextPersistScreen"
+        },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 1
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "text",
+            "expected": "HelloRoundtrip"
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "fontFamily",
+            "expected": "Segoe UI"
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "fontSize",
+            "expectedFloat": 72.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "colorR",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "colorG",
+            "expectedFloat": 0.5,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "colorB",
+            "expectedFloat": 0.25,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "colorA",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "alignment",
+            "expected": "Right"
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "bold",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "italic",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "DeleteClip" },
+        { "type": "WaitFrames", "count": 3 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 0
+        },
+        { "type": "Undo" },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 1
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "text",
+            "expected": "HelloRoundtrip"
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "field": "bold",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

@@ -195,7 +195,7 @@ struct ContentLayerRoute {
 //       this each render frame to drive the placeholder hue-cycle. Real
 //       game state (Muncher pos, ghosts, pellets, score) lands here in v2.
 struct GenerativeLayerSnapshot {
-    enum class Kind : int { Muncher = 0 };
+    enum class Kind : int { Muncher = 0, Text = 1 };
 
     std::uint64_t entity{0};
     Kind          kind{Kind::Muncher};
@@ -246,6 +246,13 @@ struct GenerativeLayerSnapshot {
     std::array<std::uint64_t, 4>  muncher_pelletBits{0ull, 0ull, 0ull, 0ull};
     std::uint16_t                 muncher_score{0};
     std::uint16_t                 muncher_lives{3};
+
+    // Text-specific baked state. Meaningful only when kind == Text.
+    // textTextureSlot is the video-pool descriptor slot TextSystem uploads
+    // the rasterized RGBA8 frame into; -1 = not yet uploaded.
+    std::int32_t  textTextureSlot{-1};
+    std::uint32_t textBakedWidth{0};
+    std::uint32_t textBakedHeight{0};
 };
 
 // One snapshot of an AnimatedProperties keyframe — bus-safe mirror of

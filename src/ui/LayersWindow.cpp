@@ -9,12 +9,14 @@ namespace entity {
 namespace {
 
 // One row in the layer palette: tinted color swatch + label, draggable.
-// Payload is a single uint8_t Layer::Kind (already the contract used by
-// TimelineWidget's accept side, "LAYER_KIND").
+// Payload is two bytes: [Layer::Kind, subKind]. subKind is 0 for Clip / OA /
+// Muncher (ignored by the accept side for non-Generative kinds), and 1 for
+// Text. TimelineWidget reads both bytes to dispatch to the right callback.
 void layerPaletteRow(const char* label,
                      const char* tooltip,
                      Layer::Kind kind,
-                     ImVec4 swatch)
+                     ImVec4 swatch,
+                     uint8_t subKind = 0)
 {
     const float lineH = ImGui::GetTextLineHeightWithSpacing();
     const float swatchSize = lineH * 0.55f;
@@ -51,8 +53,8 @@ void layerPaletteRow(const char* label,
     }
 
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-        uint8_t payload = static_cast<uint8_t>(kind);
-        ImGui::SetDragDropPayload("LAYER_KIND", &payload, sizeof(payload));
+        uint8_t payload[2] = {static_cast<uint8_t>(kind), subKind};
+        ImGui::SetDragDropPayload("LAYER_KIND", payload, sizeof(payload));
         ImGui::Text("%s", label);
         ImGui::EndDragDropSource();
     }
@@ -92,7 +94,17 @@ void LayersWindow::render() {
             "A maze-chase mini-game rendered into the layer's render target;\n"
             "responds to external inputs (OSC / MIDI / keyboard) over time.",
             Layer::Kind::Generative,
-            ImVec4(0.85f, 0.78f, 0.20f, 1.0f));
+            ImVec4(0.85f, 0.78f, 0.20f, 1.0f),
+            0);  // subKind 0 = Muncher
+
+        layerPaletteRow(
+            "Text",
+            "Drag onto a track to create a Text generative layer.\n"
+            "Renders a text string into the layer's render target.\n"
+            "Set content, font, and color in the Properties panel.",
+            Layer::Kind::Generative,
+            ImVec4(0.20f, 0.72f, 0.85f, 1.0f),
+            1);  // subKind 1 = Text
     }
 
     // === Previz ===

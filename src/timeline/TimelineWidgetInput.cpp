@@ -1226,17 +1226,23 @@ void TimelineWidget::handleContextMenus() {
             const auto idx = findClipIndices(m_timeline, m_rightClickedClip);
             const bool hasIdx = idx.has_value();
             const bool isClipKind = (clip != nullptr);
+            // Any layer with a Layer component (Clip or Generative) is copyable.
+            // OA layers are excluded: their targetScreen ref isn't meaningful
+            // on paste to an unrelated session state.
+            const bool isCopyable = hasIdx &&
+                registry.all_of<Layer>(m_rightClickedClip) &&
+                !registry.all_of<ObjectAnimationLayer>(m_rightClickedClip);
             const bool clipboardFull =
                 m_engine && m_engine->clipClipboard().has_value() &&
                 m_engine->clipClipboard()->valid;
 
-            if (ImGui::MenuItem("Cut", "Ctrl+X", false, isClipKind && hasIdx)) {
+            if (ImGui::MenuItem("Cut", "Ctrl+X", false, isCopyable)) {
                 if (m_commandDispatcher) {
                     m_commandDispatcher->enqueue(std::make_unique<CutClipCommand>(
                         static_cast<uint32_t>(m_rightClickedClip)));
                 }
             }
-            if (ImGui::MenuItem("Copy", "Ctrl+C", false, isClipKind && hasIdx)) {
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false, isCopyable)) {
                 if (m_commandDispatcher) {
                     m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
                         static_cast<uint32_t>(m_rightClickedClip)));

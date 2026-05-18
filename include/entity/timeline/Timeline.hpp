@@ -3,9 +3,12 @@
 #include "entity/core/Types.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
+#include "entity/components/MunchersGameState.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/TextLayerState.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/timeline/CueTag.hpp"
 #include <entt/entt.hpp>
@@ -141,6 +144,7 @@ public:
     enum class DeletedLayerKind : std::uint8_t {
         Clip            = 0,
         ObjectAnimation = 1,
+        Generative      = 2,
     };
 
     struct DeletedClipSnapshot {
@@ -179,10 +183,17 @@ public:
         uint32_t           videoTexHeight{0};
         bool               hadFrameBuffer{false};
 
-        // OA-only data. Unused when kind == Clip.
+        // OA-only data. Unused when kind == Clip or Generative.
         entt::entity                          oaTarget{entt::null};
         SectionBehavior                       oaSectionBehavior{SectionBehavior::Normal};
         ObjectAnimationLayer::EndBehavior     oaEndBehavior{ObjectAnimationLayer::EndBehavior::Hold};
+
+        // Generative-only data. Unused when kind == Clip or ObjectAnimation.
+        GenerativeLayer                       genLayer{};
+        bool                                  hadMuncher{false};
+        MunchersGameState                     munchersState{};  // only simFrame; resets on restore
+        bool                                  hadTextLayerState{false};
+        TextLayerState                        textLayerState{};
 
         // Shared — animated keyframes (clip Transform/Opacity/etc. or OA
         // Position/Rotation/Scale tracks).

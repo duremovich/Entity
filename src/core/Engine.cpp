@@ -33,6 +33,7 @@
 #include "entity/systems/CompositorSystem.hpp"
 #include "entity/systems/AnimationSystem.hpp"
 #include "entity/systems/RoutingLibrarySystem.hpp"
+#include "entity/systems/TextSystem.hpp"
 #include "entity/systems/GenerativeSystem.hpp"
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/input/InputBus.hpp"
@@ -59,6 +60,7 @@
 #include "entity/components/EffectChainRenderTargets.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/TextLayerState.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Screen.hpp"
@@ -245,6 +247,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_animationSystem   = m_director->getAnimationSystem();
     m_generativeSystem  = m_director->getGenerativeSystem();
     m_routingLibrarySystem = m_director->getRoutingLibrarySystem();
+    m_textSystem           = m_director->getTextSystem();
     m_timeAuthority     = m_director->getTimeAuthority();
     m_sectionScheduler  = m_director->getSectionScheduler();
 
@@ -487,6 +490,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             auto screenView = m_registry.view<Screen>();
             if (!screenView.empty()) target = *screenView.begin();
             entt::entity created = this->createMuncherLayer(target, trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
+        timelineWidget->setTextLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            entt::entity target = entt::null;
+            auto screenView = m_registry.view<Screen>();
+            if (!screenView.empty()) target = *screenView.begin();
+            entt::entity created = this->createTextLayer(target, trackIndex, startFrame, duration);
             if (created != entt::null && m_timeline) {
                 m_timeline->setSelectedClip(created);
             }
@@ -763,6 +775,7 @@ void Engine::shutdown() {
     m_timeAuthority      = nullptr;
     m_animationSystem    = nullptr;
     m_generativeSystem   = nullptr;
+    m_textSystem         = nullptr;
     m_commandDispatcher  = nullptr;
     m_inputBus.reset();
     m_transcodeManager   = nullptr;
@@ -1741,6 +1754,12 @@ void Engine::update() {
             m_inputBus->setFloat("muncher.input.y", 0.0f);
             m_muncherKeyboardActive = false;
         }
+    }
+    // TextSystem rasterizes dirty TextLayerState components into video-pool
+    // slots. Runs before GenerativeSystem so the textureSlot is settled
+    // before the generative snapshot bake reads it. Editor-thread only.
+    if (m_textSystem) {
+        m_textSystem->update(m_registry, static_cast<float>(deltaTime));
     }
     // GenerativeSystem ticks after AnimationSystem so any animated parameter
     // on a generative layer (e.g. a future opacity track) is settled before
@@ -3608,6 +3627,55 @@ entt::entity Engine::createMuncherLayer(entt::entity targetScreen,
     return layerEntity;
 }
 
+entt::entity Engine::createTextLayer(entt::entity targetScreen,
+                                     int trackIndex,
+                                     FrameNumber startFrame,
+                                     FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createTextLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::Generative;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    // Cyan-blue: distinct from Clip (blue), Muncher (yellow-green), OA (purple).
+    lay.color      = {0.20f, 0.72f, 0.85f, 1.0f};
+    lay.name       = "Text";
+
+    auto& gl = m_registry.emplace<GenerativeLayer>(layerEntity);
+    gl.targetScreen = targetScreen;
+    // Default to 1280x720 for Text — keeps per-bake CPU+upload cost low so
+    // property edits feel real-time. Users can bump it up via Render Target
+    // for sharper text on a high-res screen.
+    gl.renderWidth  = 1280;
+    gl.renderHeight = 720;
+
+    m_registry.emplace<TextLayerState>(layerEntity);
+    m_registry.emplace<MediaLayer>(layerEntity);
+    m_registry.emplace<Transform>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created Text generative layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
+}
+
 void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackIndex, Timecode position) {
     std::cout << "\n========================================" << std::endl;
     std::cout << "Media Dropped on Timeline" << std::endl;
@@ -4351,8 +4419,14 @@ ClipClipboardSnapshot Engine::snapshotClipForClipboard(entt::entity src) const {
 
     // Reuse Timeline's delete-snapshot for the common archetype state.
     out.base = m_timeline->snapshotClipForDelete(src);
-    if (!out.base.valid() || out.base.kind != Timeline::DeletedLayerKind::Clip) {
-        return out;  // not a clip on a track — refuse to clipboard.
+    if (!out.base.valid()) {
+        return out;  // not on a track — refuse to clipboard.
+    }
+    // Clip and Generative layers are copyable; OA layers are not (they
+    // target a specific Screen entity that may not exist on paste).
+    if (out.base.kind == Timeline::DeletedLayerKind::ObjectAnimation) {
+        out.base = {};  // invalidate
+        return out;
     }
 
     // Resolve source track index for paste-fallback "no selection" path.
@@ -4409,8 +4483,8 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
         std::cerr << "[Engine] materializeClipFromSnapshot: invalid snapshot" << std::endl;
         return entt::null;
     }
-    if (snap.base.kind != Timeline::DeletedLayerKind::Clip) {
-        std::cerr << "[Engine] materializeClipFromSnapshot: only Clip kind supported" << std::endl;
+    if (snap.base.kind == Timeline::DeletedLayerKind::ObjectAnimation) {
+        std::cerr << "[Engine] materializeClipFromSnapshot: OA kind not copyable" << std::endl;
         return entt::null;
     }
 
@@ -4443,56 +4517,104 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
     entt::entity dst = m_registry.create();
     const auto& b = snap.base;
 
-    auto& newClip = m_registry.emplace<Clip>(dst);
-    newClip.filepath         = b.filepath;
-    newClip.mediaType        = b.mediaType;
-    newClip.startFrame       = dstStartFrame;
-    newClip.duration         = b.duration;
-    newClip.mediaStartFrame  = b.mediaStartFrame;
-    newClip.mediaOutFrame    = b.mediaOutFrame;
-    newClip.totalMediaFrames = b.totalMediaFrames;
-    newClip.framerate        = b.framerate;
-    newClip.playbackMode     = b.playbackMode;
-    newClip.sectionBehavior  = b.sectionBehavior;
-    newClip.width            = b.width;
-    newClip.height           = b.height;
-    newClip.hasAlpha         = b.hasAlpha;
-    newClip.frameBlending    = b.frameBlending;
-    newClip.targetScreen     = b.targetScreen;
-    newClip.loaded           = false;
-    newClip.decoding         = false;
-    // FFmpeg pointers stay null — fresh decoder opens via onClipCreated.
-
-    if (b.hadTransform) {
-        auto& t = m_registry.emplace<Transform>(dst);
-        t = b.transform;
-        t.dirty = true;
-    }
-    if (b.hadMediaLayer) {
-        m_registry.emplace<MediaLayer>(dst) = b.mediaLayer;
-    }
-    if (b.hadVideoTexture) {
-        auto& vt = m_registry.emplace<VideoTexture>(dst);
-        vt.width  = b.videoTexWidth;
-        vt.height = b.videoTexHeight;
-        // descriptorSlot stays at the default (UINT32_MAX) so onClipCreated
-        // requests a fresh slot via the bus.
-    }
-    if (b.hadFrameBuffer) {
-        m_registry.emplace<FrameBuffer>(dst);
-    }
-    {
+    // --- Generative layer paste ------------------------------------------
+    if (b.kind == Timeline::DeletedLayerKind::Generative) {
         auto& lay = m_registry.emplace<Layer>(dst);
-        lay.kind        = Layer::Kind::Clip;
-        lay.startFrame  = dstStartFrame;
-        lay.duration    = b.duration;
-        lay.trackIndex  = static_cast<std::uint32_t>(trackIdx);
-        lay.name        = b.layerName;
-        lay.color       = b.layerColor;
+        lay.kind       = Layer::Kind::Generative;
+        lay.startFrame = dstStartFrame;
+        lay.duration   = b.duration;
+        lay.trackIndex = static_cast<std::uint32_t>(trackIdx);
+        lay.name       = b.layerName;
+        lay.color      = b.layerColor;
+
+        auto& gen = m_registry.emplace<GenerativeLayer>(dst);
+        gen.targetScreen     = m_registry.valid(b.genLayer.targetScreen)
+                                   ? b.genLayer.targetScreen : entt::null;
+        gen.renderWidth      = b.genLayer.renderWidth;
+        gen.renderHeight     = b.genLayer.renderHeight;
+        gen.renderTargetSlot = -1;  // fresh slot
+
+        if (b.hadTransform) {
+            auto& t = m_registry.emplace<Transform>(dst);
+            t       = b.transform;
+            t.dirty = true;
+        }
+        if (b.hadMediaLayer) {
+            m_registry.emplace<MediaLayer>(dst) = b.mediaLayer;
+        }
+
+        if (b.hadTextLayerState) {
+            auto& tls = m_registry.emplace<TextLayerState>(dst);
+            tls             = b.textLayerState;
+            tls.dirty       = true;
+            tls.textureSlot = -1;
+            tls.bakedWidth  = 0;
+            tls.bakedHeight = 0;
+        } else if (b.hadMuncher) {
+            auto& gs = m_registry.emplace<MunchersGameState>(dst);
+            gs.simFrame = 0;  // reset; game state doesn't survive copy
+        }
+
+        if (b.hadAnimatedProperties) {
+            m_registry.emplace<AnimatedProperties>(dst) = b.animatedProperties;
+        }
+        // Fall through to shared tail (ContentRoutingRef, EffectChain, track wiring).
+
+    } else {
+        // --- Clip paste --------------------------------------------------
+        auto& newClip = m_registry.emplace<Clip>(dst);
+        newClip.filepath         = b.filepath;
+        newClip.mediaType        = b.mediaType;
+        newClip.startFrame       = dstStartFrame;
+        newClip.duration         = b.duration;
+        newClip.mediaStartFrame  = b.mediaStartFrame;
+        newClip.mediaOutFrame    = b.mediaOutFrame;
+        newClip.totalMediaFrames = b.totalMediaFrames;
+        newClip.framerate        = b.framerate;
+        newClip.playbackMode     = b.playbackMode;
+        newClip.sectionBehavior  = b.sectionBehavior;
+        newClip.width            = b.width;
+        newClip.height           = b.height;
+        newClip.hasAlpha         = b.hasAlpha;
+        newClip.frameBlending    = b.frameBlending;
+        newClip.targetScreen     = b.targetScreen;
+        newClip.loaded           = false;
+        newClip.decoding         = false;
+        // FFmpeg pointers stay null — fresh decoder opens via onClipCreated.
+
+        if (b.hadTransform) {
+            auto& t = m_registry.emplace<Transform>(dst);
+            t = b.transform;
+            t.dirty = true;
+        }
+        if (b.hadMediaLayer) {
+            m_registry.emplace<MediaLayer>(dst) = b.mediaLayer;
+        }
+        if (b.hadVideoTexture) {
+            auto& vt = m_registry.emplace<VideoTexture>(dst);
+            vt.width  = b.videoTexWidth;
+            vt.height = b.videoTexHeight;
+            // descriptorSlot stays at the default (UINT32_MAX) so onClipCreated
+            // requests a fresh slot via the bus.
+        }
+        if (b.hadFrameBuffer) {
+            m_registry.emplace<FrameBuffer>(dst);
+        }
+        {
+            auto& lay = m_registry.emplace<Layer>(dst);
+            lay.kind        = Layer::Kind::Clip;
+            lay.startFrame  = dstStartFrame;
+            lay.duration    = b.duration;
+            lay.trackIndex  = static_cast<std::uint32_t>(trackIdx);
+            lay.name        = b.layerName;
+            lay.color       = b.layerColor;
+        }
+        if (b.hadAnimatedProperties) {
+            m_registry.emplace<AnimatedProperties>(dst) = b.animatedProperties;
+        }
     }
-    if (b.hadAnimatedProperties) {
-        m_registry.emplace<AnimatedProperties>(dst) = b.animatedProperties;
-    }
+
+    // --- Shared tail: ContentRoutingRef + EffectChain (all copyable kinds) ---
 
     // ContentRoutingRef — shallow copy (asset entity ref is intentionally
     // shared with the source).
@@ -4550,16 +4672,20 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
     // Wire into the track and sort by start frame.
     track->layers.push_back(dst);
     track->sortLayers(m_registry);
+    // syncLayerFromClip is a no-op for non-Clip entities (no Clip component).
     Timeline::syncLayerFromClip(m_registry, dst);
 
     std::cout << "[Engine] materializeClipFromSnapshot: entity=" << static_cast<uint32_t>(dst)
               << " track=" << trackIdx << " frame=" << dstStartFrame
+              << " kind=" << static_cast<int>(b.kind)
               << " effects=" << (snap.hadEffectChain ? snap.effectNodes.size() : 0)
               << std::endl;
 
-    // Open decoder + request GPU slot.
-    if (!newClip.filepath.empty()) {
-        onClipCreated(dst, newClip.filepath);
+    // Open decoder + request GPU slot (Clip kind only).
+    if (const auto* c = m_registry.try_get<Clip>(dst)) {
+        if (!c->filepath.empty()) {
+            onClipCreated(dst, c->filepath);
+        }
     }
     return dst;
 }

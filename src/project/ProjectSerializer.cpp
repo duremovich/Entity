@@ -18,6 +18,9 @@
 #include "entity/components/ContentRoutingAssetOps.hpp"
 #include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/Layer.hpp"
+#include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/MunchersGameState.hpp"
+#include "entity/components/TextLayerState.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
@@ -514,9 +517,78 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     oaJson["animatedProperties"] = serializeAnimatedProperties(ap);
 
                     layersJson.push_back(oaJson);
+
+                } else if (const auto* genLayer = registry.try_get<GenerativeLayer>(layerEntity)) {
+                    // --- kind: "generative" (v21+) ---
+                    json genJson;
+                    genJson["kind"] = "generative";
+
+                    const auto* lay = registry.try_get<Layer>(layerEntity);
+                    genJson["startFrame"] = lay ? lay->startFrame : 0;
+                    genJson["duration"]   = lay ? lay->duration   : 0;
+                    genJson["name"]       = lay ? lay->name       : "";
+                    if (lay) {
+                        genJson["color"] = { lay->color[0], lay->color[1],
+                                             lay->color[2], lay->color[3] };
+                    }
+
+                    // targetScreen by name (entity IDs are not stable across sessions)
+                    std::string tgtName;
+                    if (genLayer->targetScreen != entt::null
+                        && registry.valid(genLayer->targetScreen)
+                        && registry.all_of<Screen>(genLayer->targetScreen)) {
+                        tgtName = registry.get<Screen>(genLayer->targetScreen).name;
+                    }
+                    genJson["targetScreenName"] = tgtName;
+                    genJson["renderWidth"]  = genLayer->renderWidth;
+                    genJson["renderHeight"] = genLayer->renderHeight;
+
+                    // ContentRoutingRef (v20+)
+                    if (const auto* ref = registry.try_get<ContentRoutingRef>(layerEntity)) {
+                        if (ref->asset != entt::null && registry.valid(ref->asset)) {
+                            if (const auto* a = registry.try_get<ContentRoutingAsset>(ref->asset))
+                                genJson["contentRoutingAssetName"] = a->name;
+                        }
+                    }
+
+                    // Transform
+                    if (const auto* t = registry.try_get<Transform>(layerEntity)) {
+                        genJson["transform"]["position"] = { t->position.x, t->position.y, t->position.z };
+                        genJson["transform"]["rotation"] = { t->rotation.x, t->rotation.y, t->rotation.z };
+                        genJson["transform"]["scale"]    = { t->scale.x,    t->scale.y,    t->scale.z    };
+                    }
+
+                    // MediaLayer
+                    if (const auto* ml = registry.try_get<MediaLayer>(layerEntity)) {
+                        genJson["layer"]["zOrder"]    = ml->zOrder;
+                        genJson["layer"]["opacity"]   = ml->opacity;
+                        genJson["layer"]["blendMode"] = blendModeToJson(ml->blendMode);
+                        genJson["layer"]["visible"]   = ml->visible;
+                    }
+
+                    // sub-kind discriminator + kind-specific persistent state
+                    if (registry.all_of<TextLayerState>(layerEntity)) {
+                        genJson["sub_kind"] = "text";
+                        const auto& tls = registry.get<TextLayerState>(layerEntity);
+                        json tsJson;
+                        tsJson["text"]       = tls.text;
+                        tsJson["fontFamily"] = tls.fontFamily;
+                        tsJson["fontSize"]   = tls.fontSize;
+                        tsJson["color"]      = { tls.color.r, tls.color.g,
+                                                 tls.color.b, tls.color.a };
+                        tsJson["alignment"]  = static_cast<int>(tls.alignment);
+                        tsJson["bold"]       = tls.bold;
+                        tsJson["italic"]     = tls.italic;
+                        genJson["text_state"] = tsJson;
+                    } else {
+                        genJson["sub_kind"] = "muncher";
+                        // MunchersGameState resets each session — no persistent fields.
+                    }
+
+                    layersJson.push_back(genJson);
                 }
-                // Entities with neither Clip nor ObjectAnimationLayer are
-                // unrecognized and skipped — forward-compat guard.
+                // Entities with neither Clip, ObjectAnimationLayer, nor GenerativeLayer
+                // are unrecognized and skipped — forward-compat guard.
             }
 
             trackJson["layers"] = layersJson;
@@ -1520,6 +1592,103 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             continue;
                         }
 
+                        // --- kind: "generative" (v21+) ---
+                        if (kind == "generative") {
+                            entt::entity layerEntity = registry.create();
+
+                            auto& lay = registry.emplace<Layer>(layerEntity);
+                            lay.kind       = Layer::Kind::Generative;
+                            lay.startFrame = entryJson.value("startFrame", static_cast<FrameNumber>(0));
+                            lay.duration   = entryJson.value("duration",   static_cast<FrameNumber>(0));
+                            lay.name       = entryJson.value("name", std::string{});
+                            if (track) lay.trackIndex = track->trackIndex;
+                            if (entryJson.contains("color") && entryJson["color"].is_array()
+                                && entryJson["color"].size() >= 4) {
+                                lay.color = { entryJson["color"][0].get<float>(),
+                                              entryJson["color"][1].get<float>(),
+                                              entryJson["color"][2].get<float>(),
+                                              entryJson["color"][3].get<float>() };
+                            }
+
+                            auto& gen = registry.emplace<GenerativeLayer>(layerEntity);
+                            gen.renderWidth  = entryJson.value("renderWidth",  static_cast<uint32_t>(1920));
+                            gen.renderHeight = entryJson.value("renderHeight", static_cast<uint32_t>(1080));
+
+                            const std::string tgtName = entryJson.value("targetScreenName", "");
+                            gen.targetScreen = entt::null;
+                            if (!tgtName.empty()) {
+                                for (auto [se, s] : registry.view<Screen>().each()) {
+                                    if (s.name == tgtName) { gen.targetScreen = se; break; }
+                                }
+                            }
+
+                            // ContentRoutingRef (v20+)
+                            if (entryJson.contains("contentRoutingAssetName")) {
+                                const std::string assetName =
+                                    entryJson.value("contentRoutingAssetName", "");
+                                if (!assetName.empty()) {
+                                    for (auto [ae, a] : registry.view<ContentRoutingAsset>().each()) {
+                                        if (a.name == assetName) {
+                                            registry.emplace<ContentRoutingRef>(layerEntity).asset = ae;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            registry.emplace<Transform>(layerEntity);
+                            if (entryJson.contains("transform")) {
+                                auto& t = registry.get<Transform>(layerEntity);
+                                const auto& tj = entryJson["transform"];
+                                if (tj.contains("position") && tj["position"].size() >= 3)
+                                    t.setPosition({ tj["position"][0], tj["position"][1], tj["position"][2] });
+                                if (tj.contains("rotation") && tj["rotation"].size() >= 3)
+                                    t.setRotation({ tj["rotation"][0], tj["rotation"][1], tj["rotation"][2] });
+                                if (tj.contains("scale") && tj["scale"].size() >= 3)
+                                    t.setScale({ tj["scale"][0], tj["scale"][1], tj["scale"][2] });
+                            }
+
+                            auto& ml = registry.emplace<MediaLayer>(layerEntity);
+                            if (entryJson.contains("layer")) {
+                                const auto& lj = entryJson["layer"];
+                                ml.zOrder    = lj.value("zOrder",    static_cast<uint32_t>(0));
+                                ml.opacity   = lj.value("opacity",   1.0f);
+                                ml.blendMode = jsonToBlendMode(lj.value("blendMode", std::string{"Normal"}));
+                                ml.visible   = lj.value("visible",   true);
+                            }
+
+                            const std::string subKind = entryJson.value("sub_kind", "muncher");
+                            if (subKind == "text") {
+                                auto& tls = registry.emplace<TextLayerState>(layerEntity);
+                                if (entryJson.contains("text_state")) {
+                                    const auto& ts = entryJson["text_state"];
+                                    tls.text       = ts.value("text",       std::string{"Text"});
+                                    tls.fontFamily = ts.value("fontFamily", std::string{"Segoe UI"});
+                                    tls.fontSize   = ts.value("fontSize",   96.0f);
+                                    if (ts.contains("color") && ts["color"].is_array()
+                                        && ts["color"].size() >= 4) {
+                                        tls.color = { ts["color"][0].get<float>(),
+                                                      ts["color"][1].get<float>(),
+                                                      ts["color"][2].get<float>(),
+                                                      ts["color"][3].get<float>() };
+                                    }
+                                    tls.alignment = static_cast<TextAlignment>(ts.value("alignment", 1));
+                                    tls.bold      = ts.value("bold",   false);
+                                    tls.italic    = ts.value("italic", false);
+                                }
+                                tls.dirty = true;  // force re-bake on first tick
+                            } else {
+                                // Muncher or unrecognised sub-kind — emplace Muncher state
+                                // (game state resets each session; no persistent fields)
+                                registry.emplace<MunchersGameState>(layerEntity);
+                            }
+
+                            track->layers.push_back(layerEntity);
+                            std::cout << "[ProjectSerializer] Loaded generative layer ("
+                                      << subKind << "): " << lay.name << std::endl;
+                            continue;
+                        }
+
                         // --- kind: "clip" ---
                         if (kind != "clip") {
                             std::cerr << "[ProjectSerializer] Unknown layer kind '"
@@ -1748,14 +1917,8 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             if (auto* tt = registry.try_get<TimelineTrack>(trackEntity)) {
                                 lay.trackIndex = tt->trackIndex;
                             }
-                            if (clipJson.contains("kind")) {
-                                const std::string kindStr = clipJson.value("kind", "clip");
-                                if (kindStr == "generative") {
-                                    lay.kind = Layer::Kind::Generative;
-                                }
-                                // "clip" is already set; "object_animation" at this
-                                // path is impossible (handled by the OA branch above).
-                            }
+                            // only 'clip' entries reach this branch — OA, generative,
+                            // and future kinds are all caught above.
                         }
 
                         // Restore AnimatedProperties keyframes (v15+). Pre-v15

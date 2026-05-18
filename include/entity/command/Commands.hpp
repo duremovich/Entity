@@ -1964,6 +1964,38 @@ private:
 };
 
 /**
+ * CreateTextLayerCommand — script / UI command for creating a Text
+ * generative layer on the timeline.
+ *
+ * Mirrors CreateMuncherLayerCommand. Targets the first Screen entity found
+ * in the registry; retargetable via the Properties panel.
+ *
+ * Params:
+ *   trackIndex — 0-based index into timeline tracks
+ *   startFrame — first frame of the layer on the timeline
+ *   duration   — length in timeline frames
+ */
+class CreateTextLayerCommand : public Command {
+public:
+    CreateTextLayerCommand(int trackIndex, FrameNumber startFrame,
+                           FrameNumber duration)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreateTextLayer"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int          m_trackIndex;
+    FrameNumber  m_startFrame;
+    FrameNumber  m_duration;
+    entt::entity m_createdEntity{entt::null};
+};
+
+/**
  * AssertScreenSnapshotCommand — integration-test assertion.
  *
  * Calls PlaybackTimeAuthority::buildSceneSnapshot on demand and asserts a
@@ -2106,6 +2138,246 @@ private:
     std::size_t             m_savedPositionInChain{0};
 };
 
+// ============================================================================
+// Generative Layer Property Commands
+// ============================================================================
+
+/**
+ * SetGenerativeRenderSizeCommand — resize the render target of a Generative
+ * layer (Muncher, Text, or any future sub-kind).
+ *
+ * Affects GenerativeLayer::renderWidth / renderHeight.
+ * For Text layers, also sets TextLayerState::dirty so the rasterizer re-bakes.
+ *
+ * JSON format:
+ * { "type": "SetGenerativeRenderSize", "layerEntity": 12345,
+ *   "width": 1920, "height": 1080 }
+ */
+class SetGenerativeRenderSizeCommand : public UndoableCommand {
+public:
+    SetGenerativeRenderSizeCommand(entt::entity layerEntity,
+                                   std::uint32_t width, std::uint32_t height)
+        : m_layerEntity(layerEntity), m_width(width), m_height(height) {}
+
+    void setPreviousSize(std::uint32_t w, std::uint32_t h) {
+        m_prevWidth = w; m_prevHeight = h;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetGenerativeRenderSize"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity  m_layerEntity;
+    std::uint32_t m_width;
+    std::uint32_t m_height;
+    std::optional<std::uint32_t> m_prevWidth;
+    std::optional<std::uint32_t> m_prevHeight;
+};
+
+// ============================================================================
+// Text Layer Property Commands
+// ============================================================================
+
+/**
+ * SetTextContentCommand — update the text string of a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextContent", "layerEntity": 12345, "text": "Hello World" }
+ *
+ * Note: entity IDs are session-stable only; don't rely on them across loads.
+ */
+class SetTextContentCommand : public UndoableCommand {
+public:
+    SetTextContentCommand(entt::entity layerEntity, std::string text)
+        : m_layerEntity(layerEntity), m_text(std::move(text)) {}
+
+    void setPreviousText(std::string prev) { m_previousText = std::move(prev); }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextContent"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::string  m_text;
+    std::optional<std::string> m_previousText;
+};
+
+/**
+ * SetTextFontCommand — update the font family of a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextFont", "layerEntity": 12345, "fontFamily": "Arial" }
+ */
+class SetTextFontCommand : public UndoableCommand {
+public:
+    SetTextFontCommand(entt::entity layerEntity, std::string fontFamily)
+        : m_layerEntity(layerEntity), m_fontFamily(std::move(fontFamily)) {}
+
+    void setPreviousFont(std::string prev) { m_previousFont = std::move(prev); }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextFont"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::string  m_fontFamily;
+    std::optional<std::string> m_previousFont;
+};
+
+/**
+ * SetTextFontSizeCommand — update the font size of a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextFontSize", "layerEntity": 12345, "fontSize": 96.0 }
+ */
+class SetTextFontSizeCommand : public UndoableCommand {
+public:
+    SetTextFontSizeCommand(entt::entity layerEntity, float fontSize)
+        : m_layerEntity(layerEntity), m_fontSize(fontSize) {}
+
+    void setPreviousFontSize(float prev) { m_previousFontSize = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextFontSize"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    float        m_fontSize;
+    std::optional<float> m_previousFontSize;
+};
+
+/**
+ * SetTextColorCommand — update the RGBA color of a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextColor", "layerEntity": 12345,
+ *   "r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0 }
+ */
+class SetTextColorCommand : public UndoableCommand {
+public:
+    SetTextColorCommand(entt::entity layerEntity, float r, float g, float b, float a)
+        : m_layerEntity(layerEntity), m_r(r), m_g(g), m_b(b), m_a(a) {}
+
+    void setPreviousColor(float r, float g, float b, float a) {
+        m_prevR = r; m_prevG = g; m_prevB = b; m_prevA = a;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextColor"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    float m_r, m_g, m_b, m_a;
+    std::optional<float> m_prevR, m_prevG, m_prevB, m_prevA;
+};
+
+/**
+ * SetTextAlignmentCommand — update the text alignment of a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextAlignment", "layerEntity": 12345, "alignment": 1 }
+ * (0=Left, 1=Center, 2=Right)
+ */
+class SetTextAlignmentCommand : public UndoableCommand {
+public:
+    SetTextAlignmentCommand(entt::entity layerEntity, uint8_t alignment)
+        : m_layerEntity(layerEntity), m_alignment(alignment) {}
+
+    void setPreviousAlignment(uint8_t prev) { m_previousAlignment = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextAlignment"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    uint8_t      m_alignment;
+    std::optional<uint8_t> m_previousAlignment;
+};
+
+/**
+ * SetTextBoldCommand — toggle bold on a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextBold", "layerEntity": 12345, "bold": true }
+ */
+class SetTextBoldCommand : public UndoableCommand {
+public:
+    SetTextBoldCommand(entt::entity layerEntity, bool bold)
+        : m_layerEntity(layerEntity), m_bold(bold) {}
+
+    void setPreviousBold(bool prev) { m_previousBold = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextBold"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    bool         m_bold;
+    std::optional<bool> m_previousBold;
+};
+
+/**
+ * SetTextItalicCommand — toggle italic on a Text generative layer.
+ *
+ * JSON format:
+ * { "type": "SetTextItalic", "layerEntity": 12345, "italic": true }
+ */
+class SetTextItalicCommand : public UndoableCommand {
+public:
+    SetTextItalicCommand(entt::entity layerEntity, bool italic)
+        : m_layerEntity(layerEntity), m_italic(italic) {}
+
+    void setPreviousItalic(bool prev) { m_previousItalic = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextItalic"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    bool         m_italic;
+    std::optional<bool> m_previousItalic;
+};
+
 /**
  * Toggle an effect's enabled flag.
  *
@@ -2169,6 +2441,137 @@ private:
     std::string  m_paramName;
     float        m_value;
     std::optional<float> m_previousValue;
+};
+
+// ============================================================================
+// Script Utility Commands
+// ============================================================================
+
+/**
+ * UndoCommand — pops and undoes the top entry on the CommandDispatcher undo
+ * stack. Fails (returns false) if the stack is empty.
+ *
+ * JSON format:
+ * { "type": "Undo" }
+ */
+class UndoCommand : public Command {
+public:
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "Undo"; }
+    nlohmann::json toJson() const override { return {{"type", "Undo"}}; }
+    std::string getDescription() const override { return "Undo last command"; }
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+};
+
+/**
+ * SetTextLayerPropertiesCommand — set multiple text properties on a Text
+ * generative layer identified by trackIndex + layerIndex (instead of entity
+ * ID). Intended for integration scripts where entity IDs aren't known ahead
+ * of time.
+ *
+ * All property fields are optional; omitted fields are left unchanged.
+ *
+ * JSON format:
+ * {
+ *   "type": "SetTextLayerProperties",
+ *   "trackIndex": 0,
+ *   "layerIndex": 0,
+ *   "text": "Hello",
+ *   "fontFamily": "Arial",
+ *   "fontSize": 72.0,
+ *   "colorR": 1.0, "colorG": 0.5, "colorB": 0.0, "colorA": 1.0,
+ *   "alignment": "Center",
+ *   "bold": true,
+ *   "italic": false
+ * }
+ */
+class SetTextLayerPropertiesCommand : public Command {
+public:
+    SetTextLayerPropertiesCommand(int trackIndex, int layerIndex,
+                                  const nlohmann::json& props)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex), m_props(props) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetTextLayerProperties"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int            m_trackIndex;
+    int            m_layerIndex;
+    nlohmann::json m_props;
+};
+
+/**
+ * AssertTextLayerStateCommand — assert a named field on the TextLayerState
+ * component of the layer at track[trackIndex].layers[layerIndex].
+ *
+ * String fields: text, fontFamily, alignment ("Left"|"Center"|"Right")
+ * Float fields:  fontSize, colorR, colorG, colorB, colorA
+ * Bool fields:   bold, italic (compare as float 1.0/0.0)
+ *
+ * JSON format:
+ * { "type": "AssertTextLayerState", "trackIndex": 0, "layerIndex": 0,
+ *   "field": "text", "expected": "Hello" }
+ * { "type": "AssertTextLayerState", "trackIndex": 0, "layerIndex": 0,
+ *   "field": "fontSize", "expectedFloat": 72.0 }
+ */
+class AssertTextLayerStateCommand : public Command {
+public:
+    // String assertion ctor
+    AssertTextLayerStateCommand(int trackIndex, int layerIndex,
+                                std::string field, std::string expected)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex)
+        , m_field(std::move(field)), m_expectedStr(std::move(expected))
+        , m_isFloat(false), m_expectedFloat(0.f), m_tolerance(0.f) {}
+
+    // Float assertion ctor
+    AssertTextLayerStateCommand(int trackIndex, int layerIndex,
+                                std::string field, float expected, float tolerance)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex)
+        , m_field(std::move(field)), m_isFloat(true)
+        , m_expectedFloat(expected), m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertTextLayerState"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_layerIndex;
+    std::string m_field;
+    std::string m_expectedStr;
+    bool        m_isFloat;
+    float       m_expectedFloat;
+    float       m_tolerance;
+};
+
+/**
+ * AssertTrackLayerCountCommand — fail the script if track[trackIndex] does
+ * not contain exactly `count` layers.
+ *
+ * JSON format:
+ * { "type": "AssertTrackLayerCount", "trackIndex": 0, "count": 2 }
+ */
+class AssertTrackLayerCountCommand : public Command {
+public:
+    AssertTrackLayerCountCommand(int trackIndex, size_t count)
+        : m_trackIndex(trackIndex), m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertTrackLayerCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int    m_trackIndex;
+    size_t m_count;
 };
 
 } // namespace entity

@@ -1,0 +1,189 @@
+{
+    "version": 1,
+    "description": "Generative layer delete+undo and copy+paste ops. (a) Create Muncher -> delete -> undo -> assert restored. (b) Create Text -> delete -> undo -> assert restored. (c) Copy Muncher -> paste -> assert two layers on track. (d) Copy Text -> paste -> assert two layers on track; assert text field deep-copied.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "GenOpsScreen",
+            "width": 192,
+            "height": 108
+        },
+        { "type": "AddTrack" },
+        { "type": "AddTrack" },
+        { "type": "AddTrack" },
+        { "type": "WaitFrames", "count": 2 },
+
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitFrames", "count": 3 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 1
+        },
+        {
+            "type": "SelectClip",
+            "trackIndex": 0,
+            "clipIndex": 0
+        },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "DeleteClip" },
+        { "type": "WaitFrames", "count": 3 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 0
+        },
+        { "type": "Undo" },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 1
+        },
+
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 1,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 1,
+            "count": 1
+        },
+        {
+            "type": "SetTextLayerProperties",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "text": "UndoMe",
+            "fontSize": 48.0,
+            "bold": true
+        },
+        { "type": "WaitFrames", "count": 2 },
+        {
+            "type": "SelectClip",
+            "trackIndex": 1,
+            "clipIndex": 0
+        },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "DeleteClip" },
+        { "type": "WaitFrames", "count": 3 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 1,
+            "count": 0
+        },
+        { "type": "Undo" },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 1,
+            "count": 1
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "field": "text",
+            "expected": "UndoMe"
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "field": "fontSize",
+            "expectedFloat": 48.0,
+            "tolerance": 0.01
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "field": "bold",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 2,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitFrames", "count": 3 },
+        {
+            "type": "SelectClip",
+            "trackIndex": 2,
+            "clipIndex": 0
+        },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "CopyClip" },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "SeekToFrame", "frame": 400 },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "PasteClip" },
+        { "type": "WaitFrames", "count": 5 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 2,
+            "count": 2
+        },
+
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 3,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "SetTextLayerProperties",
+            "trackIndex": 3,
+            "layerIndex": 0,
+            "text": "PasteMe",
+            "bold": true
+        },
+        { "type": "WaitFrames", "count": 2 },
+        {
+            "type": "SelectClip",
+            "trackIndex": 3,
+            "clipIndex": 0
+        },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "CopyClip" },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "SeekToFrame", "frame": 400 },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "PasteClip" },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 3,
+            "count": 2
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 3,
+            "layerIndex": 1,
+            "field": "text",
+            "expected": "PasteMe"
+        },
+        {
+            "type": "AssertTextLayerState",
+            "trackIndex": 3,
+            "layerIndex": 1,
+            "field": "bold",
+            "expectedFloat": 1.0,
+            "tolerance": 0.01
+        },
+
+        { "type": "Exit" }
+    ]
+}
