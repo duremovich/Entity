@@ -1679,14 +1679,23 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 ? clip.totalMediaFrames - 1 : -1;
                         }
 
-                        // Recalculate duration in timeline frames from totalMediaFrames
-                        // This ensures correct timing even for old project files where duration was in source frames
-                        if (clip.totalMediaFrames > 0 && clip.framerate > 0) {
+                        // Trust the persisted duration (timeline frames).
+                        // The previous unconditional recalc-from-totalMediaFrames
+                        // was a one-time migration for projects saved before the
+                        // mixed-frame-rate fix; in practice it has been silently
+                        // destroying user-edited durations on every save/load
+                        // cycle (worst case: stills, which always reverted to 1
+                        // timeline frame). Very old source-frame durations may
+                        // now load slightly short — acceptable trade vs.
+                        // breaking every user trim.
+                        if (jsonDuration > 0) {
+                            clip.duration = jsonDuration;
+                        } else if (clip.totalMediaFrames > 0 && clip.framerate > 0) {
                             double timelineFrameRate = timeline.getFrameRate();
                             clip.duration = static_cast<FrameNumber>(std::ceil(
                                 clip.totalMediaFrames * (timelineFrameRate / clip.framerate)));
                         } else {
-                            clip.duration = jsonDuration;  // Fallback for malformed clips
+                            clip.duration = jsonDuration;  // 0 — malformed clip.
                         }
 
                         // Load Transform if present

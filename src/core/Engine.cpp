@@ -2109,8 +2109,10 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 break;
 
             case GLFW_KEY_S:
-                // S = Split clip at playhead
-                {
+                // S = Split clip at playhead. Guard modifiers so Ctrl+S
+                // / Ctrl+Shift+S fall through to the global Save shortcut
+                // instead of splitting AND saving on the same keypress.
+                if (!ctrlPressed && !shiftPressed) {
                     entt::entity selectedClip = m_timeline->getSelectedClip();
                     if (selectedClip != entt::null) {
                         FrameNumber currentFrame = m_timeline->getCurrentFrame();
@@ -3269,11 +3271,21 @@ void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaTy
     clip.totalMediaFrames = m_decoder->getDuration();  // Store original source length (in source frames)
     clip.mediaOutFrame = clip.totalMediaFrames > 0     // Default out-point: last frame of source (inclusive)
         ? clip.totalMediaFrames - 1 : -1;
-    // Convert source frames to timeline frames for duration
-    // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames
+    // Convert source frames to timeline frames for duration.
+    // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames.
+    // Stills (single source frame) get a 5-second default — the naive
+    // formula gives 1 timeline frame, which is unusable on the timeline.
+    // PlaybackMode::Freeze (the Clip default) holds the single source
+    // frame for the rest of the duration.
     double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
-    clip.duration = static_cast<FrameNumber>(std::ceil(
-        clip.totalMediaFrames * (timelineFrameRate / clip.framerate)));
+    if (clip.totalMediaFrames <= 1) {
+        constexpr double DEFAULT_STILL_SECONDS = 5.0;
+        clip.duration = static_cast<FrameNumber>(std::ceil(
+            DEFAULT_STILL_SECONDS * timelineFrameRate));
+    } else {
+        clip.duration = static_cast<FrameNumber>(std::ceil(
+            clip.totalMediaFrames * (timelineFrameRate / clip.framerate)));
+    }
     clip.hasAlpha = m_decoder->hasAlpha();
     clip.startFrame = 0;  // Place at timeline start
     clip.mediaStartFrame = 0;
@@ -3618,10 +3630,20 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     clip.totalMediaFrames = decoder->getDuration();  // Store original source length (in source frames)
     clip.mediaOutFrame = clip.totalMediaFrames > 0   // Default out-point: last frame of source (inclusive)
         ? clip.totalMediaFrames - 1 : -1;
-    // Convert source frames to timeline frames for duration
-    // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames
-    clip.duration = static_cast<FrameNumber>(std::ceil(
-        clip.totalMediaFrames * (timelineFrameRate / sourceFrameRate)));
+    // Convert source frames to timeline frames for duration.
+    // E.g., 100 frames at 24fps on 30fps timeline = 100 * (30/24) = 125 timeline frames.
+    // Stills (single source frame) get a 5-second default — the naive
+    // formula gives 1 timeline frame, which is unusable on the timeline.
+    // PlaybackMode::Freeze (the Clip default) holds the single source
+    // frame for the rest of the duration.
+    if (clip.totalMediaFrames <= 1) {
+        constexpr double DEFAULT_STILL_SECONDS = 5.0;
+        clip.duration = static_cast<FrameNumber>(std::ceil(
+            DEFAULT_STILL_SECONDS * timelineFrameRate));
+    } else {
+        clip.duration = static_cast<FrameNumber>(std::ceil(
+            clip.totalMediaFrames * (timelineFrameRate / sourceFrameRate)));
+    }
     clip.hasAlpha = decoder->hasAlpha();
     clip.startFrame = startFrame;
     clip.mediaStartFrame = 0;
