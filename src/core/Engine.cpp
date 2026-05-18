@@ -22,6 +22,7 @@
 #include "entity/ui/EffectGraphWindow.hpp"
 #include "entity/ui/PropertyWindow.hpp"
 #include "entity/ui/ContentRoutingWindow.hpp"
+#include "entity/ui/FeedMapEditorWindow.hpp"
 #include "entity/ui/OutputsWindow.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
 #include "entity/ui/ScreensWindow.hpp"
@@ -568,9 +569,21 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     }
     m_windowManager->registerWindow(std::make_unique<OutputsWindow>(this));
     {
+        // Feed Map Editor — dedicated dockable canvas for FeedMap
+        // assets. Registered before Content Routing so the routing
+        // window can hold a raw pointer to it for the "Edit in Feed
+        // Map Editor..." button. Defaults to hidden; user opens via
+        // the Windows menu or that button.
+        auto feedMapEditor = std::make_unique<FeedMapEditorWindow>(m_timeline);
+        feedMapEditor->setCommandDispatcher(m_commandDispatcher);
+        feedMapEditor->setRenderer(m_renderer);
+        auto* feedMapEditorPtr = feedMapEditor.get();
+        m_windowManager->registerWindow(std::move(feedMapEditor));
+
         auto routingWindow = std::make_unique<ContentRoutingWindow>(m_timeline);
         routingWindow->setCommandDispatcher(m_commandDispatcher);
         routingWindow->setRenderer(m_renderer);
+        routingWindow->setFeedMapEditor(feedMapEditorPtr);
         m_windowManager->registerWindow(std::move(routingWindow));
     }
     m_windowManager->registerWindow(std::make_unique<ModelBinWindow>(this, m_windowManager.get()));

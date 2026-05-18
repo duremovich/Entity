@@ -10,6 +10,7 @@ namespace entity {
 class Timeline;
 class CommandDispatcher;
 class IRenderer;
+class FeedMapEditorWindow;
 
 /**
  * ContentRoutingWindow — Plane A content-routing library editor
@@ -43,24 +44,52 @@ public:
     // is fine — the canvas falls back to the schematic-only path.
     void setRenderer(IRenderer* renderer) { m_renderer = renderer; }
 
+    // Optional pointer to the dedicated Feed Map editor. When wired,
+    // the Feed Map detail pane exposes an "Edit in Feed Map Editor..."
+    // button that focuses the editor on the selected asset. Null is
+    // fine — the button just hides itself.
+    void setFeedMapEditor(FeedMapEditorWindow* editor) { m_feedMapEditor = editor; }
+
     void render() override;
     const char* getName() const override { return "Content Routing"; }
     ImGuiWindowFlags getWindowFlags() const override { return ImGuiWindowFlags_None; }
 
+    // Which part of a region is being dragged. Corners + edge
+    // midpoints + body translation. Order matches a 3x3 grid (Body
+    // is the center) so iteration in the renderer stays readable.
+    enum class CanvasHandle : int {
+        Body = 0,
+        NW, N, NE,
+        W,      E,
+        SW, S, SE,
+    };
+
     // ADR-0022 L5: per-frame canvas drag state. Lives on the window
     // across frames so a mouse-down on a region body / corner persists
-    // through the drag without re-hit-testing every frame. handle
-    // encodes which part of the region is being dragged. Public so
-    // the .cpp's free helper functions can reference the type.
+    // through the drag without re-hit-testing every frame.
     struct CanvasDragState {
-        int regionIdx{-1};       // -1 = no drag in progress
-        int handle{0};           // 0 = body, 1=NW, 2=NE, 3=SW, 4=SE
+        int regionIdx{-1};                            // -1 = no drag in progress
+        CanvasHandle handle{CanvasHandle::Body};      // which handle is active
+    };
+
+    // Floating-source viewport state (Photoshop/Figma model). The
+    // canvas surface IS the full pane; the source rect floats inside
+    // it. panScreen is the screen-pixel offset of the source's
+    // top-left within the editor area. zoom is source-pixels →
+    // screen-pixels ratio (zoom=2.0 means each source pixel covers
+    // 2 screen pixels). zoom=0 is a sentinel that triggers auto-fit
+    // on the next draw (centered with a margin so the source isn't
+    // flush against the edges). Ephemeral — not persisted.
+    struct CanvasViewport {
+        ImVec2 panScreen{0.0f, 0.0f};
+        float zoom{0.0f};
     };
 
 private:
     Timeline* m_timeline{nullptr};
     CommandDispatcher* m_dispatcher{nullptr};
     IRenderer* m_renderer{nullptr};
+    FeedMapEditorWindow* m_feedMapEditor{nullptr};
 
     // Currently-selected library asset entity. Window-local UI state —
     // not persisted across sessions. entt::null = "nothing selected".
@@ -74,6 +103,18 @@ private:
     // Drag-edit state for the canvas (L5). Reset when no mouse button
     // is held; regionIdx stays >= 0 while a drag is in progress.
     CanvasDragState m_canvasDrag{};
+
+    // Canvas zoom + pan. Reset by the "Fit" button and whenever the
+    // user edits source canvas dimensions (aspect change otherwise
+    // leaves the viewport in a weird state).
+    CanvasViewport m_canvasView{};
+
+    // Right pane's vertical split between the upper controls area
+    // (name, kind, extras, targets table) and the lower canvas
+    // preview. <=0 means "auto-initialize on first draw" (picks a
+    // sensible default once we know the pane height). Adjusted by
+    // dragging the horizontal splitter between the two regions.
+    float m_upperPaneHeight{0.0f};
 };
 
 } // namespace entity

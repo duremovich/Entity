@@ -202,6 +202,8 @@ target_sources(EntityMediaCore
         src/ui/PropertyWindow.cpp
         src/ui/OutputsWindow.cpp
         src/ui/ContentRoutingWindow.cpp
+        src/ui/ContentRoutingCanvas.cpp
+        src/ui/FeedMapEditorWindow.cpp
         src/ui/ModelBinWindow.cpp
         src/ui/ScreensWindow.cpp
         src/ui/PropsWindow.cpp

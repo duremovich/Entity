@@ -1,5 +1,7 @@
-#include "entity/ui/ContentRoutingWindow.hpp"
+﻿#include "entity/ui/ContentRoutingWindow.hpp"
 
+#include "entity/ui/ContentRoutingCanvas.hpp"
+#include "entity/ui/FeedMapEditorWindow.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ContentRouting.hpp"
@@ -20,6 +22,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -30,6 +34,55 @@ namespace {
 
 // Identity uvRect — the "fills the whole source" sentinel.
 constexpr std::array<float, 4> kIdentityUV{0.0f, 0.0f, 1.0f, 1.0f};
+
+// Horizontal splitter helper. Draws a thin draggable bar that
+// resizes `upperSize` (the height of the area above the splitter)
+// within [minUpper, totalHeight - thickness - minLower]. Cursor
+// turns to ResizeNS on hover; bar tints brighter while dragging.
+// Uses public ImGui API only — the project is on 1.89.7 which
+// doesn't have ImGuiChildFlags_ResizeY yet.
+void splitterY(const char* id, float* upperSize,
+                float minUpper, float minLower, float totalHeight) {
+    constexpr float thickness = 6.0f;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+
+    ImGui::InvisibleButton(id, ImVec2(width, thickness));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+
+    if (hovered || active) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    }
+    if (active) {
+        *upperSize += ImGui::GetIO().MouseDelta.y;
+    }
+    const float maxUpper = std::max(minUpper, totalHeight - thickness - minLower);
+    *upperSize = std::clamp(*upperSize, minUpper, maxUpper);
+
+    const ImU32 col = active
+        ? IM_COL32(90, 150, 210, 255)
+        : (hovered ? IM_COL32(110, 110, 130, 255)
+                   : IM_COL32(60, 60, 70, 255));
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + thickness), col);
+}
+
+// Look up the currently-selected clip's native pixel resolution.
+// Returns false (and leaves outW/outH untouched) when there's no
+// selection, the selection isn't a Clip, or the clip hasn't reported a
+// resolution yet (decoder hasn't populated width/height).
+bool getSelectedClipResolution(entt::registry& reg, Timeline* timeline,
+                                std::uint32_t& outW, std::uint32_t& outH) {
+    if (!timeline) return false;
+    const entt::entity sel = timeline->getSelectedClip();
+    if (sel == entt::null || !reg.valid(sel)) return false;
+    const auto* clip = reg.try_get<Clip>(sel);
+    if (!clip || clip->width == 0 || clip->height == 0) return false;
+    outW = clip->width;
+    outH = clip->height;
+    return true;
+}
 
 // Materialize the Tiled targets vector from the asset's authoring
 // metadata (tiledCount + tiledAxis). The existing targets are
@@ -182,212 +235,13 @@ bool exportFeedMapSvg(entt::registry& reg, const ContentRoutingAsset& asset,
     return out.good();
 }
 
-// Draw the routing canvas (ADR-0022 L5). Replaces the L2 drawSchematic.
-// Background is the clip's most-recently-uploaded video frame when
-// `texId` is non-null; otherwise a flat dark-grey panel. Region
-// overlay + labels stay similar to L2, plus corner handles for FeedMap
-// and Tiled. Interaction is via a single canvas-wide InvisibleButton
-// with manual mouse hit-testing; drag state lives on the window across
-// frames. Mutates `asset.targets[i].uvRect` during drag — caller must
-// pass a mutable reference.
-void drawCanvas(entt::registry& reg,
-                ContentRoutingAsset& asset,
-                void* texId,
-                ContentRoutingWindow::CanvasDragState& dragState) {
-    const float aspect = (asset.sourceHeight > 0)
-        ? static_cast<float>(asset.sourceWidth) / static_cast<float>(asset.sourceHeight)
-        : (16.0f / 9.0f);
-    const float canvasW = std::min(ImGui::GetContentRegionAvail().x, 400.0f);
-    const float canvasH = canvasW / std::max(0.1f, aspect);
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 bgMax(origin.x + canvasW, origin.y + canvasH);
-    auto* dl = ImGui::GetWindowDrawList();
+// Canvas drawing moved to ContentRoutingCanvas.cpp so the new
+// FeedMapEditorWindow can share the same renderer / drag / zoom /
+// snap implementation. See entity::drawContentRoutingCanvas in
+// include/entity/ui/ContentRoutingCanvas.hpp.
 
-    // Background: poster-frame texture when available, else flat panel.
-    if (texId) {
-        dl->AddImage(reinterpret_cast<ImTextureID>(texId), origin, bgMax);
-    } else {
-        dl->AddRectFilled(origin, bgMax, IM_COL32(40, 40, 50, 255));
-    }
-    dl->AddRect(origin, bgMax, IM_COL32(120, 120, 130, 255));
-
-    // Deterministic per-index hues. Translucent fills, opaque handles.
-    static const ImU32 fillHues[] = {
-        IM_COL32(220, 100, 100, 90),
-        IM_COL32(100, 200, 130, 90),
-        IM_COL32(100, 140, 220, 90),
-        IM_COL32(230, 200, 100, 90),
-        IM_COL32(200, 110, 220, 90),
-        IM_COL32(120, 220, 220, 90),
-    };
-    static const ImU32 strokeHues[] = {
-        IM_COL32(220, 100, 100, 230),
-        IM_COL32(100, 200, 130, 230),
-        IM_COL32(100, 140, 220, 230),
-        IM_COL32(230, 200, 100, 230),
-        IM_COL32(200, 110, 220, 230),
-        IM_COL32(120, 220, 220, 230),
-    };
-    constexpr int kHueCount = static_cast<int>(sizeof(fillHues) / sizeof(fillHues[0]));
-
-    const bool handlesVisible = (asset.kind != RouteMode::Direct);
-
-    struct RegionRect { float x0, y0, x1, y1; };
-    std::vector<RegionRect> rects(asset.targets.size());
-
-    // Pass 1: per-region fill + outline + labels.
-    for (std::size_t i = 0; i < asset.targets.size(); ++i) {
-        const auto& t = asset.targets[i];
-        const float x0 = origin.x + t.uvRect[0] * canvasW;
-        const float y0 = origin.y + t.uvRect[1] * canvasH;
-        const float x1 = x0 + t.uvRect[2] * canvasW;
-        const float y1 = y0 + t.uvRect[3] * canvasH;
-        rects[i] = {x0, y0, x1, y1};
-
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fillHues[i % kHueCount]);
-        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
-                    IM_COL32(240, 240, 240, 200), 0.0f, 0, 2.0f);
-
-        std::string screenName = "(all visible)";
-        if (t.screen != entt::null && reg.valid(t.screen) &&
-            reg.all_of<Screen>(t.screen)) {
-            screenName = reg.get<Screen>(t.screen).name;
-        }
-        if (!t.name.empty()) {
-            dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
-                        IM_COL32(255, 255, 255, 240),
-                        t.name.c_str());
-            // ASCII "->" so ImGui's default font (no U+2192) doesn't
-            // render the missing-glyph "?" placeholder.
-            std::string sub = std::string("-> ") + screenName;
-            dl->AddText(ImVec2(x0 + 4.0f, y0 + 20.0f),
-                        IM_COL32(220, 220, 220, 220),
-                        sub.c_str());
-        } else {
-            dl->AddText(ImVec2(x0 + 4.0f, y0 + 4.0f),
-                        IM_COL32(255, 255, 255, 230),
-                        screenName.c_str());
-        }
-    }
-
-    // Pass 2: corner handles on top (FeedMap + Tiled only).
-    if (handlesVisible) {
-        constexpr float radius = 5.0f;
-        for (std::size_t i = 0; i < asset.targets.size(); ++i) {
-            const auto& r = rects[i];
-            const ImU32 fill = strokeHues[i % kHueCount];
-            const ImVec2 corners[4] = {
-                {r.x0, r.y0}, {r.x1, r.y0}, {r.x0, r.y1}, {r.x1, r.y1}
-            };
-            for (const auto& c : corners) {
-                dl->AddCircleFilled(c, radius, fill);
-                dl->AddCircle(c, radius, IM_COL32(255, 255, 255, 230), 0, 1.5f);
-            }
-        }
-    }
-
-    // Canvas-wide invisible button drives mouse interaction. Drawn last
-    // so it sits on top of the schematic but accepts clicks across the
-    // whole canvas; per-region hit-testing is manual below.
-    ImGui::SetCursorScreenPos(origin);
-    ImGui::InvisibleButton("##cr_canvas", ImVec2(canvasW, canvasH),
-                            ImGuiButtonFlags_MouseButtonLeft);
-    const bool active = ImGui::IsItemActive();
-    const bool hovered = ImGui::IsItemHovered();
-    const ImVec2 mouse = ImGui::GetIO().MousePos;
-
-    // Hit-test: corner handles win over bodies; later-drawn (higher
-    // index) wins on body overlap so the topmost region is grabbable.
-    auto hitTest = [&](int& outRegion, int& outHandle) {
-        outRegion = -1;
-        outHandle = 0;
-        constexpr float kCornerHit = 8.0f;
-        if (handlesVisible) {
-            for (int i = static_cast<int>(asset.targets.size()) - 1; i >= 0; --i) {
-                const auto& r = rects[i];
-                auto over = [&](float cx, float cy) {
-                    return mouse.x >= cx - kCornerHit && mouse.x <= cx + kCornerHit &&
-                           mouse.y >= cy - kCornerHit && mouse.y <= cy + kCornerHit;
-                };
-                if (over(r.x0, r.y0)) { outRegion = i; outHandle = 1; return; }
-                if (over(r.x1, r.y0)) { outRegion = i; outHandle = 2; return; }
-                if (over(r.x0, r.y1)) { outRegion = i; outHandle = 3; return; }
-                if (over(r.x1, r.y1)) { outRegion = i; outHandle = 4; return; }
-            }
-        }
-        for (int i = static_cast<int>(asset.targets.size()) - 1; i >= 0; --i) {
-            const auto& r = rects[i];
-            if (mouse.x >= r.x0 && mouse.x <= r.x1 &&
-                mouse.y >= r.y0 && mouse.y <= r.y1) {
-                outRegion = i;
-                outHandle = 0;
-                return;
-            }
-        }
-    };
-
-    if (active) {
-        // Begin drag on the frame the mouse goes down.
-        if (dragState.regionIdx < 0) {
-            int r = -1, h = 0;
-            hitTest(r, h);
-            dragState.regionIdx = r;
-            dragState.handle    = h;
-        }
-        // Apply mouse delta. Handle == 0 moves the whole region;
-        // 1-4 resize from NW/NE/SW/SE respectively.
-        if (dragState.regionIdx >= 0 &&
-            dragState.regionIdx < static_cast<int>(asset.targets.size())) {
-            const ImVec2 d = ImGui::GetIO().MouseDelta;
-            const float dx = d.x / canvasW;
-            const float dy = d.y / canvasH;
-            auto& uv = asset.targets[dragState.regionIdx].uvRect;
-            switch (dragState.handle) {
-                case 0: uv[0] += dx; uv[1] += dy; break;
-                case 1: uv[0] += dx; uv[2] -= dx; uv[1] += dy; uv[3] -= dy; break;
-                case 2: uv[2] += dx;             uv[1] += dy; uv[3] -= dy; break;
-                case 3: uv[0] += dx; uv[2] -= dx;             uv[3] += dy; break;
-                case 4: uv[2] += dx;                          uv[3] += dy; break;
-            }
-            // Keep width / height positive so the rect doesn't flip.
-            uv[2] = std::max(0.01f, uv[2]);
-            uv[3] = std::max(0.01f, uv[3]);
-        }
-    } else {
-        dragState.regionIdx = -1;
-    }
-
-    // Cursor change + tooltip when hovering (not actively dragging the
-    // wrong thing — IsItemActive already covers the active case).
-    if (hovered) {
-        int hr = -1, hh = 0;
-        hitTest(hr, hh);
-        if (hr >= 0) {
-            if (hh == 0)                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-            else if (hh == 1 || hh == 4) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
-            else                          ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW);
-
-            const auto& t = asset.targets[hr];
-            if (asset.kind == RouteMode::FeedMap &&
-                asset.sourceWidth > 0 && asset.sourceHeight > 0) {
-                const int px = static_cast<int>(std::lround(t.uvRect[0] * asset.sourceWidth));
-                const int py = static_cast<int>(std::lround(t.uvRect[1] * asset.sourceHeight));
-                const int pw = static_cast<int>(std::lround(t.uvRect[2] * asset.sourceWidth));
-                const int ph = static_cast<int>(std::lround(t.uvRect[3] * asset.sourceHeight));
-                ImGui::SetTooltip("%s\n%d,%d  %dx%d px",
-                                   t.name.empty() ? "(region)" : t.name.c_str(),
-                                   px, py, pw, ph);
-            } else {
-                ImGui::SetTooltip("uv: %.3f,%.3f  %.3fx%.3f",
-                                   t.uvRect[0], t.uvRect[1],
-                                   t.uvRect[2], t.uvRect[3]);
-            }
-        }
-    }
-}
-
-void renderLeftPane(entt::registry& reg, entt::entity& selected,
-                     entt::entity& pendingDelete) {
+void renderLeftPane(entt::registry& reg, Timeline* timeline,
+                     entt::entity& selected, entt::entity& pendingDelete) {
     // "+ Add" combo button — opens a small popup with kind options.
     if (ImGui::Button("+ Add##routingadd", ImVec2(-1, 0))) {
         ImGui::OpenPopup("##routing_add_kind");
@@ -416,8 +270,18 @@ void renderLeftPane(entt::registry& reg, entt::entity& selected,
             auto& a = reg.emplace<ContentRoutingAsset>(e);
             a.name = pickUniqueName(reg, "New Feed Map");
             a.kind = RouteMode::FeedMap;
-            a.sourceWidth  = 1920;
-            a.sourceHeight = 1080;
+            // Auto-populate source dimensions from the currently-
+            // selected clip when one is available — saves the user
+            // typing the resolution every time they author a feed map
+            // for a specific source.
+            std::uint32_t clipW = 0, clipH = 0;
+            if (getSelectedClipResolution(reg, timeline, clipW, clipH)) {
+                a.sourceWidth  = clipW;
+                a.sourceHeight = clipH;
+            } else {
+                a.sourceWidth  = 1920;
+                a.sourceHeight = 1080;
+            }
             // Start with a single full-frame region so the table isn't
             // empty on first edit; user adds + names regions from there.
             RouteTarget t;
@@ -479,9 +343,17 @@ void renderLeftPane(entt::registry& reg, entt::entity& selected,
     }
 }
 
+// Forward decl — renderDetailPane now calls renderSelectionStrip
+// directly so the strip sits above the canvas (was a sibling in
+// ContentRoutingWindow::render before the canvas grew to fill).
+void renderSelectionStrip(entt::registry& reg, Timeline* timeline);
+
 void renderDetailPane(entt::registry& reg, entt::entity selected,
                        IRenderer* renderer, Timeline* timeline,
-                       ContentRoutingWindow::CanvasDragState& dragState) {
+                       ContentRoutingWindow::CanvasDragState& dragState,
+                       ContentRoutingWindow::CanvasViewport& view,
+                       FeedMapEditorWindow* feedMapEditor,
+                       float& upperPaneHeight) {
     if (selected == entt::null || !reg.valid(selected) ||
         !reg.all_of<ContentRoutingAsset>(selected)) {
         ImGui::TextDisabled("Select a routing from the library.");
@@ -489,6 +361,21 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
     }
     auto& asset = reg.get<ContentRoutingAsset>(selected);
     const bool isAutoBound = (asset.autoBoundScreen != entt::null);
+
+    // Split the right pane vertically: upper area (controls + table)
+    // and lower area (canvas preview). The splitter between is
+    // draggable so the user can give the canvas as much room as they
+    // want without losing access to the controls.
+    const ImVec2 paneAvail = ImGui::GetContentRegionAvail();
+    if (upperPaneHeight <= 0.0f) {
+        // First-time init — pick a sensible default that shows the
+        // controls + a few table rows by default.
+        upperPaneHeight = std::min(420.0f, paneAvail.y * 0.55f);
+    }
+    constexpr float kMinUpper = 180.0f;
+    constexpr float kMinLower = 140.0f;
+
+    ImGui::BeginChild("##cr_detail_upper", ImVec2(0, upperPaneHeight), false);
 
     // Editable name — diverging from the bound Screen's name breaks
     // autosync in RoutingLibrarySystem's next tick.
@@ -556,11 +443,31 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
         ImGui::SetNextItemWidth(120.0f);
         if (ImGui::InputInt("Width##fmw", &sw, 0, 0)) {
             asset.sourceWidth = static_cast<std::uint32_t>(std::max(1, sw));
+            view = {};  // aspect change — reset viewport to fit
         }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120.0f);
         if (ImGui::InputInt("Height##fmh", &sh, 0, 0)) {
             asset.sourceHeight = static_cast<std::uint32_t>(std::max(1, sh));
+            view = {};
+        }
+        ImGui::SameLine();
+        // Match Selected Clip — explicit re-sync to the currently-
+        // selected clip's resolution. Greyed out when no clip is
+        // selected or the clip has no reported resolution.
+        std::uint32_t clipW = 0, clipH = 0;
+        const bool canMatch = getSelectedClipResolution(reg, timeline, clipW, clipH);
+        if (!canMatch) ImGui::BeginDisabled();
+        if (ImGui::Button("Match Selected Clip##fmmatch")) {
+            asset.sourceWidth  = clipW;
+            asset.sourceHeight = clipH;
+            view = {};
+        }
+        if (!canMatch) {
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Select a clip with a known resolution on the timeline.");
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Export Template...##fmexp")) {
@@ -573,6 +480,18 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
             }
         }
         ImGui::TextDisabled("SVG written under <cwd>/.feed-templates/");
+
+        // Edit in dedicated Feed Map Editor window. The button hides
+        // itself if the editor window wasn't wired (e.g. in tests).
+        if (feedMapEditor) {
+            ImGui::Spacing();
+            if (ImGui::Button("Edit in Feed Map Editor...##fm_open",
+                                ImVec2(220.0f, 0.0f))) {
+                feedMapEditor->editAsset(selected);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(dedicated workspace with big canvas)");
+        }
     }
 
     // Tiled extras.
@@ -603,6 +522,11 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
         }
     }
 
+    // Selection strip — context for what timeline clip the routing
+    // applies to. Placed here so it sits adjacent to the asset's
+    // identity controls; the table + canvas come below.
+    renderSelectionStrip(reg, timeline);
+
     // Targets table.
     ImGui::Spacing();
     ImGui::Text("Targets");
@@ -623,8 +547,17 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
     int removeIdx = -1;
     const bool isFeedMap = (asset.kind == RouteMode::FeedMap);
     const int columnCount = isFeedMap ? 7 : 6;
+    // Fill the remaining upper-child height, minus space reserved
+    // for the "+ Add Region" button below the table. Floor at a few
+    // rows so the table is always usable even when the user drags
+    // the splitter down.
+    const float reservedBelow = ImGui::GetFrameHeightWithSpacing() + 8.0f;
+    const float tableMaxH = std::max(80.0f,
+        ImGui::GetContentRegionAvail().y - reservedBelow);
     if (ImGui::BeginTable("##routestable", columnCount,
-                           ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
+                           ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                           ImGuiTableFlags_ScrollY,
+                           ImVec2(0.0f, tableMaxH))) {
         if (isFeedMap) {
             ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         }
@@ -743,14 +676,27 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
         }
     }
 
+    ImGui::EndChild();  // ##cr_detail_upper
+
+    // Draggable horizontal divider between upper controls and the
+    // canvas preview. Resizes upperPaneHeight in place.
+    splitterY("##cr_detail_splitter", &upperPaneHeight,
+              kMinUpper, kMinLower, paneAvail.y);
+
+    ImGui::BeginChild("##cr_detail_lower", ImVec2(0, 0), false);
+
     // Canvas preview. Drops the clip's most-recently-uploaded video
     // frame into the background when a clip is selected on the timeline
     // and the renderer is wired (ADR-0022 L5). Falls back to the flat
     // schematic when no clip is selected, the renderer is missing, or
     // the texture isn't uploaded yet.
-    ImGui::Spacing();
-    ImGui::Separator();
     ImGui::Text("Canvas");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fit##cr_view_reset")) {
+        view = {};
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(wheel = zoom, middle-drag = pan)");
     void* texId = nullptr;
     if (renderer && timeline) {
         const entt::entity sel = timeline->getSelectedClip();
@@ -762,7 +708,14 @@ void renderDetailPane(entt::registry& reg, entt::entity selected,
             }
         }
     }
-    drawCanvas(reg, asset, texId, dragState);
+    // Hand the canvas all remaining vertical space in the lower
+    // child. drawContentRoutingCanvas does the Photoshop-style
+    // editor-canvas rendering (source floats inside, dark area
+    // around it).
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    drawContentRoutingCanvas(reg, asset, texId, dragState, view, avail);
+
+    ImGui::EndChild();  // ##cr_detail_lower
 }
 
 // Header strip above the schematic when a clip / generative layer is
@@ -877,13 +830,16 @@ void ContentRoutingWindow::render() {
 
     const float leftWidth = 240.0f;
     ImGui::BeginChild("##cr_left", ImVec2(leftWidth, 0), true);
-    renderLeftPane(registry, m_selectedAsset, m_pendingDelete);
+    renderLeftPane(registry, m_timeline, m_selectedAsset, m_pendingDelete);
     ImGui::EndChild();
 
     ImGui::SameLine();
     ImGui::BeginChild("##cr_right", ImVec2(0, 0), true);
-    renderDetailPane(registry, m_selectedAsset, m_renderer, m_timeline, m_canvasDrag);
-    renderSelectionStrip(registry, m_timeline);
+    // renderDetailPane now owns the selection-strip placement (above
+    // the canvas) so the canvas can take all remaining vertical space.
+    renderDetailPane(registry, m_selectedAsset, m_renderer, m_timeline,
+                      m_canvasDrag, m_canvasView, m_feedMapEditor,
+                      m_upperPaneHeight);
     ImGui::EndChild();
 
     renderDeleteConfirm(registry, m_pendingDelete, m_selectedAsset);
