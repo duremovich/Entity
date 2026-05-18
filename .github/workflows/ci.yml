@@ -9,7 +9,13 @@ on:
 
 jobs:
   windows-build-and-test:
-    runs-on: windows-latest
+    # Pinned to windows-2022 because the workflow's CMake generator below is
+    # "Visual Studio 17 2022". GitHub redirected windows-latest to
+    # windows-2025-vs2026 (VS 18 / MSVC 14.50) in May 2026, which has no VS 2022
+    # installed — every build started failing at `project()` with "could not
+    # find any instance of Visual Studio." Migrating to VS 2026 is a separate
+    # work item; pinning here matches the local dev environment.
+    runs-on: windows-2022
     timeout-minutes: 90
 
     env:
