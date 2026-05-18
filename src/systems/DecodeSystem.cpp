@@ -482,6 +482,17 @@ void DecodeSystem::destroyWorker(entt::entity entity) {
     std::cout << "Destroyed decode worker for entity" << std::endl;
 }
 
+void DecodeSystem::destroyClipWorker(entt::entity entity) {
+    // Evict cached frames keyed by this entity FIRST — otherwise a media
+    // swap (SetClipMediaCommand) would serve stale frames from the old
+    // source after the worker is torn down. Mirrors the per-tick
+    // destroy path's eviction order in update().
+    if (m_frameCache) {
+        m_frameCache->evictClip(entity);
+    }
+    destroyWorker(entity);
+}
+
 void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
     if (!worker || !worker->cache) {
         std::cerr << "Decode thread started with invalid worker state" << std::endl;

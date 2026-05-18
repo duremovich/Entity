@@ -8,6 +8,9 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/components/ClipDecodeState.hpp"
+#include "entity/components/VideoTexture.hpp"
+#include "entity/components/FrameBuffer.hpp"
 #include "entity/components/ContentRouting.hpp"
 #include "entity/components/ContentRoutingAsset.hpp"
 #include "entity/components/ContentRoutingAssetOps.hpp"
@@ -26,6 +29,8 @@
 #include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/input/InputBus.hpp"
+#include "entity/media/Decoder.hpp"
+#include "entity/media/DecodedFrame.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <imgui.h>
@@ -390,8 +395,53 @@ bool DuplicateClipCommand::execute(Engine& engine) {
         return false;
     }
 
-    entt::entity newClip = timeline->duplicateClip(target);
-    return newClip != entt::null;
+    auto& reg = engine.getRegistry();
+    const auto* clip = reg.try_get<Clip>(target);
+    if (!clip) {
+        std::cerr << "[DuplicateClip] Target has no Clip component" << std::endl;
+        return false;
+    }
+    // Match the legacy duplicateClip layout: place the duplicate
+    // immediately after the original on the same track.
+    const FrameNumber dstStartFrame = clip->startFrame + clip->duration;
+
+    int srcTrackIdx = -1;
+    {
+        entt::entity trackEnt = timeline->findTrackForClip(target);
+        if (trackEnt != entt::null) {
+            const auto& tracks = timeline->getTracks();
+            for (size_t i = 0; i < tracks.size(); ++i) {
+                if (tracks[i] == trackEnt) { srcTrackIdx = static_cast<int>(i); break; }
+            }
+        }
+    }
+
+    entt::entity newClip = engine.cloneClipEntity(target, dstStartFrame, srcTrackIdx);
+    if (newClip == entt::null) return false;
+    timeline->setSelectedClip(newClip);
+    m_createdEntity = newClip;
+    m_executed = true;
+    return true;
+}
+
+bool DuplicateClipCommand::undo(Engine& engine) {
+    if (!m_executed || m_createdEntity == entt::null) {
+        std::cerr << "[DuplicateClip] undo called before successful execute" << std::endl;
+        return false;
+    }
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    if (!engine.getRegistry().valid(m_createdEntity)) {
+        // Entity already gone (another command destroyed it). Treat as
+        // success — undo is idempotent.
+        m_executed = false;
+        return true;
+    }
+    timeline->deleteClip(m_createdEntity);
+    timeline->setSelectedClip(entt::null);
+    m_executed = false;
+    m_createdEntity = entt::null;
+    return true;
 }
 
 nlohmann::json DuplicateClipCommand::toJson() const {
@@ -3844,6 +3894,379 @@ CommandPtr SetEffectFloatParamCommand::fromJson(const nlohmann::json& j) {
     float value = j.value("value", 0.0f);
     return std::make_unique<SetEffectFloatParamCommand>(
         effectEntity, std::move(paramName), value);
+}
+
+// ============================================================================
+// Clip Clipboard — Copy / Cut / Paste
+// ============================================================================
+
+namespace {
+
+entt::entity resolveClipForClipboard(Engine& engine, const std::optional<uint32_t>& entityId) {
+    if (entityId.has_value()) {
+        auto e = static_cast<entt::entity>(*entityId);
+        return engine.getRegistry().valid(e) ? e : entt::null;
+    }
+    if (auto* timeline = engine.getTimeline()) {
+        return timeline->getSelectedClip();
+    }
+    return entt::null;
+}
+
+}  // namespace
+
+bool CopyClipCommand::execute(Engine& engine) {
+    entt::entity target = resolveClipForClipboard(engine, m_entityId);
+    if (target == entt::null) {
+        std::cerr << "[CopyClip] No clip to copy" << std::endl;
+        return false;
+    }
+    auto snap = engine.snapshotClipForClipboard(target);
+    if (!snap.valid) {
+        std::cerr << "[CopyClip] Failed to snapshot clip entity="
+                  << static_cast<uint32_t>(target) << std::endl;
+        return false;
+    }
+    engine.setClipClipboard(std::move(snap));
+    std::cout << "[CopyClip] Clipboard updated from entity="
+              << static_cast<uint32_t>(target) << std::endl;
+    return true;
+}
+
+nlohmann::json CopyClipCommand::toJson() const {
+    nlohmann::json j = {{"type", "CopyClip"}};
+    if (m_entityId.has_value()) j["entityId"] = *m_entityId;
+    return j;
+}
+
+CommandPtr CopyClipCommand::fromJson(const nlohmann::json& j) {
+    if (j.contains("entityId")) {
+        return std::make_unique<CopyClipCommand>(j["entityId"].get<uint32_t>());
+    }
+    return std::make_unique<CopyClipCommand>();
+}
+
+bool CutClipCommand::execute(Engine& engine) {
+    entt::entity target = resolveClipForClipboard(engine, m_entityId);
+    if (target == entt::null) {
+        std::cerr << "[CutClip] No clip to cut" << std::endl;
+        return false;
+    }
+    auto snap = engine.snapshotClipForClipboard(target);
+    if (!snap.valid) {
+        std::cerr << "[CutClip] Failed to snapshot clip entity="
+                  << static_cast<uint32_t>(target) << std::endl;
+        return false;
+    }
+    engine.setClipClipboard(std::move(snap));
+
+    // Enqueue an undoable DeleteClipCommand so the Cut composes cleanly
+    // with Ctrl+Z. The clipboard write itself is OOB for undo.
+    auto* dispatcher = engine.getCommandDispatcher();
+    if (dispatcher) {
+        dispatcher->enqueue(std::make_unique<DeleteClipCommand>(
+            static_cast<uint32_t>(target)));
+    } else {
+        // No dispatcher (test harness?) — perform the delete inline.
+        if (auto* timeline = engine.getTimeline()) {
+            timeline->deleteClip(target);
+            timeline->setSelectedClip(entt::null);
+        }
+    }
+    std::cout << "[CutClip] Cut entity=" << static_cast<uint32_t>(target) << std::endl;
+    return true;
+}
+
+nlohmann::json CutClipCommand::toJson() const {
+    nlohmann::json j = {{"type", "CutClip"}};
+    if (m_entityId.has_value()) j["entityId"] = *m_entityId;
+    return j;
+}
+
+CommandPtr CutClipCommand::fromJson(const nlohmann::json& j) {
+    if (j.contains("entityId")) {
+        return std::make_unique<CutClipCommand>(j["entityId"].get<uint32_t>());
+    }
+    return std::make_unique<CutClipCommand>();
+}
+
+bool PasteClipCommand::execute(Engine& engine) {
+    const auto& clip = engine.clipClipboard();
+    if (!clip.has_value() || !clip->valid) {
+        std::cerr << "[PasteClip] Clipboard empty" << std::endl;
+        return false;
+    }
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    auto& reg = engine.getRegistry();
+
+    // Resolve destination track. Explicit constructor argument wins
+    // (right-click menu path); otherwise fall back to:
+    //   1) Currently-selected clip's track
+    //   2) Clipboard's source track
+    //   3) Track 0 (final fallback so paste never silently fails)
+    int trackIdx = -1;
+    if (m_targetTrack.has_value()) {
+        trackIdx = *m_targetTrack;
+    } else {
+        entt::entity sel = timeline->getSelectedClip();
+        if (sel != entt::null && reg.valid(sel)) {
+            entt::entity selTrack = timeline->findTrackForClip(sel);
+            if (selTrack != entt::null) {
+                const auto& tracks = timeline->getTracks();
+                for (size_t i = 0; i < tracks.size(); ++i) {
+                    if (tracks[i] == selTrack) { trackIdx = static_cast<int>(i); break; }
+                }
+            }
+        }
+        if (trackIdx < 0) trackIdx = clip->sourceTrackIndex;
+    }
+
+    // Resolve target frame. Explicit wins (right-click menu),
+    // else playhead.
+    const FrameNumber targetFrame = m_targetFrame.has_value()
+        ? *m_targetFrame
+        : timeline->getCurrentFrame();
+
+    entt::entity created = engine.materializeClipFromSnapshot(*clip, targetFrame, trackIdx);
+    if (created == entt::null) {
+        std::cerr << "[PasteClip] Materialize failed" << std::endl;
+        return false;
+    }
+    timeline->setSelectedClip(created);
+    m_createdEntity = created;
+    m_executed = true;
+    std::cout << "[PasteClip] entity=" << static_cast<uint32_t>(created)
+              << " at frame=" << targetFrame << " track=" << trackIdx << std::endl;
+    return true;
+}
+
+nlohmann::json PasteClipCommand::toJson() const {
+    nlohmann::json j = {{"type", "PasteClip"}};
+    if (m_targetFrame.has_value()) j["targetFrame"] = *m_targetFrame;
+    if (m_targetTrack.has_value()) j["trackIndex"] = *m_targetTrack;
+    return j;
+}
+
+CommandPtr PasteClipCommand::fromJson(const nlohmann::json& j) {
+    if (j.contains("targetFrame") && j.contains("trackIndex")) {
+        return std::make_unique<PasteClipCommand>(
+            j["targetFrame"].get<FrameNumber>(),
+            j["trackIndex"].get<int>());
+    }
+    return std::make_unique<PasteClipCommand>();
+}
+
+bool PasteClipCommand::undo(Engine& engine) {
+    if (!m_executed || m_createdEntity == entt::null) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    if (engine.getRegistry().valid(m_createdEntity)) {
+        timeline->deleteClip(m_createdEntity);
+        timeline->setSelectedClip(entt::null);
+    }
+    m_executed = false;
+    m_createdEntity = entt::null;
+    return true;
+}
+
+// ============================================================================
+// SetClipMedia — atomic media swap (filepath + media metadata)
+// ============================================================================
+
+bool SetClipMediaCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[SetClipMedia] Track index out of range: " << m_trackIndex << std::endl;
+        return false;
+    }
+    auto& reg = engine.getRegistry();
+    auto* track = reg.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) {
+        std::cerr << "[SetClipMedia] Clip index out of range: " << m_clipIndex << std::endl;
+        return false;
+    }
+    entt::entity clipEnt = track->layers[m_clipIndex];
+    auto* clip = reg.try_get<Clip>(clipEnt);
+    if (!clip) {
+        std::cerr << "[SetClipMedia] Entity has no Clip component" << std::endl;
+        return false;
+    }
+
+    // Detect + open the new media. Done synchronously on the editor
+    // thread; takes ~30-60ms on a cold-cache open. Acceptable cost for
+    // an explicit user action.
+    const std::string openPath = engine.resolveMediaPath(m_filepath);
+    MediaType mediaType = detectMediaType(openPath);
+    if (mediaType == MediaType::Unknown) {
+        std::cerr << "[SetClipMedia] Unsupported media type for: " << openPath << std::endl;
+        return false;
+    }
+    auto newDecoder = createDecoder(mediaType);
+    if (!newDecoder) {
+        std::cerr << "[SetClipMedia] Failed to create decoder for: " << openPath << std::endl;
+        return false;
+    }
+    Result openResult = newDecoder->open(openPath);
+    if (openResult != Result::Success) {
+        std::cerr << "[SetClipMedia] Failed to open: " << openPath << std::endl;
+        return false;
+    }
+
+    // Snapshot prev state on first execute (so undo restores faithfully
+    // even after subsequent edits in this command's redo chain).
+    if (!m_captured) {
+        m_prevFilepath         = clip->filepath;
+        m_prevMediaType        = clip->mediaType;
+        m_prevWidth            = clip->width;
+        m_prevHeight           = clip->height;
+        m_prevFramerate        = clip->framerate;
+        m_prevTotalMediaFrames = clip->totalMediaFrames;
+        m_prevMediaStartFrame  = clip->mediaStartFrame;
+        m_prevMediaOutFrame    = clip->mediaOutFrame;
+        m_prevHasAlpha         = clip->hasAlpha;
+        m_captured             = true;
+    }
+
+    // Tear down the existing worker — joins its thread so the new
+    // filepath is the only file the next worker can see. Synchronous
+    // on the editor thread; can take 50+ms for a 4K ProRes mid-decode
+    // join, acceptable for explicit user action.
+    engine.destroyClipWorker(clipEnt);
+    clip->loaded = false;
+
+    // Update Clip atomically with the new media's metadata. mediaStart
+    // resets to 0 (indexed into previous source). mediaOutFrame is set
+    // to the new source's last frame — matches the onMediaDroppedOnTimeline
+    // pattern (Engine.cpp:3662). Leaving -1 (the "end of source" sentinel)
+    // is a latent bug on the show side: ClipCatalogEntry doesn't carry
+    // totalMediaFrames, so clipFromCatalog reconstructs a Clip with
+    // totalMediaFrames=0, and effectivePlaybackLength falls back to 1 —
+    // every frame maps to source frame 0 ("frozen on first frame").
+    clip->filepath         = m_filepath;
+    clip->mediaType        = mediaType;
+    clip->width            = newDecoder->getWidth();
+    clip->height           = newDecoder->getHeight();
+    clip->framerate        = newDecoder->getFrameRate();
+    clip->totalMediaFrames = newDecoder->getDuration();
+    clip->hasAlpha         = newDecoder->hasAlpha();
+    clip->mediaStartFrame  = 0;
+    clip->mediaOutFrame    = clip->totalMediaFrames > 0
+        ? clip->totalMediaFrames - 1 : -1;
+    clip->decoding         = false;
+
+    // Hand the freshly-opened decoder to ClipDecodeState. The old
+    // ClipDecodeState's decoder is destroyed by emplace_or_replace —
+    // safe because the DecodeWorker holds its own decoder, not this one.
+    auto& state = reg.emplace_or_replace<ClipDecodeState>(clipEnt);
+    state.decoder = std::move(newDecoder);
+    state.frame   = std::make_unique<DecodedFrame>();
+    state.frame->allocate(clip->width, clip->height);
+    state.lastDecodedFrame = UINT32_MAX;
+
+    // Mark loaded so DecodeSystem creates a fresh worker next tick
+    // (which will spin up its own decoder against the new filepath).
+    clip->loaded = true;
+
+    // VideoTexture size may have changed — refresh markers and null
+    // the in-flight frame pointer because destroyClipWorker just evicted
+    // the FrameCache, so any AVFrame* currentFrame was pointing into is
+    // gone. Renderer will pick up new frames once the fresh worker
+    // produces them.
+    if (auto* vt = reg.try_get<VideoTexture>(clipEnt)) {
+        vt->width        = clip->width;
+        vt->height       = clip->height;
+        vt->currentFrame = nullptr;
+        vt->needsUpload  = false;
+        // Keep the existing descriptor slot — the renderer's video pool
+        // entry continues to back this clip; the upload path resizes the
+        // GPU texture on the first frame from the new decoder.
+    }
+
+    std::cout << "[SetClipMedia] entity=" << static_cast<uint32_t>(clipEnt)
+              << " '" << m_prevFilepath << "' -> '" << m_filepath
+              << "' (" << clip->width << "x" << clip->height
+              << " @ " << clip->framerate << ")" << std::endl;
+    return true;
+}
+
+bool SetClipMediaCommand::undo(Engine& engine) {
+    if (!m_captured) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& reg = engine.getRegistry();
+    auto* track = reg.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    entt::entity clipEnt = track->layers[m_clipIndex];
+    auto* clip = reg.try_get<Clip>(clipEnt);
+    if (!clip) return false;
+
+    // Reopen the previous media. If it's gone we still revert the Clip
+    // fields so subsequent ops see a coherent state — the user is the
+    // one who has to fix the missing file.
+    const std::string openPath = engine.resolveMediaPath(m_prevFilepath);
+    auto newDecoder = createDecoder(m_prevMediaType);
+    bool reopenOk = false;
+    if (newDecoder && newDecoder->open(openPath) == Result::Success) {
+        reopenOk = true;
+    }
+
+    // Same teardown as execute(): join the current worker so the next
+    // worker opens against the restored filepath.
+    engine.destroyClipWorker(clipEnt);
+    clip->loaded   = false;
+    clip->filepath = m_prevFilepath;
+    clip->mediaType = m_prevMediaType;
+    clip->width  = m_prevWidth;
+    clip->height = m_prevHeight;
+    clip->framerate        = m_prevFramerate;
+    clip->totalMediaFrames = m_prevTotalMediaFrames;
+    clip->mediaStartFrame  = m_prevMediaStartFrame;
+    clip->mediaOutFrame    = m_prevMediaOutFrame;
+    clip->hasAlpha         = m_prevHasAlpha;
+    clip->decoding         = false;
+
+    if (reopenOk) {
+        auto& state = reg.emplace_or_replace<ClipDecodeState>(clipEnt);
+        state.decoder = std::move(newDecoder);
+        state.frame   = std::make_unique<DecodedFrame>();
+        state.frame->allocate(clip->width, clip->height);
+        state.lastDecodedFrame = UINT32_MAX;
+        clip->loaded = true;
+        if (auto* vt = reg.try_get<VideoTexture>(clipEnt)) {
+            vt->width        = clip->width;
+            vt->height       = clip->height;
+            vt->currentFrame = nullptr;
+            vt->needsUpload  = false;
+        }
+        std::cout << "[SetClipMedia] undo: restored '" << m_prevFilepath << "'" << std::endl;
+    } else {
+        std::cerr << "[SetClipMedia] undo: could not reopen previous media '"
+                  << m_prevFilepath << "'" << std::endl;
+    }
+    return true;
+}
+
+nlohmann::json SetClipMediaCommand::toJson() const {
+    return {{"type", "SetClipMedia"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"filepath", m_filepath}};
+}
+
+std::string SetClipMediaCommand::getDescription() const {
+    return "Set clip media: " + m_filepath;
+}
+
+CommandPtr SetClipMediaCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetClipMediaCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex", 0),
+        j.value("filepath", std::string{}));
 }
 
 } // namespace entity

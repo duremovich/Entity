@@ -14,6 +14,7 @@ namespace entity {
 // Forward declarations
 class Timeline;
 class CommandDispatcher;
+class Engine;
 namespace effects { class EffectKindRegistry; }
 
 /**
@@ -41,6 +42,10 @@ public:
     void setEffectKindRegistry(const effects::EffectKindRegistry* reg) {
         m_effectKindRegistry = reg;
     }
+
+    // Optional — when set, the clip Media combo lists the project's
+    // media library. Without it, the combo hides itself.
+    void setEngine(Engine* engine) { m_engine = engine; }
 
     void render() override;
     const char* getName() const override { return "Properties"; }
@@ -209,6 +214,7 @@ private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
     CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
     const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};  // Non-owning, optional
+    Engine* m_engine{nullptr};  // Non-owning, optional (for Media combo media-library access)
 
     // Per-entity UI state (prevents static variable leak between clips)
     std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
@@ -255,6 +261,10 @@ private:
     // Pre-edit capture for the active Effect-parameter slider (only one
     // slider is active in ImGui at a time, so a single scalar is enough).
     float m_preEditEffectFloat{0.0f};
+
+    // Filter text for the Media combo dropdown. Cleared on dropdown open
+    // (see IsWindowAppearing branch in renderPlaybackSection).
+    char m_mediaFilterBuf[256]{0};
 };
 
 } // namespace entity

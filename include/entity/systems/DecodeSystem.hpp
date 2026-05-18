@@ -109,6 +109,18 @@ public:
     /** Read-only worker handle for status inspection (UI overlay etc). */
     const DecodeWorker* getWorker(entt::entity clipEntity) const;
 
+    /**
+     * Tear down the decode worker for a specific clip and evict the
+     * clip's frames from the FrameCache. Joins the worker thread
+     * (blocking; can take 50+ ms on 4K ProRes), releases the decoder,
+     * and drops all cached decoded frames keyed by this entity so
+     * stale frames from a previous media aren't served after a media
+     * swap. Editor-thread-only — same constraint as the per-tick
+     * lifecycle ops. No-op if no worker exists for the entity (the
+     * cache eviction still runs).
+     */
+    void destroyClipWorker(entt::entity entity);
+
 private:
     void createWorker(entt::entity entity, entt::registry& registry, FrameNumber initialFrame = 0);
     void destroyWorker(entt::entity entity);

@@ -17,6 +17,11 @@ namespace entity {
 // commands (Phase A cue ops) when wired by Engine::initializeWindowsAndCallbacks.
 class CommandDispatcher;
 
+// Forward declaration — TimelineWidget queries Engine's clipboard
+// snapshot to enable/disable Paste in the clip context menu, and walks
+// Engine::getProjectManager()'s media library for the Change Media modal.
+class Engine;
+
 // Callback for when a media file is dropped onto a track
 // Parameters: filepath, track index, timecode position
 using MediaDropCallback = std::function<void(const std::string&, int, Timecode)>;
@@ -126,6 +131,14 @@ public:
      * menu items are inert (the menu still draws).
      */
     void setCommandDispatcher(CommandDispatcher* dispatcher) { m_commandDispatcher = dispatcher; }
+
+    /**
+     * Optional — wire Engine so the clip context menu can query the
+     * clipboard state (enables/disables Paste) and the Change Media
+     * modal can walk the project's media library. Without it, those
+     * specific menu items are inert; the rest of the widget works.
+     */
+    void setEngine(Engine* engine) { m_engine = engine; }
 
     /**
      * Adjust horizontal scroll so the playhead is within the visible range.
@@ -245,6 +258,14 @@ private:
      * Handle right-click context menus.
      */
     void handleContextMenus();
+
+    /**
+     * Modal popup for "Change Media..." opened from the clip context menu.
+     * Lets the user pick a different file from the project's media library
+     * with a filter box. On selection enqueues a SetClipMediaCommand
+     * against m_pendingChangeMediaClip.
+     */
+    void renderChangeMediaPopup();
 
     /**
      * Find which track is at the given Y position.
@@ -370,6 +391,10 @@ private:
     entt::entity m_rightClickedClip{entt::null};
     bool m_showTrackContextMenu{false};
     bool m_showClipContextMenu{false};
+    // Frame on the timeline where the user right-clicked an empty track
+    // area. Captured + floor-snapped to the active tick grid. Read by
+    // the TrackContextMenu's Paste item.
+    FrameNumber m_rightClickedTrackFrame{0};
 
     // Snapping
     static constexpr float SNAP_THRESHOLD_PIXELS = 10.0f;  // Pixels threshold for snapping
@@ -473,6 +498,19 @@ private:
 
     // Optional dispatcher for ruler-menu cue commands.
     CommandDispatcher* m_commandDispatcher{nullptr};
+
+    // Optional Engine pointer. Used by the clip context menu for
+    // clipboard state (Paste enable/disable) and by the Change Media
+    // modal to walk the project's media library.
+    Engine* m_engine{nullptr};
+
+    // Change Media modal state. m_openChangeMediaPopup is set true by
+    // the context menu's "Change Media..." item; handleContextMenus
+    // calls ImGui::OpenPopup once and resets the flag on the same
+    // frame so we don't keep reopening every tick.
+    entt::entity m_pendingChangeMediaClip{entt::null};
+    bool         m_openChangeMediaPopup{false};
+    char         m_changeMediaFilterBuf[256]{0};
 
     // Callbacks
     MediaDropCallback m_mediaDropCallback;

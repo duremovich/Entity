@@ -77,6 +77,7 @@
 #include <chrono>
 #include <cstdio>
 #include <thread>
+#include <unordered_map>
 
 namespace entity {
 
@@ -492,6 +493,8 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         });
         // Phase A — ruler-menu cue ops route through the dispatcher.
         timelineWidget->setCommandDispatcher(m_commandDispatcher);
+        // Clip context menu needs Engine for clipboard state + media library.
+        timelineWidget->setEngine(this);
     }
     m_windowManager->registerWindow(std::move(timelineWindow));
 
@@ -551,6 +554,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     {
         auto propertyWindow = std::make_unique<PropertyWindow>(m_timeline);
         propertyWindow->setCommandDispatcher(m_commandDispatcher);
+        propertyWindow->setEngine(this);
         if (m_effectKindRegistry) {
             propertyWindow->setEffectKindRegistry(m_effectKindRegistry.get());
         }
@@ -2125,14 +2129,41 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 break;
 
             case GLFW_KEY_D:
-                // Ctrl+D = Duplicate selected clip
-                if (ctrlPressed) {
+                // Ctrl+D = Duplicate selected clip (undoable via DuplicateClipCommand)
+                if (ctrlPressed && !shiftPressed) {
                     entt::entity selectedClip = m_timeline->getSelectedClip();
-                    if (selectedClip != entt::null) {
-                        entt::entity newClip = m_timeline->duplicateClip(selectedClip);
-                        if (newClip != entt::null) {
-                            std::cout << "Duplicated clip" << std::endl;
-                        }
+                    if (selectedClip != entt::null && m_commandDispatcher) {
+                        m_commandDispatcher->enqueue(std::make_unique<DuplicateClipCommand>(
+                            static_cast<uint32_t>(selectedClip)));
+                    }
+                }
+                break;
+
+            case GLFW_KEY_C:
+                // Ctrl+C = Copy selected clip to in-process clipboard.
+                if (ctrlPressed && !shiftPressed) {
+                    entt::entity selectedClip = m_timeline->getSelectedClip();
+                    if (selectedClip != entt::null && m_commandDispatcher) {
+                        m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
+                            static_cast<uint32_t>(selectedClip)));
+                    }
+                }
+                break;
+
+            case GLFW_KEY_V:
+                // Ctrl+V = Paste clipboard at playhead on selected track.
+                if (ctrlPressed && !shiftPressed && m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<PasteClipCommand>());
+                }
+                break;
+
+            case GLFW_KEY_X:
+                // Ctrl+X = Cut selected clip (Copy + Delete).
+                if (ctrlPressed && !shiftPressed) {
+                    entt::entity selectedClip = m_timeline->getSelectedClip();
+                    if (selectedClip != entt::null && m_commandDispatcher) {
+                        m_commandDispatcher->enqueue(std::make_unique<CutClipCommand>(
+                            static_cast<uint32_t>(selectedClip)));
                     }
                 }
                 break;
@@ -3821,6 +3852,9 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         m_commandDispatcher->clearHistory();
     }
 
+    // Drop the clip clipboard — same reasoning as undo history.
+    m_clipClipboard.reset();
+
     // Point the transcode cache at <projectDir>/.cache/hap so subsequent
     // enqueue() writes land next to the project, not in %TEMP%.
     updateTranscodeCacheDir();
@@ -4083,6 +4117,10 @@ void Engine::closeProject() {
         m_commandDispatcher->clearHistory();
     }
 
+    // Drop the clip clipboard — the routing-asset entity ref it holds
+    // belongs to the project we're about to leave.
+    m_clipClipboard.reset();
+
     // 6. Stop the content scanner BEFORE clearing PM state — its worker
     //    thread reads m_contentDir which won't be valid post-close.
     if (m_contentScanner) {
@@ -4274,6 +4312,247 @@ void Engine::onClipCreated(entt::entity clipEntity, const std::string& filepath)
     state.lastDecodedFrame = UINT32_MAX;  // Force decode on first frame
 
     std::cout << "[Engine] New clip resources created successfully" << std::endl;
+}
+
+// ============================================================================
+// Clip clone + clipboard. Unified deep-clone path used by Duplicate and
+// Paste. See docs at the declaration in Engine.hpp.
+// ============================================================================
+
+ClipClipboardSnapshot Engine::snapshotClipForClipboard(entt::entity src) const {
+    ClipClipboardSnapshot out;
+    if (!m_timeline || !m_registry.valid(src)) return out;
+
+    // Reuse Timeline's delete-snapshot for the common archetype state.
+    out.base = m_timeline->snapshotClipForDelete(src);
+    if (!out.base.valid() || out.base.kind != Timeline::DeletedLayerKind::Clip) {
+        return out;  // not a clip on a track — refuse to clipboard.
+    }
+
+    // Resolve source track index for paste-fallback "no selection" path.
+    {
+        const auto& tracks = m_timeline->getTracks();
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            if (tracks[i] == out.base.trackEntity) {
+                out.sourceTrackIndex = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
+    // ContentRoutingRef — shallow-copy the asset pointer. Library asset is
+    // shared by design (ADR-0022); paste and source legitimately both
+    // reference the same asset entity.
+    if (const auto* ref = m_registry.try_get<ContentRoutingRef>(src)) {
+        out.hadContentRoutingRef = true;
+        out.contentRoutingRef    = *ref;
+    }
+
+    // EffectChain — deep-snapshot. Each referenced Effect entity's
+    // own component triplet is captured; oldEntity preserved so the
+    // materialize step can remap EffectConnection / outputNode.
+    if (const auto* chain = m_registry.try_get<EffectChain>(src)) {
+        out.hadEffectChain = true;
+        out.effectChain    = *chain;
+        for (entt::entity node : chain->nodes) {
+            ClipClipboardSnapshot::EffectNodeSnapshot ns;
+            ns.oldEntity = node;
+            if (const auto* eff = m_registry.try_get<Effect>(node)) {
+                ns.effect = *eff;
+            }
+            if (const auto* p = m_registry.try_get<EffectParameters>(node)) {
+                ns.hasParams = true;
+                ns.params    = *p;
+            }
+            if (const auto* ap = m_registry.try_get<EffectAnimatedParameters>(node)) {
+                ns.hasAnimParams = true;
+                ns.animParams    = *ap;
+            }
+            out.effectNodes.push_back(std::move(ns));
+        }
+    }
+
+    out.valid = true;
+    return out;
+}
+
+entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& snap,
+                                                  FrameNumber dstStartFrame,
+                                                  int         dstTrackIndex) {
+    if (!snap.valid || !m_timeline) {
+        std::cerr << "[Engine] materializeClipFromSnapshot: invalid snapshot" << std::endl;
+        return entt::null;
+    }
+    if (snap.base.kind != Timeline::DeletedLayerKind::Clip) {
+        std::cerr << "[Engine] materializeClipFromSnapshot: only Clip kind supported" << std::endl;
+        return entt::null;
+    }
+
+    // Resolve destination track. Fall back to the snapshot's source
+    // track if the requested index is out of range. Final fallback is
+    // track 0 so paste never silently fails when *any* track exists.
+    const auto& tracks = m_timeline->getTracks();
+    if (tracks.empty()) {
+        std::cerr << "[Engine] materializeClipFromSnapshot: no tracks to paste into" << std::endl;
+        return entt::null;
+    }
+    int trackIdx = dstTrackIndex;
+    if (trackIdx < 0 || trackIdx >= static_cast<int>(tracks.size())) {
+        if (snap.sourceTrackIndex >= 0 &&
+            snap.sourceTrackIndex < static_cast<int>(tracks.size())) {
+            trackIdx = snap.sourceTrackIndex;
+        } else {
+            trackIdx = 0;
+        }
+    }
+    entt::entity trackEntity = tracks[trackIdx];
+    auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
+    if (!track) {
+        std::cerr << "[Engine] materializeClipFromSnapshot: track missing TimelineTrack component" << std::endl;
+        return entt::null;
+    }
+
+    // Create the fresh entity + populate components in the same order
+    // as Timeline::duplicateClip / Timeline::restoreDeletedClip.
+    entt::entity dst = m_registry.create();
+    const auto& b = snap.base;
+
+    auto& newClip = m_registry.emplace<Clip>(dst);
+    newClip.filepath         = b.filepath;
+    newClip.mediaType        = b.mediaType;
+    newClip.startFrame       = dstStartFrame;
+    newClip.duration         = b.duration;
+    newClip.mediaStartFrame  = b.mediaStartFrame;
+    newClip.mediaOutFrame    = b.mediaOutFrame;
+    newClip.totalMediaFrames = b.totalMediaFrames;
+    newClip.framerate        = b.framerate;
+    newClip.playbackMode     = b.playbackMode;
+    newClip.sectionBehavior  = b.sectionBehavior;
+    newClip.width            = b.width;
+    newClip.height           = b.height;
+    newClip.hasAlpha         = b.hasAlpha;
+    newClip.frameBlending    = b.frameBlending;
+    newClip.targetScreen     = b.targetScreen;
+    newClip.loaded           = false;
+    newClip.decoding         = false;
+    // FFmpeg pointers stay null — fresh decoder opens via onClipCreated.
+
+    if (b.hadTransform) {
+        auto& t = m_registry.emplace<Transform>(dst);
+        t = b.transform;
+        t.dirty = true;
+    }
+    if (b.hadMediaLayer) {
+        m_registry.emplace<MediaLayer>(dst) = b.mediaLayer;
+    }
+    if (b.hadVideoTexture) {
+        auto& vt = m_registry.emplace<VideoTexture>(dst);
+        vt.width  = b.videoTexWidth;
+        vt.height = b.videoTexHeight;
+        // descriptorSlot stays at the default (UINT32_MAX) so onClipCreated
+        // requests a fresh slot via the bus.
+    }
+    if (b.hadFrameBuffer) {
+        m_registry.emplace<FrameBuffer>(dst);
+    }
+    {
+        auto& lay = m_registry.emplace<Layer>(dst);
+        lay.kind        = Layer::Kind::Clip;
+        lay.startFrame  = dstStartFrame;
+        lay.duration    = b.duration;
+        lay.trackIndex  = static_cast<std::uint32_t>(trackIdx);
+        lay.name        = b.layerName;
+        lay.color       = b.layerColor;
+    }
+    if (b.hadAnimatedProperties) {
+        m_registry.emplace<AnimatedProperties>(dst) = b.animatedProperties;
+    }
+
+    // ContentRoutingRef — shallow copy (asset entity ref is intentionally
+    // shared with the source).
+    if (snap.hadContentRoutingRef) {
+        m_registry.emplace<ContentRoutingRef>(dst) = snap.contentRoutingRef;
+    }
+
+    // EffectChain — deep clone. Create a new entity per node, copy each
+    // node's component triplet, then rebuild the chain's nodes + remap
+    // EffectConnection / outputNode through an oldToNew map.
+    if (snap.hadEffectChain && !snap.effectNodes.empty()) {
+        std::unordered_map<entt::entity, entt::entity> oldToNew;
+        oldToNew.reserve(snap.effectNodes.size());
+        std::vector<entt::entity> newNodes;
+        newNodes.reserve(snap.effectNodes.size());
+        for (const auto& ns : snap.effectNodes) {
+            entt::entity neff = m_registry.create();
+            m_registry.emplace<Effect>(neff) = ns.effect;
+            if (ns.hasParams) {
+                m_registry.emplace<EffectParameters>(neff) = ns.params;
+            }
+            if (ns.hasAnimParams) {
+                m_registry.emplace<EffectAnimatedParameters>(neff) = ns.animParams;
+            }
+            oldToNew[ns.oldEntity] = neff;
+            newNodes.push_back(neff);
+        }
+
+        auto& chain = m_registry.emplace<EffectChain>(dst);
+        chain.nodes = std::move(newNodes);
+
+        // Remap connections. entt::null (the synthetic Layer-Source /
+        // To-Screen sentinels) passes through unchanged.
+        chain.connections.reserve(snap.effectChain.connections.size());
+        for (const EffectConnection& c : snap.effectChain.connections) {
+            EffectConnection nc = c;
+            if (nc.srcNode != entt::null) {
+                auto it = oldToNew.find(nc.srcNode);
+                nc.srcNode = (it != oldToNew.end()) ? it->second : entt::null;
+            }
+            if (nc.dstNode != entt::null) {
+                auto it = oldToNew.find(nc.dstNode);
+                nc.dstNode = (it != oldToNew.end()) ? it->second : entt::null;
+            }
+            chain.connections.push_back(nc);
+        }
+        if (snap.effectChain.outputNode != entt::null) {
+            auto it = oldToNew.find(snap.effectChain.outputNode);
+            chain.outputNode = (it != oldToNew.end()) ? it->second : entt::null;
+        }
+        // EffectChainRenderTargets is intentionally NOT emplaced — the
+        // renderer reallocates ping-pong slots on next bake.
+    }
+
+    // Wire into the track and sort by start frame.
+    track->layers.push_back(dst);
+    track->sortLayers(m_registry);
+    Timeline::syncLayerFromClip(m_registry, dst);
+
+    std::cout << "[Engine] materializeClipFromSnapshot: entity=" << static_cast<uint32_t>(dst)
+              << " track=" << trackIdx << " frame=" << dstStartFrame
+              << " effects=" << (snap.hadEffectChain ? snap.effectNodes.size() : 0)
+              << std::endl;
+
+    // Open decoder + request GPU slot.
+    if (!newClip.filepath.empty()) {
+        onClipCreated(dst, newClip.filepath);
+    }
+    return dst;
+}
+
+entt::entity Engine::cloneClipEntity(entt::entity src,
+                                      FrameNumber  dstStartFrame,
+                                      int          dstTrackIndex) {
+    auto snap = snapshotClipForClipboard(src);
+    if (!snap.valid) {
+        std::cerr << "[Engine] cloneClipEntity: source is not a clip on a track" << std::endl;
+        return entt::null;
+    }
+    return materializeClipFromSnapshot(snap, dstStartFrame, dstTrackIndex);
+}
+
+void Engine::destroyClipWorker(entt::entity clipEntity) {
+    if (m_decodeSystem) {
+        m_decodeSystem->destroyClipWorker(clipEntity);
+    }
 }
 
 void Engine::createDefaultScreen() {

@@ -17,11 +17,23 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ContentRouting.hpp"
+#include "entity/components/ContentRoutingAsset.hpp"
+#include "entity/components/ContentRoutingRef.hpp"
+#include "entity/components/Screen.hpp"
+#include "entity/core/Engine.hpp"
+#include "entity/project/ProjectManager.hpp"
+#include <algorithm>
+#include <filesystem>
 #include <sstream>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cctype>
 #include <limits>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace entity {
 
@@ -1082,27 +1094,40 @@ void TimelineWidget::handleTracksInteraction() {
             }
         }
 
-        // Handle right-click for context menus (only if window is hovered)
+        // Handle right-click for context menus (only if window is hovered).
+        // We DEFER the actual ImGui::OpenPopup call to handleContextMenus()
+        // because popup IDs are scoped to the current ImGui window context.
+        // We're inside the TimelineTracks BeginChild here, but
+        // BeginPopup() runs in the parent (TimelineWindow) context — they
+        // wouldn't match if we opened here. Setting the m_show* flag is
+        // safe across the EndChild boundary.
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             int trackIndex = -1;
             entt::entity clipUnderMouse = findClipAtPosition(mousePos, windowPos, trackIndex);
 
             if (clipUnderMouse != entt::null) {
-                // Right-clicked on a clip
                 m_rightClickedClip = clipUnderMouse;
                 m_rightClickedTrackIndex = trackIndex;
                 m_showClipContextMenu = true;
                 m_showTrackContextMenu = false;
-                ImGui::OpenPopup("ClipContextMenu");
             } else {
-                // Check if right-clicked on a track (empty area)
                 int trackAtY = findTrackAtY(mousePos.y, windowPos.y);
                 if (trackAtY >= 0) {
                     m_rightClickedTrackIndex = trackAtY;
                     m_rightClickedClip = entt::null;
                     m_showTrackContextMenu = true;
                     m_showClipContextMenu = false;
-                    ImGui::OpenPopup("TrackContextMenu");
+
+                    // Capture click frame on the timeline for the
+                    // Paste-here menu item. Floor-snap to the current
+                    // tick grid so the inserted clip's start aligns
+                    // with the visible tick at-or-before the cursor.
+                    const float relativeX =
+                        mousePos.x - windowPos.x + m_syncScrollX;
+                    Timecode clickTime = pixelToTime(relativeX);
+                    if (clickTime < 0) clickTime = 0;
+                    clickTime = snapTimeToTickGrid(clickTime);
+                    m_rightClickedTrackFrame = m_timeline->timeToFrame(clickTime);
                 }
             }
         }
@@ -1112,32 +1137,193 @@ void TimelineWidget::handleTracksInteraction() {
 void TimelineWidget::handleContextMenus() {
     if (!m_timeline) return;
 
-    // Clip context menu
+    // Open the popups deferred from handleTracksInteraction. Doing the
+    // ImGui::OpenPopup here (parent window context) matches the BeginPopup
+    // call below — popup IDs are scoped to the current ImGui window, so
+    // opening + beginning in the same window context is required.
+    if (m_showClipContextMenu) {
+        ImGui::OpenPopup("ClipContextMenu");
+        m_showClipContextMenu = false;
+    }
+    if (m_showTrackContextMenu) {
+        ImGui::OpenPopup("TrackContextMenu");
+        m_showTrackContextMenu = false;
+    }
+
+    // Clip context menu — Cut / Copy / Paste / Duplicate / Delete plus
+    // Change Media... and a Route to... submenu. ASCII-only labels per
+    // the ImGui default-font constraint.
     if (ImGui::BeginPopup("ClipContextMenu")) {
         if (m_rightClickedClip != entt::null) {
-            if (ImGui::MenuItem("Delete Clip")) {
-                // Clear selection if we're deleting the selected clip
+            auto& registry = m_timeline->getRegistry();
+            const auto* clip = registry.try_get<Clip>(m_rightClickedClip);
+            const auto idx = findClipIndices(m_timeline, m_rightClickedClip);
+            const bool hasIdx = idx.has_value();
+            const bool isClipKind = (clip != nullptr);
+            const bool clipboardFull =
+                m_engine && m_engine->clipClipboard().has_value() &&
+                m_engine->clipClipboard()->valid;
+
+            if (ImGui::MenuItem("Cut", "Ctrl+X", false, isClipKind && hasIdx)) {
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<CutClipCommand>(
+                        static_cast<uint32_t>(m_rightClickedClip)));
+                }
+            }
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false, isClipKind && hasIdx)) {
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
+                        static_cast<uint32_t>(m_rightClickedClip)));
+                }
+            }
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false, clipboardFull)) {
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<PasteClipCommand>());
+                }
+            }
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, isClipKind && hasIdx)) {
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(std::make_unique<DuplicateClipCommand>(
+                        static_cast<uint32_t>(m_rightClickedClip)));
+                }
+            }
+            if (ImGui::MenuItem("Delete", "Del", false, hasIdx)) {
                 if (m_selectedClip == m_rightClickedClip) {
                     m_selectedClip = entt::null;
                     m_selectedClipTrackIndex = -1;
                 }
-                // Route through the command dispatcher so the delete is
-                // undoable (Ctrl+Z restores). Falls back to the direct path
-                // only if no dispatcher is wired (shouldn't happen at runtime
-                // but keeps unit tests that use TimelineWidget standalone OK).
                 if (m_commandDispatcher) {
                     m_commandDispatcher->enqueue(std::make_unique<DeleteClipCommand>(
                         static_cast<uint32_t>(m_rightClickedClip)));
                 } else {
                     m_timeline->deleteClip(m_rightClickedClip);
                 }
-                m_rightClickedClip = entt::null;
             }
+
             ImGui::Separator();
 
-            // Get clip info for display
-            auto& registry = m_timeline->getRegistry();
-            const auto* clip = registry.try_get<Clip>(m_rightClickedClip);
+            // Change Media... — only for clip-kind layers (not OA/Generative).
+            if (ImGui::MenuItem("Change Media...", nullptr, false, isClipKind && hasIdx)) {
+                m_pendingChangeMediaClip = m_rightClickedClip;
+                m_openChangeMediaPopup = true;
+                m_changeMediaFilterBuf[0] = '\0';
+            }
+
+            // Route to... submenu — all routing kinds (Direct / Tiled /
+            // FeedMap). Auto-direct entries first (one per Screen), then
+            // user-created. ASCII kind badges per ImGui font constraint.
+            const bool canRoute = isClipKind && hasIdx;
+            if (canRoute && ImGui::BeginMenu("Route to...")) {
+                const auto* currentRef = registry.try_get<ContentRoutingRef>(m_rightClickedClip);
+                const entt::entity currentAsset = currentRef ? currentRef->asset : entt::null;
+
+                // Default (All visible) — clears the routing ref.
+                if (ImGui::MenuItem("[*] Default (All visible)", nullptr, currentAsset == entt::null)) {
+                    if (m_commandDispatcher) {
+                        m_commandDispatcher->enqueue(std::make_unique<SetClipTargetScreenCommand>(
+                            idx->first, idx->second, std::string("All Screens")));
+                    }
+                }
+
+                struct AssetPick {
+                    entt::entity asset{entt::null};
+                    std::string  display;
+                    RouteMode    kind{RouteMode::Direct};
+                    bool         isAuto{false};
+                };
+                std::vector<AssetPick> autoDirect, userCreated;
+                for (auto [e, a] : registry.view<ContentRoutingAsset>().each()) {
+                    AssetPick p;
+                    p.asset   = e;
+                    p.display = a.name;
+                    p.kind    = a.kind;
+                    p.isAuto  = (a.autoBoundScreen != entt::null);
+                    (p.isAuto ? autoDirect : userCreated).push_back(std::move(p));
+                }
+                auto byName = [](const AssetPick& a, const AssetPick& b) { return a.display < b.display; };
+                std::sort(autoDirect.begin(), autoDirect.end(), byName);
+                std::sort(userCreated.begin(), userCreated.end(), byName);
+
+                auto kindTag = [](RouteMode m) -> const char* {
+                    switch (m) {
+                        case RouteMode::Direct:  return "[D] ";
+                        case RouteMode::Tiled:   return "[T] ";
+                        case RouteMode::FeedMap: return "[F] ";
+                    }
+                    return "";
+                };
+
+                auto applyPick = [&](const AssetPick& p) {
+                    if (!m_commandDispatcher) return;
+                    const auto* asset = registry.try_get<ContentRoutingAsset>(p.asset);
+                    // Direct with single target → SetClipTargetScreenCommand (matches
+                    // existing PropertyWindow dispatch + lets undo capture the
+                    // previous screen name as a string).
+                    if (asset && asset->kind == RouteMode::Direct &&
+                        asset->targets.size() == 1) {
+                        std::string screenName = "All Screens";
+                        if (auto* sc = registry.try_get<Screen>(asset->targets.front().screen)) {
+                            screenName = sc->name;
+                        }
+                        m_commandDispatcher->enqueue(std::make_unique<SetClipTargetScreenCommand>(
+                            idx->first, idx->second, screenName));
+                        return;
+                    }
+                    // Tiled / FeedMap / multi-target Direct → SetContentRoutingCommand
+                    // with the asset's full spec.
+                    if (asset) {
+                        const char* modeStr = "Direct";
+                        switch (asset->kind) {
+                            case RouteMode::Direct:  modeStr = "Direct";  break;
+                            case RouteMode::Tiled:   modeStr = "Tiled";   break;
+                            case RouteMode::FeedMap: modeStr = "FeedMap"; break;
+                        }
+                        std::vector<SetContentRoutingCommand::TargetSpec> specs;
+                        specs.reserve(asset->targets.size());
+                        for (const auto& t : asset->targets) {
+                            SetContentRoutingCommand::TargetSpec s;
+                            s.uvRect = t.uvRect;
+                            if (t.screen != entt::null) {
+                                if (auto* sc = registry.try_get<Screen>(t.screen)) {
+                                    s.screenName = sc->name;
+                                }
+                            }
+                            specs.push_back(std::move(s));
+                        }
+                        m_commandDispatcher->enqueue(std::make_unique<SetContentRoutingCommand>(
+                            idx->first, idx->second, std::string(modeStr), std::move(specs)));
+                    }
+                };
+
+                if (!autoDirect.empty()) {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Auto (per Screen)");
+                    for (const auto& p : autoDirect) {
+                        std::string label = kindTag(p.kind);
+                        label += p.display;
+                        if (ImGui::MenuItem(label.c_str(), nullptr, p.asset == currentAsset)) {
+                            applyPick(p);
+                        }
+                    }
+                }
+                if (!userCreated.empty()) {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("User-created");
+                    for (const auto& p : userCreated) {
+                        std::string label = kindTag(p.kind);
+                        label += p.display;
+                        if (ImGui::MenuItem(label.c_str(), nullptr, p.asset == currentAsset)) {
+                            applyPick(p);
+                        }
+                    }
+                }
+                ImGui::EndMenu();
+            }
+
+            ImGui::Separator();
+
+            // Bottom info block — Clip kind only; OA/Generative have their
+            // own readouts in PropertyWindow.
             if (clip) {
                 ImGui::TextDisabled("Duration: %d frames", clip->duration);
                 ImGui::TextDisabled("Start: frame %d", clip->startFrame);
@@ -1146,9 +1332,32 @@ void TimelineWidget::handleContextMenus() {
         ImGui::EndPopup();
     }
 
+    // Modal popup (separate so it survives across frames even after the
+    // context popup closes).
+    renderChangeMediaPopup();
+
     // Track context menu
     if (ImGui::BeginPopup("TrackContextMenu")) {
         if (m_rightClickedTrackIndex >= 0) {
+            const bool clipboardFull =
+                m_engine && m_engine->clipClipboard().has_value() &&
+                m_engine->clipClipboard()->valid;
+
+            // Paste here — uses the click-frame captured during right-
+            // click (floor-snapped to tick grid).
+            {
+                std::ostringstream label;
+                label << "Paste at frame " << m_rightClickedTrackFrame;
+                if (ImGui::MenuItem(label.str().c_str(), "Ctrl+V", false, clipboardFull)) {
+                    if (m_commandDispatcher) {
+                        m_commandDispatcher->enqueue(std::make_unique<PasteClipCommand>(
+                            m_rightClickedTrackFrame, m_rightClickedTrackIndex));
+                    }
+                }
+            }
+
+            ImGui::Separator();
+
             std::ostringstream label;
             label << "Delete Track " << (m_rightClickedTrackIndex + 1);
             if (ImGui::MenuItem(label.str().c_str())) {
@@ -1159,8 +1368,6 @@ void TimelineWidget::handleContextMenus() {
                 }
                 m_rightClickedTrackIndex = -1;
             }
-
-            ImGui::Separator();
 
             // Option to add a new track
             if (ImGui::MenuItem("Add Track Above")) {
@@ -1334,6 +1541,113 @@ void TimelineWidget::handleContextMenus() {
         }
         ImGui::EndPopup();
     }
+}
+
+void TimelineWidget::renderChangeMediaPopup() {
+    if (m_openChangeMediaPopup) {
+        ImGui::OpenPopup("Change Media");
+        m_openChangeMediaPopup = false;
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
+
+    if (!ImGui::BeginPopupModal("Change Media", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    // Bail out early if we lost the prerequisites between open + render.
+    if (m_pendingChangeMediaClip == entt::null || !m_engine || !m_engine->getProjectManager()) {
+        ImGui::TextDisabled("No clip selected.");
+        if (ImGui::Button("Close", ImVec2(120, 0))) {
+            m_pendingChangeMediaClip = entt::null;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    // Show what we're retargeting for context.
+    auto& registry = m_timeline->getRegistry();
+    const auto* clip = registry.try_get<Clip>(m_pendingChangeMediaClip);
+    if (clip) {
+        ImGui::TextDisabled("Current:");
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(clip->filepath.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+    }
+
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##change_media_filter", "Search media...",
+                              m_changeMediaFilterBuf, sizeof(m_changeMediaFilterBuf));
+
+    ImGui::Separator();
+
+    // Case-insensitive substring match on the filename leaf.
+    auto icontains = [](std::string_view hay, std::string_view needle) {
+        if (needle.empty()) return true;
+        if (needle.size() > hay.size()) return false;
+        for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+            bool match = true;
+            for (size_t j = 0; j < needle.size(); ++j) {
+                if (std::tolower(static_cast<unsigned char>(hay[i + j])) !=
+                    std::tolower(static_cast<unsigned char>(needle[j]))) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+        return false;
+    };
+
+    const std::string_view filter{m_changeMediaFilterBuf};
+    const auto& mediaFiles = m_engine->getLoadedMediaFiles();
+
+    bool chose = false;
+    std::string chosenPath;
+
+    if (ImGui::BeginChild("##change_media_list", ImVec2(420, 280), true)) {
+        for (const auto& entry : mediaFiles) {
+            std::filesystem::path p{entry.originalPath};
+            const std::string leaf = p.filename().string();
+            if (!filter.empty() && !icontains(leaf, filter)) continue;
+            const bool isCurrent = (clip && entry.originalPath == clip->filepath);
+            ImGui::PushID(entry.originalPath.c_str());
+            if (ImGui::Selectable(leaf.c_str(), isCurrent,
+                                  ImGuiSelectableFlags_AllowDoubleClick)) {
+                if (!isCurrent) {
+                    chose = true;
+                    chosenPath = entry.originalPath;
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", entry.originalPath.c_str());
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        m_pendingChangeMediaClip = entt::null;
+        ImGui::CloseCurrentPopup();
+    }
+
+    if (chose) {
+        if (auto idx = findClipIndices(m_timeline, m_pendingChangeMediaClip);
+            idx.has_value() && m_commandDispatcher) {
+            m_commandDispatcher->enqueue(std::make_unique<SetClipMediaCommand>(
+                idx->first, idx->second, chosenPath));
+        }
+        m_pendingChangeMediaClip = entt::null;
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
 }
 
 } // namespace entity

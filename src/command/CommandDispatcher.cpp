@@ -161,6 +161,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SplitClip", SplitClipCommand::fromJson);
     registerFactory("DuplicateClip", DuplicateClipCommand::fromJson);
     registerFactory("DeleteClip", DeleteClipCommand::fromJson);
+    registerFactory("CopyClip", CopyClipCommand::fromJson);
+    registerFactory("CutClip", CutClipCommand::fromJson);
+    registerFactory("PasteClip", PasteClipCommand::fromJson);
+    registerFactory("SetClipMedia", SetClipMediaCommand::fromJson);
 
     // Media commands
     registerFactory("ImportVideo", ImportVideoCommand::fromJson);

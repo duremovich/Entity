@@ -33,14 +33,20 @@
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
+#include "entity/core/Engine.hpp"
+#include "entity/project/ProjectManager.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -482,6 +488,111 @@ void PropertyWindow::renderPlaybackSection() {
                 auto cmd = std::make_unique<SetClipPlaybackModeCommand>(idx->first, idx->second, next);
                 cmd->setPreviousMode(prev);
                 m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
+    }
+
+    // Media — pick a different source file for this clip from the
+    // project media library. Hidden when no Engine pointer is wired
+    // (headless tests) or the library is empty.
+    //
+    // Custom BeginCombo (instead of plain ImGui::Combo) so we can host an
+    // InputTextWithHint filter inside the dropdown — typing narrows the
+    // list as the user types. Case-insensitive substring match on the
+    // filename leaf.
+    if (m_engine && m_engine->getProjectManager()) {
+        const auto& mediaFiles = m_engine->getLoadedMediaFiles();
+        if (!mediaFiles.empty()) {
+            ImGui::Spacing();
+            ImGui::Text("Media");
+
+            struct MediaPick {
+                std::string display;
+                std::string path;
+            };
+            std::vector<MediaPick> picks;
+            picks.reserve(mediaFiles.size());
+            for (const auto& entry : mediaFiles) {
+                std::filesystem::path p{entry.originalPath};
+                picks.push_back({p.filename().string(), entry.originalPath});
+            }
+            std::sort(picks.begin(), picks.end(),
+                       [](const MediaPick& a, const MediaPick& b) {
+                           return a.display < b.display;
+                       });
+
+            // Preview = leaf of current clip filepath, or "(none)".
+            std::string previewLabel = "(none)";
+            for (const auto& p : picks) {
+                if (p.path == clip->filepath) {
+                    previewLabel = p.display;
+                    break;
+                }
+            }
+
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##clipMedia", previewLabel.c_str())) {
+                // Auto-focus the filter when the dropdown opens so the
+                // user can just start typing.
+                if (ImGui::IsWindowAppearing()) {
+                    ImGui::SetKeyboardFocusHere();
+                    m_mediaFilterBuf[0] = '\0';
+                }
+
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputTextWithHint("##mediaFilter", "Search...",
+                                          m_mediaFilterBuf,
+                                          sizeof(m_mediaFilterBuf));
+
+                ImGui::Separator();
+
+                auto icontains = [](std::string_view hay, std::string_view needle) {
+                    if (needle.empty()) return true;
+                    if (needle.size() > hay.size()) return false;
+                    for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+                        bool match = true;
+                        for (size_t j = 0; j < needle.size(); ++j) {
+                            if (std::tolower(static_cast<unsigned char>(hay[i + j])) !=
+                                std::tolower(static_cast<unsigned char>(needle[j]))) {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) return true;
+                    }
+                    return false;
+                };
+
+                const std::string_view filter{m_mediaFilterBuf};
+                int visibleCount = 0;
+                if (ImGui::BeginChild("##mediaList", ImVec2(0, 220), false,
+                                       ImGuiWindowFlags_HorizontalScrollbar)) {
+                    for (const auto& p : picks) {
+                        if (!icontains(p.display, filter)) continue;
+                        ++visibleCount;
+                        const bool isCurrent = (p.path == clip->filepath);
+                        if (ImGui::Selectable(p.display.c_str(), isCurrent)) {
+                            if (!isCurrent) {
+                                if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                                    if (m_dispatcher) {
+                                        m_dispatcher->enqueue(std::make_unique<SetClipMediaCommand>(
+                                            idx->first, idx->second, p.path));
+                                    }
+                                }
+                            }
+                            ImGui::CloseCurrentPopup();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("%s", p.path.c_str());
+                        }
+                    }
+                    if (visibleCount == 0) {
+                        ImGui::TextDisabled("(no matches)");
+                    }
+                }
+                ImGui::EndChild();
+
+                ImGui::EndCombo();
             }
         }
     }

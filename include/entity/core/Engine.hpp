@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types.hpp"
+#include "entity/core/ClipClipboard.hpp"
 #include "entity/core/SceneState.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/core/Settings.hpp"
@@ -995,6 +996,12 @@ private:
     // WindowManager via TimelineWindow.
     class TimelineWidget* m_timelineWidget{nullptr};
 
+    // Single-slot in-process clipboard for clip Cut/Copy/Paste. See
+    // ClipClipboard.hpp for the snapshot shape. Cleared on closeProject
+    // and loadProject because routing-asset entity refs only survive
+    // within one project session.
+    std::optional<ClipClipboardSnapshot> m_clipClipboard;
+
     // TODO: implement when class is ready
     // std::unique_ptr<Transport> m_transport;
 
@@ -1116,6 +1123,64 @@ public:
                                     int trackIndex,
                                     FrameNumber startFrame,
                                     FrameNumber duration);
+
+    // --- Clipboard + clip clone (timeline ergonomics) -----------------
+    //
+    // Unified deep-clone path for Duplicate, Cut/Copy/Paste, and any
+    // future "make an independent copy of a clip" surface. The split
+    // helpers exist so Paste can reuse `materialize` against a
+    // clipboard snapshot without re-walking the source registry.
+
+    /**
+     * Capture a clip's full archetype into a typed clipboard snapshot:
+     * Layer placement, Clip media metadata, Transform, MediaLayer,
+     * VideoTexture markers, AnimatedProperties, ContentRoutingRef,
+     * EffectChain + each referenced Effect entity. Returns an invalid
+     * snapshot (valid==false) if `src` isn't a clip on any track.
+     */
+    ClipClipboardSnapshot snapshotClipForClipboard(entt::entity src) const;
+
+    /**
+     * Rebuild a clip from a snapshot on `dstTrackIndex` at
+     * `dstStartFrame`. Deep-clones the EffectChain (new Effect entities
+     * per node) and remaps EffectConnection / outputNode through an
+     * oldToNew map. ContentRoutingRef::asset is reused as-is (shared
+     * library asset by design — ADR-0022). Calls `onClipCreated` so the
+     * fresh entity gets its decoder + GPU slot. Returns the new entity,
+     * or entt::null on failure (invalid snapshot, track out of range).
+     */
+    entt::entity materializeClipFromSnapshot(const ClipClipboardSnapshot& snap,
+                                              FrameNumber dstStartFrame,
+                                              int         dstTrackIndex);
+
+    /**
+     * End-to-end: snapshot src, then materialize at the destination.
+     * Used by DuplicateClipCommand (parity-fixed Ctrl+D).
+     */
+    entt::entity cloneClipEntity(entt::entity src,
+                                  FrameNumber  dstStartFrame,
+                                  int          dstTrackIndex);
+
+    /**
+     * Single-slot in-process clipboard for CopyClipCommand / CutClipCommand /
+     * PasteClipCommand. Cleared on closeProject / loadProject because the
+     * routing-asset entity reference only survives within one project
+     * session.
+     */
+    const std::optional<ClipClipboardSnapshot>& clipClipboard() const {
+        return m_clipClipboard;
+    }
+    void setClipClipboard(ClipClipboardSnapshot snap) {
+        m_clipClipboard = std::move(snap);
+    }
+    void clearClipClipboard() { m_clipClipboard.reset(); }
+
+    /**
+     * Tear down the decode worker for a clip. Forwards to
+     * DecodeSystem::destroyClipWorker; safe to call when no worker
+     * exists. Used by SetClipMediaCommand to swap media synchronously.
+     */
+    void destroyClipWorker(entt::entity clipEntity);
 
 private:
 

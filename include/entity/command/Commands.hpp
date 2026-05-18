@@ -2,6 +2,7 @@
 
 #include "Command.hpp"
 #include "UndoableCommand.hpp"
+#include "entity/core/ClipClipboard.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
@@ -194,7 +195,7 @@ private:
     std::optional<FrameNumber> m_frame;
 };
 
-class DuplicateClipCommand : public Command {
+class DuplicateClipCommand : public UndoableCommand {
 public:
     // Duplicate selected clip (default)
     DuplicateClipCommand() = default;
@@ -203,6 +204,7 @@ public:
     explicit DuplicateClipCommand(uint32_t entityId) : m_entityId(entityId) {}
 
     bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "DuplicateClip"; }
     nlohmann::json toJson() const override;
 
@@ -210,6 +212,128 @@ public:
 
 private:
     std::optional<uint32_t> m_entityId;
+    // Created entity, recorded for undo. m_executed gates undo so a
+    // never-executed instance is a no-op rather than destroying a stale id.
+    entt::entity m_createdEntity{entt::null};
+    bool         m_executed{false};
+};
+
+// ============================================================================
+// Clip Clipboard Commands (Cut / Copy / Paste).
+//
+// Copy + Cut mutate the in-process clipboard slot on Engine. Clipboard
+// mutation is *not* on the undo stack (matches every NLE — Premiere /
+// Resolve / FCP all treat the clipboard as out-of-band). Cut additionally
+// enqueues a DeleteClipCommand, which IS undoable; undo of cut restores
+// the clip but leaves the clipboard contents intact.
+//
+// Paste materializes a fresh clip from the clipboard snapshot at the
+// current playhead on the currently selected clip's track (falls back to
+// the clipboard's source track, then track 0). Overlaps with existing
+// clips are allowed.
+// ============================================================================
+
+class CopyClipCommand : public Command {
+public:
+    CopyClipCommand() = default;
+    explicit CopyClipCommand(uint32_t entityId) : m_entityId(entityId) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CopyClip"; }
+    nlohmann::json toJson() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::optional<uint32_t> m_entityId;
+};
+
+class CutClipCommand : public Command {
+public:
+    CutClipCommand() = default;
+    explicit CutClipCommand(uint32_t entityId) : m_entityId(entityId) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CutClip"; }
+    nlohmann::json toJson() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::optional<uint32_t> m_entityId;
+};
+
+class PasteClipCommand : public UndoableCommand {
+public:
+    // Default: paste at the playhead on the currently-selected clip's
+    // track (falls back to clipboard source-track, then track 0).
+    PasteClipCommand() = default;
+
+    // Explicit-position form. Used by the timeline track right-click
+    // menu: targetFrame is captured from the mouse position at the
+    // right-click, floor-snapped to the active tick grid.
+    PasteClipCommand(FrameNumber targetFrame, int trackIndex)
+        : m_targetFrame(targetFrame), m_targetTrack(trackIndex) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "PasteClip"; }
+    nlohmann::json toJson() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::optional<FrameNumber> m_targetFrame;
+    std::optional<int>         m_targetTrack;
+    entt::entity m_createdEntity{entt::null};
+    bool         m_executed{false};
+};
+
+// ============================================================================
+// Set a clip's media. Atomic swap: filepath + media metadata
+// (mediaType, width, height, framerate, totalMediaFrames, hasAlpha) all
+// change together. Resets mediaStartFrame=0 / mediaOutFrame=-1 because
+// they index into the previous source.
+//
+// JSON format:
+// {
+//     "type": "SetClipMedia",
+//     "trackIndex": 0,
+//     "clipIndex":  0,
+//     "filepath":   "content/foo.mov"
+// }
+// ============================================================================
+class SetClipMediaCommand : public UndoableCommand {
+public:
+    SetClipMediaCommand(int trackIndex, int clipIndex, std::string filepath)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_filepath(std::move(filepath)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipMedia"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex{0};
+    int         m_clipIndex{0};
+    std::string m_filepath;
+
+    // Captured-on-first-execute previous state. Restored verbatim by
+    // undo() so a swap between two files of different framerates / sizes
+    // round-trips cleanly.
+    bool         m_captured{false};
+    std::string  m_prevFilepath;
+    MediaType    m_prevMediaType{MediaType::Unknown};
+    std::uint32_t m_prevWidth{0};
+    std::uint32_t m_prevHeight{0};
+    double       m_prevFramerate{30.0};
+    FrameNumber  m_prevTotalMediaFrames{0};
+    FrameNumber  m_prevMediaStartFrame{0};
+    FrameNumber  m_prevMediaOutFrame{-1};
+    bool         m_prevHasAlpha{false};
 };
 
 class DeleteClipCommand : public UndoableCommand {
