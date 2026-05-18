@@ -84,6 +84,16 @@ void TimelineWidget::render() {
         return;
     }
 
+    // Ghost preview is a derived per-frame visual. Reset it at the top of
+    // every frame except while a clip drag is in progress — in that case
+    // handleTracksInteraction owns m_ghost (set at end of frame, read at
+    // the next frame's renderTracks). For ImGui drag-drop sessions the
+    // peek inside renderTrack re-enables the ghost this frame if a
+    // payload is active.
+    if (!m_isDraggingClip) {
+        m_ghost.active = false;
+    }
+
     // Clean up stale entity references in expansion state
     {
         auto& reg = m_timeline->getRegistry();
@@ -558,6 +568,74 @@ Timecode TimelineWidget::snapTimeToBest(Timecode t) const {
     consider(cueT);
     consider(secT);
     return best;
+}
+
+bool TimelineWidget::wouldOverlapAnyClip(int trackIndex, Timecode startTime,
+                                         Timecode durationTime,
+                                         entt::entity excludeEntity) const {
+    if (!m_timeline || trackIndex < 0 || durationTime <= 0) return false;
+    auto& registry = m_timeline->getRegistry();
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex >= static_cast<int>(tracks.size())) return false;
+    const auto* track = registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return false;
+
+    const double fps = m_timeline->getFrameRate();
+    if (fps <= 0.0) return false;
+
+    const Timecode endTime = startTime + durationTime;
+
+    // Mirror checkClipCollision's archetype branching but boolean-only.
+    auto readPlacement = [&](entt::entity e) -> std::tuple<FrameNumber, FrameNumber, bool> {
+        if (const auto* clip = registry.try_get<Clip>(e)) {
+            return {clip->startFrame, clip->duration, true};
+        }
+        if (const auto* lay = registry.try_get<Layer>(e);
+            lay && (registry.all_of<ObjectAnimationLayer>(e) ||
+                    registry.all_of<GenerativeLayer>(e))) {
+            return {lay->startFrame, lay->duration, true};
+        }
+        return {0, 0, false};
+    };
+
+    for (entt::entity other : track->layers) {
+        if (other == excludeEntity) continue;
+        auto [oStart, oDur, valid] = readPlacement(other);
+        if (!valid) continue;
+
+        const float oStartSec = oStart / static_cast<float>(fps);
+        const float oDurSec   = oDur   / static_cast<float>(fps);
+        const Timecode oStartT = static_cast<Timecode>(oStartSec * 1000000.0f);
+        const Timecode oEndT   = static_cast<Timecode>((oStartSec + oDurSec) * 1000000.0f);
+
+        if (startTime < oEndT && endTime > oStartT) return true;
+    }
+    return false;
+}
+
+Timecode TimelineWidget::snapDropPosition(Timecode rawTime, int trackIndex) const {
+    (void)trackIndex;  // reserved for a future track-local snap variant
+    if (!m_timeline) return rawTime;
+    if (rawTime < 0) rawTime = 0;
+
+    const Timecode tol = pixelToTime(SNAP_THRESHOLD_PIXELS);
+    Timecode chosen = rawTime;
+    Timecode bestDist = tol + 1;
+    auto consider = [&](Timecode candidate) {
+        if (candidate == rawTime) return;
+        const Timecode d = std::llabs(static_cast<long long>(candidate - rawTime));
+        if (d <= tol && d < bestDist) {
+            bestDist = d;
+            chosen = candidate;
+        }
+    };
+
+    consider(m_timeline->getCurrentTime());          // playhead
+    consider(snapTimeToCues(rawTime, tol));
+    consider(snapTimeToSections(rawTime, tol));
+    consider(snapTimeToTickGrid(rawTime));           // always-on grid for drops
+
+    return chosen;
 }
 
 void TimelineWidget::computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, int& outRowsUsed) const {

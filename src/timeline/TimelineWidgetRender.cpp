@@ -555,30 +555,74 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
     ImGui::InvisibleButton(dropTargetId.str().c_str(), ImVec2(trackMax.x - trackMin.x, trackHeight));
 
     if (ImGui::BeginDragDropTarget()) {
+        ImVec2 mousePos = ImGui::GetMousePos();
+        float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
+        Timecode rawDropTime = pixelToTime(relativeX);
+        if (rawDropTime < 0) rawDropTime = 0;
+
+        const double fps = m_timeline ? m_timeline->getFrameRate() : 0.0;
+
+        // Peek payload (without consuming) so we can populate the drop
+        // ghost while the user is still hovering. AcceptDragDropPayload
+        // below only fires on actual release.
+        const ImGuiPayload* peek = ImGui::GetDragDropPayload();
+        if (peek && m_timeline && fps > 0.0) {
+            std::string type(peek->DataType ? peek->DataType : "");
+
+            Timecode ghostDur = 0;
+            std::string ghostLabel;
+
+            if (type == "MEDIA_FILE") {
+                std::string path(static_cast<const char*>(peek->Data));
+                double durSec = (m_mediaDurationLookup ? m_mediaDurationLookup(path) : 0.0);
+                if (durSec <= 0.0) durSec = 10.0;  // probe-cache miss → placeholder
+                ghostDur = static_cast<Timecode>(durSec * 1000000.0);
+                // ImGui default font is ASCII-only — strip directory only.
+                auto slash = path.find_last_of("/\\");
+                ghostLabel = (slash == std::string::npos) ? path : path.substr(slash + 1);
+            } else if (type == "LAYER_KIND") {
+                ghostDur = static_cast<Timecode>(10.0 * 1000000.0);  // 10s default, matches callback
+                const uint8_t kind = *static_cast<const uint8_t*>(peek->Data);
+                switch (static_cast<Layer::Kind>(kind)) {
+                    case Layer::Kind::ObjectAnimation: ghostLabel = "OA Layer"; break;
+                    case Layer::Kind::Clip:            ghostLabel = "Clip Layer"; break;
+                    case Layer::Kind::Generative:      ghostLabel = "Generative Layer"; break;
+                    default:                           ghostLabel = "Layer"; break;
+                }
+            }
+
+            if (ghostDur > 0) {
+                Timecode ghostStart = snapDropPosition(rawDropTime, trackIndex);
+                m_ghost.active     = true;
+                m_ghost.trackIndex = trackIndex;
+                m_ghost.startTime  = ghostStart;
+                m_ghost.duration   = ghostDur;
+                m_ghost.valid      = !wouldOverlapAnyClip(trackIndex, ghostStart,
+                                                         ghostDur, entt::null);
+                m_ghost.label      = ghostLabel;
+            }
+        }
+
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MEDIA_FILE")) {
             const char* droppedPath = static_cast<const char*>(payload->Data);
             std::string filepath(droppedPath);
 
-            ImVec2 mousePos = ImGui::GetMousePos();
-            float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
-            Timecode dropTime = pixelToTime(relativeX);
-            if (dropTime < 0) dropTime = 0;
+            // Snap drop time to match the ghost the user saw.
+            Timecode dropTime = snapDropPosition(rawDropTime, trackIndex);
 
             if (m_mediaDropCallback) {
                 m_mediaDropCallback(filepath, trackIndex, dropTime);
             }
+            m_ghost.active = false;
         }
 
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("LAYER_KIND")) {
             uint8_t kind = *static_cast<const uint8_t*>(payload->Data);
 
-            ImVec2 mousePos = ImGui::GetMousePos();
-            float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
-            Timecode dropTime = pixelToTime(relativeX);
-            if (dropTime < 0) dropTime = 0;
-
             if (m_timeline) {
-                double fps = m_timeline->getFrameRate();
+                // Snap drop time to match the ghost the user saw.
+                Timecode dropTime = snapDropPosition(rawDropTime, trackIndex);
+
                 FrameNumber startFrame = static_cast<FrameNumber>(dropTime / 1000000.0 * fps + 0.5);
                 // Default duration: 10 seconds worth of timeline frames
                 FrameNumber defaultDuration = static_cast<FrameNumber>(10.0 * fps);
@@ -597,9 +641,37 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     }
                 }
             }
+            m_ghost.active = false;
         }
 
         ImGui::EndDragDropTarget();
+    }
+
+    // Drop ghost overlay — draws on top of clips in this track when this
+    // is the target track for an active drag (cross-track existing clip
+    // drag or fresh MediaBin / LayersWindow drag-drop). Per-track render
+    // keeps Y math local to the track's known trackMin/trackMax.
+    if (m_ghost.active && m_ghost.trackIndex == trackIndex && m_timeline) {
+        const float x0 = trackMin.x + timeToPixel(m_ghost.startTime) - m_syncScrollX;
+        const float x1 = trackMin.x + timeToPixel(m_ghost.startTime + m_ghost.duration) - m_syncScrollX;
+        const float y0 = trackMin.y + 2.0f;
+        const float y1 = trackMax.y - 2.0f;
+
+        const ImU32 fillCol = m_ghost.valid ? IM_COL32(120, 180, 255,  64)
+                                            : IM_COL32(220, 100, 100,  64);
+        const ImU32 borderCol = m_ghost.valid ? IM_COL32(120, 180, 255, 220)
+                                              : IM_COL32(220, 100, 100, 220);
+
+        drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fillCol, 3.0f);
+        drawList->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), borderCol, 3.0f, 0, 2.0f);
+
+        if (!m_ghost.label.empty() && (x1 - x0) > 60.0f) {
+            const ImU32 textCol = IM_COL32(240, 240, 240, 220);
+            const ImVec2 labelSize = ImGui::CalcTextSize(m_ghost.label.c_str());
+            const float labelX = x0 + 6.0f;
+            const float labelY = y0 + ((y1 - y0) - labelSize.y) * 0.5f;
+            drawList->AddText(ImVec2(labelX, labelY), textCol, m_ghost.label.c_str());
+        }
     }
 }
 

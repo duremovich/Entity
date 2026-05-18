@@ -445,7 +445,37 @@ void TimelineWidget::handleRulerInteraction() {
             float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
             Timecode t = pixelToTime(relativeX);
             if (t < 0) t = 0;
-            m_dragCurrentCueTime = snapTimeToBest(t);
+
+            // Snap pipeline mirroring clip drag — playhead + grid + other
+            // cues + section breaks at SNAP_THRESHOLD_PIXELS tolerance.
+            // Deliberately omits clip-edge snapping (cues are timeline-wide
+            // markers; clip-edge snap would be noisy at high track counts).
+            // Shift modifier bypasses grid snap only — matches clip drag
+            // floorToGrid pattern.
+            const bool gridSnap = !ImGui::GetIO().KeyShift;
+            const Timecode tol = pixelToTime(SNAP_THRESHOLD_PIXELS);
+
+            Timecode chosen = t;
+            Timecode bestDist = tol + 1;
+            auto consider = [&](Timecode candidate) {
+                // Helpers return `t` unchanged when nothing snaps — skip to
+                // avoid poisoning the ranker with distance-0 self-matches.
+                if (candidate == t) return;
+                const Timecode d = std::llabs(static_cast<long long>(candidate - t));
+                if (d <= tol && d < bestDist) {
+                    bestDist = d;
+                    chosen = candidate;
+                }
+            };
+
+            consider(m_timeline->getCurrentTime());     // playhead
+            consider(snapTimeToCues(t, tol));           // self-skip via m_draggedCueNumber
+            consider(snapTimeToSections(t, tol));
+            if (gridSnap) consider(snapTimeToTickGrid(t));
+
+            m_dragCurrentCueTime = chosen;
+            m_isSnapping = (chosen != t);
+            m_snapTargetTime = chosen;
         } else {
             // Release. Commit only if the frame actually moved.
             const FrameNumber origF = m_timeline->timeToFrame(m_dragOriginalCueTime);
@@ -467,6 +497,8 @@ void TimelineWidget::handleRulerInteraction() {
             m_draggedCueNumber = 0.0;
             m_dragOriginalCueTime = 0;
             m_dragCurrentCueTime = 0;
+            m_isSnapping = false;
+            m_snapTargetTime = 0;
         }
         return;  // Suppress ruler scrub / range while a cue drag is active.
     }
@@ -890,6 +922,14 @@ void TimelineWidget::handleTracksInteraction() {
             // Clamp to valid range (>= 0)
             if (desiredStartTime < 0) desiredStartTime = 0;
 
+            // Live target track — what track the cursor is currently over.
+            // Collision check + same-track snap candidates now key off this
+            // (not m_selectedClipTrackIndex, the source) so cross-track
+            // drags can't land overlapping a clip on the destination track.
+            // Fallback to source track if cursor is outside the lane region.
+            int liveTargetTrack = findTrackAtY(mousePos.y, windowPos.y);
+            if (liveTargetTrack < 0) liveTargetTrack = m_selectedClipTrackIndex;
+
             // Snap to playhead and other clips if enabled
             m_isSnapping = false;  // Reset snap state
             TimelinePlacement movingPlace = registry.valid(m_selectedClip)
@@ -954,14 +994,17 @@ void TimelineWidget::handleTracksInteraction() {
                     considerCandidate(snapTimeToBest(desiredStartTime), true);
                     considerCandidate(snapTimeToBest(desiredEndTime),   false);
 
-                    // Other clips on the same track — their edges, both
-                    // matched against our start and our end. Both Clip-backed
-                    // and Layer-only (OA / Generative) entities contribute
-                    // snap targets, read uniformly via readPlacement().
-                    if (m_selectedClipTrackIndex >= 0) {
+                    // Other clips on the LIVE TARGET track — their edges,
+                    // both matched against our start and our end. Both
+                    // Clip-backed and Layer-only (OA / Generative) entities
+                    // contribute snap targets, read uniformly via
+                    // readPlacement(). Keyed off liveTargetTrack so during
+                    // cross-track drag we snap to the destination's edges,
+                    // not the source's.
+                    if (liveTargetTrack >= 0) {
                         const auto& tracks = m_timeline->getTracks();
-                        if (m_selectedClipTrackIndex < static_cast<int>(tracks.size())) {
-                            const auto* track = registry.try_get<TimelineTrack>(tracks[m_selectedClipTrackIndex]);
+                        if (liveTargetTrack < static_cast<int>(tracks.size())) {
+                            const auto* track = registry.try_get<TimelineTrack>(tracks[liveTargetTrack]);
                             if (track) {
                                 for (entt::entity otherClipEntity : track->layers) {
                                     if (otherClipEntity == m_selectedClip) continue;
@@ -996,8 +1039,11 @@ void TimelineWidget::handleTracksInteraction() {
                 }
             }
 
-            // Check for collisions and snap to valid position
-            Timecode newStartTime = checkClipCollision(m_selectedClip, desiredStartTime, m_selectedClipTrackIndex);
+            // Check for collisions and snap to valid position. Use the live
+            // target track so a cross-track drag commits to a position that
+            // doesn't overlap on the destination — no more "auto-correct
+            // on next click" after release.
+            Timecode newStartTime = checkClipCollision(m_selectedClip, desiredStartTime, liveTargetTrack);
 
             // Update placement (start frame). Routes to Clip or Layer-only
             // storage depending on the entity's archetype.
@@ -1006,6 +1052,25 @@ void TimelineWidget::handleTracksInteraction() {
                 double timelineFrameRate = m_timeline->getFrameRate();
                 FrameNumber newStartFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
                 writeStartFrame(registry, m_selectedClip, newStartFrame);
+            }
+
+            // Ghost preview — only show on cross-track drag (the actual
+            // clip is still rendered on its source track, so the ghost
+            // gives the user a preview of the destination landing site).
+            if (liveTargetTrack >= 0 && liveTargetTrack != m_selectedClipTrackIndex
+                && movingPlace.valid) {
+                const double fps = m_timeline->getFrameRate();
+                const float durSec = movingPlace.duration / static_cast<float>(fps);
+                const Timecode durTime = static_cast<Timecode>(durSec * 1000000.0f);
+                m_ghost.active     = true;
+                m_ghost.trackIndex = liveTargetTrack;
+                m_ghost.startTime  = newStartTime;
+                m_ghost.duration   = durTime;
+                m_ghost.valid      = !wouldOverlapAnyClip(liveTargetTrack, newStartTime,
+                                                         durTime, m_selectedClip);
+                m_ghost.label.clear();   // ghost IS the clip, no extra label
+            } else {
+                m_ghost.active = false;
             }
         } else {
             // Mouse released - stop dragging
@@ -1020,6 +1085,7 @@ void TimelineWidget::handleTracksInteraction() {
             m_isDraggingClip = false;
             m_selectedClipTrackIndex = -1;
             m_isSnapping = false;  // Clear snap indicator
+            m_ghost.active = false;  // Clear drop ghost
             m_timeline->setScrubbing(false);  // Exit scrubbing mode - triggers final seek
         }
     } else if (!m_isDraggingRuler && isWindowHovered) {

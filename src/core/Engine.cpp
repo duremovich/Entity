@@ -495,6 +495,32 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         timelineWidget->setCommandDispatcher(m_commandDispatcher);
         // Clip context menu needs Engine for clipboard state + media library.
         timelineWidget->setEngine(this);
+        // Drop-ghost media-duration lookup — drag payload carries the logical
+        // path; the probe cache may have been seeded under either the logical
+        // or the absolute path depending on the enqueue site. Try both; return
+        // 0 on miss so the widget falls back to its placeholder default.
+        timelineWidget->setMediaDurationLookup([this](const std::string& path) -> double {
+            if (!m_probeWorker) return 0.0;
+            auto probeFromPath = [this](const std::string& key) -> std::optional<ProbeInfo> {
+                return m_probeWorker->tryGet(key);
+            };
+
+            std::optional<ProbeInfo> probe = probeFromPath(path);
+            if (!probe && m_projectManager) {
+                // Walk the library to find an entry whose logical path matches
+                // the drag payload, then look up the cache under originalPath.
+                for (const auto& entry : m_projectManager->loadedMediaFiles()) {
+                    if (toLogicalPath(entry.originalPath) == path) {
+                        probe = probeFromPath(entry.originalPath);
+                        break;
+                    }
+                }
+            }
+
+            if (!probe || !probe->valid) return 0.0;
+            if (probe->framerate <= 0.0 || probe->totalFrames <= 0) return 0.0;
+            return static_cast<double>(probe->totalFrames) / probe->framerate;
+        });
     }
     m_windowManager->registerWindow(std::move(timelineWindow));
 

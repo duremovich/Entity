@@ -40,6 +40,12 @@ using ClipLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>
 // Parameters: track index, start frame (timeline), duration in frames
 using GenerativeLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
+// Lookup callback wired by Engine — given a logical media path, returns
+// the media's timeline-frame duration (seconds × timeline fps). Used to
+// size the drop ghost. Returns 0.0 when the path isn't probed yet; the
+// ghost falls back to a default placeholder duration in that case.
+using MediaDurationLookup = std::function<double(const std::string&)>;
+
 /**
  * Clip edge for trimming operations
  */
@@ -124,6 +130,14 @@ public:
     void setOALayerDropCallback(OALayerDropCallback callback) { m_oaLayerDropCallback = std::move(callback); }
     void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
     void setGenerativeLayerDropCallback(GenerativeLayerDropCallback callback) { m_generativeLayerDropCallback = std::move(callback); }
+
+    /**
+     * Optional — Engine-supplied lookup mapping a logical media path to
+     * the media's timeline-frame duration. Drives the drop-ghost width
+     * during MediaBin → Timeline drags. Without it, drag ghost uses the
+     * 10-second placeholder default.
+     */
+    void setMediaDurationLookup(MediaDurationLookup lookup) { m_mediaDurationLookup = std::move(lookup); }
 
     /**
      * Optional — wire the CommandDispatcher so ruler-context-menu actions
@@ -226,6 +240,26 @@ private:
      * Returns the nearest valid position (snapped to avoid collision).
      */
     Timecode checkClipCollision(entt::entity clipEntity, Timecode newStartTime, int trackIndex);
+
+    /**
+     * Boolean variant of checkClipCollision used by drop-ghost validity
+     * lighting. excludeEntity is skipped (pass m_selectedClip when
+     * checking cross-track drag of an existing clip; entt::null for fresh
+     * media/layer drops). Returns true if a clip on the given track
+     * overlaps the [startTime, startTime+durationTime) window.
+     */
+    bool wouldOverlapAnyClip(int trackIndex, Timecode startTime, Timecode durationTime,
+                             entt::entity excludeEntity) const;
+
+    /**
+     * Snap a raw drop time to the same candidate set the cue drag uses
+     * (playhead, grid, cues, sections) at SNAP_THRESHOLD_PIXELS tolerance.
+     * Drops use the same snap pipeline as cues — clip-edge snap is
+     * deliberately omitted to keep drop visualizations from chattering at
+     * track boundaries. Track index is currently unused but reserved for
+     * a future track-local snap variant.
+     */
+    Timecode snapDropPosition(Timecode rawTime, int trackIndex) const;
 
     /**
      * Render the track header panel (left side with hierarchy).
@@ -517,6 +551,27 @@ private:
     OALayerDropCallback m_oaLayerDropCallback;
     ClipLayerDropCallback m_clipLayerDropCallback;
     GenerativeLayerDropCallback m_generativeLayerDropCallback;
+    MediaDurationLookup m_mediaDurationLookup;
+
+    /**
+     * Live state for the drop ghost overlay. Set during clip drag (when
+     * cursor crosses to a different track) and during ImGui drag-drop
+     * peek on the timeline target. Read by renderDropGhost().
+     *
+     * `valid` controls border color — false → red (overlap, no gap on
+     * target track); true → blue (clean drop). The clip is still allowed
+     * to commit when valid=false; checkClipCollision snaps it into the
+     * nearest gap. Red is a warning, not a hard veto.
+     */
+    struct GhostPreview {
+        bool        active{false};
+        int         trackIndex{-1};
+        Timecode    startTime{0};
+        Timecode    duration{0};
+        bool        valid{true};
+        std::string label;
+    };
+    GhostPreview m_ghost;
 
     // Track expansion state. Track twirl now drives property-panel display
     // for the clip currently under the playhead on that track — no separate
