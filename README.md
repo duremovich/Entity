@@ -1,233 +1,188 @@
-# Entity Media Server
+<p align="center">
+  <img src="images/png/social/readme-hero-1280x426.png" alt="entity — media server" width="100%">
+</p>
 
-A high-performance, cross-platform realtime media playback and projection-mapping engine built with modern C++, designed for professional live events and installations.
+# entity
 
-## Overview
+**Frame-accurate playback and projection mapping. Open-core. Built for live shows.**
 
-Entity Media Server is a professional-grade media server similar to Disguise (d3) and Watchout, with compositing concepts borrowed from After Effects. Built from the ground up for performance using an Entity Component System (ECS) architecture and Data-Oriented Design (DoD), it delivers frame-accurate playback of multiple video layers with GPU-accelerated compositing.
+A C++ media server for projection mapping and multi-layer playback.
+Multi-projector calibration, OSC control, real-time GPU compositing.
+The dedicated show thread owns Present, so editor stalls don't freeze
+the projector output.
 
-### Key Features
+[Website](https://entitymedia.art) ·
+[Docs](https://entitymedia.art/docs/) ·
+[Roadmap](https://entitymedia.art/docs/roadmap/) ·
+[GitHub](https://github.com/duremovich/Entity) ·
+[Project board](https://github.com/users/duremovich/projects/2)
 
-- **Multi-Layer Playback**: Real-time playback of multiple video and image layers with transparency
-- **Professional Codecs**: Native support for ProRes 4444 (with alpha), HAP, and PNG sequences
-- **GPU Compositing**: Hardware-accelerated compositing with blend modes and effects
-- **Frame-Accurate Timeline**: Precision timeline with play/pause/scrub controls
-- **Multi-Output Support**: Persistent display mapping with EDID-based identification
-- **3D Visualizer**: Virtual screen placement for projection mapping (future)
-- **Network Sync**: Multi-node synchronized playback (future)
-
-## Technology Stack
-
-- **Language**: C++20
-- **Build System**: CMake 3.21+
-- **Package Manager**: vcpkg
-- **ECS Framework**: EnTT
-- **Graphics API**: Direct3D 12 (Windows), Metal (macOS - future)
-- **Windowing**: GLFW
-- **Media Decoding**: FFmpeg
-- **UI**: Dear ImGui
-
-## System Requirements
-
-### Minimum
-- **OS**: Windows 10/11 (64-bit)
-- **CPU**: Intel Core i5 or AMD Ryzen 5
-- **GPU**: DirectX 12 compatible (NVIDIA GTX 1060 / AMD RX 580 or better)
-- **RAM**: 16 GB
-- **Storage**: SSD recommended for media playback
-
-### Recommended
-- **OS**: Windows 11 (64-bit)
-- **CPU**: Intel Core i7/i9 or AMD Ryzen 7/9
-- **GPU**: NVIDIA RTX 3060 or better
-- **RAM**: 32 GB or more
-- **Storage**: NVMe SSD
-
-## Build Instructions
-
-### Prerequisites
-
-1. **Install Visual Studio 2022** (or Visual Studio Build Tools)
-   - Include "Desktop development with C++"
-   - Include Windows 10/11 SDK
-
-2. **Install CMake** (3.21 or newer)
-   ```bash
-   winget install Kitware.CMake
-   ```
-
-3. **Install vcpkg**
-   ```bash
-   git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
-   cd C:\vcpkg
-   .\bootstrap-vcpkg.bat
-   .\vcpkg integrate install
-   ```
-
-### Build Steps
-
-1. **Clone the repository** (or navigate to project directory)
-   ```bash
-   cd "Entity"
-   ```
-
-2. **Configure with CMake**
-   ```bash
-   cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-   ```
-
-3. **Build the project**
-   ```bash
-   cmake --build build --config Release
-   ```
-
-4. **Run the application**
-   ```bash
-   .\build\bin\Release\EntityMediaEditor.exe
-   ```
-
-### Debug Build
-
-For development and debugging:
-```bash
-cmake --build build --config Debug
-.\build\bin\Debug\EntityMediaEditor.exe
-```
-
-## Project Structure
-
-```
-EntityMediaServer/
-├── CLAUDE.md              # Detailed development roadmap
-├── README.md              # This file
-├── CMakeLists.txt         # Root CMake configuration
-├── vcpkg.json             # Dependency manifest
-│
-├── include/entity/        # Public API headers
-│   ├── core/              # Core engine
-│   ├── components/        # ECS components
-│   ├── media/             # Media decoding
-│   ├── render/            # Rendering
-│   └── timeline/          # Timeline engine
-│
-├── src/                   # Implementation files
-│   ├── core/
-│   ├── media/
-│   ├── render/
-│   ├── timeline/
-│   └── systems/
-│
-├── apps/                  # Applications
-│   └── editor/            # Main editor application
-│
-├── shaders/               # HLSL shaders
-├── tests/                 # Unit tests
-└── docs/                  # Documentation
-```
-
-## Development
-
-### Architecture
-
-Entity Media Server uses an **Entity Component System (ECS)** architecture powered by EnTT, combined with Data-Oriented Design principles for maximum performance.
-
-**Key Components**:
-- `Transform` - Spatial positioning and scaling
-- `MediaLayer` - Layer properties (opacity, blend mode, z-order)
-- `Clip` - Media source reference
-- `VideoTexture` - GPU texture resources
-- `FrameBuffer` - Decoded frame buffer
-
-**Key Systems**:
-- `DecodeSystem` - FFmpeg-based media decoding
-- `CompositorSystem` - Multi-layer GPU compositing
-- `RenderSystem` - D3D12 rendering pipeline
-- `TimelineSystem` - Timeline and transport control
-
-### Code Style
-
-- Modern C++20 features
-- PascalCase for classes (`D3D12Renderer`)
-- camelCase for functions and variables (`uploadTexture()`)
-- Data-oriented hot paths
-- Minimal allocations in update loops
-
-### Development Roadmap
-
-See [CLAUDE.md](CLAUDE.md) for the detailed development roadmap and current progress.
-
-## Current Status
-
-🚧 **In Development - MVP Phase**
-
-### Completed
-- ✅ Project scaffold and build system
-- ✅ Dependency management with vcpkg
-- ✅ Folder structure and organization
-
-### In Progress
-- 🔄 Core engine initialization
-- 🔄 D3D12 renderer setup
-- 🔄 ECS component definitions
-
-### Next Steps
-- ⬜ FFmpeg decoder integration
-- ⬜ Timeline engine
-- ⬜ Multi-layer compositor
-- ⬜ ImGui debug interface
-
-## Supported Media Formats
-
-### Video Codecs (Current/Planned)
-- ✅ **ProRes 4444** - Apple ProRes with alpha channel
-- ✅ **HAP** - Vidvox HAP codec (GPU-accelerated)
-- ⬜ **HAP Alpha** - HAP with alpha channel
-- ⬜ **HAP Q** - High-quality HAP variant
-
-### Image Formats
-- ✅ **PNG Sequences** - Image sequences with alpha
-- ⬜ **DPX** - Digital Picture Exchange (future)
-- ⬜ **EXR** - OpenEXR sequences (future)
-
-### Hardware Acceleration (Future)
-- ⬜ NVDEC (NVIDIA)
-- ⬜ Quick Sync (Intel)
-- ⬜ DXVA (Generic Windows)
-
-## Performance
-
-### Targets
-- **Playback**: 60 FPS (vsync) for HD content
-- **Latency**: < 3 frames from decode to display
-- **Layers**: 8+ simultaneous layers (hardware dependent)
-
-### Optimizations
-- Lock-free frame buffers
-- Zero-copy GPU upload (where supported)
-- Cache-friendly component iteration
-- Async decode threads per clip
-- GPU-accelerated compositing
-
-## License
-
-Proprietary - Internal Use Only
-
-This is proprietary software developed for internal use. All rights reserved.
-
-## Contributing
-
-This is an internal project. For development questions or issues, consult the [CLAUDE.md](CLAUDE.md) roadmap or contact the development team.
-
-## Resources
-
-- **Documentation**: See `/docs` folder
-- **Architecture**: See [CLAUDE.md](CLAUDE.md)
-- **Build System**: [CMake Documentation](https://cmake.org/documentation/)
-- **ECS Framework**: [EnTT Documentation](https://github.com/skypjack/entt)
-- **D3D12**: [Microsoft D3D12 Docs](https://learn.microsoft.com/en-us/windows/win32/direct3d12/)
+`GPLv3 core` · `Apache 2.0 plugin API` · `Windows (DX12)` · `Pre-release`
 
 ---
 
-**Status**: Pre-Alpha Development
-**Version**: 0.1.0
-**Last Updated**: November 2024
+## Key features
+
+- **Multi-layer playback.** Composite many video and image layers in
+  real time with GPU blend modes, transparency, and frame-accurate
+  scrub. Decode pipeline is per-clip and lock-free.
+- **Professional codecs.** ProRes 4444 (with alpha), HAP / HAP Q / HAP
+  Alpha, PNG sequences. Mixed frame rates handled natively — a 24 fps
+  clip on a 60 fps timeline plays at its own rate.
+- **Projection mapping.** Anchor-point calibration with a lens model,
+  soft-edge blending across multi-projector arrays, persistent display
+  identification by EDID.
+- **Show-grade timing.** A dedicated show thread owns GPU compositing
+  and output Present. Editor modals, file dialogs, and resize loops
+  don't freeze the projectors.
+- **OSC control.** Inbound OSC over UDP — play, pause, seek, fire
+  sections, jump to cues. Pairs natively with Bitfocus Companion.
+- **Projects travel.** A project is a folder. Copy it to a USB stick,
+  sync to another machine — media, timeline, calibration, and settings
+  move together as one tree.
+- **Layered timeline.** Three layer kinds on one timeline: clip,
+  object-animation (keyframe-drive screen and prop transforms),
+  generative (procedural content like Muncher).
+- **Per-layer effects.** Ordered shader chain on every layer with nine
+  engine effects (blur, sharpen, vignette, pixelate, chromatic
+  aberration, edge detect, brightness/contrast, hue/saturation,
+  invert) plus a node-graph editor and HLSL effect packs for
+  user-authored shaders.
+- **Content routing + Feed Maps.** Route logical content to screens
+  independently of how those screens reach physical outputs. Tiled
+  routes split a canvas across LED panels. Feed Maps name regions on
+  a source canvas and export an SVG template content creators can
+  author against.
+
+See the [feature overview](https://entitymedia.art/) and
+[concept docs](https://entitymedia.art/docs/concepts/) for more.
+
+## Status
+
+Pre-1.0, active development. Core engine (playback, mapping, OSC,
+effects, layers, content routing, plugins) is shipping and used
+day-to-day. **510 / 510 ctest green** at current HEAD.
+
+Latest shipped milestone: Content Routing library + Feed Maps
+(ADR-0022, May 2026).
+
+One known editor-stall gap remains — full SectionScheduler show-thread
+fallback. Animation, decode, and timeline already have fallbacks.
+
+## Build from source
+
+Prereqs: Visual Studio 2022 (Desktop C++), CMake 3.21+, vcpkg.
+
+```bash
+git clone https://github.com/duremovich/Entity.git
+cd Entity
+
+cmake -B build -S . \
+  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+cmake --build build --config Release
+
+# Editor lands at:
+build\bin\Release\EntityMediaEditor.exe
+```
+
+Full install guide with system requirements and troubleshooting:
+[entitymedia.art/docs/getting-started/install](https://entitymedia.art/docs/getting-started/install/).
+
+## Architecture
+
+- **C++20 + ECS** (EnTT) + Data-Oriented Design — components are POD,
+  systems iterate `view<Components...>()` for cache-friendly bulk
+  processing. See [`docs/reference/ECS_PRINCIPLES.md`](docs/reference/ECS_PRINCIPLES.md).
+- **D3D12** renderer on Windows. The `IRenderer` abstraction is in
+  place for future Metal (macOS) and Vulkan (Linux) backends; both are
+  deferred until customer demand makes the case (ADR-0001).
+- **FFmpeg** decode workers per clip writing into lock-free ring
+  buffers.
+- **Editor / show thread split** — the editor thread is the sole
+  registry writer; a dedicated show thread owns GPU compositing and
+  Present. Editor stalls don't pause the projector output. See
+  [`docs/adr/0014-editor-show-thread-split.md`](docs/adr/0014-editor-show-thread-split.md).
+- **Plugin system** — Apache-2.0 plugin API with first-party plugins
+  for OSC and bus-logging. Pro plugins live in a sibling private repo
+  and link via `EXTRA_PLUGIN_DIRS`. See
+  [`docs/adr/0005-open-core-dual-license.md`](docs/adr/0005-open-core-dual-license.md).
+- **Tracy profiling** integrated with on-demand capture, named frame
+  contexts for Editor and Show, per-system zones, and D3D12 GPU zones.
+  See [`docs/adr/0015-profiling-with-tracy.md`](docs/adr/0015-profiling-with-tracy.md).
+
+Architecture decisions live in [`docs/adr/`](docs/adr/) — start at
+[`docs/adr/README.md`](docs/adr/README.md). The full ADR index covers
+twenty-plus decisions spanning licensing, threading, codec strategy,
+calibration math, and the layer / effects / content-routing data
+models.
+
+## Project structure
+
+```
+entity/
+├── apps/editor/              Editor application
+├── include/entity/           Public headers (components, systems, ...)
+├── src/                      Implementation
+│   ├── core/                 Engine, settings, plugin context
+│   ├── render/               D3D12 renderer
+│   ├── systems/              ECS systems (Decode, Compositor, ...)
+│   ├── timeline/             Timeline state
+│   ├── effects/              Engine effect registry
+│   ├── director/             Snapshot bake, R2D/D2R bus drains
+│   └── ui/                   ImGui windows
+├── plugin-api/               Apache 2.0 plugin API headers
+├── plugins/                  First-party plugins (osc-receiver, bus-logger)
+├── shaders/                  HLSL shaders
+├── tests/                    ctest suites
+├── docs/
+│   ├── adr/                  Architecture Decision Records
+│   ├── reference/            ECS principles, system ordering, archetypes
+│   └── status/               HISTORY.md + CURRENT.md pointer
+├── images/                   Brand assets (logo, lockups, favicons, OG)
+└── CLAUDE.md                 Architecture overview for contributors
+```
+
+## License
+
+- **Engine core** — GPLv3 with a linking exception. See [`LICENSE`](LICENSE).
+- **Plugin API** (`plugin-api/`, `entity-bus`, `plugins/`) — Apache 2.0.
+  See [`LICENSE-PLUGIN-API`](LICENSE-PLUGIN-API).
+- See [`LICENSING.md`](LICENSING.md) for the dual-license explainer.
+
+Commercial-friendly: GPLv3 obligations attach to the engine itself, not
+to plugins built against the Apache-2.0 API. Running shows with entity
+(without redistributing the engine) is unrestricted commercial use.
+
+## Contributing
+
+Pull requests welcome. The architecture context for contributors lives
+in [`CLAUDE.md`](CLAUDE.md) and [`docs/adr/`](docs/adr/). For roadmap
+and current status, see the
+[Entity Roadmap project board](https://github.com/users/duremovich/projects/2)
+— that's the source of truth for what's in progress.
+
+For bugs and feature ideas:
+[github.com/duremovich/Entity/issues](https://github.com/duremovich/Entity/issues).
+
+## Resources
+
+| | |
+|---|---|
+| Marketing site + user docs | [entitymedia.art](https://entitymedia.art) |
+| Project board (source of truth) | [github.com/users/duremovich/projects/2](https://github.com/users/duremovich/projects/2) |
+| ADR index | [`docs/adr/README.md`](docs/adr/README.md) |
+| Contributor architecture overview | [`CLAUDE.md`](CLAUDE.md) |
+| ECS / DOD principles | [`docs/reference/ECS_PRINCIPLES.md`](docs/reference/ECS_PRINCIPLES.md) |
+| Entity archetypes | [`docs/reference/ENTITY_ARCHETYPES.md`](docs/reference/ENTITY_ARCHETYPES.md) |
+| System ordering | [`docs/reference/SYSTEM_ORDERING.md`](docs/reference/SYSTEM_ORDERING.md) |
+| Troubleshooting | [`docs/reference/TROUBLESHOOTING.md`](docs/reference/TROUBLESHOOTING.md) |
+| Development history | [`docs/status/HISTORY.md`](docs/status/HISTORY.md) |
+
+---
+
+**Tech stack** — C++20 · EnTT · D3D12 · FFmpeg · CMake / vcpkg · ImGui ·
+Tracy
+
+**Platform** — Windows 10 / 11 (DX12). macOS (Metal) and Linux
+(Vulkan) on the roadmap.
