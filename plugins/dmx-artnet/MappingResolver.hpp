@@ -15,10 +15,9 @@ namespace entity::dmx {
 
 // Resolves the active mapping table.
 //
-// Phase 1: returns baked defaults always.
-// Phase 5: refreshes from the active project's dmxMappingsJson via
-//          IPluginContext::getStringSetting; falls back to baked
-//          defaults when the project carries no mappings.
+// Returns project-scoped mappings when the active project has them;
+// falls back to baked defaults otherwise. Memoizes by raw JSON
+// string so the per-packet refresh is cheap when nothing changed.
 class MappingResolver {
 public:
     // Look up the current mapping table. Thread-safe; returns a copy
@@ -26,8 +25,9 @@ public:
     // mappings vector is small (<100 rows in practice).
     std::vector<Mapping> current() const;
 
-    // Phase 5 hook: re-parse the project-scoped mappings JSON. No-op
-    // in Phase 1.
+    // Re-read the project's serialized DMX mapping table via the
+    // plugin context's getStringSetting accessor. Idempotent + cheap
+    // when the JSON hasn't changed (early-out on string equality).
     void refreshFromProject(entity::plugin::IPluginContext* ctx);
 
     // Returns the unique set of universes the current mapping table
@@ -37,6 +37,7 @@ public:
 private:
     mutable std::mutex   m_mutex;
     std::vector<Mapping> m_projectMappings; // empty -> use baked defaults
+    std::string          m_lastParsedRaw;   // last JSON we parsed; cheap dirty check
 };
 
 } // namespace entity::dmx

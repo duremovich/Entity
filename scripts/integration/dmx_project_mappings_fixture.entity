@@ -1,0 +1,8 @@
+{
+  "format": "entity_project",
+  "version": 22,
+  "frameRate": 30,
+  "duration": 60000000,
+  "dmxMappingsJson": "[{\"universe\":5,\"startChannel\":100,\"channelCount\":1,\"kind\":\"ThresholdEdge\",\"commandType\":\"SectionGo\",\"label\":\"Op-controlled GO via custom mapping\"}]",
+  "tracks": []
+}

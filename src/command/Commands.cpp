@@ -2965,6 +2965,40 @@ CommandPtr SetDmxOutCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetDmxOutCommand>(universe, channel, value);
 }
 
+bool SetDmxMappingsJsonCommand::execute(Engine& engine) {
+    auto* pm = engine.getProjectManager();
+    if (!pm) return false;
+    if (!m_previousCaptured) {
+        m_previousJson = pm->dmxMappingsJson();
+        m_previousCaptured = true;
+    }
+    pm->setDmxMappingsJson(m_newJson);
+    return true;
+}
+
+bool SetDmxMappingsJsonCommand::undo(Engine& engine) {
+    auto* pm = engine.getProjectManager();
+    if (!pm || !m_previousCaptured) return false;
+    pm->setDmxMappingsJson(m_previousJson);
+    return true;
+}
+
+bool SetDmxMappingsJsonCommand::redo(Engine& engine) {
+    auto* pm = engine.getProjectManager();
+    if (!pm) return false;
+    pm->setDmxMappingsJson(m_newJson);
+    return true;
+}
+
+nlohmann::json SetDmxMappingsJsonCommand::toJson() const {
+    return {{"type", "SetDmxMappingsJson"}, {"json", m_newJson}};
+}
+
+CommandPtr SetDmxMappingsJsonCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetDmxMappingsJsonCommand>(
+        j.value("json", std::string{}));
+}
+
 bool AddCueAtCommand::execute(Engine& engine) {
     auto* timeline = engine.getTimeline();
     if (!timeline) return false;

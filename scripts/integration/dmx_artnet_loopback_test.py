@@ -83,6 +83,11 @@ def main() -> int:
 
     print("Sending Art-Net traffic...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Bind sender to 127.0.0.1 explicitly. On Windows, some firewall
+    # / Defender configurations drop UDP datagrams whose source isn't
+    # a loopback address when the destination is 127.0.0.1; binding
+    # forces the source to be 127.0.0.1 and avoids that drop.
+    sock.bind(("127.0.0.1", 0))
     try:
         # Channel 1 -> Play (rising edge from 0 to 255).
         sock.sendto(artdmx(0, [255] + [0] * 7, sequence=1), (DMX_HOST, DMX_PORT))

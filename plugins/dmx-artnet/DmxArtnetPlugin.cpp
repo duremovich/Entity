@@ -145,6 +145,11 @@ void onUniverseChange(std::uint16_t universe,
                       const std::uint8_t* after) {
     auto* ctx = state().ctx;
     if (!ctx) return;
+    // Re-read the project's mapping table. Cheap when unchanged
+    // (the resolver memoizes the last JSON blob and short-circuits
+    // on identity). Picks up project loads + mapping edits without
+    // any cross-thread notification path.
+    state().resolver.refreshFromProject(ctx);
     const auto mappings = state().resolver.current();
     entity::dmx::emitMappingFires(ctx, mappings, universe, before, after,
                                    "inbound");
@@ -177,6 +182,20 @@ socket_t bindUdp(std::uint16_t port, bool reuseAddr) {
         ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 #endif
     }
+
+    // Larger receive buffer so the listener can absorb burst traffic
+    // (a lighting console firing several universes per frame, or
+    // initial scene reload). Default Windows UDP recv buffer is
+    // ~8 KB; bump to 1 MB to give the editor headroom before the
+    // worker thread's next wake-up.
+#ifdef _WIN32
+    int rcvbuf = 1024 * 1024;
+    ::setsockopt(s, SOL_SOCKET, SO_RCVBUF,
+                 reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
+#else
+    int rcvbuf = 1024 * 1024;
+    ::setsockopt(s, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+#endif
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -232,14 +251,10 @@ void artnetWorkerLoop() {
         if (!entity::dmx::parseArtnetPacket(buf.data(),
                                              static_cast<std::size_t>(n),
                                              parsed)) {
-            pluginLog(LogLevel::Debug, "dmx-artnet: rejected non-ArtDmx packet");
-            continue;
+            continue;  // not ArtDmx -- ArtPoll / vendor opcodes / noise
         }
-        char dbg[96];
-        std::snprintf(dbg, sizeof(dbg),
-                       "dmx-artnet: Art-Net rx u=%u channels=%u",
-                       unsigned(parsed.universe), unsigned(parsed.channelCount));
-        pluginLog(LogLevel::Debug, dbg);
+        std::fprintf(stderr, "[dmx-artnet] artnet parsed u=%u ch=%u\n",
+                      unsigned(parsed.universe), unsigned(parsed.channelCount));
         s.table.apply(parsed.universe, parsed.channels, parsed.channelCount,
                        entity::dmx::SourceTag::Artnet, /*priority*/100,
                        std::chrono::steady_clock::now());

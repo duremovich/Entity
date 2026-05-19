@@ -80,13 +80,20 @@ bool OutboundSender::start() {
 #endif
     }
 
-    // Outbound socket: no bind — let the OS pick the source port at
-    // first sendto. Binding INADDR_ANY:0 with SO_REUSEADDR on Windows
-    // creates a self-routing weirdness for loopback sends (the OS can
-    // deliver the packet back to the sender's own queue instead of to
-    // other bound listeners on the destination port), which broke our
-    // loopback integration test. Letting the kernel choose is the
-    // simpler and more portable path.
+    // Outbound socket: no explicit bind. Let the OS pick the source
+    // address + port at first sendto. We tried INADDR_ANY:0 with
+    // SO_REUSEADDR but that produced unreliable loopback delivery on
+    // Windows when a test process was listening on the destination
+    // port. Equivalent code without the explicit bind defers source
+    // selection to the kernel and works the same way on macOS/Linux.
+
+    // Increase SO_SNDBUF so a burst of universes-per-tick doesn't get
+    // backpressured on Windows when several outputs are configured.
+#ifdef _WIN32
+    int sndbuf = 256 * 1024;
+    ::setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF,
+                 reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
+#endif
 
     m_worker = std::thread(&OutboundSender::workerLoop, this);
     return true;
@@ -105,27 +112,17 @@ void OutboundSender::workerLoop() {
 #if defined(TRACY_ENABLE)
     tracy::SetThreadName("DMX Out");
 #endif
-    std::fprintf(stderr, "[dmx-artnet] outbound worker started\n");
-    std::size_t tickCount = 0;
     while (m_running.load(std::memory_order_acquire)) {
         const auto next = std::chrono::steady_clock::now() + kTickPeriod;
         if (m_table) {
             auto snap = m_table->snapshot();
-            if (tickCount < 5 || (tickCount % 50) == 0) {
-                std::fprintf(stderr,
-                              "[dmx-artnet] outbound tick=%zu universes=%zu\n",
-                              tickCount, snap.size());
-            }
             for (const auto& [universe, slot] : snap) {
                 if (m_cfg.artnetEnabled) sendArtnet(universe, slot.channels.data());
                 if (m_cfg.sacnEnabled)   sendSacn(universe,   slot.channels.data());
             }
         }
-        ++tickCount;
         std::this_thread::sleep_until(next);
     }
-    std::fprintf(stderr, "[dmx-artnet] outbound worker exiting after %zu ticks\n",
-                  tickCount);
 }
 
 void OutboundSender::sendArtnet(std::uint16_t universe,
@@ -174,15 +171,6 @@ void OutboundSender::sendArtnet(std::uint16_t universe,
                           "[dmx-artnet] outbound: sendto %s failed\n",
                           host.c_str());
 #endif
-        } else if (universe == 0) {
-            // Diagnostic: confirm we're actually sending.
-            static int counter = 0;
-            if (counter++ < 3) {
-                std::fprintf(stderr,
-                              "[dmx-artnet] outbound: sent %d bytes to %s u=%u ch1=%u ch5=%u\n",
-                              sent, host.c_str(), unsigned(universe),
-                              unsigned(pkt[18]), unsigned(pkt[22]));
-            }
         }
     }
 }

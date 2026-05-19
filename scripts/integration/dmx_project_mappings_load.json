@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "description": "Phase 5 end-to-end: load a v22 fixture project that defines a custom DMX mapping (universe 5 ch 100 -> SectionGo), then wait for the external Python sender to fire Art-Net at universe 5 ch 100. The plugin's MappingResolver should pick up the project mappings on first packet and route SectionGo, NOT the baked-default Play.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "scripts/integration/dmx_project_mappings_fixture.entity"},
+        {"type": "WaitSeconds", "count": 9.0},
+        {"type": "Exit"}
+    ]
+}

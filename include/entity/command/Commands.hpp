@@ -1539,6 +1539,39 @@ private:
 };
 
 /**
+ * Replace the active project's DMX mapping table (#13 / #59). The
+ * ShowControlWindow dispatches this on every cell edit. Undoable —
+ * captures the pre-edit JSON on first execute and restores it on undo.
+ * Redo re-applies the captured new JSON.
+ *
+ * Coalescing is intentionally not done at the command level: every
+ * keystroke is a separate command. Ctrl+Z is a per-edit step-back
+ * which matches the muscle-memory of every other property editor in
+ * the app.
+ *
+ * JSON: {"type":"SetDmxMappingsJson","json":"[...]"}
+ */
+class SetDmxMappingsJsonCommand : public UndoableCommand {
+public:
+    explicit SetDmxMappingsJsonCommand(std::string newJson)
+        : m_newJson(std::move(newJson)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetDmxMappingsJson"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override { return "Edit DMX mappings"; }
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_newJson;
+    std::string m_previousJson;
+    bool        m_previousCaptured{false};
+};
+
+/**
  * Add a cue tag at the given timestamp. Fails if a cue with the same
  * number already exists. Undo removes the cue.
  *

@@ -213,6 +213,7 @@ void CommandDispatcher::registerBuiltinFactories() {
 
     // DMX commands (#13)
     registerFactory("SetDmxOut", SetDmxOutCommand::fromJson);
+    registerFactory("SetDmxMappingsJson", SetDmxMappingsJsonCommand::fromJson);
     registerFactory("AddCueAt", AddCueAtCommand::fromJson);
     registerFactory("RemoveCue", RemoveCueCommand::fromJson);
     registerFactory("EditCue", EditCueCommand::fromJson);

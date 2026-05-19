@@ -238,6 +238,10 @@ target_sources(EntityMediaCore
         # plugin; ADR-0023). Always linked; the plugin wires the hook
         # at register time. setChannel is a silent no-op when unwired.
         src/dmx/OutboundBridge.cpp
+        # Shared DmxMapping type + JSON serializers used by both the
+        # editor's ShowControlWindow and the dmx-artnet plugin's
+        # MappingResolver (ADR-0024).
+        src/dmx/DmxMapping.cpp
         # src/systems/RenderSystem.cpp
         # src/systems/TimelineSystem.cpp
 
