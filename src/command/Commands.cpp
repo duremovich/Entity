@@ -1,6 +1,7 @@
 #include "entity/command/Commands.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/dmx/OutboundBridge.hpp"
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
@@ -2928,6 +2929,40 @@ std::string FireCueCommand::getDescription() const {
 CommandPtr FireCueCommand::fromJson(const nlohmann::json& j) {
     double number = j.value("number", 0.0);
     return std::make_unique<FireCueCommand>(number);
+}
+
+// ============================================================================
+// DMX commands (#13 — Phase D: DMX/Art-Net plugin)
+// ============================================================================
+
+bool SetDmxOutCommand::execute(Engine& /*engine*/) {
+    entity::dmx::OutboundBridge::instance().setChannel(
+        m_universe, m_channel, m_value, /*priority*/100);
+    std::cout << "[SetDmxOut] universe=" << m_universe
+              << " channel=" << m_channel
+              << " value=" << static_cast<int>(m_value) << std::endl;
+    return true;
+}
+
+nlohmann::json SetDmxOutCommand::toJson() const {
+    return {{"type", "SetDmxOut"},
+            {"universe", m_universe},
+            {"channel",  m_channel},
+            {"value",    m_value}};
+}
+
+std::string SetDmxOutCommand::getDescription() const {
+    return "Set DMX out u=" + std::to_string(m_universe) +
+           " ch=" + std::to_string(m_channel) +
+           " v=" + std::to_string(m_value);
+}
+
+CommandPtr SetDmxOutCommand::fromJson(const nlohmann::json& j) {
+    const auto universe = static_cast<std::uint16_t>(j.value("universe", 0));
+    const auto channel  = static_cast<std::uint16_t>(j.value("channel",  1));
+    const auto value    = static_cast<std::uint8_t>(
+        std::clamp(j.value("value", 0), 0, 255));
+    return std::make_unique<SetDmxOutCommand>(universe, channel, value);
 }
 
 bool AddCueAtCommand::execute(Engine& engine) {

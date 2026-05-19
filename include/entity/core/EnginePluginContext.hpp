@@ -41,6 +41,8 @@ public:
                                                     bool defaultValue) const noexcept override;
     int                              getIntSetting(std::string_view key,
                                                    int defaultValue) const noexcept override;
+    std::string                      getStringSetting(std::string_view key,
+                                                      std::string_view defaultValue) const noexcept override;
 
 private:
     Engine*     m_engine;

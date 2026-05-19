@@ -1,0 +1,11 @@
+{
+    "version": 1,
+    "description": "DMX outbound test fixture: drive SetDmxOut through the dispatcher; the dmx-artnet plugin's outbound sender ships the matching channel state via Art-Net at 44 Hz. The Python test sniffer reads packets off UDP 6454 and asserts the bytes.",
+    "commands": [
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "SetDmxOut", "universe": 0, "channel": 1, "value": 255},
+        {"type": "SetDmxOut", "universe": 0, "channel": 5, "value": 128},
+        {"type": "WaitSeconds", "count": 2.0},
+        {"type": "Exit"}
+    ]
+}

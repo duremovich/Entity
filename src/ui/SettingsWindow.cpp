@@ -187,6 +187,98 @@ void renderOscReceiverSection(Settings& staged) {
     ImGui::TextDisabled("OSC changes take effect after restart.");
 }
 
+void renderDmxSection(Settings& staged) {
+    // --- Inbound: Art-Net ---
+    ImGui::Checkbox("Enable Art-Net listener", &staged.dmxArtnetEnabled);
+    int artnetPort = static_cast<int>(staged.dmxArtnetListenPort);
+    if (!staged.dmxArtnetEnabled) ImGui::BeginDisabled();
+    if (entity::ui::InputInt("Art-Net port##dmxArtnetPort", &artnetPort, 1, 100,
+                              ImGuiInputTextFlags_EnterReturnsTrue)) {
+        artnetPort = std::clamp(artnetPort, 1, 65535);
+        staged.dmxArtnetListenPort = static_cast<uint16_t>(artnetPort);
+    }
+    if (!staged.dmxArtnetEnabled) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "UDP port for inbound Art-Net DMX. Default 6454 is the\n"
+            "Art-Net well-known port (industry standard).\n"
+            "Baked default mapping: Universe 0\n"
+            "  ch 1 -> Play     ch 5 -> FireCue 1\n"
+            "  ch 2 -> Pause    ch 6 -> FireCue 2\n"
+            "  ch 3 -> Stop     ch 7 -> FireCue 3\n"
+            "  ch 4 -> SectionGo ch 8 -> FireCue 4\n"
+            "Threshold-edge triggers (channel >= 128 fires).\n"
+            "Custom mappings come from the active project (v22+).");
+        ImGui::EndTooltip();
+    }
+
+    // --- Inbound: sACN ---
+    ImGui::Checkbox("Enable sACN (E1.31) listener", &staged.dmxSacnEnabled);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "Streaming ACN (ESTA E1.31) multicast listener on UDP\n"
+            "5568. Port is spec-fixed; joins multicast groups\n"
+            "239.255.<universe-high>.<universe-low> lazily for each\n"
+            "universe the mapping table references. When both Art-Net\n"
+            "and sACN feed the same universe, the higher-priority\n"
+            "source wins; ties resolve to the most recent. Art-Net is\n"
+            "tagged at priority 100; sACN carries its own.");
+        ImGui::EndTooltip();
+    }
+
+    // --- Enttec ---
+    ImGui::Checkbox("Enable Enttec DMX-USB-Pro (Windows)", &staged.dmxEnttecEnabled);
+    if (!staged.dmxEnttecEnabled) ImGui::BeginDisabled();
+    renderStringField("COM port##dmxEnttecPort", staged.dmxEnttecPort);
+    int enttecUniverse = static_cast<int>(staged.dmxEnttecUniverse);
+    if (entity::ui::InputInt("Enttec universe##dmxEnttec", &enttecUniverse, 1, 10,
+                              ImGuiInputTextFlags_EnterReturnsTrue)) {
+        enttecUniverse = std::clamp(enttecUniverse, 0, 32767);
+        staged.dmxEnttecUniverse = static_cast<uint16_t>(enttecUniverse);
+    }
+    if (!staged.dmxEnttecEnabled) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "Enttec DMX-USB-Pro inbound via the FTDI Virtual COM Port\n"
+            "driver. Empty COM port -> auto-pick first FTDI device.\n"
+            "Each Pro is a single-universe interface; the universe\n"
+            "field selects which logical universe to merge the read\n"
+            "data into in the arbitration table. Windows-only in v1.");
+        ImGui::EndTooltip();
+    }
+
+    ImGui::Separator();
+    // --- Outbound ---
+    ImGui::Checkbox("Enable DMX output", &staged.dmxOutEnabled);
+    if (!staged.dmxOutEnabled) ImGui::BeginDisabled();
+    ImGui::Checkbox("Send sACN multicast", &staged.dmxOutSacnEnabled);
+    renderStringField("Art-Net targets##dmxOutTargets", staged.dmxOutArtnetTargets);
+    if (!staged.dmxOutEnabled) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "Output ticks at ~44 Hz (Enttec USB-Pro spec default).\n"
+            "Art-Net targets: comma-separated dotted-quad IPs.\n"
+            "Empty -> broadcast to 255.255.255.255.\n"
+            "Driven by the SetDmxOut script command (and future\n"
+            "timeline cells). sACN sender carries priority 100.");
+        ImGui::EndTooltip();
+    }
+
+    ImGui::TextDisabled("DMX changes take effect after restart.");
+}
+
 } // namespace
 
 void SettingsWindow::open(const Settings& current) {
@@ -232,6 +324,11 @@ void SettingsWindow::render() {
     // ----- OSC Receiver -----------------------------------------------------
     if (ImGui::CollapsingHeader("OSC Receiver", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderOscReceiverSection(m_staged);
+    }
+
+    // ----- DMX (Art-Net / sACN / Enttec) -----------------------------------
+    if (ImGui::CollapsingHeader("DMX (Art-Net / sACN / Enttec)")) {
+        renderDmxSection(m_staged);
     }
 
     ImGui::Separator();

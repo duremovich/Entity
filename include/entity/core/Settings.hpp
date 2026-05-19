@@ -90,6 +90,29 @@ struct Settings {
     uint16_t oscReceiverPort{53000};
 
     // -----------------------------------------------------------------
+    // DMX / Art-Net / sACN / Enttec plugin (Phase D, #13).
+    //
+    // Every surface is opt-in -- new I/O surfaces default off so
+    // installing the build doesn't unexpectedly bind ports. Editing
+    // any of these requires an editor restart; the plugin reads them
+    // once at register time.
+    //
+    // Per-project DMX channel mappings live in the .entity file
+    // (schema v22+, Phase 5), NOT in Settings. The plugin's baked
+    // default mapping table covers transport + cues 1-4 on universe 0
+    // out-of-box.
+    // -----------------------------------------------------------------
+    bool        dmxArtnetEnabled{false};
+    uint16_t    dmxArtnetListenPort{6454};
+    bool        dmxSacnEnabled{false};
+    bool        dmxOutEnabled{false};
+    std::string dmxOutArtnetTargets;        // comma-separated dotted-quad IPs; empty -> broadcast
+    bool        dmxOutSacnEnabled{false};
+    bool        dmxEnttecEnabled{false};
+    std::string dmxEnttecPort;              // e.g. "COM5"; empty -> auto-pick first FTDI device
+    uint16_t    dmxEnttecUniverse{0};
+
+    // -----------------------------------------------------------------
     // Active named workspace (UI dock layout). The workspaces themselves
     // live in `%APPDATA%/Entity/workspaces.json` (see WorkspaceStore);
     // this field is just the "currently selected" pointer. Survives app

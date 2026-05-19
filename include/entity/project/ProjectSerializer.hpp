@@ -135,7 +135,17 @@ public:
     //     skipped on save in v20 and earlier — no data loss, just re-create
     //     from scratch). v21 files load with default-constructed TextLayerState
     //     if `text_state` is absent on a generative layer.
-    static constexpr int PROJECT_VERSION = 21;
+    // v22 DMX per-project mapping table (#13 / #59). New top-level
+    //     "dmxMappingsJson" string field carrying the project-scoped DMX
+    //     channel mapping table as raw JSON. The dmx-artnet plugin reads
+    //     this through IPluginContext::getStringSetting("dmxMappingsJson")
+    //     and falls back to its baked default mappings when the string is
+    //     empty (which is the default for pre-v22 files). Stored as a
+    //     string rather than a parsed object because the typed DmxMapping
+    //     struct lives in the Apache-2.0 plugin headers and round-tripping
+    //     through a typed schema in the GPL serializer would create the
+    //     same boundary problem (see ADR-0024).
+    static constexpr int PROJECT_VERSION = 22;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

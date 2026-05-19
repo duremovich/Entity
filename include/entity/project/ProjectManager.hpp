@@ -537,6 +537,30 @@ public:
     NonHapImportPolicy nonHapImportPolicy() const         { return m_nonHapImportPolicy; }
     void setNonHapImportPolicy(NonHapImportPolicy policy) { m_nonHapImportPolicy = policy; }
 
+    // --- DMX mappings (per-project, schema v22, #59) -----------------------
+    //
+    // Project-scoped DMX channel mapping table, serialized as a JSON
+    // array of mapping rows. The plugin (dmx-artnet) consumes this
+    // through IPluginContext::getStringSetting("dmxMappingsJson"),
+    // which routes here.
+    //
+    // Persisted in the .entity file as the top-level `dmxMappingsJson`
+    // string field. Empty (or absent on pre-v22 load) -> the plugin
+    // falls back to its baked default mapping table.
+    //
+    // Stored as raw JSON rather than a parsed std::vector<DmxMapping>
+    // because (a) ProjectManager is the right ownership root but the
+    // typed struct lives in the plugin's headers (Apache-2.0
+    // boundary), and (b) keeping it as a string lets the UI editor be
+    // a multi-line text input in v1 without round-tripping through a
+    // typed schema. A typed editor + structured persistence is a
+    // follow-up.
+    const std::string& dmxMappingsJson() const          { return m_dmxMappingsJson; }
+    std::string&       dmxMappingsJsonMutable()         { return m_dmxMappingsJson; }
+    void setDmxMappingsJson(std::string json)           { m_dmxMappingsJson = std::move(json); }
+    // EnginePluginContext::getStringSetting helper.
+    std::string        getDmxMappingsJson() const       { return m_dmxMappingsJson; }
+
 private:
     // Non-owning dependencies (Engine owns and outlives this)
     Timeline*        m_timeline{nullptr};
@@ -550,6 +574,11 @@ private:
 
     double m_autosaveInterval{30.0};
     double m_autosaveAccumulator{0.0};
+
+    // Project-scoped DMX channel mapping table (#59). Empty -> plugin
+    // uses its baked defaults. ProjectSerializer round-trips this as
+    // the top-level "dmxMappingsJson" field in v22+ project files.
+    std::string m_dmxMappingsJson;
 };
 
 } // namespace entity

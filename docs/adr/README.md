@@ -32,6 +32,8 @@ that have moved on.
 | 0020 | [Object Animation layers — absolute values + Hold-by-default end behavior](0020-object-animation-end-behavior.md) | Accepted | 2026-05-15 |
 | 0021 | [Two-tier mapping — Content Routing vs Feed Output](0021-two-tier-mapping.md) | Accepted | 2026-05-16 |
 | 0022 | [Content Routing library + Feed Maps](0022-content-routing-library-and-feedmaps.md) | Accepted | 2026-05-17 |
+| 0023 | [Control-plane plugin outbound via process-shared bridge](0023-control-plane-plugin-outbound-bridge.md) | Accepted | 2026-05-19 |
+| 0024 | [getStringSetting bridge for project-scoped plugin state](0024-string-settings-bridge-for-project-scoped-plugin-state.md) | Accepted | 2026-05-19 |
 
 ## Format
 

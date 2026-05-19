@@ -646,6 +646,13 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             project["mediaLibrary"] = libJson;
             project["nonHapImportPolicy"] = static_cast<int>(projectMgr->nonHapImportPolicy());
 
+            // v22 — per-project DMX channel mapping table (#13 / #59).
+            // Round-tripped as a raw JSON string; the typed struct
+            // lives in the dmx-artnet plugin (Apache-2.0) so the GPL
+            // serializer keeps the boundary clean. Empty -> plugin
+            // uses its baked default mapping table.
+            project["dmxMappingsJson"] = projectMgr->dmxMappingsJson();
+
             // v18 — object library (parallel of mediaLibrary for 3D models).
             // Same pathKind + size-validity convention; no transcode /
             // archive fields because models don't have those flows.
@@ -1493,6 +1500,15 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 projectMgr->setNonHapImportPolicy(
                     autoOn ? ProjectManager::NonHapImportPolicy::AlwaysTranscode
                            : ProjectManager::NonHapImportPolicy::NeverTranscode);
+            }
+
+            // v22 — per-project DMX channel mapping table (#13 / #59).
+            // Missing on pre-v22 files -> stays empty -> plugin uses
+            // baked defaults.
+            if (project.contains("dmxMappingsJson") &&
+                project["dmxMappingsJson"].is_string()) {
+                projectMgr->setDmxMappingsJson(
+                    project["dmxMappingsJson"].get<std::string>());
             }
         }
 

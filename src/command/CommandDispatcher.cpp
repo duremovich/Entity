@@ -210,6 +210,9 @@ void CommandDispatcher::registerBuiltinFactories() {
 
     // Cue tag commands (Phase A — numbered timeline markers)
     registerFactory("FireCue", FireCueCommand::fromJson);
+
+    // DMX commands (#13)
+    registerFactory("SetDmxOut", SetDmxOutCommand::fromJson);
     registerFactory("AddCueAt", AddCueAtCommand::fromJson);
     registerFactory("RemoveCue", RemoveCueCommand::fromJson);
     registerFactory("EditCue", EditCueCommand::fromJson);

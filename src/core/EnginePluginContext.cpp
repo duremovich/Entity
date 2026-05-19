@@ -6,6 +6,7 @@
 #include "entity/core/Engine.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/plugin/Plugin.hpp"
+#include "entity/project/ProjectManager.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -83,14 +84,41 @@ bool EnginePluginContext::getBoolSetting(std::string_view key,
                                           bool defaultValue) const noexcept {
     const Settings s = activeSettings();
     if (key == "oscReceiverEnabled") return s.oscReceiverEnabled;
+    if (key == "dmxArtnetEnabled")   return s.dmxArtnetEnabled;
+    if (key == "dmxSacnEnabled")     return s.dmxSacnEnabled;
+    if (key == "dmxOutEnabled")      return s.dmxOutEnabled;
+    if (key == "dmxOutSacnEnabled")  return s.dmxOutSacnEnabled;
+    if (key == "dmxEnttecEnabled")   return s.dmxEnttecEnabled;
     return defaultValue;
 }
 
 int EnginePluginContext::getIntSetting(std::string_view key,
                                         int defaultValue) const noexcept {
     const Settings s = activeSettings();
-    if (key == "oscReceiverPort") return static_cast<int>(s.oscReceiverPort);
+    if (key == "oscReceiverPort")    return static_cast<int>(s.oscReceiverPort);
+    if (key == "dmxArtnetListenPort") return static_cast<int>(s.dmxArtnetListenPort);
+    if (key == "dmxEnttecUniverse")  return static_cast<int>(s.dmxEnttecUniverse);
     return defaultValue;
+}
+
+std::string EnginePluginContext::getStringSetting(std::string_view key,
+                                                   std::string_view defaultValue) const noexcept {
+    const Settings s = activeSettings();
+    if (key == "dmxOutArtnetTargets") return s.dmxOutArtnetTargets;
+    if (key == "dmxEnttecPort")       return s.dmxEnttecPort;
+
+    // Phase 5 special-case: project-scoped DMX mappings travel
+    // through this accessor with a synthetic key. ProjectManager owns
+    // the active project; we read its serialized mapping table.
+    if (key == "dmxMappingsJson") {
+        if (m_engine) {
+            if (auto* pm = m_engine->getProjectManager()) {
+                return pm->getDmxMappingsJson();
+            }
+        }
+        return std::string(defaultValue);
+    }
+    return std::string(defaultValue);
 }
 
 } // namespace entity::core

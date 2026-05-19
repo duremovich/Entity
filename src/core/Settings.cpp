@@ -119,6 +119,26 @@ Settings loadSettings(const std::filesystem::path& path) {
         }
     }
 
+    // DMX (Phase D, #13)
+    auto readBool = [&](const char* key, bool& dst) {
+        if (j.contains(key) && j[key].is_boolean()) dst = j[key].get<bool>();
+    };
+    auto readU16 = [&](const char* key, uint16_t& dst) {
+        if (j.contains(key) && j[key].is_number_unsigned()) {
+            const auto raw = j[key].get<uint64_t>();
+            if (raw < 65536) dst = static_cast<uint16_t>(raw);
+        }
+    };
+    readBool("dmxArtnetEnabled",    settings.dmxArtnetEnabled);
+    readU16 ("dmxArtnetListenPort", settings.dmxArtnetListenPort);
+    readBool("dmxSacnEnabled",      settings.dmxSacnEnabled);
+    readBool("dmxOutEnabled",       settings.dmxOutEnabled);
+    readString("dmxOutArtnetTargets", settings.dmxOutArtnetTargets);
+    readBool("dmxOutSacnEnabled",   settings.dmxOutSacnEnabled);
+    readBool("dmxEnttecEnabled",    settings.dmxEnttecEnabled);
+    readString("dmxEnttecPort",     settings.dmxEnttecPort);
+    readU16 ("dmxEnttecUniverse",   settings.dmxEnttecUniverse);
+
     if (j.contains("activeWorkspace") && j["activeWorkspace"].is_string()) {
         auto name = j["activeWorkspace"].get<std::string>();
         if (!name.empty()) settings.activeWorkspace = std::move(name);
@@ -153,6 +173,15 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     j["importStoragePolicy"]  = static_cast<int>(settings.importStoragePolicy);
     j["oscReceiverEnabled"]   = settings.oscReceiverEnabled;
     j["oscReceiverPort"]      = settings.oscReceiverPort;
+    j["dmxArtnetEnabled"]     = settings.dmxArtnetEnabled;
+    j["dmxArtnetListenPort"]  = settings.dmxArtnetListenPort;
+    j["dmxSacnEnabled"]       = settings.dmxSacnEnabled;
+    j["dmxOutEnabled"]        = settings.dmxOutEnabled;
+    j["dmxOutArtnetTargets"]  = settings.dmxOutArtnetTargets;
+    j["dmxOutSacnEnabled"]    = settings.dmxOutSacnEnabled;
+    j["dmxEnttecEnabled"]     = settings.dmxEnttecEnabled;
+    j["dmxEnttecPort"]        = settings.dmxEnttecPort;
+    j["dmxEnttecUniverse"]    = settings.dmxEnttecUniverse;
     j["activeWorkspace"]      = settings.activeWorkspace;
 
     // Write to a temp file then rename — atomic on POSIX, near-atomic on

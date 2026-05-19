@@ -1,0 +1,8 @@
+{
+    "version": 1,
+    "description": "DMX/Art-Net inbound test fixture: stay alive long enough for an out-of-process Art-Net sender to fire channel transitions and assert via the editor log that the plugin enqueued the mapped commands.",
+    "commands": [
+        {"type": "WaitSeconds", "count": 5.0},
+        {"type": "Exit"}
+    ]
+}

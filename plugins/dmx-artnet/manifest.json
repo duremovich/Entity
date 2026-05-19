@@ -1,0 +1,8 @@
+{
+  "name":               "dmx-artnet",
+  "version":            "0.1.0",
+  "license":            "Apache-2.0",
+  "requiredApiVersion": 0,
+  "description":        "DMX-512 I/O over Art-Net + sACN (E1.31). Inbound listeners translate channel changes into Director commands via IPluginContext::enqueueCommand; outbound sender emits DMX from SetDmxOut commands and engine-internal DmxFrame bus messages. Also supports Enttec DMX-USB-Pro hardware on Windows. Default mappings live in the plugin; per-project mapping tables come from the active .entity file (schema v22+).",
+  "kind":               "control-plane"
+}

@@ -4,6 +4,7 @@
 
 #include "Plugin.hpp"
 
+#include <string>
 #include <string_view>
 
 // Forward declaration -- plugins that touch the bus link entity-bus
@@ -102,6 +103,18 @@ public:
                                 bool defaultValue) const noexcept = 0;
     virtual int  getIntSetting(std::string_view key,
                                int defaultValue) const noexcept = 0;
+
+    // Read a string Setting (or a project-scoped state blob exposed via
+    // the same accessor — Phase 5 special-cases certain keys to read
+    // from the active project rather than the Settings struct, e.g.
+    // "dmxMappingsJson" returns the active project's JSON-serialized
+    // DMX mapping table).
+    //
+    // Same ABI rule: bottom of vtable, no PLUGIN_API_VERSION bump.
+    // The signature returns by value to keep the boundary copy-safe
+    // (no caller-managed buffer lifetime).
+    virtual std::string getStringSetting(std::string_view key,
+                                         std::string_view defaultValue) const noexcept = 0;
 };
 
 } // namespace entity::plugin

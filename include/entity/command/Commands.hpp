@@ -11,6 +11,7 @@
 #include "entity/timeline/CueTag.hpp"
 #include <entt/entt.hpp>
 #include <nlohmann/json.hpp>
+#include <cstdint>
 #include <string>
 #include <optional>
 #include <array>
@@ -1499,6 +1500,42 @@ public:
 
 private:
     double m_number;
+};
+
+// ============================================================================
+// DMX commands (#13 — Phase D: DMX/Art-Net plugin)
+// ============================================================================
+
+/**
+ * Set one DMX output channel. The dmx-artnet plugin's outbound sender
+ * reads from a process-shared OutboundBridge; this command writes
+ * through that bridge. When the plugin isn't loaded (or is disabled),
+ * the command is a silent no-op.
+ *
+ * Routes through OutboundBridge instead of an entity-bus message:
+ * see ADR-0023 (D2R/R2D doesn't fit an engine -> plugin direction).
+ *
+ * JSON: {"type":"SetDmxOut","universe":0,"channel":1,"value":255}
+ *   universe: 0..32767 (Art-Net 15-bit), 1..63999 (sACN spec range)
+ *   channel:  1..512 (1-based, matches lighting consoles)
+ *   value:    0..255
+ */
+class SetDmxOutCommand : public Command {
+public:
+    SetDmxOutCommand(std::uint16_t universe, std::uint16_t channel, std::uint8_t value)
+        : m_universe(universe), m_channel(channel), m_value(value) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetDmxOut"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Either; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::uint16_t m_universe;
+    std::uint16_t m_channel;
+    std::uint8_t  m_value;
 };
 
 /**
