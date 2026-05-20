@@ -4093,6 +4093,65 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
     return uploadVideoFrameToSlot(slot, data, width, height, &discard, format);
 }
 
+bool D3D12Renderer::uploadVideoFrameToSlotImmediate(uint32_t slot,
+                                                    const uint8_t* rgba,
+                                                    uint32_t width,
+                                                    uint32_t height) {
+    if (!m_initialized || !m_textureUploader) {
+        return false;
+    }
+
+    // A resize / format change must wait for the GPU to finish with the
+    // slot's previous resources before they are re-created.
+    if (m_textureUploader->uploadWouldResize(slot, width, height,
+                                             TextureFormat::RGBA8_UNORM) &&
+        m_textureUploader->hasTexture(slot)) {
+        waitForGpu();
+    }
+
+    // Record into the editor-owned copy list, NOT m_copyCommandList. The
+    // show thread Resets m_copyCommandList every beginShowFrame, so a copy
+    // recorded here from the editor thread would be discarded before it
+    // executes. Dedicated editor copy resources + immediate execute mirror
+    // uploadMeshImmediate. See ADR-0014.
+    const uint32_t ci = m_currentBackBufferIndex;
+    HRESULT hr = m_editorCopyCommandAllocators[ci]->Reset();
+    if (FAILED(hr)) {
+        std::cerr << "[D3D12Renderer] editor copy allocator Reset failed: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+    hr = m_editorCopyCommandList->Reset(m_editorCopyCommandAllocators[ci].Get(), nullptr);
+    if (FAILED(hr)) {
+        std::cerr << "[D3D12Renderer] editor copy list Reset failed: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    if (!m_textureUploader->upload(m_editorCopyCommandList.Get(), slot,
+                                   rgba, width, height,
+                                   TextureFormat::RGBA8_UNORM)) {
+        m_editorCopyCommandList->Close();
+        return false;
+    }
+
+    hr = m_editorCopyCommandList->Close();
+    if (FAILED(hr)) {
+        std::cerr << "[D3D12Renderer] editor copy list Close failed: 0x"
+                  << std::hex << hr << std::dec << std::endl;
+        return false;
+    }
+
+    ID3D12CommandList* copyLists[] = { m_editorCopyCommandList.Get() };
+    m_gpu->copyQueue()->ExecuteCommandLists(1, copyLists);
+    const uint64_t copyValue = ++m_uploadFenceValue;
+    m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+    // Cross-queue wait: the direct queue must not sample the texture until
+    // the copy queue has finished writing it.
+    m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
+    return true;
+}
+
 TextureRef D3D12Renderer::getVideoTexture(uint32_t slot) const {
     if (m_textureUploader && m_textureUploader->isAllocated(slot)) {
         return TextureRef::video(slot);

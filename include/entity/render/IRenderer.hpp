@@ -112,6 +112,17 @@ public:
                                               uint32_t width,
                                               uint32_t height,
                                               TextureFormat format) = 0;
+    // Editor-thread upload. uploadVideoFrameToSlot records into the
+    // show-thread-owned copy command list, which the show thread Resets
+    // every beginShowFrame — a copy recorded from the editor thread is
+    // discarded before it executes. This variant records into a dedicated
+    // editor-owned copy list and executes it immediately. Use it for any
+    // video-slot upload issued from the editor thread (e.g. TextSystem
+    // rasterized text). RGBA8 only. See ADR-0014.
+    virtual bool       uploadVideoFrameToSlotImmediate(uint32_t slot,
+                                                       const uint8_t* rgba,
+                                                       uint32_t width,
+                                                       uint32_t height) = 0;
     virtual TextureRef getVideoTexture(uint32_t slot) const = 0;
 
     // ------------------------------------------------------------------------

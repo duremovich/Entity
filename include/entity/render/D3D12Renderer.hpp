@@ -90,6 +90,10 @@ public:
                                       uint32_t width,
                                       uint32_t height,
                                       TextureFormat format) override;
+    bool       uploadVideoFrameToSlotImmediate(uint32_t slot,
+                                               const uint8_t* rgba,
+                                               uint32_t width,
+                                               uint32_t height) override;
     TextureRef getVideoTexture(uint32_t slot) const override;
 
     uint32_t   createComposeTarget(uint32_t width, uint32_t height) override;

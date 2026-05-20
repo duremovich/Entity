@@ -87,6 +87,12 @@ public:
         uploads.push_back(c);
         return true;
     }
+    bool     uploadVideoFrameToSlotImmediate(uint32_t slot,
+                                             const uint8_t* rgba,
+                                             uint32_t width,
+                                             uint32_t height) override {
+        return uploadVideoFrameToSlot(slot, rgba, width, height);
+    }
     TextureRef getVideoTexture(uint32_t slot) const override {
         return TextureRef::video(slot);
     }

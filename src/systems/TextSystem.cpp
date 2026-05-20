@@ -90,7 +90,10 @@ void TextSystem::update(entt::registry& registry, float /*deltaTime*/) {
             state.textureSlot = static_cast<int>(slot);
         }
 
-        const bool ok = m_renderer->uploadVideoFrameToSlot(
+        // Immediate editor-thread upload — TextSystem runs on the editor
+        // thread, so the regular uploadVideoFrameToSlot (records into the
+        // show-thread copy list) would have its copy discarded. See ADR-0014.
+        const bool ok = m_renderer->uploadVideoFrameToSlotImmediate(
             static_cast<uint32_t>(state.textureSlot),
             result.bgra.data(),
             result.width,
