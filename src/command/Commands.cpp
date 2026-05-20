@@ -1490,6 +1490,182 @@ CommandPtr SetKeyframeInterpolationCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// MoveKeyframeCommand
+// ============================================================================
+
+bool MoveKeyframeCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack) return false;
+
+    Keyframe* src = kfTrack->getKeyframeAt(m_oldFrame);
+    if (!src) return false;
+
+    // Snapshot before any mutation — also carries the keyframe across the move.
+    if (!m_hasPreviousState) {
+        m_movedValue   = src->value;
+        m_movedInterp  = src->interpolation;
+        m_movedEaseIn  = src->easeIn;
+        m_movedEaseOut = src->easeOut;
+        m_hasPreviousState = true;
+    }
+
+    if (m_oldFrame == m_newFrame) return true;
+    // Refuse to silently overwrite a distinct keyframe at the destination.
+    if (kfTrack->getKeyframeAt(m_newFrame)) {
+        std::cerr << "[MoveKeyframe] Destination frame " << m_newFrame
+                  << " already occupied" << std::endl;
+        return false;
+    }
+
+    kfTrack->removeKeyframe(m_oldFrame);
+    kfTrack->addKeyframe(m_newFrame, m_movedValue, m_movedInterp);
+    // addKeyframe drops easeIn/easeOut — restore them on the inserted keyframe.
+    if (Keyframe* moved = kfTrack->getKeyframeAt(m_newFrame)) {
+        moved->easeIn  = m_movedEaseIn;
+        moved->easeOut = m_movedEaseOut;
+    }
+    return true;
+}
+
+bool MoveKeyframeCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack) return false;
+
+    kfTrack->removeKeyframe(m_newFrame);
+    kfTrack->addKeyframe(m_oldFrame, m_movedValue, m_movedInterp);
+    if (Keyframe* restored = kfTrack->getKeyframeAt(m_oldFrame)) {
+        restored->easeIn  = m_movedEaseIn;
+        restored->easeOut = m_movedEaseOut;
+    }
+    return true;
+}
+
+nlohmann::json MoveKeyframeCommand::toJson() const {
+    return {
+        {"type", "MoveKeyframe"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"property", animatablePropertyName(m_property)},
+        {"oldFrame", m_oldFrame},
+        {"newFrame", m_newFrame}
+    };
+}
+
+std::string MoveKeyframeCommand::getDescription() const {
+    return std::string("Move keyframe ") + animatablePropertyName(m_property) +
+           " frame " + std::to_string(m_oldFrame) + " -> " + std::to_string(m_newFrame);
+}
+
+CommandPtr MoveKeyframeCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string propStr = j.value("property", "Opacity");
+    AnimatableProperty prop = parseAnimatableProperty(propStr).value_or(AnimatableProperty::Opacity);
+    FrameNumber oldFrame = j.value("oldFrame", 0);
+    FrameNumber newFrame = j.value("newFrame", 0);
+    return std::make_unique<MoveKeyframeCommand>(trackIndex, clipIndex, prop, oldFrame, newFrame);
+}
+
+// ============================================================================
+// RemoveKeyframeCommand
+// ============================================================================
+
+bool RemoveKeyframeCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack) return false;
+    Keyframe* kf = kfTrack->getKeyframeAt(m_frame);
+    if (!kf) return false;
+
+    if (!m_hasPreviousState) {
+        m_removedValue   = kf->value;
+        m_removedInterp  = kf->interpolation;
+        m_removedEaseIn  = kf->easeIn;
+        m_removedEaseOut = kf->easeOut;
+        m_hasPreviousState = true;
+    }
+
+    kfTrack->removeKeyframe(m_frame);
+    return true;
+}
+
+bool RemoveKeyframeCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 || m_clipIndex >= static_cast<int>(track->layers.size())) return false;
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    auto& animProps = registry.get_or_emplace<AnimatedProperties>(clipEntity);
+    KeyframeTrack& kfTrack = animProps.getOrCreateTrack(m_property);
+    kfTrack.addKeyframe(m_frame, m_removedValue, m_removedInterp);
+    if (Keyframe* restored = kfTrack.getKeyframeAt(m_frame)) {
+        restored->easeIn  = m_removedEaseIn;
+        restored->easeOut = m_removedEaseOut;
+    }
+    return true;
+}
+
+nlohmann::json RemoveKeyframeCommand::toJson() const {
+    return {
+        {"type", "RemoveKeyframe"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"property", animatablePropertyName(m_property)},
+        {"frame", m_frame}
+    };
+}
+
+std::string RemoveKeyframeCommand::getDescription() const {
+    return std::string("Remove keyframe ") + animatablePropertyName(m_property) +
+           " @ frame " + std::to_string(m_frame);
+}
+
+CommandPtr RemoveKeyframeCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex = j.value("clipIndex", 0);
+    std::string propStr = j.value("property", "Opacity");
+    AnimatableProperty prop = parseAnimatableProperty(propStr).value_or(AnimatableProperty::Opacity);
+    FrameNumber frame = j.value("frame", 0);
+    return std::make_unique<RemoveKeyframeCommand>(trackIndex, clipIndex, prop, frame);
+}
+
+// ============================================================================
 // AddScreenCommand
 // ============================================================================
 
@@ -4969,6 +5145,75 @@ CommandPtr AssertTrackLayerCountCommand::fromJson(const nlohmann::json& j) {
     int    trackIndex = j.value("trackIndex", 0);
     size_t count      = j.value("count", static_cast<size_t>(0));
     return std::make_unique<AssertTrackLayerCountCommand>(trackIndex, count);
+}
+
+// ============================================================================
+// AssertKeyframeCountCommand
+// ============================================================================
+
+bool AssertKeyframeCountCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertKeyframeCount] FAIL: no timeline" << std::endl;
+        return false;
+    }
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertKeyframeCount] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    const auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[AssertKeyframeCount] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    const auto prop = parseAnimatableProperty(m_property);
+    if (!prop) {
+        std::cerr << "[AssertKeyframeCount] FAIL: unknown property '"
+                  << m_property << "'" << std::endl;
+        return false;
+    }
+    entt::entity layerEntity = track->layers[m_clipIndex];
+    const auto* animProps = registry.try_get<AnimatedProperties>(layerEntity);
+    const KeyframeTrack* kfTrack = animProps ? animProps->getTrack(*prop) : nullptr;
+    const size_t actual = kfTrack ? kfTrack->keyframes.size() : 0;
+    if (actual == m_count) {
+        std::cout << "[AssertKeyframeCount] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex << " " << m_property
+                  << " count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertKeyframeCount] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex << " " << m_property
+              << " expected=" << m_count << " got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertKeyframeCountCommand::toJson() const {
+    return {{"type", "AssertKeyframeCount"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"property", m_property},
+            {"count", m_count}};
+}
+
+std::string AssertKeyframeCountCommand::getDescription() const {
+    return "Assert track " + std::to_string(m_trackIndex) + " clip "
+         + std::to_string(m_clipIndex) + " " + m_property + " has "
+         + std::to_string(m_count) + " keyframe(s)";
+}
+
+CommandPtr AssertKeyframeCountCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex = j.value("trackIndex", 0);
+    int clipIndex  = j.value("clipIndex", 0);
+    std::string property = j.value("property", "Opacity");
+    size_t count = j.value("count", static_cast<size_t>(0));
+    return std::make_unique<AssertKeyframeCountCommand>(
+        trackIndex, clipIndex, property, count);
 }
 
 } // namespace entity

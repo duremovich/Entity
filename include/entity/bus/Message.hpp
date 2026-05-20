@@ -178,6 +178,29 @@ struct ContentLayerRoute {
     std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};              // x, y, w, h in source UV
 };
 
+// One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
+// entity::Keyframe. The interpolation field encodes
+// entity::InterpolationType as int (per the enum-as-string-on-wire rule
+// in bus/CLAUDE.md, serialization translates).
+struct BakedKeyframe {
+    FrameNumber frame{0};
+    float       value{0.0f};
+    int         interpolation{0};  // InterpolationType enum as int
+    float       easeIn{0.42f};
+    float       easeOut{0.58f};
+};
+
+// One snapshot of an AnimatedProperties track — bus-safe mirror of
+// entity::KeyframeTrack. `property` encodes entity::AnimatableProperty
+// as int. Show thread re-evaluates these per render frame at
+// Timeline::getCurrentFrame() so animation stays alive when the editor
+// thread stalls and stops baking new snapshots (NEW-07).
+struct BakedTrack {
+    int                        property{0};   // AnimatableProperty enum as int
+    bool                       enabled{true};
+    std::vector<BakedKeyframe> keyframes;
+};
+
 // One-frame snapshot of a Generative layer (Muncher v1; future kinds add
 // optional fields here, never rename existing ones — bus rule 3). Baked by
 // the editor thread in buildSceneSnapshot; consumed by CompositorSystem on
@@ -253,29 +276,23 @@ struct GenerativeLayerSnapshot {
     std::int32_t  textTextureSlot{-1};
     std::uint32_t textBakedWidth{0};
     std::uint32_t textBakedHeight{0};
-};
 
-// One snapshot of an AnimatedProperties keyframe — bus-safe mirror of
-// entity::Keyframe. The interpolation field encodes
-// entity::InterpolationType as int (per the enum-as-string-on-wire rule
-// in bus/CLAUDE.md, serialization translates).
-struct BakedKeyframe {
-    FrameNumber frame{0};
-    float       value{0.0f};
-    int         interpolation{0};  // InterpolationType enum as int
-    float       easeIn{0.42f};
-    float       easeOut{0.58f};
-};
+    // Layer window (timeline frames). Lets the show thread compute the
+    // clip-local frame for animation re-evaluation.
+    FrameNumber   startFrame{0};
+    FrameNumber   duration{0};
 
-// One snapshot of an AnimatedProperties track — bus-safe mirror of
-// entity::KeyframeTrack. `property` encodes entity::AnimatableProperty
-// as int. Show thread re-evaluates these per render frame at
-// Timeline::getCurrentFrame() so animation stays alive when the editor
-// thread stalls and stops baking new snapshots (NEW-07).
-struct BakedTrack {
-    int                        property{0};   // AnimatableProperty enum as int
-    bool                       enabled{true};
-    std::vector<BakedKeyframe> keyframes;
+    // Transform axes mirror (snapshot of Transform::{position,rotation,scale}).
+    // Consulted by the show thread only when `tracks` is non-empty; for static
+    // generative layers, `transformMatrix` above is authoritative.
+    std::array<float, 3> position{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> rotation{0.0f, 0.0f, 0.0f};  // Euler degrees, X/Y/Z
+    std::array<float, 3> scale{1.0f, 1.0f, 1.0f};
+
+    // AnimatedProperties snapshot. Empty for generative layers without
+    // animation. The show thread re-evaluates these per render frame at the
+    // current Timeline frame so animation survives editor stalls (NEW-07).
+    std::vector<BakedTrack> tracks;
 };
 
 // One animated parameter track baked for show-thread re-evaluation. Mirror

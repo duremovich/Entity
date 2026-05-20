@@ -787,6 +787,98 @@ private:
 };
 
 /**
+ * Move a keyframe on an animated-property track from one frame to another,
+ * preserving its value, interpolation type and bezier control points.
+ * Used by the timeline's keyframe drag-to-move interaction. Undoable.
+ * No-op if no keyframe exists at oldFrame; refuses (returns false) if a
+ * different keyframe already occupies newFrame.
+ *
+ * JSON format:
+ * {
+ *     "type": "MoveKeyframe",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "property": "PositionX",
+ *     "oldFrame": 10,
+ *     "newFrame": 25
+ * }
+ */
+class MoveKeyframeCommand : public UndoableCommand {
+public:
+    MoveKeyframeCommand(int trackIndex, int clipIndex,
+                        AnimatableProperty property,
+                        FrameNumber oldFrame, FrameNumber newFrame)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_oldFrame(oldFrame), m_newFrame(newFrame) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "MoveKeyframe"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    FrameNumber m_oldFrame;
+    FrameNumber m_newFrame;
+    // Snapshot of the moved keyframe, captured on first execute for undo —
+    // KeyframeTrack::addKeyframe only carries value+interp, so the bezier
+    // tangents must be re-applied after the re-insert.
+    bool m_hasPreviousState{false};
+    float m_movedValue{0.0f};
+    InterpolationType m_movedInterp{InterpolationType::Linear};
+    float m_movedEaseIn{0.42f};
+    float m_movedEaseOut{0.58f};
+};
+
+/**
+ * Remove a single keyframe from an animated-property track. Undoable —
+ * the keyframe's value / interpolation / bezier tangents are snapshotted
+ * on execute and restored on undo. Used by the timeline's Delete-key path.
+ * Unlike ClearKeyframesCommand this targets one keyframe, not the whole
+ * AnimatedProperties component.
+ *
+ * JSON format:
+ * {
+ *     "type": "RemoveKeyframe",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "property": "PositionX",
+ *     "frame": 10
+ * }
+ */
+class RemoveKeyframeCommand : public UndoableCommand {
+public:
+    RemoveKeyframeCommand(int trackIndex, int clipIndex,
+                          AnimatableProperty property, FrameNumber frame)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_frame(frame) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveKeyframe"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    FrameNumber m_frame;
+    bool m_hasPreviousState{false};
+    float m_removedValue{0.0f};
+    InterpolationType m_removedInterp{InterpolationType::Linear};
+    float m_removedEaseIn{0.42f};
+    float m_removedEaseOut{0.58f};
+};
+
+/**
  * Clear all keyframes from a clip.
  *
  * JSON format:
@@ -2642,6 +2734,40 @@ public:
 private:
     int    m_trackIndex;
     size_t m_count;
+};
+
+/**
+ * Assert the number of keyframes on a layer's animated-property track.
+ * Works for any timeline layer kind (Clip / Generative / OA). Counts 0 when
+ * the layer has no AnimatedProperties component or no track for the property.
+ *
+ * JSON format:
+ * {
+ *     "type": "AssertKeyframeCount",
+ *     "trackIndex": 0,
+ *     "clipIndex": 0,
+ *     "property": "Opacity",
+ *     "count": 2
+ * }
+ */
+class AssertKeyframeCountCommand : public Command {
+public:
+    AssertKeyframeCountCommand(int trackIndex, int clipIndex,
+                               const std::string& property, size_t count)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertKeyframeCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    std::string m_property;
+    size_t      m_count;
 };
 
 } // namespace entity

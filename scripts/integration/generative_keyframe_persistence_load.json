@@ -1,0 +1,42 @@
+{
+    "version": 1,
+    "description": "Generative-layer keyframe round-trip (load half). Loads the project saved by the save half and asserts the Text layer's Opacity (3) + PositionX (2) keyframe tracks survived serialization. Then exercises RemoveKeyframe and asserts the Opacity count drops to 2.",
+    "commands": [
+        {
+            "type": "LoadProject",
+            "filepath": "test_output/generative_keyframe_persistence/test.entity"
+        },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AssertScreenExists",
+            "name": "GenKfScreen"
+        },
+        {
+            "type": "AssertTrackLayerCount",
+            "trackIndex": 0,
+            "count": 1
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 3
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "PositionX", "count": 2
+        },
+        {
+            "type": "RemoveKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 20
+        },
+        { "type": "WaitFrames", "count": 2 },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 2
+        },
+        { "type": "Exit" }
+    ]
+}

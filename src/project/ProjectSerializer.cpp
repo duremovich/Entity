@@ -585,6 +585,14 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         // MunchersGameState resets each session — no persistent fields.
                     }
 
+                    // AnimatedProperties keyframe tracks (additive, optional —
+                    // empty array when the generative layer has no keyframes).
+                    {
+                        const auto* ap =
+                            registry.try_get<AnimatedProperties>(layerEntity);
+                        genJson["animatedProperties"] = serializeAnimatedProperties(ap);
+                    }
+
                     layersJson.push_back(genJson);
                 }
                 // Entities with neither Clip, ObjectAnimationLayer, nor GenerativeLayer
@@ -1718,6 +1726,14 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 // Muncher or unrecognised sub-kind — emplace Muncher state
                                 // (game state resets each session; no persistent fields)
                                 registry.emplace<MunchersGameState>(layerEntity);
+                            }
+
+                            // AnimatedProperties keyframes (absent = no keyframes).
+                            if (entryJson.contains("animatedProperties")
+                                && entryJson["animatedProperties"].is_array()
+                                && !entryJson["animatedProperties"].empty()) {
+                                auto& ap = registry.emplace<AnimatedProperties>(layerEntity);
+                                deserializeAnimatedProperties(entryJson, ap);
                             }
 
                             track->layers.push_back(layerEntity);

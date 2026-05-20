@@ -1,0 +1,67 @@
+{
+    "version": 1,
+    "description": "Generative-layer keyframe round-trip (save half). Creates a Text generative layer, adds Opacity + PositionX keyframes, moves one with MoveKeyframe, asserts the pre-save counts, and saves to test_output/generative_keyframe_persistence/test.entity. The load half asserts the keyframes survive serialization.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "GenKfScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitSeconds", "count": 0.1 },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 0, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 30, "value": 0.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 60, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "PositionX", "frame": 0, "value": 0.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "PositionX", "frame": 60, "value": 0.5
+        },
+        { "type": "WaitFrames", "count": 2 },
+        {
+            "type": "MoveKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "oldFrame": 30, "newFrame": 20
+        },
+        { "type": "WaitFrames", "count": 2 },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 3
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "PositionX", "count": 2
+        },
+        {
+            "type": "SaveProject",
+            "filepath": "test_output/generative_keyframe_persistence/test.entity"
+        },
+        { "type": "WaitFrames", "count": 2 },
+        { "type": "Exit" }
+    ]
+}

@@ -118,22 +118,14 @@ void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
 }
 
 
-namespace {
-
-// One animatable channel surfaced in the expanded-track view.
-struct TimelinePropertyDef {
-    AnimatableProperty prop;
-    const char*        shortName;     // Header-panel label
-    float              defaultValue;  // Fallback when no keyframe track exists
-};
-
 // Channels to show under an expanded layer. OA layers get the full 3D set
-// (9 channels — Pos/Rot/Scale × X/Y/Z); Clip-backed layers keep the legacy
-// 2D set (6 channels). Centralized here so renderPropertyTracks (body) and
-// renderClipPropertyPanel (header) stay in lockstep.
-inline std::vector<TimelinePropertyDef>
-propertyListForEntity(entt::registry& reg, entt::entity e) {
-    if (reg.all_of<ObjectAnimationLayer>(e)) {
+// (9 channels — Pos/Rot/Scale × X/Y/Z); Clip-backed and Generative layers
+// keep the 2D set (6 channels). Shared by renderPropertyTracks (body),
+// renderClipPropertyPanel (header) and findKeyframeAtPosition so they all
+// stay in lockstep.
+std::vector<TimelineWidget::TimelinePropertyDef>
+TimelineWidget::propertyListForEntity(entt::entity e) const {
+    if (m_timeline && m_timeline->getRegistry().all_of<ObjectAnimationLayer>(e)) {
         return {
             {AnimatableProperty::PositionX, "Pos X",    0.0f},
             {AnimatableProperty::PositionY, "Pos Y",    0.0f},
@@ -156,13 +148,11 @@ propertyListForEntity(entt::registry& reg, entt::entity e) {
     };
 }
 
-} // namespace
-
 // Public accessor — also used by the input/expand code in TimelineWidget.cpp
 // to compute the expanded track height.
 std::size_t TimelineWidget::expandedPropertyRowCount(entt::entity layerEntity) const {
     if (!m_timeline) return 0;
-    return propertyListForEntity(m_timeline->getRegistry(), layerEntity).size();
+    return propertyListForEntity(layerEntity).size();
 }
 
 void TimelineWidget::renderTimeRuler() {
@@ -938,16 +928,17 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     auto& registry = m_timeline->getRegistry();
 
-    // Read placement uniformly for Clip-backed and OA-layer entities. startFrame
-    // / duration live on Clip for clips, on Layer for OA. Anything else is not
-    // a valid expand target.
+    // Read placement uniformly for Clip-backed, OA-layer and Generative-layer
+    // entities. startFrame / duration live on Clip for clips, on Layer for
+    // OA / Generative. Anything else is not a valid expand target.
     FrameNumber startFrame = 0;
     FrameNumber durationFrames = 0;
     if (const auto* clip = registry.try_get<Clip>(clipEntity)) {
         startFrame     = clip->startFrame;
         durationFrames = clip->duration;
     } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
-               lay && registry.all_of<ObjectAnimationLayer>(clipEntity)) {
+               lay && (registry.all_of<ObjectAnimationLayer>(clipEntity) ||
+                       registry.all_of<GenerativeLayer>(clipEntity))) {
         startFrame     = lay->startFrame;
         durationFrames = lay->duration;
     } else {
@@ -967,9 +958,9 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
     float clipX = baseWindowPos.x + timeToPixel(startTime);
     float clipWidth = timeToPixel(static_cast<Timecode>(durationSeconds * 1000000.0f));
 
-    // Property list varies by archetype (6 for Clip, 9 for OA).
+    // Property list varies by archetype (6 for Clip / Generative, 9 for OA).
     const std::vector<TimelinePropertyDef> properties =
-        propertyListForEntity(registry, clipEntity);
+        propertyListForEntity(clipEntity);
     const int numProperties = static_cast<int>(properties.size());
 
     for (int i = 0; i < numProperties; i++) {
@@ -985,35 +976,43 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
         ImVec2 trackMax(clipX + clipWidth, rowY + PROPERTY_ROW_HEIGHT);
         drawList->AddRectFilled(trackMin, trackMax, IM_COL32(50, 55, 65, 255));
 
-        // Draw keyframe shapes on the timeline
+        // Draw keyframe shapes on the timeline. Keyframe left-click select /
+        // drag and right-click menu are routed through findKeyframeAtPosition
+        // in handleTracksInteraction — the draw pass only paints.
         const KeyframeTrack* track = animProps ? animProps->getTrack(properties[i].prop) : nullptr;
         if (track && track->hasKeyframes()) {
-            float size = 5.0f;
-            float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
+            const float size = 5.0f;
+            const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
 
             for (const auto& kf : track->keyframes) {
-                // kf.frame is layer-local in *timeline* frames for both
-                // Clip-backed and OA layers (AnimationSystem evaluates with
-                // localFrame = currentFrame - startFrame, where both are
-                // timeline frames). Use timelineFrameRate uniformly.
-                float kfSeconds = static_cast<float>(kf.frame) / static_cast<float>(timelineFrameRate);
-                float kfX = clipX + (kfSeconds * m_pixelsPerSecond);
+                // While this keyframe is being dragged, draw it at the live
+                // drag frame instead of its (still-unmutated) data frame.
+                const bool isDragged = m_isDraggingKeyframe &&
+                    m_dragKeyframeClip == clipEntity &&
+                    m_dragKeyframeProperty == properties[i].prop &&
+                    m_dragKeyframeOriginalFrame == kf.frame;
+                const FrameNumber drawFrame =
+                    isDragged ? m_dragKeyframeCurrentFrame : kf.frame;
+
+                // drawFrame is layer-local in *timeline* frames for Clip-backed,
+                // OA and Generative layers alike (AnimationSystem evaluates with
+                // localFrame = currentFrame - startFrame, both timeline frames).
+                const float kfSeconds =
+                    static_cast<float>(drawFrame) / static_cast<float>(timelineFrameRate);
+                const float kfX = clipX + (kfSeconds * m_pixelsPerSecond);
 
                 // Only draw if within clip bounds
                 if (kfX >= clipX && kfX <= clipX + clipWidth) {
                     drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
 
-                    // Right-click pops the per-keyframe interpolation menu
-                    // wired up in TimelineWidgetInput.cpp::handleInteraction.
-                    if (ImGui::IsMouseClicked(1)) {
-                        ImVec2 mousePos = ImGui::GetMousePos();
-                        if (mousePos.x >= kfX - size - 3 && mousePos.x <= kfX + size + 3 &&
-                            mousePos.y >= keyframeY - size - 3 && mousePos.y <= keyframeY + size + 3) {
-                            m_keyframeEditClip = clipEntity;
-                            m_keyframeEditProperty = properties[i].prop;
-                            m_keyframeEditFrame = kf.frame;
-                            m_showKeyframeContextMenu = true;
-                        }
+                    // Emphasis ring on the selected keyframe (and the one
+                    // mid-drag) so the grabbed keyframe is visible.
+                    const bool isSelected = m_selectedKeyframeClip == clipEntity &&
+                        m_selectedKeyframeProperty == properties[i].prop &&
+                        m_selectedKeyframeFrame == kf.frame;
+                    if (isSelected || isDragged) {
+                        drawList->AddCircle(ImVec2(kfX, keyframeY), size + 3.0f,
+                                            IM_COL32(255, 255, 255, 255), 0, 2.0f);
                     }
                 }
             }
@@ -1205,13 +1204,14 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
     ImVec2 windowPos = ImGui::GetWindowPos();
     auto& registry = m_timeline->getRegistry();
 
-    // Resolve layer placement (startFrame) for both archetypes — OA reads from
-    // Layer, Clip from Clip. Returns 0 if neither archetype matches.
+    // Resolve layer placement (startFrame) for all archetypes — OA / Generative
+    // read from Layer, Clip from Clip. Returns 0 if no archetype matches.
     FrameNumber layerStart = 0;
     if (const auto* clip = registry.try_get<Clip>(clipEntity)) {
         layerStart = clip->startFrame;
     } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
-               lay && registry.all_of<ObjectAnimationLayer>(clipEntity)) {
+               lay && (registry.all_of<ObjectAnimationLayer>(clipEntity) ||
+                       registry.all_of<GenerativeLayer>(clipEntity))) {
         layerStart = lay->startFrame;
     } else {
         return 0.0f;
@@ -1231,10 +1231,10 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
         FrameNumber localFrame = currentFrame - layerStart;
 
         // Property list varies by archetype. propertyListForEntity returns the
-        // 6-channel set for Clip-backed entities and the 9-channel 3D set for
-        // OA layers — kept in lockstep with renderPropertyTracks (body).
+        // 6-channel set for Clip-backed / Generative entities and the 9-channel
+        // 3D set for OA layers — kept in lockstep with renderPropertyTracks.
         const std::vector<TimelinePropertyDef> properties =
-            propertyListForEntity(registry, clipEntity);
+            propertyListForEntity(clipEntity);
         const int kNumProperties = static_cast<int>(properties.size());
 
         for (int i = 0; i < kNumProperties; ++i) {

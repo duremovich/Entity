@@ -225,6 +225,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
     registerFactory("UpsertKeyframe", UpsertKeyframeCommand::fromJson);
     registerFactory("SetKeyframeInterpolation", SetKeyframeInterpolationCommand::fromJson);
+    registerFactory("MoveKeyframe", MoveKeyframeCommand::fromJson);
+    registerFactory("RemoveKeyframe", RemoveKeyframeCommand::fromJson);
 
     // Timeline structure commands
     registerFactory("AddTrack", AddTrackCommand::fromJson);
@@ -284,6 +286,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Script utility commands
     registerFactory("Undo", UndoCommand::fromJson);
     registerFactory("AssertTrackLayerCount", AssertTrackLayerCountCommand::fromJson);
+    registerFactory("AssertKeyframeCount", AssertKeyframeCountCommand::fromJson);
     registerFactory("AssertTextLayerState", AssertTextLayerStateCommand::fromJson);
     registerFactory("SetTextLayerProperties", SetTextLayerPropertiesCommand::fromJson);
 }

@@ -342,3 +342,33 @@ set_tests_properties(integration_generative_layer_ops PROPERTIES
     LABELS "integration"
     TIMEOUT 60
 )
+
+# Generative-layer keyframe persistence round-trip. Save creates a Text layer,
+# adds Opacity + PositionX keyframes, moves one via MoveKeyframe; load asserts
+# the keyframe tracks survived serialization, then exercises RemoveKeyframe.
+add_test(
+    NAME integration_generative_keyframe_persistence_save
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/generative_keyframe_persistence_save.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_generative_keyframe_persistence_save PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+add_test(
+    NAME integration_generative_keyframe_persistence_load
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/generative_keyframe_persistence_load.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_generative_keyframe_persistence_load PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+set_tests_properties(integration_generative_keyframe_persistence_save PROPERTIES
+    FIXTURES_SETUP generative_keyframe_persistence_data)
+set_tests_properties(integration_generative_keyframe_persistence_load PROPERTIES
+    FIXTURES_REQUIRED generative_keyframe_persistence_data)

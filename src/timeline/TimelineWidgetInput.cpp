@@ -287,6 +287,121 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
     return entt::null;
 }
 
+TimelineWidget::KeyframeHit
+TimelineWidget::findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const {
+    KeyframeHit hit;
+    if (!m_timeline) return hit;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto& tracks = m_timeline->getTracks();
+    const double fps = m_timeline->getFrameRate();
+    if (fps <= 0.0) return hit;
+
+    // Hit zone = glyph half-size + a few px slack, matching the keyframe
+    // size used in renderPropertyTracks.
+    constexpr float kKfSize = 5.0f;
+    constexpr float kHitPad = 3.0f;
+
+    // Walk tracks with the same cumulative-Y layout as findClipAtPosition.
+    float cumulativeY = 0.0f;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const entt::entity trackEntity = tracks[i];
+        const float trackY = windowPos.y + cumulativeY;
+
+        float trackHeight = TRACK_HEIGHT;
+        const bool expanded =
+            m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
+            m_timeline->isTrackExpanded(trackEntity);
+        entt::entity clipAtPlayhead = entt::null;
+        if (expanded) {
+            clipAtPlayhead = findClipAtPlayhead(trackEntity);
+            if (clipAtPlayhead != entt::null) {
+                trackHeight = TRACK_HEIGHT +
+                    expandedPropertyRowCount(clipAtPlayhead) * PROPERTY_ROW_HEIGHT;
+            }
+        }
+
+        if (clipAtPlayhead != entt::null) {
+            const TimelinePlacement place = readPlacement(registry, clipAtPlayhead);
+            const auto* animProps = registry.try_get<AnimatedProperties>(clipAtPlayhead);
+            if (place.valid && animProps) {
+                // Keyframe screen math is byte-identical to renderPropertyTracks.
+                const float startSeconds =
+                    static_cast<float>(place.startFrame) / static_cast<float>(fps);
+                const float clipX = windowPos.x +
+                    timeToPixel(static_cast<Timecode>(startSeconds * 1000000.0f));
+                const float clipWidth = timeToPixel(static_cast<Timecode>(
+                    (place.duration / static_cast<float>(fps)) * 1000000.0f));
+                const float propY0 = trackY + TRACK_HEIGHT;
+
+                const auto properties = propertyListForEntity(clipAtPlayhead);
+                for (size_t p = 0; p < properties.size(); ++p) {
+                    const KeyframeTrack* kfTrack =
+                        animProps->getTrack(properties[p].prop);
+                    if (!kfTrack || !kfTrack->hasKeyframes()) continue;
+                    const float rowY =
+                        propY0 + static_cast<float>(p) * PROPERTY_ROW_HEIGHT;
+                    const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
+                    if (mousePos.y < keyframeY - kKfSize - kHitPad ||
+                        mousePos.y > keyframeY + kKfSize + kHitPad) continue;
+                    for (const auto& kf : kfTrack->keyframes) {
+                        const float kfSeconds =
+                            static_cast<float>(kf.frame) / static_cast<float>(fps);
+                        const float kfX = clipX + kfSeconds * m_pixelsPerSecond;
+                        if (kfX < clipX || kfX > clipX + clipWidth) continue;
+                        if (mousePos.x >= kfX - kKfSize - kHitPad &&
+                            mousePos.x <= kfX + kKfSize + kHitPad) {
+                            hit.valid    = true;
+                            hit.clip     = clipAtPlayhead;
+                            hit.property = properties[p].prop;
+                            hit.frame    = kf.frame;
+                            return hit;
+                        }
+                    }
+                }
+            }
+        }
+
+        cumulativeY += trackHeight + TRACK_PADDING;
+    }
+    return hit;
+}
+
+bool TimelineWidget::isInPropertyRowBand(ImVec2 mousePos, ImVec2 windowPos) const {
+    if (!m_timeline) return false;
+    const auto& tracks = m_timeline->getTracks();
+
+    float cumulativeY = 0.0f;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const entt::entity trackEntity = tracks[i];
+        const float trackY = windowPos.y + cumulativeY;
+
+        float trackHeight = TRACK_HEIGHT;
+        float propPanelH = 0.0f;
+        const bool expanded =
+            m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
+            m_timeline->isTrackExpanded(trackEntity);
+        if (expanded) {
+            entt::entity atPlayhead = findClipAtPlayhead(trackEntity);
+            if (atPlayhead != entt::null) {
+                propPanelH =
+                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
+                trackHeight += propPanelH;
+            }
+        }
+
+        if (propPanelH > 0.0f) {
+            const float propY0 = trackY + TRACK_HEIGHT;
+            if (mousePos.y >= propY0 && mousePos.y <= propY0 + propPanelH) {
+                return true;
+            }
+        }
+
+        cumulativeY += trackHeight + TRACK_PADDING;
+    }
+    return false;
+}
+
 ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPos, entt::entity& outClip, int& outTrackIndex) {
     if (!m_timeline) {
         outClip = entt::null;
@@ -912,6 +1027,68 @@ void TimelineWidget::handleTracksInteraction() {
         return;  // Don't process other interactions while trimming
     }
 
+    // Active keyframe drag — owns all track interaction until release. The
+    // keyframe data is not mutated mid-drag; renderPropertyTracks draws a live
+    // preview from m_dragKeyframeCurrentFrame and a single undoable
+    // MoveKeyframeCommand is committed on mouse-up.
+    if (m_isDraggingKeyframe) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (registry.valid(m_dragKeyframeClip)) {
+                const double fps = m_timeline->getFrameRate();
+                const TimelinePlacement place =
+                    readPlacement(registry, m_dragKeyframeClip);
+                const float startSeconds =
+                    static_cast<float>(place.startFrame) / static_cast<float>(fps);
+                const float clipX = windowPos.x +
+                    timeToPixel(static_cast<Timecode>(startSeconds * 1000000.0f));
+                const float pxPerFrame = (fps > 0.0)
+                    ? m_pixelsPerSecond / static_cast<float>(fps) : 1.0f;
+
+                FrameNumber newFrame = m_dragKeyframeOriginalFrame;
+                if (pxPerFrame > 0.0f) {
+                    newFrame = static_cast<FrameNumber>(
+                        std::lround((mousePos.x - clipX) / pxPerFrame));
+                }
+
+                // Clamp to the clip's frame range and to the gap between the
+                // adjacent keyframes on the same track — a drag can't cross
+                // or collide with another keyframe.
+                FrameNumber lo = 0;
+                FrameNumber hi = (place.duration > 0) ? place.duration - 1 : 0;
+                if (const auto* animProps =
+                        registry.try_get<AnimatedProperties>(m_dragKeyframeClip)) {
+                    if (const KeyframeTrack* kt =
+                            animProps->getTrack(m_dragKeyframeProperty)) {
+                        for (const auto& kf : kt->keyframes) {
+                            if (kf.frame < m_dragKeyframeOriginalFrame)
+                                lo = std::max(lo, kf.frame + 1);
+                            else if (kf.frame > m_dragKeyframeOriginalFrame)
+                                hi = std::min(hi, kf.frame - 1);
+                        }
+                    }
+                }
+                if (hi < lo) hi = lo;
+                m_dragKeyframeCurrentFrame = std::clamp(newFrame, lo, hi);
+            }
+        } else {
+            // Release — commit a single undoable MoveKeyframeCommand.
+            if (m_dragKeyframeCurrentFrame != m_dragKeyframeOriginalFrame &&
+                m_commandDispatcher) {
+                if (auto idx = findClipIndices(m_timeline, m_dragKeyframeClip)) {
+                    m_commandDispatcher->enqueue(std::make_unique<MoveKeyframeCommand>(
+                        idx->first, idx->second, m_dragKeyframeProperty,
+                        m_dragKeyframeOriginalFrame, m_dragKeyframeCurrentFrame));
+                    m_selectedKeyframeClip     = m_dragKeyframeClip;
+                    m_selectedKeyframeProperty = m_dragKeyframeProperty;
+                    m_selectedKeyframeFrame    = m_dragKeyframeCurrentFrame;
+                }
+            }
+            m_isDraggingKeyframe = false;
+            m_dragKeyframeClip   = entt::null;
+        }
+        return;
+    }
+
     // Handle clip dragging (continue even if not hovered, to allow drag outside window)
     if (m_isDraggingClip) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -1089,6 +1266,30 @@ void TimelineWidget::handleTracksInteraction() {
             m_timeline->setScrubbing(false);  // Exit scrubbing mode - triggers final seek
         }
     } else if (!m_isDraggingRuler && isWindowHovered) {
+        // Keyframe select + start drag. Checked before clip-edge / clip
+        // selection so a click on a keyframe diamond in an expanded property
+        // row never starts a clip drag (the property panel is part of the
+        // clip's hit zone). An empty click inside a property row is a no-op
+        // for the same reason — it must not fall through to clip drag.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            KeyframeHit kfHit = findKeyframeAtPosition(mousePos, windowPos);
+            if (kfHit.valid) {
+                m_selectedKeyframeClip      = kfHit.clip;
+                m_selectedKeyframeProperty  = kfHit.property;
+                m_selectedKeyframeFrame     = kfHit.frame;
+                m_isDraggingKeyframe        = true;
+                m_dragKeyframeClip          = kfHit.clip;
+                m_dragKeyframeProperty      = kfHit.property;
+                m_dragKeyframeOriginalFrame = kfHit.frame;
+                m_dragKeyframeCurrentFrame  = kfHit.frame;
+                return;
+            }
+            if (isInPropertyRowBand(mousePos, windowPos)) {
+                m_selectedKeyframeClip = entt::null;
+                return;
+            }
+        }
+
         // Check for clip edge hover (for trimming cursor)
         entt::entity edgeClip = entt::null;
         int edgeTrackIndex = -1;
@@ -1129,6 +1330,7 @@ void TimelineWidget::handleTracksInteraction() {
                 m_selectedClip = clipUnderMouse;
                 m_isDraggingClip = true;
                 m_selectedClipTrackIndex = trackIndex;
+                m_selectedKeyframeClip = entt::null;  // selecting a clip clears keyframe selection
                 m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
 
                 // Sync selection to Timeline for PropertyWindow
@@ -1154,6 +1356,7 @@ void TimelineWidget::handleTracksInteraction() {
                 // Clicked on empty space within timeline - deselect
                 m_selectedClip = entt::null;
                 m_selectedClipTrackIndex = -1;
+                m_selectedKeyframeClip = entt::null;
 
                 // Sync deselection to Timeline
                 m_timeline->setSelectedClip(entt::null);
@@ -1168,6 +1371,17 @@ void TimelineWidget::handleTracksInteraction() {
         // wouldn't match if we opened here. Setting the m_show* flag is
         // safe across the EndChild boundary.
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            // Right-click on a keyframe diamond → interpolation context menu,
+            // routed through the same hit-test as left-click select/drag.
+            KeyframeHit kfHit = findKeyframeAtPosition(mousePos, windowPos);
+            if (kfHit.valid) {
+                m_keyframeEditClip     = kfHit.clip;
+                m_keyframeEditProperty = kfHit.property;
+                m_keyframeEditFrame    = kfHit.frame;
+                m_showKeyframeContextMenu = true;
+                m_showClipContextMenu  = false;
+                m_showTrackContextMenu = false;
+            } else {
             int trackIndex = -1;
             entt::entity clipUnderMouse = findClipAtPosition(mousePos, windowPos, trackIndex);
 
@@ -1196,6 +1410,7 @@ void TimelineWidget::handleTracksInteraction() {
                     m_rightClickedTrackFrame = m_timeline->timeToFrame(clickTime);
                 }
             }
+            }  // end else (right-click did not land on a keyframe)
         }
     }
 }
@@ -1603,9 +1818,24 @@ void TimelineWidget::handleContextMenus() {
                         ImGui::Separator();
 
                         if (ImGui::MenuItem("Delete Keyframe")) {
-                            // Delete remains a direct write — undo for
-                            // keyframe deletion is a separate follow-up.
-                            track->removeKeyframe(m_keyframeEditFrame);
+                            // Undoable via RemoveKeyframeCommand; direct-write
+                            // fallback for the no-dispatcher (script / test)
+                            // embedding, mirroring setInterp above.
+                            if (m_commandDispatcher && idx) {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<RemoveKeyframeCommand>(
+                                        idx->first, idx->second,
+                                        m_keyframeEditProperty, m_keyframeEditFrame));
+                            } else {
+                                track->removeKeyframe(m_keyframeEditFrame);
+                            }
+                            // Drop the timeline keyframe selection if it
+                            // pointed at the keyframe just deleted.
+                            if (m_selectedKeyframeClip == m_keyframeEditClip &&
+                                m_selectedKeyframeProperty == m_keyframeEditProperty &&
+                                m_selectedKeyframeFrame == m_keyframeEditFrame) {
+                                m_selectedKeyframeClip = entt::null;
+                            }
                         }
                     }
                 }

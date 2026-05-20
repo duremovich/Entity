@@ -1099,18 +1099,31 @@ int PropertyWindow::getCurrentClipFrame() const {
     if (selectedClip == entt::null) return -1;
 
     auto& registry = m_timeline->getRegistry();
-    const auto* clip = registry.try_get<Clip>(selectedClip);
-    if (!clip) return -1;
+
+    // Clip-backed entities source placement from Clip; Generative content
+    // layers (Layer, no Clip) source it from Layer. Both store start frame
+    // and duration in timeline frames.
+    FrameNumber startFrame = 0;
+    FrameNumber duration = 0;
+    if (const auto* clip = registry.try_get<Clip>(selectedClip)) {
+        startFrame = clip->startFrame;
+        duration = clip->duration;
+    } else if (const auto* lay = registry.try_get<Layer>(selectedClip)) {
+        startFrame = lay->startFrame;
+        duration = lay->duration;
+    } else {
+        return -1;
+    }
 
     // Convert to clip-relative frame. Routes through Timeline::getCurrentFrame()
     // which uses std::round, matching Timeline::seekToFrame()'s rounding so a
     // frame number round-trips cleanly. Truncating here was the cause of the
     // "edit at keyframe inserts new keyframe one frame off" bug.
-    FrameNumber clipFrame = m_timeline->getCurrentFrame() - clip->startFrame;
+    FrameNumber clipFrame = m_timeline->getCurrentFrame() - startFrame;
 
-    // Check if playhead is within clip bounds
-    if (clipFrame < 0 || clipFrame >= clip->duration) {
-        return -1;  // Playhead outside clip
+    // Check if playhead is within the layer's bounds
+    if (clipFrame < 0 || clipFrame >= duration) {
+        return -1;  // Playhead outside the layer
     }
 
     return static_cast<int>(clipFrame);
@@ -1338,8 +1351,18 @@ void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
 
     auto& registry = m_timeline->getRegistry();
     const auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
-    const auto* clip = registry.try_get<Clip>(selectedClip);
-    if (!animProps || !clip) return;
+    if (!animProps) return;
+
+    // Start frame for clip-local -> timeline conversion. Clip-backed entities
+    // source it from Clip; Generative layers from Layer.
+    FrameNumber layerStart = 0;
+    if (const auto* clip = registry.try_get<Clip>(selectedClip)) {
+        layerStart = clip->startFrame;
+    } else if (const auto* lay = registry.try_get<Layer>(selectedClip)) {
+        layerStart = lay->startFrame;
+    } else {
+        return;
+    }
 
     const KeyframeTrack* track = animProps->getTrack(property);
     if (!track || track->keyframes.empty()) return;
@@ -1347,8 +1370,8 @@ void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
     // Get current clip frame
     int currentClipFrame = getCurrentClipFrame();
     if (currentClipFrame < 0) {
-        // If outside clip, go to last keyframe
-        m_timeline->seekToFrame(clip->startFrame + track->keyframes.back().frame);
+        // If outside the layer, go to last keyframe
+        m_timeline->seekToFrame(layerStart + track->keyframes.back().frame);
         return;
     }
 
@@ -1363,7 +1386,7 @@ void PropertyWindow::goToPreviousKeyframe(AnimatableProperty property) {
     }
 
     if (prevFrame >= 0) {
-        m_timeline->seekToFrame(clip->startFrame + prevFrame);
+        m_timeline->seekToFrame(layerStart + prevFrame);
     }
 }
 
@@ -1375,8 +1398,18 @@ void PropertyWindow::goToNextKeyframe(AnimatableProperty property) {
 
     auto& registry = m_timeline->getRegistry();
     const auto* animProps = registry.try_get<AnimatedProperties>(selectedClip);
-    const auto* clip = registry.try_get<Clip>(selectedClip);
-    if (!animProps || !clip) return;
+    if (!animProps) return;
+
+    // Start frame for clip-local -> timeline conversion. Clip-backed entities
+    // source it from Clip; Generative layers from Layer.
+    FrameNumber layerStart = 0;
+    if (const auto* clip = registry.try_get<Clip>(selectedClip)) {
+        layerStart = clip->startFrame;
+    } else if (const auto* lay = registry.try_get<Layer>(selectedClip)) {
+        layerStart = lay->startFrame;
+    } else {
+        return;
+    }
 
     const KeyframeTrack* track = animProps->getTrack(property);
     if (!track || track->keyframes.empty()) return;
@@ -1384,15 +1417,15 @@ void PropertyWindow::goToNextKeyframe(AnimatableProperty property) {
     // Get current clip frame
     int currentClipFrame = getCurrentClipFrame();
     if (currentClipFrame < 0) {
-        // If outside clip, go to first keyframe
-        m_timeline->seekToFrame(clip->startFrame + track->keyframes.front().frame);
+        // If outside the layer, go to first keyframe
+        m_timeline->seekToFrame(layerStart + track->keyframes.front().frame);
         return;
     }
 
     // Find next keyframe
     for (const auto& kf : track->keyframes) {
         if (kf.frame > currentClipFrame) {
-            m_timeline->seekToFrame(clip->startFrame + kf.frame);
+            m_timeline->seekToFrame(layerStart + kf.frame);
             return;
         }
     }
@@ -2328,28 +2361,41 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     }
 
     // UV-space Transform — same axes as Clip's transform (position in screen
-    // NDC, rotation Z, scale around screen center). Scalar-only for now;
-    // generative layers aren't keyframable in this codebase yet, so no
-    // AnimationSystem coupling. The same widgets as Clip's renderTransformSection
-    // minus the keyframe dots / undo plumbing.
+    // NDC, rotation Z, scale around screen center). Each channel carries the
+    // stopwatch / keyframe-nav controls; AnimationSystem evaluates the tracks
+    // for Generative layers via the Layer-based clip-local frame. Same widgets
+    // and keyframe wiring as Clip's renderTransformSection.
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (auto* t = registry.try_get<Transform>(entity)) {
+            renderKeyframeControls(AnimatableProperty::PositionX, "Position X", t->position.x);
+            ImGui::SameLine();
+            ImGui::Text("Position X");
             ImGui::SetNextItemWidth(-1);
             float posX = t->position.x;
-            if (entity::ui::DragFloat("Position X", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
+            if (entity::ui::DragFloat("##genPosX", &posX, 0.01f, -2.0f, 2.0f, "%.3f")) {
                 t->setPosition(glm::vec3(posX, t->position.y, t->position.z));
+                updateKeyframeOnValueChange(AnimatableProperty::PositionX, posX);
             }
+
+            renderKeyframeControls(AnimatableProperty::PositionY, "Position Y", t->position.y);
+            ImGui::SameLine();
+            ImGui::Text("Position Y");
             ImGui::SetNextItemWidth(-1);
             float posY = t->position.y;
-            if (entity::ui::DragFloat("Position Y", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
+            if (entity::ui::DragFloat("##genPosY", &posY, 0.01f, -2.0f, 2.0f, "%.3f")) {
                 t->setPosition(glm::vec3(t->position.x, posY, t->position.z));
+                updateKeyframeOnValueChange(AnimatableProperty::PositionY, posY);
             }
 
             ImGui::Spacing();
+            renderKeyframeControls(AnimatableProperty::Rotation, "Rotation", t->rotation.z);
+            ImGui::SameLine();
+            ImGui::Text("Rotation");
             ImGui::SetNextItemWidth(-1);
             float rotZ = t->rotation.z;
-            if (entity::ui::DragFloat("Rotation", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
+            if (entity::ui::DragFloat("##genRotZ", &rotZ, 0.5f, -360.0f, 360.0f, "%.1f deg")) {
                 t->setRotation(glm::vec3(t->rotation.x, t->rotation.y, rotZ));
+                updateKeyframeOnValueChange(AnimatableProperty::Rotation, rotZ);
             }
 
             ImGui::Spacing();
@@ -2357,31 +2403,41 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             bool& uniformScale = it->second;
             ImGui::Checkbox("Uniform Scale", &uniformScale);
 
+            renderKeyframeControls(AnimatableProperty::ScaleX, "Scale X", t->scale.x);
+            ImGui::SameLine();
+            ImGui::Text("Scale X");
             ImGui::SetNextItemWidth(-1);
             float scaleX = t->scale.x;
             float prevScaleX = scaleX;
-            if (entity::ui::DragFloat("Scale X", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
+            if (entity::ui::DragFloat("##genScaleX", &scaleX, 0.01f, 0.01f, 10.0f, "%.3f")) {
                 if (uniformScale && prevScaleX > 0.0001f) {
                     float ratio = scaleX / prevScaleX;
-                    t->setScale(glm::vec3(scaleX,
-                                          t->scale.y * ratio,
-                                          t->scale.z * ratio));
+                    float newScaleY = t->scale.y * ratio;
+                    t->setScale(glm::vec3(scaleX, newScaleY, t->scale.z * ratio));
+                    updateKeyframeOnValueChange(AnimatableProperty::ScaleX, scaleX);
+                    updateKeyframeOnValueChange(AnimatableProperty::ScaleY, newScaleY);
                 } else {
                     t->setScale(glm::vec3(scaleX, t->scale.y, t->scale.z));
+                    updateKeyframeOnValueChange(AnimatableProperty::ScaleX, scaleX);
                 }
             }
 
+            renderKeyframeControls(AnimatableProperty::ScaleY, "Scale Y", t->scale.y);
+            ImGui::SameLine();
+            ImGui::Text("Scale Y");
             ImGui::SetNextItemWidth(-1);
             float scaleY = t->scale.y;
             float prevScaleY = scaleY;
-            if (entity::ui::DragFloat("Scale Y", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
+            if (entity::ui::DragFloat("##genScaleY", &scaleY, 0.01f, 0.01f, 10.0f, "%.3f")) {
                 if (uniformScale && prevScaleY > 0.0001f) {
                     float ratio = scaleY / prevScaleY;
-                    t->setScale(glm::vec3(t->scale.x * ratio,
-                                          scaleY,
-                                          t->scale.z * ratio));
+                    float newScaleX = t->scale.x * ratio;
+                    t->setScale(glm::vec3(newScaleX, scaleY, t->scale.z * ratio));
+                    updateKeyframeOnValueChange(AnimatableProperty::ScaleX, newScaleX);
+                    updateKeyframeOnValueChange(AnimatableProperty::ScaleY, scaleY);
                 } else {
                     t->setScale(glm::vec3(t->scale.x, scaleY, t->scale.z));
+                    updateKeyframeOnValueChange(AnimatableProperty::ScaleY, scaleY);
                 }
             }
 
@@ -2398,10 +2454,14 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
 
     if (ImGui::CollapsingHeader("Layer", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (media) {
+            renderKeyframeControls(AnimatableProperty::Opacity, "Opacity", media->opacity);
+            ImGui::SameLine();
+            ImGui::Text("Opacity");
             ImGui::SetNextItemWidth(-1);
             float opacity = media->opacity;
-            if (entity::ui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+            if (entity::ui::SliderFloat("##genOpacity", &opacity, 0.0f, 1.0f, "%.2f")) {
                 media->opacity = opacity;
+                updateKeyframeOnValueChange(AnimatableProperty::Opacity, opacity);
             }
 
             int zOrder = static_cast<int>(media->zOrder);

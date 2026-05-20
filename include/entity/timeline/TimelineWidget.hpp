@@ -311,6 +311,31 @@ private:
     int findTrackAtY(float mouseY, float windowY) const;
 
     /**
+     * A keyframe identified by its owning layer entity, animated property,
+     * and clip-relative frame. `valid == false` means no keyframe was hit.
+     */
+    struct KeyframeHit {
+        bool               valid{false};
+        entt::entity       clip{entt::null};
+        AnimatableProperty property{AnimatableProperty::PositionX};
+        FrameNumber        frame{0};
+    };
+
+    /**
+     * Hit-test the expanded property-track rows for a keyframe diamond at
+     * mousePos. Walks tracks with the same cumulative-Y layout as
+     * findClipAtPosition; the keyframe screen math mirrors
+     * renderPropertyTracks so the hit zone matches what is drawn.
+     */
+    KeyframeHit findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const;
+
+    /**
+     * True if mousePos is inside any expanded track's property-panel Y band.
+     * Used to stop a click in that band from being routed into a clip drag.
+     */
+    bool isInPropertyRowBand(ImVec2 mousePos, ImVec2 windowPos) const;
+
+    /**
      * Render the dedicated cue lane band that sits *above* the time ruler.
      * Stacks overlapping cue labels into rows (greedy left-to-right,
      * lowest available row), draws each cue as a numbered flag with a
@@ -599,11 +624,39 @@ private:
      *  findClipAtPosition. */
     std::size_t expandedPropertyRowCount(entt::entity layerEntity) const;
 
+    /** One animatable channel surfaced in the expanded-track view. */
+    struct TimelinePropertyDef {
+        AnimatableProperty prop;
+        const char*        shortName;     // Header-panel label
+        float              defaultValue;  // Fallback when no keyframe track exists
+    };
+
+    /** Channels shown under an expanded layer: 9 for OA layers (Pos/Rot/Scale
+     *  × X/Y/Z), 6 for Clip-backed and Generative layers (2D set + Opacity).
+     *  Shared by renderPropertyTracks (body), renderClipPropertyPanel (header)
+     *  and findKeyframeAtPosition so they stay in lockstep. */
+    std::vector<TimelinePropertyDef> propertyListForEntity(entt::entity e) const;
+
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};
     AnimatableProperty m_keyframeEditProperty{AnimatableProperty::PositionX};
     FrameNumber m_keyframeEditFrame{0};
     bool m_showKeyframeContextMenu{false};
+
+    // Keyframe selection (single-select). entt::null clip = nothing selected.
+    // The identity of a keyframe is (clip, property, clip-relative frame).
+    entt::entity       m_selectedKeyframeClip{entt::null};
+    AnimatableProperty m_selectedKeyframeProperty{AnimatableProperty::PositionX};
+    FrameNumber        m_selectedKeyframeFrame{0};
+
+    // Keyframe drag-to-move state. The keyframe data is NOT mutated during the
+    // drag — m_dragKeyframeCurrentFrame drives a live preview, and a single
+    // undoable MoveKeyframeCommand is committed on release.
+    bool               m_isDraggingKeyframe{false};
+    entt::entity       m_dragKeyframeClip{entt::null};
+    AnimatableProperty m_dragKeyframeProperty{AnimatableProperty::PositionX};
+    FrameNumber        m_dragKeyframeOriginalFrame{0};  // clip-relative, fixed
+    FrameNumber        m_dragKeyframeCurrentFrame{0};   // clip-relative, live
 
     // Pre-edit snapshot for the bezier-tangent DragFloat sliders in the
     // keyframe context menu. Captured on ImGui::IsItemActivated so we can

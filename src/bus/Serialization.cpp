@@ -380,6 +380,12 @@ OutputSnapshot decodeOutputSnapshot(const json& j) {
     return o;
 }
 
+// Forward decls for the BakedTrack codec — defined further down the file but
+// needed here by GenerativeLayerSnapshot (animation tracks for stall-safe
+// show-thread re-evaluation).
+ojson encode(const BakedTrack& t);
+BakedTrack decodeBakedTrack(const json& j);
+
 ojson encode(const GenerativeLayerSnapshot& g) {
     ojson j = ojson::object();
     j["entity"]            = g.entity;
@@ -435,6 +441,20 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     for (float v : g.transformMatrix) xfArr.push_back(v);
     j["transformMatrix"]   = std::move(xfArr);
     j["renderTargetSlot"]  = g.renderTargetSlot;
+    j["startFrame"]        = g.startFrame;
+    j["duration"]          = g.duration;
+    auto posArr = ojson::array();
+    for (float v : g.position) posArr.push_back(v);
+    j["position"]          = std::move(posArr);
+    auto rotArr = ojson::array();
+    for (float v : g.rotation) rotArr.push_back(v);
+    j["rotation"]          = std::move(rotArr);
+    auto sclArr = ojson::array();
+    for (float v : g.scale) sclArr.push_back(v);
+    j["scale"]             = std::move(sclArr);
+    auto tracksArr = ojson::array();
+    for (const auto& t : g.tracks) tracksArr.push_back(encode(t));
+    j["tracks"]            = std::move(tracksArr);
     return j;
 }
 
@@ -508,6 +528,21 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
             g.transformMatrix[i] = arr[i].get<float>();
     }
     g.renderTargetSlot  = j.value("renderTargetSlot",  std::int32_t{-1});
+    g.startFrame        = j.value("startFrame",        FrameNumber{0});
+    g.duration          = j.value("duration",          FrameNumber{0});
+    auto readVec3 = [&](const char* key, std::array<float, 3>& dst) {
+        if (j.contains(key)) {
+            const auto& arr = j.at(key);
+            for (std::size_t i = 0; i < dst.size() && i < arr.size(); ++i)
+                dst[i] = arr[i].get<float>();
+        }
+    };
+    readVec3("position", g.position);
+    readVec3("rotation", g.rotation);
+    readVec3("scale",    g.scale);
+    if (j.contains("tracks")) {
+        for (const auto& t : j.at("tracks")) g.tracks.push_back(decodeBakedTrack(t));
+    }
     return g;
 }
 

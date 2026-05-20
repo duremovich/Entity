@@ -50,18 +50,29 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
             continue;
         }
 
-        // Get clip for frame offset calculation (optional - without clip, use timeline frame directly)
-        auto* clip = registry.try_get<Clip>(entity);
+        // Resolve the clip-local frame origin. Clip-backed entities source it
+        // from Clip; Generative content layers (Layer + Transform + MediaLayer,
+        // no Clip) source it from Layer. OA layers also carry a Layer but are
+        // handled by the dedicated OA branch below — here they fall through
+        // with no Transform/MediaLayer to write, so the property writes no-op.
+        auto* clip  = registry.try_get<Clip>(entity);
+        auto* layer = registry.try_get<Layer>(entity);
         FrameNumber localFrame = currentFrame;
 
         if (clip) {
-            // Calculate local frame within the clip
-            // Only animate if clip is active at current frame
+            // Only animate while the clip is active at the current frame.
             if (currentFrame < clip->startFrame ||
                 currentFrame >= clip->startFrame + clip->duration) {
                 continue; // Clip not active, skip animation
             }
             localFrame = currentFrame - clip->startFrame;
+        } else if (layer) {
+            // Generative content layer — clip-relative frame from Layer.
+            if (currentFrame < layer->startFrame ||
+                currentFrame >= layer->startFrame + layer->duration) {
+                continue; // Layer not active, skip animation
+            }
+            localFrame = currentFrame - layer->startFrame;
         }
 
         // Get components to update

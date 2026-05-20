@@ -368,7 +368,8 @@ entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const 
             startFrame = clip->startFrame;
             duration   = clip->duration;
         } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
-                   lay && registry.all_of<ObjectAnimationLayer>(clipEntity)) {
+                   lay && (registry.all_of<ObjectAnimationLayer>(clipEntity) ||
+                           registry.all_of<GenerativeLayer>(clipEntity))) {
             startFrame = lay->startFrame;
             duration   = lay->duration;
         } else {
@@ -717,12 +718,30 @@ void TimelineWidget::computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, in
 int TimelineWidget::findTrackAtY(float mouseY, float windowY) const {
     if (!m_timeline) return -1;
 
-    int trackCount = static_cast<int>(m_timeline->getTrackCount());
-    for (int i = 0; i < trackCount; ++i) {
-        float trackY = windowY + i * (TRACK_HEIGHT + TRACK_PADDING);
+    // Cumulative-Y walk: an expanded track is taller than TRACK_HEIGHT by its
+    // property panel, so a flat grid mislocates every track below an expanded
+    // one. A track "hit" is the clip-body band only — the property panel below
+    // a clip is not a valid clip-drop zone.
+    const auto& tracks = m_timeline->getTracks();
+    float cumulativeY = 0.0f;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const float trackY = windowY + cumulativeY;
         if (mouseY >= trackY && mouseY <= trackY + TRACK_HEIGHT) {
-            return i;
+            return static_cast<int>(i);
         }
+
+        float propPanelHeight = 0.0f;
+        const uint32_t trackId = static_cast<uint32_t>(tracks[i]);
+        const bool expanded = m_expandedTracks.count(trackId) > 0 ||
+                              m_timeline->isTrackExpanded(tracks[i]);
+        if (expanded) {
+            entt::entity atPlayhead = findClipAtPlayhead(tracks[i]);
+            if (atPlayhead != entt::null) {
+                propPanelHeight =
+                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
+            }
+        }
+        cumulativeY += TRACK_HEIGHT + propPanelHeight + TRACK_PADDING;
     }
     return -1;
 }
