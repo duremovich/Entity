@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-noprof/
 out/
 bin/
 lib/
@@ -81,6 +82,8 @@ vcpkg_installed/
 
 # Logs
 *.log
+build_log.txt
+build_output.txt
 
 # OS
 .DS_Store
@@ -133,6 +136,7 @@ scripts/perf_diag_*.json
 # Project files
 *.autosave
 *.backup
+*.bak
 *.tmp
 *.autosave.entity
 /project.entity
