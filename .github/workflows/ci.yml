@@ -8,6 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  plugin-api-boundary:
+    # The Apache-2.0 plugin-api/ headers must not pull in GPL core engine
+    # headers or platform graphics headers — that boundary is what keeps the
+    # linking exception in LICENSE real. Fast, toolchain-free check so a
+    # violation fails immediately. See ADR-0005 and plugin-api/CLAUDE.md.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check plugin-api has no GPL-core or platform includes
+        run: |
+          set -uo pipefail
+          includes=$(grep -rEn '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]' plugin-api/ || true)
+          violations=$(echo "$includes" | grep -E 'entt/|d3d12\.h|dxgi|entity/(core|render|timeline|director|renderer)/' || true)
+          if [ -n "$violations" ]; then
+            echo "ERROR: plugin-api/ must not include EnTT, D3D12/DXGI, or core engine headers:"
+            echo "$violations"
+            exit 1
+          fi
+          echo "plugin-api/ license boundary OK."
+
   windows-build-and-test:
     # Pinned to windows-2022 because the workflow's CMake generator below is
     # "Visual Studio 17 2022". GitHub redirected windows-latest to
