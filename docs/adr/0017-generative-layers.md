@@ -3,11 +3,11 @@
 - **Status:** Accepted
 - **Date:** 2026-05-11
 - **Implemented by:** Five commits introducing the Muncher kind end-to-end:
-  - `4ba7b2f` — First generative layer kind (Muncher v1): end-to-end pipeline
-  - `0790f37` — Muncher player movement: input bus + (x, y) axes drive a yellow square
-  - `3809e86` — Muncher gameplay: ghosts chase, pellets get eaten, lives reset
-  - `4ffdef8` — GLFW joystick → Muncher input bus (gamepad support)
-  - `b0f5015` — OSC routes for Muncher controls (Companion-friendly UDLR + analog axes)
+  - `69b193e` — First generative layer kind (Muncher v1): end-to-end pipeline
+  - `a6d1636` — Muncher player movement: input bus + (x, y) axes drive a yellow square
+  - `667ec10` — Muncher gameplay: ghosts chase, pellets get eaten, lives reset
+  - `71f8ab0` — GLFW joystick → Muncher input bus (gamepad support)
+  - `f24d18c` — OSC routes for Muncher controls (Companion-friendly UDLR + analog axes)
   - This commit — Maze walls + collision + lives HUD + ADR
 - **Amends:** ADR-0016 (Timeline Layer abstraction). ADR-0016 reserved
   `Layer::Kind::Generative` and stated that sub-kinds dispatch by

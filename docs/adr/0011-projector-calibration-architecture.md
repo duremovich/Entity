@@ -7,8 +7,8 @@
   points" bug. Working plan:
   `~/.claude/plans/i-would-like-to-robust-token.md`.
 - **Implemented by:** Three commits on `master`:
-  - `9d097be` — initial QuickCal-style point picking + LM solver
-  - `a3543d2` — lens distortion (k1, k2) + precision-cursor UX
+  - `240d0a5` — initial QuickCal-style point picking + LM solver
+  - `9ffddf2` — lens distortion (k1, k2) + precision-cursor UX
   - this commit — per-vertex distortion in OutputManager mesh
     rendering + opt-in post-fit IDW residual warp ("Warp to Points")
 

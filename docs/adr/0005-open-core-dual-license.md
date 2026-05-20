@@ -4,7 +4,7 @@
 - **Date:** 2026-04-29
 - **Context source:** working plan `~/.claude/plans/i-would-like-to-foamy-shannon.md`,
   recorded in memory `architecture_open_core_plugins.md`
-- **Implemented by:** open-core scaffold (commit `2ee26e5` on origin/master,
+- **Implemented by:** open-core scaffold (commit `1cdd8c7` on origin/master,
   post-history-scrub; original commit was `dbeaf29`). Sibling private
   repo Entity-Pro at `f48c27e` on origin/main.
 

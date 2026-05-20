@@ -5,7 +5,7 @@
 - **Context source:** Working plan
   `~/.claude/plans/i-m-going-to-try-partitioned-hejlsberg.md`
   (deleted after merge — describes shipped work).
-- **Implemented by:** `1d46348` — Phase D — OSC receiver plugin +
+- **Implemented by:** `dc4bc40` — Phase D — OSC receiver plugin +
   Preferences port/enable toggle.
 - **Amends:** ADR-0005 (open-core dual-license + plugin scaffold).
   ADR-0005 still stands; this records the routing reality the

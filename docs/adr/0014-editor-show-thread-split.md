@@ -9,12 +9,12 @@
   - Stage 1 — `beginShowFrame`/`endShowFrame` + `beginEditorFrame`/`endEditorFrame`;
     per-role D3D12 command allocators and fences. Commits `4d2d1f8`–`e62b5a8`.
   - Stage 2 — `bus::SceneSnapshot`, `bus::RenderFrame`, `buildSceneSnapshot`/
-    `buildRenderFrame`. Commit `367b437`.
+    `buildRenderFrame`. Commit `ca6c193`.
   - Stage 3 — show thread spawned in `Engine::run`; `D2R` channel carries
-    `RenderFrame`; latest-wins delivery on `D2RChannel`. Commit `367b437`.
+    `RenderFrame`; latest-wins delivery on `D2RChannel`. Commit `ca6c193`.
   - Stage 4 — `Affinity` enum + `processQueue(affinity)`, `ScreenRenderTargetAllocated`
     R2D reply, `CreateOutputWindowRequest`/`OutputWindowReady` bus types, `crs->slot`
-    data-race fix. Commits `91589e2`–`7e92b68`.
+    data-race fix. Commits `aab0189`–`512ff7b`.
   - Stage 5 — remove deprecated `beginFrame`/`endFrame`; ADR; doc update.
     (This ADR.)
 - **Amends:** ADR-0003 (Director/Renderer split). ADR-0003 describes the
@@ -165,7 +165,7 @@ serialization are present.
 
 ### Show-Thread Fallback Pattern for Editor Stalls
 
-*Added after Stage 5: commits `cf103bd` (Timeline) and `8492438`
+*Added after Stage 5: commits `ee99a99` (Timeline) and `a9bcd8b`
 (DecodeSystem).*
 
 The split as described above prevents UI modality from stalling the show
@@ -205,9 +205,9 @@ heartbeat refreshes and the show-thread fallback skips on the next
 iteration.
 
 **Currently covered systems:**
-- `Timeline::update` — `cf103bd`. Safe because `m_currentTime` is
+- `Timeline::update` — `ee99a99`. Safe because `m_currentTime` is
   atomic; advancing it from either thread is well-defined.
-- `DecodeSystem::update` — `8492438`. Safe because the only state
+- `DecodeSystem::update` — `a9bcd8b`. Safe because the only state
   it mutates per call is `worker->targetFrame.store(...)` (atomic).
   The `view<Clip, FrameBuffer>` iteration is read-only on the registry,
   and during a stall the editor isn't writing.
@@ -223,8 +223,8 @@ or thread-local state is fine; `registry.get<T>(e).field = ...` is not.
   fallback violates the constraint.
 - **NEW-08** SectionScheduler freezes the same way. It mutates
   `Timeline` section state and `ClipPlaybackPhase` components.
-- **NEW-09** No regression test for the fallback. `cf103bd` and
-  `8492438` could silently break in a future refactor.
+- **NEW-09** No regression test for the fallback. `ee99a99` and
+  `a9bcd8b` could silently break in a future refactor.
 
 **Future Systems rule.** Any new editor-tick system that drives output
 must, at design time, choose one of:

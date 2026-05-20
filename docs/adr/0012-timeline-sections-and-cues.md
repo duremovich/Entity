@@ -6,11 +6,11 @@
   `~/.claude/plans/where-are-we-on-sunny-sutherland.md`. Implements
   the four-phase epic "Sections + Cue tags".
 - **Implemented by:** Six commits on `master`:
-  - `57d835c` — Phase A: cue tags (data + UI + persistence at v9)
-  - `7b32633` — Phase B: section break-points + Locked playback semantics
-  - `7e150d6` — Phase C: Normal continuation phase
-  - `885e628` — Phase D: section fade envelopes
-  - `b5b836c`, `d527357` — review-driven fixups
+  - `707fcd0` — Phase A: cue tags (data + UI + persistence at v9)
+  - `1c890fa` — Phase B: section break-points + Locked playback semantics
+  - `483ee21` — Phase C: Normal continuation phase
+  - `2409d74` — Phase D: section fade envelopes
+  - `ec04926`, `6121995` — review-driven fixups
 
 ## Context
 
@@ -244,8 +244,8 @@ one creates a confusing first-tick where playback "starts" mid-cycle.
 ## References
 
 - Working plan: `~/.claude/plans/where-are-we-on-sunny-sutherland.md`
-- Implementation commits: `57d835c`, `7b32633`, `7e150d6`, `885e628`,
-  `b5b836c`, `d527357`
+- Implementation commits: `707fcd0`, `1c890fa`, `483ee21`, `2409d74`,
+  `ec04926`, `6121995`
 - Related: `docs/adr/0003-director-renderer-split.md` (the boundary
   contract that `SectionScheduler` and `PlaybackPresenter` respect)
 - Memory: `feedback_no_competitor_names.md` — mechanism described

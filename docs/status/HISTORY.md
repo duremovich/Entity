@@ -258,8 +258,8 @@ authoring entry today); custom-font load to support real Unicode
 glyphs in ImGui labels; region-overlap warnings (intentionally
 allowed); off-canvas warnings.
 
-**Commits:** `3ba7be0` (L1) → `229183f` (L2) → `af1c5f6` (L3) →
-`f30ae12` (L4-minimal) → `b4de33a` (docs) → `9f6a44a` (L5).
+**Commits:** `daa6450` (L1) → `e1cb249` (L2) → `279f673` (L3) →
+`95e93e6` (L4-minimal) → `3cb8071` (docs) → `9da42b1` (L5).
 510/510 ctest green.
 
 ---

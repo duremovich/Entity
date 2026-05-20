@@ -553,15 +553,15 @@ and observe the marker:
   display path. Much rarer. Use PresentMon to confirm whether the OS
   is actually completing your presents.
 
-This methodology was learned the hard way (commit `8492438`): we spent
+This methodology was learned the hard way (commit `a9bcd8b`): we spent
 hours layering display-layer fixes (WM_TIMER pump, ALLOW_TEARING,
 SetFullscreenState) before the marker test pivoted us to the actual
 six-line decode-pipeline fix.
 
 **Solutions** (assuming marker test confirms content-pipeline freeze):
 
-1. **Check ADR-0014 fallback list.** Timeline (`cf103bd`) and
-   DecodeSystem (`8492438`) already have show-thread fallbacks in
+1. **Check ADR-0014 fallback list.** Timeline (`ee99a99`) and
+   DecodeSystem (`a9bcd8b`) already have show-thread fallbacks in
    `Engine::showThreadMain` next to the editor-heartbeat staleness check.
 2. **AnimationSystem freeze** is a known gap (CODE_ISSUES NEW-07).
    Animated clip properties (opacity, transform, rotation, scale)

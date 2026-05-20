@@ -2,10 +2,10 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-17
-- **Implemented by:** L1 (`3ba7be0` — asset/ref split, RoutingLibrarySystem,
-  v20 migration, PropertyWindow rewire), L2 (`229183f` — library browser
-  + Tiled authoring), L3 (`af1c5f6` — Feed Map kind + SVG template
-  export), L4 minimal (`f30ae12` — selection context strip).
+- **Implemented by:** L1 (`daa6450` — asset/ref split, RoutingLibrarySystem,
+  v20 migration, PropertyWindow rewire), L2 (`e1cb249` — library browser
+  + Tiled authoring), L3 (`279f673` — Feed Map kind + SVG template
+  export), L4 minimal (`95e93e6` — selection context strip).
 - **Relates to:** ADR-0021 (the two-tier mapping baseline — this ADR
   extends Plane A from inline to library-asset form), ADR-0014 (editor
   is sole registry writer; the library lives in the registry; show
@@ -266,4 +266,4 @@ field, not a parallel data structure. Rejected; `RouteTarget.name`
   `ContentLayerSnapshot.routes` only).
 - ADR-0018: the unified PASS 2 compositor path the resolved routes
   flow into.
-- Implementation commits: `3ba7be0`, `229183f`, `af1c5f6`, `f30ae12`.
+- Implementation commits: `daa6450`, `e1cb249`, `279f673`, `95e93e6`.

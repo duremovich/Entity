@@ -22,7 +22,7 @@ When the editor thread stalls (Win32 modal dialog, OS resize/move loop, slow pro
 - `buildSceneSnapshot()` also stops running, so `ClipCatalogEntry::transformMatrix` / `opacity` stay frozen at whatever they were at stall start.
 - The show thread keeps Present-ing frames at 60 Hz — but the *content* shows static, frozen animation.
 
-`Timeline::m_currentTime` and `DecodeSystem::targetFrame` keep advancing because they have show-thread fallbacks (commits `cf103bd` and `8492438`). Animation does not, so users see decode progress while transforms / opacity stand still.
+`Timeline::m_currentTime` and `DecodeSystem::targetFrame` keep advancing because they have show-thread fallbacks (commits `ee99a99` and `a9bcd8b`). Animation does not, so users see decode progress while transforms / opacity stand still.
 
 ## Why the naive fix doesn't work
 

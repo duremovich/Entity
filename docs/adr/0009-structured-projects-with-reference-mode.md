@@ -10,16 +10,16 @@
 - **Implemented by:** GitHub epic
   [#20](https://github.com/duremovich/Entity/issues/20). Shipped
   across ten commits on `master`:
-  - `a7b64f7` — schema v7 + `ProjectManager::createNew()`
-  - `03f9fde` — Project Launcher + Recent Projects
-  - `2c496e2` — Copy/Link import flow + Managed path resolution
-  - `7d0b399` — TranscodeManager repoint + archive-on-transcode
-  - `1bc0909` — Collect Linked → Managed
-  - `4e340b0` — Save Project As Bundle
-  - `eb00083` — Orphan-showfile recovery (Rebuild + Find Missing)
-  - `ef0bdfc` — Restore Original from archive
-  - `95b851b` — `.cache/` discipline + `docs/reference/PROJECT_LAYOUT.md`
-  - `0451d56` — File > Close Project returns to launcher
+  - `850dd45` — schema v7 + `ProjectManager::createNew()`
+  - `4ae559b` — Project Launcher + Recent Projects
+  - `9a53d3e` — Copy/Link import flow + Managed path resolution
+  - `7dc2828` — TranscodeManager repoint + archive-on-transcode
+  - `f31273f` — Collect Linked → Managed
+  - `62b4c9b` — Save Project As Bundle
+  - `9056719` — Orphan-showfile recovery (Rebuild + Find Missing)
+  - `d79121d` — Restore Original from archive
+  - `83a3ed4` — `.cache/` discipline + `docs/reference/PROJECT_LAYOUT.md`
+  - `fe5b52b` — File > Close Project returns to launcher
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-12
-- **Implemented by:** Issue #54, commits `424d6c6` … `f921d36`
+- **Implemented by:** Issue #54, commits `85bc6ac` … `44676c3`
   (Phases 1, 2, 3, 5 — Phase 4 node graph editor and Phase 6
   user-authored HLSL deferred).
 - **Relates to:** ADR-0014 (editor/show thread split — the snapshot
