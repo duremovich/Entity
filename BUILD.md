@@ -49,7 +49,7 @@ Save this path for the configuration step.
 Open a command prompt or PowerShell in the project directory:
 
 ```bash
-cd "Entity"
+cd Entity
 ```
 
 Configure the project (replace the vcpkg path if you installed it elsewhere):
