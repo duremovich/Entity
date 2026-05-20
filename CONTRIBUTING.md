@@ -96,7 +96,7 @@ own `LICENSE` file. That's the override path, not the default.
 
 ## Style
 
-See `CLAUDE.md` and `docs/` for code style, architecture rules, and the
+See `docs/` for code style, architecture rules, and the
 ECS/data-oriented invariants the core enforces. Plugin code is held to the
 same C++ style; ECS rules don't apply since plugins shouldn't see the
 registry.

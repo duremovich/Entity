@@ -286,4 +286,4 @@ Once the application builds and runs:
 
 You're ready to continue to Phase 2: Implementing the D3D12 renderer!
 
-See [CLAUDE.md](CLAUDE.md) for the full development roadmap.
+See the [project board](https://github.com/users/duremovich/projects/2) for the development roadmap and current status.

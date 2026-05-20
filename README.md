@@ -139,8 +139,7 @@ entity/
 │   ├── adr/                  Architecture Decision Records
 │   ├── reference/            ECS principles, system ordering, archetypes
 │   └── status/               HISTORY.md + CURRENT.md pointer
-├── images/                   Brand assets (logo, lockups, favicons, OG)
-└── CLAUDE.md                 Architecture overview for contributors
+└── images/                   Brand assets (logo, lockups, favicons, OG)
 ```
 
 ## License
@@ -157,8 +156,8 @@ to plugins built against the Apache-2.0 API. Running shows with entity
 ## Contributing
 
 Pull requests welcome. The architecture context for contributors lives
-in [`CLAUDE.md`](CLAUDE.md) and [`docs/adr/`](docs/adr/). For roadmap
-and current status, see the
+in [`docs/adr/`](docs/adr/) and [`docs/reference/`](docs/reference/).
+For roadmap and current status, see the
 [Entity Roadmap project board](https://github.com/users/duremovich/projects/2)
 — that's the source of truth for what's in progress.
 
@@ -172,7 +171,6 @@ For bugs and feature ideas:
 | Marketing site + user docs | [entitymedia.art](https://entitymedia.art) |
 | Project board (source of truth) | [github.com/users/duremovich/projects/2](https://github.com/users/duremovich/projects/2) |
 | ADR index | [`docs/adr/README.md`](docs/adr/README.md) |
-| Contributor architecture overview | [`CLAUDE.md`](CLAUDE.md) |
 | ECS / DOD principles | [`docs/reference/ECS_PRINCIPLES.md`](docs/reference/ECS_PRINCIPLES.md) |
 | Entity archetypes | [`docs/reference/ENTITY_ARCHETYPES.md`](docs/reference/ENTITY_ARCHETYPES.md) |
 | System ordering | [`docs/reference/SYSTEM_ORDERING.md`](docs/reference/SYSTEM_ORDERING.md) |
