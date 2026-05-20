@@ -2112,7 +2112,7 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
 
             case GLFW_KEY_LEFT:
                 // Left arrow = step back by one zoom-tick increment.
-                // Disguise convention. GLFW_REPEAT is allowed for this key
+                // Standard timeline convention. GLFW_REPEAT is allowed for this key
                 // (allowlisted at the top of the handler) so holding the
                 // arrow scrubs continuously by tick increments.
                 {

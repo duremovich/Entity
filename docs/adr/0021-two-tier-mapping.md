@@ -31,9 +31,8 @@ correctly, but the C++ name `MappingSurface` and the UI window
 existing dead `FeedMapping` struct in `Screen.hpp` doubles down on
 the confusion: it carries content-mapping fields (UV offset, scale,
 rotation) but borrows the word "feed" which in the standard
-industry vocabulary (Disguise et al.) means hardware output, not
-content. The struct has been instantiated zero times since it
-landed.
+industry vocabulary means hardware output, not content. The struct
+has been instantiated zero times since it landed.
 
 The two problems share one root cause: the codebase doesn't draw a
 clean line between **how content lands on screens** and **how screens
@@ -68,10 +67,10 @@ Physical output swap chain      (OutputManager::renderOutputs)
 
 The word **"feed"** is reserved for Plane B in documentation. Code
 type names avoid "feed" entirely to dodge the vendor-vocabulary
-overload (Disguise's "feed map" is Plane A; their "feed output" is
-Plane B — the term is unhelpful as a discriminator). Per the global
-"don't name competitors in commits / ADRs / code" rule, comparisons
-to specific products are conversational only.
+overload (in some competing media servers "feed map" is Plane A while
+"feed output" is Plane B — the term is unhelpful as a discriminator).
+Per the global "don't name competitors in commits / ADRs / code"
+rule, comparisons to specific products are conversational only.
 
 ### 2. Plane A — Content Routing component (M2/M3)
 

@@ -19,9 +19,9 @@ class IRenderer;
  * Content Routing window's right pane was too small for precise
  * region placement — even with cursor-anchored zoom, the visible
  * area was capped by the pane's width. This window provides the
- * dedicated workspace pattern used by similar tools (Disguise's
- * feed mapping), with a sidebar of region/source controls on the
- * left and a canvas filling the rest.
+ * dedicated workspace pattern common to feed-mapping tools, with a
+ * sidebar of region/source controls on the left and a canvas filling
+ * the rest.
  *
  * Defaults to hidden. Made visible by:
  *   - Windows menu toggle

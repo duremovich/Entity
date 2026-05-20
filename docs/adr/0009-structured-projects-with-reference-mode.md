@@ -2,8 +2,10 @@
 
 - **Status:** Accepted
 - **Date:** 2026-04-29
-- **Context source:** strategic discussion comparing Disguise's rigid
-  per-show folder structure vs. QLab/Watchout's free-floating show file.
+- **Context source:** strategic discussion comparing the rigid
+  prescribed-layout model used by established media servers vs. the
+  free-floating-workspace model used by cue-based and workspace-file
+  tools.
   Working plan: `~/.claude/plans/i-have-a-question-async-ripple.md`.
 - **Implemented by:** GitHub epic
   [#20](https://github.com/duremovich/Entity/issues/20). Shipped
@@ -21,26 +23,28 @@
 
 ## Context
 
-Entity today follows the QLab/Watchout model: a `.entity` project file
-references absolute paths anywhere on disk. The only foothold toward
+Entity today follows the free-floating-workspace model: a `.entity`
+project file references absolute paths anywhere on disk. The only foothold toward
 project-as-folder is the HAP transcode cache, which lives at
 `<projectDir>/.cache/hap/`. Otherwise, paths are fully free-floating.
 
 Two industry models exist for live-show project state:
 
-- **Disguise**: rigid prescribed folder layout per show (`content/`,
-  `objects/`, `recordings/`, etc.). Importing media copies/links into
-  the project tree. You cannot reference arbitrary external paths.
-- **QLab / Watchout / most others**: a workspace file references files
-  at arbitrary paths. Move the workspace, get a "missing media"
-  relink dialog. "Bundle/Collect" is an opt-in export step.
+- **The prescribed-layout model** (established media servers): rigid
+  prescribed folder layout per show (`content/`, `objects/`,
+  `recordings/`, etc.). Importing media copies/links into the project
+  tree. You cannot reference arbitrary external paths.
+- **The free-floating-workspace model** (cue-based and workspace-file
+  tools, most others): a workspace file references files at arbitrary
+  paths. Move the workspace, get a "missing media" relink dialog.
+  "Bundle/Collect" is an opt-in export step.
 
-Entity sits in Disguise/Pixera's market segment — projection mapping
-for live shows, with cluster ambitions (ADR-0006) and a Pro tier
+Entity sits in the professional-media-server market segment — projection
+mapping for live shows, with cluster ambitions (ADR-0006) and a Pro tier
 targeting touring/install (ADR-0007). That market cares about
-portability and cluster sync more than QLab's single-machine audience.
+portability and cluster sync more than the single-machine audience.
 But Entity is also open-core and wants to win indie/small-venue users
-who live in the QLab flexibility model.
+who live in the free-floating-workspace flexibility model.
 
 Cluster sync (the ADR-0006 follow-on epics, currently unqueued) is
 dramatically simpler when projects are folders. Pushing a project to a
@@ -96,15 +100,16 @@ Three load-bearing design choices:
    Open. There is no "untitled, in-memory" state that you can import
    files into before saving. New Project asks for name + parent
    directory, creates the folder tree on disk, then opens the editor
-   pointed at it. This matches Disguise Designer / Unity Hub /
-   Unreal's project browser.
+   pointed at it. This matches the project-browser entry point used by
+   established media servers and by Unity Hub / Unreal.
 
 `mediaLibrary` entries gain `path_kind` (`"managed"` = project-relative
-under `content/`; `"linked"` = absolute, the QLab-style escape hatch),
+under `content/`; `"linked"` = absolute, the free-floating-workspace
+escape hatch),
 `archived_original` (project-relative path under `.archive/` when
 transcoded), and `original_codec`.
 
-## Why this shape, not Disguise-strict
+## Why this shape, not strict prescribed-layout
 
 Locking out reference-mode loses too much of the open-core target
 market. Single-machine theater shops with `\\nas\events\...` already
@@ -168,22 +173,24 @@ their content automatically — file-browser drag-drop just works.
 
 ## Alternatives considered
 
-- **Stay free-path; add a Bundle/Collect export step** (the QLab
-  model). Rejected because it punts the cluster-sync problem and
+- **Stay free-path; add a Bundle/Collect export step** (the
+  free-floating-workspace model). Rejected because it punts the
+  cluster-sync problem and
   every asset-touching system continues to accrete free-path
   assumptions. Doing the structural work now is cheaper than after
   LTC/OSC/audio/DMX bolt onto absolute-path conventions.
 
-- **Disguise-strict (no link-in-place escape hatch).** Rejected
-  because it loses the QLab/Watchout user. Open-core needs to win
-  both segments; a single-default-with-opt-out covers both.
+- **Strict prescribed-layout (no link-in-place escape hatch).**
+  Rejected because it loses the free-floating-workspace user.
+  Open-core needs to win both segments; a single-default-with-opt-out
+  covers both.
 
 - **Parallel `media/sources/` + `media/transcodes/` trees.** See
   "Why transcode replaces source" above.
 
 - **Top-level `media/` instead of `content/`.** Rejected: "media" is
   already overloaded in Entity (media library, media bin, media file
-  formats). `content/` matches Disguise vocabulary and is unambiguous.
+  formats). `content/` is unambiguous and conventional.
 
 - **Global root-level `.archive/`.** See "Why per-folder archives"
   above.
@@ -201,8 +208,8 @@ their content automatically — file-browser drag-drop just works.
   reason structured projects matter beyond single-machine
   portability.
 - ADR-0007 (open-core feature tiering) — touring/Pro market is the
-  primary beneficiary; QLab-like single-machine users keep
-  link-in-place as escape hatch.
+  primary beneficiary; free-floating-workspace single-machine users
+  keep link-in-place as escape hatch.
 - Working plan:
   `~/.claude/plans/i-have-a-question-async-ripple.md` — the full
   analysis and implementation sketch.

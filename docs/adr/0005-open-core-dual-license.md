@@ -10,8 +10,8 @@
 
 ## Context
 
-Entity's commercial vision is a Disguise/Watchout/Pixera replacement, which
-means: (a) some plugins are commercially load-bearing and must stay
+Entity's commercial vision is a replacement for the established media servers,
+which means: (a) some plugins are commercially load-bearing and must stay
 proprietary, (b) the core engine wants community contribution and ecosystem
 plugins, (c) we need a clean licensing story before the project goes public
 or any third-party touches the code.

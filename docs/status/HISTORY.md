@@ -520,7 +520,7 @@ Implemented per-window undocking via right-click context menu and fixed ping-pon
 
 ### 3D Stage Visualization (2025-11-26)
 
-Implemented disguise-style 3D stage visualization with floor grid and camera controls.
+Implemented 3D stage visualization with floor grid and camera controls.
 
 **Features**:
 - Floor Grid: Major/minor grid lines with perspective, colored coordinate axes (red X, blue Z)

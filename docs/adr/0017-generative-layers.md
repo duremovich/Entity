@@ -26,12 +26,13 @@ without a media file. The slot existed, but no concrete kind had been
 implemented and the architectural shape of "what a generative layer
 looks like" was still open.
 
-The disguise reference is the **Tennis** layer (originally called Pong;
-renamed for legal reasons). Two visible parameters per axis ("left bat
-position", "right bat position") that an external controller — typically
-a MIDI fader — drives in realtime. Ball speed in "pixels per beat"
-ties game tempo to show timing. That pattern — externally-drivable
-floats per axis, no source-specific game code — is the one to copy.
+The reference point is a classic two-paddle arcade game shipped as a
+generative layer in established media servers. Two visible parameters
+per axis ("left bat position", "right bat position") that an external
+controller — typically a MIDI fader — drives in realtime. Ball speed in
+"pixels per beat" ties game tempo to show timing. That pattern —
+externally-drivable floats per axis, no source-specific game code — is
+the one to copy.
 
 The first generative kind shipped is **Muncher**: a Pac-Man-style
 maze-chase mini-game where the player is the lower-case "e" Entity logo
@@ -254,8 +255,9 @@ correlation, real-time audio synthesis, etc.).
 
 **Per-layer render target + textured composite.** Each generative
 layer renders to its own offscreen RT, then the compositor samples
-that RT as a textured quad on the target screen. The disguise model.
-Rejected for v1 because it requires per-layer RT allocation + an
+that RT as a textured quad on the target screen. The model used by
+established media servers. Rejected for v1 because it requires
+per-layer RT allocation + an
 R2D ack round-trip + a new descriptor heap slot policy, and the
 current direct-compose approach is visually indistinguishable for
 the Muncher's single-layer-per-screen use case. Add it when a

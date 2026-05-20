@@ -22,10 +22,10 @@ this layer that don't collide with the in-process roles, because every
 doc and conversation would otherwise need to disambiguate "in-process
 Director" vs "cluster Director" forever.
 
-Disguise uses Director / Actor / Understudy. Borrowing those exact words
-would make us look derivative, and they collide with the same naming
-problem we just diagnosed (their "Director" is also two-tiered,
-unpleasantly).
+An established media server uses Director / Actor / Understudy.
+Borrowing those exact words would make us look derivative, and they
+collide with the same naming problem we just diagnosed (their
+"Director" is also two-tiered, unpleasantly).
 
 ## Decision
 
@@ -61,11 +61,12 @@ single-machine today.
   locks to the conductor's downbeat. There is no overlap with anything
   else in the Entity codebase or vocabulary.
 - **Performer** is theatrical, fits Entity's existing Stage / Screen /
-  Surface naming, single-word, and active. Doesn't directly copy
-  Disguise's "Actor" while occupying the same conceptual slot.
+  Surface naming, single-word, and active. Doesn't directly copy an
+  established media server's "Actor" while occupying the same
+  conceptual slot.
 - **Standby** is industry-standard for hot-failover. Doesn't borrow
-  Disguise's "Understudy" (which is a fine word but specifically
-  theirs).
+  the "Understudy" used by a competing media server (which is a fine
+  word but specifically theirs).
 - **Cluster** is the standard distributed-systems term and reads
   unambiguously.
 
@@ -130,12 +131,12 @@ responsibility, not a separate process type.
 
 ## Alternatives considered
 
-- **Director / Actor / Understudy** (Disguise's vocabulary). Rejected:
-  direct copy of a competitor in our exact niche; reinforces
-  "knockoff" perception; doesn't actually solve the in-process /
-  cluster layering problem.
-- **Director / Runner** (Watchout 7's vocabulary). Rejected: same
-  copying problem.
+- **Director / Actor / Understudy** (an established media server's
+  vocabulary). Rejected: direct copy of a competitor in our exact
+  niche; reinforces "knockoff" perception; doesn't actually solve the
+  in-process / cluster layering problem.
+- **Director / Runner** (a competing media server's vocabulary).
+  Rejected: same copying problem.
 - **Director / Aspect / Cluster.** Rejected: "Aspect" is a passive
   noun and doesn't pair with the active "Director" verb. You can't
   meaningfully *direct* an Aspect.

@@ -9,21 +9,21 @@
 
 ## Context
 
-Every serious media server in this category — Disguise, Pixera, Watchout 7,
-Resolume Arena — has converged on GPU-decodable, i-frame-only codec families
+Every serious media server in this category — the established, professional
+products — has converged on GPU-decodable, i-frame-only codec families
 (HAP and NotchLC). The convergence is not coincidence; it's what survived
 contact with live shows. HAP frames are 4-8× smaller than RGBA, decode is
 "Snappy decompress + DMA," and the GPU does the texture decompression at
 sample time. Per-frame i-frame encoding makes seek free — no GOP walk-back.
 
-Pixera explicitly *removed* GPU H.264/H.265 decode in v25.1 because of NVDEC
-driver inconsistency. The lesson: don't fight NVDEC; use codecs designed for
-this category.
+At least one established media server explicitly *removed* GPU H.264/H.265
+decode in a recent release because of NVDEC driver inconsistency. The lesson:
+don't fight NVDEC; use codecs designed for this category.
 
 Entity already had a working ProRes 4444 path (FFmpeg). At ~33 MB per 4K
 frame, it pressured the per-clip ring buffer and the upload pipeline; HAP at
 ~4 MB collapses both. The transcode-on-import workflow is the standard
-industry pattern (Disguise/Pixera/Watchout users drop ProRes/H.264 in,
+industry pattern (users of established media servers drop ProRes/H.264 in,
 background-transcode to HAP, playback is HAP).
 
 ## Decision
@@ -37,9 +37,9 @@ contract for ProRes performance.
 Alpha-Only (HapA/BC4), HAP R (Hap7/BC7), HAP HDR (HapH/BC6H_UF16). HAP HDR
 gates on FP16 compose targets landing in the color pipeline (see ADR-0004).
 
-**Do not invent a codec.** Pixera, Watchout, Disguise, and Resolume all run on
-HAP/HAP-derivatives + NotchLC. Resolume's DXV is HAP with a different header.
-The codec slot is full.
+**Do not invent a codec.** The established media servers and VJ-oriented media
+software all run on HAP/HAP-derivatives + NotchLC. The DXV codec is HAP with a
+different header. The codec slot is full.
 
 **Implementation discipline:** the HAP decoder demuxes via libavformat but
 **bypasses libavcodec for the BC payload** — FFmpeg's `libavcodec/hapdec.c`
@@ -79,17 +79,16 @@ post-Snappy BCn bytes directly to `TextureUploader` with the matching
   consumed by a handful of frames, and nothing about the engine is optimized
   for the actual market.
 - **NotchLC as primary.** Nice quality/size sweet spot but: (a) closed-source
-  spec, (b) requires SDK from Notch, (c) integration story is unclear for an
-  open-core project. Acceptable as a future Phase E+ addition once HAP is
-  done.
+  spec, (b) requires a vendor-supplied SDK, (c) integration story is unclear
+  for an open-core project. Acceptable as a future Phase E+ addition once HAP
+  is done.
 - **Invent a codec.** Months of work, no customer win, every competitor has
-  already settled on the same handful. Pixera's "PixCodec" is marketing
-  slop — they ship HAP and NotchLC.
+  already settled on the same handful. Vendor-branded "proprietary" codec
+  names in this space are mostly marketing — the products ship HAP and NotchLC.
 
 ## References
 
 - HAP open spec: <https://github.com/Vidvox/hap/blob/master/documentation/HapVideoDRAFT.md>
-- Disguise HAP/HAP-Q docs: <https://help.disguise.one/designer/content-management/video-codecs/hap-hapq-codec>
 - Vidvox HAP R benchmarks: <https://vdmx.vidvox.net/blog/hap-r-benchmarks>
 - Playback engine deep-dive: `~/.claude/plans/so-even-with-hap-cosmic-glacier.md`
 - HAP variant status table: `docs/status/HISTORY.md` (Phase C.9 entry)

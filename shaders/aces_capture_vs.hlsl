@@ -5,7 +5,7 @@
  *
  * The triangle covers the (-1..1, -1..1) clip-space rectangle with one extra
  * corner; the rasterizer clips off the half outside the viewport. Standard
- * AMD/NVIDIA recipe; same vertex layout used by Disguise / Resolve.
+ * AMD/NVIDIA recipe; standard full-screen-triangle vertex layout.
  */
 
 struct VSOutput {

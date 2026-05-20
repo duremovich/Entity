@@ -299,7 +299,7 @@ void TimelineWidget::render() {
     ImGui::SameLine();
 
     // Discrete zoom ladder: dropdown + minus/plus + Alt+scroll all step the
-    // same m_zoomIndex. Disguise/Resolve-style fixed division sizes instead
+    // same m_zoomIndex. Fixed division sizes instead
     // of a continuous px/sec slider.
     static const char* kZoomLabels[ZOOM_LEVEL_COUNT] = {
         "1f", "2f", "5f", "10f", "20f", "50f", "100f", "200f", "500f"

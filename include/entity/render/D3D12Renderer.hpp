@@ -783,7 +783,7 @@ private:
         int   numPts{0};
         int   activeIdx{-1};
         // 1 = full-frame quadrant checkerboard centered on the active crosshair
-        // (Disguise-style precision cursor). 0 = standard small crosshair markers.
+        // (precision cursor). 0 = standard small crosshair markers.
         int   checkerboard{0};
         float pad{};
     };

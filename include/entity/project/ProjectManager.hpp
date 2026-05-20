@@ -169,7 +169,7 @@ public:
     /**
      * Per ADR-0009. `Managed` = path is project-relative (under
      * `content/...`), resolved against the project root. `Linked` =
-     * path is absolute and used as-is (the QLab/Watchout escape
+     * path is absolute and used as-is (the link-in-place escape
      * hatch).
      *
      * v6 → v7 migration sets every existing entry to Linked since the

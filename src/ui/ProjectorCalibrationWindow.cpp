@@ -905,7 +905,7 @@ void ProjectorCalibrationWindow::renderPointsTable() {
             ImGui::TableSetColumnIndex(4);
             if (i < static_cast<int>(perPtErr.size())) {
                 float e = perPtErr[i];
-                // Disguise-style traffic light. Tight thresholds so the user
+                // Traffic-light error indicator. Tight thresholds so the user
                 // can immediately see which points need re-dragging.
                 ImVec4 col = (e < 1.5f) ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
                            : (e < 5.0f) ? ImVec4(1.0f, 0.85f, 0.2f, 1.0f)

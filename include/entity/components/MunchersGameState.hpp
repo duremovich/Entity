@@ -49,7 +49,7 @@ struct MunchersGameState {
     // [-1, 1]. Bakes into the snapshot so the show thread can render an
     // input indicator / debug overlay later if needed.
     //
-    // Per the disguise Tennis precedent ("left bat position" / "right bat
+    // Per the classic two-paddle game layout ("left bat position" / "right bat
     // position" are user-tweakable floats, driven externally by MIDI
     // faders), Muncher's controls are externally-drivable floats too. A
     // joystick maps naturally: stick X → muncher.input.x, stick Y →

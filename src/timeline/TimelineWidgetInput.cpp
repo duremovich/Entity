@@ -645,8 +645,8 @@ void TimelineWidget::handleRulerInteraction() {
                 m_lastSeekTime = snapped;
                 m_timeline->seek(snapped);
             }
-            // Plain ruler click also clears any selection — Disguise/Resolve
-            // both behave this way so the user isn't left wondering why the
+            // Plain ruler click also clears any selection — established
+            // editing tools behave this way so the user isn't left wondering why the
             // ripple-delete shortcut is greyed out.
             m_range = {};
         }

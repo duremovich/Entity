@@ -10,12 +10,13 @@
 
 ## Context
 
-Pixera's Manager-Client topology and Watchout 7's four-service split
-(Producer / Director / Runner / Asset Manager) both partition "owns the show
-state" from "produces pixels" *even when everything runs on one machine*.
-Watchout 7 was a v6 ground-up rewrite specifically to land this. The pattern
-is what makes "single machine demo" → "multi-machine cluster" a deployment
-topology change rather than a rewrite.
+The established media servers converge on a multi-service topology — a
+manager/client split, or a four-service partition (producer / director /
+runner / asset manager) — that separates "owns the show state" from "produces
+pixels" *even when everything runs on one machine*. In at least one case a
+recent major version was a ground-up rewrite specifically to land this. The
+pattern is what makes "single machine demo" → "multi-machine cluster" a
+deployment topology change rather than a rewrite.
 
 Going into Phase D, Entity's `Engine` was a single class owning the registry,
 window, timing, playback, project I/O, clip lifecycle, and callbacks — ~2,000
@@ -103,8 +104,6 @@ exclusively via `CommandDispatcher`. Documented in
 
 ## References
 
-- Pixera Manager-Client: <https://help.pixera.one/en_US/project-management/manager-client-setup>
-- Watchout 7 architecture: <https://docs.dataton.com/watchout-7/.architecture.html>
 - Director/Renderer working plan: `~/.claude/plans/yeah-1-lets-plan-zazzy-hartmanis.md`
 - Bus implementation: `entity-bus/`, `include/entity/bus/`,
   `include/entity/director/`, `include/entity/renderer/`

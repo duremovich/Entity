@@ -32,7 +32,7 @@ namespace entity {
  */
 struct Settings {
     // Total RAM budget for the (forthcoming Phase C.10) FrameCache, in bytes.
-    // 512 MB matches Disguise/Pixera-class behavior and gives ~128 frames of
+    // 512 MB matches professional-media-server-class behavior and gives ~128 frames of
     // 4K HAP-Q headroom (~4 MB/frame). Hardware-dependent — bump on a 64 GB
     // workstation, drop on a laptop. Not yet wired to a cache (the cache
     // lands in C.10); persisted now so the value survives across that work.

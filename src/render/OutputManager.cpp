@@ -962,7 +962,7 @@ void OutputManager::renderToOutput(
         return;
     } // if (output.sourceProjector != 0)
 
-    // Projection-mapping render order (Disguise model):
+    // Projection-mapping render order (industry-standard model):
     //   compose target -> InputRegion pre-crop -> per-surface warp + source UVs
     //
     // If any OutputSurface is assigned to this output, draw each one with

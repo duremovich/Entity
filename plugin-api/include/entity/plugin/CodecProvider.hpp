@@ -11,7 +11,7 @@
 // OutputDriver, this is STATIC-LINK ONLY -- a codec provider that crosses
 // a dlopen boundary either pays the bus's serialization tax per frame
 // (catastrophic at 4K60) or exposes a fragile C++ vtable. First-party
-// Entity Pro codec providers (R3D, ARRI raw, Notch blocks) compile in
+// Entity Pro codec providers (R3D, ARRI raw, effect-runtime block formats) compile in
 // alongside core.
 //
 // The interface here is a deliberate STUB. The first real implementation

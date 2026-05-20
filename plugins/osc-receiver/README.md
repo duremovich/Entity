@@ -19,7 +19,7 @@ recursively. Accepts `i`, `h`, `f`, `d` numeric argument types and `s` strings.
 | `/entity/stop` | `Pause` + `SeekToFrame{frame:0}` | |
 | `/entity/section/next` | `SectionGo` | |
 | `/entity/seek <int>` | `SeekToFrame{frame:N}` | any numeric arg type |
-| `/entity/cue/{number}/go` | `FireCue{number:N}` | decimal cue numbers (QLab-style) |
+| `/entity/cue/{number}/go` | `FireCue{number:N}` | decimal cue numbers (e.g. 1.5, 2.10) |
 | `/entity/muncher/up` | `SetInputChannel` x=0, y=-1 | |
 | `/entity/muncher/down` | `SetInputChannel` x=0, y=+1 | |
 | `/entity/muncher/left` | `SetInputChannel` x=-1, y=0 | |
@@ -45,7 +45,7 @@ Shape:
 ```json
 [
   {
-    "address": "/qlab/cue/{N}/go",
+    "address": "/show/cue/{N}/go",
     "captureKey": "N",
     "commands": [
       { "type": "FireCue", "params": "{\"number\":$capturef}" }

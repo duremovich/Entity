@@ -24,7 +24,7 @@ float2 getPoint(int i)
 float4 PSMain(float4 svPos : SV_Position,
               float2 uv    : TEXCOORD0) : SV_Target
 {
-    // Disguise-style precision cursor: full-frame quadrant pattern centered on
+    // Precision cursor: full-frame quadrant pattern centered on
     // the active crosshair. The user aligns the sharp 4-quadrant intersection
     // against a physical feature for sub-pixel cursor placement. White covers
     // the projector view entirely, so the user can see EVERY pixel of the

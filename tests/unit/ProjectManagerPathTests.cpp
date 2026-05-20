@@ -2,7 +2,7 @@
  * Unit tests for ProjectManager's path resolution helpers (ADR-0009).
  *
  * resolveMediaPath / decoderPathFor have to handle a few subtle cases:
- *   - Linked entries: pass through unchanged (the QLab-style path).
+ *   - Linked entries: pass through unchanged (the link-in-place path).
  *   - Managed entries: project-relative path joined with the project root.
  *   - Managed entry but no project root yet: passthrough (caller treats
  *     that as "not openable until a project loads").

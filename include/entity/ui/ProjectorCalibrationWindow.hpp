@@ -130,7 +130,7 @@ private:
 
     // Display options
     bool              m_showWireframe{true};       // overlay mesh edges in scene pane
-    bool              m_precisionCursor{false};    // Disguise-style full-frame quadrant
+    bool              m_precisionCursor{false};    // full-frame quadrant
                                                     // checkerboard for sub-pixel placement
 
     // Solver constraint options. Lock parameters when the user has reliable

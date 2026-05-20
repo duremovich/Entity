@@ -61,7 +61,7 @@ it will rebuild as the project is used. Two reasons it's separated:
   pre-transcode original moved to a sibling `<sub>/.archive/<filename>`.
   Restorable via the MediaBin right-click "Restore Original" action.
 - `Linked` — absolute path, file stays where the operator put it. The
-  QLab/Watchout-style escape hatch. Transcodes (when produced) land in
+  free-floating-workspace-style escape hatch. Transcodes (when produced) land in
   `<project>/.cache/hap/` rather than rewriting the source.
 
 A project can mix both freely. `Collect Linked Media into Project

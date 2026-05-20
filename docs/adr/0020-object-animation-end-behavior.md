@@ -42,9 +42,9 @@ questions that hadn't been settled in code:
    want the screen to *settle* wherever the animation parked it,
    not pop back when one cue ends and the next hasn't fired yet.
 
-Disguise's analogous feature ("Animate Object" layers + Configuration
-Presets) was the user's reference point. Two questions came out of
-the comparison conversation:
+The analogous feature in established media servers ("Animate Object"
+layers + Configuration Presets) was the reference point. Two questions
+came out of the comparison conversation:
 
 - "What is the ground truth of the object's location?"
 - "Does animate add/subtract from the screen's position, or set it
@@ -186,8 +186,8 @@ discover the Hold opt-in, so the show-friendly behavior would be
 the path-less-taken. Rejected; the show-friendly choice is the
 right default for a media server.
 
-**Configuration Presets (Disguise model) instead of direct
-keyframes.** Named transform snapshots; OA layers keyframe transitions
+**Configuration Presets (the established-media-server model) instead
+of direct keyframes.** Named transform snapshots; OA layers keyframe transitions
 between presets. Considered and deferred to Phase 2. Presets don't
 change any of the semantic questions above — they're a UX
 reusability layer over the same keyframe data model. Capturing a
@@ -215,6 +215,3 @@ the base transform.
   archetype).
 - ADR-0019: per-layer effects (animation-snapshot-bake reference —
   the show-side re-eval architecture this builds on).
-- Disguise AnimateObjectPreset:
-  `help.disguise.one/designer/layers/layer-types/previsualisation/animateobjectpreset`
-  (reference for the deferred preset-system alternative).

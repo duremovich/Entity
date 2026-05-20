@@ -267,7 +267,7 @@ TEST(ProjectSerializer, MediaLibraryPathKindAndArchiveRoundTrip) {
 TEST(ProjectSerializer, MediaLibraryDefaultPathKindIsLinked) {
     // Default-constructed entry round-trips as Linked. This matches pre-v7
     // behavior — addMediaFile with no further setup means "absolute path,
-    // QLab-style reference."
+    // link-in-place reference."
     TempFile tf("v7_default_linked");
     const std::string kPath = "C:/some/abs/path.mov";
 

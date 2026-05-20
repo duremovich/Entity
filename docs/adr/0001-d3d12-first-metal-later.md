@@ -14,7 +14,7 @@ and a custom thin RHI. We also evaluated native-per-platform (D3D12 + Metal +
 optional Vulkan-for-Linux).
 
 The stated commercial target is Windows live-performance venues — ~95% of the
-existing Disguise/Watchout/Pixera/Resolume/Notch market is Windows-native
+existing professional media-server and effects-tool market is Windows-native
 already. Mac is "eventually wanted" with no hard timeline. Linux is
 deprioritized.
 

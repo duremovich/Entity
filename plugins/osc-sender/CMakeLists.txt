@@ -1,5 +1,5 @@
 # osc-sender -- outbound OSC over UDP. Broadcasts transport state and fires
-# user-defined mappings to external OSC destinations (QLab, TouchOSC, etc.).
+# user-defined mappings to external OSC destinations (show-control software, etc.).
 # See manifest.json for the broadcast address namespace.
 #
 # License: Apache 2.0 (inherited from repo root LICENSE-PLUGIN-API).

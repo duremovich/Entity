@@ -108,7 +108,7 @@ TEST(OscMappingTable, ParsesSingleRoute) {
 TEST(OscMappingTable, ParsesCaptureKey) {
     const char* json = R"([
         {
-            "address": "/qlab/cue/{N}/go",
+            "address": "/show/cue/{N}/go",
             "captureKey": "N",
             "commands": [{"type": "FireCue", "params": "{\"number\":$capturef}"}]
         }
@@ -189,7 +189,7 @@ TEST(OscMappingTable, CaptureMatch) {
 
 TEST(OscMappingTable, CaptureMatchDecimalNumber) {
     std::string_view cap;
-    EXPECT_TRUE(matchPattern("/qlab/cue/{N}/go", "/qlab/cue/1.5/go", cap));
+    EXPECT_TRUE(matchPattern("/show/cue/{N}/go", "/show/cue/1.5/go", cap));
     EXPECT_EQ(cap, "1.5");
 }
 
@@ -258,7 +258,7 @@ TEST(OscMappingTable, ExpandTemplate_Capturef) {
     EXPECT_EQ(*result, "{\"number\":5}");
 }
 
-// $capturef with a decimal capture (QLab-style cue number).
+// $capturef with a decimal capture (fractional cue number).
 TEST(OscMappingTable, ExpandTemplate_Capturef_Decimal) {
     auto result = expandTemplate("{\"number\":$capturef}", "1.5",
                                   ",", nullptr, nullptr);

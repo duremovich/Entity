@@ -22,10 +22,10 @@ couldn't ingest user `.ocio` configs, had no slot for camera log encodings
 (LogC, Log3G10, S-Log), and shipped zero infrastructure for 3D LUTs / look
 files.
 
-Disguise made the same call in April 2024 — replaced their ACES-only pipeline
-with OCIO, ACES Studio Config 1.3 as the default. Resolve, Nuke, Houdini, and
-the entire Foundry ecosystem run on OCIO. The vocabulary is what professional
-colorists already speak.
+An established media server made the same call in April 2024 — replaced its
+ACES-only pipeline with OCIO, ACES Studio Config 1.3 as the default. Resolve,
+Nuke, Houdini, and the entire Foundry ecosystem run on OCIO. The vocabulary is
+what professional colorists already speak.
 
 ## Decision
 
@@ -98,8 +98,8 @@ textures and zero uniforms — just static const arrays + helper fns.
   rewrite the moment a user shows up with LogC footage — which, for the
   stated audience, is when, not if.
 - **No color pipeline (status-quo gamma).** Cheap. Fails any pro-grade
-  user expectation. Disguise/Pixera/Watchout are all ACES-internal; shipping
-  without a real color pipeline is shipping a tech demo.
+  user expectation. The established media servers are all ACES-internal;
+  shipping without a real color pipeline is shipping a tech demo.
 - **Pure OCIO with no bundled config.** Forces every user to set up their
   own config. Drops the zero-config out-of-box experience.
 
@@ -108,7 +108,6 @@ textures and zero uniforms — just static const arrays + helper fns.
 - OCIO project: <https://opencolorio.org>
 - ACES Studio Config 1.3 (bundled): the OCIO library 2.4+ ships it via
   `Config::CreateFromBuiltinConfig`.
-- Disguise color pipeline (fxguide): <https://www.fxguide.com/fxfeatured/disgusing-virtual-production-rendering/>
 - Working plan: `~/.claude/plans/quick-thought-before-we-pure-thompson.md`
 - Superseded plan: `~/.claude/plans/jaunty-launching-tulip.md`
 - ODT correctness gate: `tests/unit/OcioOdtTests.cpp` (7 enabled tests +

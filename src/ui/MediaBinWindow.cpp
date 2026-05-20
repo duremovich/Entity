@@ -286,7 +286,7 @@ void MediaBinWindow::renderPendingImportModal() {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
                     "Reference the file at its current absolute path.\n"
-                    "QLab/Watchout-style; not portable without relinking.");
+                    "Link-in-place style; not portable without relinking.");
             }
 
             // Subfolder input — only meaningful in Copy mode.

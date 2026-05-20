@@ -11,7 +11,7 @@
 
 Multi-machine deployment is not on the immediate 12-month roadmap, but
 every architectural decision from here forward should assume cluster is the
-eventual deployment topology. The pattern across Disguise, Pixera, Watchout
+eventual deployment topology. The pattern across the established media servers
 is: hardware genlock + content-hash asset distribution + per-Renderer cache
 + Director-as-time-authority.
 
@@ -33,9 +33,9 @@ Five concrete architectural commitments that pay off in Phase E+:
    Phase E with no message-format change. Wire format is the abstraction;
    transport is swappable.
 
-2. **Asset references use content-hash IDs**, not absolute paths. Steal
-   Disguise's pattern: every imported file gets a content hash on ingest;
-   project files reference assets by hash; the local asset path is
+2. **Asset references use content-hash IDs**, not absolute paths. Follow the
+   established-media-server pattern: every imported file gets a content hash
+   on ingest; project files reference assets by hash; the local asset path is
    resolved per-machine. `AssetId` strong typedef threaded through
    `ProvisionClipResources` (commit `9c1f45b`).
 
@@ -55,12 +55,12 @@ Five concrete architectural commitments that pay off in Phase E+:
    `Renderer` as a service; future cluster work extracts the rest.
 
 **Cluster sync model — hardware-deferred.** When cluster work lands in
-Phase E+, do not invent a software replacement for hardware genlock. Pixera
-and Disguise both buy NVIDIA Quadro Sync II + feed it BlackBurst /
+Phase E+, do not invent a software replacement for hardware genlock. The
+established media servers buy NVIDIA Quadro Sync II + feed it BlackBurst /
 Tri-Level / PTPv2 SMPTE 2059-2; the GPU never speaks PTP directly.
 Software-only sync caps the product at non-broadcast use cases (~2ms
 drift, fine for projection blends, terrible for camera-facing LED walls).
-The d3net-equivalent message bus carries transport state + parameter
+The message bus carries transport state + parameter
 changes; the Quadro Sync card carries frame-presentation timing. **Both,
 not one.**
 
@@ -91,10 +91,11 @@ not one.**
 
 ## Alternatives considered
 
-- **Software-only cluster sync.** Watchout 7 ships this (~2ms NTP drift).
-  Acceptable for projection blends. Unacceptable for camera-facing video
-  walls. Targeting the lower bar locks Entity out of the higher-end
-  market — exactly the market where "Disguise replacement" matters.
+- **Software-only cluster sync.** Some competing media servers ship this
+  (~2ms NTP drift). Acceptable for projection blends. Unacceptable for
+  camera-facing video walls. Targeting the lower bar locks Entity out of the
+  higher-end market — exactly the market where replacing the established
+  media servers matters.
 - **Defer everything to Phase E.** The cost of the deferred path is
   months of rewrite. The cost of the up-front path is weeks. The
   rewrite cost dominates by an order of magnitude.
@@ -103,10 +104,6 @@ not one.**
 
 ## References
 
-- Pixera Genlock: <https://help.pixera.one/1214969-synchronize-outputs-genlock-framelock-setup>
-- Disguise Genlock: <https://help.disguise.one/designer/configuration/genlock-configuration>
-- Disguise IP-VFC PTPv2 SMPTE 2059-2: <https://help.disguise.one/hardware/ip-vfc/ip-vfc-genlock>
-- Watchout 7 NTP-only sync (counter-example): <https://docs.dataton.com/watchout-7/.architecture.html>
 - Working plan: `~/.claude/plans/so-even-with-hap-cosmic-glacier.md`
 - Bus implementation: `entity-bus/`, `include/entity/bus/`
 - See also ADR-0003 (Director/Renderer split) for the structural change

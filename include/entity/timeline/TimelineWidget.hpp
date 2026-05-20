@@ -95,7 +95,7 @@ public:
      * value IS the tick spacing AND the snap increment AND the dropdown
      * label. "10f" means: tick lines every 10 frames, scrub snaps to every
      * 10 frames. No separate minor/major hierarchy (it confused users about
-     * what the snap actually was). Disguise / Resolve-style stepping.
+     * what the snap actually was). Discrete-step zoom ladder.
      */
     static constexpr int FRAMES_PER_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
     static constexpr int ZOOM_LEVEL_COUNT = 9;

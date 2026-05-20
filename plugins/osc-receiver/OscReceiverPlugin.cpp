@@ -32,8 +32,8 @@
 //   /entity/muncher/input/x <f>   -> SetInputChannel muncher.input.x = value
 //   /entity/muncher/input/y <f>   -> SetInputChannel muncher.input.y = value
 //
-// The number in `/entity/cue/{number}/go` is parsed as a double so QLab-
-// style cue numbers like 1.5 or 2.10 work. `/entity/seek` accepts any
+// The number in `/entity/cue/{number}/go` is parsed as a double so
+// fractional cue numbers like 1.5 or 2.10 work. `/entity/seek` accepts any
 // numeric OSC argument type (i, h, f, d) and truncates to integer frame.
 //
 // The Muncher UDLR addresses take no arguments — fire on press; the player

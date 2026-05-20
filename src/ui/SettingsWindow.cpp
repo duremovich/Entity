@@ -188,8 +188,8 @@ void renderOscReceiverSection(Settings& staged) {
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(
             "UDP port for the inbound OSC receiver plugin.\n"
-            "Default 53000 matches QLab's outbound default.\n"
-            "Point QLab Network Cues at <this-machine-ip>:<port>.\n"
+            "Default 53000 is a common show-control outbound port.\n"
+            "Point your show-control software's network cues at <this-machine-ip>:<port>.\n"
             "Address namespace: /entity/play, /entity/pause,\n"
             "/entity/stop, /entity/section/next,\n"
             "/entity/cue/{number}/go, /entity/seek <int frame>.");

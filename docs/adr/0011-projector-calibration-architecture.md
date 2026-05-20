@@ -235,7 +235,7 @@ user actually notices the C⁰ artifact.
 
 ## Alternatives considered
 
-- **Camera-based / structured-light calibration** (the "OmniCal"
+- **Camera-based / structured-light calibration** (an automated
   approach used by high-end systems). Multi-day implementation,
   requires aux hardware, requires camera intrinsic calibration first.
   Deferred to Phase E+ as a Pro feature gated on proper hardware

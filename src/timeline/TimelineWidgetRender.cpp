@@ -184,7 +184,7 @@ void TimelineWidget::renderTimeRuler() {
     const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
     const int LABEL_EVERY_N = 5;
 
-    // Hover-division highlight (Disguise-style). Fills the [x, x + tickEvery]
+    // Hover-division highlight. Fills the [x, x + tickEvery]
     // band across the ruler when the mouse hovers a tick division. Drawn
     // before the tick lines so the lines remain visible on top.
     if (m_hoverDivisionIndex >= 0) {
