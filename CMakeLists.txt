@@ -313,7 +313,7 @@ target_link_libraries(EntityMediaCore
 
 # Windows-specific libraries
 if(WIN32)
-    target_link_libraries(EntityMediaCore PRIVATE ${D3D12_LIBRARIES})
+    target_link_libraries(EntityMediaCore PRIVATE ${D3D12_LIBRARIES} ws2_32)
 endif()
 
 if(ENTITY_ENABLE_TRACY)

@@ -176,7 +176,9 @@ void Timeline::clear() {
     m_tracks.clear();
 
     // Clear named sections too — they were tied to the project being unloaded.
-    m_sections.clear();
+    // Use clearSections() to take the exclusive lock (plugin worker threads
+    // may concurrently call snapshotSectionsAndRate).
+    clearSections();
 
     // Cue tags belong to the project; drop them with the timeline.
     m_cueTags.clear();
@@ -1042,8 +1044,19 @@ void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
 // Vector kept sorted ascending by `breakFrame`; lookups are binary-search.
 // ============================================================================
 
+void Timeline::setFrameRate(double frameRate) {
+    std::unique_lock lock(m_sectionsMutex);
+    m_frameRate = frameRate;
+}
+
+void Timeline::clearSections() {
+    std::unique_lock lock(m_sectionsMutex);
+    m_sections.clear();
+}
+
 bool Timeline::addSectionBreak(Timecode breakFrame,
                                uint32_t color, double fadeSeconds) {
+    std::unique_lock lock(m_sectionsMutex);
     auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
         [](const Section& s, Timecode v) { return s.breakFrame < v; });
     if (it != m_sections.end() && it->breakFrame == breakFrame) {
@@ -1060,6 +1073,7 @@ bool Timeline::addSectionBreak(Timecode breakFrame,
 }
 
 bool Timeline::removeSectionBreak(Timecode breakFrame) {
+    std::unique_lock lock(m_sectionsMutex);
     auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
         [](const Section& s, Timecode v) { return s.breakFrame < v; });
     if (it == m_sections.end() || it->breakFrame != breakFrame) {
@@ -1074,6 +1088,7 @@ bool Timeline::removeSectionBreak(Timecode breakFrame) {
 
 bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
                                 uint32_t newColor, double newFadeSeconds) {
+    std::unique_lock lock(m_sectionsMutex);
     auto oldIt = std::lower_bound(m_sections.begin(), m_sections.end(), oldBreakFrame,
         [](const Section& s, Timecode v) { return s.breakFrame < v; });
     if (oldIt == m_sections.end() || oldIt->breakFrame != oldBreakFrame) {
@@ -1112,6 +1127,7 @@ bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
 }
 
 const Timeline::Section* Timeline::findNextBreakAfter(Timecode time) const {
+    // Editor-thread-only caller; no lock needed here.
     auto it = std::upper_bound(m_sections.begin(), m_sections.end(), time,
         [](Timecode v, const Section& s) { return v < s.breakFrame; });
     if (it == m_sections.end()) return nullptr;
@@ -1119,6 +1135,7 @@ const Timeline::Section* Timeline::findNextBreakAfter(Timecode time) const {
 }
 
 const Timeline::Section* Timeline::findSectionBreakNear(Timecode time, Timecode tolerance) const {
+    // Editor-thread-only caller; no lock needed here.
     if (m_sections.empty()) return nullptr;
     auto it = std::lower_bound(m_sections.begin(), m_sections.end(), time,
         [](const Section& s, Timecode v) { return s.breakFrame < v; });
@@ -1135,6 +1152,38 @@ const Timeline::Section* Timeline::findSectionBreakNear(Timecode time, Timecode 
     consider(it);
     if (it != m_sections.begin()) consider(std::prev(it));
     return best;
+}
+
+std::pair<std::vector<Timeline::Section>, double>
+Timeline::copySectionsAndRate() const {
+    std::shared_lock lock(m_sectionsMutex);
+    return { m_sections, m_frameRate };
+}
+
+void Timeline::snapshotSectionsAndRate(FrameNumber currentFrame,
+                                       double&   outFrameRate,
+                                       int&      outActiveIdx,
+                                       int64_t&  outActiveFrame,
+                                       int&      outNextIdx,
+                                       int64_t&  outNextFrame) const {
+    std::shared_lock lock(m_sectionsMutex);
+    outFrameRate  = m_frameRate;
+    outActiveIdx  = -1;
+    outNextIdx    = -1;
+    outActiveFrame = 0;
+    outNextFrame   = 0;
+    for (int i = 0; i < static_cast<int>(m_sections.size()); ++i) {
+        auto bf = static_cast<int64_t>(
+            static_cast<FrameNumber>(std::round(
+                (m_sections[i].breakFrame / 1000000.0) * m_frameRate)));
+        if (bf <= static_cast<int64_t>(currentFrame)) {
+            outActiveIdx   = i;
+            outActiveFrame = bf;
+        } else if (outNextIdx == -1) {
+            outNextIdx   = i;
+            outNextFrame = bf;
+        }
+    }
 }
 
 // ============================================================================

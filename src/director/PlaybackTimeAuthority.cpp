@@ -467,10 +467,9 @@ void PlaybackTimeAuthority::updateTiming() {
 
 FrameNumber PlaybackTimeAuthority::sectionFadeTailFrames(FrameNumber endFrame) const {
     if (!m_timeline) return 0;
-    const auto& sections = m_timeline->getSections();
+    auto [sections, rawFps] = m_timeline->copySectionsAndRate();
     if (sections.empty()) return 0;
-    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
-        ? m_timeline->getFrameRate() : 30.0;
+    const double timelineFrameRate = rawFps > 0.0 ? rawFps : 30.0;
     constexpr FrameNumber snapTol = 1;
     auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
         return a >= b ? a - b : b - a;
@@ -649,14 +648,13 @@ std::string PlaybackTimeAuthority::lookupInputColorSpaceOverride(const Clip& cli
 
 float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) const {
     if (!m_timeline) return 1.0f;
-    const auto& sections = m_timeline->getSections();
+    auto [sections, rawFps] = m_timeline->copySectionsAndRate();
     if (sections.empty()) return 1.0f;
 
     const FrameNumber currentFrame = m_timeline->getCurrentFrame();
     const FrameNumber clipStart    = clip.startFrame;
     const FrameNumber clipEnd      = clip.startFrame + clip.duration;
-    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
-        ? m_timeline->getFrameRate() : 30.0;
+    const double timelineFrameRate = rawFps > 0.0 ? rawFps : 30.0;
     // ±1 timeline-frame snap tolerance — matches the boundary semantics
     // documented in the Phase D plan; clips that merely cross a break
     // (>1 frame off either end) get no envelope.

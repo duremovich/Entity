@@ -15,7 +15,7 @@
 //   - Joins the worker on engine shutdown via a registered shutdown hook
 //     so we never use the dispatcher / bus after they've been torn down.
 //
-// Address namespace (fixed, small):
+// Address namespace (default, overridable via per-project oscInboundMappingsJson):
 //
 //   /entity/play                  -> Play
 //   /entity/pause                 -> Pause
@@ -49,6 +49,7 @@
 // ignored (logged at Debug level).
 
 #include "entity/plugin/PluginContext.hpp"
+#include "OscInboundMappings.hpp"
 
 #ifdef _WIN32
   #ifndef WIN32_LEAN_AND_MEAN
@@ -80,6 +81,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -90,15 +94,29 @@ namespace {
 using entity::plugin::IPluginContext;
 using entity::plugin::LogLevel;
 
+// Shared route-table types and logic from the header.
+using osc_inbound::CommandSpec;
+using osc_inbound::InboundRoute;
+using osc_inbound::defaultRoutes;
+using osc_inbound::matchPattern;
+using osc_inbound::expandTemplate;
+
 constexpr std::uint16_t kDefaultPort = 53000;
 
-// Singleton listener state. The plugin is registered once; we treat its
-// state as a process-global the way bus-logger treats its log sink.
+// ---------------------------------------------------------------------------
+// Singleton listener state.
+
 struct ReceiverState {
-    std::atomic<bool> running{false};
-    socket_t          socket{ENTITY_OSC_INVALID};
-    std::thread       worker;
-    IPluginContext*   ctx{nullptr};
+    std::atomic<bool>       running{false};
+    socket_t                socket{ENTITY_OSC_INVALID};
+    std::thread             worker;
+    IPluginContext*         ctx{nullptr};
+
+    // Route table — rebuilt on hash change. Protected by routeMutex so the
+    // editor UI thread can write it while the worker reads.
+    mutable std::shared_mutex      routeMutex;
+    std::vector<InboundRoute>      routeTable;
+    std::uint32_t                  lastMappingsHash{0};
 };
 
 ReceiverState& state() {
@@ -114,38 +132,13 @@ void pluginLog(LogLevel level, std::string_view msg) {
 }
 
 // ---------------------------------------------------------------------------
-// OSC 1.0 wire-format helpers. Everything is big-endian on the wire.
+// OSC 1.0 wire-format helpers — plugin-local (Winsock types involved).
 
 std::uint32_t readU32BE(const std::uint8_t* p) {
     return (std::uint32_t(p[0]) << 24) |
            (std::uint32_t(p[1]) << 16) |
            (std::uint32_t(p[2]) << 8)  |
             std::uint32_t(p[3]);
-}
-
-std::int32_t readI32BE(const std::uint8_t* p) {
-    return static_cast<std::int32_t>(readU32BE(p));
-}
-
-float readF32BE(const std::uint8_t* p) {
-    std::uint32_t bits = readU32BE(p);
-    float f;
-    std::memcpy(&f, &bits, sizeof(f));
-    return f;
-}
-
-std::int64_t readI64BE(const std::uint8_t* p) {
-    std::uint64_t bits = 0;
-    for (int i = 0; i < 8; ++i) bits = (bits << 8) | p[i];
-    return static_cast<std::int64_t>(bits);
-}
-
-double readF64BE(const std::uint8_t* p) {
-    std::uint64_t bits = 0;
-    for (int i = 0; i < 8; ++i) bits = (bits << 8) | p[i];
-    double d;
-    std::memcpy(&d, &bits, sizeof(d));
-    return d;
 }
 
 // Read a 4-byte-padded null-terminated OSC string starting at `pos`. On
@@ -164,185 +157,74 @@ bool readOscString(const std::uint8_t* bytes, std::size_t len,
 }
 
 // ---------------------------------------------------------------------------
-// JSON snippet builders for paramsJson. Tiny stack-buffered formatters —
-// none of the commands we route take structured arguments.
+// FNV-1a 32-bit hash — used for hot-reload change detection.
 
-void buildIntJson(std::string& out, std::string_view key, std::int64_t v) {
-    char buf[64];
-    int n = std::snprintf(buf, sizeof(buf), "{\"%.*s\":%lld}",
-                          int(key.size()), key.data(),
-                          static_cast<long long>(v));
-    out.assign(buf, n > 0 ? std::size_t(n) : 0u);
+std::uint32_t fnv1a32(std::string_view s) {
+    std::uint32_t h = 0x811c9dc5u;
+    for (unsigned char c : s) {
+        h ^= c;
+        h *= 0x01000193u;
+    }
+    return h;
 }
 
-void buildDoubleJson(std::string& out, std::string_view key, double v) {
-    char buf[64];
-    int n = std::snprintf(buf, sizeof(buf), "{\"%.*s\":%.10g}",
-                          int(key.size()), key.data(), v);
-    out.assign(buf, n > 0 ? std::size_t(n) : 0u);
-}
+// ---------------------------------------------------------------------------
+// Parse the per-project oscInboundMappingsJson. Thin wrapper around the
+// shared header parser; adds plugin-level logging on known error paths.
 
-// {"channel":"<channel>","value":<value>} — matches SetInputChannel's
-// fromJson expectations. Keys are fixed; only value substitution.
-void buildSetInputChannelJson(std::string& out, std::string_view channel, double value) {
-    char buf[128];
-    int n = std::snprintf(buf, sizeof(buf),
-                          "{\"channel\":\"%.*s\",\"value\":%.10g}",
-                          int(channel.size()), channel.data(), value);
-    out.assign(buf, n > 0 ? std::size_t(n) : 0u);
-}
+std::vector<InboundRoute> parseInboundMappingsJson(std::string_view json,
+                                                    IPluginContext* ctx) {
+    if (json.empty()) return defaultRoutes();
 
-// Convenience: enqueue a SetInputChannel with the given float. Caller
-// already holds `ctx`.
-void enqueueSetAxis(IPluginContext* ctx, std::string_view channel, double value) {
-    std::string body;
-    buildSetInputChannelJson(body, channel, value);
-    ctx->enqueueCommand("SetInputChannel", body);
-}
+    // Fast structural check so we can log a specific warning before
+    // delegating — the header parser falls back silently.
+    std::size_t p = 0;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' ||
+                                json[p] == '\n' || json[p] == '\r')) ++p;
+    if (p >= json.size() || json[p] != '[') {
+        if (ctx) ctx->log(LogLevel::Warn,
+            "osc-receiver: inbound mappings JSON is not an array — using defaults");
+        return defaultRoutes();
+    }
 
-bool firstNumericArgAsDouble(std::string_view typeTag,
-                              const std::uint8_t* argsBegin,
-                              const std::uint8_t* argsEnd,
-                              double& out) {
-    if (typeTag.size() < 2 || typeTag[0] != ',') return false;
-    char tag = typeTag[1];
-    auto avail = argsEnd - argsBegin;
-    if (tag == 'i' && avail >= 4) { out = static_cast<double>(readI32BE(argsBegin)); return true; }
-    if (tag == 'f' && avail >= 4) { out = static_cast<double>(readF32BE(argsBegin)); return true; }
-    if (tag == 'h' && avail >= 8) { out = static_cast<double>(readI64BE(argsBegin)); return true; }
-    if (tag == 'd' && avail >= 8) { out = readF64BE(argsBegin); return true; }
-    return false;
-}
-
-bool parseDouble(std::string_view s, double& out) {
-    if (s.empty()) return false;
-    std::string buf(s);
-    char* end = nullptr;
-    out = std::strtod(buf.c_str(), &end);
-    return end != buf.c_str();
+    return osc_inbound::parseInboundMappingsJson(json);
 }
 
 // ---------------------------------------------------------------------------
 // Address routing.
-
-bool firstNumericArgAsInt64(std::string_view typeTag,
-                             const std::uint8_t* argsBegin,
-                             const std::uint8_t* argsEnd,
-                             std::int64_t& out) {
-    if (typeTag.size() < 2 || typeTag[0] != ',') return false;
-    char tag = typeTag[1];
-    auto avail = argsEnd - argsBegin;
-    if (tag == 'i' && avail >= 4) { out = readI32BE(argsBegin); return true; }
-    if (tag == 'f' && avail >= 4) { out = static_cast<std::int64_t>(readF32BE(argsBegin)); return true; }
-    if (tag == 'h' && avail >= 8) { out = readI64BE(argsBegin); return true; }
-    if (tag == 'd' && avail >= 8) { out = static_cast<std::int64_t>(readF64BE(argsBegin)); return true; }
-    return false;
-}
 
 void dispatch(std::string_view address, std::string_view typeTag,
               const std::uint8_t* argsBegin, const std::uint8_t* argsEnd) {
     auto* ctx = state().ctx;
     if (!ctx) return;
 
-    if (address == "/entity/play") {
-        ctx->enqueueCommand("Play", {});
-        return;
-    }
-    if (address == "/entity/pause") {
-        ctx->enqueueCommand("Pause", {});
-        return;
-    }
-    if (address == "/entity/stop") {
-        ctx->enqueueCommand("Pause", {});
-        ctx->enqueueCommand("SeekToFrame", "{\"frame\":0}");
-        return;
-    }
-    if (address == "/entity/section/next") {
-        ctx->enqueueCommand("SectionGo", {});
-        return;
-    }
-    if (address == "/entity/seek") {
-        std::int64_t frame = 0;
-        if (firstNumericArgAsInt64(typeTag, argsBegin, argsEnd, frame)) {
-            std::string body;
-            buildIntJson(body, "frame", frame);
-            ctx->enqueueCommand("SeekToFrame", body);
-        } else {
-            pluginLog(LogLevel::Warn,
-                      "/entity/seek expects a numeric (i/h/f/d) frame arg");
-        }
-        return;
-    }
+    auto& s = state();
+    std::shared_lock<std::shared_mutex> lock(s.routeMutex);
 
-    // --- Muncher controls -------------------------------------------------
-    // Discrete UDLR triggers (Bitfocus Companion button style). Each press
-    // sets one axis to ±1 and zeroes the other — last command wins, the
-    // player keeps moving in that direction until told otherwise. Same
-    // grid-snap semantics as the keyboard handler in Engine::update.
-    if (address == "/entity/muncher/up") {
-        enqueueSetAxis(ctx, "muncher.input.x", 0.0);
-        enqueueSetAxis(ctx, "muncher.input.y", -1.0);
-        return;
-    }
-    if (address == "/entity/muncher/down") {
-        enqueueSetAxis(ctx, "muncher.input.x", 0.0);
-        enqueueSetAxis(ctx, "muncher.input.y", 1.0);
-        return;
-    }
-    if (address == "/entity/muncher/left") {
-        enqueueSetAxis(ctx, "muncher.input.x", -1.0);
-        enqueueSetAxis(ctx, "muncher.input.y", 0.0);
-        return;
-    }
-    if (address == "/entity/muncher/right") {
-        enqueueSetAxis(ctx, "muncher.input.x", 1.0);
-        enqueueSetAxis(ctx, "muncher.input.y", 0.0);
-        return;
-    }
-    if (address == "/entity/muncher/stop") {
-        enqueueSetAxis(ctx, "muncher.input.x", 0.0);
-        enqueueSetAxis(ctx, "muncher.input.y", 0.0);
-        return;
-    }
+    for (const auto& route : s.routeTable) {
+        std::string_view capture;
+        if (!matchPattern(route.addressPattern, address, capture)) continue;
 
-    // Analog axis variants. For TouchOSC faders, smartphone OSC apps,
-    // audio-reactive senders, etc. Value is forwarded raw; the input snap
-    // in GenerativeSystem applies its deadzone.
-    if (address == "/entity/muncher/input/x" || address == "/entity/muncher/input/y") {
-        const std::string_view channel =
-            (address == "/entity/muncher/input/x")
-                ? std::string_view{"muncher.input.x"}
-                : std::string_view{"muncher.input.y"};
-        double value = 0.0;
-        if (firstNumericArgAsDouble(typeTag, argsBegin, argsEnd, value)) {
-            enqueueSetAxis(ctx, channel, value);
-        } else {
-            std::string m{address};
-            m.append(" expects a numeric (i/h/f/d) arg in [-1, 1]");
-            pluginLog(LogLevel::Warn, m);
+        for (const auto& cmd : route.commands) {
+            if (cmd.commandType.empty()) continue;
+            bool hasTokens = (cmd.paramsTemplate.find('$') != std::string::npos);
+            if (!hasTokens) {
+                ctx->enqueueCommand(cmd.commandType, cmd.paramsTemplate);
+            } else {
+                auto params = expandTemplate(cmd.paramsTemplate,
+                                             capture, typeTag,
+                                             argsBegin, argsEnd);
+                if (!params) {
+                    std::string m = "osc-receiver: ";
+                    m.append(address);
+                    m.append(" dropped — missing or non-numeric argument");
+                    pluginLog(LogLevel::Warn, m);
+                    continue;
+                }
+                ctx->enqueueCommand(cmd.commandType, *params);
+            }
         }
-        return;
-    }
-
-    // /entity/cue/{number}/go
-    constexpr std::string_view kCuePrefix = "/entity/cue/";
-    constexpr std::string_view kCueSuffix = "/go";
-    if (address.size() > kCuePrefix.size() + kCueSuffix.size() &&
-        address.substr(0, kCuePrefix.size()) == kCuePrefix &&
-        address.substr(address.size() - kCueSuffix.size()) == kCueSuffix) {
-        std::string_view numStr = address.substr(
-            kCuePrefix.size(),
-            address.size() - kCuePrefix.size() - kCueSuffix.size());
-        double number = 0.0;
-        if (parseDouble(numStr, number)) {
-            std::string body;
-            buildDoubleJson(body, "number", number);
-            ctx->enqueueCommand("FireCue", body);
-        } else {
-            std::string m = "/entity/cue/.../go: bad number '";
-            m.append(numStr); m.push_back('\'');
-            pluginLog(LogLevel::Warn, m);
-        }
+        // First matching route wins.
         return;
     }
 
@@ -355,7 +237,7 @@ void dispatch(std::string_view address, std::string_view typeTag,
 void parsePacket(const std::uint8_t* bytes, std::size_t len) {
     if (len == 0) return;
     if (len >= 8 && std::memcmp(bytes, "#bundle\0", 8) == 0) {
-        if (len < 16) return;     // need 8-byte tag + 8-byte timetag
+        if (len < 16) return;
         std::size_t pos = 16;
         while (pos + 4 <= len) {
             std::uint32_t elemLen = readU32BE(bytes + pos);
@@ -372,9 +254,7 @@ void parsePacket(const std::uint8_t* bytes, std::size_t len) {
     if (!readOscString(bytes, len, pos, address)) return;
     std::string_view typeTag;
     if (!readOscString(bytes, len, pos, typeTag)) {
-        // OSC 1.0 also permits no type-tag (legacy); treat as empty.
         typeTag = std::string_view();
-        // pos is unchanged; arg span is the rest of the packet.
     }
     dispatch(address, typeTag, bytes + pos, bytes + len);
 }
@@ -390,6 +270,21 @@ void workerLoop() {
     std::vector<std::uint8_t> buf(kBufSize);
     auto& s = state();
     while (s.running.load(std::memory_order_acquire)) {
+        if (s.ctx) {
+            std::string mappingsJson =
+                s.ctx->getStringSetting("oscInboundMappingsJson", "");
+            const std::uint32_t h = fnv1a32(mappingsJson);
+            if (h != s.lastMappingsHash) {
+                s.lastMappingsHash = h;
+                std::vector<InboundRoute> newTable =
+                    mappingsJson.empty()
+                        ? defaultRoutes()
+                        : parseInboundMappingsJson(mappingsJson, s.ctx);
+                std::unique_lock<std::shared_mutex> wlock(s.routeMutex);
+                s.routeTable = std::move(newTable);
+            }
+        }
+
         sockaddr_in from{};
         socklen_t fromLen = sizeof(from);
         int n = ::recvfrom(s.socket,
@@ -404,8 +299,8 @@ void workerLoop() {
         }
 #ifdef _WIN32
         int err = ::WSAGetLastError();
-        if (err == WSAETIMEDOUT) continue;          // expected, lets us re-check running
-        if (err == WSAEINTR) continue;              // socket closed by shutdown
+        if (err == WSAETIMEDOUT) continue;
+        if (err == WSAEINTR) continue;
         if (!s.running.load(std::memory_order_acquire)) break;
 #else
         if (!s.running.load(std::memory_order_acquire)) break;
@@ -450,8 +345,6 @@ bool startListener(std::uint16_t port) {
         return false;
     }
 
-    // 250ms recv timeout so the worker re-checks the running flag and
-    // exits promptly when the engine signals shutdown.
 #ifdef _WIN32
     DWORD timeoutMs = 250;
     ::setsockopt(s.socket, SOL_SOCKET, SO_RCVTIMEO,
@@ -473,9 +366,6 @@ bool startListener(std::uint16_t port) {
     return true;
 }
 
-// Engine-driven shutdown hook. Joins the worker BEFORE the engine starts
-// tearing down dispatcher/bus — see the comment on
-// IPluginContext::registerShutdownHook for why this matters.
 extern "C" void entity_plugin_osc_receiver_shutdown() {
     auto& s = state();
     if (!s.running.exchange(false)) return;
@@ -495,10 +385,6 @@ extern "C" void entity_plugin_osc_receiver_shutdown() {
     s.ctx = nullptr;
 }
 
-// Settings precedence: ENTITY_OSC_PORT env var > Settings.oscReceiverPort >
-// the kDefaultPort built-in. The env var stays as a developer escape hatch
-// so test scripts can run without touching settings.json; Preferences is
-// the normal user-facing path.
 std::uint16_t resolvePort(IPluginContext* ctx) {
     if (const char* env = std::getenv("ENTITY_OSC_PORT")) {
         int v = 0;
@@ -530,11 +416,17 @@ extern "C" int entity_plugin_register_osc_receiver(IPluginContext* ctx) {
     if (!ctx->getBoolSetting("oscReceiverEnabled", true)) {
         ctx->log(LogLevel::Info,
                  "osc-receiver disabled in Preferences — no UDP listener");
-        // Successful registration; the listener simply does not bind. The
-        // shutdown hook isn't installed because there is nothing to join.
-        // Clear ctx so the (unused) static state doesn't dangle.
         state().ctx = nullptr;
         return 0;
+    }
+
+    {
+        std::string mappingsJson = ctx->getStringSetting("oscInboundMappingsJson", "");
+        auto& s = state();
+        s.lastMappingsHash = fnv1a32(mappingsJson);
+        s.routeTable = mappingsJson.empty()
+            ? defaultRoutes()
+            : parseInboundMappingsJson(mappingsJson, ctx);
     }
 
     if (!startListener(resolvePort(ctx))) {
@@ -542,7 +434,6 @@ extern "C" int entity_plugin_register_osc_receiver(IPluginContext* ctx) {
         return -3;
     }
 
-    // Engine shuts us down before tearing the dispatcher / bus.
     ctx->registerShutdownHook(&entity_plugin_osc_receiver_shutdown);
     return 0;
 }

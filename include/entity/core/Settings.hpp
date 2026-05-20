@@ -90,6 +90,18 @@ struct Settings {
     uint16_t oscReceiverPort{53000};
 
     // -----------------------------------------------------------------
+    // OSC sender plugin. Opt-in (default off — outbound is noisier and
+    // unexpected if fired without user intent). Restart-to-apply.
+    //
+    // oscSenderDestinationsJson: JSON array of {host, port, enabled}
+    // objects. Empty = no destinations; plugin logs once and skips all
+    // sendto calls (worker still runs). Phase 7 (Settings UI) surfaces
+    // both fields in the Preferences dialog.
+    // -----------------------------------------------------------------
+    bool        oscSenderEnabled{false};
+    std::string oscSenderDestinationsJson;
+
+    // -----------------------------------------------------------------
     // DMX / Art-Net / sACN / Enttec plugin (Phase D, #13).
     //
     // Every surface is opt-in -- new I/O surfaces default off so

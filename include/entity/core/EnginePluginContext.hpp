@@ -43,6 +43,7 @@ public:
                                                    int defaultValue) const noexcept override;
     std::string                      getStringSetting(std::string_view key,
                                                       std::string_view defaultValue) const noexcept override;
+    entity::plugin::TransportSnapshot getTransportSnapshot() const noexcept override;
 
 private:
     Engine*     m_engine;

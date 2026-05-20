@@ -6,6 +6,7 @@
 #include "entity/project/ProjectManager.hpp"
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -17,11 +18,9 @@ namespace entity {
 
 namespace {
 
-// Per-window in-memory mirror of the parsed mapping table. We re-parse
-// from ProjectManager's stored JSON whenever it changes underneath us
-// (project loaded / reverted), and re-serialize whenever the user
-// edits a field. Storing the typed vector here keeps the per-frame
-// path free of JSON parsing.
+// ---------------------------------------------------------------------------
+// DMX tab state
+
 struct DmxTabState {
     std::vector<entity::dmx::Mapping> mappings;
     std::string                       lastSyncedJson;
@@ -47,29 +46,22 @@ const char* kTriggerKindLabels[] = {
 };
 
 void syncFromJsonIfChanged(ProjectManager& pm, DmxTabState& s) {
-    const std::string& current = pm.dmxMappingsJson();
+    std::string current = pm.getDmxMappingsJson();
     if (current == s.lastSyncedJson) return;
     s.mappings = entity::dmx::parseMappingsJson(current);
     s.lastSyncedJson = current;
 }
 
-// Push the typed table back to the project as an undoable command.
-// Each call adds one Ctrl+Z step. Coalescing per-keystroke would
-// require focus tracking we don't have today; per-edit undo matches
-// the rest of the editor's property-inspector behavior.
 void writeBack(Engine& engine, ProjectManager& pm, DmxTabState& s) {
     s.lastSyncedJson = entity::dmx::serializeMappingsJson(s.mappings);
     if (auto* dispatcher = engine.getCommandDispatcher()) {
         dispatcher->enqueue(std::make_unique<SetDmxMappingsJsonCommand>(
             s.lastSyncedJson));
     } else {
-        // Fallback: no dispatcher (shouldn't happen in normal runtime,
-        // but keep the editor usable in test harnesses).
         pm.setDmxMappingsJson(s.lastSyncedJson);
     }
 }
 
-// Render a single editable string cell into a fixed buffer.
 bool textCell(const char* label, std::string& value, int maxLen = 256) {
     char buf[512];
     const size_t copyLen = std::min(value.size(),
@@ -115,7 +107,6 @@ bool commandCombo(const char* label, std::string& cmd) {
         ImGui::EndCombo();
     }
     ImGui::PopItemWidth();
-    // Fall-through edit: allow free-form name as well (custom commands).
     char buf[64];
     const size_t copyLen = std::min(cmd.size(), sizeof(buf) - 1);
     std::memcpy(buf, cmd.data(), copyLen);
@@ -234,8 +225,6 @@ void renderTableEditor(Engine& engine, ProjectManager& pm, DmxTabState& s) {
     if (s.jsonModeOpen) {
         ImGui::Separator();
         ImGui::TextDisabled("Raw JSON (read-only mirror; edit the table above)");
-        // Always re-render from the typed mappings so the JSON view
-        // tracks edits live.
         s.jsonBuf = entity::dmx::serializeMappingsJson(s.mappings);
         ImGui::PushItemWidth(-1.0f);
         ImVec2 sz = ImVec2(0.0f, 120.0f);
@@ -244,6 +233,415 @@ void renderTableEditor(Engine& engine, ProjectManager& pm, DmxTabState& s) {
                                    ImGuiInputTextFlags_ReadOnly);
         ImGui::PopItemWidth();
     }
+}
+
+// ---------------------------------------------------------------------------
+// OSC inbound tab state
+
+struct OscInboundRoute {
+    std::string address;    // OSC address pattern, e.g. /entity/play
+    std::string command;    // command type name
+    std::string params;     // params template JSON fragment
+};
+
+struct OscInboundTabState {
+    std::vector<OscInboundRoute> routes;
+    std::string                  lastSyncedJson;
+};
+
+OscInboundTabState& oscInboundState() {
+    static OscInboundTabState s;
+    return s;
+}
+
+// Parse the inbound JSON bare array produced by the receiver plugin.
+// Shape: [ { "address": "...", "captureKey": "...", "commands": [{"type":"...","params":"..."}] } ]
+// Multi-command routes are flattened into one row per command for simple editing.
+// Returns empty on any parse error (UI treats as "using defaults").
+std::vector<OscInboundRoute> parseOscInboundJson(const std::string& json) {
+    std::vector<OscInboundRoute> result;
+    if (json.empty()) return result;
+    try {
+        auto arr = nlohmann::json::parse(json);
+        if (!arr.is_array()) return result;
+        for (const auto& route : arr) {
+            std::string addr;
+            if (route.contains("address") && route["address"].is_string())
+                addr = route["address"].get<std::string>();
+            if (!route.contains("commands") || !route["commands"].is_array())
+                continue;
+            for (const auto& cmd : route["commands"]) {
+                std::string type, params;
+                if (cmd.contains("type") && cmd["type"].is_string())
+                    type = cmd["type"].get<std::string>();
+                if (cmd.contains("params") && cmd["params"].is_string())
+                    params = cmd["params"].get<std::string>();
+                if (!type.empty())
+                    result.push_back({addr, type, params});
+            }
+        }
+    } catch (const nlohmann::json::exception&) {}
+    return result;
+}
+
+// Serialize the inbound route table to the bare-array JSON the receiver parser expects.
+// Consecutive rows with the same address are grouped into one route object so that
+// multi-command routes (e.g. /entity/stop -> Pause + SeekToFrame) survive a round-trip.
+// Note: rows that were non-consecutive for the same address get merged into one entry;
+// reordering rows for the same address across other addresses can change grouping.
+std::string serializeOscInboundJson(const std::vector<OscInboundRoute>& routes) {
+    nlohmann::json arr = nlohmann::json::array();
+    std::size_t i = 0;
+    while (i < routes.size()) {
+        const std::string& addr = routes[i].address;
+        // Collect consecutive rows sharing this address.
+        std::size_t j = i;
+        while (j < routes.size() && routes[j].address == addr) ++j;
+
+        nlohmann::json cmds = nlohmann::json::array();
+        for (std::size_t k = i; k < j; ++k) {
+            cmds.push_back({{"type", routes[k].command}, {"params", routes[k].params}});
+        }
+        arr.push_back({{"address", addr}, {"commands", cmds}});
+        i = j;
+    }
+    return arr.dump();
+}
+
+const char* kOscCommandPresets[] = {
+    "Play", "Pause", "Stop", "SectionGo", "FireCue",
+    "SeekToFrame", "SetInputChannel",
+};
+
+void syncOscInboundIfChanged(ProjectManager& pm, OscInboundTabState& s) {
+    std::string current = pm.getOscInboundMappingsJson();
+    if (current == s.lastSyncedJson) return;
+    s.routes        = parseOscInboundJson(current);
+    s.lastSyncedJson = current;
+}
+
+void writeBackOscInbound(ProjectManager& pm, OscInboundTabState& s) {
+    s.lastSyncedJson = serializeOscInboundJson(s.routes);
+    pm.setOscInboundMappingsJson(s.lastSyncedJson);
+}
+
+bool oscCommandCombo(const char* label, std::string& cmd) {
+    int current = -1;
+    for (int i = 0; i < IM_ARRAYSIZE(kOscCommandPresets); ++i) {
+        if (cmd == kOscCommandPresets[i]) { current = i; break; }
+    }
+    const char* preview = (current >= 0) ? kOscCommandPresets[current]
+                                         : (cmd.empty() ? "(none)" : cmd.c_str());
+    bool changed = false;
+    ImGui::PushItemWidth(-1.0f);
+    if (ImGui::BeginCombo(label, preview)) {
+        for (int i = 0; i < IM_ARRAYSIZE(kOscCommandPresets); ++i) {
+            const bool sel = (i == current);
+            if (ImGui::Selectable(kOscCommandPresets[i], sel)) {
+                cmd     = kOscCommandPresets[i];
+                changed = true;
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopItemWidth();
+    return changed;
+}
+
+void renderOscInboundTab(ProjectManager& pm, OscInboundTabState& s) {
+    syncOscInboundIfChanged(pm, s);
+
+    if (ImGui::Button("+ Add route")) {
+        OscInboundRoute r;
+        r.address = "/entity/";
+        r.command = "Play";
+        s.routes.push_back(std::move(r));
+        writeBackOscInbound(pm, s);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Restore defaults")) {
+        s.routes.clear();
+        s.lastSyncedJson.clear();
+        pm.setOscInboundMappingsJson("");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%d row%s)", static_cast<int>(s.routes.size()),
+                         s.routes.size() == 1 ? "" : "s");
+
+    if (s.routes.empty()) {
+        ImGui::TextWrapped(
+            "No project-scoped routes -- plugin uses baked defaults:\n"
+            "  /entity/play   /entity/pause   /entity/stop\n"
+            "  /entity/section/next   /entity/cue/{number}/go\n"
+            "  /entity/seek <frame>   /entity/munch/{dir}");
+        return;
+    }
+
+    constexpr ImGuiTableFlags kFlags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+        ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable;
+    if (!ImGui::BeginTable("oscInboundTable", 4, kFlags)) return;
+
+    ImGui::TableSetupColumn("Address",  ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Command",  ImGuiTableColumnFlags_WidthStretch, 1.5f);
+    ImGui::TableSetupColumn("Params",   ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("",         ImGuiTableColumnFlags_WidthFixed,   40);
+    ImGui::TableHeadersRow();
+
+    int rowToDelete = -1;
+    for (int i = 0; i < static_cast<int>(s.routes.size()); ++i) {
+        auto& r = s.routes[i];
+        ImGui::PushID(i);
+        ImGui::TableNextRow();
+        bool dirty = false;
+
+        ImGui::TableSetColumnIndex(0);
+        if (textCell("##addr", r.address, 256)) dirty = true;
+
+        ImGui::TableSetColumnIndex(1);
+        if (oscCommandCombo("##cmd", r.command)) dirty = true;
+
+        ImGui::TableSetColumnIndex(2);
+        {
+            // Empty params = valid (no-arg route). Non-empty must parse as JSON.
+            const bool paramsValid = r.params.empty() ||
+                nlohmann::json::accept(r.params);
+            if (!paramsValid)
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            if (textCell("##params", r.params, 256)) dirty = true;
+            if (!paramsValid)
+                ImGui::PopStyleColor();
+        }
+
+        ImGui::TableSetColumnIndex(3);
+        if (ImGui::SmallButton("X##rm")) rowToDelete = i;
+
+        if (dirty) writeBackOscInbound(pm, s);
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+
+    if (rowToDelete >= 0) {
+        s.routes.erase(s.routes.begin() + rowToDelete);
+        writeBackOscInbound(pm, s);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OSC outbound tab state
+
+struct OscOutboundEvent {
+    const char* id;           // event key used in the JSON
+    const char* defaultAddr;  // default OSC address the plugin uses
+    std::string address;      // override (empty = use default)
+    bool        enabled{true};
+};
+
+struct OscOutboundTabState {
+    // Fixed 9-element table mirroring the sender plugin's event set.
+    OscOutboundEvent events[9] = {
+        { "transport.state",        "/entity/out/transport/state",       "", true },
+        { "transport.frame",        "/entity/out/transport/frame",       "", true },
+        { "transport.seconds",      "/entity/out/transport/seconds",     "", true },
+        { "section.active.index",   "/entity/out/section/active/index",  "", true },
+        { "section.active.frame",   "/entity/out/section/active/frame",  "", true },
+        { "section.next.index",     "/entity/out/section/next/index",    "", true },
+        { "section.next.frame",     "/entity/out/section/next/frame",    "", true },
+        { "project.name",           "/entity/out/project/name",          "", true },
+        { "heartbeat",              "/entity/out/heartbeat",             "", true },
+    };
+    std::string lastSyncedJson;
+};
+
+OscOutboundTabState& oscOutboundState() {
+    static OscOutboundTabState s;
+    return s;
+}
+
+// Parse "{ "events": { "id": { "enabled": bool, "address": "..." } } }"
+// Only touches the 9 known event IDs; unknown keys are silently ignored.
+void parseOscOutboundJson(const std::string& json, OscOutboundTabState& s) {
+    // Reset to defaults first.
+    for (auto& ev : s.events) {
+        ev.address = "";
+        ev.enabled = true;
+    }
+    if (json.empty()) return;
+
+    // Find "events" value object via simple string search.
+    const char* eventsKey = "\"events\"";
+    auto evPos = json.find(eventsKey);
+    if (evPos == std::string::npos) return;
+    evPos += std::strlen(eventsKey);
+    while (evPos < json.size() && (json[evPos] == ' ' || json[evPos] == '\t' ||
+                                   json[evPos] == '\n' || json[evPos] == '\r' ||
+                                   json[evPos] == ':'))
+        ++evPos;
+    if (evPos >= json.size() || json[evPos] != '{') return;
+
+    // Walk the events object.  Depth tracking handles nested {}.
+    ++evPos; // skip opening '{'
+    while (evPos < json.size() && json[evPos] != '}') {
+        // Skip whitespace and commas.
+        while (evPos < json.size() && (json[evPos] == ' ' || json[evPos] == '\t' ||
+                                       json[evPos] == '\n' || json[evPos] == '\r' ||
+                                       json[evPos] == ','))
+            ++evPos;
+        if (evPos >= json.size() || json[evPos] == '}') break;
+        if (json[evPos] != '"') break;
+
+        // Read event id string.
+        ++evPos;
+        std::size_t idStart = evPos;
+        while (evPos < json.size() && json[evPos] != '"') ++evPos;
+        std::string id = json.substr(idStart, evPos - idStart);
+        if (evPos < json.size()) ++evPos; // closing quote
+
+        // Skip ':'
+        while (evPos < json.size() && json[evPos] != '{') ++evPos;
+        if (evPos >= json.size() || json[evPos] != '{') break;
+        ++evPos;
+
+        // Read "enabled" and "address" from inner object.
+        bool        enabled = true;
+        std::string address;
+        while (evPos < json.size() && json[evPos] != '}') {
+            while (evPos < json.size() && (json[evPos] == ' ' || json[evPos] == '\t' ||
+                                           json[evPos] == '\n' || json[evPos] == '\r' ||
+                                           json[evPos] == ','))
+                ++evPos;
+            if (evPos >= json.size() || json[evPos] == '}') break;
+            if (json[evPos] != '"') break;
+            ++evPos;
+            std::size_t kStart = evPos;
+            while (evPos < json.size() && json[evPos] != '"') ++evPos;
+            std::string k = json.substr(kStart, evPos - kStart);
+            if (evPos < json.size()) ++evPos;
+
+            while (evPos < json.size() && json[evPos] != ':') ++evPos;
+            ++evPos;
+            while (evPos < json.size() && (json[evPos] == ' ' || json[evPos] == '\t')) ++evPos;
+
+            if (k == "enabled") {
+                if (evPos + 3 < json.size() && json.substr(evPos, 4) == "true")  { enabled = true;  evPos += 4; }
+                if (evPos + 4 < json.size() && json.substr(evPos, 5) == "false") { enabled = false; evPos += 5; }
+            } else if (k == "address") {
+                if (evPos < json.size() && json[evPos] == '"') {
+                    ++evPos;
+                    std::size_t aStart = evPos;
+                    while (evPos < json.size() && json[evPos] != '"') ++evPos;
+                    address = json.substr(aStart, evPos - aStart);
+                    if (evPos < json.size()) ++evPos;
+                }
+            }
+        }
+        if (evPos < json.size() && json[evPos] == '}') ++evPos;
+
+        // Apply to matching event slot.
+        for (auto& ev : s.events) {
+            if (id == ev.id) {
+                ev.enabled = enabled;
+                ev.address = address;
+                break;
+            }
+        }
+    }
+}
+
+std::string serializeOscOutboundJson(const OscOutboundTabState& s) {
+    std::string out = "{\"events\":{";
+    bool first = true;
+    for (const auto& ev : s.events) {
+        if (!first) out += ",";
+        first = false;
+        out += "\"";
+        out += ev.id;
+        out += "\":{\"enabled\":";
+        out += ev.enabled ? "true" : "false";
+        out += ",\"address\":\"";
+        for (char c : ev.address) {
+            if (c == '"')  out += "\\\"";
+            else if (c == '\\') out += "\\\\";
+            else           out.push_back(c);
+        }
+        out += "\"}";
+    }
+    out += "}}";
+    return out;
+}
+
+void syncOscOutboundIfChanged(ProjectManager& pm, OscOutboundTabState& s) {
+    std::string current = pm.getOscOutboundMappingsJson();
+    if (current == s.lastSyncedJson) return;
+    parseOscOutboundJson(current, s);
+    s.lastSyncedJson = current;
+}
+
+void writeBackOscOutbound(ProjectManager& pm, OscOutboundTabState& s) {
+    s.lastSyncedJson = serializeOscOutboundJson(s);
+    pm.setOscOutboundMappingsJson(s.lastSyncedJson);
+}
+
+void renderOscOutboundTab(ProjectManager& pm, OscOutboundTabState& s) {
+    syncOscOutboundIfChanged(pm, s);
+
+    if (ImGui::Button("Restore defaults")) {
+        pm.setOscOutboundMappingsJson("");
+        s.lastSyncedJson.clear();
+        for (auto& ev : s.events) {
+            ev.address = "";
+            ev.enabled = true;
+        }
+        return;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Edits are picked up by the sender plugin on the next tick.");
+
+    constexpr ImGuiTableFlags kFlags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+        ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable;
+    if (!ImGui::BeginTable("oscOutboundTable", 3, kFlags)) return;
+
+    ImGui::TableSetupColumn("Event",    ImGuiTableColumnFlags_WidthStretch, 1.5f);
+    ImGui::TableSetupColumn("Address",  ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Enabled",  ImGuiTableColumnFlags_WidthFixed,   60);
+    ImGui::TableHeadersRow();
+
+    for (int i = 0; i < 9; ++i) {
+        auto& ev = s.events[i];
+        ImGui::PushID(i);
+        ImGui::TableNextRow();
+        bool dirty = false;
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(ev.id);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Default: %s", ev.defaultAddr);
+
+        ImGui::TableSetColumnIndex(1);
+        // Show placeholder text for the default address.
+        char buf[256];
+        const size_t copyLen = std::min(ev.address.size(), sizeof(buf) - 1);
+        std::memcpy(buf, ev.address.data(), copyLen);
+        buf[copyLen] = '\0';
+        ImGui::PushItemWidth(-1.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        char hint[256];
+        std::snprintf(hint, sizeof(hint), "(default: %s)", ev.defaultAddr);
+        if (ImGui::InputTextWithHint("##addr", hint, buf, sizeof(buf))) {
+            ev.address = buf;
+            dirty = true;
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::TableSetColumnIndex(2);
+        if (ImGui::Checkbox("##en", &ev.enabled)) dirty = true;
+
+        if (dirty) writeBackOscOutbound(pm, s);
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
 }
 
 } // namespace
@@ -268,6 +666,27 @@ void ShowControlWindow::render() {
             renderTableEditor(*m_engine, *pm, dmxState());
             ImGui::EndTabItem();
         }
+
+        if (ImGui::BeginTabItem("OSC In")) {
+            ImGui::TextWrapped(
+                "Per-project inbound OSC routes. Each row maps an OSC address "
+                "pattern to a command. Edits are picked up by the receiver "
+                "plugin on the next incoming packet. Empty table = baked defaults.");
+            ImGui::Separator();
+            renderOscInboundTab(*pm, oscInboundState());
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("OSC Out")) {
+            ImGui::TextWrapped(
+                "Per-project outbound OSC event configuration. The sender "
+                "plugin broadcasts these events; override the address or "
+                "disable individual events here.");
+            ImGui::Separator();
+            renderOscOutboundTab(*pm, oscOutboundState());
+            ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
     }
 }

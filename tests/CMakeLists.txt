@@ -45,6 +45,8 @@ add_executable(EntityMediaTests
     unit/CalibrationSolverTests.cpp
     unit/WaitForGpuEarlyOutTests.cpp
     unit/DmxMappingTests.cpp
+    unit/OscEncodingTest.cpp
+    unit/OscMappingTableTest.cpp
     test_Decoder.cpp
 )
 

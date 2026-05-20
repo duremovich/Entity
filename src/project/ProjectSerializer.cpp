@@ -651,7 +651,15 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             // lives in the dmx-artnet plugin (Apache-2.0) so the GPL
             // serializer keeps the boundary clean. Empty -> plugin
             // uses its baked default mapping table.
-            project["dmxMappingsJson"] = projectMgr->dmxMappingsJson();
+            project["dmxMappingsJson"] = projectMgr->getDmxMappingsJson();
+
+            // Freeform (no schema bump) — per-project OSC mapping tables.
+            // Same boundary rationale as dmxMappingsJson: raw JSON string,
+            // typed structs live in the Apache-2.0 plugin boundary.
+            // Empty string -> plugin falls back to hardcoded defaults.
+            // Missing on older project files -> stays empty on load.
+            project["oscInboundMappingsJson"]  = projectMgr->getOscInboundMappingsJson();
+            project["oscOutboundMappingsJson"] = projectMgr->getOscOutboundMappingsJson();
 
             // v18 — object library (parallel of mediaLibrary for 3D models).
             // Same pathKind + size-validity convention; no transcode /
@@ -1509,6 +1517,19 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 project["dmxMappingsJson"].is_string()) {
                 projectMgr->setDmxMappingsJson(
                     project["dmxMappingsJson"].get<std::string>());
+            }
+
+            // Freeform — per-project OSC mapping tables. Missing on
+            // older files -> stays empty -> plugin uses hardcoded defaults.
+            if (project.contains("oscInboundMappingsJson") &&
+                project["oscInboundMappingsJson"].is_string()) {
+                projectMgr->setOscInboundMappingsJson(
+                    project["oscInboundMappingsJson"].get<std::string>());
+            }
+            if (project.contains("oscOutboundMappingsJson") &&
+                project["oscOutboundMappingsJson"].is_string()) {
+                projectMgr->setOscOutboundMappingsJson(
+                    project["oscOutboundMappingsJson"].get<std::string>());
             }
         }
 

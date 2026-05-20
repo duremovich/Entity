@@ -7,6 +7,7 @@
 #include "entity/core/Settings.hpp"
 #include "entity/plugin/Plugin.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/timeline/Timeline.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -84,6 +85,7 @@ bool EnginePluginContext::getBoolSetting(std::string_view key,
                                           bool defaultValue) const noexcept {
     const Settings s = activeSettings();
     if (key == "oscReceiverEnabled") return s.oscReceiverEnabled;
+    if (key == "oscSenderEnabled")   return s.oscSenderEnabled;
     if (key == "dmxArtnetEnabled")   return s.dmxArtnetEnabled;
     if (key == "dmxSacnEnabled")     return s.dmxSacnEnabled;
     if (key == "dmxOutEnabled")      return s.dmxOutEnabled;
@@ -104,12 +106,12 @@ int EnginePluginContext::getIntSetting(std::string_view key,
 std::string EnginePluginContext::getStringSetting(std::string_view key,
                                                    std::string_view defaultValue) const noexcept {
     const Settings s = activeSettings();
-    if (key == "dmxOutArtnetTargets") return s.dmxOutArtnetTargets;
-    if (key == "dmxEnttecPort")       return s.dmxEnttecPort;
+    if (key == "dmxOutArtnetTargets")        return s.dmxOutArtnetTargets;
+    if (key == "dmxEnttecPort")              return s.dmxEnttecPort;
+    if (key == "oscSenderDestinationsJson")  return s.oscSenderDestinationsJson;
 
-    // Phase 5 special-case: project-scoped DMX mappings travel
-    // through this accessor with a synthetic key. ProjectManager owns
-    // the active project; we read its serialized mapping table.
+    // Project-scoped mapping JSON tables. ProjectManager owns the active
+    // project; we read its serialized tables through project-scoped keys.
     if (key == "dmxMappingsJson") {
         if (m_engine) {
             if (auto* pm = m_engine->getProjectManager()) {
@@ -118,7 +120,64 @@ std::string EnginePluginContext::getStringSetting(std::string_view key,
         }
         return std::string(defaultValue);
     }
+    if (key == "oscInboundMappingsJson") {
+        if (m_engine) {
+            if (auto* pm = m_engine->getProjectManager()) {
+                return pm->getOscInboundMappingsJson();
+            }
+        }
+        return std::string(defaultValue);
+    }
+    if (key == "oscOutboundMappingsJson") {
+        if (m_engine) {
+            if (auto* pm = m_engine->getProjectManager()) {
+                return pm->getOscOutboundMappingsJson();
+            }
+        }
+        return std::string(defaultValue);
+    }
     return std::string(defaultValue);
+}
+
+entity::plugin::TransportSnapshot
+EnginePluginContext::getTransportSnapshot() const noexcept {
+    using entity::plugin::TransportSnapshot;
+    using entity::plugin::TransportState;
+
+    TransportSnapshot snap;
+    if (!m_engine) return snap;
+
+    auto* tl = m_engine->getTimeline();
+    if (!tl) return snap;
+
+    // Playback state — both fields are atomic; safe cross-thread.
+    const auto ps = tl->getPlaybackState();
+    if (ps == entity::PlaybackState::Playing)
+        snap.playbackState = TransportState::Playing;
+    else if (ps == entity::PlaybackState::Paused)
+        snap.playbackState = TransportState::Paused;
+    else
+        snap.playbackState = TransportState::Stopped;
+
+    const auto currentFrame = tl->getCurrentFrame();
+    snap.frameNumber = static_cast<int64_t>(currentFrame);
+
+    // Section state + frame rate — uses shared lock internally so this call
+    // is safe from the OSC sender worker thread concurrently with editor-thread
+    // addSectionBreak / removeSectionBreak / setFrameRate mutations.
+    tl->snapshotSectionsAndRate(currentFrame,
+                                snap.frameRate,
+                                snap.activeSectionIndex,
+                                snap.activeSectionFrame,
+                                snap.nextSectionIndex,
+                                snap.nextSectionFrame);
+
+    // Project name — thread-safe via ProjectManager's shared lock.
+    if (auto* pm = m_engine->getProjectManager()) {
+        snap.projectName = pm->getProjectName();
+    }
+
+    return snap;
 }
 
 } // namespace entity::core

@@ -6,6 +6,95 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### OSC Outbound Sender + Mapping Table (2026-05-19)
+
+Ten-phase implementation (Phases 1-10). Adds an outbound OSC sender plugin that
+broadcasts Entity transport and section state to external show-control software
+at 30 Hz; refactors the existing inbound receiver to table-driven dispatch with
+per-project route overrides; and adds a per-project OSC mapping editor in the
+Show Control window.
+
+**IPluginContext transport accessor (Phase 1).** New
+`IPluginContext::getTransportSnapshot()` returns a `TransportSnapshot` struct
+(state enum, current frame, seconds, active/next section indices and frames,
+project name) snapshotted from the editor thread. Implemented in
+`EnginePluginContext::getTransportSnapshot` by reading atomic fields on
+`Timeline` and `ProjectManager`. Additive at the vtable bottom; no
+`PLUGIN_API_VERSION` bump. `TransportState` enum: `Stopped`, `Playing`, `Paused`.
+
+**Outbound sender plugin (Phases 2-4).** New `plugins/osc-sender/` plugin
+(Apache-2.0). Opens a `SOCK_DGRAM` UDP send socket; spawns a 30 Hz worker that
+polls `getTransportSnapshot()`, diffs against last-sent state, and broadcasts
+OSC packets to all enabled destinations. Nine default events: `transport.state`
+(string, on-change), `transport.frame` (int32, 30 Hz when playing),
+`transport.seconds` (float32, 30 Hz when playing), `section.active.index/frame`
+(int32, on-change), `section.next.index/frame` (int32, on-change),
+`project.name` (string, on-change), `heartbeat` (int32 counter, 1 Hz).
+Multiple events per tick coalesced into one `#bundle` packet.
+`oscSenderEnabled` + `oscSenderDestinationsJson` added to `Settings.json` and
+the Settings UI (Preferences > OSC Sender section). Destinations JSON shape:
+`[{"host":"...","port":N,"enabled":true/false}, ...]`. Settings UI shows a
+per-row host/port/enabled table with Add/Remove.
+
+**Per-project mapping table (Phases 5-6).** `oscInboundMappingsJson` and
+`oscOutboundMappingsJson` string blobs added to `ProjectManager` (loaded and
+saved with the project; default empty). The receiver plugin is refactored from
+hardcoded if/else dispatch to a runtime route table built from the per-project
+JSON. Table hot-reloads on hash change every 250 ms (between `recvfrom` timeout
+cycles) without restarting the socket or the worker. Inbound JSON shape: bare
+top-level array of `{address, captureKey?, commands:[{type, params}]}` objects.
+Params templates support four substitution tokens: `$arg0i`, `$arg0f`,
+`$capturei`, `$capturef`; any unresolvable token logs Warn + noops the command
+(Phase 6 arg-missing fix — `/entity/seek` with no numeric arg drops cleanly
+instead of seeking to frame 0). Outbound JSON shape:
+`{"events":{"<id>":{"enabled":bool,"address":"..."}}}`.
+
+**OSC Mappings UI (Phase 8).** Two new tabs ("OSC In", "OSC Out") added to the
+existing `ShowControlWindow` (Window > Show Control). OSC In tab: editable
+table of routes (address + command type + params string); Add/Remove row
+buttons; params cell renders with a red background when it holds syntactically
+invalid JSON (`nlohmann::json::accept` check). OSC Out tab: fixed 9-row table
+one row per default event, address override (InputTextWithHint showing the
+default as hint when empty) + enabled checkbox; Restore Defaults clears the
+JSON blob. Both tabs write directly to the per-project `oscInbound/
+OutboundMappingsJson` blobs via `ProjectManager`; changes take effect on the
+next receiver hot-reload cycle or sender tick.
+
+**Shared headers + tests (Phase 9).** Wire-format encode helpers lifted into
+`plugins/osc-sender/OscWire.hpp` (`namespace osc`, no Winsock); route-table
+logic lifted into `plugins/osc-receiver/OscInboundMappings.hpp`
+(`namespace osc_inbound`, no plugin-api). `OscReceiverPlugin.cpp` now includes
+the shared header and deletes its inline duplicate (~215 lines removed).
+`OscMappingTableTest.cpp` therefore exercises the live receiver code, not a
+parallel copy. Two GTest files: `OscEncodingTest.cpp` (15 tests — int32/float32
+round-trips, string padding, full message and bundle build+parse) and
+`OscMappingTableTest.cpp` (30 tests — JSON parse, default-routes fallback,
+literal and capture `matchPattern`, `expandTemplate` with all four tokens plus
+nullopt paths). `scripts/osc_smoke_listen.py` (stdlib-only, ~111 lines) decodes
+and pretty-prints inbound OSC packets including bundles and nested bundles.
+
+**Files (new).** `plugin-api/include/entity/plugin/PluginContext.hpp` (modified
+for `getTransportSnapshot`), `plugins/osc-sender/OscSenderPlugin.cpp`,
+`plugins/osc-sender/OscWire.hpp`, `plugins/osc-sender/manifest.json`,
+`plugins/osc-sender/CMakeLists.txt`,
+`plugins/osc-receiver/OscInboundMappings.hpp`,
+`plugins/osc-sender/README.md`, `plugins/osc-receiver/README.md`,
+`tests/unit/OscEncodingTest.cpp`, `tests/unit/OscMappingTableTest.cpp`,
+`scripts/osc_smoke_listen.py`.
+
+**Files (modified).** `include/entity/core/EnginePluginContext.hpp`,
+`src/core/EnginePluginContext.cpp`, `include/entity/core/Settings.hpp`,
+`src/core/Settings.cpp`, `include/entity/project/ProjectManager.hpp`,
+`src/project/ProjectManager.cpp`, `src/project/ProjectSerializer.cpp`,
+`include/entity/timeline/Timeline.hpp`, `src/timeline/Timeline.cpp`,
+`include/entity/ui/ShowControlWindow.hpp`, `src/ui/ShowControlWindow.cpp`,
+`src/ui/SettingsWindow.cpp`, `src/command/Commands.cpp`,
+`src/director/PlaybackTimeAuthority.cpp`,
+`plugins/osc-receiver/OscReceiverPlugin.cpp`,
+`tests/CMakeLists.txt`.
+
+---
+
 ### Text Generator Layer (2026-05-18)
 
 Seven-phase implementation (Phases 1-7). Adds a new Generative sub-kind

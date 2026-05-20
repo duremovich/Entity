@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <entt/entt.hpp>
 #include <filesystem>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -158,6 +159,10 @@ public:
 
     const std::filesystem::path& projectPath() const { return m_projectPath; }
     void setProjectPath(const std::filesystem::path& p) { m_projectPath = p; }
+
+    // Thread-safe project name (stem of projectPath). Returns empty string
+    // when no project is loaded. Safe to call from plugin worker threads.
+    std::string getProjectName() const;
 
     // --- Media library -------------------------------------------------------
 
@@ -555,17 +560,39 @@ public:
     // a multi-line text input in v1 without round-tripping through a
     // typed schema. A typed editor + structured persistence is a
     // follow-up.
-    const std::string& dmxMappingsJson() const          { return m_dmxMappingsJson; }
-    std::string&       dmxMappingsJsonMutable()         { return m_dmxMappingsJson; }
-    void setDmxMappingsJson(std::string json)           { m_dmxMappingsJson = std::move(json); }
-    // EnginePluginContext::getStringSetting helper.
-    std::string        getDmxMappingsJson() const       { return m_dmxMappingsJson; }
+    //
+    // All setters take an exclusive lock; all get* helpers take a shared
+    // lock so plugin worker threads can safely read these fields while the
+    // editor thread writes them on project load / mapping-table edits.
+    void               setDmxMappingsJson(std::string json);  // takes exclusive lock
+    std::string        getDmxMappingsJson() const;            // takes shared lock (plugin-safe)
+
+    // --- OSC per-project mapping tables (#2 follow-up) ---------------------
+    //
+    // Project-scoped OSC inbound and outbound mapping tables, serialized as
+    // JSON strings. The osc-receiver and osc-sender plugins consume these
+    // through IPluginContext::getStringSetting("oscInboundMappingsJson") /
+    // ("oscOutboundMappingsJson"), which routes here.
+    //
+    // Empty -> plugin falls back to hardcoded defaults. Same lock discipline
+    // as dmxMappingsJson above.
+    void        setOscInboundMappingsJson(std::string json);   // takes exclusive lock
+    std::string getOscInboundMappingsJson() const;             // takes shared lock (plugin-safe)
+
+    void        setOscOutboundMappingsJson(std::string json);  // takes exclusive lock
+    std::string getOscOutboundMappingsJson() const;            // takes shared lock (plugin-safe)
 
 private:
     // Non-owning dependencies (Engine owns and outlives this)
     Timeline*        m_timeline{nullptr};
     entt::registry*  m_registry{nullptr};
     IRenderer*       m_renderer{nullptr};
+
+    // Guards m_projectPath and all per-project JSON string fields for
+    // cross-thread reads by plugin worker threads (osc-sender, dmx-artnet).
+    // Editor thread takes exclusive lock on writes; plugins take shared lock
+    // in the thread-safe get* helpers.
+    mutable std::shared_mutex m_stateMutex;
 
     std::filesystem::path             m_projectPath;
     std::vector<MediaLibraryEntry>    m_loadedMediaFiles;
@@ -579,6 +606,12 @@ private:
     // uses its baked defaults. ProjectSerializer round-trips this as
     // the top-level "dmxMappingsJson" field in v22+ project files.
     std::string m_dmxMappingsJson;
+
+    // Project-scoped OSC inbound / outbound mapping tables. Empty -> plugin
+    // uses its baked defaults. Persisted in the project file as top-level
+    // "oscInboundMappingsJson" / "oscOutboundMappingsJson" string fields.
+    std::string m_oscInboundMappingsJson;
+    std::string m_oscOutboundMappingsJson;
 };
 
 } // namespace entity

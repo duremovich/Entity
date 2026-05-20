@@ -2969,7 +2969,7 @@ bool SetDmxMappingsJsonCommand::execute(Engine& engine) {
     auto* pm = engine.getProjectManager();
     if (!pm) return false;
     if (!m_previousCaptured) {
-        m_previousJson = pm->dmxMappingsJson();
+        m_previousJson = pm->getDmxMappingsJson();
         m_previousCaptured = true;
     }
     pm->setDmxMappingsJson(m_newJson);

@@ -139,7 +139,7 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
                                            : serializerErr));
     }
 
-    m_projectPath = projectFile;
+    { std::unique_lock lk(m_stateMutex); m_projectPath = projectFile; }
     std::cout << "[ProjectManager] Created new project at "
               << projectFile.string() << std::endl;
     return true;
@@ -221,9 +221,9 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
     // by temporarily pointing m_projectPath at the new file; on failure
     // restore the old path + tear down the partial bundle.
     const fs::path oldProjectPath = m_projectPath;
-    m_projectPath = newFile;
+    { std::unique_lock lk(m_stateMutex); m_projectPath = newFile; }
     if (!save(newFile)) {
-        m_projectPath = oldProjectPath;
+        { std::unique_lock lk(m_stateMutex); m_projectPath = oldProjectPath; }
         std::error_code rmEc;
         fs::remove_all(newRoot, rmEc);
         std::cerr << "[ProjectManager] saveAsBundle: project file write failed; "
@@ -267,7 +267,7 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
         return false;
     }
 
-    m_projectPath = savePath;
+    { std::unique_lock lk(m_stateMutex); m_projectPath = savePath; }
     std::cout << "[ProjectManager] Project saved successfully" << std::endl;
     return true;
 }
@@ -275,7 +275,7 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
 void ProjectManager::closeProject() {
     m_loadedMediaFiles.clear();
     m_loadedObjectFiles.clear();
-    m_projectPath.clear();
+    { std::unique_lock lk(m_stateMutex); m_projectPath.clear(); }
     m_nonHapImportPolicy = NonHapImportPolicy::Ask;
     m_autosaveAccumulator = 0.0;
 }
@@ -298,7 +298,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
     // value so a failed load doesn't leave the field pinned to a broken
     // file.
     const std::filesystem::path previousProjectPath = m_projectPath;
-    m_projectPath = filepath;
+    { std::unique_lock lk(m_stateMutex); m_projectPath = filepath; }
 
     // Clear existing clip decode state (destructors release decoders + frames).
     m_registry->clear<ClipDecodeState>();
@@ -376,7 +376,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
 
     if (!ProjectSerializer::load(*m_timeline, filepath, loadCallback, this)) {
         std::cerr << "[ProjectManager] Load failed: " << ProjectSerializer::getLastError() << std::endl;
-        m_projectPath = previousProjectPath;  // restore (#34)
+        { std::unique_lock lk(m_stateMutex); m_projectPath = previousProjectPath; }  // restore (#34)
         return false;
     }
 
@@ -1049,6 +1049,45 @@ std::string ProjectManager::decoderPathFor(const std::string& originalPath) cons
     // "this file should exist here but doesn't" rather than silently
     // rolling to a different version.
     return resolveMediaPath(originalPath);
+}
+
+// ---------------------------------------------------------------------------
+// Thread-safe plugin-facing accessors (shared lock for reads, exclusive for
+// writes). The OSC sender and DMX plugins call these from worker threads.
+
+std::string ProjectManager::getProjectName() const {
+    std::shared_lock lock(m_stateMutex);
+    return m_projectPath.stem().string();
+}
+
+void ProjectManager::setDmxMappingsJson(std::string json) {
+    std::unique_lock lock(m_stateMutex);
+    m_dmxMappingsJson = std::move(json);
+}
+
+std::string ProjectManager::getDmxMappingsJson() const {
+    std::shared_lock lock(m_stateMutex);
+    return m_dmxMappingsJson;
+}
+
+void ProjectManager::setOscInboundMappingsJson(std::string json) {
+    std::unique_lock lock(m_stateMutex);
+    m_oscInboundMappingsJson = std::move(json);
+}
+
+std::string ProjectManager::getOscInboundMappingsJson() const {
+    std::shared_lock lock(m_stateMutex);
+    return m_oscInboundMappingsJson;
+}
+
+void ProjectManager::setOscOutboundMappingsJson(std::string json) {
+    std::unique_lock lock(m_stateMutex);
+    m_oscOutboundMappingsJson = std::move(json);
+}
+
+std::string ProjectManager::getOscOutboundMappingsJson() const {
+    std::shared_lock lock(m_stateMutex);
+    return m_oscOutboundMappingsJson;
 }
 
 } // namespace entity

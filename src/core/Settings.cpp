@@ -118,6 +118,10 @@ Settings loadSettings(const std::filesystem::path& path) {
             settings.oscReceiverPort = static_cast<uint16_t>(raw);
         }
     }
+    if (j.contains("oscSenderEnabled") && j["oscSenderEnabled"].is_boolean()) {
+        settings.oscSenderEnabled = j["oscSenderEnabled"].get<bool>();
+    }
+    readString("oscSenderDestinationsJson", settings.oscSenderDestinationsJson);
 
     // DMX (Phase D, #13)
     auto readBool = [&](const char* key, bool& dst) {
@@ -171,8 +175,10 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     j["defaultDisplay"]       = settings.defaultDisplay;
     j["defaultView"]          = settings.defaultView;
     j["importStoragePolicy"]  = static_cast<int>(settings.importStoragePolicy);
-    j["oscReceiverEnabled"]   = settings.oscReceiverEnabled;
-    j["oscReceiverPort"]      = settings.oscReceiverPort;
+    j["oscReceiverEnabled"]         = settings.oscReceiverEnabled;
+    j["oscReceiverPort"]            = settings.oscReceiverPort;
+    j["oscSenderEnabled"]           = settings.oscSenderEnabled;
+    j["oscSenderDestinationsJson"]  = settings.oscSenderDestinationsJson;
     j["dmxArtnetEnabled"]     = settings.dmxArtnetEnabled;
     j["dmxArtnetListenPort"]  = settings.dmxArtnetListenPort;
     j["dmxSacnEnabled"]       = settings.dmxSacnEnabled;

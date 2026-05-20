@@ -1,0 +1,12 @@
+{
+  "format": "entity_project",
+  "version": 22,
+  "frameRate": 30.0,
+  "sections": [],
+  "tracks": [],
+  "screens": [],
+  "outputs": [],
+  "dmxMappingsJson": "",
+  "oscInboundMappingsJson": "{\"mappings\":[{\"address\":\"/test/in\",\"command\":\"Play\"}]}",
+  "oscOutboundMappingsJson": "{\n  \"events\": {\n    \"transport.frame\": {\n      \"enabled\": true,\n      \"address\": \"/myshow/playhead\"\n    },\n    \"heartbeat\": {\n      \"enabled\": false,\n      \"address\": \"\"\n    }\n  }\n}"
+}

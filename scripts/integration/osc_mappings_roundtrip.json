@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "description": "Phase 5: load a project with oscInboundMappingsJson + oscOutboundMappingsJson set, save it back, then the test runner inspects the output file to confirm both fields survived the round-trip.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "scripts/integration/osc_mappings_roundtrip_fixture.entity"},
+        {"type": "SaveProject", "filepath": "scripts/integration/osc_mappings_roundtrip_out.entity"},
+        {"type": "Exit"}
+    ]
+}

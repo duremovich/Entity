@@ -3,11 +3,23 @@
 #include "entity/color/OcioManager.hpp"
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#endif
 
 namespace entity {
 
@@ -279,6 +291,196 @@ void renderDmxSection(Settings& staged) {
     ImGui::TextDisabled("DMX changes take effect after restart.");
 }
 
+// One row in the destinations table (parsed from oscSenderDestinationsJson).
+struct OscDestination {
+    std::string host{"127.0.0.1"};
+    int         port{53001};
+    bool        enabled{true};
+};
+
+// Parse oscSenderDestinationsJson -> vector<OscDestination>.
+// Returns empty vector on any parse error (JSON shape: [{host,port,enabled},...]).
+static std::vector<OscDestination> parseOscDestinations(const std::string& json) {
+    std::vector<OscDestination> result;
+    if (json.empty()) return result;
+    try {
+        auto arr = nlohmann::json::parse(json);
+        if (!arr.is_array()) return result;
+        for (const auto& item : arr) {
+            OscDestination d;
+            if (item.contains("host") && item["host"].is_string())
+                d.host = item["host"].get<std::string>();
+            if (item.contains("port") && item["port"].is_number_integer())
+                d.port = item["port"].get<int>();
+            if (item.contains("enabled") && item["enabled"].is_boolean())
+                d.enabled = item["enabled"].get<bool>();
+            result.push_back(d);
+        }
+    } catch (...) {}
+    return result;
+}
+
+// Serialize vector<OscDestination> -> compact JSON string.
+static std::string serializeOscDestinations(const std::vector<OscDestination>& dests) {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& d : dests) {
+        arr.push_back({{"host", d.host}, {"port", d.port}, {"enabled", d.enabled}});
+    }
+    return arr.dump();
+}
+
+void renderOscSenderSection(Settings& staged) {
+    ImGui::Checkbox("Enable OSC sender", &staged.oscSenderEnabled);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "Broadcasts transport state and section changes over OSC\n"
+            "UDP to every enabled destination below.\n"
+            "Default namespace: /entity/out/transport/state,\n"
+            "/entity/out/transport/frame, /entity/out/section/active/index,\n"
+            "/entity/out/heartbeat (1 Hz), and others.\n"
+            "Changes take effect after restart.");
+        ImGui::EndTooltip();
+    }
+
+    if (!staged.oscSenderEnabled) ImGui::BeginDisabled();
+
+    // Parse the current destinations JSON into a mutable in-memory list.
+    // We re-parse every frame from the staged string — the list is small
+    // (typically 1-3 entries) and the modal is not on the hot path.
+    std::vector<OscDestination> dests = parseOscDestinations(staged.oscSenderDestinationsJson);
+    bool changed = false;
+
+    ImGui::TextUnformatted("Destinations:");
+
+    // Table: Host | Port | Enabled | (Remove button)
+    constexpr ImGuiTableFlags kTableFlags =
+        ImGuiTableFlags_BordersOuter |
+        ImGuiTableFlags_BordersInnerV |
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_SizingFixedFit;
+
+    if (ImGui::BeginTable("##oscSenderDests", 4, kTableFlags)) {
+        ImGui::TableSetupColumn("Host",    ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Port",    ImGuiTableColumnFlags_WidthFixed, 70.0f);
+        ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+        ImGui::TableSetupColumn("##rm",    ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableHeadersRow();
+
+        int removeIdx = -1;
+        for (int i = 0; i < static_cast<int>(dests.size()); ++i) {
+            ImGui::TableNextRow();
+            ImGui::PushID(i);
+
+            // Host
+            ImGui::TableSetColumnIndex(0);
+            char hostBuf[256];
+            const size_t hn = std::min(dests[i].host.size(), sizeof(hostBuf) - 1);
+            std::memcpy(hostBuf, dests[i].host.data(), hn);
+            hostBuf[hn] = '\0';
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##host", hostBuf, sizeof(hostBuf))) {
+                dests[i].host.assign(hostBuf);
+                changed = true;
+            }
+
+            // Port
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputInt("##port", &dests[i].port, 0, 0)) {
+                dests[i].port = std::clamp(dests[i].port, 1, 65535);
+                changed = true;
+            }
+
+            // Enabled checkbox (centered)
+            ImGui::TableSetColumnIndex(2);
+            float checkX = (ImGui::GetColumnWidth() - ImGui::GetFrameHeight()) * 0.5f;
+            if (checkX > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + checkX);
+            if (ImGui::Checkbox("##en", &dests[i].enabled)) changed = true;
+
+            // Remove button
+            ImGui::TableSetColumnIndex(3);
+            if (ImGui::SmallButton("Remove")) removeIdx = i;
+
+            ImGui::PopID();
+        }
+
+        ImGui::EndTable();
+
+        if (removeIdx >= 0) {
+            dests.erase(dests.begin() + removeIdx);
+            changed = true;
+        }
+    }
+
+    // Add destination button
+    if (ImGui::Button("+ Add destination")) {
+        dests.push_back(OscDestination{});
+        changed = true;
+    }
+
+    // "Send test" fires one /entity/out/test i:1 packet to every enabled
+    // destination right now, using Winsock directly — no plugin involvement.
+    // Enabled only when the sender is on and at least one destination is enabled.
+    const bool hasEnabledDest = std::any_of(dests.begin(), dests.end(),
+                                             [](const OscDestination& d){ return d.enabled; });
+    ImGui::SameLine();
+    if (!hasEnabledDest) ImGui::BeginDisabled();
+    if (ImGui::Button("Send test")) {
+        // OSC 1.0 encoding of /entity/out/test ,i 1 (28 bytes total):
+        //   "/entity/out/test\0\0\0\0" — 20 bytes (16 chars + NUL padded to 20)
+        //   ",i\0\0"                   —  4 bytes
+        //   \x00\x00\x00\x01          —  4 bytes (int32 BE = 1)
+        static constexpr std::uint8_t kTestPacket[28] = {
+            '/', 'e', 'n', 't', 'i', 't', 'y', '/',
+            'o', 'u', 't', '/', 't', 'e', 's', 't',
+            0, 0, 0, 0,          // NUL + 3-byte pad to 20
+            ',', 'i', 0, 0,      // type tag ",i\0\0"
+            0, 0, 0, 1           // int32 BE = 1
+        };
+#ifdef _WIN32
+        WSADATA wsa{};
+        if (::WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+            SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (sock != INVALID_SOCKET) {
+                for (const auto& d : dests) {
+                    if (!d.enabled) continue;
+                    sockaddr_in addr{};
+                    addr.sin_family = AF_INET;
+                    addr.sin_port   = htons(static_cast<u_short>(d.port));
+                    if (::inet_pton(AF_INET, d.host.c_str(), &addr.sin_addr) == 1) {
+                        ::sendto(sock,
+                                 reinterpret_cast<const char*>(kTestPacket),
+                                 sizeof(kTestPacket), 0,
+                                 reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+                    }
+                }
+                ::closesocket(sock);
+            }
+            ::WSACleanup();
+        }
+#endif
+    }
+    if (!hasEnabledDest) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "Send a test OSC message (/entity/out/test 1)\n"
+            "to all enabled destinations.");
+        ImGui::EndTooltip();
+    }
+
+    if (changed) {
+        staged.oscSenderDestinationsJson = serializeOscDestinations(dests);
+    }
+
+    if (!staged.oscSenderEnabled) ImGui::EndDisabled();
+
+    ImGui::TextDisabled("OSC sender changes take effect after restart.");
+}
+
 } // namespace
 
 void SettingsWindow::open(const Settings& current) {
@@ -324,6 +526,11 @@ void SettingsWindow::render() {
     // ----- OSC Receiver -----------------------------------------------------
     if (ImGui::CollapsingHeader("OSC Receiver", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderOscReceiverSection(m_staged);
+    }
+
+    // ----- OSC Sender -------------------------------------------------------
+    if (ImGui::CollapsingHeader("OSC Sender")) {
+        renderOscSenderSection(m_staged);
     }
 
     // ----- DMX (Art-Net / sACN / Enttec) -----------------------------------

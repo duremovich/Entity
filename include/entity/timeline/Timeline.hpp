@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <shared_mutex>
 
 namespace entity {
 
@@ -110,7 +111,7 @@ public:
 
     // Time setters
     void setDuration(Timecode duration) { m_duration = duration; }
-    void setFrameRate(double frameRate) { m_frameRate = frameRate; }
+    void setFrameRate(double frameRate); // non-inline: takes exclusive lock on m_sectionsMutex
 
     // Track management
     entt::entity createTrack(const std::string& name);
@@ -320,6 +321,24 @@ public:
 
     const std::vector<Section>& getSections() const { return m_sections; }
 
+    /** Thread-safe copy of the section list + current frame rate for callers
+     *  that need to iterate sections under a lock without holding the lock
+     *  across the iteration. Returns a value pair so the caller can release
+     *  the shared lock before doing any heavy work.
+     *  Safe to call from the show thread. */
+    std::pair<std::vector<Section>, double> copySectionsAndRate() const;
+
+    /** Thread-safe snapshot of sections + frame rate for plugin worker threads.
+     *  Takes a shared lock on m_sectionsMutex internally. Outputs active and
+     *  next section index/frame relative to `currentFrame`. Indices are -1
+     *  when there is no active / next section. */
+    void snapshotSectionsAndRate(FrameNumber currentFrame,
+                                 double&   outFrameRate,
+                                 int&      outActiveIdx,
+                                 int64_t&  outActiveFrame,
+                                 int&      outNextIdx,
+                                 int64_t&  outNextFrame) const;
+
     /** Insert a section break at the given frame. Returns false if a break
      *  already exists at that exact frame. Sorted-insert; no snapping
      *  (callers snap to the tick grid before invoking). */
@@ -343,7 +362,7 @@ public:
     const Section* findSectionBreakNear(Timecode time, Timecode tolerance) const;
 
     /** Drop every section. Used by Timeline::clear() and the project loader. */
-    void clearSections() { m_sections.clear(); }
+    void clearSections(); // non-inline: takes exclusive lock on m_sectionsMutex
 
     /** True when the SectionScheduler has parked the playhead at a break this
      *  tick. UI uses this for spacebar dispatch + playhead visual feedback;
@@ -514,6 +533,11 @@ private:
 
     // Track entities (stored in ECS)
     std::vector<entt::entity> m_tracks;
+
+    // Guards m_sections and m_frameRate for cross-thread reads by plugin
+    // worker threads (e.g. osc-sender). Editor thread takes exclusive lock
+    // on all writes; plugin threads take shared lock via snapshotSectionsAndRate().
+    mutable std::shared_mutex m_sectionsMutex;
 
     // Named time-range sections, persisted in project files.
     std::vector<Section> m_sections;

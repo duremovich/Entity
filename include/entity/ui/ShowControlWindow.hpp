@@ -9,18 +9,12 @@ class Engine;
 /**
  * ShowControlWindow -- per-project show-control mapping editor.
  *
- * v1 (#59): a single "DMX" tab carrying the project's DMX channel
- * mapping table as raw JSON. The dmx-artnet plugin reads the same
- * string through IPluginContext::getStringSetting("dmxMappingsJson")
- * and falls back to its baked default mappings when empty.
+ * Tabs:
+ *   DMX    -- channel-to-command mapping table (project field dmxMappingsJson)
+ *   OSC In -- inbound address-pattern-to-command route table (oscInboundMappingsJson)
+ *   OSC Out -- outbound event enable/address overrides (oscOutboundMappingsJson)
  *
- * Future tabs: "OSC" (project-configurable address->command rewrites),
- * "MIDI" (MIDI Show Control protocol). Tabs land alongside the
- * existing DMX tab without further window plumbing.
- *
- * Editing convention: the text area is the canonical authoring
- * surface. Edits dirty the project. A typed table editor is a
- * follow-up that can be added without a schema change.
+ * Future tabs: "MIDI" (MIDI Show Control protocol).
  */
 class ShowControlWindow : public EditorWindow {
 public:

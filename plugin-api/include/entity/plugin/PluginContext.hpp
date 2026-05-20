@@ -16,6 +16,26 @@ class IMessageTransport;
 
 namespace entity::plugin {
 
+// Playback state mirroring entity::PlaybackState without pulling in
+// core headers (boundary rule: no internal headers in plugin-api).
+enum class TransportState : int { Stopped = 0, Playing = 1, Paused = 2 };
+
+// Snapshot of transport + section + project state at the moment of the call.
+// Returned by value — no caller-managed buffers, no pointers into engine
+// internals. Safe to stash and diff on a plugin worker thread.
+struct TransportSnapshot {
+    TransportState playbackState{TransportState::Stopped};
+    int64_t        frameNumber{0};
+    double         frameRate{30.0};
+
+    int     activeSectionIndex{-1};  // -1 if no sections
+    int64_t activeSectionFrame{0};
+    int     nextSectionIndex{-1};    // -1 if at end of show
+    int64_t nextSectionFrame{0};
+
+    std::string projectName;         // filename stem; empty if no project loaded
+};
+
 enum class LogLevel : int {
     Debug = 0,
     Info  = 1,
@@ -32,10 +52,11 @@ enum class LogLevel : int {
 // it should retain the bus() pointer (not the context itself) -- the
 // transport is thread-safe by contract; the context is not.
 //
-// Boundary rule: every method here is noexcept, returns trivially-copyable
-// data or stable pointers, and never exposes core internals. New methods
-// land at the bottom of the vtable so existing compiled plugins keep
-// working across patch-version bumps to the engine.
+// Boundary rule: every method here is noexcept, returns value-safe data
+// (may include std::string and other STL types compatible across a
+// statically-linked plugin boundary) or stable pointers, and never
+// exposes core internals. New methods land at the bottom of the vtable
+// so existing compiled plugins keep working across patch-version bumps.
 class IPluginContext {
 public:
     virtual ~IPluginContext() = default;
@@ -105,16 +126,27 @@ public:
                                int defaultValue) const noexcept = 0;
 
     // Read a string Setting (or a project-scoped state blob exposed via
-    // the same accessor — Phase 5 special-cases certain keys to read
-    // from the active project rather than the Settings struct, e.g.
-    // "dmxMappingsJson" returns the active project's JSON-serialized
-    // DMX mapping table).
+    // the same accessor — special-cases certain keys to read from the
+    // active project rather than the Settings struct):
+    //   "dmxMappingsJson"        — active project's DMX mapping table JSON
+    //   "oscInboundMappingsJson" — active project's OSC inbound mapping JSON
+    //   "oscOutboundMappingsJson"— active project's OSC outbound mapping JSON
     //
     // Same ABI rule: bottom of vtable, no PLUGIN_API_VERSION bump.
     // The signature returns by value to keep the boundary copy-safe
     // (no caller-managed buffer lifetime).
     virtual std::string getStringSetting(std::string_view key,
                                          std::string_view defaultValue) const noexcept = 0;
+
+    // Return a snapshot of transport + section + project state. Safe to
+    // call from any plugin worker thread — the implementation takes brief
+    // shared locks where needed and returns a fully-owned value struct.
+    // Plugins must join any worker thread that calls this from within
+    // their registerShutdownHook callback, so engine pointers remain
+    // valid for the call's duration.
+    //
+    // Same ABI rule: bottom of vtable, no PLUGIN_API_VERSION bump.
+    virtual TransportSnapshot getTransportSnapshot() const noexcept = 0;
 };
 
 } // namespace entity::plugin
