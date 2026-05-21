@@ -67,9 +67,14 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
     }
 
     if (state != PlaybackState::Playing) {
-        // Paused (manually or by us). While at-break, advance Normal-clip
-        // continuation phase so Loop / PingPong clips keep cycling. If the
-        // user just scrubbed elsewhere we'll detect a discontinuity below.
+        // Paused (manually or by the at-break park). While at-break, advance
+        // Normal-clip continuation phase so Loop / PingPong clips keep
+        // cycling. The show-side mapToMediaFrameFromCatalog derives the same
+        // value from the wall-clock anchor (so the projector stays correct
+        // during editor stalls); this editor-side write keeps the registry
+        // ClipPlaybackPhase component live for the PropertyWindow and is the
+        // value go() snapshots. If the user just scrubbed elsewhere we'll
+        // detect a discontinuity below.
         if (m_atBreak) {
             advanceContinuation(deltaTimeSeconds);
         }
@@ -79,9 +84,9 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
 
     // Manual-resume unstick: any state-Playing tick where m_atBreak is
     // still raised is stale. Drop the latch unconditionally — Timeline::seek
-    // already clears `sectionAtBreak()` (above), and the discontinuity
-    // branch (below) clears scheduler state. This guard is the last
-    // safety net for paths that don't go through either. The previous
+    // already clears `sectionAtBreak()`, and the discontinuity branch
+    // (below) clears scheduler state. This guard is the last safety net for
+    // paths that don't go through either. The previous
     // `currentTime > m_lastBreakHitFrame` guard failed when the user
     // scrubbed BACKWARD before pressing Play.
     if (m_atBreak) {
@@ -90,15 +95,21 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         clearAllContinuation();
     }
 
+    // NEW-08: section-break *crossing detection* lives on the show thread
+    // now (Engine::showThreadMain) — it runs every show frame regardless of
+    // editor-thread health, so a break can no longer be missed by an editor
+    // stall. The editor applies the crossing via handleBreakAt() from the
+    // R2D drain. What remains here is scrub handling: if the playhead jumped
+    // during playback the user scrubbed, and any post-break anchor past the
+    // new playhead position is now stale.
     const double frameRate = m_timeline->getFrameRate() > 0.0 ? m_timeline->getFrameRate() : 30.0;
     const Timecode oneFrame = static_cast<Timecode>(1000000.0 / frameRate);
 
-    // Scrub jumps are not crossings — only continuous playback advances
-    // trigger break detection. The threshold is "more than 2 timeline
-    // frames OR more than 5× the per-tick advance, whichever is greater".
-    // Without the deltaTime floor, high-fps timelines (>120 fps) put 2×
-    // oneFrame below the per-render-tick advance (~16ms at 60Hz) and every
-    // normal advance reads as a scrub.
+    // Scrub jumps vs continuous playback. The threshold is "more than 2
+    // timeline frames OR more than 5× the per-tick advance, whichever is
+    // greater". Without the deltaTime floor, high-fps timelines (>120 fps)
+    // put 2× oneFrame below the per-render-tick advance (~16ms at 60Hz) and
+    // every normal advance reads as a scrub.
     const Timecode delta = currentTime > m_lastTickFrame
                          ? currentTime - m_lastTickFrame
                          : m_lastTickFrame - currentTime;
@@ -107,79 +118,52 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
         : static_cast<Timecode>(0);
     const Timecode discontinuityThreshold = std::max(oneFrame * 2, tickAdvance * 5);
     if (delta > discontinuityThreshold) {
-        // ADR-0014: when the editor thread stalls, the show thread keeps
-        // Timeline::update ticking via the fallback path. The editor
-        // resumes and SectionScheduler sees one tick where currentTime
-        // has jumped past where m_lastTickFrame left it — sometimes
-        // straight over a section break. A user scrub looks identical
-        // to that gap from this code's point of view, EXCEPT: a scrub
-        // can go in either direction, while the editor-stall artifact
-        // is always forward (playback advances, never rewinds). If the
-        // jump is forward and a break sits in (m_lastTickFrame, currentTime],
-        // honor it as a crossing rather than discarding it as a scrub —
-        // otherwise the at-break pause silently never fires.
-        if (currentTime > m_lastTickFrame) {
-            if (const Timeline::Section* brk = m_timeline->findNextBreakAfter(m_lastTickFrame)) {
-                if (brk->breakFrame <= currentTime) {
-                    const Timecode hit = brk->breakFrame;
-                    m_timeline->seek(hit);
-                    m_timeline->pause();
-                    m_atBreak = true;
-                    m_lastBreakHitFrame = hit;
-                    m_lastTickFrame = hit;
-                    m_timeline->setSectionAtBreak(true);
-                    seedContinuationAt(hit);
-                    std::cout << "[SectionScheduler] At break frame=" << hit
-                              << " (caught crossing inside discontinuity)" << std::endl;
-                    std::cout << "[SBG][at-break] hit=" << hit << " via=jump" << std::endl;
-                    return;
-                }
-            }
-        }
-        // Round-2 fixup, Phase 4 — a discontinuity here means the user
-        // scrubbed (or some non-playback driver moved the playhead). Any
-        // post-break anchor whose `anchorTimelineFrame > currentTimelineFrame`
-        // is now stale: the user either jumped backward past the break
-        // that set it, or forward-skipped the at-break pause without
-        // experiencing it.
+        // A discontinuity here means the user scrubbed (or some non-playback
+        // driver moved the playhead). Any post-break anchor whose
+        // `anchorTimelineFrame > currentTimelineFrame` is now stale: the
+        // user jumped backward past the break that set it, or forward past
+        // the at-break pause without experiencing it.
         resetAnchorsAcrossScrub(currentTime);
-        // Round-3 fixup, Phase 1 — also drop the at-break latch. Belt-and-
-        // braces against scrubs that come through paths Timeline::seek
-        // doesn't see (e.g., direct currentTime mutation). Continuation is
-        // cleared too: the parked phase no longer corresponds to the new
-        // playhead position.
-        if (m_atBreak) {
-            m_atBreak = false;
-            m_timeline->setSectionAtBreak(false);
-        }
+        // Continuation is cleared too: the parked phase no longer
+        // corresponds to the new playhead position.
         clearAllContinuation();
-        m_lastTickFrame = currentTime;
-        return;
-    }
-
-    // Look for the first break strictly after the previous tick's frame.
-    // If it sits at or before the current frame, the playhead crossed it.
-    if (const Timeline::Section* brk = m_timeline->findNextBreakAfter(m_lastTickFrame)) {
-        if (brk->breakFrame <= currentTime) {
-            const Timecode hit = brk->breakFrame;
-            m_timeline->seek(hit);
-            // Timeline::seek auto-pauses if playing, but be explicit.
-            m_timeline->pause();
-            m_atBreak = true;
-            m_lastBreakHitFrame = hit;
-            m_lastTickFrame = hit;
-            m_timeline->setSectionAtBreak(true);
-            // Phase C: seed Normal clips with the source-frame phase they
-            // had at the break so their continuation picks up smoothly.
-            seedContinuationAt(hit);
-            std::cout << "[SectionScheduler] At break frame=" << hit << std::endl;
-            // [SBG] diag — REMOVE after section-break-glitch fix lands.
-            std::cout << "[SBG][at-break] hit=" << hit << std::endl;
-            return;
-        }
     }
 
     m_lastTickFrame = currentTime;
+}
+
+void SectionScheduler::handleBreakAt(Timecode breakFrameTime) {
+    // NEW-08 — apply a crossing the show thread detected. The show thread
+    // has already snapped the playhead to the break, paused, and raised
+    // Timeline::sectionAtBreak(); this runs the registry-mutating tail on
+    // the editor thread (the sole registry writer, ADR-0014).
+    if (!m_timeline) return;
+
+    // Staleness guard. Between the show thread posting SectionBreakDetected
+    // and this drain, a seek (clears sectionAtBreak) or a Play (flips state
+    // back to Playing) may have landed — Timeline::seek calls
+    // setSectionAtBreak(false). If either happened the message is stale; the
+    // playhead is no longer parked at the break, so do not seed continuation.
+    if (!m_timeline->sectionAtBreak()) return;
+    if (m_timeline->getPlaybackState() != PlaybackState::Paused) return;
+
+    // Idempotency: already parked at this exact break (e.g. the editor's own
+    // path raced the drain). Re-seeding would reset the wall-clock anchors.
+    if (m_atBreak && m_lastBreakHitFrame == breakFrameTime) return;
+
+    m_atBreak           = true;
+    m_lastBreakHitFrame = breakFrameTime;
+    // m_lastTickFrame / m_haveLastTickFrame must move with the playhead —
+    // otherwise the next tick() reads a bogus discontinuity off a stale
+    // previous-frame value.
+    m_lastTickFrame     = breakFrameTime;
+    m_haveLastTickFrame = true;
+    // Seed Normal clips with the source-frame phase they had at the break so
+    // their continuation picks up smoothly.
+    seedContinuationAt(breakFrameTime);
+
+    std::cout << "[SectionScheduler] At break frame=" << breakFrameTime
+              << " (applied from show-thread detection)" << std::endl;
 }
 
 void SectionScheduler::go() {
@@ -188,6 +172,16 @@ void SectionScheduler::go() {
     const double frameRate = m_timeline->getFrameRate() > 0.0 ? m_timeline->getFrameRate() : 30.0;
     const Timecode oneFrame = static_cast<Timecode>(1000000.0 / frameRate);
     const Timecode resumeFrame = m_lastBreakHitFrame + oneFrame;
+
+    // NEW-08 — recompute continuation phase from the wall-clock anchor
+    // BEFORE the snapshot helpers below. advanceContinuation's wall-clock
+    // path derives sourcePhaseFrames from (now - continuationStartTimeNs),
+    // independent of dt, so a 0.0 dt is fine. Without this, an editor that
+    // stalled through the at-break park leaves phase.sourcePhaseFrames at
+    // the seed value (advanceContinuation didn't tick during the stall),
+    // and snapshotTailHoldFrames / snapshotPostBreakAnchors would capture a
+    // source frame the user never saw — a visible jump at GO.
+    advanceContinuation(0.0);
 
     // Phase 6 — snapshot the displayed frame for any continuing clip
     // ending at this break, so the post-break held-fade shows what the

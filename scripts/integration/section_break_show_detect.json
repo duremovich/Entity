@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "description": "NEW-08 regression guard — section-break crossing detection runs on the SHOW thread (Engine::showThreadMain), not the editor-thread SectionScheduler::tick. Plays a clip across a section break at timeline frame 60 (2000000us at 30fps). The show-thread detector must snap + pause the playhead at the break; the editor applies the crossing via SectionScheduler::handleBreakAt from the R2D SectionBreakDetected drain. Then SectionGo resumes playback. Wall-clock-anchored: uses WaitSeconds per scripts/CLAUDE.md (headless --script runs the editor loop at thousands of fps, so WaitFrames would not give the Timeline real wall-clock time to advance to the break).",
+    "commands": [
+        {"type": "AddScreen", "name": "ShowDetectScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 300},
+        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "Break1"},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "AssertPlayheadAtFrame", "frame": 0, "tolerance": 0},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 2.5},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 2},
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "Exit"}
+    ]
+}

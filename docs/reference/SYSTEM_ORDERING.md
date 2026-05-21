@@ -22,7 +22,12 @@ load, thousands of Hz in `--headless --script` mode with no decode work).
        └─ Advances m_currentTime when Playing. Atomic write.
 
 2.  SectionScheduler::tick()
-       └─ Detects section breaks; writes ClipPlaybackPhase + Timeline state.
+       └─ Break-crossing DETECTION runs on the show thread now (NEW-08).
+          tick() applies the catch-up: advances ClipPlaybackPhase
+          continuation while parked, drops a stale at-break latch on
+          manual resume, resets post-break anchors on a playback scrub.
+       └─ The editor applies a show-detected crossing via handleBreakAt()
+          from drainRendererToDirector (step 10).
        └─ Wall-clock-anchored (steady_clock), NOT dt-accumulator.
 
 3.  AnimationSystem::update(dt)
@@ -95,8 +100,21 @@ load, thousands of Hz in `--headless --script` mode with no decode work).
 framerate (typically vsync on the primary output, 60 Hz).
 
 ```
-1.  if (editor heartbeat > 50ms stale):
-       ├─ Timeline::update(dt)            ← show-thread fallback (ee99a99)
+1.  Timeline::update(dt)
+       └─ Advances Timeline::m_currentTime when Playing. Runs every show
+          frame unconditionally (ee99a99) — playback pace is decoupled
+          from editor health.
+
+1.1 SectionScheduler break-crossing detection  (NEW-08, the `SectionDetect` zone)
+       └─ When Playing and not already at-break, finds the first
+          Section::breakFrame the playhead just crossed, snaps + pauses
+          the playhead, raises Timeline::sectionAtBreak(), and posts an
+          R2D bus::SectionBreakDetected. Show-thread-local last-seen
+          state; sections read live via Timeline::copySectionsAndRate();
+          no registry writes. The editor applies the crossing via
+          SectionScheduler::handleBreakAt (editor step 10).
+
+1.2 if (editor heartbeat > 50ms stale):
        └─ DecodeSystem::update()          ← show-thread fallback (a9bcd8b)
 
 2.  CommandDispatcher::processQueue(Show affinity)
@@ -195,22 +213,27 @@ write the registry.** That's why only some systems have fallbacks.
 | System | Editor-tick site | Show-thread fallback? | Notes |
 |---|---|---|---|
 | `Timeline::update` | step 1 | yes since `ee99a99` | Writes only atomic `m_currentTime` — show-safe. |
-| `SectionScheduler::tick` | step 2 | no | Writes `ClipPlaybackPhase` + `Timeline` section state + `ObjectAnimationLayer::frozen` (Phase 3.8). See CODE_ISSUES NEW-08. |
+| `SectionScheduler` | editor step 2 / show step 1.1 | yes via detector-on-show split (2026-05-20) | Break-crossing *detection* runs on the show thread (`SectionDetect`, show step 1.1) — it snaps + pauses the playhead and posts R2D `SectionBreakDetected`. The editor *applies* it via `handleBreakAt` (registry writes: `ClipPlaybackPhase`, scheduler latch). Continuation phase is re-derived show-side from the wall-clock anchor in `mapToMediaFrameFromCatalog`, so it never freezes during a stall. NEW-08 closed. |
 | `AnimationSystem::update` | step 3 | yes via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` (Clip branch) and `ObjectAnimationOutput` (OA branch) for UI surfaces. Clip tracks are baked into `ClipCatalogEntry`; OA tracks into `ObjectAnimationLayerSnapshot`. Show thread re-evaluates both per render frame in `buildRenderFrame`. Animation stays alive during editor stalls. NEW-07 closed. OA freeze for Locked layers at section breaks handled via `ObjectAnimationLayer::frozen` (ADR-0016). End-of-layer behavior follows `ObjectAnimationLayer::endBehavior` (ADR-0020): `Hold` keeps the last evaluated values applied past the layer's active window (default); `Reset` clears the override. After-end-Hold layers ride the snapshot to keep the show thread in sync during stalls; after-end-Reset layers are filtered out editor-side. |
 | `TextSystem::update` | step 3.5 | no -- not needed | Rasterizes dirty Text layers to video-pool textures. Static-per-frame: text content only changes on explicit authoring commands, never on playback. The last-baked texture remains valid during editor stalls so output stays correct. Writes `TextLayerState::textureSlot`/`bakedWidth`/`bakedHeight`; clears `dirty`. |
 | `drainContentScannerDeltas` | step 4 | no -- not needed | Filesystem-watcher updates can wait until stall ends. |
 | `DecodeSystem::update` | step 5 | yes since `a9bcd8b` | Writes only atomic `worker->targetFrame` — show-safe. |
 
-NEW-08 is the remaining open gap. NEW-07 was closed 2026-05-11 by the
-snapshot-bake approach in `docs/design/animation-snapshot-bake.md`:
-keyframe tracks travel through `bus::ClipCatalogEntry` and the show
-thread re-evaluates them per render frame, so animation stays alive
-during editor stalls without any registry writes from the show thread.
+Every editor-tick system that drives the projector output now has a
+stall path. NEW-07 was closed 2026-05-11 by the snapshot-bake approach
+in `docs/design/animation-snapshot-bake.md`: keyframe tracks travel
+through `bus::ClipCatalogEntry` and the show thread re-evaluates them
+per render frame.
 
-The plan for NEW-08 follows the same shape (see
-`docs/design/section-scheduler-snapshot-bake.md`), but with the added
-state-machine wiring the SectionScheduler needs — detector-on-show +
-applier-on-editor + wall-clock anchor for continuation phase.
+NEW-08 was closed 2026-05-20 with the detector-on-show / applier-on-
+editor split (see `docs/design/section-scheduler-snapshot-bake.md`).
+Because SectionScheduler is a state machine — not a stateless evaluator
+like AnimationSystem — the snapshot-bake shape alone was not enough: the
+show thread runs the *detector* (and snaps the playhead immediately so
+output never sails past the break), while the registry-mutating *apply*
+stays on the editor thread, reached by an R2D `SectionBreakDetected`
+message. Continuation phase rides a wall-clock anchor (`steady_clock`),
+re-derived show-side, so it advances even with no editor ticks.
 
 ---
 

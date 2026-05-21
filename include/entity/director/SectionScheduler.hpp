@@ -8,23 +8,26 @@ namespace entity {
 
 class Timeline;
 
-// SectionScheduler — Director-side state machine that watches Timeline
-// playback for section-break crossings and parks the playhead at the
-// first break it crosses each tick.
+// SectionScheduler — Director-side (editor-thread) state machine for
+// section-break parking.
 //
-// Phase B parked the playhead and let `mapToMediaFrame` freeze every
-// clip's source frame as a side effect of the timeline frame freezing.
-// Phase C activates the per-clip `sectionBehavior` flag: when a break
-// fires, every clip flagged Normal gets a `ClipPlaybackPhase` component
-// seeded with the source-frame phase it had at the break, and the
-// scheduler advances that phase each at-break tick. `mapToMediaFrame`
-// consults the phase so Loop/PingPong clips keep cycling while the
-// playhead is parked. Locked clips simply skip continuation and freeze
-// (their `inContinuation` is never set true).
+// Break-crossing DETECTION runs on the show thread (Engine::showThreadMain,
+// NEW-08) so a break is caught on time even when the editor thread stalls;
+// the show thread snaps + pauses the playhead and posts a
+// bus::SectionBreakDetected. This class APPLIES a detected crossing via
+// handleBreakAt() and owns the at-break continuation state machine.
 //
-// Owned by Director (next to PlaybackTimeAuthority). Engine ticks it
-// each main-loop update AFTER `Timeline::update(dt)` (so the snapped
-// frame is the one AnimationSystem evaluates against).
+// When a break is applied, every clip flagged `sectionBehavior == Normal`
+// gets a `ClipPlaybackPhase` component seeded with the source-frame phase
+// it had at the break (`seedContinuationAt`). `mapToMediaFrame` consults
+// the phase so Loop/PingPong clips keep cycling while the playhead is
+// parked; the show-side `mapToMediaFrameFromCatalog` re-derives that phase
+// from a wall-clock anchor so cycling survives an editor stall. Locked
+// clips skip continuation and freeze (`inContinuation` stays false).
+//
+// Owned by Director (next to PlaybackTimeAuthority). Engine ticks it each
+// editor-thread update; handleBreakAt() is additionally called from
+// Engine::drainRendererToDirector when a show-detected crossing arrives.
 class SectionScheduler {
 public:
     SectionScheduler(entt::registry& registry, Timeline* timeline);
@@ -33,14 +36,25 @@ public:
     SectionScheduler(const SectionScheduler&) = delete;
     SectionScheduler& operator=(const SectionScheduler&) = delete;
 
-    /** Per-tick hook. If the playhead just crossed any Section::breakFrame
-     *  this tick, snap to it, pause the timeline, raise the at-break flag
-     *  on Timeline, and seed `ClipPlaybackPhase` on every Normal-mode
-     *  active clip. While at-break, advances accumulated source-frame
-     *  phase by `deltaTimeSeconds * clip.framerate` for each Normal clip
-     *  in continuation. Scrub jumps are not crossings — only continuous
-     *  playback advances trigger break detection. */
+    /** Per-tick hook on the editor thread. Section-break *crossing
+     *  detection* lives on the show thread now (NEW-08) — see
+     *  `Engine::showThreadMain` — so this no longer detects crossings.
+     *  It still: clears continuation on Stop, advances continuation phase
+     *  while parked at a break (Paused), drops a stale at-break latch on
+     *  manual resume, and resets post-break anchors when the user scrubs
+     *  during playback. */
     void tick(double deltaTimeSeconds);
+
+    /** Apply a section-break crossing detected by the show thread (NEW-08).
+     *  Called only from `Engine::drainRendererToDirector` when a
+     *  `bus::SectionBreakDetected` message arrives. The show thread has
+     *  already snapped + paused the playhead and raised
+     *  `Timeline::sectionAtBreak()`; this runs the registry-mutating
+     *  catch-up on the editor thread: raise the scheduler's at-break
+     *  latch and seed `ClipPlaybackPhase` on every Normal-mode active
+     *  clip. Idempotent; drops the call if the message is stale (a seek
+     *  or Play landed before the editor drained it). */
+    void handleBreakAt(Timecode breakFrameTime);
 
     /** Spacebar GO when at a break: clear the at-break flag, advance one
      *  frame past the break, resume play. Also clears `inContinuation`

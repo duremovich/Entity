@@ -66,8 +66,9 @@ day-to-day. **510 / 510 ctest green** at current HEAD.
 Latest shipped milestone: Content Routing library + Feed Maps
 (ADR-0022, May 2026).
 
-One known editor-stall gap remains — full SectionScheduler show-thread
-fallback. Animation, decode, and timeline already have fallbacks.
+The editor/show thread split is complete — timeline, decode, animation,
+and section scheduling all keep running on the show thread when the
+editor thread stalls, so the projector output never freezes.
 
 ## Build from source
 

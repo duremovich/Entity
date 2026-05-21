@@ -860,6 +860,8 @@ ojson encode(const ClipCatalogEntry& e) {
     j["phase_tailHoldMediaFrame"] = e.phase_tailHoldMediaFrame;
     j["phase_postBreakMediaAnchor"] = e.phase_postBreakMediaAnchor;
     j["phase_anchorTimelineFrame"]  = e.phase_anchorTimelineFrame;
+    j["phase_continuationStartTimeNs"] = e.phase_continuationStartTimeNs;
+    j["phase_continuationSeedFrames"]  = e.phase_continuationSeedFrames;
     j["position"]             = e.position;
     j["rotation"]             = e.rotation;
     j["scale"]                = e.scale;
@@ -909,6 +911,11 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     e.phase_tailHoldMediaFrame = j.at("phase_tailHoldMediaFrame").get<FrameNumber>();
     e.phase_postBreakMediaAnchor = j.at("phase_postBreakMediaAnchor").get<FrameNumber>();
     e.phase_anchorTimelineFrame  = j.at("phase_anchorTimelineFrame").get<FrameNumber>();
+    // Wall-clock continuation anchor (NEW-08) — optional for backward compat;
+    // defaults match the struct (0 = "no anchor", show side uses the snapshot
+    // phase_sourcePhaseFrames instead).
+    e.phase_continuationStartTimeNs = j.value("phase_continuationStartTimeNs", std::int64_t{0});
+    e.phase_continuationSeedFrames  = j.value("phase_continuationSeedFrames", 0.0);
     // Animation fields (added for NEW-07) — optional for backward compat with
     // any pre-recorded test fixtures or older payloads. Defaults match the
     // struct defaults so static (un-animated) clips stay correct.
@@ -1272,6 +1279,18 @@ OutputWindowReady decodeOutputWindowReady(const json& j) {
     return m;
 }
 
+ojson encode(const SectionBreakDetected& m) {
+    ojson j = ojson::object();
+    j["breakFrame"] = m.breakFrame;
+    return j;
+}
+
+SectionBreakDetected decodeSectionBreakDetected(const json& j) {
+    SectionBreakDetected m;
+    m.breakFrame = j.at("breakFrame").get<Timecode>();
+    return m;
+}
+
 } // namespace
 
 const char* messageTypeName(const Message& msg) noexcept {
@@ -1293,6 +1312,7 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, FrameDropped>)                return "FrameDropped";
         else if constexpr (std::is_same_v<T, CreateOutputWindowRequest>)   return "CreateOutputWindowRequest";
         else if constexpr (std::is_same_v<T, OutputWindowReady>)           return "OutputWindowReady";
+        else if constexpr (std::is_same_v<T, SectionBreakDetected>)        return "SectionBreakDetected";
         else return "Unknown";
     }, msg);
 }
@@ -1334,6 +1354,7 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "EffectCompileFailed")            return Message{decodeEffectCompileFailed(data)};
         if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
+        if (type == "SectionBreakDetected")          return Message{decodeSectionBreakDetected(data)};
     } catch (const std::exception&) {
         return std::nullopt;
     }

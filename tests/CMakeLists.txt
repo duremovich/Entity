@@ -185,6 +185,11 @@ entity_add_integration_test(scrub_clears_at_break  scrub_clears_at_break.json)
 # Phase 5 visibility gate must NOT fire when the playhead isn't at a break.
 entity_add_integration_test(first_section_plays  first_section_plays.json)
 
+# NEW-08 — section-break crossing detection runs on the show thread. Play
+# past a break; the show-thread detector parks the playhead, the editor
+# applies the crossing via handleBreakAt from the R2D drain; SectionGo resumes.
+entity_add_integration_test(section_break_show_detect  section_break_show_detect.json)
+
 # Phase 6 / queued-at-break — clip whose start aligns with a section break
 # is queued waiting for GO; first visible post-GO tick must map to
 # clip.mediaStartFrame, not mediaStartFrame + 1. Companion scripts cover

@@ -6,6 +6,57 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### SectionScheduler Show-Thread Detection — NEW-08 closed (2026-05-20)
+
+Closed the last editor-stall gap. `SectionScheduler::tick` was the sole
+section-break crossing detector and ran only on the editor thread, so an
+editor stall (modal drag, slow project load) let the playhead sail past a
+break — the cue fired late with a visible glitch — and froze continuation
+phase for clips parked at a break.
+
+**Show-thread detection.** Break-crossing detection moved into
+`Engine::showThreadMain` (the `SectionDetect` Tracy zone), which runs every
+show frame regardless of editor health. When playing and not already
+at-break, it finds the first `Timeline::Section::breakFrame` the playhead
+crossed since the last show frame, snaps + pauses the playhead, raises
+`Timeline::sectionAtBreak()`, and posts a new R2D `bus::SectionBreakDetected`
+message. Sections are read live via `Timeline::copySectionsAndRate()`
+(already show-safe); detector state is two show-thread-local vars. A
+discontinuity guard (`max(2 frames, 5×dt)`) skips command-seeks.
+
+**Editor-side apply.** `SectionScheduler::handleBreakAt(Timecode)` —
+extracted from the old `tick()` crossing branch — is called from
+`Engine::drainRendererToDirector` on the `SectionBreakDetected` drain. It
+runs the registry-mutating catch-up on the editor thread (the sole registry
+writer per ADR-0014): raises the scheduler at-break latch and seeds
+`ClipPlaybackPhase`. Staleness guard: drops the message if a seek or Play
+landed in the gap (`sectionAtBreak()` cleared, or state no longer Paused).
+Crossing detection was **removed from `tick()` entirely** — one detector,
+one applier, no dual-detector race.
+
+**Continuation phase survives a stall.** `bus::ClipCatalogEntry` gained
+`phase_continuationStartTimeNs` / `phase_continuationSeedFrames` (baked from
+the existing `ClipPlaybackPhase` wall-clock anchor). The show-side
+`mapToMediaFrameFromCatalog` re-derives the live source phase from the
+anchor + `steady_clock::now()` instead of the snapshot-frozen
+`phase_sourcePhaseFrames`, so Loop/PingPong clips keep cycling at a parked
+break while the editor is stalled. `SectionScheduler::go()` calls
+`advanceContinuation(0.0)` first so a GO after a stall snapshots the phase
+the user actually saw, not a stale seed value.
+
+Implemented per `docs/design/section-scheduler-snapshot-bake.md` with two
+divergences (show-only detection; live `copySectionsAndRate()` instead of a
+baked section list) — see that doc's header.
+
+**Files.** `include/entity/bus/Message.hpp`, `src/bus/Serialization.cpp`
+(2 `ClipCatalogEntry` fields + `SectionBreakDetected` message),
+`include/entity/director/SectionScheduler.hpp` + `src/director/SectionScheduler.cpp`
+(`handleBreakAt`, `tick()` detection removed, `go()` phase recompute),
+`src/director/PlaybackTimeAuthority.cpp` (bake + show-side derivation),
+`src/core/Engine.cpp` (show detector + R2D drain arm),
+`include/entity/timeline/Timeline.hpp` (threading comment).
+New test: `scripts/integration/section_break_show_detect.json`.
+
 ### OSC Outbound Sender + Mapping Table (2026-05-19)
 
 Ten-phase implementation (Phases 1-10). Adds an outbound OSC sender plugin that

@@ -521,10 +521,14 @@ public:
 private:
     entt::registry& m_registry;
 
-    // Timeline state. m_currentTime is atomic so the show thread can read it
-    // (via getCurrentTime() / getCurrentFrame()) for buildRenderFrame /
-    // buildSceneSnapshot while the editor thread mutates it via update() /
-    // seek() / play()/pause()/stop(). All writes happen on the editor thread.
+    // Timeline state. m_currentTime and m_playbackState are atomic because
+    // both the editor and show threads touch them. The show thread owns the
+    // per-frame playback advance (Timeline::update, called unconditionally in
+    // Engine::showThreadMain) and — since NEW-08 — also snaps + pauses the
+    // playhead when its section-break detector fires (a seek() call). The
+    // editor thread owns user-driven scrub / seek / play / pause / stop and
+    // project load. Reads (getCurrentTime / getCurrentFrame / getPlaybackState)
+    // happen on both threads, including buildRenderFrame / buildSceneSnapshot.
     std::atomic<Timecode> m_currentTime{0};
     Timecode m_duration{600000000};  // Default: 10 minutes = 600 seconds = 600,000,000 microseconds
     std::atomic<PlaybackState> m_playbackState{PlaybackState::Stopped};

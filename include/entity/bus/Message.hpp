@@ -515,6 +515,15 @@ struct ClipCatalogEntry {
     FrameNumber   phase_postBreakMediaAnchor{-1};
     FrameNumber   phase_anchorTimelineFrame{0};
 
+    // Wall-clock continuation anchor (NEW-08). Mirror of
+    // ClipPlaybackPhase::{continuationStartTimeNs, continuationSeedFrames}.
+    // When phase_continuationStartTimeNs > 0 the show thread re-derives the
+    // live source phase from this anchor + steady_clock::now() instead of the
+    // snapshot-frozen phase_sourcePhaseFrames — so Loop/PingPong clips keep
+    // cycling at a parked section break while the editor thread is stalled.
+    std::int64_t  phase_continuationStartTimeNs{0};
+    double        phase_continuationSeedFrames{0.0};
+
     // Transform axes mirror (snapshot of Transform::{position,rotation,scale}).
     // Used by the show thread only when `tracks` is non-empty; for static
     // clips, `transformMatrix` above is the authoritative pre-bake.
@@ -734,6 +743,17 @@ struct OutputWindowReady {
     std::string   errorMessage;
 };
 
+// Renderer → Director (NEW-08). The show thread's section-break detector
+// found the playhead crossing a Timeline section break and has already
+// snapped + paused the playhead and raised Timeline::sectionAtBreak(). The
+// editor drains this in drainRendererToDirector and runs the registry-
+// mutating catch-up via SectionScheduler::handleBreakAt (seed
+// ClipPlaybackPhase, raise the scheduler's at-break latch). This keeps
+// section breaks firing on time even while the editor thread is stalled.
+struct SectionBreakDetected {
+    Timecode breakFrame{0};
+};
+
 using Message = std::variant<
     RenderFrame,
     SceneSnapshot,
@@ -750,7 +770,8 @@ using Message = std::variant<
     DeviceLost,
     FrameDropped,
     CreateOutputWindowRequest,
-    OutputWindowReady
+    OutputWindowReady,
+    SectionBreakDetected
 >;
 
 // Stable wire identifier. Mirrors the CommandDispatcher "type" string

@@ -33,7 +33,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <utility>
@@ -214,9 +216,25 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
         return clip.mediaStartFrame + sourceLength - 1;
     }
 
-    // continuation path: derive from accumulated source phase
+    // continuation path: derive from accumulated source phase.
     if (sourceLength <= 0) return clip.mediaStartFrame;
-    const double phaseClamped = std::max(e.phase_sourcePhaseFrames, 0.0);
+    // NEW-08: when a wall-clock anchor is present, re-derive the live phase
+    // from it instead of the snapshot-frozen phase_sourcePhaseFrames. During
+    // an editor stall no new SceneSnapshot is published, so the baked
+    // phase_sourcePhaseFrames goes stale — but the anchor (set once at the
+    // at-break park, never mutated during continuation) plus a fresh
+    // steady_clock reading keeps Loop/PingPong clips cycling on the
+    // projector. Mirrors SectionScheduler::advanceContinuation's wall-clock
+    // path; the dt-accumulator fallback (anchor == 0) reads the baked value.
+    double effectivePhase = e.phase_sourcePhaseFrames;
+    if (e.phase_continuationStartTimeNs > 0) {
+        const std::int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double elapsedSec =
+            static_cast<double>(nowNs - e.phase_continuationStartTimeNs) * 1e-9;
+        effectivePhase = e.phase_continuationSeedFrames + elapsedSec * clip.framerate;
+    }
+    const double phaseClamped = std::max(effectivePhase, 0.0);
     const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
     switch (clip.playbackMode) {
         case PlaybackMode::Freeze:
@@ -1043,6 +1061,10 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             ce.phase_tailHoldMediaFrame  = phase->tailHoldMediaFrame;
             ce.phase_postBreakMediaAnchor = phase->postBreakMediaAnchor;
             ce.phase_anchorTimelineFrame  = phase->anchorTimelineFrame;
+            // NEW-08 wall-clock anchor — lets the show thread re-derive the
+            // live continuation phase during editor stalls.
+            ce.phase_continuationStartTimeNs = phase->continuationStartTimeNs;
+            ce.phase_continuationSeedFrames  = phase->continuationSeedFrames;
         }
 
         out.clipCatalog.push_back(std::move(ce));

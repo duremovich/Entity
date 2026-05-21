@@ -1,9 +1,36 @@
 # SectionScheduler editor-stall fix — design
 
 **Tracking issue**: `docs/reference/CODE_ISSUES.md` NEW-08.
-**Status**: design only; not yet implemented.
+**Status**: **Implemented 2026-05-20.** Closed NEW-08.
 **Sibling design**: `docs/design/animation-snapshot-bake.md` (NEW-07) —
 similar shape, less state. Read that first if you haven't.
+
+> **Implemented with two divergences from the design below**, decided
+> after a threading review:
+>
+> 1. **Show-only detection.** The design suggested keeping the editor
+>    `tick()` detector as a "non-stalled fast path" alongside the new
+>    show detector. That dual-detector arrangement is a race surface
+>    (double-seed resetting the wall-clock anchors; `m_lastTickFrame`
+>    desync). Instead, crossing detection was **removed from `tick()`
+>    entirely** in the same change that added the show detector — one
+>    detector, one applier, no dedup races.
+> 2. **Sections read live, not baked.** The detector reads the section
+>    list via `Timeline::copySectionsAndRate()` (already show-safe —
+>    shared lock) instead of a new `SceneSnapshot::sections` field. A
+>    detector wants live data, and this adds zero bus surface. The
+>    snapshot `atBreak` / `lastBreakHitFrame` gating fields were also
+>    not needed — `Timeline::sectionAtBreak()` (an existing atomic) is
+>    the gate, and `handleBreakAt` uses it (plus `state == Paused`) as
+>    its staleness guard.
+>
+> The wall-clock continuation anchor went onto `bus::ClipCatalogEntry`
+> as `phase_continuationStartTimeNs` / `phase_continuationSeedFrames`
+> (mirroring the existing `ClipPlaybackPhase` fields) rather than a
+> single `phase_anchorWallTimeNs`. `advanceContinuation` was kept as an
+> editor-side per-tick write (belt-and-suspenders for the PropertyWindow)
+> and is additionally called once at the top of `go()` so a GO after a
+> stall snapshots a fresh phase. The rest of the design below stands.
 
 This doc is more nuanced than the AnimationSystem one because
 SectionScheduler is a state machine that carries memory across ticks

@@ -1127,6 +1127,12 @@ void Engine::showThreadMain() {
     constexpr auto kShowPeriod = std::chrono::nanoseconds(16'666'667); // ~60 Hz
     auto nextTick = Clock::now() + kShowPeriod;
 
+    // NEW-08 — show-thread section-break detector state. Show-thread-private
+    // (like CompositorSystem::m_pendingAllocations) — never a registry
+    // component, never touched by the editor thread.
+    Timecode showSectionLastSeen     = 0;
+    bool     showSectionHaveLastSeen = false;
+
     while (!m_showStopRequested.load(std::memory_order_acquire)) {
         ZoneScopedN("Show iter");
         const auto showIterStart = Clock::now();
@@ -1153,6 +1159,76 @@ void Engine::showThreadMain() {
         // so it's safe to call unconditionally.
         if (m_timeline && m_timeAuthority) {
             m_timeline->update(m_timeAuthority->getDeltaTime());
+        }
+
+        // NEW-08 — section-break crossing detection. Runs here, on the show
+        // thread, so a break is caught on time even when the editor thread
+        // is stalled (Win32 modal drag, slow project load). Editor-side
+        // SectionScheduler::tick no longer detects crossings; the editor
+        // applies them via handleBreakAt from the R2D drain. Detector state
+        // is the two show-thread-local vars declared above the loop.
+        if (m_timeline && m_transport) {
+            ZoneScopedN("SectionDetect");
+            const Timecode      cur = m_timeline->getCurrentTime();
+            const PlaybackState st  = m_timeline->getPlaybackState();
+            // Only detect during continuous playback, and never while the
+            // editor already has the playhead parked at a break.
+            if (st == PlaybackState::Playing && !m_timeline->sectionAtBreak()) {
+                if (!showSectionHaveLastSeen) {
+                    showSectionLastSeen     = cur;
+                    showSectionHaveLastSeen = true;
+                } else if (cur > showSectionLastSeen) {
+                    auto secAndRate = m_timeline->copySectionsAndRate();
+                    const std::vector<Timeline::Section>& sections = secAndRate.first;
+                    double rate = secAndRate.second > 0.0 ? secAndRate.second : 30.0;
+                    const Timecode oneFrame = static_cast<Timecode>(1000000.0 / rate);
+                    // A jump larger than a few frames is a command-seek, not
+                    // continuous playback — resync and skip detection.
+                    const double showDtSec =
+                        m_timeAuthority ? m_timeAuthority->getDeltaTime() : 0.0;
+                    const Timecode tickAdvance = showDtSec > 0.0
+                        ? static_cast<Timecode>(showDtSec * 1000000.0)
+                        : static_cast<Timecode>(0);
+                    const Timecode threshold = std::max(oneFrame * 2, tickAdvance * 5);
+                    if (cur - showSectionLastSeen <= threshold) {
+                        // First break in (showSectionLastSeen, cur].
+                        Timecode hitFrame = -1;
+                        for (const auto& s : sections) {
+                            if (s.breakFrame > showSectionLastSeen &&
+                                s.breakFrame <= cur &&
+                                (hitFrame < 0 || s.breakFrame < hitFrame)) {
+                                hitFrame = s.breakFrame;
+                            }
+                        }
+                        if (hitFrame >= 0) {
+                            // Snap + pause + raise the at-break flag so the
+                            // projector parks this very frame and the spacebar
+                            // gate dispatches SectionGo during the window
+                            // before the editor drains the message.
+                            m_timeline->seek(hitFrame);
+                            m_timeline->setSectionAtBreak(true);
+                            m_transport->send(bus::Direction::R2D,
+                                bus::serialize(bus::Message{
+                                    bus::SectionBreakDetected{hitFrame}}));
+                            showSectionLastSeen = hitFrame;
+                            std::cout << "[SectionDetect] break crossing at frame="
+                                      << hitFrame << " (show thread)" << std::endl;
+                        } else {
+                            showSectionLastSeen = cur;
+                        }
+                    } else {
+                        showSectionLastSeen = cur;  // discontinuity (seek)
+                    }
+                } else if (cur < showSectionLastSeen) {
+                    showSectionLastSeen = cur;  // backward jump (seek)
+                }
+            } else {
+                // Paused / Stopped / already at-break — keep last-seen fresh
+                // so the next Playing run doesn't read a crossing across the
+                // paused gap.
+                showSectionLastSeen     = cur;
+                showSectionHaveLastSeen = true;
+            }
         }
 
         // DecodeSystem still ticks on the editor thread (Engine::update).
@@ -4940,6 +5016,14 @@ void Engine::drainRendererToDirector() {
                 std::cerr << "[Engine] EffectCompileFailed kind=0x"
                           << std::hex << body.kindIdHash << std::dec
                           << ": " << body.errorMessage << std::endl;
+            } else if constexpr (std::is_same_v<T, bus::SectionBreakDetected>) {
+                // NEW-08 — the show thread's detector found a section-break
+                // crossing and already snapped + paused the playhead. Run
+                // the registry-mutating catch-up (seed ClipPlaybackPhase,
+                // raise the scheduler at-break latch) on the editor thread.
+                if (m_sectionScheduler) {
+                    m_sectionScheduler->handleBreakAt(body.breakFrame);
+                }
             } else if constexpr (std::is_same_v<T, bus::DeviceLost>) {
                 // Autosave-on-device-loss. The Engine already observed
                 // isDeviceLost() in the main loop and set m_running=false.
