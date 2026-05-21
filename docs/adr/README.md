@@ -34,6 +34,7 @@ that have moved on.
 | 0022 | [Content Routing library + Feed Maps](0022-content-routing-library-and-feedmaps.md) | Accepted | 2026-05-17 |
 | 0023 | [Control-plane plugin outbound via process-shared bridge](0023-control-plane-plugin-outbound-bridge.md) | Accepted | 2026-05-19 |
 | 0024 | [getStringSetting bridge for project-scoped plugin state](0024-string-settings-bridge-for-project-scoped-plugin-state.md) | Accepted | 2026-05-19 |
+| 0025 | [Timeline clock — separate rate authority from position authority](0025-clock-rate-vs-position-authority.md) | Accepted | 2026-05-21 |
 
 ## Format
 
