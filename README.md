@@ -13,9 +13,7 @@ the projector output.
 
 [Website](https://entitymedia.art) ·
 [Docs](https://entitymedia.art/docs/) ·
-[Roadmap](https://entitymedia.art/docs/roadmap/) ·
-[GitHub](https://github.com/duremovich/Entity) ·
-[Project board](https://github.com/users/duremovich/projects/2)
+[GitHub](https://github.com/duremovich/Entity)
 
 `GPLv3 core` · `Apache 2.0 plugin API` · `Windows (DX12)` · `Pre-release`
 
@@ -158,9 +156,6 @@ to plugins built against the Apache-2.0 API. Running shows with entity
 
 Pull requests welcome. The architecture context for contributors lives
 in [`docs/adr/`](docs/adr/) and [`docs/reference/`](docs/reference/).
-For roadmap and current status, see the
-[Entity Roadmap project board](https://github.com/users/duremovich/projects/2)
-— that's the source of truth for what's in progress.
 
 For bugs and feature ideas:
 [github.com/duremovich/Entity/issues](https://github.com/duremovich/Entity/issues).
@@ -170,7 +165,6 @@ For bugs and feature ideas:
 | | |
 |---|---|
 | Marketing site + user docs | [entitymedia.art](https://entitymedia.art) |
-| Project board (source of truth) | [github.com/users/duremovich/projects/2](https://github.com/users/duremovich/projects/2) |
 | ADR index | [`docs/adr/README.md`](docs/adr/README.md) |
 | ECS / DOD principles | [`docs/reference/ECS_PRINCIPLES.md`](docs/reference/ECS_PRINCIPLES.md) |
 | Entity archetypes | [`docs/reference/ENTITY_ARCHETYPES.md`](docs/reference/ENTITY_ARCHETYPES.md) |
