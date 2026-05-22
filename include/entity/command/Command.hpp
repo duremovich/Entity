@@ -10,16 +10,19 @@ namespace entity {
 class Engine;
 
 // Thread affinity for command execution.
-//   Editor — registry mutations, project I/O, UI state, and timeline
-//            transport (Play/Pause/Seek/SectionGo). Running transport on the
-//            editor thread keeps script-driven asserts ordered: Pause then
-//            AssertPlaybackState("Paused") both execute on the editor thread
-//            in sequence, so the assert always sees the post-Pause state.
-//            Timeline transport writes are all atomic, so running them from
-//            the editor thread is safe even though the show thread reads them.
-//   Either — commands that are safe on either thread and have no ordering
-//            dependency with respect to WaitFrames/assert commands. Currently
-//            only ExitCommand.
+//   Editor — registry mutations, project I/O, UI state, timeline transport,
+//            and ALL assert/capture commands. Editor-affinity commands honour
+//            WaitFrames and WaitSeconds ordering: the editor processQueue
+//            checks the deadline before popping the next command, so
+//            WaitSeconds(2.0) → AssertFoo is guaranteed to run after 2s.
+//            Any assert that must execute after a preceding wait MUST be
+//            Editor-affinity — Either bypasses the wait-state gate on the
+//            show thread and can fire with 0 accumulated samples.
+//   Either — commands that are safe on either thread AND have no ordering
+//            dependency with respect to WaitFrames/assert commands. The show
+//            thread drains Either commands without checking the wait deadline.
+//            Use only for commands that are truly order-independent (ExitCommand,
+//            pure-setter transport ops consumed by the show thread's own path).
 //   Show   — (unused: reserved for future show-thread-only commands)
 enum class Affinity { Editor, Show, Either };
 

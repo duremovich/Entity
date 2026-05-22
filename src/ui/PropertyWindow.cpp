@@ -21,6 +21,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/AudioSource.hpp"
 #include "entity/render/TextRasterizer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Effect.hpp"
@@ -197,6 +198,17 @@ void PropertyWindow::render() {
     // Playback section
     if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderPlaybackSection();
+    }
+
+    // Audio section — only shown for clips that carry audio
+    {
+        auto& reg = m_timeline->getRegistry();
+        const auto* src = reg.try_get<AudioSource>(selectedClip);
+        if (src && src->hasAudioStream) {
+            if (ImGui::CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
+                renderAudioSection(selectedClip);
+            }
+        }
     }
 
     // Clip Info section
@@ -2766,6 +2778,62 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     }
 
     ImGui::PopID();
+}
+
+// ============================================================================
+// Audio section
+// ============================================================================
+
+void PropertyWindow::renderAudioSection(entt::entity clipEntity) {
+    auto& registry = m_timeline->getRegistry();
+    auto* src = registry.try_get<AudioSource>(clipEntity);
+    if (!src) return;
+
+    // Gain — show in dB; clamp linear to [0, 2] (~+6 dBFS headroom).
+    // -60 dB floor avoids log(0). SliderFloat operates in dB space.
+    constexpr float kMinDb = -60.0f;
+    constexpr float kMaxDb =  6.0f;
+
+    auto linearToDb = [&](float g) -> float {
+        return g <= 0.0f ? kMinDb : std::max(kMinDb, 20.0f * std::log10(g));
+    };
+    auto dbToLinear = [&](float db) -> float {
+        return std::pow(10.0f, db / 20.0f);
+    };
+
+    float gainDb = linearToDb(src->gain);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 60.0f);
+    bool gainChanged = ImGui::SliderFloat("##audiogain", &gainDb, kMinDb, kMaxDb, "%.1f dB");
+    if (ImGui::IsItemActivated()) {
+        m_preEditAudioGain = src->gain;
+    }
+    if (gainChanged) {
+        src->gain = dbToLinear(gainDb);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+        auto cmd = std::make_unique<SetAudioSourceGainCommand>(clipEntity, src->gain);
+        cmd->setPreviousGain(m_preEditAudioGain);
+        m_dispatcher->enqueue(std::move(cmd));
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted("Gain");
+
+    // Mute / Solo toggles on one row
+    bool mute = src->mute;
+    if (ImGui::Checkbox("Mute##audiomute", &mute) && m_dispatcher) {
+        auto cmd = std::make_unique<SetAudioSourceMuteCommand>(clipEntity, mute);
+        cmd->setPreviousMute(src->mute);
+        src->mute = mute;
+        m_dispatcher->enqueue(std::move(cmd));
+    }
+    ImGui::SameLine();
+    bool solo = src->solo;
+    if (ImGui::Checkbox("Solo##audiosolo", &solo) && m_dispatcher) {
+        auto cmd = std::make_unique<SetAudioSourceSoloCommand>(clipEntity, solo);
+        cmd->setPreviousSolo(src->solo);
+        src->solo = solo;
+        m_dispatcher->enqueue(std::move(cmd));
+    }
 }
 
 } // namespace entity

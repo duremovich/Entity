@@ -1,0 +1,71 @@
+{
+    "version": 1,
+    "description": "F3: Audio loop-at-section-break regression guard. Places the 1 kHz tone fixture with PlaybackMode=Loop and SectionBehavior=Normal, adds a section break inside the clip, plays past the break so the playhead parks, then asserts the LoopbackDevice capture has non-zero RMS — the Normal-mode loop kept producing audio through the parked break. Requires tests/fixtures/audio/tone_1khz.mov.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "LoopAudioScreen",
+            "width": 320,
+            "height": 240
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "tests/fixtures/audio/tone_1khz.mov",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "SetClipPlaybackMode",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "mode": "Loop"
+        },
+        {
+            "type": "SetClipSectionBehavior",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "behavior": "Normal"
+        },
+        {
+            "type": "SetClipDuration",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "duration": 300
+        },
+        {
+            "type": "AddSectionBreak",
+            "breakFrame": 2000000,
+            "name": "AudioBreak"
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 2.5
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Paused"
+        },
+        {
+            "type": "AssertAudioCaptureRms",
+            "minRms": 0.005
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

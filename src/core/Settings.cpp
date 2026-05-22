@@ -143,6 +143,8 @@ Settings loadSettings(const std::filesystem::path& path) {
     readString("dmxEnttecPort",     settings.dmxEnttecPort);
     readU16 ("dmxEnttecUniverse",   settings.dmxEnttecUniverse);
 
+    readBool("audioOutputEnabled", settings.audioOutputEnabled);
+
     if (j.contains("activeWorkspace") && j["activeWorkspace"].is_string()) {
         auto name = j["activeWorkspace"].get<std::string>();
         if (!name.empty()) settings.activeWorkspace = std::move(name);
@@ -188,6 +190,7 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     j["dmxEnttecEnabled"]     = settings.dmxEnttecEnabled;
     j["dmxEnttecPort"]        = settings.dmxEnttecPort;
     j["dmxEnttecUniverse"]    = settings.dmxEnttecUniverse;
+    j["audioOutputEnabled"]   = settings.audioOutputEnabled;
     j["activeWorkspace"]      = settings.activeWorkspace;
 
     // Write to a temp file then rename — atomic on POSIX, near-atomic on

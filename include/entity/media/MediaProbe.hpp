@@ -29,6 +29,9 @@ struct ProbeInfo {
     double        framerate{0.0};
     FrameNumber   totalFrames{0};
     bool          hasAlpha{false};
+    bool          hasAudio{false};
+    int           audioSampleRate{0};
+    int           audioChannels{0};
     std::string   sourceCodecName;   // ffmpeg short form: "hap", "prores", "h264", ...
     std::string   displayCodecName;  // pretty form: "HAP", "ProRes", "H.264"
     CodecTier     tier{CodecTier::Unknown};

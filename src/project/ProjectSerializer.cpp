@@ -21,6 +21,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/AudioSource.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
@@ -470,6 +471,16 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     // compat free.
                     clipJson["effects"] = serializeEffectChain(registry, layerEntity);
 
+                    // v23 — AudioSource (optional; only written when clip has audio).
+                    const auto* audioSrc = registry.try_get<AudioSource>(layerEntity);
+                    if (audioSrc && audioSrc->hasAudioStream) {
+                        json audioJson;
+                        audioJson["gain"] = audioSrc->gain;
+                        audioJson["mute"] = audioSrc->mute;
+                        audioJson["solo"] = audioSrc->solo;
+                        clipJson["audio"] = std::move(audioJson);
+                    }
+
                     layersJson.push_back(clipJson);
 
                 } else if (oal) {
@@ -668,6 +679,10 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             // Missing on older project files -> stays empty on load.
             project["oscInboundMappingsJson"]  = projectMgr->getOscInboundMappingsJson();
             project["oscOutboundMappingsJson"] = projectMgr->getOscOutboundMappingsJson();
+
+            // v23 — project-level audio master state.
+            project["audioMasterGain"] = projectMgr->getAudioMasterGain();
+            project["audioMasterMute"] = projectMgr->getAudioMasterMute();
 
             // v18 — object library (parallel of mediaLibrary for 3D models).
             // Same pathKind + size-validity convention; no transcode /
@@ -1539,6 +1554,15 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 projectMgr->setOscOutboundMappingsJson(
                     project["oscOutboundMappingsJson"].get<std::string>());
             }
+
+            // v23 — audio master state. Missing on older files -> stays at
+            // default (gain=1.0, mute=false) which matches AudioEngine default.
+            if (project.contains("audioMasterGain") && project["audioMasterGain"].is_number()) {
+                projectMgr->setAudioMasterGain(project["audioMasterGain"].get<float>());
+            }
+            if (project.contains("audioMasterMute") && project["audioMasterMute"].is_boolean()) {
+                projectMgr->setAudioMasterMute(project["audioMasterMute"].get<bool>());
+            }
         }
 
         // Load tracks
@@ -1987,6 +2011,17 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         // Restore effect chain (v16+, issue #54). Pre-v16
                         // clips have no "effects" key — no-op.
                         deserializeEffectChain(clipJson, registry, clipEntity);
+
+                        // v23 — AudioSource gain/mute/solo. Only user-authored
+                        // fields; hasAudioStream and source* are re-derived when
+                        // the decode worker opens the file.
+                        if (clipJson.contains("audio") && clipJson["audio"].is_object()) {
+                            const auto& aj = clipJson["audio"];
+                            auto& as = registry.emplace_or_replace<AudioSource>(clipEntity);
+                            as.gain = aj.value("gain", 1.0f);
+                            as.mute = aj.value("mute", false);
+                            as.solo = aj.value("solo", false);
+                        }
 
                         // Add layer to track
                         track->layers.push_back(clipEntity);

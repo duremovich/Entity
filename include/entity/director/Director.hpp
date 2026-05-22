@@ -19,6 +19,7 @@ class PlaybackTimeAuthority;
 class SectionScheduler;
 class CaptureBroker;
 class TextSystem;
+class AudioSystem;
 
 // Director owns Phase D's "logical-side" subsystems -- the half of the engine
 // that decides *what* to render this tick (timeline state, project state,
@@ -57,6 +58,7 @@ public:
     SectionScheduler* getSectionScheduler()   noexcept { return m_sectionScheduler.get(); }
     CaptureBroker* getCaptureBroker()       noexcept { return m_captureBroker.get(); }
     TextSystem* getTextSystem()             noexcept { return m_textSystem.get(); }
+    AudioSystem* getAudioSystem()           noexcept { return m_audioSystem.get(); }
 
     const Timeline* getTimeline()                 const noexcept { return m_timeline.get(); }
     const ProjectManager* getProjectManager()     const noexcept { return m_projectManager.get(); }
@@ -69,6 +71,7 @@ public:
     const SectionScheduler* getSectionScheduler() const noexcept { return m_sectionScheduler.get(); }
     const CaptureBroker* getCaptureBroker()       const noexcept { return m_captureBroker.get(); }
     const TextSystem* getTextSystem()             const noexcept { return m_textSystem.get(); }
+    const AudioSystem* getAudioSystem()           const noexcept { return m_audioSystem.get(); }
 
     // SceneState seam. Director writes the registry during its tick (clip
     // creation, keyframe evaluation, ProjectManager load). Subtask 8's
@@ -110,6 +113,9 @@ private:
     // Rasterizes dirty TextLayerState components into video-pool slots each
     // editor tick. Editor-thread only; no show-thread fallback needed.
     std::unique_ptr<TextSystem>        m_textSystem;
+    // Owns per-clip audio decode workers; drives them from the timeline each
+    // editor tick. Show-thread fallback in Engine::showThreadMain (D6).
+    std::unique_ptr<AudioSystem>       m_audioSystem;
 };
 
 } // namespace entity

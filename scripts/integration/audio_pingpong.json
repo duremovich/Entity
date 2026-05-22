@@ -1,0 +1,70 @@
+{
+    "version": 1,
+    "description": "F3: Audio PingPong regression guard — verifies audio plays during the REVERSE phase specifically, not just the forward phase. The tone fixture is 5s (150 frames at 30fps). Duration is extended to 600 frames (20s) so the timeline clip stays active past the 5.5s wait that reaches the reverse phase. We play 5.5s to get past the forward span and into the reverse phase, call ClearAudioCapture so the capture buffer starts fresh, then wait 2s fully inside the reverse phase and assert non-zero RMS. This test FAILS if the reverse phase is silent — AssertAudioCaptureRms only sees reverse-phase audio after the clear. Requires tests/fixtures/audio/tone_1khz.mov.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "PingPongAudioScreen",
+            "width": 320,
+            "height": 240
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "tests/fixtures/audio/tone_1khz.mov",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "SetClipPlaybackMode",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "mode": "PingPong"
+        },
+        {
+            "type": "SetClipDuration",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "duration": 600
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 5.5
+        },
+        {
+            "type": "ClearAudioCapture"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 2.0
+        },
+        {
+            "type": "Pause"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "AssertAudioCaptureRms",
+            "minRms": 0.005
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

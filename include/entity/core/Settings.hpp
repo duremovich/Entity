@@ -125,6 +125,13 @@ struct Settings {
     uint16_t    dmxEnttecUniverse{0};
 
     // -----------------------------------------------------------------
+    // Audio output. When false, the audio engine is not started and
+    // all audio playback is silenced. Useful for headless / loopback
+    // environments where no audio device is available or desired.
+    // -----------------------------------------------------------------
+    bool audioOutputEnabled{true};
+
+    // -----------------------------------------------------------------
     // Active named workspace (UI dock layout). The workspaces themselves
     // live in `%APPDATA%/Entity/workspaces.json` (see WorkspaceStore);
     // this field is just the "currently selected" pointer. Survives app

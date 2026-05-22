@@ -33,7 +33,6 @@
 
 #include <algorithm>
 #include <bit>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -139,9 +138,13 @@ Clip clipFromCatalog(const bus::ClipCatalogEntry& e) {
 
 // Show-side mapToMediaFrame: mirrors the entity-aware 3-arg overload but reads
 // phase data from the ClipCatalogEntry instead of the registry.
+// nowNs is the active rate source's current time in nanoseconds
+// (caller passes rateNow()*1e9 so the continuation anchor and the show-thread
+// re-derivation share the same clock domain as the editor-side seed).
 FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
                                        FrameNumber timelineFrame,
-                                       double timelineFrameRate) {
+                                       double timelineFrameRate,
+                                       std::int64_t nowNs) {
     const Clip clip = clipFromCatalog(e);
     const FrameNumber clipEnd = clip.startFrame + clip.duration;
     const FrameNumber sourceLength = effectivePlaybackLength(clip);
@@ -222,14 +225,13 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
     // from it instead of the snapshot-frozen phase_sourcePhaseFrames. During
     // an editor stall no new SceneSnapshot is published, so the baked
     // phase_sourcePhaseFrames goes stale — but the anchor (set once at the
-    // at-break park, never mutated during continuation) plus a fresh
-    // steady_clock reading keeps Loop/PingPong clips cycling on the
-    // projector. Mirrors SectionScheduler::advanceContinuation's wall-clock
-    // path; the dt-accumulator fallback (anchor == 0) reads the baked value.
+    // at-break park, never mutated during continuation) plus the caller-
+    // supplied nowNs (from the active RateSource) keeps Loop/PingPong clips
+    // cycling on the projector on the same clock domain as the seed.
+    // Mirrors SectionScheduler::advanceContinuation's wall-clock path;
+    // the dt-accumulator fallback (anchor == 0) reads the baked value.
     double effectivePhase = e.phase_sourcePhaseFrames;
     if (e.phase_continuationStartTimeNs > 0) {
-        const std::int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
         const double elapsedSec =
             static_cast<double>(nowNs - e.phase_continuationStartTimeNs) * 1e-9;
         effectivePhase = e.phase_continuationSeedFrames + elapsedSec * clip.framerate;
@@ -509,21 +511,36 @@ PlaybackTimeAuthority::PlaybackTimeAuthority(entt::registry& registry, Timeline*
 
 PlaybackTimeAuthority::~PlaybackTimeAuthority() = default;
 
+RateSource* PlaybackTimeAuthority::selectRateSource() {
+    if (m_audioRate && m_audioRate->healthy()) return m_audioRate;
+    return &m_systemRate;
+}
+
 void PlaybackTimeAuthority::startTiming() {
-    m_startTime = Clock::now();
-    m_lastFrameTime = m_startTime;
-    m_deltaTime = 0.0;
-    m_elapsedTime = 0.0;
-    m_frameCount = 0;
+    RateSource* sel = selectRateSource();
+    m_activeRate.store(sel, std::memory_order_release);
+    m_lastSelected = sel;
+    m_lastNow      = sel->now();
+    m_startNow     = m_lastNow;
+    m_deltaTime    = 0.0;
+    m_elapsedTime  = 0.0;
+    m_frameCount   = 0;
 }
 
 void PlaybackTimeAuthority::updateTiming() {
-    TimePoint currentTime = Clock::now();
-    std::chrono::duration<double> delta = currentTime - m_lastFrameTime;
-    m_deltaTime = delta.count();
-    std::chrono::duration<double> elapsed = currentTime - m_startTime;
-    m_elapsedTime = elapsed.count();
-    m_lastFrameTime = currentTime;
+    RateSource* sel = selectRateSource();
+    if (sel != m_lastSelected) {
+        m_lastSelected = sel;
+        m_lastNow      = sel->now();
+        m_activeRate.store(sel, std::memory_order_release);
+        m_deltaTime    = 0.0;
+        return;
+    }
+    const double n = sel->now();
+    m_deltaTime    = n - m_lastNow;
+    if (m_deltaTime < 0.0) m_deltaTime = 0.0;
+    m_elapsedTime += m_deltaTime;
+    m_lastNow      = n;
 }
 
 FrameNumber PlaybackTimeAuthority::sectionFadeTailFrames(FrameNumber endFrame) const {
@@ -1345,6 +1362,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
     const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
         ? m_timeline->getFrameRate() : 30.0;
 
+    // Snapshot the active rate-source time once per render frame and share it
+    // across all catalog entries so every clip's continuation re-derivation
+    // runs against the same instant (audio crystal when AudioRateSource is active).
+    const std::int64_t rateNowNs = static_cast<std::int64_t>(rateNow() * 1e9);
+
     // Show thread reads ONLY the clip catalog — zero registry access.
     for (const auto& ce : scene.clipCatalog) {
         const Clip clip = clipFromCatalog(ce);
@@ -1353,7 +1375,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         bus::ClipRenderState c;
         c.entity       = ce.entity;
         c.slot         = ce.descriptorSlot;
-        c.mediaFrame   = mapToMediaFrameFromCatalog(ce, currentFrame, timelineFrameRate);
+        c.mediaFrame   = mapToMediaFrameFromCatalog(ce, currentFrame, timelineFrameRate, rateNowNs);
         c.ocioOverride = ce.ocioOverride;
         c.transformMatrix = ce.transformMatrix;
         c.opacity      = ce.opacity;

@@ -114,14 +114,4 @@ std::unique_ptr<Decoder> createDecoder(MediaType mediaType);
  */
 MediaType detectMediaType(const std::string& filepath);
 
-/**
- * Probe the source codec name (FFmpeg's `avcodec_get_name` short form,
- * e.g. "hap", "prores", "h264", "hevc", "vp9", "av1"). Image sequences
- * return their format ("png", "dpx"). Returns an empty string if the
- * file can't be opened or carries no video stream.
- *
- * Used by MediaBin to color-code rows by playback tier (#27).
- */
-std::string probeSourceCodecName(const std::string& filepath);
-
 } // namespace entity

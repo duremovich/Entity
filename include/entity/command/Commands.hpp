@@ -2770,4 +2770,220 @@ private:
     size_t      m_count;
 };
 
+/**
+ * SetAudioSourceGainCommand — set per-clip gain on AudioSource.
+ *
+ * JSON format:
+ * { "type": "SetAudioSourceGain", "clipEntity": 12345, "gain": 0.8 }
+ */
+class SetAudioSourceGainCommand : public UndoableCommand {
+public:
+    SetAudioSourceGainCommand(entt::entity clipEntity, float gain)
+        : m_clipEntity(clipEntity), m_gain(gain) {}
+
+    void setPreviousGain(float prev) { m_previousGain = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetAudioSourceGain"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity         m_clipEntity;
+    float                m_gain;
+    std::optional<float> m_previousGain;
+};
+
+/**
+ * SetAudioSourceMuteCommand — set per-clip mute on AudioSource.
+ *
+ * JSON format:
+ * { "type": "SetAudioSourceMute", "clipEntity": 12345, "mute": true }
+ */
+class SetAudioSourceMuteCommand : public UndoableCommand {
+public:
+    SetAudioSourceMuteCommand(entt::entity clipEntity, bool mute)
+        : m_clipEntity(clipEntity), m_mute(mute) {}
+
+    void setPreviousMute(bool prev) { m_previousMute = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetAudioSourceMute"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity        m_clipEntity;
+    bool                m_mute;
+    std::optional<bool> m_previousMute;
+};
+
+/**
+ * SetAudioSourceSoloCommand — set per-clip solo on AudioSource.
+ *
+ * JSON format:
+ * { "type": "SetAudioSourceSolo", "clipEntity": 12345, "solo": true }
+ */
+class SetAudioSourceSoloCommand : public UndoableCommand {
+public:
+    SetAudioSourceSoloCommand(entt::entity clipEntity, bool solo)
+        : m_clipEntity(clipEntity), m_solo(solo) {}
+
+    void setPreviousSolo(bool prev) { m_previousSolo = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetAudioSourceSolo"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity        m_clipEntity;
+    bool                m_solo;
+    std::optional<bool> m_previousSolo;
+};
+
+/**
+ * SetMasterGainCommand — set project master gain on AudioEngine.
+ *
+ * JSON format:
+ * { "type": "SetMasterGain", "gain": 1.0 }
+ */
+class SetMasterGainCommand : public UndoableCommand {
+public:
+    explicit SetMasterGainCommand(float gain) : m_gain(gain) {}
+
+    void setPreviousGain(float prev) { m_previousGain = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetMasterGain"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Either; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    float                m_gain;
+    std::optional<float> m_previousGain;
+};
+
+/**
+ * SetMasterMuteCommand — set project master mute on AudioEngine.
+ *
+ * JSON format:
+ * { "type": "SetMasterMute", "mute": false }
+ */
+class SetMasterMuteCommand : public UndoableCommand {
+public:
+    explicit SetMasterMuteCommand(bool mute) : m_mute(mute) {}
+
+    void setPreviousMute(bool prev) { m_previousMute = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetMasterMute"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Either; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    bool                m_mute;
+    std::optional<bool> m_previousMute;
+};
+
+// ============================================================================
+// Audio capture assertions (integration tests — LoopbackDevice only)
+// ============================================================================
+
+/**
+ * Clear the LoopbackDevice's accumulated capture buffer. Use in integration
+ * scripts to isolate a specific playback phase — e.g. clear after the
+ * forward span of a PingPong clip so the subsequent AssertAudioCaptureRms
+ * only sees reverse-phase audio.
+ *
+ * No-op (returns true) when no LoopbackDevice is present, so scripts that
+ * run in non-headless mode don't hard-fail.
+ *
+ * JSON: {"type":"ClearAudioCapture"}
+ */
+class ClearAudioCaptureCommand : public Command {
+public:
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "ClearAudioCapture"; }
+    nlohmann::json toJson() const override { return {{"type", "ClearAudioCapture"}}; }
+    std::string getDescription() const override { return "Clear LoopbackDevice capture buffer"; }
+    // Editor affinity: must respect WaitSeconds ordering relative to preceding
+    // and following asserts. Either would let the show thread drain this before
+    // the editor's wait deadline expires, producing 0 samples at the assert.
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+};
+
+/**
+ * Assert that the LoopbackDevice capture buffer's RMS is above `minRms`.
+ * Fails (returns false = script abort) when:
+ *   - AudioEngine is null or not running a LoopbackDevice;
+ *   - RMS of capturedCopy() is <= minRms.
+ *
+ * Use after WaitSeconds so the device has had real time to accumulate frames.
+ *
+ * JSON: {"type":"AssertAudioCaptureRms","minRms":0.01}
+ */
+class AssertAudioCaptureRmsCommand : public Command {
+public:
+    explicit AssertAudioCaptureRmsCommand(float minRms) : m_minRms(minRms) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertAudioCaptureRms"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    float m_minRms;
+};
+
+/**
+ * Goertzel-filter assertion on the LoopbackDevice capture buffer.
+ *
+ * Checks that the energy at `targetHz` is at least `minRatio` times the
+ * energy at `referenceHz`. Use to confirm a known tone dominates over a
+ * nearby frequency bin without requiring an FFT library.
+ *
+ * Example (1 kHz tone vs. 500 Hz noise floor):
+ *   {"type":"AssertAudioCaptureGoertzel",
+ *    "targetHz":1000,"referenceHz":500,"minRatio":3.0}
+ *
+ * JSON: {"type":"AssertAudioCaptureGoertzel",
+ *        "targetHz":1000.0,"referenceHz":500.0,"minRatio":3.0}
+ */
+class AssertAudioCaptureGoertzelCommand : public Command {
+public:
+    AssertAudioCaptureGoertzelCommand(float targetHz, float referenceHz, float minRatio)
+        : m_targetHz(targetHz), m_referenceHz(referenceHz), m_minRatio(minRatio) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertAudioCaptureGoertzel"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    float m_targetHz;
+    float m_referenceHz;
+    float m_minRatio;
+};
+
 } // namespace entity

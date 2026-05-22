@@ -6,6 +6,54 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Continuation Clock Onto RateSource — Phase G (2026-05-21)
+
+Migrated the section-break continuation-phase wall-clock anchor from raw
+`std::chrono::steady_clock` onto the active `RateSource` so the main
+timeline and continuation phase share one clock domain (the audio crystal
+when `AudioRateSource` is active).
+
+**G1 — SectionScheduler injection.** `SectionScheduler` gained a
+`setTimeAuthority(PlaybackTimeAuthority*)` public method and a
+`m_timeAuthority` private member. The anonymous-namespace helper
+`steadyNowNs()` in `SectionScheduler.cpp` was removed; both call sites
+(`seedContinuationAt` and `advanceContinuation`) now compute
+`int64_t(m_timeAuthority->rateNow() * 1e9)` when the authority is wired,
+and fall back to `int64_t{0}` (dt-accumulator path) otherwise. The
+`<chrono>` include in `SectionScheduler.cpp` was removed. `Director.cpp`
+calls `m_sectionScheduler->setTimeAuthority(m_timeAuthority.get())` after
+both objects are constructed.
+
+**G2 — Show-side re-derivation.** `mapToMediaFrameFromCatalog` (file-
+local free function in `PlaybackTimeAuthority.cpp`) gained a `nowNs`
+parameter. The previous `std::chrono::steady_clock::now()` call inside the
+function was replaced with the caller-supplied `nowNs`. `buildRenderFrame`
+snapshots `rateNow() * 1e9` once per render frame into `rateNowNs` and
+passes it to every `mapToMediaFrameFromCatalog` call, so all clips in one
+frame share the same instant. The `<chrono>` include in
+`PlaybackTimeAuthority.cpp` was removed (no remaining usages).
+
+**G3 — Behaviour preservation.** All 47 section-related tests pass
+(ctest `-j 1 -R "section|Section"`) with no changes to any test or
+production logic.
+
+**G4 — New test.** `scripts/integration/audio_loop_break_synced.json`:
+Loop+Normal tone clip, section break at 2 s, play past break to park,
+`ClearAudioCapture`, wait 2 s while parked, `AssertAudioCaptureRms 0.005`.
+Verifies the continuation loop keeps producing audio after the break on the
+shared clock. Registered in `tests/CMakeLists.txt` with `TIMEOUT 30`.
+
+**Files.** `include/entity/director/SectionScheduler.hpp` (forward decl +
+`setTimeAuthority` public + `m_timeAuthority` private member),
+`src/director/SectionScheduler.cpp` (`PlaybackTimeAuthority.hpp` include,
+`<chrono>` removed, `steadyNowNs` helper removed, two call sites rerouted),
+`src/director/Director.cpp` (wiring call),
+`src/director/PlaybackTimeAuthority.cpp` (`<chrono>` removed,
+`mapToMediaFrameFromCatalog` gets `nowNs` param, `buildRenderFrame` snapshots
+`rateNowNs`),
+`scripts/integration/audio_loop_break_synced.json` (new),
+`tests/CMakeLists.txt` (new test registration).
+
 ### SectionScheduler Show-Thread Detection — NEW-08 closed (2026-05-20)
 
 Closed the last editor-stall gap. `SectionScheduler::tick` was the sole

@@ -2,10 +2,12 @@
 
 #include "entity/bus/Message.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/director/RateSource.hpp"
+#include "entity/director/SystemRateSource.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include <entt/entt.hpp>
 
-#include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -62,6 +64,18 @@ public:
     // registerBuiltins.
     void setEffectKindRegistry(const effects::EffectKindRegistry* r) {
         m_effectKindRegistry = r;
+    }
+
+    // Phase B wires the audio device's rate source in here. nullptr =>
+    // system clock only (today's behaviour).
+    void setAudioRateSource(RateSource* audioRate) { m_audioRate = audioRate; }
+
+    // The currently-selected master rate source's now(), in seconds.
+    // Thread-safe read (used by SectionScheduler in Phase G). Never
+    // mutates selector bookkeeping.
+    double rateNow() const {
+        RateSource* s = m_activeRate.load(std::memory_order_acquire);
+        return s ? s->now() : 0.0;
     }
 
     // Per-tick hooks driven by Engine's main loop.
@@ -135,6 +149,8 @@ public:
     float computeSectionFadeMultiplier(const Clip& clip) const;
 
 private:
+    RateSource* selectRateSource();
+
     std::string lookupInputColorSpaceOverride(const Clip& clip) const;
 
     // Phase 6 — hold + fade-after-break. Returns the number of timeline
@@ -151,13 +167,15 @@ private:
     ProjectManager* m_projectManager{nullptr};
     const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
 
-    using Clock = std::chrono::high_resolution_clock;
-    using TimePoint = std::chrono::time_point<Clock>;
-    TimePoint m_startTime;
-    TimePoint m_lastFrameTime;
-    double    m_deltaTime{0.0};
-    double    m_elapsedTime{0.0};
-    uint64_t  m_frameCount{0};
+    SystemRateSource           m_systemRate;
+    RateSource*                m_audioRate{nullptr};
+    std::atomic<RateSource*>   m_activeRate{nullptr};
+    RateSource*                m_lastSelected{nullptr};
+    double                     m_lastNow{0.0};
+    double                     m_startNow{0.0};
+    double                     m_deltaTime{0.0};
+    double                     m_elapsedTime{0.0};
+    uint64_t                   m_frameCount{0};
 };
 
 } // namespace entity

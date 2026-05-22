@@ -572,6 +572,11 @@ private:
     // frame so we don't keep reopening every tick.
     entt::entity m_pendingChangeMediaClip{entt::null};
     bool         m_openChangeMediaPopup{false};
+
+    // Pre-drag capture for the master gain slider. Populated on
+    // IsItemActivated so undo restores the value before the drag started,
+    // not the penultimate-frame value (which drifts during live preview).
+    float m_preEditMasterGain{1.0f};
     char         m_changeMediaFilterBuf[256]{0};
 
     // Callbacks

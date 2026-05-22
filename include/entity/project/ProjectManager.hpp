@@ -582,6 +582,16 @@ public:
     void        setOscOutboundMappingsJson(std::string json);  // takes exclusive lock
     std::string getOscOutboundMappingsJson() const;            // takes shared lock (plugin-safe)
 
+    // --- Audio master state (per-project, schema v23) -----------------------
+    //
+    // Project-level master gain and mute that survive save/load. Engine
+    // populates these from AudioEngine before save and applies them after
+    // load. Stored here so ProjectSerializer doesn't need an Engine*.
+    void  setAudioMasterGain(float gain);
+    float getAudioMasterGain() const;
+    void  setAudioMasterMute(bool mute);
+    bool  getAudioMasterMute() const;
+
 private:
     // Non-owning dependencies (Engine owns and outlives this)
     Timeline*        m_timeline{nullptr};
@@ -612,6 +622,11 @@ private:
     // "oscInboundMappingsJson" / "oscOutboundMappingsJson" string fields.
     std::string m_oscInboundMappingsJson;
     std::string m_oscOutboundMappingsJson;
+
+    // Project-level audio master state (#audio). Populated by Engine before
+    // save; applied by Engine after load. Defaults match AudioEngine defaults.
+    float m_audioMasterGain{1.0f};
+    bool  m_audioMasterMute{false};
 };
 
 } // namespace entity

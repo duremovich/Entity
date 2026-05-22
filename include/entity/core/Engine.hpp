@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types.hpp"
+#include "entity/audio/AudioEngine.hpp"
 #include "entity/core/ClipClipboard.hpp"
 #include "entity/core/SceneState.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -34,6 +35,7 @@ class AnimationSystem;
 class GenerativeSystem;
 class RoutingLibrarySystem;
 class TextSystem;
+class AudioSystem;
 class CommandDispatcher;
 class InputBus;
 class OutputManager;
@@ -190,6 +192,10 @@ public:
      * before initialize() and after shutdown().
      */
     bus::IMessageTransport* getBusTransport() { return m_transport.get(); }
+
+    // Audio engine — owns the device, mixer, and rate source. Null until
+    // initialize(); stop() is called in shutdown().
+    AudioEngine* getAudioEngine() { return m_audioEngine.get(); }
 
     /**
      * Get the cross-system input channel bus. Input sources (OSC plugins,
@@ -887,6 +893,10 @@ private:
     // only after the shortcuts are no longer used.
     std::unique_ptr<Director> m_director;
 
+    // Audio engine (Phase B): owns device + mixer + rate source. Stopped
+    // in shutdown() before director teardown.
+    std::unique_ptr<AudioEngine> m_audioEngine;
+
     // Effect kind registry (issue #54). Owned by Engine so both the editor-
     // side bake (PlaybackTimeAuthority) and the show-side renderer
     // (D3D12Renderer's PSO cache) can read it through a stable pointer.
@@ -1023,6 +1033,7 @@ private:
     PlaybackTimeAuthority* m_timeAuthority{nullptr};
     SectionScheduler*      m_sectionScheduler{nullptr};
     PlaybackPresenter*     m_playbackPresenter{nullptr};
+    AudioSystem*           m_audioSystem{nullptr};
 
     // Phase D entry, subtask 8: Director->Renderer per-tick state-snapshot
     // travels through this transport. In-process today (no threads, no

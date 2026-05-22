@@ -1,4 +1,5 @@
 #include "entity/director/SectionScheduler.hpp"
+#include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/profile/Tracy.hpp"
 
 #include "entity/components/Clip.hpp"
@@ -8,7 +9,6 @@
 #include "entity/timeline/Timeline.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -22,11 +22,6 @@ namespace {
         return d <= kAtBreakSnapTol;
     }
 
-    inline int64_t steadyNowNs() {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   std::chrono::steady_clock::now().time_since_epoch())
-            .count();
-    }
 }
 
 SectionScheduler::SectionScheduler(entt::registry& registry, Timeline* timeline)
@@ -284,7 +279,9 @@ void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
         // (now - continuationStartTimeNs) * fps + continuationSeedFrames
         // each tick, so phase tracks wall time exactly regardless of
         // editor tick-rate fluctuations or dt accumulation error.
-        phase.continuationStartTimeNs = steadyNowNs();
+        phase.continuationStartTimeNs = m_timeAuthority
+            ? static_cast<int64_t>(m_timeAuthority->rateNow() * 1e9)
+            : int64_t{0};
         phase.continuationSeedFrames = phase.sourcePhaseFrames;
     }
 
@@ -315,7 +312,9 @@ void SectionScheduler::advanceContinuation(double deltaTimeSeconds) {
     // The dt fallback (continuationStartTimeNs == 0) preserves the
     // synthetic-time path used by tests that drive advanceContinuation
     // without going through seedContinuationAt's anchor capture.
-    const int64_t nowNs = steadyNowNs();
+    const int64_t nowNs = m_timeAuthority
+        ? static_cast<int64_t>(m_timeAuthority->rateNow() * 1e9)
+        : int64_t{0};
     auto view = m_registry.view<Clip, ClipPlaybackPhase>();
     for (auto entity : view) {
         const Clip& clip = view.get<Clip>(entity);

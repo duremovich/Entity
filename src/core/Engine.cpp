@@ -62,6 +62,8 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/AudioSource.hpp"
+#include "entity/systems/AudioSystem.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Screen.hpp"
@@ -655,6 +657,27 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // TODO: Initialize transport
     // m_transport = std::make_unique<Transport>();
 
+    // Audio engine (Phase B). Loopback device in headless mode (tests / CI);
+    // WASAPI in interactive mode. setAudioRateSource must be called before
+    // startTiming so the selector sees the audio clock from frame 0.
+    m_audioEngine = std::make_unique<AudioEngine>();
+    const bool audioEnabled = headless || m_settings.audioOutputEnabled;
+    if (audioEnabled && m_audioEngine->start(/*useLoopback=*/headless)) {
+        if (m_timeAuthority)
+            m_timeAuthority->setAudioRateSource(m_audioEngine->rateSource());
+    } else {
+        std::cerr << "  Audio engine failed to open device; "
+                     "falling back to system clock." << std::endl;
+    }
+
+    // Wire AudioSystem (Director-side) to the audio engine + time authority.
+    m_audioSystem = m_director->getAudioSystem();
+    if (m_audioSystem) {
+        m_audioSystem->setAudioEngine(m_audioEngine.get());
+        m_audioSystem->setTimeAuthority(m_timeAuthority);
+        m_audioSystem->initialize(m_registry);
+    }
+
     // Initialize timing -- authority is Director-side; Engine just
     // forwards startTiming + the per-tick updateTiming/incrementFrameCount.
     m_timeAuthority->startTiming();
@@ -767,6 +790,13 @@ void Engine::shutdown() {
     m_launcher.reset();
     m_recentProjects.reset();
     m_showLauncher = false;
+
+    // Stop the audio engine before the director tears down
+    // PlaybackTimeAuthority (which holds the rate-source pointer).
+    if (m_audioEngine) {
+        m_audioEngine->stop();
+        m_audioEngine.reset();
+    }
 
     // Tear down Director-owned subsystems (Timeline, ProjectManager,
     // TranscodeManager, CommandDispatcher, AnimationSystem,
@@ -1244,6 +1274,22 @@ void Engine::showThreadMain() {
             constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
             if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
                 m_decodeSystem->update(m_registry,
+                    static_cast<float>(m_timeAuthority->getDeltaTime()));
+            }
+        }
+
+        // AudioSystem show-thread fallback: mirrors the DecodeSystem pattern above.
+        // When the editor is stalled, AudioSystem::update keeps worker seekTargets
+        // advancing so audio stays in sync with the advancing Timeline.
+        // AudioSystem::update is show-safe — it only writes atomic worker fields,
+        // never the registry.
+        if (m_audioSystem && m_timeAuthority) {
+            const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
+            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
+            if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
+                m_audioSystem->update(m_registry,
                     static_cast<float>(m_timeAuthority->getDeltaTime()));
             }
         }
@@ -1851,6 +1897,9 @@ void Engine::update() {
     drainContentScannerDeltas();
     if (m_decodeSystem) {
         m_decodeSystem->update(m_registry, static_cast<float>(deltaTime));
+    }
+    if (m_audioSystem) {
+        m_audioSystem->update(m_registry, static_cast<float>(deltaTime));
     }
 
     // Upload any Model meshes that don't yet have GPU resources.
@@ -3474,6 +3523,23 @@ void Engine::ingestVideoClip(const std::string& canonicalPath, MediaType mediaTy
     // engine-global FrameCache now, not a per-clip ring buffer.
     m_registry.emplace<FrameBuffer>(clipEntity);
 
+    // Attach AudioSource from probe cache (probe was enqueued above).
+    {
+        bool hasAudio = false;
+        int  audioRate = 0, audioCh = 0;
+        if (m_probeWorker) {
+            if (auto probe = m_probeWorker->tryGet(canonicalPath)) {
+                hasAudio  = probe->hasAudio;
+                audioRate = probe->audioSampleRate;
+                audioCh   = probe->audioChannels;
+            }
+        }
+        auto& as = m_registry.emplace<AudioSource>(clipEntity);
+        as.hasAudioStream   = hasAudio;
+        as.sourceSampleRate = audioRate;
+        as.sourceChannels   = audioCh;
+    }
+
     // Store decoder and create frame buffer for this clip (legacy path)
     auto& state = m_registry.emplace_or_replace<ClipDecodeState>(clipEntity);
     state.decoder = std::move(m_decoder);  // Transfer ownership
@@ -3934,6 +4000,25 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     // Marker tag for DecodeSystem (decoded frames live in the engine cache).
     m_registry.emplace<FrameBuffer>(clipEntity);
 
+    // Attach AudioSource if the probe (which may already be done for MediaBin
+    // files) reported an audio stream. If not yet probed, emplace with defaults;
+    // AudioSystem's worker will confirm hasAudioStream on open.
+    {
+        bool hasAudio = false;
+        int  audioRate = 0, audioCh = 0;
+        if (m_probeWorker) {
+            if (auto probe = m_probeWorker->tryGet(filePath)) {
+                hasAudio  = probe->hasAudio;
+                audioRate = probe->audioSampleRate;
+                audioCh   = probe->audioChannels;
+            }
+        }
+        auto& as = m_registry.emplace<AudioSource>(clipEntity);
+        as.hasAudioStream   = hasAudio;
+        as.sourceSampleRate = audioRate;
+        as.sourceChannels   = audioCh;
+    }
+
     // Store decoder and create frame buffer for this clip (legacy path)
     auto& state = m_registry.emplace_or_replace<ClipDecodeState>(clipEntity);
     state.decoder = std::move(decoder);
@@ -3968,6 +4053,12 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
 
 bool Engine::saveProject(const std::filesystem::path& filepath) {
     if (!m_projectManager) return false;
+    // Snapshot master audio state into ProjectManager so ProjectSerializer
+    // can write it without an Engine* parameter.
+    if (m_audioEngine) {
+        m_projectManager->setAudioMasterGain(m_audioEngine->masterGain());
+        m_projectManager->setAudioMasterMute(m_audioEngine->masterMute());
+    }
     bool ok = m_projectManager->save(filepath);
     if (ok) updateTranscodeCacheDir();
     return ok;
@@ -4219,6 +4310,13 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // this and the modal will skip the open. Larger projects keep
     // the modal until the worker finishes.
     m_showProjectLoadModal = m_probeWorker && m_probeWorker->pendingCount() > 0;
+
+    // Apply persisted audio master state (v23+). No-op on older files because
+    // ProjectManager's fields stay at their defaults (gain=1.0, mute=false).
+    if (m_audioEngine && m_projectManager) {
+        m_audioEngine->setMasterGain(m_projectManager->getAudioMasterGain());
+        m_audioEngine->setMasterMute(m_projectManager->getAudioMasterMute());
+    }
 
     // #27 — kick off the content/ poller now that we know the project
     // root. Files that already exist in content/ but aren't in the
@@ -4677,6 +4775,29 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
         }
         if (b.hadFrameBuffer) {
             m_registry.emplace<FrameBuffer>(dst);
+        }
+        // Restore AudioSource. Re-derive hardware fields (hasAudioStream,
+        // sourceSampleRate, sourceChannels) from the probe cache; copy the
+        // user-authored fields (gain/mute/solo) from the snapshot when present.
+        {
+            bool hasAudio = false;
+            int  audioRate = 0, audioCh = 0;
+            if (m_probeWorker) {
+                if (auto probe = m_probeWorker->tryGet(b.filepath)) {
+                    hasAudio  = probe->hasAudio;
+                    audioRate = probe->audioSampleRate;
+                    audioCh   = probe->audioChannels;
+                }
+            }
+            auto& as = m_registry.emplace<AudioSource>(dst);
+            as.hasAudioStream   = hasAudio;
+            as.sourceSampleRate = audioRate;
+            as.sourceChannels   = audioCh;
+            if (b.hadAudioSource) {
+                as.gain = b.audioSource.gain;
+                as.mute = b.audioSource.mute;
+                as.solo = b.audioSource.solo;
+            }
         }
         {
             auto& lay = m_registry.emplace<Layer>(dst);

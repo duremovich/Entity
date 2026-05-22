@@ -56,6 +56,16 @@ load, thousands of Hz in `--headless --script` mode with no decode work).
           worker->targetFrame. Lazily creates per-clip DecodeWorker
           threads. Reads Clip + FrameBuffer; writes none.
 
+5.5 AudioSystem::update()
+       └─ Per active Clip+AudioSource: creates/destroys AudioDecodeWorker
+          threads lazily, steers seekTarget (atomic) on playhead jumps,
+          mirrors gain/mute/solo from AudioSource into the AudioMixer slot,
+          gates active flag from the clip's active window + ClipPlaybackPhase
+          continuation state. Reads Clip + AudioSource + ClipPlaybackPhase;
+          writes only atomic worker fields — never the registry. Show-thread
+          fallback fires on editor stalls (same 50ms heartbeat gate as
+          DecodeSystem).
+
 6.  m_lastEditorTickNs.store(now)
        └─ Heartbeat the show thread polls for stall detection.
 
@@ -116,6 +126,7 @@ framerate (typically vsync on the primary output, 60 Hz).
 
 1.2 if (editor heartbeat > 50ms stale):
        └─ DecodeSystem::update()          ← show-thread fallback (a9bcd8b)
+       └─ AudioSystem::update()           ← show-thread fallback (Phase D audio)
 
 2.  CommandDispatcher::processQueue(Show affinity)
        └─ Drains Play / Pause / Seek / SectionGo. Writes atomic
@@ -213,11 +224,12 @@ write the registry.** That's why only some systems have fallbacks.
 | System | Editor-tick site | Show-thread fallback? | Notes |
 |---|---|---|---|
 | `Timeline::update` | step 1 | yes since `ee99a99` | Writes only atomic `m_currentTime` — show-safe. |
-| `SectionScheduler` | editor step 2 / show step 1.1 | yes via detector-on-show split (2026-05-20) | Break-crossing *detection* runs on the show thread (`SectionDetect`, show step 1.1) — it snaps + pauses the playhead and posts R2D `SectionBreakDetected`. The editor *applies* it via `handleBreakAt` (registry writes: `ClipPlaybackPhase`, scheduler latch). Continuation phase is re-derived show-side from the wall-clock anchor in `mapToMediaFrameFromCatalog`, so it never freezes during a stall. NEW-08 closed. |
+| `SectionScheduler` | editor step 2 / show step 1.1 | yes via detector-on-show split (2026-05-20) | Break-crossing *detection* runs on the show thread (`SectionDetect`, show step 1.1) — it snaps + pauses the playhead and posts R2D `SectionBreakDetected`. The editor *applies* it via `handleBreakAt` (registry writes: `ClipPlaybackPhase`, scheduler latch). Continuation phase is re-derived show-side from the wall-clock anchor in `mapToMediaFrameFromCatalog` using the active `RateSource` time (Phase G, 2026-05-21) — same clock domain as the editor-side seed — so it never freezes during a stall and stays in sync with the audio crystal when audio is active. NEW-08 closed. |
 | `AnimationSystem::update` | step 3 | yes via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` (Clip branch) and `ObjectAnimationOutput` (OA branch) for UI surfaces. Clip tracks are baked into `ClipCatalogEntry`; OA tracks into `ObjectAnimationLayerSnapshot`. Show thread re-evaluates both per render frame in `buildRenderFrame`. Animation stays alive during editor stalls. NEW-07 closed. OA freeze for Locked layers at section breaks handled via `ObjectAnimationLayer::frozen` (ADR-0016). End-of-layer behavior follows `ObjectAnimationLayer::endBehavior` (ADR-0020): `Hold` keeps the last evaluated values applied past the layer's active window (default); `Reset` clears the override. After-end-Hold layers ride the snapshot to keep the show thread in sync during stalls; after-end-Reset layers are filtered out editor-side. |
 | `TextSystem::update` | step 3.5 | no -- not needed | Rasterizes dirty Text layers to video-pool textures. Static-per-frame: text content only changes on explicit authoring commands, never on playback. The last-baked texture remains valid during editor stalls so output stays correct. Writes `TextLayerState::textureSlot`/`bakedWidth`/`bakedHeight`; clears `dirty`. |
 | `drainContentScannerDeltas` | step 4 | no -- not needed | Filesystem-watcher updates can wait until stall ends. |
 | `DecodeSystem::update` | step 5 | yes since `a9bcd8b` | Writes only atomic `worker->targetFrame` — show-safe. |
+| `AudioSystem::update` | step 5.5 | yes (Phase D audio) | Writes only atomic worker fields (`seekTarget`, `active`) and `MixSource` mixer-slot fields — no registry writes. Show-thread fallback fires on the same 50ms heartbeat stale gate as DecodeSystem so audio keeps advancing during editor stalls. |
 
 Every editor-tick system that drives the projector output now has a
 stall path. NEW-07 was closed 2026-05-11 by the snapshot-bake approach

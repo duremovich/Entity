@@ -227,6 +227,7 @@ target_sources(EntityMediaCore
         src/systems/RoutingLibrarySystem.cpp
         src/systems/TextSystem.cpp
         src/systems/CameraControlSystem.cpp
+        src/systems/AudioSystem.cpp
 
         # Effects (issue #54)
         src/effects/EffectKindRegistry.cpp
@@ -266,6 +267,7 @@ target_sources(EntityMediaCore
         src/director/PlaybackTimeAuthority.cpp
         src/director/SectionScheduler.cpp
         src/director/CaptureBroker.cpp
+        src/director/SystemRateSource.cpp
 
         # Renderer service (Phase D entry — owns D3D12Renderer,
         # OutputManager, FrameCache, OcioManager, CompositorSystem,
@@ -275,6 +277,15 @@ target_sources(EntityMediaCore
         # wiring.
         src/renderer/Renderer.cpp
         src/renderer/PlaybackPresenter.cpp
+
+        # Audio subsystem
+        src/audio/AudioMixer.cpp
+        src/audio/LoopbackDevice.cpp
+        src/audio/WasapiDevice.cpp
+        src/audio/AudioRateSource.cpp
+        src/audio/AudioEngine.cpp
+        src/audio/AudioDecoder.cpp
+        src/audio/AudioDecodeWorker.cpp
 )
 
 target_include_directories(EntityMediaCore
@@ -313,7 +324,7 @@ target_link_libraries(EntityMediaCore
 
 # Windows-specific libraries
 if(WIN32)
-    target_link_libraries(EntityMediaCore PRIVATE ${D3D12_LIBRARIES} ws2_32)
+    target_link_libraries(EntityMediaCore PRIVATE ${D3D12_LIBRARIES} ws2_32 Ole32 Avrt)
 endif()
 
 if(ENTITY_ENABLE_TRACY)

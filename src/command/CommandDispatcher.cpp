@@ -280,6 +280,18 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetTextBold",      SetTextBoldCommand::fromJson);
     registerFactory("SetTextItalic",    SetTextItalicCommand::fromJson);
 
+    // Audio commands
+    registerFactory("SetAudioSourceGain", SetAudioSourceGainCommand::fromJson);
+    registerFactory("SetAudioSourceMute", SetAudioSourceMuteCommand::fromJson);
+    registerFactory("SetAudioSourceSolo", SetAudioSourceSoloCommand::fromJson);
+    registerFactory("SetMasterGain",      SetMasterGainCommand::fromJson);
+    registerFactory("SetMasterMute",      SetMasterMuteCommand::fromJson);
+
+    // Audio capture commands (integration tests)
+    registerFactory("ClearAudioCapture",          ClearAudioCaptureCommand::fromJson);
+    registerFactory("AssertAudioCaptureRms",      AssertAudioCaptureRmsCommand::fromJson);
+    registerFactory("AssertAudioCaptureGoertzel", AssertAudioCaptureGoertzelCommand::fromJson);
+
     // Input bus commands
     registerFactory("SetInputChannel", SetInputChannelCommand::fromJson);
 

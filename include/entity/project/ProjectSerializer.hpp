@@ -145,7 +145,8 @@ public:
     //     struct lives in the Apache-2.0 plugin headers and round-tripping
     //     through a typed schema in the GPL serializer would create the
     //     same boundary problem (see ADR-0024).
-    static constexpr int PROJECT_VERSION = 22;
+    // v23: per-clip AudioSource (gain/mute/solo); project master gain/mute.
+    static constexpr int PROJECT_VERSION = 23;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

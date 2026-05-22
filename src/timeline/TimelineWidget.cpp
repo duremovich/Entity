@@ -16,6 +16,10 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
+#include "entity/core/Engine.hpp"
+#include "entity/audio/AudioEngine.hpp"
+#include "entity/command/CommandDispatcher.hpp"
+#include "entity/command/Commands.hpp"
 #include <sstream>
 #include <cmath>
 #include <cstdio>
@@ -295,6 +299,50 @@ void TimelineWidget::render() {
     ImGui::Text("Time: %02d:%02d:%02d", minutes, seconds, frames);
     ImGui::SameLine();
     ImGui::Text("Frame %lld", static_cast<long long>(currentFrame));
+
+    // Master audio controls
+    if (m_engine) {
+        auto* ae = m_engine->getAudioEngine();
+        if (ae) {
+            ImGui::SameLine();
+            ImGui::Text("|");
+            ImGui::SameLine();
+
+            // Master mute toggle
+            bool masterMute = ae->masterMute();
+            if (ImGui::Checkbox("M##masterMute", &masterMute) && m_commandDispatcher) {
+                auto cmd = std::make_unique<SetMasterMuteCommand>(masterMute);
+                cmd->setPreviousMute(ae->masterMute());
+                ae->setMasterMute(masterMute);
+                m_commandDispatcher->enqueue(std::move(cmd));
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Master mute");
+
+            ImGui::SameLine();
+
+            // Master gain slider in dB
+            constexpr float kMinDb = -60.0f;
+            constexpr float kMaxDb =  6.0f;
+            float masterGainLinear = ae->masterGain();
+            float masterGainDb = masterGainLinear <= 0.0f
+                ? kMinDb
+                : std::max(kMinDb, 20.0f * std::log10(masterGainLinear));
+            ImGui::SetNextItemWidth(80.0f);
+            if (ImGui::SliderFloat("##masterGain", &masterGainDb, kMinDb, kMaxDb, "%.1fdB")) {
+                ae->setMasterGain(std::pow(10.0f, masterGainDb / 20.0f));
+            }
+            if (ImGui::IsItemActivated()) {
+                m_preEditMasterGain = masterGainLinear;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && m_commandDispatcher) {
+                const float newLinear = ae->masterGain();
+                auto cmd = std::make_unique<SetMasterGainCommand>(newLinear);
+                cmd->setPreviousGain(m_preEditMasterGain);
+                m_commandDispatcher->enqueue(std::move(cmd));
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Master gain");
+        }
+    }
 
     ImGui::SameLine();
 

@@ -11,6 +11,7 @@
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/components/FrameBuffer.hpp"
+#include "entity/components/AudioSource.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include <algorithm>
@@ -366,6 +367,19 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         // compose target stays empty (user-visible as cyan bleed-through on
         // the stage preview after a project reload).
         clip.loaded = true;
+
+        // Attach AudioSource so AudioSystem creates an audio decode worker
+        // for this clip. This is the project-load equivalent of the
+        // drag-drop / provision sites — without it, a clip loaded from a
+        // project never plays audio. ProjectSerializer only emplaces
+        // AudioSource when the saved JSON carried an "audio" block, so
+        // pre-v23 projects (or clips saved before they had an AudioSource)
+        // would otherwise be permanently silent. get_or_emplace preserves
+        // any gain/mute/solo the serializer already restored. The decode
+        // worker's AudioDecoder is the source of truth for whether the
+        // media actually has an audio stream; a clip whose media has none
+        // simply gets a worker that fails to open and stays silent.
+        m_registry->get_or_emplace<AudioSource>(clipEntity);
 
         // Original path is the identity — library already has it from the
         // serializer loading mediaLibrary above, but this is idempotent.
@@ -1088,6 +1102,26 @@ void ProjectManager::setOscOutboundMappingsJson(std::string json) {
 std::string ProjectManager::getOscOutboundMappingsJson() const {
     std::shared_lock lock(m_stateMutex);
     return m_oscOutboundMappingsJson;
+}
+
+void ProjectManager::setAudioMasterGain(float gain) {
+    std::unique_lock lock(m_stateMutex);
+    m_audioMasterGain = gain;
+}
+
+float ProjectManager::getAudioMasterGain() const {
+    std::shared_lock lock(m_stateMutex);
+    return m_audioMasterGain;
+}
+
+void ProjectManager::setAudioMasterMute(bool mute) {
+    std::unique_lock lock(m_stateMutex);
+    m_audioMasterMute = mute;
+}
+
+bool ProjectManager::getAudioMasterMute() const {
+    std::shared_lock lock(m_stateMutex);
+    return m_audioMasterMute;
 }
 
 } // namespace entity

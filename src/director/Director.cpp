@@ -8,6 +8,7 @@
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/systems/AnimationSystem.hpp"
+#include "entity/systems/AudioSystem.hpp"
 #include "entity/systems/GenerativeSystem.hpp"
 #include "entity/systems/RoutingLibrarySystem.hpp"
 #include "entity/systems/TextSystem.hpp"
@@ -31,6 +32,7 @@ Director::Director(entt::registry& registry,
     , m_sectionScheduler(std::make_unique<SectionScheduler>(registry, m_timeline.get()))
     , m_captureBroker(std::make_unique<CaptureBroker>())
     , m_textSystem(std::make_unique<TextSystem>(renderer))
+    , m_audioSystem(std::make_unique<AudioSystem>())
 {
     // ProjectManager needs the Timeline + registry + renderer to honour
     // load/save calls (it allocates render-target slots for Screens at load
@@ -57,11 +59,18 @@ Director::Director(entt::registry& registry,
     m_routingLibrarySystem->initialize(registry);
     m_textSystem->initialize(registry);
 
+    m_audioSystem->setTimeline(m_timeline.get());
+
     // Wire ProjectManager into the time authority so the per-tick
     // active-set tuples carry the per-clip MediaBin OCIO override
     // (Phase C.12 #9). Done after ProjectManager::initialize so the
     // entry table is ready by the time the authority looks anything up.
     m_timeAuthority->setProjectManager(m_projectManager.get());
+
+    // Give SectionScheduler the time authority so its continuation-phase
+    // wall-clock anchor uses the active RateSource (audio crystal when
+    // audio is on) instead of raw steady_clock. Phase G.
+    m_sectionScheduler->setTimeAuthority(m_timeAuthority.get());
 
     // Capture broker resolves script-results via the dispatcher. Wire
     // the dispatcher now; the transport is wired by Engine post-init
@@ -72,6 +81,9 @@ Director::Director(entt::registry& registry,
 Director::~Director() {
     // Tear down systems against the registry before their unique_ptrs run.
     // Mirrors System lifecycle contracts elsewhere in the codebase.
+    if (m_audioSystem) {
+        m_audioSystem->shutdown(m_registry);
+    }
     if (m_textSystem) {
         m_textSystem->shutdown(m_registry);
     }

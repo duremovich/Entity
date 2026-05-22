@@ -170,6 +170,21 @@ void renderColorSection(Settings& staged,
     ImGui::TextDisabled("OCIO config switches require app restart in C.12.");
 }
 
+void renderAudioSection(Settings& staged) {
+    ImGui::Checkbox("Enable audio output", &staged.audioOutputEnabled);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(
+            "When enabled, audio is mixed and sent to the system audio device.\n"
+            "Disable for headless environments or when no audio hardware is available.\n"
+            "Requires restart to take effect.");
+        ImGui::EndTooltip();
+    }
+    ImGui::TextDisabled("Audio changes take effect after restart.");
+}
+
 void renderOscReceiverSection(Settings& staged) {
     ImGui::Checkbox("Enable OSC receiver", &staged.oscReceiverEnabled);
 
@@ -521,6 +536,11 @@ void SettingsWindow::render() {
     // ----- Color (Phase C.12 #7) -------------------------------------------
     if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderColorSection(m_staged, m_ocioManager, m_browseOcio);
+    }
+
+    // ----- Audio ------------------------------------------------------------
+    if (ImGui::CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
+        renderAudioSection(m_staged);
     }
 
     // ----- OSC Receiver -----------------------------------------------------

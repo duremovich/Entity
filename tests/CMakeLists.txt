@@ -47,6 +47,9 @@ add_executable(EntityMediaTests
     unit/DmxMappingTests.cpp
     unit/OscEncodingTest.cpp
     unit/OscMappingTableTest.cpp
+    unit/AudioRingBufferTest.cpp
+    unit/AudioMixerTest.cpp
+    unit/RateSourceSelectorTest.cpp
     test_Decoder.cpp
 )
 
@@ -377,3 +380,50 @@ set_tests_properties(integration_generative_keyframe_persistence_save PROPERTIES
     FIXTURES_SETUP generative_keyframe_persistence_data)
 set_tests_properties(integration_generative_keyframe_persistence_load PROPERTIES
     FIXTURES_REQUIRED generative_keyframe_persistence_data)
+
+# Phase F audio tests — require tests/fixtures/audio/tone_1khz.mov.
+# Generate the fixture once with: .\scripts\perf\setup-audio-fixtures.ps1
+# These tests use LoopbackDevice (headless mode) so no ENTITY_FORCE_WARP needed.
+add_test(
+    NAME integration_audio_tone_playback
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/audio_tone_playback.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_audio_tone_playback PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
+add_test(
+    NAME integration_audio_loop_section_break
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/audio_loop_section_break.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_audio_loop_section_break PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
+add_test(
+    NAME integration_audio_pingpong
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/audio_pingpong.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_audio_pingpong PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
+add_test(
+    NAME integration_audio_loop_break_synced
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/audio_loop_break_synced.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_audio_loop_break_synced PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

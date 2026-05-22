@@ -30,6 +30,9 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/AudioSource.hpp"
+#include "entity/audio/AudioEngine.hpp"
+#include "entity/audio/LoopbackDevice.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/input/InputBus.hpp"
 #include "entity/media/Decoder.hpp"
@@ -5214,6 +5217,318 @@ CommandPtr AssertKeyframeCountCommand::fromJson(const nlohmann::json& j) {
     size_t count = j.value("count", static_cast<size_t>(0));
     return std::make_unique<AssertKeyframeCountCommand>(
         trackIndex, clipIndex, property, count);
+}
+
+// ============================================================================
+// Audio source commands
+// ============================================================================
+
+namespace {
+AudioSource* getAudioSource(Engine& engine, entt::entity clipEntity) {
+    auto& reg = engine.getRegistry();
+    return reg.try_get<AudioSource>(clipEntity);
+}
+} // anonymous namespace
+
+// ----------------------------------------------------------------------------
+// SetAudioSourceGainCommand
+// ----------------------------------------------------------------------------
+
+bool SetAudioSourceGainCommand::execute(Engine& engine) {
+    auto* src = getAudioSource(engine, m_clipEntity);
+    if (!src) return false;
+    if (!m_previousGain.has_value()) m_previousGain = src->gain;
+    src->gain = m_gain;
+    return true;
+}
+
+bool SetAudioSourceGainCommand::undo(Engine& engine) {
+    if (!m_previousGain.has_value()) return false;
+    auto* src = getAudioSource(engine, m_clipEntity);
+    if (!src) return false;
+    src->gain = *m_previousGain;
+    return true;
+}
+
+nlohmann::json SetAudioSourceGainCommand::toJson() const {
+    return {{"type", "SetAudioSourceGain"},
+            {"clipEntity", static_cast<std::uint32_t>(m_clipEntity)},
+            {"gain", m_gain}};
+}
+
+std::string SetAudioSourceGainCommand::getDescription() const {
+    return "Set clip audio gain";
+}
+
+CommandPtr SetAudioSourceGainCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("clipEntity", std::uint32_t{0}));
+    return std::make_unique<SetAudioSourceGainCommand>(e, j.value("gain", 1.0f));
+}
+
+// ----------------------------------------------------------------------------
+// SetAudioSourceMuteCommand
+// ----------------------------------------------------------------------------
+
+bool SetAudioSourceMuteCommand::execute(Engine& engine) {
+    auto* src = getAudioSource(engine, m_clipEntity);
+    if (!src) return false;
+    if (!m_previousMute.has_value()) m_previousMute = src->mute;
+    src->mute = m_mute;
+    return true;
+}
+
+bool SetAudioSourceMuteCommand::undo(Engine& engine) {
+    if (!m_previousMute.has_value()) return false;
+    auto* src = getAudioSource(engine, m_clipEntity);
+    if (!src) return false;
+    src->mute = *m_previousMute;
+    return true;
+}
+
+nlohmann::json SetAudioSourceMuteCommand::toJson() const {
+    return {{"type", "SetAudioSourceMute"},
+            {"clipEntity", static_cast<std::uint32_t>(m_clipEntity)},
+            {"mute", m_mute}};
+}
+
+std::string SetAudioSourceMuteCommand::getDescription() const {
+    return m_mute ? "Mute clip audio" : "Unmute clip audio";
+}
+
+CommandPtr SetAudioSourceMuteCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("clipEntity", std::uint32_t{0}));
+    return std::make_unique<SetAudioSourceMuteCommand>(e, j.value("mute", false));
+}
+
+// ----------------------------------------------------------------------------
+// SetAudioSourceSoloCommand
+// ----------------------------------------------------------------------------
+
+bool SetAudioSourceSoloCommand::execute(Engine& engine) {
+    auto* src = getAudioSource(engine, m_clipEntity);
+    if (!src) return false;
+    if (!m_previousSolo.has_value()) m_previousSolo = src->solo;
+    src->solo = m_solo;
+    return true;
+}
+
+bool SetAudioSourceSoloCommand::undo(Engine& engine) {
+    if (!m_previousSolo.has_value()) return false;
+    auto* src = getAudioSource(engine, m_clipEntity);
+    if (!src) return false;
+    src->solo = *m_previousSolo;
+    return true;
+}
+
+nlohmann::json SetAudioSourceSoloCommand::toJson() const {
+    return {{"type", "SetAudioSourceSolo"},
+            {"clipEntity", static_cast<std::uint32_t>(m_clipEntity)},
+            {"solo", m_solo}};
+}
+
+std::string SetAudioSourceSoloCommand::getDescription() const {
+    return m_solo ? "Solo clip audio" : "Unsolo clip audio";
+}
+
+CommandPtr SetAudioSourceSoloCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("clipEntity", std::uint32_t{0}));
+    return std::make_unique<SetAudioSourceSoloCommand>(e, j.value("solo", false));
+}
+
+// ----------------------------------------------------------------------------
+// SetMasterGainCommand
+// ----------------------------------------------------------------------------
+
+bool SetMasterGainCommand::execute(Engine& engine) {
+    auto* ae = engine.getAudioEngine();
+    if (!ae) return false;
+    if (!m_previousGain.has_value()) m_previousGain = ae->masterGain();
+    ae->setMasterGain(m_gain);
+    return true;
+}
+
+bool SetMasterGainCommand::undo(Engine& engine) {
+    if (!m_previousGain.has_value()) return false;
+    auto* ae = engine.getAudioEngine();
+    if (!ae) return false;
+    ae->setMasterGain(*m_previousGain);
+    return true;
+}
+
+nlohmann::json SetMasterGainCommand::toJson() const {
+    return {{"type", "SetMasterGain"}, {"gain", m_gain}};
+}
+
+std::string SetMasterGainCommand::getDescription() const {
+    return "Set master audio gain";
+}
+
+CommandPtr SetMasterGainCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetMasterGainCommand>(j.value("gain", 1.0f));
+}
+
+// ----------------------------------------------------------------------------
+// SetMasterMuteCommand
+// ----------------------------------------------------------------------------
+
+bool SetMasterMuteCommand::execute(Engine& engine) {
+    auto* ae = engine.getAudioEngine();
+    if (!ae) return false;
+    if (!m_previousMute.has_value()) m_previousMute = ae->masterMute();
+    ae->setMasterMute(m_mute);
+    return true;
+}
+
+bool SetMasterMuteCommand::undo(Engine& engine) {
+    if (!m_previousMute.has_value()) return false;
+    auto* ae = engine.getAudioEngine();
+    if (!ae) return false;
+    ae->setMasterMute(*m_previousMute);
+    return true;
+}
+
+nlohmann::json SetMasterMuteCommand::toJson() const {
+    return {{"type", "SetMasterMute"}, {"mute", m_mute}};
+}
+
+std::string SetMasterMuteCommand::getDescription() const {
+    return m_mute ? "Mute master audio" : "Unmute master audio";
+}
+
+CommandPtr SetMasterMuteCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetMasterMuteCommand>(j.value("mute", false));
+}
+
+// ============================================================================
+// Audio capture assertions
+// ============================================================================
+
+namespace {
+
+// Downmix interleaved stereo float buffer to mono, return RMS.
+float captureRms(const std::vector<float>& buf) {
+    if (buf.empty()) return 0.0f;
+    double acc = 0.0;
+    for (float s : buf) acc += static_cast<double>(s) * s;
+    return static_cast<float>(std::sqrt(acc / buf.size()));
+}
+
+// Goertzel filter energy at `hz` for a mono-mixed float buffer sampled at `sr`.
+float goertzel(const std::vector<float>& buf, float hz, int sr) {
+    if (buf.empty() || sr <= 0) return 0.0f;
+    constexpr double PI = 3.14159265358979323846;
+    const double k  = static_cast<double>(buf.size()) * hz / sr;
+    const double w  = 2.0 * PI * k / buf.size();
+    const double c  = 2.0 * std::cos(w);
+    double s0 = 0.0, s1 = 0.0, s2 = 0.0;
+    for (float x : buf) {
+        s0 = x + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return static_cast<float>(s1 * s1 + s2 * s2 - c * s1 * s2);
+}
+
+// Return the LoopbackDevice* from an Engine's AudioEngine, or nullptr.
+entity::LoopbackDevice* getLoopback(Engine& engine) {
+    auto* ae = engine.getAudioEngine();
+    if (!ae) return nullptr;
+    return dynamic_cast<entity::LoopbackDevice*>(ae->device());
+}
+
+} // namespace
+
+bool ClearAudioCaptureCommand::execute(Engine& engine) {
+    auto* lb = getLoopback(engine);
+    if (lb) lb->clearCapture();
+    return true;
+}
+
+CommandPtr ClearAudioCaptureCommand::fromJson(const nlohmann::json&) {
+    return std::make_unique<ClearAudioCaptureCommand>();
+}
+
+bool AssertAudioCaptureRmsCommand::execute(Engine& engine) {
+    auto* lb = getLoopback(engine);
+    if (!lb) {
+        std::cerr << "[AssertAudioCaptureRms] No LoopbackDevice available\n";
+        return false;
+    }
+    const auto buf = lb->capturedCopy();
+    const float rms = captureRms(buf);
+    if (rms <= m_minRms) {
+        std::cerr << "[AssertAudioCaptureRms] RMS " << rms
+                  << " <= required " << m_minRms
+                  << " (" << buf.size() << " samples captured)\n";
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json AssertAudioCaptureRmsCommand::toJson() const {
+    return {{"type", "AssertAudioCaptureRms"}, {"minRms", m_minRms}};
+}
+
+std::string AssertAudioCaptureRmsCommand::getDescription() const {
+    return "Assert audio capture RMS > " + std::to_string(m_minRms);
+}
+
+CommandPtr AssertAudioCaptureRmsCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertAudioCaptureRmsCommand>(
+        j.value("minRms", 0.01f));
+}
+
+bool AssertAudioCaptureGoertzelCommand::execute(Engine& engine) {
+    auto* lb = getLoopback(engine);
+    if (!lb) {
+        std::cerr << "[AssertAudioCaptureGoertzel] No LoopbackDevice available\n";
+        return false;
+    }
+    auto* ae = engine.getAudioEngine();
+    const int sr = ae ? ae->sampleRate() : 48000;
+    const auto buf = lb->capturedCopy();
+    if (buf.empty()) {
+        std::cerr << "[AssertAudioCaptureGoertzel] Capture buffer is empty\n";
+        return false;
+    }
+    // Downmix to mono for the filter.
+    const int ch = ae ? ae->device()->channelCount() : 2;
+    std::vector<float> mono;
+    mono.reserve(buf.size() / ch);
+    for (size_t i = 0; i < buf.size(); i += ch) {
+        float sum = 0.0f;
+        for (int c = 0; c < ch && (i + c) < buf.size(); ++c) sum += buf[i + c];
+        mono.push_back(sum / ch);
+    }
+    const float targetE    = goertzel(mono, m_targetHz,    sr);
+    const float referenceE = goertzel(mono, m_referenceHz, sr);
+    if (referenceE <= 0.0f || (targetE / referenceE) < m_minRatio) {
+        std::cerr << "[AssertAudioCaptureGoertzel] target(" << m_targetHz << "Hz)="
+                  << targetE << " reference(" << m_referenceHz << "Hz)="
+                  << referenceE << " ratio=" << (referenceE > 0 ? targetE/referenceE : 0.f)
+                  << " < required " << m_minRatio << "\n";
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json AssertAudioCaptureGoertzelCommand::toJson() const {
+    return {{"type", "AssertAudioCaptureGoertzel"},
+            {"targetHz", m_targetHz},
+            {"referenceHz", m_referenceHz},
+            {"minRatio", m_minRatio}};
+}
+
+std::string AssertAudioCaptureGoertzelCommand::getDescription() const {
+    return "Assert Goertzel(" + std::to_string(m_targetHz) + "Hz) / ("
+         + std::to_string(m_referenceHz) + "Hz) >= " + std::to_string(m_minRatio);
+}
+
+CommandPtr AssertAudioCaptureGoertzelCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertAudioCaptureGoertzelCommand>(
+        j.value("targetHz",    1000.0f),
+        j.value("referenceHz",  500.0f),
+        j.value("minRatio",      3.0f));
 }
 
 } // namespace entity

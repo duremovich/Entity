@@ -4,6 +4,13 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/media/TranscodeManager.hpp"  // isHapMediaType
 
+#ifdef HAVE_FFMPEG
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+}
+#endif
+
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -274,10 +281,10 @@ void MediaProbeWorker::runLoop() {
 }
 
 ProbeInfo MediaProbeWorker::doProbe(const std::string& absolutePath) const {
-    // Mirrors the synchronous probe that previously lived in
-    // MediaBinWindow.cpp. detectMediaType + decoder.open +
-    // probeSourceCodecName each touch FFmpeg's avformat layer; total
-    // cost 30-60 ms on 4K ProRes, fine on a worker thread.
+    // detectMediaType + decoder.open each touch FFmpeg's avformat layer;
+    // total cost 30-60 ms on 4K ProRes, fine on a worker thread.
+    // A single additional avformat_open_input below extracts both the
+    // codec name and audio stream info in one pass.
     ProbeInfo info;
     const MediaType mt = detectMediaType(absolutePath);
     info.isHap = isHapMediaType(mt);
@@ -294,9 +301,51 @@ ProbeInfo MediaProbeWorker::doProbe(const std::string& absolutePath) const {
             }
         }
     }
-    info.sourceCodecName  = probeSourceCodecName(absolutePath);
+    // Derive codec name AND audio info from a single container open for
+    // formats that need FFmpeg. Image sequences use extension-only detection
+    // (no FFmpeg open, no audio). This replaces what was previously two
+    // separate avformat_open_input calls (one in probeSourceCodecName, one
+    // for the audio scan).
+    {
+        namespace fs = std::filesystem;
+        std::string ext = fs::path(absolutePath).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+        if (ext == ".png") {
+            info.sourceCodecName = "png";
+        } else if (ext == ".dpx") {
+            info.sourceCodecName = "dpx";
+        }
+#ifdef HAVE_FFMPEG
+        else if (ext == ".mov" || ext == ".mp4" || ext == ".m4v" ||
+                 ext == ".avi" || ext == ".mkv" || ext == ".webm" || ext == ".hap") {
+            AVFormatContext* ctx = nullptr;
+            if (avformat_open_input(&ctx, absolutePath.c_str(), nullptr, nullptr) == 0) {
+                if (avformat_find_stream_info(ctx, nullptr) >= 0) {
+                    for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+                        AVCodecParameters* cp = ctx->streams[i]->codecpar;
+                        if (cp->codec_type == AVMEDIA_TYPE_VIDEO && info.sourceCodecName.empty()) {
+                            const char* n = avcodec_get_name(cp->codec_id);
+                            if (n) info.sourceCodecName = n;
+                        }
+                    }
+                    const int audioIdx = av_find_best_stream(ctx, AVMEDIA_TYPE_AUDIO,
+                                                              -1, -1, nullptr, 0);
+                    if (audioIdx >= 0) {
+                        const AVCodecParameters* ap = ctx->streams[audioIdx]->codecpar;
+                        info.hasAudio        = true;
+                        info.audioSampleRate = ap->sample_rate;
+                        info.audioChannels   = ap->ch_layout.nb_channels;
+                    }
+                }
+                avformat_close_input(&ctx);
+            }
+        }
+#endif
+    }
     info.tier             = classifyCodec(info.sourceCodecName);
     info.displayCodecName = prettyCodec(info.sourceCodecName);
+
     return info;
 }
 

@@ -134,6 +134,13 @@ private:
     void renderEffectsSection(entt::entity layerEntity);
 
     /**
+     * Render per-clip audio controls (gain dB slider, mute toggle, solo toggle).
+     * Only shown when the selected clip has an AudioSource component with
+     * hasAudioStream == true.
+     */
+    void renderAudioSection(entt::entity clipEntity);
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control
@@ -274,6 +281,10 @@ private:
     float       m_preEditTextColorG{0.0f};
     float       m_preEditTextColorB{0.0f};
     float       m_preEditTextColorA{0.0f};
+
+    // Pre-edit capture for the audio gain slider. Populated on IsItemActivated;
+    // used to emit SetAudioSourceGainCommand on IsItemDeactivatedAfterEdit.
+    float m_preEditAudioGain{1.0f};
 };
 
 } // namespace entity

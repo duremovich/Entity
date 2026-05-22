@@ -10,6 +10,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/Transform.hpp"
+#include "entity/components/AudioSource.hpp"
 #include "entity/timeline/CueTag.hpp"
 #include <entt/entt.hpp>
 #include <array>
@@ -195,6 +196,10 @@ public:
         MunchersGameState                     munchersState{};  // only simFrame; resets on restore
         bool                                  hadTextLayerState{false};
         TextLayerState                        textLayerState{};
+
+        // Clip audio state (v23+). Unused when kind != Clip.
+        bool        hadAudioSource{false};
+        AudioSource audioSource{};
 
         // Shared — animated keyframes (clip Transform/Opacity/etc. or OA
         // Position/Rotation/Scale tracks).

@@ -279,6 +279,10 @@ Timeline::DeletedClipSnapshot Timeline::snapshotClipForDelete(entt::entity clipE
             snap.videoTexHeight  = vt->height;
         }
         snap.hadFrameBuffer = m_registry.all_of<FrameBuffer>(clipEntity);
+        if (const auto* as = m_registry.try_get<AudioSource>(clipEntity)) {
+            snap.hadAudioSource = true;
+            snap.audioSource    = *as;
+        }
     } else if (oal) {
         snap.kind              = DeletedLayerKind::ObjectAnimation;
         snap.oaTarget          = oal->target;
@@ -471,6 +475,9 @@ entt::entity Timeline::restoreDeletedClip(const DeletedClipSnapshot& snap) {
     }
     if (snap.hadFrameBuffer) {
         m_registry.emplace<FrameBuffer>(newEntity);
+    }
+    if (snap.hadAudioSource) {
+        m_registry.emplace<AudioSource>(newEntity) = snap.audioSource;
     }
     if (snap.hadAnimatedProperties) {
         m_registry.emplace<AnimatedProperties>(newEntity) = snap.animatedProperties;

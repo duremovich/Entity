@@ -1,0 +1,78 @@
+{
+    "version": 1,
+    "description": "G4: Audio continuation clock uses active RateSource. Places the 1 kHz tone fixture with PlaybackMode=Loop and SectionBehavior=Normal, adds a section break at 2 s, plays past it so the playhead parks, clears the capture buffer to isolate the parked-phase audio, waits 2 s while parked (the Normal loop keeps cycling via seedContinuationAt / advanceContinuation on the RateSource clock), then asserts non-zero RMS. Requires tests/fixtures/audio/tone_1khz.mov.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "BreakSyncScreen",
+            "width": 320,
+            "height": 240
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "tests/fixtures/audio/tone_1khz.mov",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "SetClipPlaybackMode",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "mode": "Loop"
+        },
+        {
+            "type": "SetClipSectionBehavior",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "behavior": "Normal"
+        },
+        {
+            "type": "SetClipDuration",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "duration": 300
+        },
+        {
+            "type": "AddSectionBreak",
+            "breakFrame": 2000000,
+            "name": "SyncBreak"
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 5
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 2.5
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Paused"
+        },
+        {
+            "type": "ClearAudioCapture"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 2.0
+        },
+        {
+            "type": "AssertAudioCaptureRms",
+            "minRms": 0.005
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

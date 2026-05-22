@@ -6,6 +6,7 @@
 
 namespace entity {
 
+class PlaybackTimeAuthority;
 class Timeline;
 
 // SectionScheduler — Director-side (editor-thread) state machine for
@@ -65,6 +66,12 @@ public:
     bool atBreak() const { return m_atBreak; }
     Timecode lastBreakHitFrame() const { return m_lastBreakHitFrame; }
 
+    /** Wire the active PlaybackTimeAuthority so the continuation-phase
+     *  wall-clock anchor uses the same RateSource as the main timeline
+     *  (audio crystal when audio is on). Called once from Director constructor
+     *  after both objects are constructed. Phase G. */
+    void setTimeAuthority(PlaybackTimeAuthority* a) { m_timeAuthority = a; }
+
 private:
     // Runs once when a break-crossing is detected. Walks Clip + Section
     // behavior, allocates ClipPlaybackPhase on Normal clips, seeds
@@ -109,9 +116,10 @@ private:
     // `anchorTimelineFrame > currentTimelineFrame` is reset to sentinels.
     void resetAnchorsAcrossScrub(Timecode currentTime);
 
-    entt::registry& m_registry;
-    Timeline*       m_timeline{nullptr};
-    bool            m_atBreak{false};
+    entt::registry&        m_registry;
+    Timeline*              m_timeline{nullptr};
+    PlaybackTimeAuthority* m_timeAuthority{nullptr};
+    bool                   m_atBreak{false};
     Timecode        m_lastBreakHitFrame{0};
     Timecode        m_lastTickFrame{0};
     bool            m_haveLastTickFrame{false};  // First-tick guard: skip crossing detection.
