@@ -140,12 +140,12 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         // Keep playback mode in sync.
         worker->playbackMode = clip.playbackMode;
 
-        // Determine audible-active. A clip is heard only while the
-        // transport is actually advancing (Playing) and the playhead is
-        // inside the clip window, OR while the clip is in section-break
-        // continuation (parked at a break but still cycling). A clip whose
-        // window merely contains a paused or scrubbed playhead is NOT
-        // audible: audio must not play when the transport is paused.
+        // Determine whether this clip should be steering its worker.
+        // A clip steers (seeks/prerolls) whenever the transport is Playing and
+        // the playhead is inside the clip window, OR while the clip is in
+        // section-break continuation. This is independent of the seek-sync gate
+        // so the worker seeks and prerolls its ring even while the gate holds
+        // the timeline still.
         const bool playing =
             (m_timeline->getPlaybackState() == PlaybackState::Playing);
         const bool inWindow = (currentTLFrame >= clip.startFrame &&
@@ -156,10 +156,17 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
             if (phase && phase->inContinuation)
                 inContinuation = true;
         }
-        const bool audible = (inWindow && playing) || inContinuation;
-        worker->mixSource.active.store(audible);
+        const bool shouldSteer = (inWindow && playing) || inContinuation;
 
-        if (!audible) continue;
+        // mixSource.active gates the mixer: the clip is audible only when it
+        // should be steering AND the seek-sync gate is not holding the timeline.
+        // When the gate is set (Phase 4 path), the worker still seeks/prerolls
+        // but the mixer outputs silence until SeekSyncController releases.
+        // Gate is always false in this phase, so behaviour is unchanged.
+        worker->mixSource.active.store(
+            shouldSteer && !m_timeline->isSeekSyncGated());
+
+        if (!shouldSteer) continue;
 
         // Compute expected clip-local output-rate sample, mirroring
         // DecodeSystem's timeline→media-frame mapping.
@@ -255,6 +262,29 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
             destroyWorker(ent);
         }
     }
+}
+
+int64_t AudioSystem::getWorkerSeekTargetFrame(entt::entity clipEntity,
+                                               double clipFps) const {
+    auto it = m_workers.find(clipEntity);
+    if (it == m_workers.end() || !it->second) return -1;
+    const AudioDecodeWorker& w = *it->second;
+    if (w.initFailed.load(std::memory_order_relaxed)) return 0;
+    if (!w.initialized.load(std::memory_order_acquire)) return -1;
+    const double fps = (clipFps > 0.0) ? clipFps : 30.0;
+    const int64_t sampleTarget = w.seekTarget.load(std::memory_order_relaxed);
+    return static_cast<int64_t>(
+        std::round(static_cast<double>(sampleTarget) / w.targetSampleRate * fps));
+}
+
+bool AudioSystem::isWorkerSeekReady(entt::entity clipEntity) const {
+    auto it = m_workers.find(clipEntity);
+    if (it == m_workers.end() || !it->second) return false;
+    const AudioDecodeWorker& w = *it->second;
+    if (w.initFailed.load(std::memory_order_relaxed)) return true;
+    return w.initialized.load(std::memory_order_acquire)
+        && !w.seekPending.load(std::memory_order_acquire)
+        && w.ring.availableFrames() >= kAudioPrerollFrames;
 }
 
 void AudioSystem::shutdown(entt::registry& registry) {

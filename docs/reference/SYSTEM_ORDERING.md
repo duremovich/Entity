@@ -66,6 +66,27 @@ load, thousands of Hz in `--headless --script` mode with no decode work).
           fallback fires on editor stalls (same 50ms heartbeat gate as
           DecodeSystem).
 
+5.6 SeekSyncController::tick()
+       └─ No-op when m_seekSyncGate is clear (99.9% of ticks — returns on
+          first branch). When the gate is active (engaged by Timeline::play()
+          on every ->Playing transition), polls two injectable readiness
+          predicates: videoReady (∀ active Clips: DecodeSystem::isClipReadyAt)
+          and audioReady (∀ active Clip+AudioSources: AudioSystem::isWorkerSeekReady).
+          Releases the gate by calling Timeline::setSeekSyncGate(false) when
+          both predicates return true. Falls back to releasing after
+          kPrerollTimeoutMs (3000 ms) so a broken decoder can never hang
+          playback indefinitely (ADR-0026).
+       └─ Must tick AFTER AudioSystem::update (step 5.5) so worker seek
+          state and ring-buffer fill are current when the readiness predicate
+          fires. Must tick BEFORE m_lastEditorTickNs.store (step 6) so the
+          gate release happens on the same editor tick that sees the ready
+          state.
+       └─ Show-thread fallback: not needed. The gate holds Timeline::update
+          from advancing m_currentTime. During an editor stall, the show-
+          thread Timeline::update also reads m_seekSyncGate (acquire order)
+          and respects the hold — so the gate extends across editor stalls
+          without SeekSyncController needing a show-thread presence.
+
 6.  m_lastEditorTickNs.store(now)
        └─ Heartbeat the show thread polls for stall detection.
 
@@ -230,6 +251,7 @@ write the registry.** That's why only some systems have fallbacks.
 | `drainContentScannerDeltas` | step 4 | no -- not needed | Filesystem-watcher updates can wait until stall ends. |
 | `DecodeSystem::update` | step 5 | yes since `a9bcd8b` | Writes only atomic `worker->targetFrame` — show-safe. |
 | `AudioSystem::update` | step 5.5 | yes (Phase D audio) | Writes only atomic worker fields (`seekTarget`, `active`) and `MixSource` mixer-slot fields — no registry writes. Show-thread fallback fires on the same 50ms heartbeat stale gate as DecodeSystem so audio keeps advancing during editor stalls. |
+| `SeekSyncController::tick` | step 5.6 | no — not needed | Polls readiness predicates and releases `Timeline::m_seekSyncGate` when all active decoders reach the parked frame. The gate itself is an `std::atomic<bool>` read by both the show-thread and editor-thread `Timeline::update`; both respect the hold without SeekSyncController needing a show-thread presence. During an editor stall the gate stays held (no tick = no release), which is correct — audio and video decode workers keep running independently, so by the time the editor resumes the predicates may already be satisfied and the gate releases on the first tick. Timeout failsafe (3000 ms) guards against indefinite holds (ADR-0026). |
 
 Every editor-tick system that drives the projector output now has a
 stall path. NEW-07 was closed 2026-05-11 by the snapshot-bake approach

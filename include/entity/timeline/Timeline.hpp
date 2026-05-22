@@ -84,6 +84,20 @@ public:
     void setScrubbing(bool scrubbing) { m_isScrubbing.store(scrubbing); }
     bool isScrubbing() const { return m_isScrubbing.load(); }
 
+    // Seek-sync gate — when true, Timeline::update() does not advance the
+    // playhead. Set by play() (Phase 4) before audio workers begin seeking;
+    // released by SeekSyncController once all workers are primed. Cleared
+    // automatically by pause(), stop(), seek(), and clear() so a stale gate
+    // never locks the timeline.
+    void setSeekSyncGate(bool v) { m_seekSyncGate.store(v, std::memory_order_release); }
+    bool isSeekSyncGated() const { return m_seekSyncGate.load(std::memory_order_acquire); }
+    // Wall-clock nanoseconds (steady_clock) when the gate was last set by play().
+    // SeekSyncController reads this to compute preroll elapsed time so the timeout
+    // is measured from play()-time, not from the first tick() after play().
+    int64_t getSeekSyncEngageTimeNs() const {
+        return m_seekSyncEngageTimeNs.load(std::memory_order_acquire);
+    }
+
     /**
      * Convert a frame number to a Timecode (microseconds).
      * Uses std::round so seekToFrame(N) -> getCurrentFrame() round-trips to N.
@@ -538,6 +552,8 @@ private:
     Timecode m_duration{600000000};  // Default: 10 minutes = 600 seconds = 600,000,000 microseconds
     std::atomic<PlaybackState> m_playbackState{PlaybackState::Stopped};
     std::atomic<bool> m_isScrubbing{false};  // True during drag-scrubbing (prevents decoder seeks)
+    std::atomic<bool>    m_seekSyncGate{false};         // Set by play() (Phase 4); released by SeekSyncController when all audio workers are primed
+    std::atomic<int64_t> m_seekSyncEngageTimeNs{0};    // Steady-clock ns at last gate engage (for controller timeout)
     double m_frameRate{30.0};
 
     // Track entities (stored in ECS)

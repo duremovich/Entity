@@ -110,6 +110,17 @@ public:
     const DecodeWorker* getWorker(entt::entity clipEntity) const;
 
     /**
+     * Returns true when the given clip has a decoded frame ready at
+     * `mediaFrame` and is not mid-seek. Used by SeekSyncController to decide
+     * when video is primed after a seek.
+     *
+     * - No worker → false (wait for bootstrap)
+     * - initFailed → true (don't block on broken media)
+     * - else → initialized && !seekPending && FrameCache::has(entity, mediaFrame)
+     */
+    bool isClipReadyAt(entt::entity clipEntity, FrameNumber mediaFrame) const;
+
+    /**
      * Tear down the decode worker for a specific clip and evict the
      * clip's frames from the FrameCache. Joins the worker thread
      * (blocking; can take 50+ ms on 4K ProRes), releases the decoder,

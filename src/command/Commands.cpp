@@ -33,6 +33,7 @@
 #include "entity/components/AudioSource.hpp"
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/audio/LoopbackDevice.hpp"
+#include "entity/systems/AudioSystem.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/input/InputBus.hpp"
 #include "entity/media/Decoder.hpp"
@@ -5529,6 +5530,91 @@ CommandPtr AssertAudioCaptureGoertzelCommand::fromJson(const nlohmann::json& j) 
         j.value("targetHz",    1000.0f),
         j.value("referenceHz",  500.0f),
         j.value("minRatio",      3.0f));
+}
+
+bool AssertAudioWorkerSeekFrameCommand::execute(Engine& engine) {
+    auto* timeline  = engine.getTimeline();
+    auto* director  = engine.getDirector();
+    if (!timeline || !director) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: timeline/director unavailable"
+                  << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: no Clip component" << std::endl;
+        return false;
+    }
+    if (!registry.try_get<AudioSource>(clipEntity)) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: clip has no AudioSource "
+                     "(media has no audio stream)" << std::endl;
+        return false;
+    }
+
+    auto* audioSystem = director->getAudioSystem();
+    if (!audioSystem) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: no AudioSystem" << std::endl;
+        return false;
+    }
+
+    const int64_t actual = audioSystem->getWorkerSeekTargetFrame(
+        clipEntity, clip->framerate);
+    if (actual < 0) {
+        std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: worker not initialized yet "
+                     "(returned -1)" << std::endl;
+        return false;
+    }
+
+    const int64_t diff = std::abs(actual - m_expected);
+    if (diff <= m_tolerance) {
+        std::cout << "[AssertAudioWorkerSeekFrame] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " seekFrame=" << actual
+                  << " (== " << m_expected << " +/-" << m_tolerance << ")" << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertAudioWorkerSeekFrame] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex
+              << " expected " << m_expected << " (+/-" << m_tolerance
+              << "), got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertAudioWorkerSeekFrameCommand::toJson() const {
+    return {{"type", "AssertAudioWorkerSeekFrame"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance}};
+}
+
+std::string AssertAudioWorkerSeekFrameCommand::getDescription() const {
+    return "Assert audio worker seek frame for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertAudioWorkerSeekFrameCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertAudioWorkerSeekFrameCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex",  0),
+        j.value("expected",  int64_t{0}),
+        j.value("tolerance", int64_t{5}));
 }
 
 } // namespace entity

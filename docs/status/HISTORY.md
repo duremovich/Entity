@@ -6,6 +6,95 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
+
+Adds a seek-sync preroll gate so playback after a seek starts cleanly. On
+Play, the timeline playhead is held parked at the target frame (audio
+silent) until every active decoder has genuinely caught up to that frame,
+then released — both streams begin from the same frame, instead of with a
+glitchy interval while the video decoder decodes forward from its GOP
+keyframe and the audio worker re-seeks and prerolls its ring.
+
+Scope note: the plan (`tidy-nibbling-kurzweil` Part 2) was originally
+motivated by a multi-second mid-clip-seek desync (audio seconds ahead of
+video). That turned out to be a separate `ProResDecoder` inter-frame-seek
+bug — it returned the GOP keyframe mislabeled as the target frame — fixed
+independently in commit `12590ae`. The preroll gate does not fix that
+desync; it relies on decoders reporting their position honestly. Its role
+is the clean-start one above.
+
+Implemented in four phases (plan `tidy-nibbling-kurzweil` Part 2, Phases A-D):
+
+**Phase A — Gate plumbing.** `std::atomic<bool> m_seekSyncGate` added to
+`Timeline`. `Timeline::play()` sets the gate on every `->Playing`
+transition. `update()` only advances `m_currentTime` when the gate is
+clear (acquire order). `pause()`, `stop()`, `seekToFrame()`, and
+`clear()` all clear the gate so a stale hold can never deadlock the
+transport. `isSeekSyncGated()` and `setSeekSyncGate()` exposed as public
+accessors for `SeekSyncController`.
+
+**Phase B — Readiness queries + AudioSystem decouple.**
+`DecodeSystem::isClipReadyAt(entity, mediaFrame)` — returns true when the
+worker is initialized, not mid-seek, and `FrameCache::has` the target
+frame. `AudioSystem::isWorkerSeekReady(entity)` — returns true when the
+audio worker is initialized, not mid-seek, and the ring buffer holds at
+least `kAudioPrerollFrames = 2048` samples (~43 ms @ 48 kHz).
+`AudioSystem::getWorkerSeekTargetFrame(entity, clipFps)` — converts the
+worker's sample-domain `seekTarget` to a media frame number for
+integration-test assertion. AudioSystem's mixer-gating decoupled: a
+separate `shouldSteer` predicate drives worker steering; `mixSource.active`
+is additionally gated by `!isSeekSyncGated()` so audio is silent during
+the preroll hold without suppressing the seek itself.
+
+**Phase C — SeekSyncController.** New plain class (not an ECS System)
+`SeekSyncController` lives on `Engine` (the only object that can name
+both Director-side and Renderer-side subsystems per ADR-0014/ADR-0003).
+Injectable `std::function<bool()>` readiness predicates let unit tests
+supply fakes without standing up a full Engine. `tick(Timeline*)` is a
+no-op when the gate is clear; when active, polls `videoReady` (∀ active
+Clips: `isClipReadyAt`) and `audioReady` (∀ active Clip+AudioSources:
+`isWorkerSeekReady`); releases the gate when both return true. Timeout
+failsafe: releases with a warning log after `kPrerollTimeoutMs = 3000` ms
+so a decoder that cannot reach the target frame (missing media, seek
+error) never hangs playback indefinitely. Wired in `Engine::initialize()`
+after AudioSystem; ticked from `Engine::update()` at step 5.6, right after
+`AudioSystem::update` (step 5.5).
+
+**Phase D — Tests, ADR, docs.** Eleven `SeekSyncControllerTest` unit tests
+exercise the gate state machine through injectable predicates:
+no-op-when-clear, release-on-first-tick, release-after-N-ticks,
+null-predicate-counts-ready, timeout-release, pause/stop/seek-during-
+preroll-clear, re-engage-after-release, null-Timeline-no-crash. Two
+integration scripts: `seek_sync_mid_clip.json` (seeks to frame 60, plays,
+asserts video near frame 60 + audio steered near frame 60) and
+`seek_sync_frame_zero.json` (plays from frame 0, asserts playback advanced
+— the no-regression gate for a keyframe-cold start). New script command
+`AssertAudioWorkerSeekFrame` asserts the audio worker's seek-target frame
+with tolerance. ADR-0026 written.
+
+**Files.** `include/entity/core/SeekSyncController.hpp` (new),
+`src/core/SeekSyncController.cpp` (new), `include/entity/core/Engine.hpp`
+(`m_seekSyncController` member + fwd decl), `src/core/Engine.cpp`
+(readiness closures + tick call), `include/entity/timeline/Timeline.hpp`
+(`m_seekSyncGate` + accessors), `src/timeline/Timeline.cpp`
+(gate engage/clear sites), `include/entity/systems/AudioSystem.hpp`
+(`isWorkerSeekReady`, `getWorkerSeekTargetFrame` declarations),
+`src/systems/AudioSystem.cpp` (implementations + decouple),
+`include/entity/command/Commands.hpp`
+(`AssertAudioWorkerSeekFrameCommand`),
+`src/command/Commands.cpp` + `src/command/CommandDispatcher.cpp`
+(implementation + registration), `tests/unit/SeekSyncControllerTest.cpp`
+(new), `scripts/integration/seek_sync_mid_clip.json` (new),
+`scripts/integration/seek_sync_frame_zero.json` (new),
+`tests/CMakeLists.txt` (unit + integration registrations),
+`docs/adr/0026-seek-sync-preroll-gate.md` (new),
+`docs/adr/README.md` (index entry),
+`docs/reference/SYSTEM_ORDERING.md` (step 5.6 + fallback table row),
+`scripts/CLAUDE.md` (`AssertAudioWorkerSeekFrame` command doc).
+`CMakeLists.txt` (`SeekSyncController.cpp` source registration).
+
+---
+
 ### Continuation Clock Onto RateSource — Phase G (2026-05-21)
 
 Migrated the section-break continuation-phase wall-clock anchor from raw

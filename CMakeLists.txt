@@ -156,6 +156,7 @@ target_sources(EntityMediaCore
         src/core/Settings.cpp
         src/core/EnginePluginContext.cpp
         src/core/CrashLogger.cpp
+        src/core/SeekSyncController.cpp
 
         # Color (Phase C.12 — OCIO color management)
         src/color/OcioManager.cpp

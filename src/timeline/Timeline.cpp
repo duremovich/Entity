@@ -16,6 +16,7 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include <iostream>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -30,7 +31,8 @@ Timeline::Timeline(entt::registry& registry)
 
 void Timeline::update(double deltaTime) {
     ZoneScopedN("Timeline::update");
-    if (m_playbackState.load() == PlaybackState::Playing) {
+    if (m_playbackState.load() == PlaybackState::Playing &&
+        !m_seekSyncGate.load(std::memory_order_acquire)) {
         // Advance current time based on deltaTime
         const Timecode deltaTimecode = static_cast<Timecode>(deltaTime * 1000000.0);
         const Timecode newTime = m_currentTime.fetch_add(deltaTimecode,
@@ -50,12 +52,23 @@ void Timeline::update(double deltaTime) {
 
 void Timeline::play() {
     if (m_playbackState.load() != PlaybackState::Playing) {
+        // Engage the seek-sync gate before transitioning to Playing so
+        // Timeline::update() holds the playhead parked until
+        // SeekSyncController confirms all active decoders are prerolled.
+        // pause(), stop(), seek(), and clear() clear the gate on any
+        // non-play transition so a stale gate can never lock the timeline.
+        m_seekSyncEngageTimeNs.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count(),
+            std::memory_order_release);
+        m_seekSyncGate.store(true, std::memory_order_release);
         m_playbackState.store(PlaybackState::Playing);
         std::cout << "[Timeline] Playing from " << getCurrentTime() << std::endl;
     }
 }
 
 void Timeline::pause() {
+    m_seekSyncGate.store(false, std::memory_order_release);
     if (m_playbackState.load() == PlaybackState::Playing) {
         m_playbackState.store(PlaybackState::Paused);
         // Playhead is frame-quantized at rest. Snap on the play->pause
@@ -69,12 +82,14 @@ void Timeline::pause() {
 }
 
 void Timeline::stop() {
+    m_seekSyncGate.store(false, std::memory_order_release);
     m_playbackState.store(PlaybackState::Stopped);
     m_currentTime.store(0, std::memory_order_relaxed);
     std::cout << "[Timeline] Stopped, reset to 0" << std::endl;
 }
 
 void Timeline::seek(Timecode time) {
+    m_seekSyncGate.store(false, std::memory_order_release);
     // Pause playback when seeking to prevent freezes
     // (ring buffer gets cleared on seek, main thread would block waiting for frames)
     if (m_playbackState.load() == PlaybackState::Playing) {
@@ -189,6 +204,7 @@ void Timeline::clear() {
     m_selectedSectionBreakFrame.reset();
 
     // Reset timeline state
+    m_seekSyncGate.store(false, std::memory_order_release);
     m_currentTime.store(0, std::memory_order_relaxed);
     m_playbackState.store(PlaybackState::Stopped);
     m_atSectionBreak.store(false);

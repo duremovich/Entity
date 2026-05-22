@@ -44,6 +44,7 @@ class OcioManager;
 class PlaybackTimeAuthority;
 class SectionScheduler;
 class PlaybackPresenter;
+class SeekSyncController;
 namespace effects { class EffectKindRegistry; }
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
                       // TranscodeManager, CommandDispatcher,
@@ -1034,6 +1035,12 @@ private:
     SectionScheduler*      m_sectionScheduler{nullptr};
     PlaybackPresenter*     m_playbackPresenter{nullptr};
     AudioSystem*           m_audioSystem{nullptr};
+
+    // Phase C (seek-sync): polls video + audio worker readiness each editor
+    // tick and releases the Timeline seek-sync gate once all active decoders
+    // have prerolled to the parked frame.  Constructed in initialize(); never
+    // null after that point.
+    std::unique_ptr<SeekSyncController> m_seekSyncController;
 
     // Phase D entry, subtask 8: Director->Renderer per-tick state-snapshot
     // travels through this transport. In-process today (no threads, no

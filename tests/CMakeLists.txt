@@ -50,6 +50,7 @@ add_executable(EntityMediaTests
     unit/AudioRingBufferTest.cpp
     unit/AudioMixerTest.cpp
     unit/RateSourceSelectorTest.cpp
+    unit/SeekSyncControllerTest.cpp
     test_Decoder.cpp
 )
 
@@ -424,6 +425,34 @@ add_test(
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 set_tests_properties(integration_audio_loop_break_synced PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
+# ADR-0026 seek-sync preroll gate: mid-clip seek + Play checks that the gate
+# holds then releases and A/V are both steered near the seek frame.
+# Requires tests/fixtures/audio/tone_1khz.mov.
+add_test(
+    NAME integration_seek_sync_mid_clip
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/seek_sync_mid_clip.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_seek_sync_mid_clip PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
+# ADR-0026 seek-sync frame-0 control: Play from frame 0 must not hang; gate
+# releases within ~one editor tick (decoders already warm at keyframe 0).
+# Requires tests/fixtures/audio/tone_1khz.mov.
+add_test(
+    NAME integration_seek_sync_frame_zero
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/seek_sync_frame_zero.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_seek_sync_frame_zero PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )

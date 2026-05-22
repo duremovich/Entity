@@ -402,6 +402,15 @@ const DecodeWorker* DecodeSystem::getWorker(entt::entity clipEntity) const {
     return it != m_workers.end() ? it->second.get() : nullptr;
 }
 
+bool DecodeSystem::isClipReadyAt(entt::entity clipEntity, FrameNumber mediaFrame) const {
+    const DecodeWorker* w = getWorker(clipEntity);
+    if (!w) return false;
+    if (w->initFailed.load(std::memory_order_relaxed)) return true;
+    return w->initialized.load(std::memory_order_acquire)
+        && !w->seekPending.load(std::memory_order_acquire)
+        && m_frameCache && m_frameCache->has(clipEntity, mediaFrame);
+}
+
 void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, FrameNumber initialFrame) {
     auto totalStart = std::chrono::high_resolution_clock::now();
 

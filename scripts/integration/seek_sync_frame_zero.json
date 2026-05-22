@@ -1,0 +1,44 @@
+{
+    "version": 1,
+    "description": "Seek-sync preroll gate (ADR-0026): frame-0 control case. Loads the 1 kHz tone fixture at position 0, plays from frame 0 (a keyframe -- the gate should release within ~one editor tick since decoders are already warm), waits 1 second, then asserts (a) playback state is still Playing and (b) the video media frame has advanced at least to frame 10 (proving playback resumed after the immediate gate release). Play-from-frame-0 is the no-regression case: it must not hang waiting for a preroll that is already done. Requires tests/fixtures/audio/tone_1khz.mov.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "SeekSyncFrame0Screen",
+            "width": 320,
+            "height": 240
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "tests/fixtures/audio/tone_1khz.mov",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 15
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 1.0
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Playing"
+        },
+        {
+            "type": "AssertClipMediaFrame",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "expected": 0,
+            "tolerance": 5,
+            "mode": "notEqual"
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

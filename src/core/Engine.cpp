@@ -64,6 +64,7 @@
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/systems/AudioSystem.hpp"
+#include "entity/core/SeekSyncController.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Screen.hpp"
@@ -676,6 +677,57 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         m_audioSystem->setAudioEngine(m_audioEngine.get());
         m_audioSystem->setTimeAuthority(m_timeAuthority);
         m_audioSystem->initialize(m_registry);
+    }
+
+    // Phase C (seek-sync): build readiness predicates and construct the
+    // controller.  Both closures capture raw pointers that are valid for the
+    // engine's lifetime; the controller is destroyed in ~Engine before those
+    // objects are torn down.
+    {
+        // Keep a local copy of the pointers we capture.  Capturing the
+        // member pointers themselves is fine — the lambdas' lifetime is
+        // bounded by m_seekSyncController, which is destroyed before the
+        // systems it references.
+        entt::registry*        reg          = &m_registry;
+        PlaybackTimeAuthority* timeAuthority = m_timeAuthority;
+        DecodeSystem*          decodeSystem  = m_decodeSystem;
+        AudioSystem*           audioSystem   = m_audioSystem;
+        Timeline*              timeline      = m_timeline;
+
+        // videoReady: every Clip that is active at the current (parked) frame
+        // must have its target media frame in the cache.
+        SeekSyncController::ReadinessFn videoReady = [=]() -> bool {
+            if (!decodeSystem || !timeAuthority || !timeline || !reg) return true;
+            const FrameNumber currentFrame = timeline->getCurrentFrame();
+            auto view = reg->view<Clip>();
+            for (auto [entity, clip] : view.each()) {
+                if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
+                const FrameNumber mediaFrame =
+                    timeAuthority->mapToMediaFrame(entity, clip, currentFrame);
+                if (!decodeSystem->isClipReadyAt(entity, mediaFrame)) return false;
+            }
+            return true;
+        };
+
+        // audioReady: every Clip+AudioSource that is active at the parked
+        // frame must have its ring buffer prerolled.
+        SeekSyncController::ReadinessFn audioReady;
+        if (audioSystem) {
+            audioReady = [=]() -> bool {
+                if (!timeAuthority || !timeline || !reg) return true;
+                const FrameNumber currentFrame = timeline->getCurrentFrame();
+                auto view = reg->view<Clip, AudioSource>();
+                for (auto [entity, clip, audio] : view.each()) {
+                    (void)audio;
+                    if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
+                    if (!audioSystem->isWorkerSeekReady(entity)) return false;
+                }
+                return true;
+            };
+        }
+
+        m_seekSyncController = std::make_unique<SeekSyncController>(
+            std::move(videoReady), std::move(audioReady));
     }
 
     // Initialize timing -- authority is Director-side; Engine just
@@ -1900,6 +1952,13 @@ void Engine::update() {
     }
     if (m_audioSystem) {
         m_audioSystem->update(m_registry, static_cast<float>(deltaTime));
+    }
+    // Seek-sync gate: poll readiness and release when all active decoders
+    // (video + audio) have prerolled to the parked frame.  No-ops when the
+    // gate is not engaged.  Ticked after AudioSystem so worker readiness
+    // reflects this tick's steering decisions.
+    if (m_seekSyncController) {
+        m_seekSyncController->tick(m_timeline);
     }
 
     // Upload any Model meshes that don't yet have GPU resources.

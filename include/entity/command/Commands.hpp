@@ -2986,4 +2986,42 @@ private:
     float m_minRatio;
 };
 
+/**
+ * Assert that the audio decode worker for the clip at (trackIndex, clipIndex)
+ * was steered to a seek target within `tolerance` frames of `expected`.
+ * Uses AudioSystem::getWorkerSeekTargetFrame, which converts the worker's
+ * clip-local seekTarget sample back to a media frame using the clip's
+ * frame rate. Returns false (fail) if the clip has no AudioSource component
+ * or no live worker.
+ *
+ * Intended for seek-sync integration tests: after SeekToFrame + Play +
+ * WaitSeconds, assert the audio worker reached the right media frame.
+ *
+ * JSON: {"type":"AssertAudioWorkerSeekFrame","trackIndex":0,"clipIndex":0,
+ *        "expected":60,"tolerance":5}
+ */
+class AssertAudioWorkerSeekFrameCommand : public Command {
+public:
+    AssertAudioWorkerSeekFrameCommand(int trackIndex, int clipIndex,
+                                      int64_t expected,
+                                      int64_t tolerance = 5)
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_expected(expected)
+        , m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertAudioWorkerSeekFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int     m_trackIndex;
+    int     m_clipIndex;
+    int64_t m_expected;
+    int64_t m_tolerance;
+};
+
 } // namespace entity
