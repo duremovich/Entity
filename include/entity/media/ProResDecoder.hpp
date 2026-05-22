@@ -86,6 +86,14 @@ private:
     Result decodeNextPacket(bool actuallyDecode = true);
 
     /**
+     * Recover a decoded frame's true frame number from its presentation
+     * timestamp — the inverse of seek()'s frame-number -> timestamp
+     * mapping. Used to resync after an inter-frame seek lands on an
+     * unknown GOP keyframe.
+     */
+    FrameNumber frameNumberFromPts(AVFrame* frame) const;
+
+    /**
      * Cleanup FFmpeg resources.
      * Called during close() to properly deallocate all FFmpeg contexts.
      */
@@ -114,6 +122,15 @@ private:
     // Stream tracking
     int m_videoStreamIndex{-1};
     FrameNumber m_currentFrame{-1};
+
+    // Codec class. Inter-frame codecs (H.264/HEVC/...) seek to a sparse GOP
+    // keyframe and must be decoded forward to the target; intra-only codecs
+    // (ProRes/HAP/PNG/MJPEG) seek exactly onto the target. Set in open().
+    bool m_intraOnly{false};
+    // Set by seek() for inter-frame codecs: the next decodeFrame() must
+    // recover the true position from the first decoded frame's PTS before
+    // catching up to the requested frame.
+    bool m_resyncPending{false};
 };
 
 } // namespace entity

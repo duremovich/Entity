@@ -76,6 +76,21 @@ Result ProResDecoder::open(const std::string& filepath) {
 
     std::cout << "ProResDecoder: Using codec: " << codec->long_name << std::endl;
 
+    // Detect intra-only vs inter-frame. Intra-only codecs (ProRes, HAP,
+    // PNG, MJPEG) decode every frame independently, so a BACKWARD seek
+    // lands exactly on the target. Inter-frame codecs (H.264, HEVC) only
+    // carry sparse keyframes — a BACKWARD seek lands on the GOP keyframe and
+    // the decoder must run forward to the target. This flag drives the
+    // seek strategy in seek() / decodeFrame().
+    {
+        const AVCodecDescriptor* desc = avcodec_descriptor_get(codec->id);
+        m_intraOnly     = desc && (desc->props & AV_CODEC_PROP_INTRA_ONLY);
+        m_resyncPending = false;
+        std::cout << "ProResDecoder: codec is "
+                  << (m_intraOnly ? "intra-only" : "inter-frame (long-GOP)")
+                  << std::endl;
+    }
+
     // 5. Create codec context
     m_codecContext = avcodec_alloc_context3(codec);
     if (!m_codecContext) {
@@ -245,20 +260,34 @@ Result ProResDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFram
         if (seekResult != Result::Success) {
             return seekResult;
         }
-        // seek() leaves m_currentFrame at frameNumber - 1; the loop below
-        // decodes exactly one frame to reach the target.
     }
 
-    // Skip intermediates without decoding (cheap), then full-decode the
-    // target. Safe because ProRes is intra-only -- each packet is
-    // self-contained, so the codec context's state isn't disturbed by
-    // packets we dropped without sending. This is the win: jumping
-    // forward N frames costs ~N×(av_read_frame I/O) + 1×(decode + sws)
-    // instead of N×(decode + sws). For the realtime "decoder behind
-    // playhead, drop frames cleanly" case this turns a 76 ms freeze into
-    // a single decode at natural cadence.
+    // Inter-frame resync: an inter-frame seek (above, or a direct seek()
+    // call from DecodeSystem) lands on an unknown GOP keyframe. Decode the
+    // first frame and recover the true position from its PTS before
+    // catching up. No-op for intra-only — seek() set m_currentFrame exactly.
+    if (m_resyncPending) {
+        m_resyncPending = false;
+        if (Result r = decodeNextPacket(/*actuallyDecode=*/true);
+                r != Result::Success) {
+            return r;
+        }
+        m_currentFrame = frameNumberFromPts(m_frame);
+        if (m_currentFrame >= frameNumber) {
+            // Keyframe sits at or past the target — it IS the frame wanted.
+            return convertToRGBA(m_frame, outFrame);
+        }
+    }
+
+    // Catch up to the target frame. Intra-only codecs can drop intermediate
+    // packets without decoding (each is a self-contained keyframe — the
+    // 76 ms-freeze-to-single-decode win for forward jumps). Inter-frame
+    // codecs MUST decode every frame forward from the keyframe: P/B frames
+    // reference earlier frames, so a skipped packet corrupts everything
+    // after it. Only the colour conversion is skipped for intermediates;
+    // the target frame is always converted.
     while (m_currentFrame + 1 < frameNumber) {
-        Result r = decodeNextPacket(/*actuallyDecode=*/false);
+        Result r = decodeNextPacket(/*actuallyDecode=*/!m_intraOnly);
         if (r != Result::Success) return r;
     }
     if (Result r = decodeNextPacket(/*actuallyDecode=*/true); r != Result::Success) {
@@ -321,14 +350,47 @@ Result ProResDecoder::seek(FrameNumber frameNumber) {
     // Flush decoder to clear internal state
     avcodec_flush_buffers(m_codecContext);
 
-    // Reset current frame to before target (will decode forward to reach it)
-    m_currentFrame = frameNumber - 1;
+    if (m_intraOnly) {
+        // Intra-only: av_seek_frame(BACKWARD) landed exactly on the target
+        // (every frame is a keyframe). decodeFrame() decodes one frame to
+        // reach it.
+        m_currentFrame  = frameNumber - 1;
+        m_resyncPending = false;
+    } else {
+        // Inter-frame: av_seek_frame(BACKWARD) landed on the GOP keyframe
+        // at or before the target. The true position is unknown until the
+        // first frame is decoded — decodeFrame() resyncs from its PTS, then
+        // decodes forward to the target. Without this, the decoder returned
+        // the keyframe's pixels mislabelled as the requested frame.
+        m_currentFrame  = -1;
+        m_resyncPending = true;
+    }
 
     return Result::Success;
 #else
     (void)frameNumber;
     std::cerr << "ProResDecoder: seek - FFmpeg not available" << std::endl;
     return Result::NotImplemented;
+#endif
+}
+
+// Inverse of seek()'s frame-number -> timestamp mapping: recovers a decoded
+// frame's true number from its presentation timestamp, so an inter-frame
+// seek can resync after landing on an unknown GOP keyframe.
+FrameNumber ProResDecoder::frameNumberFromPts(AVFrame* frame) const {
+#ifdef HAVE_FFMPEG
+    if (!frame || !m_formatContext || m_videoStreamIndex < 0) return m_currentFrame;
+    int64_t pts = frame->best_effort_timestamp;
+    if (pts == AV_NOPTS_VALUE) pts = frame->pts;
+    if (pts == AV_NOPTS_VALUE) return m_currentFrame; // no timestamp — keep counter
+    AVStream* stream = m_formatContext->streams[m_videoStreamIndex];
+    const AVRational fpsRational{1, static_cast<int>(m_frameRate + 0.5)};
+    int64_t n = av_rescale_q(pts, stream->time_base, fpsRational);
+    if (n < 0) n = 0;
+    return static_cast<FrameNumber>(n);
+#else
+    (void)frame;
+    return m_currentFrame;
 #endif
 }
 
