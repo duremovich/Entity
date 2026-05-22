@@ -555,12 +555,15 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
 }
 
 Timecode TimelineWidget::snapTimeToTickGrid(Timecode t) const {
-    if (!m_timeline) return t;
+    if (!m_timeline || m_timeline->getFrameRate() <= 0.0) return t;
     const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
-    const double fps = m_timeline->getFrameRate();
-    if (fps <= 0.0) return t;
-    // Floor — click resolves to the start of the cell the cursor is in.
-    FrameNumber f = static_cast<FrameNumber>(std::floor((t / 1000000.0) * fps));
+    if (tickEvery <= 0) return t;
+    // Resolve the cursor to a whole frame the SAME way the hover-highlight
+    // does (Timeline::timeToFrame rounds), then floor to the tick-grid cell.
+    // Using round here — not std::floor — keeps section-break / cue placement
+    // landing on exactly the division the hover band is showing.
+    FrameNumber f = m_timeline->timeToFrame(t);
+    if (f < 0) f = 0;
     f = (f / tickEvery) * tickEvery;
     return m_timeline->frameToTime(f);
 }

@@ -490,22 +490,30 @@ void TimelineWidget::handleRulerInteraction() {
     if (!m_timeline) return;
 
     ImVec2 windowPos = ImGui::GetCursorScreenPos();
-    ImVec2 windowSize = ImGui::GetContentRegionAvail();
     ImVec2 mousePos = ImGui::GetMousePos();
     ImGuiIO& io = ImGui::GetIO();
+
+    // Right edge of the interactive ruler. ImGui::GetContentRegionAvail() is
+    // unreliable for this — ImGui caps the reported content region (the same
+    // cap renderTimeRuler() works around for the ruler background), so past
+    // ~65k content px the hover-highlight and right-click hit-test silently
+    // died. Derive the extent from the timeline content width instead, with a
+    // visible-width floor so a short timeline's ruler stays interactive.
+    const float rulerRightEdge = windowPos.x +
+        std::max(timeToPixel(m_timeline->getDuration()), m_lastVisibleWidth);
 
     // Cue lane sits ABOVE the ruler. windowPos.y == ruler top, so the
     // lane occupies [windowPos.y - m_cueLaneHeight, windowPos.y).
     const float laneTopY = windowPos.y - m_cueLaneHeight;
     bool overCueLane = (m_cueLaneHeight > 0.0f &&
                         mousePos.x >= windowPos.x &&
-                        mousePos.x <= windowPos.x + windowSize.x &&
+                        mousePos.x <= rulerRightEdge &&
                         mousePos.y >= laneTopY &&
                         mousePos.y <  windowPos.y);
 
     // Check if mouse is over the ruler window
     bool overRuler = (mousePos.x >= windowPos.x &&
-                      mousePos.x <= windowPos.x + windowSize.x &&
+                      mousePos.x <= rulerRightEdge &&
                       mousePos.y >= windowPos.y &&
                       mousePos.y <= windowPos.y + RULER_HEIGHT);
 
@@ -519,7 +527,7 @@ void TimelineWidget::handleRulerInteraction() {
     // (NOT the cue lane) — renderTimeRuler() reads this to draw the
     // hover highlight.
     if (overRuler) {
-        const float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        const float relativeX = mousePos.x - windowPos.x;
         const FrameNumber currentFrame = m_timeline->timeToFrame(pixelToTime(relativeX));
         const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
         m_hoverDivisionIndex = (tickEvery > 0 && currentFrame >= 0)
@@ -557,7 +565,7 @@ void TimelineWidget::handleRulerInteraction() {
     // cue at its visual position. Release commits one EditCueCommand.
     if (m_isDraggingCue) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            float relativeX = mousePos.x - windowPos.x;
             Timecode t = pixelToTime(relativeX);
             if (t < 0) t = 0;
 
@@ -622,7 +630,7 @@ void TimelineWidget::handleRulerInteraction() {
     // the existing scrub gesture and clears any prior range so the user can
     // get back to scrubbing without hunting for a clear command.
     if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        float relativeX = mousePos.x - windowPos.x;
         Timecode clickTime = pixelToTime(relativeX);
         if (clickTime < 0) clickTime = 0;
 
@@ -654,7 +662,7 @@ void TimelineWidget::handleRulerInteraction() {
 
     if (m_isCreatingRange) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            float relativeX = mousePos.x - windowPos.x;
             Timecode mouseTime = pixelToTime(relativeX);
             if (mouseTime < 0) mouseTime = 0;
             mouseTime = snapTimeToTickGrid(mouseTime);
@@ -667,7 +675,7 @@ void TimelineWidget::handleRulerInteraction() {
         }
     } else if (m_isDraggingRuler) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            float relativeX = mousePos.x - windowPos.x;
             Timecode snapped = snapTimeToTickGrid(pixelToTime(relativeX));
             if (snapped != m_lastSeekTime) {
                 m_lastSeekTime = snapped;
@@ -687,7 +695,7 @@ void TimelineWidget::handleRulerInteraction() {
     // This kills the prior cue-vs-break right-click ambiguity that lived
     // when both shared the ruler band.
     if (overCueLane && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        float relativeX = mousePos.x - windowPos.x;
         Timecode clickTime = pixelToTime(relativeX);
         if (clickTime < 0) clickTime = 0;
         m_rulerRightClickTime = clickTime;
@@ -717,7 +725,7 @@ void TimelineWidget::handleRulerInteraction() {
             ImGui::OpenPopup("CueLaneContextMenu");
         }
     } else if (overRuler && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+        float relativeX = mousePos.x - windowPos.x;
         Timecode clickTime = pixelToTime(relativeX);
         if (clickTime < 0) clickTime = 0;
         m_rulerRightClickTime = clickTime;
@@ -845,8 +853,10 @@ void TimelineWidget::handleRulerInteraction() {
     // user can override color + fade.
     if (ImGui::BeginPopup("RulerContextMenu")) {
         if (ImGui::MenuItem("Add Section Break Here") && m_commandDispatcher) {
-            // Grid-only snap: snapTimeToBest would prefer an existing nearby
-            // section break, producing a near-duplicate.
+            // Snap to the highlighted tick-grid cell so the break lands on the
+            // front line of the division the hover band is showing.
+            // snapTimeToBest is avoided here: it would prefer an existing
+            // nearby section break, producing a near-duplicate.
             const Timecode at = snapTimeToTickGrid(m_rulerRightClickTime);
             // Auto-color: index = current section count + 1, so the first
             // user-added break gets palette[1] (palette[0] is reserved for
@@ -909,7 +919,7 @@ void TimelineWidget::handleTracksInteraction() {
     if (m_isTrimmingClip) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             // Calculate mouse position in timeline time
-            float relativeX = mousePos.x - windowPos.x + m_syncScrollX;
+            float relativeX = mousePos.x - windowPos.x;
             Timecode mouseTime = pixelToTime(relativeX);
             if (mouseTime < 0) mouseTime = 0;
             // Round-3 Phase 3B — shift held bypasses grid+cue+section snap so
@@ -1403,7 +1413,7 @@ void TimelineWidget::handleTracksInteraction() {
                     // tick grid so the inserted clip's start aligns
                     // with the visible tick at-or-before the cursor.
                     const float relativeX =
-                        mousePos.x - windowPos.x + m_syncScrollX;
+                        mousePos.x - windowPos.x;
                     Timecode clickTime = pixelToTime(relativeX);
                     if (clickTime < 0) clickTime = 0;
                     clickTime = snapTimeToTickGrid(clickTime);

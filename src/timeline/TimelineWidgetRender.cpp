@@ -375,10 +375,11 @@ void TimelineWidget::renderTracks() {
     {
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const float visibleH = ImGui::GetWindowHeight();
-        const float scrollX = m_syncScrollX;
         if (m_range.active && m_range.end > m_range.start) {
-            const float xStart = baseWindowPos.x + (timeToPixel(m_range.start) - scrollX);
-            const float xEnd   = baseWindowPos.x + (timeToPixel(m_range.end)   - scrollX);
+            // baseWindowPos.x already includes -Scroll (see the grid-line note
+            // below) — draw at the absolute content pixel, no scroll subtract.
+            const float xStart = baseWindowPos.x + timeToPixel(m_range.start);
+            const float xEnd   = baseWindowPos.x + timeToPixel(m_range.end);
             const float yTop = baseWindowPos.y;
             const float yBot = baseWindowPos.y + visibleH;
             drawList->AddRectFilled(ImVec2(xStart, yTop), ImVec2(xEnd, yBot),
@@ -483,8 +484,10 @@ void TimelineWidget::renderTracks() {
         // Range endpoint accent lines on top of clips so the boundary stays
         // visible even when a clip is colored similar to the band tint.
         if (m_range.active && m_range.end > m_range.start) {
-            const float xStart = baseWindowPos.x + (timeToPixel(m_range.start) - scrollX);
-            const float xEnd   = baseWindowPos.x + (timeToPixel(m_range.end)   - scrollX);
+            // baseWindowPos.x already includes -Scroll — same as the grid
+            // lines above; draw at the absolute content pixel.
+            const float xStart = baseWindowPos.x + timeToPixel(m_range.start);
+            const float xEnd   = baseWindowPos.x + timeToPixel(m_range.end);
             drawList->AddLine(ImVec2(xStart, gridTop), ImVec2(xStart, gridBot),
                 IM_COL32(120, 200, 255, 220), 1.0f);
             drawList->AddLine(ImVec2(xEnd, gridTop), ImVec2(xEnd, gridBot),
@@ -546,7 +549,9 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
 
     if (ImGui::BeginDragDropTarget()) {
         ImVec2 mousePos = ImGui::GetMousePos();
-        float relativeX = mousePos.x - baseWindowPos.x + m_syncScrollX;
+        // baseWindowPos.x already includes -Scroll — mousePos.x - baseWindowPos.x
+        // is the content pixel directly; do not add scroll back.
+        float relativeX = mousePos.x - baseWindowPos.x;
         Timecode rawDropTime = pixelToTime(relativeX);
         if (rawDropTime < 0) rawDropTime = 0;
 
@@ -654,8 +659,8 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
     // drag or fresh MediaBin / LayersWindow drag-drop). Per-track render
     // keeps Y math local to the track's known trackMin/trackMax.
     if (m_ghost.active && m_ghost.trackIndex == trackIndex && m_timeline) {
-        const float x0 = trackMin.x + timeToPixel(m_ghost.startTime) - m_syncScrollX;
-        const float x1 = trackMin.x + timeToPixel(m_ghost.startTime + m_ghost.duration) - m_syncScrollX;
+        const float x0 = trackMin.x + timeToPixel(m_ghost.startTime);
+        const float x1 = trackMin.x + timeToPixel(m_ghost.startTime + m_ghost.duration);
         const float y0 = trackMin.y + 2.0f;
         const float y1 = trackMax.y - 2.0f;
 
@@ -1028,9 +1033,13 @@ void TimelineWidget::renderPlayhead() {
     // Use foreground draw list to render on top of child windows
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-    // Calculate playhead X position (accounting for scroll)
+    // Playhead X in content pixels. m_rulerScreenPos / m_tracksScreenPos are
+    // captured via GetCursorScreenPos() INSIDE the scrolled child windows, so
+    // they already include the scroll offset. Do NOT subtract m_syncScrollX
+    // here — that double-counts scroll and the playhead drifts left of its
+    // true position, off-screen entirely at large scroll / high zoom.
     Timecode currentTime = m_timeline->getCurrentTime();
-    float playheadPixel = timeToPixel(currentTime) - m_syncScrollX;
+    float playheadPixel = timeToPixel(currentTime);
 
     // Playhead X in ruler space
     float playheadXRuler = m_rulerScreenPos.x + playheadPixel;
@@ -1057,7 +1066,7 @@ void TimelineWidget::renderPlayhead() {
 
     // Draw snap indicator when actively snapping
     if (m_isSnapping) {
-        float snapPixel = timeToPixel(m_snapTargetTime) - m_syncScrollX;
+        float snapPixel = timeToPixel(m_snapTargetTime);
         float snapXRuler = m_rulerScreenPos.x + snapPixel;
         float snapXTracks = m_tracksScreenPos.x + snapPixel;
 
