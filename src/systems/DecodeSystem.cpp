@@ -268,6 +268,34 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         }
     }
 
+    // Sliding-window prefetch — warm decoders for clips that will start
+    // within kPrefetchAheadSeconds of the current playhead so a GO,
+    // continuous play-through, or cue-jump lands on a hot worker instead
+    // of paying the cold FFmpeg-open + seek + first-frame cost inside the
+    // seek-sync gate (ADR-0026). Editor-thread only because it writes
+    // m_workers (same constraint as the bootstrap path above). Skipped
+    // when Stopped (project teardown / pre-load); runs in Paused so an
+    // operator who pauses, scrubs, then plays still benefits.
+    if (isEditorTick &&
+        m_timeline->getPlaybackState() != PlaybackState::Stopped) {
+        ZoneScopedN("DecodeSystem::prefetchUpcoming");
+        const double fps = std::max(1.0, m_timeline->getFrameRate());
+        const FrameNumber prefetchAhead = static_cast<FrameNumber>(
+            std::ceil(kPrefetchAheadSeconds * fps));
+        const FrameNumber windowEnd = currentTimelineFrame + prefetchAhead;
+
+        for (auto [entity, clip] : view.each()) {
+            if (!clip.loaded) continue;
+            // Strict > so already-started or active clips fall through to
+            // the bootstrap / steer path above; only warm not-yet-started
+            // clips inside the lookahead window.
+            if (clip.startFrame <= currentTimelineFrame) continue;
+            if (clip.startFrame >  windowEnd)             continue;
+            if (m_workers.contains(entity))               continue;
+            createWorker(entity, registry, clip.mediaStartFrame);
+        }
+    }
+
     // Emit decode backlog plot: total frames-behind across all active workers.
     // Measures how many frames each worker still needs to decode to reach
     // its target (targetFrame - currentFrame, clamped to 0). Rising steadily
