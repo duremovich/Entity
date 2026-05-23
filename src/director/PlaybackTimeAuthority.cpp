@@ -727,19 +727,18 @@ std::string PlaybackTimeAuthority::lookupInputColorSpaceOverride(const Clip& cli
     return entry->inputColorSpaceOverride;
 }
 
-float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) const {
+float PlaybackTimeAuthority::computeSectionFadeMultiplier(
+    FrameNumber layerStart, FrameNumber layerEnd) const {
     if (!m_timeline) return 1.0f;
     auto [sections, rawFps] = m_timeline->copySectionsAndRate();
     if (sections.empty()) return 1.0f;
 
     const FrameNumber currentFrame = m_timeline->getCurrentFrame();
-    const FrameNumber clipStart    = clip.startFrame;
-    const FrameNumber clipEnd      = clip.startFrame + clip.duration;
     const double timelineFrameRate = rawFps > 0.0 ? rawFps : 30.0;
 
     float multiplier = 1.0f;
 
-    // At-break visibility gate. Clips that START at the current break stay
+    // At-break visibility gate. Layers that START at the current break stay
     // invisible until GO, regardless of fadeSeconds. User requirement:
     // "things after the break shouldn't start yet until we resume."
     // Authored fade-in (if any) resumes naturally post-GO once both
@@ -751,10 +750,10 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
     //   (b) State is Playing AND currentFrame == breakFrame — catches the
     //       brief window between Timeline crossing the break and
     //       SectionScheduler::tick latching atBreak. Without this, the
-    //       break-aligned clip flashes at full opacity for 1-3 ticks
+    //       break-aligned layer flashes at full opacity for 1-3 ticks
     //       (the "blip" bug). Excluding Paused here keeps scrub-to-break
     //       editing — where state is Paused after Timeline::seek and
-    //       sectionAtBreak() is false — showing the clip's first frame.
+    //       sectionAtBreak() is false — showing the layer's first frame.
     {
         const bool atBreakLatched = m_timeline->sectionAtBreak();
         const bool isPlaying =
@@ -762,9 +761,9 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
         if (atBreakLatched || isPlaying) {
             for (const auto& sec : sections) {
                 // breakFrame is an integer timeline frame — an exact match
-                // on both the playhead and the clip's start gates the clip.
+                // on both the playhead and the layer's start gates it.
                 if (sec.breakFrame == currentFrame &&
-                    clip.startFrame == sec.breakFrame) {
+                    layerStart == sec.breakFrame) {
                     multiplier = 0.0f;
                     break;
                 }
@@ -779,34 +778,39 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
             std::ceil(sec.fadeSeconds * timelineFrameRate));
         if (fadeFrames <= 0) continue;
 
-        // Fade in: clip's start sits exactly on this break.
-        if (breakFrame == clipStart) {
-            if (currentFrame >= clipStart &&
-                currentFrame < clipStart + fadeFrames) {
-                const float t = static_cast<float>(currentFrame - clipStart)
+        // Fade in: layer's start sits exactly on this break.
+        if (breakFrame == layerStart) {
+            if (currentFrame >= layerStart &&
+                currentFrame < layerStart + fadeFrames) {
+                const float t = static_cast<float>(currentFrame - layerStart)
                               / static_cast<float>(fadeFrames);
-                // min-combine: a clip with both ends on breaks (shorter
+                // min-combine: a layer with both ends on breaks (shorter
                 // than fadeIn + fadeOut) takes the more restrictive ramp.
                 multiplier = std::min(multiplier, t);
             }
         }
         // Phase 6 — fade-out is the post-end held tail. Window is
-        // [clipEnd, clipEnd + fadeFrames). At currentFrame == clipEnd the
-        // multiplier is 1.0 (fully visible at the break, matches the
+        // [layerEnd, layerEnd + fadeFrames). At currentFrame == layerEnd
+        // the multiplier is 1.0 (fully visible at the break, matches the
         // at-break held look), ramping linearly to 0.0 at the window's
         // open upper edge. The post-end window can't overlap the
-        // at-start fade-in window of the *same* clip, so the min-combine
-        // for both-aligned clips still works cleanly.
-        if (breakFrame == clipEnd) {
-            if (currentFrame >= clipEnd &&
-                currentFrame < clipEnd + fadeFrames) {
-                const float t = 1.0f - static_cast<float>(currentFrame - clipEnd)
+        // at-start fade-in window of the *same* layer, so the min-combine
+        // for both-aligned layers still works cleanly.
+        if (breakFrame == layerEnd) {
+            if (currentFrame >= layerEnd &&
+                currentFrame < layerEnd + fadeFrames) {
+                const float t = 1.0f - static_cast<float>(currentFrame - layerEnd)
                                       / static_cast<float>(fadeFrames);
                 multiplier = std::min(multiplier, t);
             }
         }
     }
     return std::clamp(multiplier, 0.0f, 1.0f);
+}
+
+float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) const {
+    return computeSectionFadeMultiplier(clip.startFrame,
+                                        clip.startFrame + clip.duration);
 }
 
 void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {
@@ -1099,8 +1103,17 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
     out.generativeLayers.clear();
     for (auto [entity, layer, gen] :
             m_registry.view<Layer, GenerativeLayer>().each()) {
+        // Active window extended by sectionFadeTailFrames the same way
+        // isClipActiveAtFrame does for Clips. With Fix 1 this returns >= 1
+        // for any layer whose end aligns with a break, so trailing-edge
+        // generatives stay in the snapshot during the at-break park (and
+        // through any post-end fade-out tail). Without this a Text or
+        // Muncher layer ending on a break would drop the moment the
+        // playhead reached the break — same bug as Fix 1, same fix.
+        const FrameNumber layerEnd   = layer.startFrame + layer.duration;
+        const FrameNumber tailFrames = sectionFadeTailFrames(layerEnd);
         if (currentFrameForOA < layer.startFrame ||
-            currentFrameForOA >= layer.startFrame + layer.duration) continue;
+            currentFrameForOA >= layerEnd + tailFrames) continue;
 
         bus::GenerativeLayerSnapshot snap;
         snap.entity       = static_cast<std::uint64_t>(entity);
@@ -1565,7 +1578,12 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
                                    gl.opacity, localFrame,
                                    c.transformMatrix, c.opacity);
         }
-        c.sectionFadeMultiplier = 1.0f;  // SectionScheduler integration is NEW-08
+        // Bake section fade for generative layers — same envelope clips get,
+        // via the layer-agnostic overload. Without this Text / Muncher layers
+        // queued at a section break pop on at full opacity instead of waiting
+        // invisible until GO + fading in.
+        c.sectionFadeMultiplier = computeSectionFadeMultiplier(
+            gl.startFrame, gl.startFrame + gl.duration);
         c.blendMode             = gl.blendMode;
         c.zOrder                = gl.zOrder;
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Compose;

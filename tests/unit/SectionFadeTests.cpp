@@ -307,3 +307,57 @@ TEST_F(SectionFadeTest, AtBreakGate_ClipOneFrameAfterBreak_NotGated) {
     timeline.setSectionAtBreak(true);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }
+
+// --- Layer-agnostic (start, end) overload ---------------------------------
+//
+// The overload exists so generative layers (Text, Muncher) honor section
+// fades the same way clips do. The Clip overload is a trampoline onto this,
+// so the entire SectionFadeTest suite above also covers it. These cases
+// focus on the things the generative path cares about:
+//   - parity with the Clip overload for equivalent inputs
+//   - trailing-edge hold at break with fadeSeconds == 0 (Fix 1 symmetry)
+//   - at-break visibility gate fires for leading-edge layers
+
+// 10. Parity: the (start, end) overload matches the Clip trampoline for
+// matching inputs across fade-in, fade-out, and identity cases.
+TEST_F(SectionFadeTest, Overload_MatchesClipTrampolineAcrossWindow) {
+    Clip c;
+    fillClip(c, /*start*/30, /*duration*/30);
+    const FrameNumber start = c.startFrame;
+    const FrameNumber end   = c.startFrame + c.duration;
+
+    timeline.addSectionBreak(30, 0xFF6090C8, 0.5);  // fade-in [30, 45)
+    timeline.addSectionBreak(60, 0xFF7060C8, 0.5);  // fade-out [60, 75)
+
+    for (FrameNumber f : {15, 30, 37, 45, 59, 60, 65, 74, 80}) {
+        seekToFrame(f);
+        const float viaClip   = auth.computeSectionFadeMultiplier(c);
+        const float viaParams = auth.computeSectionFadeMultiplier(start, end);
+        EXPECT_FLOAT_EQ(viaClip, viaParams) << "frame=" << f;
+    }
+}
+
+// 11. Trailing-edge generative with fadeSeconds == 0 — the Fix 1 symmetry
+// case applied to the layer overload. The multiplier at the break frame
+// is 1.0 because the fade-out branch is guarded on fadeSeconds > 0.
+// Combined with the snapshot-filter extension in buildSceneSnapshot (which
+// uses sectionFadeTailFrames, ≥ 1 for break-aligned ends), trailing-edge
+// generatives now hold visible during the at-break park.
+TEST_F(SectionFadeTest, Overload_TrailingEdge_HoldsAtBreakWithZeroFade) {
+    timeline.addSectionBreak(60, 0xFF6090C8, /*fadeSeconds*/0.0);
+    seekToFrame(60);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(/*start*/0, /*end*/60),
+                    1.0f);
+}
+
+// 12. Leading-edge generative at a parked break is gated to 0 — same as
+// the clip gate at SectionFadeTest.AtBreakGate_ClipStartsOnBreakFrame above.
+// This is what makes a Text layer queued at a break wait invisible until GO
+// instead of popping on.
+TEST_F(SectionFadeTest, Overload_LeadingEdge_AtBreakGateHidesUntilGo) {
+    timeline.addSectionBreak(250, 0xFF6090C8, 0.0);
+    seekToFrame(250);
+    timeline.setSectionAtBreak(true);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(/*start*/250, /*end*/400),
+                    0.0f);
+}

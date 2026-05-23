@@ -146,6 +146,13 @@ public:
     //     shorter than fadeIn + fadeOut would otherwise overshoot).
     // Pure read of Timeline + Clip; no side effects. Public so the
     // AssertClipFadeMultiplierCommand can poll it from script tests.
+    //
+    // Generative-layer overload — same math, operating on (start, end)
+    // directly instead of Clip fields. Lets generative layers (Text,
+    // Muncher) honor section fades without inventing a fake Clip. The
+    // Clip version is a trampoline onto this overload.
+    float computeSectionFadeMultiplier(FrameNumber layerStart,
+                                       FrameNumber layerEnd) const;
     float computeSectionFadeMultiplier(const Clip& clip) const;
 
 private:
