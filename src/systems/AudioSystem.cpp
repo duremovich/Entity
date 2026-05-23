@@ -225,7 +225,12 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
                 && clip.sectionBehavior == SectionBehavior::Normal) {
             sourceLocalFrame = static_cast<FrameNumber>(
                 std::floor(std::max(phase->sourcePhaseFrames, 0.0)));
-        } else if (phase && phase->postBreakMediaAnchor >= 0) {
+        } else if (phase && phase->postBreakMediaAnchor >= 0
+                && currentTLFrame >= phase->anchorTimelineFrame) {
+            // Defensive guard (2026-05-23) — only apply the anchor
+            // when the playhead is at or past anchorTimelineFrame. See
+            // parallel guards in PlaybackTimeAuthority + DecodeSystem
+            // for the full rationale.
             const double timelineDelta = static_cast<double>(
                 currentTLFrame - phase->anchorTimelineFrame);
             const double localFloat =

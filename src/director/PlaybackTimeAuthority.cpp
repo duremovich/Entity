@@ -180,7 +180,21 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
     if (!inContinuation) {
         // post-break anchor path — covers the post-GO span, including the
         // extension window for Normal-extended clips.
-        if (e.hasPhase && e.phase_postBreakMediaAnchor >= 0 && timelineFrame < realEnd) {
+        //
+        // Defensive guard (2026-05-23) — only apply the anchor when the
+        // playhead is at or past the anchor's reference timeline frame.
+        // `resetAnchorsAcrossScrub` is supposed to clear stale anchors on
+        // scrub-back-past-break and on Stop, but its delta-based
+        // discontinuity detection can miss slow drags or clip-move
+        // workflows where the playhead ends up before the anchor without
+        // a single big jump. With a stale anchor the math's `max(...,0)`
+        // clamp pins mediaFrame at the held value for every tick where
+        // currentTimelineFrame < anchorTimelineFrame, which presents as
+        // a video freeze. The natural sourceLocalFrame branch below
+        // produces the correct mapping for the clip's current position.
+        if (e.hasPhase && e.phase_postBreakMediaAnchor >= 0 &&
+            timelineFrame >= e.phase_anchorTimelineFrame &&
+            timelineFrame < realEnd) {
             const double frameRateRatio = (timelineFrameRate > 0.0)
                 ? clip.framerate / timelineFrameRate : 1.0;
             if (sourceLength <= 0) return clip.mediaStartFrame;
@@ -714,7 +728,12 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
         // as `anchor + (timelineFrame - anchorTimelineFrame) * ratio`,
         // wrapped per playbackMode — same math as the natural-mapping
         // path but anchored to where the user was watching at GO.
+        // Defensive guard (2026-05-23) — only apply the anchor when the
+        // playhead is at or past the anchor's reference timeline frame.
+        // See the parallel guard + rationale in
+        // mapToMediaFrameFromCatalog.
         if (phase && phase->postBreakMediaAnchor >= 0
+                && timelineFrame >= phase->anchorTimelineFrame
                 && timelineFrame < realEnd) {
             const double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
             const double frameRateRatio = (timelineFrameRate > 0.0)

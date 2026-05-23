@@ -13,7 +13,9 @@
 #include "entity/timeline/Timeline.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <unordered_map>
 
 namespace entity {
 
@@ -134,6 +136,31 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                     // more time.
                 }
                 nearestFallbacks++;
+            }
+        } else {
+            // 2026-05-23 diagnostic — clip is in activeClips, slot is
+            // valid, but the cache has ZERO frames for this entity
+            // (nearestTo returned null). That means the decoder hasn't
+            // produced anything yet, OR the worker doesn't exist /
+            // isn't being steered. Texture stays at whatever was
+            // there before (black if never uploaded since slot create).
+            // Rate-limit to 1 line/sec/entity. Gated on
+            // ENTITY_DECODE_VERBOSE.
+            if (const char* v = std::getenv("ENTITY_DECODE_VERBOSE");
+                v && v[0] == '1') {
+                static thread_local std::unordered_map<entt::entity, int64_t> lastLogNs;
+                const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                auto& last = lastLogNs[entity];
+                if (nowNs - last > 1'000'000'000LL) {
+                    last = nowNs;
+                    std::cout << "[PRESENT EMPTY] entity="
+                              << static_cast<uint32_t>(entity)
+                              << " slot=" << slot
+                              << " mediaFrame=" << ac.mediaFrame
+                              << " (cache has 0 frames for this entity)"
+                              << std::endl;
+                }
             }
         }
     }

@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
+#include <unordered_map>
 
 namespace entity {
 
@@ -187,6 +188,32 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
              currentTimelineFrame < clipEnd + tailFrames);
         const bool inTailHeld = inTail && !inExtension;
         if (inAuthored || inExtension || inTail) {
+            // 2026-05-23 diagnostic — rate-limited (1 line/sec/entity)
+            // per-clip state dump when the clip is active. Pairs with
+            // PlaybackPresenter's [PRESENT EMPTY] log: if the
+            // presenter sees an empty cache for this entity but
+            // [DECODE STATE] shows it's being steered, the worker is
+            // producing slowly or not at all; if no [DECODE STATE]
+            // line for the entity, DecodeSystem isn't seeing it.
+            if (decodeLogsEnabled()) {
+                static thread_local std::unordered_map<entt::entity, int64_t> lastDecodeStateLogNs;
+                const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                auto& last = lastDecodeStateLogNs[entity];
+                if (nowNs - last > 1'000'000'000LL) {
+                    last = nowNs;
+                    std::cout << "[DECODE STATE] entity="
+                              << static_cast<uint32_t>(entity)
+                              << " tl=" << currentTimelineFrame
+                              << " inAuth=" << (inAuthored ? 1 : 0)
+                              << " inExt=" << (inExtension ? 1 : 0)
+                              << " inTail=" << (inTail ? 1 : 0)
+                              << " inTailHeld=" << (inTailHeld ? 1 : 0)
+                              << " workerCurrent=" << worker->currentFrame.load()
+                              << " seekPending=" << (worker->seekPending.load() ? 1 : 0)
+                              << std::endl;
+                }
+            }
             // Active clip: compute target media frame using playback mode.
             // In the held-tail (inTailHeld = past extension, before tail
             // ends — Locked clips or non-extended Normal clips), clamp
@@ -217,13 +244,27 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                     && clip.sectionBehavior == SectionBehavior::Normal) {
                 const double phaseClamped = std::max(phase->sourcePhaseFrames, 0.0);
                 sourceLocalFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
-            } else if (phase && phase->postBreakMediaAnchor >= 0) {
+            } else if (phase && phase->postBreakMediaAnchor >= 0
+                    && currentTimelineFrame >= phase->anchorTimelineFrame) {
                 // Round-2 fixup, Phase 4 — post-break anchor steers the
                 // decoder so the worker target tracks the same media
                 // frame the presenter is mapping to. Mirrors the
                 // anchor branch in PlaybackTimeAuthority::mapToMediaFrame
                 // — the wrap math below (Loop / PingPong / Freeze)
                 // applies the same way to this sourceLocalFrame.
+                //
+                // Defensive guard (2026-05-23) — only apply the anchor
+                // when the playhead is at or past anchorTimelineFrame.
+                // resetAnchorsAcrossScrub should clear stale anchors
+                // on scrub-back and on Stop but its delta-based
+                // discontinuity detector can miss slow drags / clip-
+                // move workflows. With a stale anchor the math's
+                // max(...,0) clamp pins worker->targetFrame at the
+                // held media frame for every tick where the gate
+                // condition fails — visible as a video freeze with
+                // audio still playing (audio worker decodes forward
+                // independently of the steered target). See parallel
+                // guards in PlaybackTimeAuthority + AudioSystem.
                 const double timelineDelta = static_cast<double>(
                     currentTimelineFrame - phase->anchorTimelineFrame);
                 const double localFloat =

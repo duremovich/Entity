@@ -393,4 +393,54 @@ TEST_F(PostBreakAnchorTest, BackwardScrubClearsAnchor) {
     EXPECT_EQ(phase.anchorTimelineFrame, 61);
 }
 
+// ---------------------------------------------------------------------------
+// 5. Defensive guard (2026-05-23 follow-up). When the anchor is stale —
+// e.g. set during a prior playback session at a different clip position
+// — and the playhead lands BEFORE the anchor's reference frame without
+// resetAnchorsAcrossScrub firing (slow drag misses the discontinuity
+// threshold, or clip-move-then-play with no scrub at all),
+// mapToMediaFrame must NOT apply the anchor. Without the guard the
+// anchor math's max(...,0) clamp pins mediaFrame at the held source
+// frame for every tick where currentTimelineFrame < anchorTimelineFrame,
+// presenting as a video freeze (operator-reported 2026-05-23). The
+// natural sourceLocalFrame branch produces the correct mapping for the
+// clip's current position.
+// ---------------------------------------------------------------------------
+TEST_F(PostBreakAnchorTest, StaleAnchorBeforePlayheadFallsBackToNatural) {
+    auto entity = registry.create();
+    Clip& clip = registry.emplace<Clip>(entity);
+    // Clip currently at [0, 240). Source 60 frames @ 30fps, Loop mode.
+    fillSpanningClip(clip, /*start*/0, /*dur*/240, /*srcLen*/60,
+                     /*fps*/30.0, PlaybackMode::Loop);
+
+    // Anchor stamped during a prior session when the clip was elsewhere
+    // (e.g. queued at break frame 60 with mediaStartFrame=0, so
+    // postBreakMediaAnchor=0 anchorTimelineFrame=61). The clip has since
+    // moved leftward to startFrame=0 but the phase persists with the
+    // old anchor — resetAnchorsAcrossScrub wasn't triggered because
+    // the move didn't go through a scrub-discontinuity event.
+    auto& phase = registry.emplace<ClipPlaybackPhase>(entity);
+    phase.postBreakMediaAnchor = 0;
+    phase.anchorTimelineFrame  = 61;
+    phase.inContinuation       = false;
+
+    // At timelineFrame=10 (< anchor 61): defensive guard MUST skip the
+    // anchor branch. Natural mapping at startFrame=0 returns
+    // mediaStartFrame + 10 = 10. Without the guard the math would
+    // clamp to max((0-0) + (10-61)*1, 0) = max(-51, 0) = 0 →
+    // mediaFrame=0 (the freeze).
+    EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 10), 10);
+    EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 30), 30);
+    EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 59), 59);
+    // Loop wrap at sourceLength=60: at frame 60 sourceLocalFrame is 60
+    // which is >= 60, Loop wraps to 0.
+    EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 60), 0);
+
+    // At timelineFrame >= anchorTimelineFrame the anchor IS applied
+    // (typical post-GO use). With anchor=0, timelineDelta=0,
+    // mediaFrame=0. One frame later, mediaFrame=1.
+    EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 61), 0);
+    EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 62), 1);
+}
+
 } // namespace entity
