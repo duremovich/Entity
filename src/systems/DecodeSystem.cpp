@@ -153,27 +153,57 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         // clipEnd, so this is a no-op for clips not at a break.
         const FrameNumber tailFrames =
             timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
+        const double timelineFps = m_timeline->getFrameRate();
+        // 2026-05-23 follow-up — match PTA's break-aligned extension
+        // semantics so DecodeSystem advances source frames through the
+        // fade-window (Fix 8 + fadeSeconds cap) instead of clamping to
+        // the held-tail. Without this, slot 1 in a two-clip-meeting-at-
+        // fade-break setup froze visually mid-fade (operator-reported).
+        const double endingBreakFadeSeconds = (tailFrames > 0)
+            ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEnd)
+            : 0.0;
+        const FrameNumber extendedDuration = entity::computeExtendedDuration(
+            clip, timelineFps, /*endAlignsWithBreak*/ tailFrames > 0,
+            endingBreakFadeSeconds);
+        const FrameNumber extendedEnd = clip.startFrame + extendedDuration;
         const bool inAuthored =
             (currentTimelineFrame >= clip.startFrame &&
              currentTimelineFrame < clipEnd);
+        // inExtension is the post-clipEnd region that Fix 8's extension
+        // covers (zero-width when no extension applies). Frames in here
+        // advance naturally, like inAuthored — they're NOT held-tail.
+        const bool inExtension =
+            (extendedDuration > clip.duration &&
+             currentTimelineFrame >= clipEnd &&
+             currentTimelineFrame < extendedEnd);
+        // inTail keeps its prior meaning (post-clipEnd held-tail window)
+        // but the localFrame clamp + decode-ahead suppression below now
+        // ignore inTail when inExtension covers the same frame. After
+        // extendedEnd, the held-tail behavior is preserved for Locked
+        // and non-extended clips.
         const bool inTail =
             (tailFrames > 0 &&
              currentTimelineFrame >= clipEnd &&
              currentTimelineFrame < clipEnd + tailFrames);
-        if (inAuthored || inTail) {
+        const bool inTailHeld = inTail && !inExtension;
+        if (inAuthored || inExtension || inTail) {
             // Active clip: compute target media frame using playback mode.
-            // In the tail, clamp localFrame to the last authored timeline
-            // frame so the worker holds the same frame the gate predicate
-            // and compositor read out of mapToMediaFrame. Phase-steering
-            // branches below override sourceLocalFrame for continuation
-            // and post-break-anchor cases — those keep their existing
-            // semantics; this clamp only matters when neither fires.
-            FrameNumber localFrame = inTail
+            // In the held-tail (inTailHeld = past extension, before tail
+            // ends — Locked clips or non-extended Normal clips), clamp
+            // localFrame to the last authored timeline frame so the
+            // worker holds the same frame the gate predicate and
+            // compositor read out of mapToMediaFrame. In the extension
+            // window (inExtension), localFrame advances naturally so
+            // source content keeps playing through the fade. Phase-
+            // steering branches below override sourceLocalFrame for
+            // continuation and post-break-anchor cases — those keep
+            // their existing semantics; this clamp only matters when
+            // neither fires.
+            FrameNumber localFrame = inTailHeld
                 ? (clip.duration - 1)
                 : (currentTimelineFrame - clip.startFrame);
 
-            double timelineFrameRate = m_timeline->getFrameRate();
-            double frameRateRatio = clip.framerate / timelineFrameRate;
+            double frameRateRatio = clip.framerate / timelineFps;
             FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
 
             // Phase 1 fix — when the SectionScheduler has put this clip in
@@ -247,7 +277,14 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // clips' working sets — which is what caused the visible chug
             // through the fade after Fix 5 closed the freeze (~50 force-
             // seeks per 5s tail, decoder thrashing).
-            if ((clip.playbackMode == PlaybackMode::PingPong && isReverse) || inTail) {
+            //
+            // 2026-05-23 follow-up — `inTailHeld` instead of `inTail` so the
+            // Normal-mode extension window (inExtension covers it) keeps
+            // decode-ahead engaged for natural realtime playback through
+            // the fade. Only the pure-held-tail case (Locked clips, or
+            // Normal clips with no extension) gets the no-decode-ahead
+            // clamp.
+            if ((clip.playbackMode == PlaybackMode::PingPong && isReverse) || inTailHeld) {
                 worker->targetFrame.store(mediaFrame);
             } else {
                 worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
@@ -281,7 +318,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // we let the worker work.
             //
             // Fix 6 (2026-05-23) — skip cache-miss recovery for held tail
-            // clips (inTail). The held frame was uploaded to the GPU
+            // clips (inTailHeld). The held frame was uploaded to the GPU
             // texture during normal play; TextureUploader keeps the
             // texture resource resident across cache misses (only
             // freeSlot() releases it), and CompositorSystem samples the
@@ -290,7 +327,16 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // entry. Force-seeking to repopulate the cache buys nothing
             // visually and creates a thrash loop with another active
             // clip's working set under cache pressure.
-            if (!inTail && !worker->seekPending.load() && m_frameCache &&
+            //
+            // 2026-05-23 follow-up — gate on `inTailHeld` (= inTail &&
+            // !inExtension) so the Fix 8 extension window keeps normal
+            // cache-miss recovery. In the extension the clip is
+            // naturally advancing source frames; if the cache evicts
+            // one we DO want to force-seek and re-decode (same as
+            // inAuthored). Only the post-extension pure-held-tail
+            // (Locked clips or non-extended Normal clips) skips
+            // recovery.
+            if (!inTailHeld && !worker->seekPending.load() && m_frameCache &&
                     !m_frameCache->has(entity, mediaFrame) &&
                     worker->currentFrame.load() >= mediaFrame) {
                 needsSeek = true;

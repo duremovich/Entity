@@ -32,11 +32,18 @@ namespace entity {
  */
 struct Settings {
     // Total RAM budget for the (forthcoming Phase C.10) FrameCache, in bytes.
-    // 512 MB matches professional-media-server-class behavior and gives ~128 frames of
-    // 4K HAP-Q headroom (~4 MB/frame). Hardware-dependent — bump on a 64 GB
-    // workstation, drop on a laptop. Not yet wired to a cache (the cache
-    // lands in C.10); persisted now so the value survives across that work.
-    uint64_t frameCacheBytes{512ull * 1024ull * 1024ull};
+    // 2 GiB sizes the cache for 4K H.264 multi-layer realtime: ~33 MB
+    // per decoded RGBA frame × 9 frames per active clip (current +
+    // DECODE_AHEAD_FRAMES=8) = 297 MB per clip; 2 GiB holds ~62 frames,
+    // ~6 simultaneous 4K-H.264 working sets — comfortable LRU headroom
+    // for 2-clip crossfades and the multi-layer Pro workloads. For
+    // 4K HAP-Q (~4 MB/frame), this gives ~512 frames of headroom.
+    // Hardware-dependent: drop on a laptop with < 16 GB RAM via
+    // settings.json. The 2 GiB bump (from 512 MiB) is the 2026-05-23
+    // follow-up to the section-break two-clip cache thrash fix — see
+    // bus::ClipCatalogEntry::endingBreakFadeSeconds for the companion
+    // logic change that stops decoder over-extension past fades.
+    uint64_t frameCacheBytes{2048ull * 1024ull * 1024ull};
 
     // -----------------------------------------------------------------
     // Phase C.12 #7 — OCIO color management.

@@ -137,27 +137,12 @@ Clip clipFromCatalog(const bus::ClipCatalogEntry& e) {
     return c;
 }
 
-// 2026-05-23 — shared implementation of the Normal-mode break-aligned
-// active-window extension. Returns clip.duration when no extension
-// applies. Editor-side wrapper passes
-// `endAlignsWithBreak = sectionFadeTailFrames(endFrame) > 0`; show-side
-// caller (mapToMediaFrameFromCatalog) reads it from the catalog so it
-// stays independent of live Timeline section state. See ADR-0012
-// amendment 2026-05-23.
-FrameNumber computeExtendedDurationImpl(const Clip& clip,
-                                        double timelineFrameRate,
-                                        bool endAlignsWithBreak) {
-    if (clip.sectionBehavior != SectionBehavior::Normal) return clip.duration;
-    if (!endAlignsWithBreak) return clip.duration;
-    if (timelineFrameRate <= 0.0 || clip.framerate <= 0.0) return clip.duration;
-    const FrameNumber sourceFrames = effectivePlaybackLength(clip);
-    if (sourceFrames <= 0) return clip.duration;
-    const double frameRateRatio = clip.framerate / timelineFrameRate;
-    if (frameRateRatio <= 0.0) return clip.duration;
-    const FrameNumber sourceTimelineFrames = static_cast<FrameNumber>(
-        std::ceil(static_cast<double>(sourceFrames) / frameRateRatio));
-    return std::max(clip.duration, sourceTimelineFrames);
-}
+// The Normal-mode break-aligned extension math lives in Clip.hpp as
+// the free function `entity::computeExtendedDuration(clip, fps,
+// endAlignsWithBreak, endingBreakFadeSeconds)`. DecodeSystem and
+// AudioSystem call the same helper so their inTail-versus-extension
+// decisions stay in lockstep with PTA. See ADR-0012 amendment
+// 2026-05-23 + the 2026-05-23 follow-up.
 
 // Show-side mapToMediaFrame: mirrors the entity-aware 3-arg overload but reads
 // phase data from the ClipCatalogEntry instead of the registry.
@@ -179,7 +164,9 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
     // checks below use realEnd so natural playback continues through the
     // extension window before tail-hold semantics kick in.
     const FrameNumber realEnd = clip.startFrame +
-        computeExtendedDurationImpl(clip, timelineFrameRate, e.endAlignsWithSectionBreak);
+        entity::computeExtendedDuration(clip, timelineFrameRate,
+                                        e.endAlignsWithSectionBreak,
+                                        e.endingBreakFadeSeconds);
 
     // tail short-circuit (same as entity-aware overload) — applies past
     // the clip's real end, which is extendedEnd for Normal-extended clips.
@@ -595,8 +582,12 @@ FrameNumber PlaybackTimeAuthority::computeExtendedDuration(const Clip& clip) con
     if (!m_timeline) return clip.duration;
     const FrameNumber endFrame = clip.startFrame + clip.duration;
     const bool endAlignsWithBreak = sectionFadeTailFrames(endFrame) > 0;
+    const double endingBreakFadeSeconds =
+        timeline::sectionFadeSecondsAtBreak(*m_timeline, endFrame);
     const double timelineFps = m_timeline->getFrameRate();
-    return computeExtendedDurationImpl(clip, timelineFps, endAlignsWithBreak);
+    return entity::computeExtendedDuration(clip, timelineFps,
+                                           endAlignsWithBreak,
+                                           endingBreakFadeSeconds);
 }
 
 bool PlaybackTimeAuthority::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
@@ -1083,8 +1074,19 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         // duration without reading live Timeline section state. The bake
         // happens once per editor frame here; the show side reads it
         // verbatim from the catalog. See ADR-0012 amendment 2026-05-23.
+        const FrameNumber clipEndFrame = clip.startFrame + clip.duration;
         ce.endAlignsWithSectionBreak =
-            sectionFadeTailFrames(clip.startFrame + clip.duration) > 0;
+            sectionFadeTailFrames(clipEndFrame) > 0;
+        // 2026-05-23 follow-up — bake the fadeSeconds of the section
+        // break at the clip's end (0.0 when no aligned break or break
+        // has no fade). Gates the Normal-mode extension on
+        // fadeSeconds == 0 so the decoder stops at the fade window end
+        // instead of running to source-out. Fixes the two-clip-meeting-
+        // at-fade-break cache thrash. See Message.hpp.
+        ce.endingBreakFadeSeconds =
+            m_timeline
+                ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEndFrame)
+                : 0.0;
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
 
         // Bake transform matrix on the editor thread (no const_cast needed here).

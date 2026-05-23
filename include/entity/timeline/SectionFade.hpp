@@ -28,5 +28,21 @@ namespace timeline {
 FrameNumber sectionFadeTailFrames(const Timeline& timeline,
                                   FrameNumber endFrame);
 
+// fadeSeconds of the section break that aligns exactly with `endFrame`.
+// Returns 0.0 if no break aligns (or the break has zero fade configured).
+// Pure read of Timeline state -- same threading contract as
+// sectionFadeTailFrames.
+//
+// Used by PlaybackTimeAuthority to gate the Normal-mode break-aligned
+// active-window extension on fadeSeconds == 0 (see ADR-0012 amendment
+// 2026-05-23 follow-up). When the operator sets fadeSeconds > 0 they
+// have signalled "this break is a fade transition" -- the clip should
+// fade out per the existing tail-frames mechanism, not extend past the
+// break. With fadeSeconds == 0 the extension is the right behavior
+// (Fix 8's original use case: trimmed-to-break clip with hard cut,
+// playback continues past the trim to source-out).
+double sectionFadeSecondsAtBreak(const Timeline& timeline,
+                                 FrameNumber endFrame);
+
 } // namespace timeline
 } // namespace entity

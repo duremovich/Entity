@@ -215,6 +215,20 @@ entity_add_integration_test(section_break_tail_no_freeze  section_break_tail_no_
 # this test exercises the Normal-extension path end-to-end.
 entity_add_integration_test(normal_mode_extends_past_break normal_mode_extends_past_break.json)
 
+# 2026-05-23 follow-up — two-clip-meeting-at-fade-break cache thrash
+# regression guard. Two Normal clips on adjacent tracks meeting at a
+# section break with fadeSeconds > 0. Pre-fix: Fix 8's extension fired
+# for clip 1 (Normal + end-aligns-with-break + source > duration),
+# decoder kept running past the break alongside clip 2's decoder, two
+# 4K-class working sets blew FrameCache budget, Fix 4 cache-miss
+# recovery thrashed, gate stalled, playhead froze. Post-fix: extension
+# is gated on fadeSeconds == 0 so the fade case ends per the
+# tail-frames mechanism — clip 1 fades out and decoder stops, no
+# overlap, no thrash. Asserts the playhead advances cleanly past the
+# fade window post-GO. Companion to normal_mode_extends_past_break.json
+# (fadeSeconds=0 → extension still fires).
+entity_add_integration_test(section_break_two_clip_no_thrash section_break_two_clip_no_thrash.json)
+
 # Phase 6 / queued-at-break — clip whose start aligns with a section break
 # is queued waiting for GO; first visible post-GO tick must map to
 # clip.mediaStartFrame, not mediaStartFrame + 1. Companion scripts cover

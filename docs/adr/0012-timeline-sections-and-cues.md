@@ -998,3 +998,89 @@ at-break-park → SectionGo → playback-past-clipEnd flow. The existing
 `SectionBehavior = Locked` so it stays a held-frame regression guard
 under the new semantics (the Normal path now uses extension instead).
 624/624 ctest green at `-j 1`.
+
+## Amendment 2026-05-23 (follow-up): extension shape gated by fadeSeconds
+
+The 2026-05-23 amendment above extended Normal-mode break-aligned
+clips all the way to source-out unconditionally. Real-show operator
+feedback (a project with two 4K H.264 clips meeting at a break with
+fadeSeconds=5.0) showed the extension over-runs when the operator's
+intent is a section fade transition: slot 1's decoder kept running
+past visibility, slot 2 also decoded from the break, the two 4K
+working sets blew the 512 MiB `FrameCache` budget, and Fix 4's
+cache-miss recovery thrashed slot 2 into a visible freeze.
+
+The amendment is refined to TWO extension shapes, gated by the
+`fadeSeconds` of the section break at `clipEnd`:
+
+- **fadeSeconds == 0** at the ending break → extend to source-out.
+  Unchanged from the original 2026-05-23 amendment. Operator intent
+  is "trimmed-to-break with hard cut — keep playing source content
+  past the trim until it runs out." Regression-tested by
+  `normal_mode_extends_past_break.json`.
+
+- **fadeSeconds > 0** at the ending break → extend through the
+  fade window only:
+  `extendedDuration = min(max(clip.duration, clip.duration + ceil(fadeSeconds × timelineFps)), sourceTimelineFrames)`.
+  Source content keeps advancing during the visible fade-out (so
+  the clip plays through the fade instead of freezing), then the
+  clip becomes inactive at the fade end and the decoder stops.
+  Operator intent is "fade transition at this break — clip ends
+  here gracefully, not extends forever." Regression-tested by
+  `scripts/integration/section_break_two_clip_no_thrash.json`.
+
+The bounding by `sourceTimelineFrames` ensures a short clip whose
+trimmed source ends inside the fade window doesn't try to extend
+past its own source out.
+
+**Implementation moved out of `PlaybackTimeAuthority.cpp`'s anonymous
+namespace.** `computeExtendedDuration` is now a free inline function
+in `include/entity/components/Clip.hpp` (next to
+`effectivePlaybackLength`), called by both `PlaybackTimeAuthority`,
+`DecodeSystem`, and `AudioSystem`. This unifies the math across
+editor + show + audio paths.
+
+**New wire field.** `bus::ClipCatalogEntry::endingBreakFadeSeconds`
+(double, default 0.0 = backward compat). Baked editor-side from the
+new helper `entity::timeline::sectionFadeSecondsAtBreak` (parallel to
+the existing `sectionFadeTailFrames`). The show side reads it
+verbatim from the catalog so the extension shape is computable
+without live Timeline section reads.
+
+**Downstream-consumer audit.** Adding the new extension branch to
+`isClipActiveAtFrame` invalidated assumptions in `DecodeSystem` and
+`AudioSystem`, which had keyed off a separate `inTail` boolean for
+held-frame semantics. Both systems now split:
+
+- `inExtension = (extendedDuration > clip.duration && currentFrame
+  ∈ [clipEnd, extendedEnd))` — clip is active and advancing source
+  frames naturally.
+- `inTailHeld = inTail && !inExtension` — clip is active but in the
+  pure held-tail window (Locked clips, or Normal clips with no
+  extension). Held-frame `localFrame` clamp + no-decode-ahead
+  (Fix 6) + cache-miss-recovery skip (Fix 4's
+  `inTail`-aware guard) all scoped to `inTailHeld` instead of
+  `inTail`.
+
+Inside the extension window, cache-miss recovery is intentionally
+re-enabled: frames advance naturally, evictions need recovery (same
+contract as inAuthored). Outside the extension (pure held-tail),
+Fix 6's no-recovery contract is preserved.
+
+**Default `frameCacheBytes` bumped to 2 GiB.** Even with extension
+correctly capped, 2-clip 4K H.264 crossfades legitimately need
+~594 MB working set. Default went 512 MiB → 2 GiB (multi-layer
+realtime headroom). Override via `settings.json` per existing
+deployment posture.
+
+**Tests preserved.** `normal_mode_extends_past_break.json` (fadeSeconds=0
+→ extension still to source-out), `section_break_tail_no_freeze.json`
+(Locked → no extension, held-frame), `section_fade_after_break.json`
++ `section_fade_combined.json` (fade-multiplier math unchanged), all
+eight `PlaybackTimeAuthorityTest.NormalExtension_*` unit cases
+(fadeSeconds=0 in test setups). New regression test
+`section_break_two_clip_no_thrash.json` covers the operator scenario
+shape with the `tone_1khz.mov` fixture; the 4K cache-pressure aspect
+is verified by manual operator repro.
+
+See HISTORY.md Fix 10 entry for the full diagnostic narrative.

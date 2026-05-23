@@ -31,4 +31,15 @@ FrameNumber sectionFadeTailFrames(const Timeline& timeline,
     return 0;
 }
 
+double sectionFadeSecondsAtBreak(const Timeline& timeline,
+                                 FrameNumber endFrame) {
+    auto [sections, rawFps] = timeline.copySectionsAndRate();
+    (void)rawFps;
+    for (const auto& sec : sections) {
+        if (sec.breakFrame != endFrame) continue;
+        return sec.fadeSeconds > 0.0 ? sec.fadeSeconds : 0.0;
+    }
+    return 0.0;
+}
+
 } // namespace entity::timeline

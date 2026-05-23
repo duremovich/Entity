@@ -519,6 +519,134 @@ the diagnostic + future Tracy captures:
   documents the section-break + crossfade capture procedure tailored
   to this project. References the new env vars + Tracy zones.
 
+### Fix 10 — Section-break two-clip cache thrash (2026-05-23 follow-up)
+
+Operator-reported video freeze on a project with two 4K H.264 clips
+meeting at a section break with fadeSeconds=5.0. Slot 1 ended at the
+break (Normal, end-aligns-with-break, source >> duration); slot 2
+started at the same break. Post-Section-GO, slot 2's video froze on a
+single frame while audio kept advancing; slot 1 had visually faded out
+several seconds prior.
+
+**Diagnosis.** The "single-clip post-GO steady-state freeze" framing in
+the source plan was misleading. Visually slot 1 was gone (z-order
+resolution with `sectionFadeMultiplier` ramped to ~0 put slot 2 on
+top); mechanistically slot 1's decoder was still running, courtesy of
+Fix 8's break-aligned extension. Fix 8's predicate (Normal +
+endAlignsWithSectionBreak + sourceTimelineFrames > duration) fired for
+slot 1, extending its active window from `[startFrame, clipEnd)` =
+`[181, 3000)` all the way to source-out = `[181, 19217)`. So slot 1's
+worker kept decoding 4K H.264 forward at realtime alongside slot 2.
+
+Two 9-frame working sets (current + `DECODE_AHEAD_FRAMES=8`) at
+~33 MB per 4K RGBA frame totalled ~594 MB, exceeding the 512 MiB
+`FrameCache` budget. Fix 4's cache-miss recovery thrashed: every
+editor tick evicted slot 2's just-decoded frames and force-seeked,
+decoder spent ~half its time re-seeking, dropped to ~55% realtime.
+`PlaybackPresenter`'s nearest-fallback masked the stall by holding
+the last successfully-decoded frame on the texture (H1 in the source
+plan was the visible symptom; H2 layered underneath was the root
+cause).
+
+The diagnostic itself ran cleanly via `ENTITY_DECODE_VERBOSE=1` stdout:
+23x `Seek: jump from 5000 to 5000` during the at-break park (slot 2's
+first frame evicted before it could be presented), then sustained
+`Seek: jump from X to X+1` pattern post-GO on slot 2's entity. The
+operator's verbal "slot 1 has faded out (only slot 2 is active)"
+turned out to describe pixels, not workers.
+
+**Fix part 1 — extension shape gated by fadeSeconds at ending break.**
+The Fix 8 extension now has two shapes:
+
+- **fadeSeconds == 0** at the ending break → extend to source-out
+  (original Fix 8 semantic, unchanged; preserves the
+  `normal_mode_extends_past_break.json` regression test).
+- **fadeSeconds  > 0** at the ending break → cap extension at
+  `clip.duration + ceil(fadeSeconds × timelineFps)` timeline frames,
+  bounded by `sourceTimelineFrames`. Source content keeps advancing
+  through the visible fade-out (so the operator sees the clip playing,
+  not frozen), then the clip becomes inactive at the fade end —
+  decoder stops, cache pressure resolves.
+
+The math moved out of `PlaybackTimeAuthority.cpp`'s anonymous namespace
+into `entity::computeExtendedDuration` in `include/entity/components/Clip.hpp`,
+so `DecodeSystem` and `AudioSystem` can use the same helper without
+needing a PTA pointer. New bus field
+`bus::ClipCatalogEntry::endingBreakFadeSeconds` (default 0.0 = backward
+compat) lets the show side reproduce the extension math without
+reading live Timeline section state. Baked editor-side via the new
+`entity::timeline::sectionFadeSecondsAtBreak` helper in
+`include/entity/timeline/SectionFade.hpp`, paralleling the existing
+`sectionFadeTailFrames`.
+
+**Fix part 2 — default `frameCacheBytes` 512 MiB → 2 GiB.**
+At ~33 MB per 4K H.264 RGBA frame, `DECODE_AHEAD_FRAMES=8` + current
+frame = 297 MB per active clip. 2 GiB holds ~62 frames = ~6
+simultaneous 4K working sets, comfortable headroom for 2-clip
+crossfades and the 3-layer multi-layer-realtime target. Existing
+`settings.json` overrides preserved (operators on laptops with < 16 GB
+RAM can drop). `SettingsTests` updated to assert the new default.
+
+**Downstream-consumer audit — `inTail` split.** Fix 8 added a new
+"extension" branch to `isClipActiveAtFrame`, but `DecodeSystem` and
+`AudioSystem` keyed off a separate `inTail` boolean for held-frame
+behavior (clamp `localFrame` to `clip.duration - 1`, disable
+decode-ahead, skip cache-miss recovery — collectively Fix 5 + Fix 6).
+With the extension active, `inTail && inExtension` could co-occur,
+meaning "active and naturally advancing through the fade." Both
+systems now split:
+
+- `inExtension = (extendedDuration > clip.duration && currentFrame ∈
+  [clipEnd, extendedEnd))` — natural advance, decode-ahead engaged.
+- `inTailHeld = inTail && !inExtension` — pure held-tail past the
+  extension (Locked clips, or Normal clips with no extension).
+  Held-frame clamp + decode-ahead suppression + cache-miss-recovery
+  skip stay scoped to `inTailHeld`.
+
+Fix 6's no-decode-ahead clamp and Fix 4's cache-miss-recovery skip
+now correctly apply only to the pure held-tail path. Inside the
+extension window the decoder runs normal-play steering so frames
+that get evicted under cache pressure are recovered.
+
+**First-pass-fix regression.** Initial fix gated Fix 8 entirely on
+`fadeSeconds == 0` (no extension when there's a fade). Operator
+verified and pushed back: "slot 1 is pausing at the break instead of
+continuing." The cap-at-fade-end shape preserves Fix 8's intent for
+the fade case without keeping the decoder alive past visibility. New
+memory: [[feedback_cap_dont_disable]] captures the lesson — when a
+fix would disable a feature, articulate the original purpose first
+and look for a scope-reduction.
+
+**Files.** `include/entity/components/Clip.hpp` (new
+`computeExtendedDuration` helper),
+`include/entity/timeline/SectionFade.{hpp,cpp}` (new
+`sectionFadeSecondsAtBreak` helper),
+`include/entity/bus/Message.hpp` + `src/bus/Serialization.cpp` (new
+`endingBreakFadeSeconds` wire field),
+`src/director/PlaybackTimeAuthority.cpp` (delegates to shared helper,
+bakes new field), `src/systems/DecodeSystem.cpp` +
+`src/systems/AudioSystem.cpp` (inExtension / inTailHeld separation),
+`include/entity/core/Settings.hpp` + `tests/unit/SettingsTests.cpp`
+(2 GiB default). New regression test
+`scripts/integration/section_break_two_clip_no_thrash.json` (uses
+`tone_1khz.mov` fixture; the 4K-cache-pressure aspect is verified by
+manual operator repro since no 4K fixture exists in the test tree).
+615/615 ctest green at `-j 1` modulo known integration flakes.
+
+**Tests still passing**: `normal_mode_extends_past_break.json`
+(Fix 8 original, fadeSeconds=0 → extension still goes to source-out),
+`section_break_tail_no_freeze.json` (Fix 5, Locked clip with
+fadeSeconds=2 → no extension, held-frame), `section_fade_after_break.json`
++ `section_fade_combined.json` (fade-multiplier math unchanged), all
+PlaybackTimeAuthority unit tests (fadeSeconds=0 in test setups).
+
+**Lessons captured**: [[feedback_visual_facts_vs_mechanism]] (operator
+visual claims describe pixels not systems),
+[[feedback_cap_dont_disable]] (cap before disable),
+[[feedback_active_predicate_consumer_audit]] (audit downstream
+consumers when changing active-window semantics). ADR-0012 amended
+with the two-shapes extension follow-up.
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On

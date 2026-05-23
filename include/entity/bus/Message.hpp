@@ -479,14 +479,28 @@ struct ClipCatalogEntry {
     int           sectionBehavior{0}; // SectionBehavior enum as int
 
     // 2026-05-23 — true when (startFrame + duration) exactly aligns with a
-    // Section::breakFrame. Gates the Normal-mode active-window extension to
-    // source-out: when a Normal-mode clip ends at a break and has source
-    // content past that point, its active window extends past clip.duration
-    // up to the source out point. Computed editor-side from
-    // sectionFadeTailFrames(endFrame) > 0; the show thread reads it
+    // Section::breakFrame. Necessary but no longer sufficient for the
+    // Normal-mode active-window extension: the bake-site also requires
+    // `endingBreakFadeSeconds == 0` (see below). Computed editor-side
+    // from sectionFadeTailFrames(endFrame) > 0; the show thread reads it
     // verbatim to keep mapToMediaFrameFromCatalog independent of Timeline
     // section state. ADR-0012 amendment 2026-05-23.
     bool          endAlignsWithSectionBreak{false};
+
+    // 2026-05-23 follow-up — fadeSeconds of the section break at the
+    // clip's endFrame, 0.0 if no aligned break or the break has no
+    // fade. Shapes the Normal-mode extension (entity::computeExtendedDuration
+    // in Clip.hpp): fadeSeconds == 0 extends to source-out (Fix 8's
+    // original "play through the trim"); fadeSeconds > 0 extends through
+    // the fade window only (clip.duration + ceil(fadeSeconds * fps)
+    // timeline frames) so source content keeps advancing during the
+    // visible fade-out then the decoder stops at fade end. The cap
+    // fixes the two-clip-meeting-at-fade-break cache thrash (operator-
+    // reported 2026-05-23: clip 1 + clip 2 both 4K H.264 at
+    // fadeSeconds=5.0 exceeded the FrameCache budget and force-seek
+    // thrashed past the fade window). ADR-0012 amendment 2026-05-23
+    // follow-up.
+    double        endingBreakFadeSeconds{0.0};
 
     // VideoTexture
     int           descriptorSlot{-1};

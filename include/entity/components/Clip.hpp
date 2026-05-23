@@ -2,6 +2,8 @@
 
 #include "../core/Types.hpp"
 #include <string>
+#include <algorithm>
+#include <cmath>
 #include <entt/entt.hpp>
 
 // Forward declare FFmpeg cleanup functions
@@ -187,6 +189,62 @@ inline FrameNumber effectivePlaybackLength(const Clip& clip) {
         return clip.totalMediaFrames - clip.mediaStartFrame;
     }
     return 1;
+}
+
+// Normal-mode break-aligned active-window extension (ADR-0012 amendment
+// 2026-05-23 and the 2026-05-23 follow-up). Returns `clip.duration`
+// when no extension applies. Pure math — callers supply
+// `endAlignsWithBreak` and `endingBreakFadeSeconds` from Timeline
+// queries (`timeline::sectionFadeTailFrames > 0` and
+// `timeline::sectionFadeSecondsAtBreak` respectively). The show-side
+// caller reads them from the baked ClipCatalogEntry; the editor-side
+// caller queries the live Timeline. Lives here (not on
+// PlaybackTimeAuthority) so DecodeSystem and AudioSystem can use the
+// same math without depending on PTA.
+//
+// Two extension shapes, gated by the ending break's fadeSeconds:
+//
+//   fadeSeconds == 0  → extend all the way to source-out (Fix 8's
+//                       original "play through the trim" semantic;
+//                       see normal_mode_extends_past_break.json).
+//
+//   fadeSeconds  > 0  → extend through the fade window only
+//                       (clip.duration + ceil(fadeSeconds * fps)
+//                       timeline frames). Source content advances
+//                       during the visible fade; clip becomes inactive
+//                       at the fade end — decoder stops, cache
+//                       pressure goes away. Cap at sourceTimelineFrames
+//                       so a short clip never extends past its own
+//                       source out point.
+//
+// The fadeSeconds > 0 cap fixes the two-clip-meeting-at-fade-break
+// cache thrash (operator-reported 2026-05-23): pre-fix the extension
+// ran past visibility, two 4K H.264 decoders competed for cache
+// indefinitely, Fix 4 cache-miss recovery thrashed. Post-fix the
+// extra decoder runs only for the legitimate fade window; combined
+// with the 2 GiB FrameCache default, 2× 4K H.264 fits comfortably.
+inline FrameNumber computeExtendedDuration(const Clip& clip,
+                                            double timelineFrameRate,
+                                            bool endAlignsWithBreak,
+                                            double endingBreakFadeSeconds) {
+    if (clip.sectionBehavior != SectionBehavior::Normal) return clip.duration;
+    if (!endAlignsWithBreak) return clip.duration;
+    if (timelineFrameRate <= 0.0 || clip.framerate <= 0.0) return clip.duration;
+    const FrameNumber sourceFrames = effectivePlaybackLength(clip);
+    if (sourceFrames <= 0) return clip.duration;
+    const double frameRateRatio = clip.framerate / timelineFrameRate;
+    if (frameRateRatio <= 0.0) return clip.duration;
+    const FrameNumber sourceTimelineFrames = static_cast<FrameNumber>(
+        std::ceil(static_cast<double>(sourceFrames) / frameRateRatio));
+
+    if (endingBreakFadeSeconds > 0.0) {
+        const FrameNumber fadeFrames = static_cast<FrameNumber>(
+            std::ceil(endingBreakFadeSeconds * timelineFrameRate));
+        const FrameNumber extendedToFadeEnd = clip.duration + fadeFrames;
+        return std::min(std::max(clip.duration, extendedToFadeEnd),
+                        sourceTimelineFrames);
+    }
+    return std::max(clip.duration, sourceTimelineFrames);
 }
 
 } // namespace entity

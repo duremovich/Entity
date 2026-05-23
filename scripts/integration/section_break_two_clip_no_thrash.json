@@ -1,0 +1,35 @@
+{
+    "version": 1,
+    "description": "2026-05-23 follow-up regression guard. Two Normal-mode clips meeting at a section break with fadeSeconds > 0. Before this fix, Fix 8's extension fired for clip 1 (Normal + end-aligns-with-break + sourceTimelineFrames > duration), keeping its decoder running indefinitely past the break. With clip 2 also decoding from the same break, two 4K H.264 working sets blew the FrameCache budget and triggered Fix 4's cache-miss recovery in a thrash loop, freezing clip 2's video while audio kept advancing. The fix gates Fix 8's extension on fadeSeconds == 0 at the ending break: when the operator sets a non-zero fade, the clip ends per the existing tail-frames mechanism (fades out, decoder stops), no extension, no cache thrash. Setup: tone_1khz.mov on tracks 0 and 1, both duration=30 ending/starting at break 30 with fadeSeconds=1.0 (30 frames tail). After GO, the playhead must cleanly advance through and past the fade window. The fixture's 150-frame source range is what would have triggered Fix 8 extension pre-fix (sourceTimelineFrames=150 > duration=30). Asserts playhead at frame 90 (60 frames after GO at break+1=31, ~2s of real-time playback) with tolerance.",
+    "commands": [
+        {"type": "AddScreen", "name": "TwoClipBreakScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 30},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 1, "position": 1000000},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "SetClipDuration", "trackIndex": 1, "clipIndex": 0, "duration": 60},
+        {"type": "SetClipSectionBehavior", "trackIndex": 1, "clipIndex": 0, "behavior": "Normal"},
+
+        {"type": "AddSectionBreak", "breakFrame": 30, "fadeSeconds": 1.0},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.5},
+
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 30, "tolerance": 2},
+
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds", "count": 2.0},
+
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "AssertPlayheadAtFrame", "frame": 90, "tolerance": 15},
+
+        {"type": "Exit"}
+    ]
+}

@@ -159,10 +159,28 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         // breaks, so this is a no-op for clips not aligned with one.
         const FrameNumber tailFrames =
             timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
+        // 2026-05-23 follow-up — Normal-mode break-aligned extension
+        // (see Clip.hpp::computeExtendedDuration). The extension window
+        // advances source frames naturally during the visible fade; audio
+        // should advance in lockstep instead of held-clamping, so we
+        // separate `inExtension` from `inTailHeld` exactly like
+        // DecodeSystem does.
+        const double endingBreakFadeSeconds = (tailFrames > 0)
+            ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEnd)
+            : 0.0;
+        const FrameNumber extendedDuration = entity::computeExtendedDuration(
+            clip, tlFPS, /*endAlignsWithBreak*/ tailFrames > 0,
+            endingBreakFadeSeconds);
+        const FrameNumber extendedEnd = clip.startFrame + extendedDuration;
+        const bool inExtension =
+            (extendedDuration > clip.duration &&
+             currentTLFrame >= clipEnd &&
+             currentTLFrame < extendedEnd);
         const bool inTail = (tailFrames > 0 &&
                              currentTLFrame >= clipEnd &&
                              currentTLFrame < clipEnd + tailFrames);
-        const bool inWindow = inAuthored || inTail;
+        const bool inTailHeld = inTail && !inExtension;
+        const bool inWindow = inAuthored || inExtension || inTail;
         bool inContinuation = false;
         if (clip.sectionBehavior == SectionBehavior::Normal) {
             const ClipPlaybackPhase* phase = registry.try_get<ClipPlaybackPhase>(entity);
@@ -189,8 +207,13 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         // branches below override sourceLocalFrame for continuation and
         // post-break-anchor cases (they keep their existing semantics);
         // this clamp matters only when neither fires.
+        //
+        // 2026-05-23 follow-up — `inTailHeld` instead of `inTail` so the
+        // Normal-mode extension window (inExtension covers it) advances
+        // naturally and audio plays through the fade in lockstep with
+        // video.
         const double frameRateRatio = clip.framerate / tlFPS;
-        FrameNumber localTLFrame = inTail
+        FrameNumber localTLFrame = inTailHeld
             ? (clip.duration - 1)
             : (currentTLFrame - clip.startFrame);
         FrameNumber sourceLocalFrame = static_cast<FrameNumber>(

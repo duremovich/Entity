@@ -837,6 +837,7 @@ ojson encode(const ClipCatalogEntry& e) {
     j["playbackMode"]         = e.playbackMode;
     j["sectionBehavior"]      = e.sectionBehavior;
     j["endAlignsWithSectionBreak"] = e.endAlignsWithSectionBreak;
+    j["endingBreakFadeSeconds"] = e.endingBreakFadeSeconds;
     j["descriptorSlot"]       = e.descriptorSlot;
     j["transformMatrix"]      = e.transformMatrix;
     j["opacity"]              = e.opacity;
@@ -885,6 +886,11 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     // Optional for backward compat with pre-2026-05-23 payloads — default
     // false matches the struct default (no extension).
     e.endAlignsWithSectionBreak = j.value("endAlignsWithSectionBreak", false);
+    // Optional for backward compat with pre-2026-05-23-follow-up payloads
+    // — default 0.0 = no fade at end => extension can still fire when
+    // endAlignsWithSectionBreak is true, preserving prior single-clip
+    // behavior. New payloads carry the actual fadeSeconds.
+    e.endingBreakFadeSeconds = j.value("endingBreakFadeSeconds", 0.0);
     e.descriptorSlot  = j.at("descriptorSlot").get<int>();
     const auto& arr   = j.at("transformMatrix");
     if (!arr.is_array() || arr.size() != 16)
