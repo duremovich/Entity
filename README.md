@@ -7,9 +7,7 @@
 **Frame-accurate playback and projection mapping. Open-core. Built for live shows.**
 
 A C++ media server for projection mapping and multi-layer playback.
-Multi-projector calibration, OSC control, real-time GPU compositing.
-The dedicated show thread owns Present, so editor stalls don't freeze
-the projector output.
+Multi-projector calibration, real-time GPU compositing, show control.
 
 [Website](https://entitymedia.art) ·
 [Docs](https://entitymedia.art/docs/) ·
