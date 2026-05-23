@@ -478,6 +478,16 @@ struct ClipCatalogEntry {
     int           playbackMode{0};  // PlaybackMode enum as int
     int           sectionBehavior{0}; // SectionBehavior enum as int
 
+    // 2026-05-23 — true when (startFrame + duration) exactly aligns with a
+    // Section::breakFrame. Gates the Normal-mode active-window extension to
+    // source-out: when a Normal-mode clip ends at a break and has source
+    // content past that point, its active window extends past clip.duration
+    // up to the source out point. Computed editor-side from
+    // sectionFadeTailFrames(endFrame) > 0; the show thread reads it
+    // verbatim to keep mapToMediaFrameFromCatalog independent of Timeline
+    // section state. ADR-0012 amendment 2026-05-23.
+    bool          endAlignsWithSectionBreak{false};
+
     // VideoTexture
     int           descriptorSlot{-1};
 

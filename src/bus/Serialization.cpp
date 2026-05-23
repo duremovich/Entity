@@ -836,6 +836,7 @@ ojson encode(const ClipCatalogEntry& e) {
     j["framerate"]            = e.framerate;
     j["playbackMode"]         = e.playbackMode;
     j["sectionBehavior"]      = e.sectionBehavior;
+    j["endAlignsWithSectionBreak"] = e.endAlignsWithSectionBreak;
     j["descriptorSlot"]       = e.descriptorSlot;
     j["transformMatrix"]      = e.transformMatrix;
     j["opacity"]              = e.opacity;
@@ -881,6 +882,9 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     e.framerate       = j.at("framerate").get<double>();
     e.playbackMode    = j.at("playbackMode").get<int>();
     e.sectionBehavior = j.at("sectionBehavior").get<int>();
+    // Optional for backward compat with pre-2026-05-23 payloads — default
+    // false matches the struct default (no extension).
+    e.endAlignsWithSectionBreak = j.value("endAlignsWithSectionBreak", false);
     e.descriptorSlot  = j.at("descriptorSlot").get<int>();
     const auto& arr   = j.at("transformMatrix");
     if (!arr.is_array() || arr.size() != 16)

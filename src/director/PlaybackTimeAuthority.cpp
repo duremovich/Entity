@@ -137,6 +137,28 @@ Clip clipFromCatalog(const bus::ClipCatalogEntry& e) {
     return c;
 }
 
+// 2026-05-23 — shared implementation of the Normal-mode break-aligned
+// active-window extension. Returns clip.duration when no extension
+// applies. Editor-side wrapper passes
+// `endAlignsWithBreak = sectionFadeTailFrames(endFrame) > 0`; show-side
+// caller (mapToMediaFrameFromCatalog) reads it from the catalog so it
+// stays independent of live Timeline section state. See ADR-0012
+// amendment 2026-05-23.
+FrameNumber computeExtendedDurationImpl(const Clip& clip,
+                                        double timelineFrameRate,
+                                        bool endAlignsWithBreak) {
+    if (clip.sectionBehavior != SectionBehavior::Normal) return clip.duration;
+    if (!endAlignsWithBreak) return clip.duration;
+    if (timelineFrameRate <= 0.0 || clip.framerate <= 0.0) return clip.duration;
+    const FrameNumber sourceFrames = effectivePlaybackLength(clip);
+    if (sourceFrames <= 0) return clip.duration;
+    const double frameRateRatio = clip.framerate / timelineFrameRate;
+    if (frameRateRatio <= 0.0) return clip.duration;
+    const FrameNumber sourceTimelineFrames = static_cast<FrameNumber>(
+        std::ceil(static_cast<double>(sourceFrames) / frameRateRatio));
+    return std::max(clip.duration, sourceTimelineFrames);
+}
+
 // Show-side mapToMediaFrame: mirrors the entity-aware 3-arg overload but reads
 // phase data from the ClipCatalogEntry instead of the registry.
 // nowNs is the active rate source's current time in nanoseconds
@@ -149,9 +171,19 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
     const Clip clip = clipFromCatalog(e);
     const FrameNumber clipEnd = clip.startFrame + clip.duration;
     const FrameNumber sourceLength = effectivePlaybackLength(clip);
+    // 2026-05-23 — Normal-mode break-aligned extension. For Normal clips
+    // ending exactly at a break with source content past that point,
+    // realEnd extends past clipEnd up to the source-out-equivalent timeline
+    // frame. For Locked / non-break-aligned clips, realEnd == clipEnd
+    // (unchanged behavior). All "is this clip past its play window?"
+    // checks below use realEnd so natural playback continues through the
+    // extension window before tail-hold semantics kick in.
+    const FrameNumber realEnd = clip.startFrame +
+        computeExtendedDurationImpl(clip, timelineFrameRate, e.endAlignsWithSectionBreak);
 
-    // tail short-circuit (same as entity-aware overload)
-    if (timelineFrame >= clipEnd && e.hasPhase && e.phase_tailHoldMediaFrame >= 0) {
+    // tail short-circuit (same as entity-aware overload) — applies past
+    // the clip's real end, which is extendedEnd for Normal-extended clips.
+    if (timelineFrame >= realEnd && e.hasPhase && e.phase_tailHoldMediaFrame >= 0) {
         return e.phase_tailHoldMediaFrame;
     }
 
@@ -159,8 +191,9 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
         && clip.sectionBehavior == SectionBehavior::Normal;
 
     if (!inContinuation) {
-        // post-break anchor path
-        if (e.hasPhase && e.phase_postBreakMediaAnchor >= 0 && timelineFrame < clipEnd) {
+        // post-break anchor path — covers the post-GO span, including the
+        // extension window for Normal-extended clips.
+        if (e.hasPhase && e.phase_postBreakMediaAnchor >= 0 && timelineFrame < realEnd) {
             const double frameRateRatio = (timelineFrameRate > 0.0)
                 ? clip.framerate / timelineFrameRate : 1.0;
             if (sourceLength <= 0) return clip.mediaStartFrame;
@@ -195,16 +228,18 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
         // natural timeline-derived path (2-arg equivalent, inlined)
         const double frameRateRatio = (timelineFrameRate > 0.0)
             ? clip.framerate / timelineFrameRate : 1.0;
-        // Fix 5 (2026-05-23 follow-up) — held last decoded frame is the
-        // media frame the clip displayed at its last authored timeline
-        // frame (clipEnd - 1), wrapped per playbackMode — NOT the
-        // trimmed source-range end. A clip whose authored duration is
-        // shorter than its trimmed source range never decoded
-        // mediaStartFrame + sourceLength - 1, so asking the cache for
-        // that frame (via the gate predicate or show-side compositor)
-        // is a guaranteed stall until SeekSyncController times out.
-        // Clamp and fall through to the wrap math below at clipEnd-1.
-        if (timelineFrame >= clipEnd) timelineFrame = clipEnd - 1;
+        // Fix 5 (2026-05-23) — held last decoded frame is the media frame
+        // the clip displayed at its last authored timeline frame
+        // (realEnd - 1), wrapped per playbackMode — NOT the trimmed
+        // source-range end. A clip whose authored duration is shorter
+        // than its trimmed source range never decoded mediaStartFrame +
+        // sourceLength - 1, so asking the cache for that frame is a
+        // guaranteed stall until SeekSyncController times out. For
+        // Normal-extended clips realEnd > clipEnd so the natural-wrap
+        // math walks through the extension window before clamping — the
+        // PlaybackMode (Freeze/Loop/PingPong) wrap at sourceLocalFrame
+        // >= sourceLength kicks in naturally at the source out point.
+        if (timelineFrame >= realEnd) timelineFrame = realEnd - 1;
         const FrameNumber localFrame = timelineFrame - clip.startFrame;
         const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
             std::floor(localFrame * frameRateRatio));
@@ -556,6 +591,14 @@ FrameNumber PlaybackTimeAuthority::sectionFadeTailFrames(FrameNumber endFrame) c
     return timeline::sectionFadeTailFrames(*m_timeline, endFrame);
 }
 
+FrameNumber PlaybackTimeAuthority::computeExtendedDuration(const Clip& clip) const {
+    if (!m_timeline) return clip.duration;
+    const FrameNumber endFrame = clip.startFrame + clip.duration;
+    const bool endAlignsWithBreak = sectionFadeTailFrames(endFrame) > 0;
+    const double timelineFps = m_timeline->getFrameRate();
+    return computeExtendedDurationImpl(clip, timelineFps, endAlignsWithBreak);
+}
+
 bool PlaybackTimeAuthority::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
     if (frame < clip.startFrame) return false;
     const FrameNumber endFrame = clip.startFrame + clip.duration;
@@ -565,6 +608,25 @@ bool PlaybackTimeAuthority::isClipActiveAtFrame(const Clip& clip, FrameNumber fr
     // the clip visible (held last frame) while the post-break fade-out
     // ramps to zero.
     const FrameNumber tailFrames = sectionFadeTailFrames(endFrame);
+
+    // 2026-05-23 — Normal-mode break-aligned extension. A Normal-mode clip
+    // whose end aligns with a section break (tailFrames > 0) extends its
+    // active window past clip.duration up to the source out point. Locked
+    // and non-break-aligned clips keep the original `endFrame + tail`
+    // window. The natural wrap math in mapToMediaFrame walks through the
+    // extension window naturally — Freeze/Loop/PingPong kicks in at the
+    // source-out boundary as before. See ADR-0012 amendment 2026-05-23.
+    if (clip.sectionBehavior == SectionBehavior::Normal && tailFrames > 0) {
+        const FrameNumber extendedEnd = clip.startFrame + computeExtendedDuration(clip);
+        if (extendedEnd > endFrame) {
+            if (frame < extendedEnd) return true;
+            // Section-fade tail attaches to the clip's true end. If
+            // extendedEnd itself aligns with another break, the held +
+            // fade window applies past extendedEnd; otherwise the clip
+            // simply becomes inactive at extendedEnd.
+            return frame < extendedEnd + sectionFadeTailFrames(extendedEnd);
+        }
+    }
     return frame < endFrame + tailFrames;
 }
 
@@ -575,19 +637,23 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(const Clip& clip, FrameNumber
     FrameNumber sourceLength = effectivePlaybackLength(clip);
 
     // Phase 6 — post-end tail (held last decoded frame). isClipActiveAtFrame
-    // gates entry into this window, so when timelineFrame >= clipEnd we
+    // gates entry into this window, so when timelineFrame >= realEnd we
     // know we're inside the fade tail. Don't advance past the source.
     //
-    // Fix 5 (2026-05-23 follow-up) — clamp timelineFrame to clipEnd-1
-    // and let the wrap math below produce the correct held frame. The
-    // previous `mediaStartFrame + sourceLength - 1` formula returned
-    // the trimmed source range's end, which a clip with authored
-    // duration < trimmed source range never decoded. That asked the
-    // gate predicate (and the show-side compositor) for a frame the
-    // FrameCache would never have, stalling the SeekSyncController
-    // gate for its full 3-second preroll timeout on every Section GO.
-    const FrameNumber clipEnd = clip.startFrame + clip.duration;
-    if (timelineFrame >= clipEnd) timelineFrame = clipEnd - 1;
+    // Fix 5 (2026-05-23) — clamp timelineFrame to realEnd-1 and let
+    // the wrap math below produce the correct held frame. The previous
+    // `mediaStartFrame + sourceLength - 1` formula returned the trimmed
+    // source range's end, which a clip with authored duration < trimmed
+    // source range never decoded.
+    //
+    // 2026-05-23 amendment — realEnd is the Normal-mode break-aligned
+    // extended end (== startFrame + duration for Locked / non-break-aligned
+    // clips). Inside `[clipEnd, extendedEnd)` for an extended Normal clip
+    // the timelineFrame is unclamped, so localFrame walks naturally past
+    // clip.duration; the wrap math at sourceLocalFrame >= sourceLength
+    // (Freeze/Loop/PingPong) kicks in at the source-out boundary.
+    const FrameNumber realEnd = clip.startFrame + computeExtendedDuration(clip);
+    if (timelineFrame >= realEnd) timelineFrame = realEnd - 1;
 
     FrameNumber localFrame = timelineFrame - clip.startFrame;
     FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
@@ -617,7 +683,12 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(const Clip& clip, FrameNumber
 FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
                                                    const Clip& clip,
                                                    FrameNumber timelineFrame) const {
-    const FrameNumber clipEnd = clip.startFrame + clip.duration;
+    // 2026-05-23 — realEnd is the Normal-mode break-aligned extended end
+    // (== startFrame + duration for Locked / non-break-aligned clips). All
+    // "past the play window?" checks below use realEnd so an extended
+    // Normal clip plays naturally past clipEnd before tail-hold kicks in.
+    // See ADR-0012 amendment 2026-05-23.
+    const FrameNumber realEnd = clip.startFrame + computeExtendedDuration(clip);
 
     // Continuation-phase override only applies when the component exists
     // AND the scheduler has placed the clip in continuation AND the clip's
@@ -633,8 +704,10 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
     // tailHoldMediaFrame stashed by SectionScheduler::go() at the moment
     // continuation cleared (so a clip that was looping at the break holds
     // the frame the user actually saw); otherwise fall through to the
-    // 2-arg overload's last-decoded-frame clamp.
-    if (timelineFrame >= clipEnd && phase && phase->tailHoldMediaFrame >= 0) {
+    // 2-arg overload's last-decoded-frame clamp. For Normal-extended
+    // clips this fires only past extendedEnd — within `[clipEnd,
+    // extendedEnd)` natural playback / postBreakMediaAnchor takes over.
+    if (timelineFrame >= realEnd && phase && phase->tailHoldMediaFrame >= 0) {
         return phase->tailHoldMediaFrame;
     }
 
@@ -644,14 +717,14 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
         // clips that observed an at-break pause have a source-frame
         // anchor stamped by SectionScheduler::go(). The anchor branch
         // fires only after continuation has ended (post-GO,
-        // !inContinuation) and only inside the clip's authored range
-        // (timelineFrame < clipEnd; the tail-hold short-circuit above
-        // already handled timelineFrame >= clipEnd). It maps mediaFrame
+        // !inContinuation) and only inside the clip's real play window
+        // (timelineFrame < realEnd; the tail-hold short-circuit above
+        // already handled timelineFrame >= realEnd). It maps mediaFrame
         // as `anchor + (timelineFrame - anchorTimelineFrame) * ratio`,
         // wrapped per playbackMode — same math as the natural-mapping
         // path but anchored to where the user was watching at GO.
         if (phase && phase->postBreakMediaAnchor >= 0
-                && timelineFrame < clipEnd) {
+                && timelineFrame < realEnd) {
             const double timelineFrameRate = m_timeline ? m_timeline->getFrameRate() : 30.0;
             const double frameRateRatio = (timelineFrameRate > 0.0)
                 ? clip.framerate / timelineFrameRate : 1.0;
@@ -1005,6 +1078,13 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         ce.framerate       = clip.framerate;
         ce.playbackMode    = static_cast<int>(clip.playbackMode);
         ce.sectionBehavior = static_cast<int>(clip.sectionBehavior);
+        // 2026-05-23 — bake whether the clip's end aligns with a section
+        // break so the show side can compute the Normal-mode extended
+        // duration without reading live Timeline section state. The bake
+        // happens once per editor frame here; the show side reads it
+        // verbatim from the catalog. See ADR-0012 amendment 2026-05-23.
+        ce.endAlignsWithSectionBreak =
+            sectionFadeTailFrames(clip.startFrame + clip.duration) > 0;
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
 
         // Bake transform matrix on the editor thread (no const_cast needed here).

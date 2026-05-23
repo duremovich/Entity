@@ -92,6 +92,17 @@ public:
     bool        isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const;
     FrameNumber mapToMediaFrame(const Clip& clip, FrameNumber timelineFrame) const;
 
+    // 2026-05-23 — Normal-mode break-aligned active-window extension.
+    // When a Normal-mode clip's timeline-end aligns with a section break
+    // AND the clip has more source content to play past that point, the
+    // active window extends past clip.duration up to the source out point.
+    // Returns clip.duration when no extension applies (Locked clip,
+    // non-break-aligned end, or sourceTimelineFrames <= duration). Public
+    // so SectionScheduler can seed continuation / post-break anchors for
+    // break-aligned-end Normal clips that the original spanning-check
+    // would have skipped. See ADR-0012 amendment 2026-05-23.
+    FrameNumber computeExtendedDuration(const Clip& clip) const;
+
     // Entity-aware overload (Phase C — Normal continuation phase). When the
     // entity carries a ClipPlaybackPhase component with `inContinuation` set,
     // the media frame is derived from `sourcePhaseFrames` instead of the

@@ -252,6 +252,135 @@ plays at full level until the clip falls out of `shouldSteer` (at
 which point `mixSource.active` goes false and audio cuts). Should
 be wired so audio fades synchronously with video — separate change.
 
+### Trim Integrity + Normal-Mode Extension to Source Out (2026-05-23 follow-up)
+
+Two independent bugs surfaced by an operator report of "Normal-mode
+clip paused at a section break when I expected it to keep playing."
+Both turned out to be real; investigation against the codebase showed
+they layer on the same scenario but root in different places.
+
+**Fix 7 — Left-edge timeline drag stops slipping the source in-point.**
+The PropertyWindow UI contract has long been: In Point edits are
+*slip* edits (modify `mediaStartFrame`, leave timeline footprint
+alone); right-edge timeline drags are *resize* edits (modify
+`duration`, leave source in/out alone); Duration is read-only in the
+panel and edited only via right-edge drag. Left-edge drag was the
+asymmetric exception — it modified `startFrame`, `duration`, AND
+`mediaStartFrame` (the "NLE-style trim head" behavior from
+Premiere/Resolve). That contradicted the panel's slip-vs-resize
+separation and silently shifted the source window any time the
+operator nudged a clip's left edge to make timeline room.
+
+The operator's symptom — "Normal-mode clip paused at the break" —
+turned out to be partially explained by this: dragging the left edge
+of a clip to reposition it on the timeline silently advanced
+`mediaStartFrame` by the drag distance, so by the time playback hit
+the break the clip was decoding source frames offset from what the
+operator intended.
+
+**Fix:** in `src/timeline/TimelineWidgetInput.cpp` the
+`ClipEdge::Left` branch now updates `startFrame` and `duration` only.
+The `clip->mediaStartFrame = m_trimOriginalMediaStart + framesDelta`
+line and its trim-start capture are removed; the
+`m_trimOriginalMediaStart` field on `TimelineWidgetInput` is
+deleted. Left-edge drag is now symmetric with right-edge drag —
+pure timeline-footprint resize, source in/out untouched. The
+PropertyWindow's In Point slider remains the only authoritative path
+to changing `mediaStartFrame`.
+
+**Behavior change:** dragging the left edge of a clip rightward by N
+frames now leaves the same source content under the cursor at frame
+0 of the clip (instead of shifting the in-point so the same source
+*frame* stays under the *original* timeline position). Existing
+projects are unaffected — the data model didn't change; only
+interactive behavior did.
+
+**Fix 8 — Normal-mode active window extends to source-out at
+break-aligned ends.** Independent of Fix 7, the active-window gate
+`isClipActiveAtFrame` ended both Normal and Locked clips at
+`startFrame + duration` (plus the section-fade tail). For a clip
+whose timeline edge was authored to match a section break — the
+idiomatic "this clip plays for this section" shape — the gate cut
+playback off at `clipEnd` regardless of how much source content
+remained. The operator's stated expectation: a Normal-mode clip
+whose timeline edge aligns with a break should *continue playing*
+past the break to its source out point. Locked stays at the timeline
+edge (its explicit semantic is "pause at break").
+
+ADR-0012's D2 said "Normal clips continue per their PlaybackMode at
+the break" — phrased about *what plays during* the at-break park.
+This amendment extends it to *what plays through* the break: when
+the clip's right edge meets a break, Normal mode treats that edge as
+the boundary of "scheduled play" rather than absolute cutoff, and
+the clip keeps producing source frames until either the source out
+point is reached or — if `clip.duration > sourceTimelineFrames` —
+the original timeline edge wins (the `max(duration,
+sourceTimelineFrames)` formula degenerates to `duration` and
+behavior is unchanged).
+
+**Implementation.** New `PlaybackTimeAuthority::computeExtendedDuration(clip)`
+returns `clip.duration` unless all three predicates hold (Normal +
+break-aligned end + `sourceTimelineFrames > duration`), in which case
+it returns the extended duration. The math is shared between editor
+and show via a file-local `computeExtendedDurationImpl(clip, fps,
+endAlignsWithBreak)` helper; show side gets the
+`endAlignsWithSectionBreak` bool baked into `bus::ClipCatalogEntry`
+(serialization backward-compatible — default false matches
+pre-amendment payloads).
+
+- `isClipActiveAtFrame` consults `computeExtendedDuration` for
+  Normal+break-aligned clips and extends the active window.
+- Both `mapToMediaFrame` overloads + `mapToMediaFrameFromCatalog`
+  swap their `clipEnd` boundary for `realEnd = startFrame +
+  computeExtendedDuration(clip)`. Fix 5's hold-last-decoded-frame
+  clamp now fires at `realEnd - 1`. For non-extended clips
+  `realEnd == clipEnd` so Fix 5 is preserved exactly; for extended
+  clips, `localFrame` walks past `clip.duration` and the natural
+  wrap math at `sourceLocalFrame >= sourceLength` handles
+  Freeze/Loop/PingPong as usual.
+- `SectionScheduler::seedContinuationAt` uses the same active-end
+  computation so a Normal-extended clip ending at a break gets a
+  continuation phase seed (its source-phase advances on wall-clock
+  during the at-break park, identical to a spanning clip).
+- `SectionScheduler::snapshotPostBreakAnchors` stops skipping
+  break-aligned-end clips when extension applies; the
+  `postBreakMediaAnchor` lets the 3-arg `mapToMediaFrame`'s
+  post-break path resume natural playback past `clipEnd` after
+  Section GO.
+- `SectionScheduler::snapshotTailHoldFrames` skips extended clips
+  (they're not entering a tail; they're playing through to
+  `extendedEnd`). The held-frame branch in `mapToMediaFrame` is
+  gated on `timelineFrame >= realEnd` which is past `extendedEnd`,
+  so the unset `tailHoldMediaFrame` is never consulted in the
+  extension window.
+
+**Files.** `src/timeline/TimelineWidgetInput.cpp` +
+`include/entity/timeline/TimelineWidget.hpp` (Fix 7).
+`include/entity/director/PlaybackTimeAuthority.hpp` +
+`src/director/PlaybackTimeAuthority.cpp` (Fix 8 — helper +
+`isClipActiveAtFrame` + both `mapToMediaFrame` overloads +
+`mapToMediaFrameFromCatalog` + bake-site in `buildSceneSnapshot`).
+`include/entity/bus/Message.hpp` + `src/bus/Serialization.cpp` (new
+`endAlignsWithSectionBreak` bool on `ClipCatalogEntry`).
+`src/director/SectionScheduler.cpp` (three spots — seed,
+snapshotPostBreakAnchors, snapshotTailHoldFrames).
+`docs/adr/0012-timeline-sections-and-cues.md` (amendment block).
+
+**Tests.** Eight new `PlaybackTimeAuthorityTest.NormalExtension_*`
+unit cases — four-corner predicate coverage plus natural playthrough,
+Loop wrap inside extension, mixed-fps, and the
+fade-tail-at-extended-end edge. New integration test
+`scripts/integration/normal_mode_extends_past_break.json` exercises
+the full Play → at-break-park → SectionGo → past-clipEnd playback
+flow. The existing `section_break_tail_no_freeze.json` is updated to
+set `SectionBehavior = Locked` so it remains a Fix 5 held-frame
+regression guard under the new semantics (its previous Normal-mode
+shape now travels through the extension path instead). 624/624 ctest
+green at `-j 1`. Fix 7 is verified by manual repro (no
+mouse-drag script command exists to automate left-edge trim — the
+contract is local to one branch of TimelineWidgetInput and the
+behavior change is direct).
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On

@@ -202,8 +202,18 @@ entity_add_integration_test(section_break_show_detect  section_break_show_detect
 # the gate for its full 3000ms timeout on every Section GO. The held
 # frame is now mapToMediaFrame(clip, clipEnd - 1) — what was on screen
 # at the last authored timeline frame — which the worker has already
-# decoded, so the gate releases on the first tick.
+# decoded, so the gate releases on the first tick. SectionBehavior set
+# to Locked so this stays a held-frame test post 2026-05-23 amendment.
 entity_add_integration_test(section_break_tail_no_freeze  section_break_tail_no_freeze.json)
+
+# 2026-05-23 — ADR-0012 amendment regression guard for the Normal-mode
+# break-aligned active-window extension. A Normal-mode clip ending exactly
+# at a section break with source content past that point now extends its
+# active window past clip.duration up to the source out point (Locked
+# clips and non-break-aligned ends preserve original behavior). Companion
+# to section_break_tail_no_freeze.json's Locked-held-frame coverage —
+# this test exercises the Normal-extension path end-to-end.
+entity_add_integration_test(normal_mode_extends_past_break normal_mode_extends_past_break.json)
 
 # Phase 6 / queued-at-break — clip whose start aligns with a section break
 # is queued waiting for GO; first visible post-GO tick must map to

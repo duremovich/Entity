@@ -1,0 +1,29 @@
+{
+    "version": 1,
+    "description": "2026-05-23 — ADR-0012 amendment regression guard for the Normal-mode break-aligned active-window extension. A Normal-mode clip whose timeline-end aligns with a section break AND has source content past that point extends its active window past clip.duration up to the source out point: during the at-break park the continuation phase advances the source-frame via wall-clock, and after Section GO the postBreakMediaAnchor + the 3-arg mapToMediaFrame's extended-realEnd math resume natural playback past clipEnd to extendedEnd. Setup mirrors section_break_tail_no_freeze.json (tone_1khz.mov is 150 source frames at 30fps; SetClipDuration to 30 makes the authored window 30 frames but extendedDuration = ceil(150/1) = 150 so the active window grows to 150). SectionBehavior defaults to Normal — verifies the new extension path, not held-frame behavior.",
+    "commands": [
+        {"type": "AddScreen", "name": "NormalExtScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 30},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 30, "fadeSeconds": 0.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.5},
+
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 30, "tolerance": 2},
+
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds", "count": 2.0},
+
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "AssertPlayheadAtFrame", "frame": 90, "tolerance": 15},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 90, "tolerance": 20},
+
+        {"type": "Exit"}
+    ]
+}

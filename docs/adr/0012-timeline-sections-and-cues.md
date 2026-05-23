@@ -863,3 +863,138 @@ case 5 rewritten for exact alignment; `PostBreakAnchorTests` /
 `CueTagTests` updated to the frame-native API; section/cue integration
 scripts rewritten microseconds → frames. 543/543 unit tests green; all
 27 section + cue integration scripts green.
+
+## Amendment 2026-05-23: Normal-mode break-aligned active-window extension
+
+D2 said: "Locked clips freeze with the playhead … Normal clips continue
+per their PlaybackMode." That phrasing was about *what plays* during the
+at-break park — and the implementation took it literally: a Normal-Loop
+clip cycled its source frames while parked, a Normal-Freeze clip held
+its last source frame, both gated to the clip's authored timeline
+window `[startFrame, startFrame + duration)` (plus the section-fade
+tail).
+
+In show authoring it's idiomatic to trim a clip's timeline edge to
+exactly a section break — "this clip plays for this section." The
+clip's right edge lands on the break frame. With D2 as originally
+implemented, a Normal-mode clip in that shape lost everything it had
+to play past the break the moment the playhead reached `clipEnd` (no
+matter how much source content the trimmed in/out range still held).
+The operator-visible effect was the clip "pausing" at the break — held
+on its final-displayed source frame for the at-break park, then cut
+off entirely the moment Section GO fired. The intent of "Normal
+continues past the break" was strictly *during* the at-break park, not
+*through* it.
+
+**Decision — Normal-mode active window extends to source-out when the
+clip's timeline-end aligns with a break.** A Normal-mode clip whose
+`startFrame + duration` exactly matches some `Section::breakFrame`
+AND has more source content past the break (i.e.
+`sourceTimelineFrames > duration`, where `sourceTimelineFrames =
+ceil(effectivePlaybackLength(clip) / (clip.framerate /
+timelineFrameRate))`) extends its active window to
+`startFrame + max(duration, sourceTimelineFrames)`. After Section GO,
+the playhead resumes past the break and the existing 3-arg
+`mapToMediaFrame` post-break-anchor path naturally plays the
+remaining source content through to the source out point; `PlaybackMode`
+(Freeze / Loop / PingPong) handles source-end wrap as usual.
+
+Locked clips are untouched. Normal clips whose end *isn't* break-aligned
+are untouched (no extension). Normal clips whose source isn't longer
+than their authored timeline window are untouched (the `max` is a
+no-op). A clip whose extended end happens to align with a second break
+gets the standard section-fade tail attached at `extendedEnd`, not at
+`clipEnd`.
+
+This narrows the "Normal continues past the break" semantic to its
+operator-natural reading: the timeline edge stops being a hard cutoff
+for the clip's content, *if* that edge is a break (not arbitrary
+clipping) and *if* there's source content to keep playing. The Locked
+behavior is unchanged because the explicit point of `Locked` is "pause
+at breaks" — the trim is the cutoff there by design.
+
+**Why the gate on break-alignment rather than a universal extension.**
+The amendment is deliberately narrow. Trimming a clip's right edge
+short of a break is a legitimate authoring choice — "I want this clip
+to stop here mid-section." Universalising the extension would change
+behaviour for Normal-Loop / PingPong clips whose authors deliberately
+trimmed off the back of a cycle. The break-aligned gate keeps the
+amendment to the only case the trimming was clearly *incidental* —
+the user was carving the clip to the section structure, not picking
+a specific source duration.
+
+**Implementation.**
+
+- `PlaybackTimeAuthority::computeExtendedDuration(const Clip&)`
+  (public, editor-only): returns `max(clip.duration, sourceTimelineFrames)`
+  when Normal + break-aligned, else `clip.duration`. Reads the
+  Timeline's section list via the existing `sectionFadeTailFrames` /
+  `copySectionsAndRate` thread-safe accessor — callable from editor
+  thread (and show thread, since `m_timeline` is set at construction
+  and never reassigned).
+
+- File-local helper `computeExtendedDurationImpl(clip, timelineFps,
+  endAlignsWithBreak)` shared by editor and show paths — the editor
+  wrapper supplies `endAlignsWithBreak = sectionFadeTailFrames(endFrame) > 0`
+  from live Timeline state; the show-side wrapper (in
+  `mapToMediaFrameFromCatalog`) reads it from the catalog's new
+  `endAlignsWithSectionBreak` bool.
+
+- `bus::ClipCatalogEntry` gains `bool endAlignsWithSectionBreak` —
+  baked editor-side in `buildSceneSnapshot`. The show side
+  reconstructs `extendedDuration` from the catalog's mediaStart /
+  mediaOut / framerate + `timelineFrameRate` (already passed in), so
+  no Timeline section access is needed on the show thread.
+  Backward-compat serialization: defaults to `false`, matches
+  pre-amendment behavior for legacy payloads.
+
+- `isClipActiveAtFrame`: after the original `frame < endFrame +
+  tailFrames` check, an explicit Normal+break-aligned branch consults
+  `computeExtendedDuration` and (when extension applies) returns true
+  for `frame < extendedEnd`. A second `sectionFadeTailFrames` lookup
+  at `extendedEnd` attaches a held + fade tail if the extended end
+  itself aligns with a break.
+
+- Both `mapToMediaFrame` overloads (2-arg + 3-arg) and the show-side
+  `mapToMediaFrameFromCatalog` swap their `clipEnd` boundary for
+  `realEnd = startFrame + computeExtendedDuration(clip)`. The Fix 5
+  hold-last-decoded-frame clamp (Amendment 2026-05-22 follow-up) now
+  fires at `realEnd - 1`, not `clipEnd - 1`. For non-extended clips
+  `realEnd == clipEnd` — Fix 5 behavior is preserved exactly. For
+  extended clips, `localFrame` walks naturally through the extension
+  window, hitting Freeze/Loop/PingPong wrap math at source-out as
+  before.
+
+- `SectionScheduler::seedContinuationAt` now uses the
+  authority-computed active end (`startFrame +
+  computeExtendedDuration`) instead of `startFrame + duration` when
+  deciding whether the break "fits inside" the clip — so a
+  Normal-extended clip ending exactly at this break gets the same
+  continuation-phase seed a spanning clip would. During the at-break
+  park its source-phase advances on wall-clock as usual; at Section
+  GO `snapshotPostBreakAnchors` (also updated to *not* skip break-
+  aligned-end clips when extension applies) stamps the
+  `postBreakMediaAnchor` so the 3-arg `mapToMediaFrame`'s anchor
+  branch picks up natural playback past `clipEnd`.
+
+- `SectionScheduler::snapshotTailHoldFrames` skips Normal-extended
+  clips — they're not entering a tail, they're playing through to
+  `extendedEnd`. Leaving `tailHoldMediaFrame` unset is safe because
+  the held-frame short-circuit is gated on `timelineFrame >= realEnd`,
+  which is past `extendedEnd` for extended clips. Locked / non-
+  extended Normal clips fall into `snapshotTailHoldFrames` as before
+  and the held-frame test (`section_break_tail_no_freeze.json`) still
+  asserts the Fix 5 invariant.
+
+**Tests.** Eight new `PlaybackTimeAuthorityTest.NormalExtension_*`
+unit cases covering all four predicate combinations
+(Normal+break-aligned+long-source, Locked+break-aligned+long-source,
+Normal+not-break-aligned, Normal+break-aligned+short-source) plus
+natural playthrough, Loop wrap, mixed-fps, and the
+fade-tail-at-extended-end edge. New integration test
+`normal_mode_extends_past_break.json` exercises the full Play →
+at-break-park → SectionGo → playback-past-clipEnd flow. The existing
+`section_break_tail_no_freeze.json` is updated to set
+`SectionBehavior = Locked` so it stays a held-frame regression guard
+under the new semantics (the Normal path now uses extension instead).
+624/624 ctest green at `-j 1`.

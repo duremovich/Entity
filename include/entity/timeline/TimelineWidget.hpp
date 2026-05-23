@@ -451,7 +451,6 @@ private:
     entt::entity m_trimClip{entt::null};
     FrameNumber m_trimOriginalStart{0};
     FrameNumber m_trimOriginalDuration{0};
-    FrameNumber m_trimOriginalMediaStart{0};
     static constexpr float TRIM_EDGE_WIDTH = 8.0f;  // Pixels from edge to trigger trim
 
     // Context menu state

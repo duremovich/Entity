@@ -322,3 +322,169 @@ TEST_F(PlaybackTimeAuthorityTest, Timing_StartTimingResetsCounters) {
     EXPECT_DOUBLE_EQ(auth.getDeltaTime(), 0.0);
     EXPECT_DOUBLE_EQ(auth.getElapsedTime(), 0.0);
 }
+
+// --- Normal-mode break-aligned active-window extension (2026-05-23) -------
+//
+// A Normal-mode clip whose timeline-end aligns with a section break AND
+// has source content past that point extends its active window past
+// clip.duration up to the source-out-equivalent timeline frame. Within
+// the extension window, mapToMediaFrame walks naturally through the
+// remaining source frames; PlaybackMode (Freeze/Loop/PingPong) wraps at
+// source-out as usual. Locked clips, non-break-aligned ends, and clips
+// whose source isn't longer than their timeline footprint all preserve
+// the original behavior unchanged.
+//
+// See ADR-0012 amendment 2026-05-23. The four EXTENDED predicate cases:
+//   * Normal + break-aligned + source > duration  → EXTENDS (new)
+//   * Locked + break-aligned + source > duration  → NO extension
+//   * Normal + not break-aligned + source > duration → NO extension
+//   * Normal + break-aligned + source <= duration → NO extension (max wins)
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_ExtendsActiveWindowWhenSourceLongerThanDuration) {
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(/*breakFrame*/30, /*color*/0u, /*fadeSeconds*/0.0);
+    Clip c;
+    // clip.duration=30 timeline frames, source 100 frames at 30fps.
+    // sourceTimelineFrames = ceil(100 / 1.0) = 100. extension applies.
+    // extendedEnd = 100.
+    fillClip(c, /*start*/0, /*duration*/30, /*total*/100, 30.0);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    // Inside the authored window: unchanged.
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 29));
+    // At the break: included (also covered by the trailing-edge tail test
+    // up top, but explicit here so a regression is unambiguous).
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 30));
+    // Inside the extension window: new active range.
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 60));
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 99));
+    // Past extendedEnd: inactive (no break at 100, so no tail).
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 100));
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 150));
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_MapToMediaFrame_NaturalPlaythroughPastClipEnd) {
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(30, 0u, 0.0);
+    Clip c;
+    fillClip(c, 0, 30, 100, 30.0, PlaybackMode::Freeze);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    // Inside authored window: identity.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 0),  0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 29), 29);
+    // Inside extension window: keeps walking past clipEnd.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 30), 30);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 60), 60);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 99), 99);  // last source frame
+    // Past extendedEnd: clamps to realEnd-1 → wrap math returns last
+    // source frame (Freeze).
+    EXPECT_EQ(auth.mapToMediaFrame(c, 100), 99);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 200), 99);
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_MapToMediaFrame_LoopWrapsInsideExtensionWindow) {
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(30, 0u, 0.0);
+    Clip c;
+    // Source 50 frames; clip duration 30; extension to 50.
+    fillClip(c, 0, 30, 50, 30.0, PlaybackMode::Loop);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    // Within authored window: identity.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 29), 29);
+    // Within extension window: identity (within source range still).
+    EXPECT_EQ(auth.mapToMediaFrame(c, 49), 49);
+    // Past extendedEnd: clamped to realEnd-1=49, no wrap needed. Loop wrap
+    // would only kick in if extendedDuration > sourceTimelineFrames.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 50), 49);
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_LockedSkipsExtension) {
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(30, 0u, 0.0);
+    Clip c;
+    fillClip(c, 0, 30, 100, 30.0);
+    c.sectionBehavior = SectionBehavior::Locked;
+
+    // Locked clip ends at clipEnd + section-fade tail (1 frame for fade=0).
+    // No extension to source-out — the explicit "pause at the break" semantic.
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 29));
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 30));  // one-frame at-break hold
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 31));  // post-break — inactive
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 60));
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_NotBreakAlignedSkipsExtension) {
+    timeline.setFrameRate(30.0);
+    // Break at frame 45, not at clipEnd (30). No alignment → no extension.
+    timeline.addSectionBreak(45, 0u, 0.0);
+    Clip c;
+    fillClip(c, 0, 30, 100, 30.0);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 29));
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 30));  // clipEnd, no break-tail
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 60));
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_ShorterSourceLeavesDurationUnchanged) {
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(50, 0u, 0.0);
+    Clip c;
+    // duration=50 > source=20 frames. extendedDuration = max(50, 20) = 50.
+    // No extension; clip ends at the break per the original semantics.
+    fillClip(c, 0, 50, 20, 30.0, PlaybackMode::Loop);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 49));
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 50));  // at-break tail
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 51));  // post-tail
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 60));
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_MixedFps_ComputesExtensionInTimelineFrames) {
+    // Clip @ 24fps, timeline @ 30fps. Source 48 frames → 60 timeline
+    // frames worth of source content. Clip duration is 30 timeline
+    // frames, so extension grows the active window to 60.
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(30, 0u, 0.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/30, /*total*/48, /*clipFps*/24.0);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    // Inside authored window.
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 29));
+    // Inside extension window — 30..59 inclusive at 30fps timeline.
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 30));
+    EXPECT_TRUE(auth.isClipActiveAtFrame(c, 59));
+    // Past extendedEnd (60).
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 60));
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 100));
+}
+
+TEST_F(PlaybackTimeAuthorityTest,
+       NormalExtension_FadeTailAttachesAtExtendedEndIfBreakAligned) {
+    // Two breaks: one at clipEnd (drives the extension), one at
+    // extendedEnd (drives the tail past the extension).
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(/*breakFrame*/30,  0u, /*fadeSeconds*/0.0);
+    timeline.addSectionBreak(/*breakFrame*/100, 0u, /*fadeSeconds*/0.5);  // 15-frame fade
+    Clip c;
+    fillClip(c, 0, 30, 100, 30.0);
+    c.sectionBehavior = SectionBehavior::Normal;
+
+    // Active through the extension.
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 99));
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 100));  // at extendedEnd / break 2
+    // Section fade tail past extendedEnd (15 frames at 30fps fadeSeconds=0.5).
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 114));
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 115));
+}

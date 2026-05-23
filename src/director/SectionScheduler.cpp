@@ -130,6 +130,7 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
 }
 
 void SectionScheduler::handleBreakAt(FrameNumber breakFrame) {
+    ZoneScopedN("SectionScheduler::handleBreakAt");
     // NEW-08 — apply a crossing the show thread detected. The show thread
     // has already snapped the playhead to the break, paused, and raised
     // Timeline::sectionAtBreak(); this runs the registry-mutating tail on
@@ -165,6 +166,7 @@ void SectionScheduler::handleBreakAt(FrameNumber breakFrame) {
 }
 
 void SectionScheduler::go() {
+    ZoneScopedN("SectionScheduler::go");
     if (!m_timeline || !m_atBreak) return;
 
     // breakFrame and resumeFrame are integer timeline frames — resume one
@@ -214,6 +216,7 @@ void SectionScheduler::go() {
 }
 
 void SectionScheduler::seedContinuationAt(FrameNumber breakTimelineFrame) {
+    ZoneScopedN("SectionScheduler::seedContinuationAt");
     if (!m_timeline) return;
     const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
         ? m_timeline->getFrameRate() : 30.0;
@@ -228,8 +231,20 @@ void SectionScheduler::seedContinuationAt(FrameNumber breakTimelineFrame) {
         // (uninitialized / corrupt project) would compute a zero phase and
         // silently land at mediaStartFrame regardless of where the break sat.
         if (clip.framerate <= 0.0) continue;
+        // 2026-05-23 — Normal-mode break-aligned extension. Use the extended
+        // duration (computed by PlaybackTimeAuthority from source out-point)
+        // so a clip whose end aligns with this break AND has source content
+        // past the break still gets continuation — its source-phase advances
+        // via wall-clock during the at-break park, then postBreakMediaAnchor
+        // resumes natural playback past clipEnd to extendedEnd after GO.
+        // For Locked / non-break-aligned clips, extendedDuration == duration
+        // so the original spanning check is preserved exactly.
+        // See ADR-0012 amendment 2026-05-23.
+        const FrameNumber clipActiveEnd = m_timeAuthority
+            ? clip.startFrame + m_timeAuthority->computeExtendedDuration(clip)
+            : clip.startFrame + clip.duration;
         if (breakTimelineFrame < clip.startFrame ||
-            breakTimelineFrame >= clip.startFrame + clip.duration) {
+            breakTimelineFrame >= clipActiveEnd) {
             continue;
         }
 
@@ -298,6 +313,7 @@ void SectionScheduler::seedContinuationAt(FrameNumber breakTimelineFrame) {
 }
 
 void SectionScheduler::advanceContinuation(double deltaTimeSeconds) {
+    ZoneScopedN("SectionScheduler::advanceContinuation");
     // Round-3 fixup: prefer the wall-clock anchor (continuationStartTimeNs)
     // over the dt accumulator. The accumulator is mathematically equivalent
     // when dt is correctly per-editor-tick wall-clock, but it amplifies any
@@ -382,6 +398,21 @@ void SectionScheduler::snapshotTailHoldFrames(FrameNumber breakTimelineFrame) {
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
         if (clipEnd != breakTimelineFrame) continue;
 
+        // 2026-05-23 — Normal-mode break-aligned extension. A clip ending
+        // at this break that has more source content to play (extended
+        // duration > duration) is NOT entering a tail; it's playing
+        // through to extendedEnd via postBreakMediaAnchor after GO. Skip
+        // the tail-hold snapshot — the held-frame branch in mapToMediaFrame
+        // is gated on `timelineFrame >= realEnd`, and for extended clips
+        // realEnd == extendedEnd, well past breakFrame. Leaving the
+        // tail-hold unset (sentinel -1) means the held-frame branch
+        // simply doesn't fire inside the extension window.
+        // See ADR-0012 amendment 2026-05-23.
+        if (m_timeAuthority &&
+            m_timeAuthority->computeExtendedDuration(clip) > clip.duration) {
+            continue;
+        }
+
         const FrameNumber sourceLength = effectivePlaybackLength(clip);
         if (sourceLength <= 0) continue;
 
@@ -423,8 +454,21 @@ void SectionScheduler::snapshotPostBreakAnchors(FrameNumber breakTimelineFrame) 
         // Skip clips ending exactly AT the break — those are owned by
         // tail-hold, they don't play past the break, so they don't need
         // an anchor.
+        //
+        // 2026-05-23 — exception: Normal-mode break-aligned extension.
+        // A clip ending at this break that has source content past it
+        // (extendedDuration > duration) IS going to play through the
+        // break, up to extendedEnd. It needs the anchor so the 3-arg
+        // mapToMediaFrame's post-break path resumes from the source
+        // frame the user was watching at GO instead of rewinding to
+        // (clip.startFrame, mediaStartFrame). See ADR-0012 amendment
+        // 2026-05-23.
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
-        if (clipEnd == breakTimelineFrame) continue;
+        if (clipEnd == breakTimelineFrame) {
+            const bool hasExtension = m_timeAuthority &&
+                m_timeAuthority->computeExtendedDuration(clip) > clip.duration;
+            if (!hasExtension) continue;
+        }
 
         if (isAtBreakAlignedStart(clip.startFrame, breakTimelineFrame)) {
             // Queued clip — first visible post-GO tick is clipStart+1,

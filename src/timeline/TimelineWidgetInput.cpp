@@ -990,8 +990,13 @@ void TimelineWidget::handleTracksInteraction() {
                             clip->duration = m_trimOriginalDuration - framesDelta;
                             Timeline::syncLayerFromClip(registry, m_trimClip);
 
-                            // Adjust media start to keep sync
-                            clip->mediaStartFrame = m_trimOriginalMediaStart + framesDelta;
+                            // Pure timeline resize: do NOT slip mediaStartFrame.
+                            // Source in/out is the PropertyWindow's domain (slip edits
+                            // route through SetClipMediaStartFrameCommand). Timeline-edge
+                            // drag only changes the clip's timeline footprint
+                            // (startFrame + duration) — the clip's source-window
+                            // anchor (mediaStartFrame) is left intact so the same
+                            // source frame still plays at frame 0 of the clip.
                         }
                     } else if (m_trimEdge == ClipEdge::Right) {
                         // Trim right edge - adjust duration only
@@ -1326,7 +1331,6 @@ void TimelineWidget::handleTracksInteraction() {
                 if (clip) {
                     m_trimOriginalStart = clip->startFrame;
                     m_trimOriginalDuration = clip->duration;
-                    m_trimOriginalMediaStart = clip->mediaStartFrame;
                 }
                 return;
             }
