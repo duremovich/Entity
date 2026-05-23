@@ -78,6 +78,43 @@ seek-sync preroll gate (ADR-0026, 2026-05-22) landed:
 `tests/unit/SectionFadeTests.cpp` (Fix 2: 3 cases). 611/611 ctest
 green at `-j 1` after all three.
 
+**Fix 3 follow-up — the actual cause was LRU eviction, not cold
+bootstrap (commit `f15ad17`).** Manual verification showed the hitch
+still firing after Fix 3 with full 3-second `SeekSyncController`
+preroll timeouts on a project of two clips referencing the same
+source MP4. Diagnostic logging added to the gate readiness predicates
+revealed the failing worker was *already* initialized, not mid-seek,
+and `worker->currentFrame` was past the requested `mediaFrame` — the
+FrameCache simply did not have the frame. The misdiagnosis came from
+not recognising that `DecodeSystem::update`'s existing bootstrap path
+(line ~82, predates Fix 3) already creates a worker for every loaded
+`Clip + FrameBuffer` entity regardless of activity. Fix 3's sliding-
+window prefetch was therefore a no-op in practice — by the time the
+prefetch sweep ran each tick, `m_workers.contains(entity)` was already
+true. What actually broke playback was the global `FrameCache` LRU:
+while Clip A plays for 100 seconds at 4K (huge per-frame data), it
+evicts every one of Clip B's pre-decoded frames. Clip B's worker still
+thinks it has decoded those frames (its `nextFrame` is past the
+eviction point), so it idles on backpressure waiting for `targetFrame`
+to advance — it never re-decodes. **Fix 4** adds cache-miss recovery
+in `DecodeSystem::update`: when a clip is active and
+`worker->currentFrame >= mediaFrame` but `!cache.has(entity, mediaFrame)`,
+force a `seekClip(entity, mediaFrame)`. The decode thread's existing
+fast path (`DecodeSystem.cpp:555`) skips the actual decoder seek when
+the cache happens to be hot, so this is cheap in the steady state.
+Audio side: same parallel-shape prefetch sweep added to
+`AudioSystem::update` so audio workers are bootstrapped in lockstep
+with video for late-load scenarios (also mostly a no-op given the
+existing bootstrap path, but kept as a safety net). Diagnostic logs
+on the gate predicates rate-limited to 1 line/sec/entity, left in
+place — fires only on actual stalls and prints enough state
+(`workerCurrent` / `target` / `lastReq`) to debug future regressions
+without adding more printlns. **Lesson:** seek-sync preroll timeouts
+in a multi-clip project with long-form content should look at LRU
+eviction first, not cold-bootstrap. The cache contract was
+"once-decoded, stays decoded for a while"; in practice it's whatever
+fits in the budget at this instant.
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On
