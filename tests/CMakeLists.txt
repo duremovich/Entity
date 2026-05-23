@@ -194,6 +194,17 @@ entity_add_integration_test(first_section_plays  first_section_plays.json)
 # applies the crossing via handleBreakAt from the R2D drain; SectionGo resumes.
 entity_add_integration_test(section_break_show_detect  section_break_show_detect.json)
 
+# Fix 5 (2026-05-23 follow-up) — section-break tail-window held-frame
+# regression. A clip with authored duration much shorter than its trimmed
+# source range, ending exactly at a section break with fadeSeconds > 0,
+# used to make the SeekSyncController preroll gate ask the cache for the
+# trimmed source's last frame (which the decoder never reached), stalling
+# the gate for its full 3000ms timeout on every Section GO. The held
+# frame is now mapToMediaFrame(clip, clipEnd - 1) — what was on screen
+# at the last authored timeline frame — which the worker has already
+# decoded, so the gate releases on the first tick.
+entity_add_integration_test(section_break_tail_no_freeze  section_break_tail_no_freeze.json)
+
 # Phase 6 / queued-at-break — clip whose start aligns with a section break
 # is queued waiting for GO; first visible post-GO tick must map to
 # clip.mediaStartFrame, not mediaStartFrame + 1. Companion scripts cover

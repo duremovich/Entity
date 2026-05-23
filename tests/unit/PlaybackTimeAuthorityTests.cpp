@@ -168,6 +168,73 @@ TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_PingPongMirrorsOnOddCycle) {
     EXPECT_EQ(auth.mapToMediaFrame(c, 32), 0);   // forward phase resumes
 }
 
+// Fix 5 (2026-05-23 follow-up) — trimmed-clip tail held-frame regression.
+// A clip whose authored timeline duration is shorter than its trimmed
+// source range (e.g. a long MP4 cut down to a 3000-frame slot) used to
+// return `mediaStartFrame + sourceLength - 1` past clipEnd — the trimmed
+// source's last frame, which the decoder never reached. That asked the
+// FrameCache for a frame it would never have, stalling the seek-sync gate
+// for its full 3-second preroll timeout on every Section GO with
+// fadeSeconds > 0. The held frame is now the media frame the clip
+// displayed at its last authored timeline frame (clipEnd - 1) with the
+// usual wrap math, NOT the trimmed source end.
+TEST_F(PlaybackTimeAuthorityTest,
+       MapToMediaFrame_TrimmedClipPastEnd_HoldsAtLastPlayedFrame) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    // 3000-frame timeline window over a 19036-frame source — reproduces
+    // the operator log (mediaFrame=19035 vs lastReq=4710 before the fix).
+    fillClip(c, /*start*/0, /*duration*/3000, /*total*/19036, 30.0,
+             PlaybackMode::Freeze);
+    c.mediaOutFrame = 19035;
+    // clipEnd = 3000. Tail frames 3000, 3001, 3010, ... must all map to
+    // mediaStartFrame + (clip.duration - 1) = 2999, NOT 19035.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 3000), 2999);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 3001), 2999);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 3149), 2999);
+}
+
+// Loop clip in the tail without continuation — the clip authored 250
+// timeline frames over a 100-frame source so it wraps 2.5× naturally.
+// Past clipEnd, the held frame is what was on screen at clipEnd - 1
+// (timeline frame 249, sourceLocalFrame 249, Loop-wrap to 49) — NOT
+// the trimmed source's last frame (99).
+TEST_F(PlaybackTimeAuthorityTest,
+       MapToMediaFrame_LoopClipPastEnd_HoldsAtLastWrappedFrame) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/250, /*total*/100, 30.0,
+             PlaybackMode::Loop);
+    // Pre-tail still wraps as before.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 0),   0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 99),  99);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 100), 0);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 249), 49);   // last authored frame
+    // Past clipEnd (250) — the held frame is what 249 mapped to (49),
+    // not the trimmed source's last frame (99).
+    EXPECT_EQ(auth.mapToMediaFrame(c, 250), 49);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 260), 49);
+}
+
+// Backward-compat — Freeze clip whose authored duration matches its
+// source range still holds at the source's last frame past the end.
+// This was already covered by MapToMediaFrame_FreezeClampsToLastFrame
+// above; this case adds explicit coverage of the post-end frames the
+// section-fade tail uses (clipEnd, clipEnd + tailFrames - 1) so a
+// regression in the wrap math at exact clipEnd-1 shows up here.
+TEST_F(PlaybackTimeAuthorityTest,
+       MapToMediaFrame_FreezeUntrimmedPastEnd_StillReturnsSourceEnd) {
+    timeline.setFrameRate(30.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/5, /*total*/5, 30.0,
+             PlaybackMode::Freeze);
+    // duration == sourceLength == 5: clipEnd-1=4 maps to source frame 4,
+    // which is also sourceLength-1. No behavior change pre/post fix.
+    EXPECT_EQ(auth.mapToMediaFrame(c, 4),  4);
+    EXPECT_EQ(auth.mapToMediaFrame(c, 5),  4);  // at clipEnd
+    EXPECT_EQ(auth.mapToMediaFrame(c, 10), 4);
+}
+
 // --- buildActiveSet -------------------------------------------------------
 
 TEST_F(PlaybackTimeAuthorityTest, BuildActiveSet_OnlyIncludesAllocatedActiveClips) {

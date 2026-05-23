@@ -115,6 +115,82 @@ eviction first, not cold-bootstrap. The cache contract was
 "once-decoded, stays decoded for a while"; in practice it's whatever
 fits in the budget at this instant.
 
+**Fix 5 — section-break tail freeze on trimmed clips with non-zero
+fadeSeconds.** A clip whose right edge sits exactly on a section break
+with `fadeSeconds > 0` caused a ~3-second freeze on every Section GO.
+Pause length matched the `SeekSyncController` preroll timeout
+exactly (3006 ms in the operator log). Correlation with `fadeSeconds`
+was crisp — `0s` → no pause; `5s` → full 3-second timeout.
+
+Diagnostic: gate predicate log showed `mediaFrame=19035 ... workerCurrent=4718
+target=4718 lastReq=4710` — a 14,325-frame divergence between what the
+gate asked the cache for and what the decoder had been steered to.
+Root cause was a formula bug in `PlaybackTimeAuthority::mapToMediaFrame`
+(2-arg overload) and the parallel `mapToMediaFrameFromCatalog`. Both
+returned `mediaStartFrame + sourceLength - 1` for `timelineFrame >= clipEnd`
+(the post-end held-frame branch), but `sourceLength` is
+`effectivePlaybackLength(clip)` — the clip's *trimmed source range*,
+not the range it actually played. A clip whose authored timeline
+duration is shorter than its trimmed source range (very common: drop
+a 10-minute MP4 onto a 3000-frame slot) never decoded
+`mediaStartFrame + sourceLength - 1`, so the gate stalled until the
+3-second preroll timeout fired. The Loop / PingPong continuation
+case already worked because `SectionScheduler::snapshotTailHoldFrames`
+captured the correct held frame into `phase->tailHoldMediaFrame`
+which the 3-arg overload short-circuits on; the bug only bit clips
+ending naturally at the break without entering continuation.
+
+**Fix**: clamp `timelineFrame` to `clipEnd - 1` in the post-end
+branch of both functions and let the existing Freeze/Loop/PingPong
+wrap math produce the correct held frame — what was on screen at the
+last authored timeline frame, not the trimmed source's last frame.
+One-line change in each function. The `fadeSeconds` correlation
+falls out cleanly from `isClipActiveAtFrame`'s tail: with
+`fadeSeconds=0` `sectionFadeTailFrames` returns 1, so the clip is
+active for one frame past `clipEnd` and the gate has at most one
+tick to stall before Timeline advances; with `fadeSeconds=5` it
+returns 150, so the gate hits the broken formula for 150 frames
+straight (~5 wall-clock seconds at 30fps) and the 3s preroll timeout
+fires before the tail closes.
+
+Audio and decode steering extended in parallel so the tail window
+isn't asymmetric. `DecodeSystem::update` and `AudioSystem::update`
+now treat `[clipEnd, clipEnd + sectionFadeTailFrames(clipEnd))` as
+"active for steering" alongside the authored window, clamping
+`localFrame` to `clip.duration - 1` so the worker keeps holding the
+same frame the compositor and gate read out of `mapToMediaFrame`.
+Defensive against `FrameCache` LRU eviction during long tails or
+multi-clip pressure (same LRU pattern that motivated Fix 4); without
+this, even the corrected gate predicate would stall if the held
+frame got evicted while parked.
+
+`sectionFadeTailFrames` was lifted off `PlaybackTimeAuthority` to a
+free function in new `include/entity/timeline/SectionFade.hpp` so
+all three call sites (PTA, DecodeSystem, AudioSystem) share one
+implementation. PTA's existing member is now a one-line trampoline.
+
+**Files.** `src/director/PlaybackTimeAuthority.cpp` (two-site clamp
++ trampoline), `include/entity/timeline/SectionFade.hpp` +
+`src/timeline/SectionFade.cpp` (new helper),
+`src/systems/DecodeSystem.cpp` + `src/systems/AudioSystem.cpp`
+(tail steering), `CMakeLists.txt` (register new source). Three new
+unit cases in `tests/unit/PlaybackTimeAuthorityTests.cpp` cover the
+trimmed-Freeze, trimmed-Loop, and backward-compat (untrimmed-Freeze)
+held-frame paths. New integration test
+`scripts/integration/section_break_tail_no_freeze.json` reproduces
+the operator scenario (tone_1khz.mov, duration=30 on a 150-frame
+source, break at 30, fadeSeconds=2.0) and asserts the playhead
+advances past the break within 1 second of GO. 615/615 ctest green
+at `-j 1` after the fix (up from 611/611, 4 new tests added).
+
+**Note: the diagnosis-to-fix ratio is satisfying — a one-line clamp
+in two places is the whole freeze fix. The math gap was right there
+in the log (`mediaFrame=19035`, `lastReq=4710` — a 14k-frame gap
+that had to come from somewhere) and `effectivePlaybackLength`
+returning the trimmed-source-end was the only formula in the codebase
+that produced numbers like that.** The DecodeSystem/AudioSystem tail
+steering and shared helper are quality-of-implementation on top.
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On

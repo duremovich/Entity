@@ -7,6 +7,7 @@
 
 #include "entity/systems/DecodeSystem.hpp"
 #include "entity/profile/Tracy.hpp"
+#include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
@@ -114,10 +115,36 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             worker->totalMediaFrames = static_cast<FrameNumber>(clip.duration * frameRateRatio);
         }
 
-        if (currentTimelineFrame >= clip.startFrame &&
-            currentTimelineFrame < clip.startFrame + clip.duration) {
+        const FrameNumber clipEnd = clip.startFrame + clip.duration;
+        // Fix 5 (2026-05-23 follow-up) — extend the "active for steering"
+        // window to include the section fade tail. During the tail the
+        // worker is no longer being advanced by playback (timeline has
+        // passed clipEnd), but the gate predicate and the compositor
+        // both ask for the held frame mapToMediaFrame produces at
+        // clipEnd-1. Keep steering the worker so the held frame stays
+        // in cache against LRU eviction during long tails or multi-clip
+        // pressure. tailFrames is 0 when no section break aligns with
+        // clipEnd, so this is a no-op for clips not at a break.
+        const FrameNumber tailFrames =
+            timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
+        const bool inAuthored =
+            (currentTimelineFrame >= clip.startFrame &&
+             currentTimelineFrame < clipEnd);
+        const bool inTail =
+            (tailFrames > 0 &&
+             currentTimelineFrame >= clipEnd &&
+             currentTimelineFrame < clipEnd + tailFrames);
+        if (inAuthored || inTail) {
             // Active clip: compute target media frame using playback mode.
-            FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
+            // In the tail, clamp localFrame to the last authored timeline
+            // frame so the worker holds the same frame the gate predicate
+            // and compositor read out of mapToMediaFrame. Phase-steering
+            // branches below override sourceLocalFrame for continuation
+            // and post-break-anchor cases — those keep their existing
+            // semantics; this clamp only matters when neither fires.
+            FrameNumber localFrame = inTail
+                ? (clip.duration - 1)
+                : (currentTimelineFrame - clip.startFrame);
 
             double timelineFrameRate = m_timeline->getFrameRate();
             double frameRateRatio = clip.framerate / timelineFrameRate;

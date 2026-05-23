@@ -6,6 +6,7 @@
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/media/Decoder.hpp"
+#include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/profile/Tracy.hpp"
 
@@ -148,8 +149,20 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         // the timeline still.
         const bool playing =
             (m_timeline->getPlaybackState() == PlaybackState::Playing);
-        const bool inWindow = (currentTLFrame >= clip.startFrame &&
-                               currentTLFrame < clip.startFrame + clip.duration);
+        const FrameNumber clipEnd = clip.startFrame + clip.duration;
+        const bool inAuthored = (currentTLFrame >= clip.startFrame &&
+                                 currentTLFrame < clipEnd);
+        // Fix 5 (2026-05-23 follow-up) — extend steering to the section
+        // fade tail so audio holds the same sample the video compositor
+        // holds during the fade, instead of cutting hard at clipEnd
+        // while video continues fading. tailFrames is 0 outside section
+        // breaks, so this is a no-op for clips not aligned with one.
+        const FrameNumber tailFrames =
+            timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
+        const bool inTail = (tailFrames > 0 &&
+                             currentTLFrame >= clipEnd &&
+                             currentTLFrame < clipEnd + tailFrames);
+        const bool inWindow = inAuthored || inTail;
         bool inContinuation = false;
         if (clip.sectionBehavior == SectionBehavior::Normal) {
             const ClipPlaybackPhase* phase = registry.try_get<ClipPlaybackPhase>(entity);
@@ -170,8 +183,16 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
 
         // Compute expected clip-local output-rate sample, mirroring
         // DecodeSystem's timeline→media-frame mapping.
+        // Fix 5 — in the section fade tail, clamp localTLFrame to the
+        // last authored timeline frame so the worker steers toward the
+        // held sample rather than advancing past clipEnd. Phase-steering
+        // branches below override sourceLocalFrame for continuation and
+        // post-break-anchor cases (they keep their existing semantics);
+        // this clamp matters only when neither fires.
         const double frameRateRatio = clip.framerate / tlFPS;
-        FrameNumber localTLFrame = currentTLFrame - clip.startFrame;
+        FrameNumber localTLFrame = inTail
+            ? (clip.duration - 1)
+            : (currentTLFrame - clip.startFrame);
         FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
             std::floor(localTLFrame * frameRateRatio));
 

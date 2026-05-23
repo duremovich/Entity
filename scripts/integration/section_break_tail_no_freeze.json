@@ -1,0 +1,29 @@
+{
+    "version": 1,
+    "description": "Fix 5 (2026-05-23 follow-up) regression guard for the section-break tail freeze. A clip with authored duration much shorter than its trimmed source range, ending exactly at a section break with non-zero fadeSeconds, used to make the SeekSyncController preroll gate ask the FrameCache for `mediaStartFrame + sourceLength - 1` (the trimmed-source-end the worker never decoded) on every tick after Section GO — the gate stalled for its full 3000ms timeout. The held frame is now `mapToMediaFrame(clip, clipEnd - 1)` (the frame the clip actually displayed at its last authored timeline frame), which the worker has already decoded; the gate releases on the first tick and playback advances within tens of milliseconds. Setup: tone_1khz.mov fixture is 150 frames at 30fps; SetClipDuration to 30 makes the authored window 30 frames but the trimmed source range is still 150 (mediaOutFrame defaults to -1, so effectivePlaybackLength = totalMediaFrames = 150). Section break at frame 30 with fadeSeconds=2.0 → 60-frame fade tail.",
+    "commands": [
+        {"type": "AddScreen", "name": "TailNoFreezeScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 30},
+        {"type": "AddSectionBreak", "breakFrame": 30, "fadeSeconds": 2.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.5},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 30, "tolerance": 2},
+
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 29, "tolerance": 2},
+
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds", "count": 1.0},
+
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "AssertPlayheadAtFrame", "frame": 60, "tolerance": 10},
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 29, "tolerance": 2},
+
+        {"type": "Exit"}
+    ]
+}

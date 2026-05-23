@@ -26,6 +26,7 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -194,9 +195,16 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
         // natural timeline-derived path (2-arg equivalent, inlined)
         const double frameRateRatio = (timelineFrameRate > 0.0)
             ? clip.framerate / timelineFrameRate : 1.0;
-        if (timelineFrame >= clipEnd) {
-            return clip.mediaStartFrame + std::max<FrameNumber>(0, sourceLength - 1);
-        }
+        // Fix 5 (2026-05-23 follow-up) — held last decoded frame is the
+        // media frame the clip displayed at its last authored timeline
+        // frame (clipEnd - 1), wrapped per playbackMode — NOT the
+        // trimmed source-range end. A clip whose authored duration is
+        // shorter than its trimmed source range never decoded
+        // mediaStartFrame + sourceLength - 1, so asking the cache for
+        // that frame (via the gate predicate or show-side compositor)
+        // is a guaranteed stall until SeekSyncController times out.
+        // Clamp and fall through to the wrap math below at clipEnd-1.
+        if (timelineFrame >= clipEnd) timelineFrame = clipEnd - 1;
         const FrameNumber localFrame = timelineFrame - clip.startFrame;
         const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
             std::floor(localFrame * frameRateRatio));
@@ -545,25 +553,7 @@ void PlaybackTimeAuthority::updateTiming() {
 
 FrameNumber PlaybackTimeAuthority::sectionFadeTailFrames(FrameNumber endFrame) const {
     if (!m_timeline) return 0;
-    auto [sections, rawFps] = m_timeline->copySectionsAndRate();
-    if (sections.empty()) return 0;
-    const double timelineFrameRate = rawFps > 0.0 ? rawFps : 30.0;
-    for (const auto& sec : sections) {
-        // breakFrame is an integer timeline frame; the clip's end must be
-        // exactly on the break to get a post-end hold + fade tail.
-        if (sec.breakFrame != endFrame) continue;
-        // Any clip whose end aligns with a break holds for at least 1 frame
-        // so it stays visible while the playhead is parked at the break
-        // (independent of fadeSeconds). The hold frame is breakFrame == clipEnd;
-        // post-GO behavior is governed by the fade ramp (or instant cut when
-        // fadeSeconds == 0). Without this, a trailing-edge clip with
-        // fadeSeconds=0 would pop out the moment the playhead reaches the break.
-        const FrameNumber ramp = sec.fadeSeconds > 0.0
-            ? static_cast<FrameNumber>(std::ceil(sec.fadeSeconds * timelineFrameRate))
-            : 0;
-        return std::max<FrameNumber>(1, ramp);
-    }
-    return 0;
+    return timeline::sectionFadeTailFrames(*m_timeline, endFrame);
 }
 
 bool PlaybackTimeAuthority::isClipActiveAtFrame(const Clip& clip, FrameNumber frame) const {
@@ -587,10 +577,17 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(const Clip& clip, FrameNumber
     // Phase 6 — post-end tail (held last decoded frame). isClipActiveAtFrame
     // gates entry into this window, so when timelineFrame >= clipEnd we
     // know we're inside the fade tail. Don't advance past the source.
+    //
+    // Fix 5 (2026-05-23 follow-up) — clamp timelineFrame to clipEnd-1
+    // and let the wrap math below produce the correct held frame. The
+    // previous `mediaStartFrame + sourceLength - 1` formula returned
+    // the trimmed source range's end, which a clip with authored
+    // duration < trimmed source range never decoded. That asked the
+    // gate predicate (and the show-side compositor) for a frame the
+    // FrameCache would never have, stalling the SeekSyncController
+    // gate for its full 3-second preroll timeout on every Section GO.
     const FrameNumber clipEnd = clip.startFrame + clip.duration;
-    if (timelineFrame >= clipEnd) {
-        return clip.mediaStartFrame + std::max<FrameNumber>(0, sourceLength - 1);
-    }
+    if (timelineFrame >= clipEnd) timelineFrame = clipEnd - 1;
 
     FrameNumber localFrame = timelineFrame - clip.startFrame;
     FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));

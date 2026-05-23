@@ -186,6 +186,7 @@ target_sources(EntityMediaCore
         src/render/TextureUploader.cpp
 
         # Timeline
+        src/timeline/SectionFade.cpp
         src/timeline/Timeline.cpp
         src/timeline/TimelineWidget.cpp
         src/timeline/TimelineWidgetRender.cpp
