@@ -87,6 +87,40 @@ public:
                            TextureFormat format = TextureFormat::RGBA8_UNORM) const;
 
     /**
+     * Proactively create the GPU texture + upload buffer + SRV descriptor for
+     * `slot` without copying any pixels. Use this from the editor thread at
+     * project load (when the source dimensions are known) to avoid paying the
+     * two CreateCommittedResource calls (texture + upload buffer, ~33MB each
+     * for 4K) on the show thread at the first uploadVideoFrameToSlot call.
+     *
+     * That first lazy creation was the cause of the section-break stutter
+     * (2026-05-23): a queued-at-break clip's slot was allocated at project
+     * load but the underlying D3D12 resources weren't created until the
+     * playhead reached the break and PlaybackPresenter::present made the
+     * first upload — blocking the show frame for ~30-100ms.
+     *
+     * Idempotent: if the slot is already prepared with matching dimensions
+     * and format, this is a no-op. Mismatched dimensions trigger the same
+     * release+recreate that ensureTexture does for upload().
+     *
+     * **Threading contract:** safe to call from any thread when the slot is
+     * not concurrently being uploaded to. The intended use is at project
+     * load (editor thread, before the show thread first presents this slot),
+     * which satisfies that invariant by construction. The internal
+     * m_slotMutex serializes concurrent prepareTexture() calls but does NOT
+     * race-protect against upload() — that path doesn't lock. If we ever
+     * need mid-session prepare for an in-use slot, add waitForGpu + lock
+     * around upload's ensureTexture call first.
+     *
+     * Returns false on slot-out-of-bounds, unallocated slot, or D3D12
+     * resource-creation failure.
+     */
+    bool prepareTexture(uint32_t slot,
+                        uint32_t width,
+                        uint32_t height,
+                        TextureFormat format = TextureFormat::RGBA8_UNORM);
+
+    /**
      * Perform an upload. Records copy commands into `cmdList`:
      *  1. If first upload, dimensions changed, or format changed, (re)creates
      *     the GPU texture, upload buffer, and SRV descriptor using the DXGI

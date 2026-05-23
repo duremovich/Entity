@@ -381,6 +381,144 @@ mouse-drag script command exists to automate left-edge trim — the
 contract is local to one branch of TimelineWidgetInput and the
 behavior change is direct).
 
+### Fix 9 — Eager video texture slot allocation at project load (2026-05-23 follow-up)
+
+Operator-reported follow-up after Fix 7+8 landed: "a little bit of a
+stutter at the section break" on a 4K H.264 test project. The stutter
+hit at the break crossing instant, before Section GO.
+
+**Diagnosis from stdout (Tracy connection issues kept that
+diagnostic surface unavailable for this session — separate todo).** A
+queued-at-break clip's video texture slot was reserved during project
+load but its underlying D3D12 resources weren't created until first
+upload. `TextureUploader::ensureTexture` does two
+`CreateCommittedResource` calls — one for the texture, one for the
+upload buffer — each ~33 MB for a 3840×2160 RGBA8 frame. On 4K H.264
+content this is ~10-50 ms of driver-side VRAM commitment work per
+call. The first `PlaybackPresenter::present` for the queued clip
+landed at the moment the playhead reached the break, so the show
+thread paid both allocations on the render-frame hot path —
+~30-100 ms blocking the show frame, exactly matching the visible
+stutter.
+
+Confirming trace from the operator's session log:
+
+```
+[SectionScheduler] At break frame=3000 (applied from show-thread detection)
+TextureUploader: created slot 2 (3840x2160, dxgi=28)   ← lazy, on show thread
+[Command] Executing: Section GO
+```
+
+Compare with the active-at-load clip whose slot was created during the
+first editor frame at load time — invisible to the user. The queued
+clip lost that race.
+
+**Fix.** Pre-allocate the D3D12 texture on the editor thread at
+project load, when the clip's source dimensions are already known from
+`decoder->getWidth()`/`getHeight()`:
+
+- New `TextureUploader::prepareTexture(slot, width, height, format)` —
+  public method wrapping the existing `ensureTexture` under
+  `m_slotMutex`. Idempotent on matching dimensions/format; on mismatch
+  triggers the same release+recreate the lazy first-upload path took.
+  Threading contract: safe to call from any thread when the slot is
+  not concurrently being uploaded to. The intended call site
+  (`ProjectManager::loadMedia` on the editor thread, before the show
+  thread first presents this clip) satisfies that by construction.
+
+- New `IRenderer::prepareVideoTextureSlot(slot, width, height, format)`
+  with a default no-op implementation for mock/test renderers.
+  `D3D12Renderer` overrides to delegate to
+  `TextureUploader::prepareTexture`.
+
+- `ProjectManager::loadMedia` calls `prepareVideoTextureSlot` right
+  after `allocateVideoTextureSlot` (at the existing site where source
+  dimensions become known via the just-opened decoder). Default format
+  `RGBA8_UNORM` — `ensureTexture` handles format-change recreation
+  cleanly if a decoder later produces a different format.
+
+**Verification.** Operator's follow-up session log shows all three
+slots (PNG + two 4K H.264) now created at load time (line 142, 152,
+162). The section break crossing in the new session (lines 296-301)
+has **no `TextureUploader: created slot` line between the at-break
+event and Section GO** — the texture was already in VRAM, so the show
+thread's first upload just copied pixels into the existing buffer. No
+~30-100 ms allocation blocking the show frame.
+
+**Cost.** ~66 MB of VRAM committed per clip at load (texture + upload
+buffer) instead of lazily. For the operator's 3-slot project, ~200 MB
+total at load; trades show-thread stutter for project-load latency,
+which is acceptable for show authoring. Larger projects (50+ clips)
+may want to revisit — possible follow-up is per-clip pre-allocation
+gated on "is this clip on the timeline?" rather than "is this clip in
+the media bin?" — but `loadMedia` is per-clip-on-timeline today so
+the current implementation already has the right granularity.
+
+**Out of scope.** The operator also reported a *crossfade slowdown*
+(both clips visible at once via overlap or section fade). This
+session didn't include one, so no diagnostic data on that path yet.
+Likely candidates remain upload bandwidth on two concurrent 4K H.264
+streams, or `FrameCache` LRU thrash with two clips' working sets
+under pressure (per the existing memory note). Tracking as separate
+work pending a capture.
+
+**Tracy capture connectivity (separate todo).** Multiple attempts to
+attach `tracy-capture.exe` to the running editor failed during this
+session (TCP port 8086 accepts connections, but the handshake never
+completes — possibly a vcpkg `on-demand` feature + `tracy-capture`
+0.13.1 quirk). For diagnostic purposes the operator-instructed
+"play through the trouble area and read stdout" path was used
+instead — the structured event lines (`[SectionDetect]`,
+`[SectionScheduler]`, `TextureUploader: created slot`,
+`Section GO`) gave enough signal to localize the bug without
+per-frame timing data. Worth a fix pass later — Tracy is the
+canonical perf surface for this codebase per ADR-0015.
+
+**Files.** `include/entity/render/TextureUploader.hpp` +
+`src/render/TextureUploader.cpp` (new `prepareTexture`).
+`include/entity/render/IRenderer.hpp` (new `prepareVideoTextureSlot`
+with default no-op). `include/entity/render/D3D12Renderer.hpp` +
+`src/render/D3D12Renderer.cpp` (override).
+`src/project/ProjectManager.cpp` (call site).
+
+### Perf Investigation Plumbing — 2026-05-23
+
+Three small instrumentation changes landed alongside Fix 9 to support
+the diagnostic + future Tracy captures:
+
+- **Stdout log gating.** `DecodeSystem.cpp`'s `Seek: jump from X to Y`
+  (line ~323) and `[DECODE PACE]` (line ~724) lines now gate behind
+  the env var `ENTITY_DECODE_VERBOSE=1`. Off by default — they were
+  firing dozens of times per second under cache pressure, adding
+  measurable cost (Windows stdout serialization is ~0.5-2 ms per line
+  when sustained) and drowning out the structured events. Tracy zones
+  remain the canonical observation surface.
+
+- **Fence-wait timeout configurable via env var.** `D3D12Renderer.cpp`'s
+  two `WaitForSingleObject(..., 2000)` sites (the MED-13/Phase A2
+  device-lost safety in `beginShowFrame` and `moveToNextFrame`) now
+  read `ENTITY_FENCE_TIMEOUT_MS` once at startup. Default 2000.
+  Profiler attachment (Tracy) and heavyweight first-frame work on
+  multi-output 4K H.264 projects can blow past 2 s once during init —
+  the operator session in this perf-investigation thread hit that
+  exact false-positive twice before the env var let us extend to 10 s
+  for the Tracy run. Production should leave the default; diagnostic
+  sessions bump as needed.
+
+- **Tracy zones on the section-break apply path.**
+  `SectionScheduler.cpp`'s `handleBreakAt`, `seedContinuationAt`,
+  `go`, and `advanceContinuation` now have `ZoneScopedN` markers. Pairs
+  with the existing `SectionDetect` zone on the show thread so a
+  Tracy capture shows both halves of the break-detection /
+  break-apply split (NEW-08). New plot `Cache-miss recoveries / tick`
+  in `DecodeSystem::update` tracks how often Fix 4's force-seek
+  recovery fires across all clips — sustained ≥1/tick is the LRU
+  thrash signal under multi-clip 4K H.264 pressure.
+
+- **Capture playbook.** `docs/perf/capture-section-break-stutter.md`
+  documents the section-break + crossfade capture procedure tailored
+  to this project. References the new env vars + Tracy zones.
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On

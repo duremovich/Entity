@@ -102,6 +102,29 @@ bool TextureUploader::isAllocated(uint32_t slot) const {
     return m_slots[slot].allocated;
 }
 
+bool TextureUploader::prepareTexture(uint32_t slot, uint32_t width, uint32_t height,
+                                      TextureFormat format) {
+    if (slot >= MAX_SLOTS) {
+        std::cerr << "TextureUploader::prepareTexture: slot " << slot
+                  << " out of bounds (max " << MAX_SLOTS << ")" << std::endl;
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(m_slotMutex);
+    Slot& s = m_slots[slot];
+    if (!s.allocated) {
+        std::cerr << "TextureUploader::prepareTexture: slot " << slot
+                  << " not allocated" << std::endl;
+        return false;
+    }
+    // ensureTexture is idempotent on matching dimensions/format: returns true
+    // immediately. On mismatch it releases the old resources and re-creates
+    // — which is exactly the same behavior the lazy first-upload path takes
+    // when dimensions change mid-session. Caller is responsible for GPU
+    // synchronization in that case; at project-load time (the intended call
+    // site) the slot is brand-new and there's nothing in flight on the GPU.
+    return ensureTexture(s, slot, width, height, format);
+}
+
 bool TextureUploader::hasTexture(uint32_t slot) const {
     if (slot >= MAX_SLOTS) return false;
     return m_slots[slot].allocated && m_slots[slot].texture != nullptr;

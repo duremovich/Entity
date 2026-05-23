@@ -18,10 +18,29 @@
 #include "entity/media/DecodeBufferPool.hpp"
 #include "entity/media/FrameCache.hpp"
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <chrono>
 
 namespace entity {
+
+namespace {
+// Verbose per-tick / per-decode diagnostic logging.
+// OFF by default — these lines (Seek: jump, [DECODE PACE]) fire dozens
+// of times per second under cache pressure, both spamming the terminal
+// and adding measurable cost (stdout serialization is ~0.5-2ms per line
+// on Windows when sustained). Re-enable for diagnostic sessions with
+// the env var `ENTITY_DECODE_VERBOSE=1`. Tracy zones / plots remain the
+// canonical observation surface (FrameCache hit rate %, Decode queue
+// depth, per-system zones).
+bool decodeLogsEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("ENTITY_DECODE_VERBOSE");
+        return v && *v && v[0] != '0';
+    }();
+    return enabled;
+}
+} // namespace
 
 DecodeSystem::DecodeSystem() = default;
 
@@ -49,6 +68,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     ZoneScopedN("DecodeSystem::update");
     (void)deltaTime;
     if (!m_timeline) return;
+    // Per-tick counter of how often Fix 4 cache-miss recovery force-seeks
+    // fire across all clips. Plotted at the end of this tick so the .tracy
+    // file shows the thrash rate. Steady >0 == LRU eviction is undoing
+    // useful decode work; targeted fix is a per-clip cache share or HW
+    // decode. Pre-amendment baseline expected 0/tick on a healthy single
+    // clip; ≥1/tick under multi-clip cache pressure (crossfade with 4K H.264).
+    [[maybe_unused]] int64_t cacheMissRecoveryCount = 0;
 
     // Gate worker lifecycle (create/destroy) to the editor thread. The
     // show-thread fallback (Engine.cpp:982) re-enters this function during
@@ -268,6 +294,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                     !m_frameCache->has(entity, mediaFrame) &&
                     worker->currentFrame.load() >= mediaFrame) {
                 needsSeek = true;
+                ++cacheMissRecoveryCount;
             }
 
             if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
@@ -320,7 +347,10 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             }
 
             if (needsSeek) {
-                std::cout << "Seek: jump from " << lastRequested << " to " << mediaFrame << std::endl;
+                if (decodeLogsEnabled()) {
+                    std::cout << "Seek: jump from " << lastRequested
+                              << " to " << mediaFrame << std::endl;
+                }
                 seekClip(entity, mediaFrame);
             }
         } else if (currentTimelineFrame < clip.startFrame) {
@@ -381,6 +411,12 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         }
         TracyPlot("Decode queue depth", totalPending);
     }
+    // Steady non-zero values indicate LRU eviction is force-re-decoding
+    // frames the worker just produced — the canonical multi-clip 4K H.264
+    // thrash pattern. Goal under healthy load: <1/tick. Spike at section
+    // break crossings or during crossfade hints at the cache budget vs
+    // active-clip working set imbalance.
+    TracyPlot("Cache-miss recoveries / tick", cacheMissRecoveryCount);
 
     // Tear down workers for entities that were destroyed. Editor-only:
     // destroyWorker calls thread.join() which blocks for the duration of
@@ -712,13 +748,14 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
 
         // [DECODE PACE] only fires when adaptive pacing kicked in (nextFrame
         // jumped forward to match the playhead, dropping `skipped` source
-        // frames). Confirms the new realtime path is exercised under load
-        // and shows the steady-state stride. Quiet for HAP / fast content.
+        // frames). Gated behind ENTITY_DECODE_VERBOSE — Tracy zones are
+        // the canonical observation surface for this; the stdout line was
+        // diagnostic-only.
         auto decodeStart = std::chrono::high_resolution_clock::now();
         ZoneScopedN("Decode");
         ZoneValue(static_cast<uint64_t>(nextFrame));
         Result result = worker->decoder->decodeFrame(nextFrame, frame);
-        if (skipped > 0) {
+        if (skipped > 0 && decodeLogsEnabled()) {
             auto decodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now() - decodeStart).count();
             std::cout << "[DECODE PACE] entity=" << static_cast<uint32_t>(worker->entity)

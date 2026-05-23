@@ -19,6 +19,7 @@
 #include <GLFW/glfw3native.h>
 
 #include <d3dcompiler.h>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 
@@ -40,6 +41,28 @@
 #pragma comment(lib, "d3dcompiler.lib")
 
 namespace entity {
+
+// 2026-05-23 — fence-wait timeout configurable via env var
+// `ENTITY_FENCE_TIMEOUT_MS`. Default 2000 (the MED-13 / Phase A2 fix value,
+// which guards against true device-lost). Profiler attachment (Tracy) and
+// heavy first-frame work on multi-output 4K H.264 projects can blow past
+// 2s once, false-positive as device-lost. Bump to 8000+ when running
+// under Tracy or against a heavyweight project; leave at default in
+// production. One-time env read; zero hot-path overhead.
+namespace {
+DWORD fenceWaitTimeoutMs() {
+    static const DWORD ms = []() -> DWORD {
+        const char* v = std::getenv("ENTITY_FENCE_TIMEOUT_MS");
+        if (v && *v) {
+            char* end = nullptr;
+            long parsed = std::strtol(v, &end, 10);
+            if (end != v && parsed > 0) return static_cast<DWORD>(parsed);
+        }
+        return 2000;
+    }();
+    return ms;
+}
+} // namespace
 
 // Thread-local active command list and descriptor-heap cache.
 // beginShowFrame (show thread) and beginEditorFrame (editor thread) each write
@@ -504,7 +527,7 @@ void D3D12Renderer::beginShowFrame() {
         if (m_showFence->GetCompletedValue() < lastSignaled) {
             ZoneScopedNC("GPU fence wait", 0xCC4444);
             m_showFence->SetEventOnCompletion(lastSignaled, m_showFenceEvent);
-            DWORD result = WaitForSingleObject(m_showFenceEvent, 2000);
+            DWORD result = WaitForSingleObject(m_showFenceEvent, fenceWaitTimeoutMs());
             if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
                 HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
                     ? m_gpu->device()->GetDeviceRemovedReason()
@@ -1185,7 +1208,7 @@ void D3D12Renderer::moveToNextFrame() {
     if (m_editorFence->GetCompletedValue() < m_editorFenceValues[m_currentBackBufferIndex]) {
         ZoneScopedNC("GPU fence wait", 0xCC4444);
         m_editorFence->SetEventOnCompletion(m_editorFenceValues[m_currentBackBufferIndex], m_fenceEvent);
-        DWORD result = WaitForSingleObject(m_fenceEvent, 2000);
+        DWORD result = WaitForSingleObject(m_fenceEvent, fenceWaitTimeoutMs());
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
             HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
                 ? m_gpu->device()->GetDeviceRemovedReason()
@@ -1929,6 +1952,21 @@ uint32_t D3D12Renderer::allocateVideoTextureSlot() {
     }
     std::cout << "Allocated video texture slot " << slot << std::endl;
     return slot;
+}
+
+bool D3D12Renderer::prepareVideoTextureSlot(uint32_t slot,
+                                             uint32_t width, uint32_t height,
+                                             TextureFormat format) {
+    // 2026-05-23 — proactive D3D12 texture allocation. Called from
+    // ProjectManager::loadMedia (editor thread) right after
+    // allocateVideoTextureSlot so the show-thread first-frame upload
+    // doesn't pay CreateCommittedResource on the hot path. See ADR-0014's
+    // editor/show split — this is editor-thread D3D12 work, which is safe
+    // for CreateCommittedResource / CreateShaderResourceView because the
+    // slot isn't yet visible to the show thread (the SceneSnapshot bake
+    // hasn't published this clip's catalog entry yet).
+    if (!m_initialized || !m_textureUploader) return false;
+    return m_textureUploader->prepareTexture(slot, width, height, format);
 }
 
 void D3D12Renderer::freeVideoTextureSlot(uint32_t slot) {

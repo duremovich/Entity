@@ -81,6 +81,11 @@ public:
 
     uint32_t   allocateVideoTextureSlot() override;
     void       freeVideoTextureSlot(uint32_t slot) override;
+    bool       prepareVideoTextureSlot(uint32_t slot,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       TextureFormat format =
+                                           TextureFormat::RGBA8_UNORM) override;
     bool       uploadVideoFrameToSlot(uint32_t slot,
                                       const uint8_t* rgba,
                                       uint32_t width,

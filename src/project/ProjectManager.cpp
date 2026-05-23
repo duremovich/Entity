@@ -345,6 +345,23 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
             videoTex.descriptorSlot = m_renderer->allocateVideoTextureSlot();
             videoTex.width = decoder->getWidth();
             videoTex.height = decoder->getHeight();
+
+            // 2026-05-23 — proactively create the GPU texture + upload buffer
+            // for this slot now (on the editor thread, with the GPU idle for
+            // this slot) so the first show-thread uploadVideoFrameToSlot
+            // doesn't pay two ~33MB CreateCommittedResource calls on the hot
+            // path. That lazy allocation was the cause of the section-break
+            // stutter (a queued-at-break clip whose first-frame upload
+            // landed on the show thread blocked ~30-100ms at the break).
+            // Default to RGBA8_UNORM — ensureTexture handles format-change
+            // recreation if the decoder later produces something different.
+            if (videoTex.descriptorSlot != UINT32_MAX) {
+                m_renderer->prepareVideoTextureSlot(
+                    videoTex.descriptorSlot,
+                    videoTex.width,
+                    videoTex.height,
+                    TextureFormat::RGBA8_UNORM);
+            }
         }
 
         // Marker tag for DecodeSystem (decoded frames live in the engine cache).

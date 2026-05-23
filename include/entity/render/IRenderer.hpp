@@ -96,6 +96,21 @@ public:
     // ------------------------------------------------------------------------
     virtual uint32_t   allocateVideoTextureSlot() = 0;
     virtual void       freeVideoTextureSlot(uint32_t slot) = 0;
+    // 2026-05-23 — Proactively create the slot's GPU texture + upload buffer
+    // so the first uploadVideoFrameToSlot doesn't pay two CreateCommittedResource
+    // calls (~33MB each for 4K) on the show thread. Closes the section-break
+    // stutter where a queued-at-break clip's first-frame upload allocated
+    // the texture lazily on the show thread, blocking the render frame for
+    // ~30-100ms. Idempotent on matching dimensions. Returns true on success.
+    // Default implementation is a no-op for mock renderers; D3D12Renderer
+    // delegates to TextureUploader::prepareTexture.
+    virtual bool       prepareVideoTextureSlot(uint32_t /*slot*/,
+                                               uint32_t /*width*/,
+                                               uint32_t /*height*/,
+                                               TextureFormat /*format*/ =
+                                                   TextureFormat::RGBA8_UNORM) {
+        return true;
+    }
     // Upload an RGBA8 frame to a video slot. Legacy convenience — equivalent
     // to uploadVideoFrameToSlot(slot, data, w, h, TextureFormat::RGBA8_UNORM).
     virtual bool       uploadVideoFrameToSlot(uint32_t slot,
