@@ -56,6 +56,17 @@ public:
     // considers an audio worker primed.
     static constexpr size_t kAudioPrerollFrames = 2048;
 
+    // Sliding-window prefetch lookahead. Mirrors
+    // DecodeSystem::kPrefetchAheadSeconds — every editor tick (when not
+    // Stopped), audio workers are bootstrapped for clips whose startFrame
+    // is within this many seconds of the playhead so the cold open + seek
+    // + ring-buffer preroll finishes in the background before the playhead
+    // (or a cue-jump) actually reaches the clip. SeekSyncController polls
+    // both video and audio readiness; without this, audio-bearing clips
+    // (MP4 with embedded audio) hold the gate even when the video worker
+    // is warm.
+    static constexpr double kPrefetchAheadSeconds = 5.0;
+
 private:
     void createWorker(entt::entity e, entt::registry& registry);
     void destroyWorker(entt::entity e);

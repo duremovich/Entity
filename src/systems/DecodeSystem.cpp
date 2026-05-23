@@ -203,6 +203,27 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             FrameNumber lastRequested = worker->lastRequestedFrame.load();
             bool needsSeek = false;
 
+            // Cache-miss recovery. The worker can be ahead of mediaFrame
+            // (worker->currentFrame >= mediaFrame) but the global FrameCache
+            // no longer has it — LRU evicted the worker's previously-decoded
+            // frames while another clip was playing. The worker won't re-
+            // decode on its own because nextFrame > targetFrame from its
+            // perspective; it just idles. Force a seek so it re-decodes.
+            // The decode-thread fast path (line ~555) skips the actual seek
+            // when cache.has(seekTarget) is true, so this is cheap when the
+            // cache happens to be hot.
+            //
+            // Guard on worker->currentFrame >= mediaFrame to avoid spurious
+            // seeks during normal play, when the worker is decoding TOWARD
+            // mediaFrame and the cache transiently misses because the decode
+            // hasn't landed yet. In that case currentFrame < mediaFrame and
+            // we let the worker work.
+            if (!worker->seekPending.load() && m_frameCache &&
+                    !m_frameCache->has(entity, mediaFrame) &&
+                    worker->currentFrame.load() >= mediaFrame) {
+                needsSeek = true;
+            }
+
             if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
                 int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
 
@@ -288,7 +309,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             if (!clip.loaded) continue;
             // Strict > so already-started or active clips fall through to
             // the bootstrap / steer path above; only warm not-yet-started
-            // clips inside the lookahead window.
+            // clips inside the lookahead window. In practice the bootstrap
+            // path (line ~82) already creates workers for every loaded
+            // Clip+FrameBuffer entity regardless of activity, so this loop
+            // is usually a no-op — kept as a safety net for late-loaded
+            // clips (async MediaProbe completion mid-play, etc.).
             if (clip.startFrame <= currentTimelineFrame) continue;
             if (clip.startFrame >  windowEnd)             continue;
             if (m_workers.contains(entity))               continue;

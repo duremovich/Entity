@@ -250,6 +250,28 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         m_lastExpectedSample[entity] = expectedSample;
     }
 
+    // Sliding-window prefetch — mirrors DecodeSystem::prefetchUpcoming so
+    // audio workers warm in step with video. Without this, an MP4 clip
+    // queued at a section break holds the SeekSyncController gate for the
+    // full preroll-timeout (3 s) because its audio worker doesn't exist
+    // until the playhead enters the clip window. Editor-thread only
+    // (writes m_workers); skipped when Stopped.
+    if (isEditorTick &&
+        m_timeline->getPlaybackState() != PlaybackState::Stopped) {
+        ZoneScopedN("AudioSystem::prefetchUpcoming");
+        const FrameNumber prefetchAhead = static_cast<FrameNumber>(
+            std::ceil(kPrefetchAheadSeconds * tlFPS));
+        const FrameNumber windowEnd = currentTLFrame + prefetchAhead;
+
+        for (auto [entity, clip, as] : view.each()) {
+            if (!clip.loaded) continue;
+            if (clip.startFrame <= currentTLFrame) continue;
+            if (clip.startFrame >  windowEnd)      continue;
+            if (m_workers.contains(entity))        continue;
+            createWorker(entity, registry);
+        }
+    }
+
     // Destroy workers for entities that are gone (editor-thread only).
     if (isEditorTick) {
         std::vector<entt::entity> toRemove;

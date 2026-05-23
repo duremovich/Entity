@@ -704,7 +704,32 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                 if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
                 const FrameNumber mediaFrame =
                     timeAuthority->mapToMediaFrame(entity, clip, currentFrame);
-                if (!decodeSystem->isClipReadyAt(entity, mediaFrame)) return false;
+                if (!decodeSystem->isClipReadyAt(entity, mediaFrame)) {
+                    // Diagnostic: rate-limited (one line per second per entity)
+                    // so we can see WHICH clip is holding the gate without
+                    // spamming. State breakdown: worker existence, init flag,
+                    // seekPending flag, cache hit. Removable once the cause
+                    // is understood.
+                    static thread_local std::unordered_map<entt::entity, int64_t> lastLogNs;
+                    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    auto& last = lastLogNs[entity];
+                    if (nowNs - last > 1'000'000'000LL) {
+                        last = nowNs;
+                        const auto* w = decodeSystem->getWorker(entity);
+                        std::cerr << "[Gate] videoReady=false entity="
+                                  << static_cast<uint32_t>(entity)
+                                  << " mediaFrame=" << mediaFrame
+                                  << " worker=" << (w ? "yes" : "no")
+                                  << " init=" << (w && w->initialized.load() ? 1 : 0)
+                                  << " seekPending=" << (w && w->seekPending.load() ? 1 : 0)
+                                  << " workerCurrent=" << (w ? w->currentFrame.load() : -1)
+                                  << " target=" << (w ? w->targetFrame.load() : -1)
+                                  << " lastReq=" << (w ? w->lastRequestedFrame.load() : -1)
+                                  << std::endl;
+                    }
+                    return false;
+                }
             }
             return true;
         };
@@ -720,7 +745,20 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                 for (auto [entity, clip, audio] : view.each()) {
                     (void)audio;
                     if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
-                    if (!audioSystem->isWorkerSeekReady(entity)) return false;
+                    if (!audioSystem->isWorkerSeekReady(entity)) {
+                        // Same rate-limited diagnostic as videoReady.
+                        static thread_local std::unordered_map<entt::entity, int64_t> lastLogNs;
+                        const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+                        auto& last = lastLogNs[entity];
+                        if (nowNs - last > 1'000'000'000LL) {
+                            last = nowNs;
+                            std::cerr << "[Gate] audioReady=false entity="
+                                      << static_cast<uint32_t>(entity)
+                                      << std::endl;
+                        }
+                        return false;
+                    }
                 }
                 return true;
             };
