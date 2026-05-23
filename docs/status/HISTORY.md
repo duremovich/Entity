@@ -6,6 +6,78 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Section-Break Behavior — Three Fixes (2026-05-23)
+
+Three issues observed during real cueing once the section-break
+detector-on-show / applier-on-editor split (NEW-08, 2026-05-20) and the
+seek-sync preroll gate (ADR-0026, 2026-05-22) landed:
+
+1. **Trailing-edge clip popped out at break with fadeSeconds = 0.** A
+   clip whose right edge sat exactly on a section break disappeared the
+   moment the playhead reached the break — should hold visible during
+   the at-break park, then cut (or fade) on GO. Cause: `sectionFadeTail-
+   Frames(endFrame)` returned `ceil(0 * fps) = 0`, collapsing
+   `isClipActiveAtFrame`'s window to `[start, end)` and dropping the
+   clip at `currentFrame == end`. With `fadeSeconds > 0` the held-
+   visible behavior fell out for free since `ceil(...) >= 1`. **Fix**:
+   `sectionFadeTailFrames` returns `max(1, ramp)` for any clip whose
+   end aligns with a break, independent of fadeSeconds. The clip now
+   stays visible for the at-break park frame, then drops on
+   `currentFrame == end+1` when `fadeSeconds == 0` (instant cut after
+   GO, matching the intended "hard cut" semantic) or follows the
+   existing tail ramp when positive. Symmetric with the leading-edge
+   at-break visibility gate. Commit `5ecd210`.
+
+2. **Generative layers ignored section fades entirely.** Text and
+   Muncher layers queued at a break popped on at full opacity instead
+   of waiting invisible until GO. Cause: the generative fold-in to
+   `bus::ContentLayerSnapshot` hardcoded
+   `c.sectionFadeMultiplier = 1.0f` with a stale `// SectionScheduler
+   integration is NEW-08` comment; the unified PASS 2 compositor's
+   `opacity × sectionFadeMultiplier` multiply produced no envelope.
+   **Fix**: lift `computeSectionFadeMultiplier` off `Clip` — the body
+   now takes `(FrameNumber layerStart, FrameNumber layerEnd)` as pure
+   timeline math, no component dependence. The `Clip` overload is a
+   one-line trampoline so the existing call sites are unchanged. Wire
+   the generative fold-in to call the overload with
+   `(gl.startFrame, gl.startFrame + gl.duration)`. Extend the
+   generative snapshot filter in `buildSceneSnapshot` the same way
+   `isClipActiveAtFrame` was extended in Fix 1 — include
+   `sectionFadeTailFrames(endFrame)` in the upper bound so trailing-
+   edge generatives stay in the snapshot during the at-break park.
+   Generatives now get the same at-break visibility gate, the same
+   fade-in/fade-out ramps, and the same trailing-edge hold clips do.
+   Commit `28c69b5`.
+
+3. **Cold-decoder hitch after GO at a queued clip.** Clips queued at a
+   break had no decode worker until GO fired — the cold FFmpeg open +
+   seek + first-frame decode (~50–300 ms on 4K ProRes) ran inside the
+   seek-sync gate, producing a visible delay before motion. Same hitch
+   hit any GO path: Spacebar after parking, cue-jump straight into the
+   next section, scrub-then-Play. **Fix**: continuous sliding-window
+   prefetch in `DecodeSystem::update`. Every editor tick (when not
+   `Stopped`) sweep `view<Clip, FrameBuffer>` and bootstrap a worker
+   for any not-yet-started clip whose `startFrame` is within
+   `kPrefetchAheadSeconds` (5 s) of the playhead. The worker opens
+   FFmpeg, seeks to `mediaStartFrame`, and pre-fills its ring buffer
+   in the background. When the playhead (or cue-jump) reaches the
+   clip, the seek-sync gate releases on the first tick because
+   `isClipReadyAt` is already true. Naturally covers all three
+   approach-direction cases — no SectionScheduler wiring, no Timeline
+   helper, the sliding window subsumes the natural-break, at-break-
+   parking, and cue-jump cases. Editor-thread only (writes
+   `m_workers`); runs while `Paused` so an operator who pauses,
+   scrubs, then Plays still benefits. Tracy zone:
+   `DecodeSystem::prefetchUpcoming`. Commit `6297353`.
+
+**Files.** `src/director/PlaybackTimeAuthority.cpp` +
+`include/entity/director/PlaybackTimeAuthority.hpp` (Fixes 1 + 2),
+`src/systems/DecodeSystem.cpp` +
+`include/entity/systems/DecodeSystem.hpp` (Fix 3). New unit cases in
+`tests/unit/PlaybackTimeAuthorityTests.cpp` (Fix 1: 3 cases) and
+`tests/unit/SectionFadeTests.cpp` (Fix 2: 3 cases). 611/611 ctest
+green at `-j 1` after all three.
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On
