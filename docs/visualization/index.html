@@ -1,0 +1,2221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Entity Media Server &mdash; Architecture Overview</title>
+  <style>
+    /* ===================================================================
+       ENTITY MEDIA SERVER â€” ARCHITECTURE OVERVIEW
+       Visual system v1.0 â€” designer-locked, 2026-05-23
+       Coders: touch ZERO CSS. Add only <section>, <table>, <p>, <svg>
+       using the classes defined here.
+    =================================================================== */
+
+    /* --- Reset & box model --- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* --- Custom properties â€” palette --- */
+    :root {
+      /* Surface neutrals */
+      --bg:        #FBFAF7;
+      --surface:   #FFFFFF;
+      --surface-2: #F1EFE9;
+      --ink:       #1B1B1F;
+      --ink-2:     #52525B;
+      --rule:      #E4E2DA;
+
+      /* Thread axis */
+      --editor:        #C2410C;
+      --editor-tint:   #FFEDD5;
+      --show:          #1E3A8A;
+      --show-tint:     #DBEAFE;
+      --workers:       #525252;
+      --workers-tint:  #E5E5E5;
+      --bus:           #0F766E;
+      --bus-tint:      #CCFBF1;
+
+      /* ECS-role axis */
+      --component:       #7C3AED;
+      --component-tint:  #EDE9FE;
+      --system:          #0891B2;
+      --system-tint:     #CFFAFE;
+      --archetype:       #D97706;
+      --archetype-tint:  #FEF3C7;
+      --ui:              #BE185D;
+      --ui-tint:         #FCE7F3;
+      --plugin:          #15803D;
+      --plugin-tint:     #DCFCE7;
+
+      /* License accents (S6 only) */
+      --gpl:         #7F1D1D;
+      --apache:      #1D4ED8;
+      --proprietary: #3F3F46;
+
+      /* Typography */
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, "SF Mono", ui-monospace, monospace;
+    }
+
+    /* --- Base typography & layout --- */
+    html { font-size: 15px; }
+
+    body {
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--ink);
+      background: var(--bg);
+    }
+
+    main.doc {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 24px;
+      background: var(--bg);
+    }
+
+    /* --- Type scale --- */
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+
+    h2 {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.25;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    h3 {
+      font-size: 17px;
+      font-weight: 600;
+      line-height: 1.3;
+      margin-top: 1.4rem;
+      margin-bottom: 0.5rem;
+    }
+
+    p {
+      margin-bottom: 0.75rem;
+    }
+
+    ul, ol {
+      margin-left: 1.4rem;
+      margin-bottom: 0.75rem;
+    }
+
+    li {
+      margin-bottom: 0.2rem;
+    }
+
+    /* --- Document header --- */
+    .doc-header {
+      padding-bottom: 1.5rem;
+      margin-bottom: 0.5rem;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .doc-subtitle {
+      font-size: 13px;
+      color: var(--ink-2);
+      margin-top: 4px;
+      margin-bottom: 0;
+    }
+
+    /* --- Section wrapper --- */
+    .doc-section {
+      margin-top: 0;
+    }
+
+    /* --- Card --- */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 16px;
+      margin: 12px 0;
+    }
+
+    /* --- Callout family --- */
+    .callout {
+      padding: 12px 16px;
+      border-radius: 4px;
+      margin: 12px 0;
+      border-left: 3px solid var(--rule);
+      background: var(--surface-2);
+    }
+    .callout p:last-child { margin-bottom: 0; }
+
+    .callout--editor   { background: var(--editor-tint);    border-left-color: var(--editor); }
+    .callout--show     { background: var(--show-tint);      border-left-color: var(--show); }
+    .callout--workers  { background: var(--workers-tint);   border-left-color: var(--workers); }
+    .callout--bus      { background: var(--bus-tint);        border-left-color: var(--bus); }
+    .callout--component { background: var(--component-tint); border-left-color: var(--component); }
+    .callout--system   { background: var(--system-tint);    border-left-color: var(--system); }
+    .callout--archetype { background: var(--archetype-tint); border-left-color: var(--archetype); }
+    .callout--ui       { background: var(--ui-tint);         border-left-color: var(--ui); }
+    .callout--plugin   { background: var(--plugin-tint);     border-left-color: var(--plugin); }
+
+    /* --- Pills --- */
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-radius: 3px;
+      padding: 2px 6px;
+      margin-right: 4px;
+      margin-bottom: 3px;
+      border: 1px solid var(--rule);
+      color: var(--ink-2);
+    }
+
+    .pill--editor    { border-color: var(--editor);    color: var(--editor); }
+    .pill--show      { border-color: var(--show);      color: var(--show); }
+    .pill--workers   { border-color: var(--workers);   color: var(--workers); }
+    .pill--bus       { border-color: var(--bus);        color: var(--bus); }
+    .pill--component { border-color: var(--component);  color: var(--component); }
+    .pill--system    { border-color: var(--system);     color: var(--system); }
+    .pill--archetype { border-color: var(--archetype);  color: var(--archetype); }
+    .pill--ui        { border-color: var(--ui);          color: var(--ui); }
+    .pill--plugin    { border-color: var(--plugin);      color: var(--plugin); }
+    /* Optional-component pill variant: dashed border */
+    .pill--optional  { border-style: dashed; opacity: 0.8; }
+
+    /* --- Tech badges (S1 strip) --- */
+    .tech-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-radius: 3px;
+      padding: 2px 6px;
+      margin-right: 4px;
+      margin-bottom: 3px;
+      background: var(--surface-2);
+      color: var(--ink-2);
+      border: 1px solid var(--rule);
+    }
+
+    /* --- kbd / path style --- */
+    .kbd, kbd {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--rule);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
+    /* --- inline code --- */
+    code {
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      background: var(--surface-2);
+      border-radius: 2px;
+      padding: 0 3px;
+    }
+
+    /* --- Note (provenance annotation) --- */
+    .note {
+      font-size: 12px;
+      font-style: italic;
+      color: var(--ink-2);
+      margin-top: 6px;
+      margin-bottom: 12px;
+    }
+
+    /* --- Stat strip --- */
+    .stat-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0;
+      margin: 12px 0;
+    }
+
+    .stat {
+      flex: 1 1 120px;
+      padding: 14px 18px;
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      margin: 4px;
+      text-align: center;
+    }
+
+    .stat__num {
+      display: block;
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+
+    .stat__label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--ink-2);
+      margin-top: 2px;
+    }
+
+    /* --- Tables --- */
+    .doc table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 13px;
+    }
+
+    .doc th {
+      background: var(--surface-2);
+      text-align: left;
+      padding: 8px 10px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+      color: var(--ink-2);
+    }
+
+    .doc td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--rule);
+      vertical-align: top;
+    }
+
+    .doc tr:last-child td {
+      border-bottom: none;
+    }
+
+    .doc td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    /* Family-colored left border on first td */
+    .doc tr[data-family="editor"]     td:first-child { border-left: 2px solid var(--editor);     padding-left: 12px; }
+    .doc tr[data-family="show"]       td:first-child { border-left: 2px solid var(--show);       padding-left: 12px; }
+    .doc tr[data-family="workers"]    td:first-child { border-left: 2px solid var(--workers);    padding-left: 12px; }
+    .doc tr[data-family="bus"]        td:first-child { border-left: 2px solid var(--bus);         padding-left: 12px; }
+    .doc tr[data-family="component"]  td:first-child { border-left: 2px solid var(--component);  padding-left: 12px; }
+    .doc tr[data-family="system"]     td:first-child { border-left: 2px solid var(--system);     padding-left: 12px; }
+    .doc tr[data-family="archetype"]  td:first-child { border-left: 2px solid var(--archetype);  padding-left: 12px; }
+    .doc tr[data-family="ui"]         td:first-child { border-left: 2px solid var(--ui);          padding-left: 12px; }
+    .doc tr[data-family="plugin"]     td:first-child { border-left: 2px solid var(--plugin);     padding-left: 12px; }
+    .doc tr[data-family="timeline"]   td:first-child { border-left: 2px solid var(--archetype);  padding-left: 12px; }
+    .doc tr[data-family="animation"]  td:first-child { border-left: 2px solid var(--component);  padding-left: 12px; }
+    .doc tr[data-family="media"]      td:first-child { border-left: 2px solid var(--workers);    padding-left: 12px; }
+    .doc tr[data-family="routing"]    td:first-child { border-left: 2px solid var(--bus);         padding-left: 12px; }
+    .doc tr[data-family="output"]     td:first-child { border-left: 2px solid var(--show);       padding-left: 12px; }
+    .doc tr[data-family="effects"]    td:first-child { border-left: 2px solid var(--system);     padding-left: 12px; }
+    .doc tr[data-family="kind"]       td:first-child { border-left: 2px solid var(--plugin);     padding-left: 12px; }
+
+    /* --- SVG block sizing --- */
+    .doc svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      margin: 16px 0;
+    }
+
+    /* --- Footer --- */
+    .doc-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--rule);
+      font-size: 12px;
+      color: var(--ink-2);
+    }
+
+    .doc-footer p {
+      margin-bottom: 0.3rem;
+    }
+
+    /* ===================================================================
+       PRINT STYLES
+    =================================================================== */
+    @media print {
+      body { font-size: 12px; background: #fff; }
+      main.doc { max-width: 100%; padding: 12px; }
+
+      h2 { margin-top: 1.5rem; }
+
+      .card { break-inside: avoid; }
+      .callout { break-inside: avoid; }
+      .stat-strip { break-inside: avoid; }
+
+      /* Don't break inside SVG diagrams if they fit on page */
+      svg { break-inside: avoid; max-height: 90vh; }
+
+      /* Don't print background tints â€” saves ink and avoids washed-out look */
+      .callout--editor,
+      .callout--show,
+      .callout--workers,
+      .callout--bus,
+      .callout--component,
+      .callout--system,
+      .callout--archetype,
+      .callout--ui,
+      .callout--plugin {
+        background: #fff;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .doc-header { border-bottom-color: #ccc; }
+      .doc-footer { border-top-color: #ccc; }
+    }
+  </style>
+</head>
+<body>
+  <main class="doc">
+
+    <!-- SECTION:HEADER -->
+    <header class="doc-header">
+      <h1>Entity Media Server</h1>
+      <p class="doc-subtitle">Architecture overview &middot; generated 2026-05-23 at e7fc109</p>
+    </header>
+
+    <!-- SECTION:S1 -->
+<section id="s1" class="doc-section">
+  <h2>1. Project at a Glance</h2>
+
+  <p>Entity is a C++20 media server for live projection mapping. The engine is
+  built around an Entity Component System (EnTT 3.x), a D3D12 renderer, and an
+  FFmpeg decode pipeline. A single editor executable hosts both the authoring UI
+  (ImGui, D3D12 swap chain) and the projector output pipeline (a parallel show
+  thread that keeps GPU presents running at 60&nbsp;Hz even while the editor
+  blocks). The codebase is dual-licensed open-core: a GPLv3 core with an
+  Apache&nbsp;2.0 plugin layer, plus a sibling private repository
+  (Entity-Pro) that folds in via <code>-DEXTRA_PLUGIN_DIRS</code>.</p>
+
+  <p>The product context is live shows -- theater, concerts, installations, immersive
+  experiences -- where one or more projectors throw video onto irregular surfaces (LED
+  walls, stage props, building facades) and need to do so at frame-accurate 60&nbsp;Hz
+  while an operator authors cues, calibrates surfaces, and triggers transitions live.
+  That use case sets every architectural constraint: the projector output is sacred and
+  must never freeze; clips need frame-accurate seek without an audible glitch; the
+  editor must stay responsive even when loading 4K ProRes off disk. Most of what
+  follows is downstream of those constraints.</p>
+
+  <h3>By the numbers</h3>
+
+  <div class="stat-strip">
+    <div class="stat"><span class="stat__num">78,000</span><span class="stat__label">Lines of code</span></div>
+    <div class="stat"><span class="stat__num">89</span><span class="stat__label">.cpp files</span></div>
+    <div class="stat"><span class="stat__num">143</span><span class="stat__label">.hpp files</span></div>
+    <div class="stat"><span class="stat__num">11</span><span class="stat__label">Systems</span></div>
+    <div class="stat"><span class="stat__num">33</span><span class="stat__label">Components</span></div>
+    <div class="stat"><span class="stat__num">22</span><span class="stat__label">UI windows</span></div>
+    <div class="stat"><span class="stat__num">4</span><span class="stat__label">Plugins</span></div>
+    <div class="stat"><span class="stat__num">26</span><span class="stat__label">ADRs</span></div>
+    <div class="stat"><span class="stat__num">18</span><span class="stat__label">src/ subsystems</span></div>
+  </div>
+
+  <h3>Tech stack</h3>
+
+  <p>Every dependency on the badge row below was a deliberate choice with an ADR or
+  reference doc behind it. EnTT for the registry (sparse-set cache coherency).
+  D3D12 first, Metal as a future second backend (ADR-0001). FFmpeg for decode with
+  HAP as the preferred codec and ProRes as the import format (ADR-0002). OCIO for
+  color over hand-rolled ACES (ADR-0004). Tracy for live profiling with
+  <code>ENTITY_ENABLE_TRACY</code> on by default (ADR-0015).</p>
+
+  <p>
+    <span class="tech-badge">C++20</span>
+    <span class="tech-badge">EnTT</span>
+    <span class="tech-badge">D3D12</span>
+    <span class="tech-badge">FFmpeg</span>
+    <span class="tech-badge">ImGui</span>
+    <span class="tech-badge">DirectWrite</span>
+    <span class="tech-badge">OCIO</span>
+    <span class="tech-badge">vcpkg</span>
+    <span class="tech-badge">Tracy</span>
+    <span class="tech-badge">CMake</span>
+  </p>
+
+  <h3>The architectural spine</h3>
+
+  <p>One diagram does most of the work in this document. The editor thread (warm,
+  on the left) owns the registry. The show thread (cool, on the right) owns the
+  GPU and the projector output. A teal bus carries a baked snapshot between them.
+  Everything else hangs off this split.</p>
+
+  <svg font-family="inherit" data-diagram="D1" viewBox="0 0 920 140" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d1-title d1-desc">
+    <title id="d1-title">Thread architecture overview</title>
+    <desc id="d1-desc">Three boxes left to right: Editor Thread (orange), bus::SceneSnapshot (teal arrow), Show Thread (indigo). A lighter bar below shows Decode / Plugin workers in slate.</desc>
+    <defs>
+      <marker id="d1-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#0F766E"/>
+      </marker>
+      <marker id="d1-arrow-r" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+        <polygon points="8 0, 0 3, 8 6" fill="#0F766E"/>
+      </marker>
+    </defs>
+
+    <!-- Editor box -->
+    <rect x="12" y="12" width="260" height="72" rx="4" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+    <text x="142" y="36" text-anchor="middle" font-size="11" font-weight="600"
+          fill="#C2410C" text-transform="uppercase" letter-spacing="0.04em">EDITOR THREAD</text>
+    <text x="142" y="55" text-anchor="middle" font-size="12" fill="#1B1B1F">Sole registry writer</text>
+    <text x="142" y="73" text-anchor="middle" font-size="11" fill="#52525B">Engine::update  ~60 Hz</text>
+
+    <!-- Arrow D2R -->
+    <line x1="272" y1="42" x2="380" y2="42" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d1-arrow)"/>
+    <text x="326" y="36" text-anchor="middle" font-size="11" fill="#0F766E" font-weight="600">D2R bus</text>
+    <text x="326" y="56" text-anchor="middle" font-size="10" fill="#0F766E">SceneSnapshot</text>
+
+    <!-- Arrow R2D -->
+    <line x1="380" y1="62" x2="272" y2="62" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d1-arrow-r)"/>
+    <text x="326" y="79" text-anchor="middle" font-size="10" fill="#0F766E">R2D replies</text>
+
+    <!-- Show box -->
+    <rect x="380" y="12" width="260" height="72" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="510" y="36" text-anchor="middle" font-size="11" font-weight="600"
+          fill="#1E3A8A" letter-spacing="0.04em">SHOW THREAD</text>
+    <text x="510" y="55" text-anchor="middle" font-size="12" fill="#1B1B1F">Snapshot reader + GPU</text>
+    <text x="510" y="73" text-anchor="middle" font-size="11" fill="#52525B">Engine::showThreadMain  60 Hz</text>
+
+    <!-- Workers bar -->
+    <rect x="12" y="98" width="628" height="30" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+    <text x="326" y="117" text-anchor="middle" font-size="11" fill="#525252" font-weight="600">
+      WORKER THREADS &#x2014; Decode #N (per clip) &middot; ContentScanner &middot; MediaProbe &middot; Transcode &middot; OSC
+    </text>
+  </svg>
+
+  <p>The architectural load-bearing story is the <strong>editor/show thread split</strong>: one thread
+  owns the registry, one thread owns the GPU and the projector outputs, and a teal bus
+  carries a baked snapshot between them. That split -- and the fallback machinery that
+  keeps the projector alive when the editor stalls -- is what S2 unpacks. This document
+  was generated at commit <code>e7fc109</code>. The Entity-Pro sibling repository is not
+  present on this machine, but the architecture it plugs into via
+  <code>-DEXTRA_PLUGIN_DIRS</code> is fully documented in S6.</p>
+</section>
+
+
+    <!-- SECTION:S2 -->
+<section id="s2" class="doc-section">
+  <h2>2. The Architecture Spine</h2>
+
+  <h3>ECS + Data-Oriented Design -- the substrate</h3>
+
+  <p>Every piece of runtime state in Entity lives on one of three primitives:
+  an <strong>entity</strong> (just an integer ID -- no data, no behavior), a
+  <strong>component</strong> (a plain data struct attached to an entity), or a
+  <strong>system</strong> (a class that reads and writes components in bulk via
+  <code>registry.view&lt;Components...&gt;()</code>). EnTT's sparse-set storage
+  packs components contiguously in memory, so iterating a view is a sequential
+  walk through dense arrays rather than a pointer chase.</p>
+
+  <p>That layout buys three properties that matter in a realtime media server:</p>
+
+  <ul>
+    <li><strong>Cache coherency.</strong> When <code>CompositorSystem</code> iterates
+    <code>view&lt;Transform, MediaLayer&gt;()</code>, both component arrays march
+    through cache lines together. Putting logic or vtables inside components would
+    fragment those arrays and turn a predictable sequential read into a random walk.</li>
+    <li><strong>Threading discipline.</strong> Components are value types -- they are
+    cheap to copy and snapshot-bake across threads. The editor/show split (below) works
+    only because there are no embedded mutexes, no internal thread state, no
+    reference-counted shared ownership to reason about.</li>
+    <li><strong>Inspectability.</strong> Pure data is easy to print, diff, and
+    serialize. The project's multi-version project file (schema v1 to v22+) and the
+    <code>bus::SceneSnapshot</code> snapshot wire format both benefit directly from
+    components being flat structs.</li>
+  </ul>
+
+  <div class="callout callout--component">
+    <p><strong>Documented component exceptions.</strong> Three components carry methods
+    that would violate strict POD purity -- all three are explicitly reviewed and acceptable
+    under the rule: <em>a method is fine if it has no virtuals, touches only the component's
+    own fields, and adds no construction/destruction cost.</em></p>
+    <ul>
+      <li><strong><code>Clip</code></strong> -- has a destructor and move-only semantics
+      that free its FFmpeg <code>AVFormatContext</code> / <code>AVCodecContext</code>.
+      RAII is safer than a scattered "don't forget to call close()" contract. This is the
+      only component in the tree that owns heap resources.</li>
+      <li><strong><code>Transform</code></strong> -- has <code>updateMatrix()</code> /
+      <code>setPosition()</code> / <code>getMatrix()</code> etc. that cache a dirty-flag
+      matrix from the component's own position/rotation/scale fields. No virtuals,
+      no cross-component reach.</li>
+      <li><strong><code>AnimatedProperties</code></strong> / <code>KeyframeTrack</code>
+      -- have <code>addKeyframe()</code> / <code>evaluate()</code> that operate only on
+      their own track data. Cache-local, no virtuals, no external state.</li>
+    </ul>
+  </div>
+
+  <p>Everything that <em>does</em> reach outside a component -- input handling, multi-component
+  side effects, cross-system coordination -- lives in a system. The base class
+  <code>include/entity/systems/System.hpp</code> has virtuals (<code>update</code>,
+  <code>initialize</code>, <code>shutdown</code>, <code>getName</code>) which is fine
+  because systems are not iterated in packed arrays; one indirect call per system per frame
+  is trivial cost.</p>
+
+  <h3>The editor/show thread split</h3>
+
+  <p>The single most important architectural decision in Entity is that the
+  <strong>editor thread is the sole writer of the EnTT registry</strong>. Everything that
+  reads from the registry for rendering does so through a baked snapshot, never through a
+  live registry read. This is the subject of
+  <code>docs/adr/0014-editor-show-thread-split.md</code>.</p>
+
+  <p><strong>The editor thread</strong> (<code>Engine::update</code>, ~60 Hz) is responsible
+  for all registry mutations. Its per-frame order is:</p>
+
+  <ol>
+    <li>Time advance -- <code>Timeline::update(dt)</code> writes the atomic
+    <code>m_currentTime</code>.</li>
+    <li>Section scheduling -- <code>SectionScheduler::tick()</code> applies catch-up
+    continuation phase; break-crossing detection now runs on the show thread (see below).</li>
+    <li>Animation -- <code>AnimationSystem::update(dt)</code> evaluates keyframe tracks
+    and writes <code>Transform</code> + <code>ObjectAnimationOutput</code> registry
+    components.</li>
+    <li>Text rasterization -- <code>TextSystem::update()</code> rasterizes dirty
+    <code>TextLayerState</code> entries to video-pool textures via DirectWrite + D2D.</li>
+    <li>Content scanner -- <code>drainContentScannerDeltas()</code> folds
+    filesystem-watcher deltas into the media bin.</li>
+    <li>Decode steering -- <code>DecodeSystem::update()</code> maps the current timeline
+    frame to a media frame for each clip and writes the atomic
+    <code>worker-&gt;targetFrame</code>.</li>
+    <li>Audio steering -- <code>AudioSystem::update()</code> manages
+    <code>AudioDecodeWorker</code> threads; mirrors gain/mute/solo to the mixer.</li>
+    <li>Seek sync -- <code>SeekSyncController::tick()</code> polls decoder readiness
+    and releases the seek-sync gate when all active decoders reach the parked frame.</li>
+    <li>Heartbeat -- <code>m_lastEditorTickNs.store(now)</code> so the show thread can
+    detect editor stalls.</li>
+    <li>UI -- ImGui new-frame plus all editor window rendering. Writes go through
+    <code>CommandDispatcher</code>.</li>
+    <li>Command drain -- <code>CommandDispatcher::processQueue(Editor + Either affinity)</code>
+    applies all pending commands; this is the only other registry-write site.</li>
+    <li>Snapshot -- <code>buildSceneSnapshot()</code> bakes the registry into a
+    <code>bus::SceneSnapshot</code> and publishes it onto the D2R bus.</li>
+    <li>Reply drain -- <code>drainRendererToDirector()</code> reads R2D replies (for
+    example, <code>ScreenRenderTargetAllocated</code> -- the compose-target slot ack --
+    triggers a registry write of <code>Screen::renderTargetSlot</code>).</li>
+    <li>Present -- <code>beginEditorFrame</code> / <code>endEditorFrame</code> for the
+    editor swap chain.</li>
+  </ol>
+
+  <p><strong>The show thread</strong> (<code>Engine::showThreadMain</code>, 60 Hz output
+  framerate) never writes the registry. Its per-frame order is:</p>
+
+  <ol>
+    <li>Time advance -- <code>Timeline::update(dt)</code> unconditionally advances
+    <code>m_currentTime</code> every show frame, decoupled from editor health.</li>
+    <li>Section break detection -- the <code>SectionDetect</code> Tracy zone finds
+    any break-frame the playhead just crossed, snaps and pauses the playhead, and
+    posts an R2D <code>bus::SectionBreakDetected</code>. No registry writes.</li>
+    <li>Editor-stall fallback -- if the editor heartbeat is stale by more than 50 ms,
+    the show thread calls <code>DecodeSystem::update()</code> and
+    <code>AudioSystem::update()</code> directly.</li>
+    <li>Command drain -- <code>CommandDispatcher::processQueue(Show affinity)</code>
+    drains Play / Pause / Seek / SectionGo; writes only atomics on
+    <code>Timeline</code>, never the registry.</li>
+    <li>Snapshot drain -- pull the latest <code>SceneSnapshot</code> from the D2R bus
+    (latest-wins delivery; superseded snapshots are discarded).</li>
+    <li>GPU upload -- <code>PlaybackPresenter::present()</code> uploads decoded frames
+    from <code>FrameRingBuffer</code> to GPU textures.</li>
+    <li>Composite -- <code>CompositorSystem::update(renderFrame)</code>, three passes
+    (see S4 for detail).</li>
+    <li>Output -- <code>OutputManager::renderOutputs()</code> fans each screen's compose
+    target to its assigned output swap chain.</li>
+    <li>Present -- <code>endShowFrame</code> closes the Tracy D3D12 zone, executes the
+    command list, and calls <code>Present()</code> on all output swap chains.</li>
+  </ol>
+
+  <p><strong>The bus.</strong> D2R (Director-to-Renderer) carries the
+  <code>bus::SceneSnapshot</code> with latest-wins delivery -- if the editor publishes
+  two snapshots before the show thread drains one, the older snapshot is silently
+  superseded. R2D (Renderer-to-Director) is FIFO and carries reply messages: compose-target
+  slot acks (<code>ScreenRenderTargetAllocated</code>,
+  <code>GenerativeLayerRenderTargetAllocated</code>), effect-chain slot acks
+  (<code>EffectChainRenderTargetAllocated</code>), and section-break crossing events
+  (<code>SectionBreakDetected</code>). Decode / transcode / scanner / plugin workers are
+  independent of both threads -- they write atomics that the editor reads each tick.</p>
+
+  <p class="note">Source: <code>docs/reference/SYSTEM_ORDERING.md</code></p>
+
+  <svg font-family="inherit" data-diagram="D2" viewBox="0 0 920 1020" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d2-title d2-desc">
+    <title id="d2-title">Per-frame system execution order across editor, show, and worker threads</title>
+    <desc id="d2-desc">Three vertical swim lanes side by side. The Editor lane (left, orange) shows 14 ordered per-frame steps from Timeline::update through Present. The Show lane (centre, indigo) shows 10 steps including a dashed slate fallback box that fires only when the editor heartbeat is stale. The Workers lane (right, slate) shows 5 independent worker types. Two prominent teal arrows in the gutter between Editor and Show show the D2R SceneSnapshot publish and the R2D reply path. A footer band notes that worker atomics and the editor heartbeat are read directly by the editor and show threads respectively, without explicit arrows.</desc>
+
+    <defs>
+      <marker id="d2-arrow-bus" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+        <polygon points="0 0, 10 4, 0 8" fill="#0F766E"/>
+      </marker>
+    </defs>
+
+    <!-- ===== LANE HEADERS ===== -->
+    <rect x="12" y="4" width="304" height="40" rx="3" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+    <text x="164" y="28" text-anchor="middle" font-size="13" font-weight="700" fill="#C2410C">EDITOR THREAD &#x2014; Engine::update()</text>
+
+    <rect x="348" y="4" width="304" height="40" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="500" y="28" text-anchor="middle" font-size="13" font-weight="700" fill="#1E3A8A">SHOW THREAD &#x2014; showThreadMain()</text>
+
+    <rect x="672" y="4" width="236" height="40" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+    <text x="790" y="28" text-anchor="middle" font-size="13" font-weight="700" fill="#525252">WORKER THREADS</text>
+
+    <!-- ===== LEGEND ROW ===== -->
+    <rect x="12" y="54" width="896" height="32" rx="3" fill="#FFFFFF" stroke="#E4E2DA" stroke-width="1"/>
+    <text x="24" y="74" font-size="11" font-weight="700" fill="#52525B" letter-spacing="0.04em">LEGEND</text>
+    <rect x="84" y="62" width="20" height="16" rx="2" fill="#FFEDD5" stroke="#C2410C" stroke-width="1"/>
+    <text x="110" y="74" font-size="11" fill="#52525B">editor step (writes registry)</text>
+    <rect x="270" y="62" width="20" height="16" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+    <text x="296" y="74" font-size="11" fill="#52525B">bus publish / drain (teal)</text>
+    <rect x="448" y="62" width="20" height="16" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1" stroke-dasharray="3 2"/>
+    <text x="474" y="74" font-size="11" fill="#52525B">fallback (only fires on editor stall)</text>
+    <line x1="690" y1="70" x2="724" y2="70" stroke="#0F766E" stroke-width="2.5" marker-end="url(#d2-arrow-bus)"/>
+    <text x="730" y="74" font-size="11" fill="#0F766E">cross-thread bus message</text>
+
+    <!-- ===== EDITOR STEPS — 14 boxes, 60 tall, stride 64, start y=100 ===== -->
+    <!-- Box backgrounds: 11 normal + step 9 teal + 2 normal -->
+    <g fill="#FFEDD5" stroke="#C2410C" stroke-width="1">
+      <rect x="12" y="100" width="304" height="60" rx="3"/>
+      <rect x="12" y="164" width="304" height="60" rx="3"/>
+      <rect x="12" y="228" width="304" height="60" rx="3"/>
+      <rect x="12" y="292" width="304" height="60" rx="3"/>
+      <rect x="12" y="356" width="304" height="60" rx="3"/>
+      <rect x="12" y="420" width="304" height="60" rx="3"/>
+      <rect x="12" y="484" width="304" height="60" rx="3"/>
+      <rect x="12" y="548" width="304" height="60" rx="3"/>
+      <rect x="12" y="612" width="304" height="60" rx="3"/>
+      <rect x="12" y="676" width="304" height="60" rx="3"/>
+      <rect x="12" y="740" width="304" height="60" rx="3"/>
+      <rect x="12" y="868" width="304" height="60" rx="3"/>
+      <rect x="12" y="932" width="304" height="60" rx="3"/>
+    </g>
+    <!-- Step 9 (buildSceneSnapshot) — teal -->
+    <rect x="12" y="804" width="304" height="60" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+
+    <!-- Step-number gutter dividers -->
+    <g stroke="#E4E2DA" stroke-width="1">
+      <line x1="50" y1="112" x2="50" y2="148"/><line x1="50" y1="176" x2="50" y2="212"/>
+      <line x1="50" y1="240" x2="50" y2="276"/><line x1="50" y1="304" x2="50" y2="340"/>
+      <line x1="50" y1="368" x2="50" y2="404"/><line x1="50" y1="432" x2="50" y2="468"/>
+      <line x1="50" y1="496" x2="50" y2="532"/><line x1="50" y1="560" x2="50" y2="596"/>
+      <line x1="50" y1="624" x2="50" y2="660"/><line x1="50" y1="688" x2="50" y2="724"/>
+      <line x1="50" y1="752" x2="50" y2="788"/><line x1="50" y1="816" x2="50" y2="852"/>
+      <line x1="50" y1="880" x2="50" y2="916"/><line x1="50" y1="944" x2="50" y2="980"/>
+    </g>
+
+    <!-- Step numbers (left column) -->
+    <g font-size="14" font-weight="700" fill="#C2410C" text-anchor="middle">
+      <text x="31" y="135">1</text><text x="31" y="199">2</text><text x="31" y="263">3</text>
+      <text x="31" y="327">3.5</text><text x="31" y="391">4</text><text x="31" y="455">5</text>
+      <text x="31" y="519">5.5</text><text x="31" y="583">5.6</text><text x="31" y="647">6</text>
+      <text x="31" y="711">7</text><text x="31" y="775">8</text>
+      <text x="31" y="903">10</text><text x="31" y="967">11</text>
+    </g>
+    <text x="31" y="839" font-size="14" font-weight="700" fill="#0F766E" text-anchor="middle">9</text>
+
+    <!-- Editor primary labels -->
+    <g font-size="13" font-weight="600" fill="#1B1B1F">
+      <text x="60" y="124">Timeline::update(dt)</text>
+      <text x="60" y="188">SectionScheduler::tick()</text>
+      <text x="60" y="252">AnimationSystem::update(dt)</text>
+      <text x="60" y="316">TextSystem::update()</text>
+      <text x="60" y="380">drainContentScannerDeltas()</text>
+      <text x="60" y="444">DecodeSystem::update()</text>
+      <text x="60" y="508">AudioSystem::update()</text>
+      <text x="60" y="572">SeekSyncController::tick()</text>
+      <text x="60" y="636">m_lastEditorTickNs.store(now)</text>
+      <text x="60" y="700">ImGui + UI rendering</text>
+      <text x="60" y="764">CommandDispatcher::processQueue</text>
+      <text x="60" y="892">drainRendererToDirector()</text>
+      <text x="60" y="956">begin/endEditorFrame &#x2014; Present</text>
+    </g>
+    <text x="60" y="828" font-size="13" font-weight="700" fill="#0F766E">buildSceneSnapshot()</text>
+
+    <!-- Editor sub-labels -->
+    <g font-size="11" fill="#52525B">
+      <text x="60" y="146">advances m_currentTime (atomic write)</text>
+      <text x="60" y="210">applies catch-up; detection is show-side</text>
+      <text x="60" y="274">keyframes &#x2192; Transform + OAOutput</text>
+      <text x="60" y="338">rasterize dirty Text via DirectWrite</text>
+      <text x="60" y="402">folds FS-watcher deltas into MediaBin</text>
+      <text x="60" y="466">maps timeline frame &#x2192; worker-&gt;targetFrame</text>
+      <text x="60" y="530">steers AudioDecodeWorker; mirrors gain/mute</text>
+      <text x="60" y="594">polls decoder readiness; releases gate</text>
+      <text x="60" y="658">heartbeat the show thread polls for stalls</text>
+      <text x="60" y="722">windows draw; writes via CommandDispatcher</text>
+      <text x="60" y="786">drains Editor + Either affinity; writes registry</text>
+      <text x="60" y="914">writes R2D replies back to registry</text>
+      <text x="60" y="978">editor swap chain Present</text>
+    </g>
+    <text x="60" y="850" font-size="11" fill="#0F766E">bakes registry &#x2192; bus::SceneSnapshot; publishes D2R</text>
+
+    <!-- ===== SHOW STEPS — 10 boxes, 60 tall, stride 64, start y=100 ===== -->
+    <g fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1">
+      <rect x="348" y="100" width="304" height="60" rx="3"/>
+      <rect x="348" y="164" width="304" height="60" rx="3"/>
+      <rect x="348" y="292" width="304" height="60" rx="3"/>
+      <rect x="348" y="420" width="304" height="60" rx="3"/>
+      <rect x="348" y="484" width="304" height="60" rx="3"/>
+      <rect x="348" y="548" width="304" height="60" rx="3"/>
+      <rect x="348" y="612" width="304" height="60" rx="3"/>
+      <rect x="348" y="676" width="304" height="60" rx="3"/>
+    </g>
+    <!-- Step 1.2 — fallback (slate dashed) -->
+    <rect x="348" y="228" width="304" height="60" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1.5" stroke-dasharray="5 3"/>
+    <!-- Step 3 — drain D2R (teal) -->
+    <rect x="348" y="356" width="304" height="60" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+
+    <!-- Step-number gutter dividers -->
+    <g stroke="#E4E2DA" stroke-width="1">
+      <line x1="386" y1="112" x2="386" y2="148"/><line x1="386" y1="176" x2="386" y2="212"/>
+      <line x1="386" y1="240" x2="386" y2="276"/><line x1="386" y1="304" x2="386" y2="340"/>
+      <line x1="386" y1="368" x2="386" y2="404"/><line x1="386" y1="432" x2="386" y2="468"/>
+      <line x1="386" y1="496" x2="386" y2="532"/><line x1="386" y1="560" x2="386" y2="596"/>
+      <line x1="386" y1="624" x2="386" y2="660"/><line x1="386" y1="688" x2="386" y2="724"/>
+    </g>
+
+    <!-- Show step numbers -->
+    <g font-size="14" font-weight="700" fill="#1E3A8A" text-anchor="middle">
+      <text x="367" y="135">1</text><text x="367" y="199">1.1</text>
+      <text x="367" y="327">2</text><text x="367" y="455">4</text>
+      <text x="367" y="519">5</text><text x="367" y="583">6</text>
+      <text x="367" y="647">7</text><text x="367" y="711">8</text>
+    </g>
+    <text x="367" y="263" font-size="14" font-weight="700" fill="#525252" text-anchor="middle">1.2</text>
+    <text x="367" y="391" font-size="14" font-weight="700" fill="#0F766E" text-anchor="middle">3</text>
+
+    <!-- Show primary labels -->
+    <g font-size="13" font-weight="600" fill="#1B1B1F">
+      <text x="396" y="124">Timeline::update(dt)</text>
+      <text x="396" y="188">SectionDetect zone</text>
+      <text x="396" y="316">CommandDispatcher::processQueue</text>
+      <text x="396" y="444">beginShowFrame</text>
+      <text x="396" y="508">PlaybackPresenter::present()</text>
+      <text x="396" y="572">CompositorSystem::update()</text>
+      <text x="396" y="636">OutputManager::renderOutputs()</text>
+      <text x="396" y="700">endShowFrame</text>
+    </g>
+    <text x="396" y="252" font-size="13" font-weight="600" fill="#525252">DecodeSystem + AudioSystem (fallback)</text>
+    <text x="396" y="380" font-size="13" font-weight="700" fill="#0F766E">Drain D2R bus</text>
+
+    <!-- Show sub-labels -->
+    <g font-size="11" fill="#52525B">
+      <text x="396" y="146">advances time unconditionally every show frame</text>
+      <text x="396" y="210">break detection; posts R2D SectionBreakDetected</text>
+      <text x="396" y="338">Show affinity: Play / Pause / Seek / SectionGo</text>
+      <text x="396" y="466">reset show allocator; open cmd list; Tracy zone</text>
+      <text x="396" y="530">uploads decoded frames to GPU textures</text>
+      <text x="396" y="594">PASS 1 generative &#x2192; 1.5 effects &#x2192; 2 composite</text>
+      <text x="396" y="658">composite screens to output swap chains</text>
+      <text x="396" y="722">close Tracy zone; execute; Present all outputs</text>
+    </g>
+    <text x="396" y="274" font-size="11" fill="#525252">only if editor heartbeat is stale &gt; 50 ms</text>
+    <text x="396" y="402" font-size="11" fill="#0F766E">pulls latest SceneSnapshot (latest-wins)</text>
+
+    <!-- ===== WORKERS — 5 boxes, 80 tall, stride 84, start y=100 ===== -->
+    <g fill="#E5E5E5" stroke="#525252" stroke-width="1">
+      <rect x="672" y="100" width="236" height="80" rx="3"/>
+      <rect x="672" y="184" width="236" height="80" rx="3"/>
+      <rect x="672" y="268" width="236" height="80" rx="3"/>
+      <rect x="672" y="352" width="236" height="80" rx="3"/>
+    </g>
+    <!-- Plugin workers — green -->
+    <rect x="672" y="436" width="236" height="80" rx="3" fill="#DCFCE7" stroke="#15803D" stroke-width="1"/>
+
+    <g text-anchor="middle" font-size="13" font-weight="700">
+      <text x="790" y="132" fill="#525252">Decode #N</text>
+      <text x="790" y="216" fill="#525252">AudioDecodeWorker</text>
+      <text x="790" y="300" fill="#525252">ContentScanner</text>
+      <text x="790" y="384" fill="#525252">MediaProbe / Transcode</text>
+      <text x="790" y="468" fill="#15803D">Plugin workers</text>
+    </g>
+    <g text-anchor="middle" font-size="11" fill="#52525B">
+      <text x="790" y="151">one per clip entity</text>
+      <text x="790" y="167">FFmpeg &#x2192; FrameRingBuffer</text>
+      <text x="790" y="235">one per clip entity</text>
+      <text x="790" y="251">FFmpeg audio &#x2192; ring</text>
+      <text x="790" y="319">filesystem watcher</text>
+      <text x="790" y="335">delta queue &#x2192; editor step 4</text>
+      <text x="790" y="403">probe metadata; transcode</text>
+      <text x="790" y="419">to delivery codec</text>
+    </g>
+    <g text-anchor="middle" font-size="11" fill="#15803D">
+      <text x="790" y="487">OSC, DMX, telemetry, ...</text>
+      <text x="790" y="503">enqueue() via IPluginContext</text>
+    </g>
+
+    <!-- ===== WORKER LANE FOOTER NOTE ===== -->
+    <rect x="672" y="540" width="236" height="80" rx="3" fill="#FFFFFF" stroke="#E4E2DA" stroke-width="1" stroke-dasharray="2 2"/>
+    <text x="790" y="565" text-anchor="middle" font-size="11" font-weight="700" fill="#52525B">INDEPENDENT</text>
+    <text x="790" y="583" text-anchor="middle" font-size="11" fill="#52525B">no per-frame ordering;</text>
+    <text x="790" y="599" text-anchor="middle" font-size="11" fill="#52525B">write atomics that editor</text>
+    <text x="790" y="615" text-anchor="middle" font-size="11" fill="#52525B">reads at steps 4, 5, 5.5</text>
+
+    <!-- ===== HEARTBEAT NOTE (between worker lane and bottom of editor) ===== -->
+    <rect x="672" y="632" width="236" height="64" rx="3" fill="#FFEDD5" stroke="#C2410C" stroke-width="1" stroke-dasharray="2 2"/>
+    <text x="790" y="654" text-anchor="middle" font-size="11" font-weight="700" fill="#C2410C">HEARTBEAT &#x2014; step 6</text>
+    <text x="790" y="672" text-anchor="middle" font-size="11" fill="#52525B">editor writes m_lastEditorTickNs;</text>
+    <text x="790" y="688" text-anchor="middle" font-size="11" fill="#52525B">show polls it at step 1.2</text>
+
+    <!-- ===== CROSS-LANE ARROWS — only the two bus channels ===== -->
+    <!-- D2R: editor step 9 (out) -> show step 3 (in) -->
+    <path d="M 316 834 L 326 834 L 326 386 L 348 386"
+          fill="none" stroke="#0F766E" stroke-width="2.5"
+          marker-end="url(#d2-arrow-bus)"/>
+
+    <!-- R2D: show step 6 (out, posts ScreenRTAllocated/SectionBreakDetected) -> editor step 10 (in) -->
+    <path d="M 348 578 L 340 578 L 340 898 L 316 898"
+          fill="none" stroke="#0F766E" stroke-width="2.5"
+          marker-end="url(#d2-arrow-bus)"/>
+
+    <!-- Arrow labels — rotated to read along verticals -->
+    <text transform="translate(322, 615) rotate(-90)" font-size="11" font-weight="700" fill="#0F766E" text-anchor="middle">D2R &#x2014; SceneSnapshot</text>
+    <text transform="translate(344, 745) rotate(90)" font-size="11" font-weight="700" fill="#0F766E" text-anchor="middle">R2D &#x2014; replies</text>
+  </svg>
+
+  <p class="note">Source: <code>docs/reference/SYSTEM_ORDERING.md</code></p>
+
+  <h3>Editor-stall fallbacks -- keeping the projector alive</h3>
+
+  <p>When the editor thread blocks for more than ~50 ms -- a native file-picker dialog,
+  an OS resize/move loop, a slow project load -- <code>Engine::update</code> stops running.
+  Every editor-tick system stops with it. Without a counter-measure, the projector output
+  freezes on whatever frame the user last saw. In a live show, that is a failure.</p>
+
+  <p>The show thread polls <code>m_lastEditorTickNs</code> (the heartbeat written at editor
+  step 6) to detect staleness. Two counter-measure shapes cover all the systems that matter:</p>
+
+  <ul>
+    <li><strong>Show-fallback tick.</strong> When the system's per-frame work writes only
+    atomics and never the registry, the show thread can call the system's <code>update()</code>
+    directly on the stall path. Systems using this shape:
+    <ul>
+      <li><strong>Timeline</strong> -- <code>m_currentTime</code> is an atomic; the show
+      thread has called <code>Timeline::update(dt)</code> unconditionally since commit
+      <code>ee99a99</code>, not just during editor stalls.</li>
+      <li><strong>DecodeSystem</strong> -- writes only the atomic <code>worker-&gt;targetFrame</code>;
+      the show-thread fallback has been in place since commit <code>a9bcd8b</code>.</li>
+      <li><strong>AudioSystem</strong> -- writes only atomic worker fields
+      (<code>seekTarget</code>, <code>active</code>) and <code>MixSource</code>
+      mixer-slot fields; fallback fires on the same 50 ms heartbeat gate as DecodeSystem.</li>
+    </ul>
+    </li>
+    <li><strong>Snapshot-bake and re-derive.</strong> When the system writes registry
+    components, the show thread cannot call it at all. Instead, the editor bakes the
+    system's output into <code>bus::SceneSnapshot::clipCatalog</code> once per editor
+    frame, and the show thread re-evaluates from those baked inputs each render frame
+    in <code>buildRenderFrame()</code>. Systems using this shape:
+    <ul>
+      <li><strong>AnimationSystem</strong> (<strong>NEW-07</strong>, closed 2026-05-11).
+      Keyframe tracks for each clip are baked into <code>bus::ClipCatalogEntry</code>.
+      The show thread re-evaluates them in <code>buildRenderFrame</code>, overriding
+      <code>ClipRenderState::transformMatrix</code> / <code>opacity</code> for animated
+      clips. Design doc: <code>docs/design/animation-snapshot-bake.md</code>.</li>
+      <li><strong>SectionScheduler</strong> (<strong>NEW-08</strong>, closed 2026-05-20).
+      Because SectionScheduler is a state machine -- not a stateless evaluator like
+      AnimationSystem -- snapshot-bake alone is not sufficient. The solution splits the
+      work: break-crossing <em>detection</em> runs on the show thread (the
+      <code>SectionDetect</code> zone, step 1.1); the registry-mutating
+      <em>application</em> (<code>SectionScheduler::handleBreakAt</code>) stays on the
+      editor thread, triggered by an R2D <code>bus::SectionBreakDetected</code> message
+      drain. Continuation phase is re-derived show-side from a wall-clock anchor baked
+      into <code>ClipCatalogEntry</code> fields
+      (<code>phase_continuationStartTimeNs</code> /
+      <code>phase_continuationSeedFrames</code>), so Loop and PingPong clips keep
+      cycling at a parked break even during a multi-second editor stall. Design doc:
+      <code>docs/design/section-scheduler-snapshot-bake.md</code>.</li>
+    </ul>
+    </li>
+  </ul>
+
+  <p><strong>TextSystem</strong> does not need either mechanism. Text content only changes
+  on explicit authoring commands -- it does not advance with wall time. The last-baked
+  texture remains valid at the GPU indefinitely during a stall.</p>
+
+  <div class="callout callout--show">
+    <p><strong>Diagnostic recipe: "is the output frozen?"</strong> Before chasing
+    display-layer theories (DWM composition, Independent Flip, swap-chain fullscreen
+    mode, driver bugs), add ~20 lines to render an independent per-frame counter quad
+    to the output -- a small color-cycling square in a corner that is totally
+    independent of <code>Timeline</code>, <code>SceneSnapshot</code>, and decode state.
+    Then trigger the suspected stall and observe:</p>
+    <ul>
+      <li><strong>Counter keeps cycling</strong> -- the swap chain is fine. The freeze
+      is in the content pipeline: some editor-tick system stopped feeding the show
+      thread. Check whether it has a show-thread fallback per
+      <code>docs/adr/0014-editor-show-thread-split.md</code>.</li>
+      <li><strong>Counter freezes too</strong> -- the freeze really is in the swap
+      chain or display path. Use PresentMon to confirm whether the OS is completing
+      your presents. Genuinely rare on this codebase given the editor/show split.</li>
+    </ul>
+    <p>This recipe was learned the hard way (commit <code>a9bcd8b</code>): ~6 hours of
+    display-layer investigation before the marker test pivoted to the actual
+    six-line content-pipeline fix.</p>
+  </div>
+
+  <svg font-family="inherit" data-diagram="D3" viewBox="0 0 920 320" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d3-title d3-desc">
+    <title id="d3-title">Snapshot-bake decision tree for editor-tick systems</title>
+    <desc id="d3-desc">Decision tree: root asks whether system drives output. If yes, asks whether it writes registry. Registry-writes branch leads to snapshot-bake leaves (AnimationSystem, SectionScheduler, TextSystem). Non-registry-write branch leads to show-fallback-tick leaves (Timeline, DecodeSystem, AudioSystem).</desc>
+    <defs>
+      <marker id="d3-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#52525B"/>
+      </marker>
+    </defs>
+
+    <!-- Root -->
+    <rect x="310" y="12" width="300" height="44" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="460" y="30" text-anchor="middle" font-size="13" font-weight="600" fill="#1B1B1F">Editor-tick system</text>
+    <text x="460" y="48" text-anchor="middle" font-size="11" fill="#52525B">drives projector output?</text>
+    <line x1="460" y1="56" x2="460" y2="88" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+    <!-- Second node -->
+    <rect x="310" y="88" width="300" height="44" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="460" y="106" text-anchor="middle" font-size="13" font-weight="600" fill="#1B1B1F">Writes registry</text>
+    <text x="460" y="124" text-anchor="middle" font-size="11" fill="#52525B">components each tick?</text>
+
+    <!-- YES branch (left -> snapshot-bake) -->
+    <line x1="360" y1="110" x2="220" y2="110" stroke="#52525B" stroke-width="1.5"/>
+    <line x1="220" y1="110" x2="220" y2="170" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+    <text x="290" y="103" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">YES</text>
+
+    <!-- NO branch (right -> show-fallback) -->
+    <line x1="560" y1="110" x2="700" y2="110" stroke="#52525B" stroke-width="1.5"/>
+    <line x1="700" y1="110" x2="700" y2="170" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+    <text x="630" y="103" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">NO</text>
+
+    <!-- Snapshot-bake box -->
+    <rect x="100" y="170" width="240" height="44" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+    <text x="220" y="191" text-anchor="middle" font-size="12" font-weight="700" fill="#7C3AED">Snapshot-bake</text>
+    <text x="220" y="208" text-anchor="middle" font-size="10" fill="#7C3AED">Bake result into ClipCatalogEntry;</text>
+
+    <!-- Show-fallback box -->
+    <rect x="580" y="170" width="240" height="44" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="1.5"/>
+    <text x="700" y="191" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">Show-fallback tick</text>
+    <text x="700" y="208" text-anchor="middle" font-size="10" fill="#0891B2">Show thread calls system directly</text>
+
+    <!-- Snapshot-bake leaves -->
+    <line x1="220" y1="214" x2="220" y2="248" stroke="#7C3AED" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+    <rect x="60" y="248" width="160" height="36" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1"/>
+    <text x="140" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">AnimationSystem</text>
+    <text x="140" y="278" text-anchor="middle" font-size="10" fill="#52525B">tracks -&gt; ClipCatalogEntry</text>
+
+    <rect x="230" y="248" width="150" height="36" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1"/>
+    <text x="305" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">SectionScheduler</text>
+    <text x="305" y="278" text-anchor="middle" font-size="10" fill="#52525B">anchor -&gt; CatalogEntry</text>
+
+    <!-- Show-fallback leaves -->
+    <line x1="700" y1="214" x2="700" y2="248" stroke="#0891B2" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+    <rect x="560" y="248" width="120" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="620" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">Timeline</text>
+    <text x="620" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic m_currentTime</text>
+
+    <rect x="690" y="248" width="120" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="750" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">DecodeSystem</text>
+    <text x="750" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic targetFrame</text>
+
+    <rect x="820" y="248" width="88" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="864" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">AudioSystem</text>
+    <text x="864" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic workers</text>
+
+    <!-- No-stall-risk note -->
+    <text x="220" y="308" text-anchor="middle" font-size="10" fill="#52525B" font-style="italic">TextSystem: no fallback needed (text static per frame)</text>
+  </svg>
+
+  <p>The fallback coverage is now complete. There are no known editor-stall gaps -- NEW-07
+  (AnimationSystem) closed 2026-05-11 and NEW-08 (SectionScheduler) closed 2026-05-20
+  were the last two. Any new editor-tick system that drives the projector output must
+  choose one of these two shapes before shipping: show-fallback tick (if registry-write-free)
+  or snapshot-bake (if it writes registry components). The checklist is in
+  <code>docs/adr/0014-editor-show-thread-split.md</code> under
+  "Show-Thread Fallback Pattern."</p>
+
+  <p>With the spine established -- two threads, one registry, one baked snapshot, two
+  fallback shapes -- the next three sections walk down it. S3 inventories what is actually
+  inside the components and systems. S4 follows the render path from snapshot drain through
+  the three-pass compositor to the output swap chains. S5 catalogs the 22 editor windows
+  and the command loop that connects operator input back to registry state.</p>
+</section>
+
+
+    <!-- SECTION:S3 -->
+<section id="s3" class="doc-section">
+  <h2>3. Catalog: Systems, Components, Archetypes</h2>
+
+  <p>Now we open the toolbox. Three tables and a recipe-card grid. The systems table is the behavior; the components table is the data; the archetypes are the contracts between them. Every number and path below comes from a live HEAD scan at commit <code>e7fc109</code> (2026-05-23); see the fact sheet at <code>docs/reference/</code> for the full methodology. Systems are documented in <code>include/entity/systems/</code>, components in <code>include/entity/components/</code>, and archetypes are defined in <code>docs/reference/ENTITY_ARCHETYPES.md</code>.</p>
+
+  <h3>Systems (10)</h3>
+
+  <table>
+    <thead>
+      <tr>
+        <th>System</th>
+        <th>Header</th>
+        <th>Thread</th>
+        <th>What it does</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-family="system">
+        <td><code>AnimationSystem</code></td>
+        <td><code>include/entity/systems/AnimationSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Evaluates keyframe tracks; writes <code>Transform</code> + <code>ObjectAnimationOutput</code> each tick. Tracks are also baked into <code>ClipCatalogEntry</code> so the show thread can re-evaluate during editor stalls (NEW-07 closed 2026-05-11).</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>AudioSystem</code></td>
+        <td><code>include/entity/systems/AudioSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span> <span class="pill pill--show">Show fallback</span></td>
+        <td>Manages <code>AudioDecodeWorker</code> threads per clip; steers seek and gain; mirrors mute/solo to the audio mixer. Show-thread fallback fires when editor heartbeat is stale &gt;50 ms.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>CameraControlSystem</code></td>
+        <td><code>include/entity/systems/CameraControlSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Handles orbit/pan/zoom input for the Stage 3D viewport camera.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>CompositorSystem</code></td>
+        <td><code>include/entity/systems/CompositorSystem.hpp</code></td>
+        <td><span class="pill pill--show">Show</span></td>
+        <td>Three-pass GPU compositor (ADR-0018 + ADR-0019): PASS 1 draws generative layer content into per-layer compose targets; PASS 1.5 runs per-layer effect chains via ping-pong; PASS 2 unifies all content kinds onto each screen's compose target.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>DecodeSystem</code></td>
+        <td><code>include/entity/systems/DecodeSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span> <span class="pill pill--show">Show fallback</span></td>
+        <td>Maps timeline frame to media frame per clip; owns per-clip <code>DecodeWorker</code> threads; writes only the atomic <code>worker->targetFrame</code>. Show-thread fallback since commit <code>a9bcd8b</code>. Also runs a sliding-window prefetch (5 s ahead) to warm decode workers before clips become active.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>GenerativeSystem</code></td>
+        <td><code>include/entity/systems/GenerativeSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Ticks procedural layer state components each editor frame (Muncher tick counter, etc.).</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>RoutingLibrarySystem</code></td>
+        <td><code>include/entity/systems/RoutingLibrarySystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Reconciles the <code>ContentRoutingAsset</code> library each editor tick: creates one auto-direct asset per <code>Screen</code>, name-syncs from <code>Screen::name</code>, cascade-deletes orphan assets when a screen is destroyed.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>TextSystem</code></td>
+        <td><code>include/entity/systems/TextSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Rasterizes dirty <code>TextLayerState</code> entries to video-pool textures via DirectWrite + D2D. No show-thread fallback needed: text only changes on explicit authoring commands, so the last-baked texture stays valid during editor stalls.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>TimelineSystem</code></td>
+        <td><code>include/entity/systems/TimelineSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Legacy utility system: timeline-clip sync helpers used during track operations.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>TestSystem</code></td>
+        <td><code>include/entity/systems/TestSystem.hpp</code></td>
+        <td><span class="pill pill--workers">Utility</span></td>
+        <td>Skeleton integration-test harness. Placeholder only (CODE_ISSUES NEW-05); not wired into the production loop.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="note">Plus an abstract <code>System</code> base class (<code>include/entity/systems/System.hpp</code>) providing the virtual <code>update</code> / <code>initialize</code> / <code>shutdown</code> / <code>getName</code> contract. Not a system in its own right, so not counted above.</p>
+
+  <div class="callout callout--system">
+    <p>Most systems are editor-affinity: the editor thread is the sole registry writer, and systems that write <code>emplace</code> / <code>replace</code> / <code>destroy</code> can only run there. The two exceptions are <code>CompositorSystem</code> and <code>PlaybackPresenter</code>, which are show-affinity and never touch the registry. <code>DecodeSystem</code> and <code>AudioSystem</code> have both: they run on the editor thread in the normal case and fall back to the show thread when the editor is stalled, because they write only atomic fields rather than registry components.</p>
+  </div>
+
+  <h3>Components (33), grouped</h3>
+
+  <svg font-family="inherit" data-diagram="D4" viewBox="0 0 920 270" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d4-title d4-desc">
+    <title id="d4-title">Component families grid</title>
+    <desc id="d4-desc">Seven columns, one per component family. Families: Timeline (amber), Animation (violet), Media (slate), Routing (teal), Output (indigo), Effects (cyan), Kind-Specific (forest).</desc>
+    <!-- Column X centres: 68, 202, 333, 464, 598, 727, 854. Width 128 each except Media(122), Effects(118), Kind(124). -->
+    <!-- Headers -->
+    <g font-size="10" font-weight="700" text-anchor="middle">
+      <rect x="4" y="0" width="128" height="22" rx="2" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/><text x="68" y="15" fill="#D97706">TIMELINE</text>
+      <rect x="138" y="0" width="128" height="22" rx="2" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/><text x="202" y="15" fill="#7C3AED">ANIMATION</text>
+      <rect x="272" y="0" width="122" height="22" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/><text x="333" y="15" fill="#525252">MEDIA</text>
+      <rect x="400" y="0" width="128" height="22" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/><text x="464" y="15" fill="#0F766E">ROUTING</text>
+      <rect x="534" y="0" width="128" height="22" rx="2" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/><text x="598" y="15" fill="#1E3A8A">OUTPUT</text>
+      <rect x="668" y="0" width="118" height="22" rx="2" fill="#CFFAFE" stroke="#0891B2" stroke-width="1.5"/><text x="727" y="15" fill="#0891B2">EFFECTS</text>
+      <rect x="792" y="0" width="124" height="22" rx="2" fill="#DCFCE7" stroke="#15803D" stroke-width="1.5"/><text x="854" y="15" fill="#15803D">KIND-SPECIFIC</text>
+    </g>
+    <!-- Pills: fill=#FFFFFF stroke-width=1, shared via group per family -->
+    <!-- Timeline pills (amber) -->
+    <g fill="#FFFFFF" stroke="#D97706" stroke-width="1" font-size="10" text-anchor="middle" fill2="#D97706">
+      <rect x="4" y="28" width="128" height="20" rx="2"/><text x="68" y="43" fill="#D97706">Clip</text>
+      <rect x="4" y="54" width="128" height="20" rx="2"/><text x="68" y="69" fill="#D97706">Layer</text>
+      <rect x="4" y="80" width="128" height="20" rx="2"/><text x="68" y="95" fill="#D97706">MediaLayer</text>
+      <rect x="4" y="106" width="128" height="20" rx="2"/><text x="68" y="121" fill="#D97706">TimelineTrack</text>
+      <rect x="4" y="132" width="128" height="20" rx="2"/><text x="68" y="147" fill="#D97706">ClipDecodeState</text>
+      <rect x="4" y="158" width="128" height="20" rx="2"/><text x="68" y="173" fill="#D97706">ClipPlaybackPhase</text>
+      <rect x="4" y="184" width="128" height="20" rx="2"/><text x="68" y="199" fill="#D97706">AudioSource</text>
+      <rect x="4" y="210" width="128" height="20" rx="2"/><text x="68" y="225" fill="#D97706">FrameBuffer</text>
+    </g>
+    <!-- Animation pills (violet) -->
+    <g fill="#FFFFFF" stroke="#7C3AED" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="138" y="28" width="128" height="20" rx="2"/><text x="202" y="43" fill="#7C3AED">AnimatedProperties</text>
+      <rect x="138" y="54" width="128" height="20" rx="2"/><text x="202" y="69" fill="#7C3AED">Transform</text>
+      <rect x="138" y="80" width="128" height="20" rx="2"/><text x="202" y="95" fill="#7C3AED">Camera</text>
+      <rect x="138" y="106" width="128" height="20" rx="2"/><text x="202" y="121" fill="#7C3AED">ObjectAnimationLayer</text>
+      <rect x="138" y="132" width="128" height="20" rx="2"/><text x="202" y="147" fill="#7C3AED">ObjectAnimationOutput</text>
+    </g>
+    <!-- Media pills (slate) -->
+    <g fill="#FFFFFF" stroke="#525252" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="272" y="28" width="122" height="20" rx="2"/><text x="333" y="43" fill="#525252">VideoTexture</text>
+      <rect x="272" y="54" width="122" height="20" rx="2"/><text x="333" y="69" fill="#525252">Model</text>
+    </g>
+    <!-- Routing pills (teal) -->
+    <g fill="#FFFFFF" stroke="#0F766E" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="400" y="28" width="128" height="20" rx="2"/><text x="464" y="43" fill="#0F766E">ContentRouting</text>
+      <rect x="400" y="54" width="128" height="20" rx="2"/><text x="464" y="69" fill="#0F766E">ContentRoutingAsset</text>
+      <rect x="400" y="80" width="128" height="20" rx="2"/><text x="464" y="95" fill="#0F766E">ContentRoutingRef</text>
+    </g>
+    <!-- Output pills (indigo) -->
+    <g fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="534" y="28" width="128" height="20" rx="2"/><text x="598" y="43" fill="#1E3A8A">Screen</text>
+      <rect x="534" y="54" width="128" height="20" rx="2"/><text x="598" y="69" fill="#1E3A8A">OutputDisplay</text>
+      <rect x="534" y="80" width="128" height="20" rx="2"/><text x="598" y="95" fill="#1E3A8A">OutputSurface</text>
+      <rect x="534" y="106" width="128" height="20" rx="2"/><text x="598" y="121" fill="#1E3A8A">Projector</text>
+      <rect x="534" y="132" width="128" height="20" rx="2"/><text x="598" y="147" fill="#1E3A8A">Prop</text>
+    </g>
+    <!-- Effects pills (cyan) -->
+    <g fill="#FFFFFF" stroke="#0891B2" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="668" y="28" width="118" height="20" rx="2"/><text x="727" y="43" fill="#0891B2">Effect</text>
+      <rect x="668" y="54" width="118" height="20" rx="2"/><text x="727" y="69" fill="#0891B2">EffectChain</text>
+      <rect x="668" y="80" width="118" height="20" rx="2"/><text x="727" y="95" fill="#0891B2">EffectParameters</text>
+      <rect x="668" y="106" width="118" height="20" rx="2"/><text x="727" y="121" fill="#0891B2">EffectParam</text>
+      <rect x="668" y="132" width="118" height="20" rx="2"/><text x="727" y="147" fill="#0891B2">EffectChainRTs</text>
+      <rect x="668" y="158" width="118" height="20" rx="2"/><text x="727" y="173" fill="#0891B2">EffectAnimatedParams</text>
+    </g>
+    <!-- Kind-specific pills (forest) -->
+    <g fill="#FFFFFF" stroke="#15803D" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="792" y="28" width="124" height="20" rx="2"/><text x="854" y="43" fill="#15803D">GenerativeLayer</text>
+      <rect x="792" y="54" width="124" height="20" rx="2"/><text x="854" y="69" fill="#15803D">MunchersGameState</text>
+      <rect x="792" y="80" width="124" height="20" rx="2"/><text x="854" y="95" fill="#15803D">TextLayerState</text>
+    </g>
+    <text x="4" y="262" font-size="10" fill="#52525B" font-style="italic">All components are POD structs except Clip (RAII FFmpeg handles). ContentRoutingAssetOps is a helper header, not a component.</text>
+  </svg>
+
+  <p>The seven families cluster by purpose. <strong>Timeline</strong> components hold the raw authoring data for things that live on tracks: start frame, duration, loop mode, decode state, section-break continuation anchor. <strong>Animation</strong> components encode keyframe tracks and the output of evaluating them, plus the editor viewport camera. <strong>Media</strong> is thin by design: <code>VideoTexture</code> holds the descriptor-pool slot and the decoded frame pointer; <code>Model</code> holds the GPU mesh. <strong>Routing</strong> (introduced ADR-0022) is the Plane A content-routing library: named reusable <code>ContentRoutingAsset</code> entities that clips reference via <code>ContentRoutingRef</code>, replacing the old inline <code>ContentRouting</code> component. <strong>Output</strong> is everything from a physical display to a virtual projector to a stage prop used only for editor pre-visualization. <strong>Effects</strong> are entities in their own right (per ADR-0019): <code>Effect</code> + <code>EffectParameters</code> sit on separate entities referenced by an <code>EffectChain</code> on the layer. <strong>Kind-specific</strong> components discriminate generative sub-kinds at the component-composition level rather than at a runtime enum switch.</p>
+
+  <div class="callout callout--component">
+    <p><strong>Note:</strong> <code>ContentRoutingAssetOps</code> (<code>include/entity/components/ContentRoutingAssetOps.hpp</code>) is a header of free helper functions for creating, looking up, and applying routing assets. It lives in the components directory for locality but is not a component struct and is never attached to an entity. Do not model it as a component in architecture diagrams.</p>
+  </div>
+
+  <h3>Archetypes -- what makes a Clip a Clip</h3>
+
+  <p>EnTT will happily attach any component to any entity; the actual archetypes are conventions enforced by the systems that read them. No archetype is hard-coded at the type-system level. What makes a <code>Clip</code> a Clip is that <code>CompositorSystem</code>, <code>DecodeSystem</code>, and <code>PlaybackTimeAuthority</code> all operate on the combination of <code>Clip + Transform + ClipDecodeState + VideoTexture</code> -- if one of those components is absent, that entity silently falls outside the system's view. The five archetypes below cover roughly 95% of timeline-resident entities on any real show project.</p>
+
+  <svg font-family="inherit" data-diagram="D5" viewBox="0 0 920 460" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d5-title d5-desc">
+    <title id="d5-title">Archetype recipe cards for the five main entity archetypes</title>
+    <desc id="d5-desc">Five horizontal rows: Clip, Screen, Projector, OA Layer, Generative. Each shows required (solid) and optional (dashed) component pills.</desc>
+    <defs><style>.ra{font-size:9;font-weight:700}.la{font-size:14;font-weight:700;text-anchor:middle}.sub{font-size:10;text-anchor:middle;fill:#52525B}.it{font-size:10;font-style:italic;fill:#52525B}</style></defs>
+    <g fill="#FFFFFF" font-size="9" text-anchor="middle">
+    <!-- ROW 1: Clip -->
+    <rect x="0" y="0" width="920" height="76" rx="4" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+    <text x="90" y="30" class="la" fill="#D97706">Clip</text>
+    <text x="90" y="48" class="sub">video / image source</text>
+    <line x1="168" y1="8" x2="168" y2="68" stroke="#D97706" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="18" class="ra" fill="#7C3AED">REQUIRED</text>
+    <g stroke-width="1">
+      <rect x="178" y="22" width="52" height="16" rx="2" stroke="#D97706"/><text x="204" y="34" fill="#D97706">Clip</text>
+      <rect x="234" y="22" width="60" height="16" rx="2" stroke="#7C3AED"/><text x="264" y="34" fill="#7C3AED">Transform</text>
+      <rect x="298" y="22" width="90" height="16" rx="2" stroke="#D97706"/><text x="343" y="34" fill="#D97706">ClipDecodeState</text>
+      <rect x="392" y="22" width="72" height="16" rx="2" stroke="#525252"/><text x="428" y="34" fill="#525252">VideoTexture</text>
+    </g>
+    <text x="178" y="58" class="ra" fill="#52525B">OPTIONAL</text>
+    <g stroke-width="1" stroke-dasharray="3 2">
+      <rect x="178" y="62" width="62" height="14" rx="2" stroke="#D97706"/><text x="209" y="73" fill="#D97706">MediaLayer</text>
+      <rect x="244" y="62" width="92" height="14" rx="2" stroke="#7C3AED"/><text x="290" y="73" fill="#7C3AED">AnimatedProperties</text>
+      <rect x="340" y="62" width="96" height="14" rx="2" stroke="#D97706"/><text x="388" y="73" fill="#D97706">ClipPlaybackPhase</text>
+      <rect x="440" y="62" width="60" height="14" rx="2" stroke="#0891B2"/><text x="470" y="73" fill="#0891B2">EffectChain</text>
+      <rect x="504" y="62" width="96" height="14" rx="2" stroke="#0F766E"/><text x="552" y="73" fill="#0F766E">ContentRoutingRef</text>
+      <rect x="604" y="62" width="66" height="14" rx="2" stroke="#D97706"/><text x="637" y="73" fill="#D97706">AudioSource</text>
+    </g>
+    <!-- ROW 2: Screen -->
+    <rect x="0" y="88" width="920" height="76" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="90" y="118" class="la" fill="#1E3A8A">Screen</text>
+    <text x="90" y="136" class="sub">projection surface</text>
+    <line x1="168" y1="96" x2="168" y2="156" stroke="#1E3A8A" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="106" class="ra" fill="#1E3A8A">REQUIRED</text>
+    <rect x="178" y="110" width="52" height="16" rx="2" stroke="#1E3A8A" stroke-width="1"/><text x="204" y="122" fill="#1E3A8A">Screen</text>
+    <text x="178" y="148" class="it">Single-component archetype. Position/rotation/scale embedded on Screen struct.</text>
+    <!-- ROW 3: Projector -->
+    <rect x="0" y="176" width="920" height="76" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="90" y="206" class="la" fill="#1E3A8A">Projector</text>
+    <text x="90" y="224" class="sub">virtual camera</text>
+    <line x1="168" y1="184" x2="168" y2="244" stroke="#1E3A8A" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="194" class="ra" fill="#1E3A8A">REQUIRED</text>
+    <rect x="178" y="198" width="60" height="16" rx="2" stroke="#1E3A8A" stroke-width="1"/><text x="208" y="210" fill="#1E3A8A">Projector</text>
+    <text x="178" y="236" class="it">Single-component archetype. Carries calibration point list + fov/near/far internally.</text>
+    <!-- ROW 4: OA Layer -->
+    <rect x="0" y="264" width="920" height="76" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+    <text x="90" y="294" class="la" fill="#7C3AED" font-size="13">OA Layer</text>
+    <text x="90" y="312" class="sub">object animation</text>
+    <line x1="168" y1="272" x2="168" y2="332" stroke="#7C3AED" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="282" class="ra" fill="#7C3AED">REQUIRED</text>
+    <g stroke-width="1">
+      <rect x="178" y="286" width="108" height="16" rx="2" stroke="#D97706"/><text x="232" y="298" fill="#D97706">Layer (Kind::OA)</text>
+      <rect x="290" y="286" width="116" height="16" rx="2" stroke="#7C3AED"/><text x="348" y="298" fill="#7C3AED">ObjectAnimationLayer</text>
+    </g>
+    <text x="178" y="324" class="ra" fill="#52525B">OPTIONAL</text>
+    <g stroke-width="1" stroke-dasharray="3 2">
+      <rect x="178" y="328" width="92" height="14" rx="2" stroke="#7C3AED"/><text x="224" y="339" fill="#7C3AED">AnimatedProperties</text>
+      <rect x="274" y="328" width="112" height="14" rx="2" stroke="#7C3AED"/><text x="330" y="339" fill="#7C3AED">ObjectAnimationOutput</text>
+    </g>
+    <!-- ROW 5: Generative -->
+    <rect x="0" y="352" width="920" height="100" rx="4" fill="#DCFCE7" stroke="#15803D" stroke-width="1.5"/>
+    <text x="90" y="382" class="la" fill="#15803D" font-size="13">Generative</text>
+    <text x="90" y="400" class="sub">procedural layer</text>
+    <line x1="168" y1="360" x2="168" y2="444" stroke="#15803D" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="372" class="ra" fill="#15803D">REQUIRED</text>
+    <g stroke-width="1">
+      <rect x="178" y="376" width="118" height="16" rx="2" stroke="#D97706"/><text x="237" y="388" fill="#D97706">Layer (Kind::Generative)</text>
+      <rect x="300" y="376" width="82" height="16" rx="2" stroke="#15803D"/><text x="341" y="388" fill="#15803D">GenerativeLayer</text>
+      <rect x="386" y="376" width="60" height="16" rx="2" stroke="#7C3AED"/><text x="416" y="388" fill="#7C3AED">Transform</text>
+      <rect x="450" y="376" width="70" height="16" rx="2" stroke="#D97706"/><text x="485" y="388" fill="#D97706">MediaLayer</text>
+    </g>
+    <text x="178" y="412" class="ra" fill="#15803D">KIND-SPECIFIC (one of)</text>
+    <g stroke-width="1">
+      <rect x="178" y="416" width="100" height="16" rx="2" stroke="#15803D"/><text x="228" y="428" fill="#15803D">MunchersGameState</text>
+      <text x="282" y="428" fill="#52525B">OR</text>
+      <rect x="298" y="416" width="80" height="16" rx="2" stroke="#15803D"/><text x="338" y="428" fill="#15803D">TextLayerState</text>
+    </g>
+    <text x="178" y="447" class="it">Sub-kind dispatched by component composition, not by a kind enum at runtime.</text>
+    </g>
+  </svg>
+
+  <p>The design principle here is composition-not-inheritance, per ADR-0016 and ADR-0018. Systems select entity kinds by component combination -- <code>view&lt;Layer, Clip&gt;</code> vs. <code>view&lt;Layer, ObjectAnimationLayer&gt;</code> -- never by reading <code>Layer::kind</code> at runtime. The <code>Kind</code> enum on <code>Layer</code> exists for three things only: UI kind badges in the timeline, serialization disambiguation in the project file, and human-readable log output. For the Generative archetype this goes one level deeper: the presence of <code>MunchersGameState</code> versus <code>TextLayerState</code> is the discriminator between the Muncher and Text sub-kinds. There is no sub-kind field to switch on. Adding a new sub-kind means adding a new kind-specific component and wiring it into <code>GenerativeSystem</code> and the compositor's PASS 1 -- PASS 2 doesn't care.</p>
+
+  <h3>Largest files -- what's overgrown</h3>
+
+  <p>Eight files cross 1,000 lines. Some of that is justified domain complexity; some of it is genuine god-file accumulation that the roadmap is working through. Either way, these are the files where a reviewer should look first when something breaks, and the files most likely to be involved in a messy merge conflict.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th class="num">Lines</th>
+        <th>Why it's big</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-family="system">
+        <td><code>src/render/D3D12Renderer.cpp</code></td>
+        <td class="num">6,044</td>
+        <td>Full D3D12 renderer: swap chains, command lists, GPU resource management, all compositor passes. True god-file -- touches every GPU resource type and the entire pipeline in one translation unit.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>src/command/Commands.cpp</code></td>
+        <td class="num">5,626</td>
+        <td>All undoable command implementations (~100+ command types) in one file. Large by design -- it's a registry pattern, not accumulation. Every new feature adds command types here.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>src/core/Engine.cpp</code></td>
+        <td class="num">5,290</td>
+        <td>Main engine: ECS initialization, editor thread loop, show thread, all system wiring. This is the trunk file -- it knows about everything. Phase B Engine decomposition has been on the roadmap for a while.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/ui/PropertyWindow.cpp</code></td>
+        <td class="num">2,839</td>
+        <td>Per-component property editing UI for every archetype (clips, screens, effects, text layers). Grows linearly as new component types are added.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/project/ProjectSerializer.cpp</code></td>
+        <td class="num">2,328</td>
+        <td>Full project schema read/write + multi-version migration (v1 through v22+). Every schema version bump adds code here.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/timeline/TimelineWidgetInput.cpp</code></td>
+        <td class="num">1,967</td>
+        <td>All timeline hit-testing: drag, trim, scrub, rubber-band, keyframe picking. Complex but focused domain.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>src/director/PlaybackTimeAuthority.cpp</code></td>
+        <td class="num">1,613</td>
+        <td>SceneSnapshot bake + RenderFrame build + show-side re-evaluation of animation tracks and section phase. Genuinely complex: it straddles the editor/show boundary.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/timeline/TimelineWidgetRender.cpp</code></td>
+        <td class="num">1,606</td>
+        <td>All timeline drawing: tracks, clips, keyframe diamonds, ruler, waveforms. Paired with the input file -- together they're the timeline widget.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--archetype">
+    <p>The top three are the ones worth knowing about for architecture work. <code>D3D12Renderer.cpp</code> at 6,044 lines is a genuine decomposition target -- every GPU resource type lives in one file, and adding a new rendering pass means navigating thousands of lines of unrelated resource management. <code>Commands.cpp</code> at 5,626 is large but intentional: all undoable commands in one place is a registry pattern, and splitting it would scatter the undo stack across multiple files with no obvious benefit. <code>Engine.cpp</code> at 5,290 is the wiring trunk -- it's large because it wires everything together, not because the logic is dense. The Phase B Engine decomposition work on the roadmap would carve it into subsystem-specific initializers.</p>
+  </div>
+
+  <h3>UI windows (22)</h3>
+
+  <p>S5 walks through all 22 windows in detail. They live in <code>src/ui/</code> and total ~13,889 LOC -- a substantial fraction of the codebase. The largest is <code>PropertyWindow</code> at 2,839 lines; the smallest is <code>TimelineWindow</code> at 16 lines (a thin shell that hosts the two <code>src/timeline/</code> widget files). Note that <code>MathInput</code> (532 LOC) is a utility input widget that lives in <code>src/ui/</code> but is not an operator-visible window.</p>
+
+</section>
+
+
+    <!-- SECTION:S4 -->
+<section id="s4" class="doc-section">
+  <h2>4. The Render Pipeline</h2>
+
+  <p>Once the editor publishes a <code>bus::SceneSnapshot</code>, the show thread takes over. Everything from here lives on the show thread and writes only to GPU memory -- the registry is read-only on this side, per ADR-0014. The three-pass compositor is specified in <code>docs/adr/0018-content-layer-unification.md</code> (the kind-blind PASS 2 contract) and <code>docs/adr/0019-per-layer-effects.md</code> (the PASS 1.5 ping-pong effect chain). The implementation lives in <code>src/systems/CompositorSystem.cpp</code> and <code>src/render/D3D12Renderer.cpp</code>.</p>
+
+  <h3>Three passes, kind-blind composite</h3>
+
+  <p>The unifying abstraction the compositor works on is the <em>content layer</em>:
+  a video clip, a generative layer (Muncher, Text), or any future kind that produces
+  a texture for a screen. Each one contributes one <code>ContentLayerSnapshot</code>
+  to the render frame, and from PASS 1.5 onward the pipeline is kind-blind -- it
+  doesn't matter what produced the texture, only that there is one. This is the
+  payoff of ADR-0018; adding a new layer kind means writing PASS 1 producer code,
+  and nothing else changes.</p>
+
+  <p>The compositor's job is to go from a <code>RenderFrame</code> -- a list of <code>ContentLayerSnapshot</code> structs sorted by z-order -- to one filled compose-target texture per visible screen. It does this in three passes.</p>
+
+  <p><strong>PASS 1 -- Generative producers.</strong> For each active <code>GenerativeLayerSnapshot</code> in the render frame, the compositor calls <code>ensureGenerativeRenderTarget</code> to lazily allocate a compose-target slot (the allocation is confirmed via an R2D <code>GenerativeLayerRenderTargetAllocated</code> ack that the editor writes back to <code>GenerativeLayer::renderTargetSlot</code> on the next editor tick). It then opens that compose target, draws the kind-specific content in layer-local NDC -- the Muncher playfield for Muncher layers, or the texture already rasterized into the video-pool by <code>TextSystem</code> for Text layers -- and closes the target. Output: one compose-target texture per active generative layer. Video clips do not go through PASS 1; their textures are already in the video-pool, uploaded by <code>PlaybackPresenter::present()</code> before the compositor runs.</p>
+
+  <p><strong>PASS 1.5 -- Per-layer effect chains.</strong> For each <code>ContentLayerSnapshot</code> whose <code>effects</code> list is non-empty, the compositor ensures two ping-pong compose targets exist (<code>EffectChainRenderTargets</code>, again via R2D ack). It then walks the effect chain, calling <code>drawEffectPass</code> per enabled <code>Effect</code>, ping-ponging input and output targets each pass. The final result lands in <code>postEffectsSlot</code> on the layer snapshot. The kind-blind contract here is strict: PASS 1.5 operates identically on Video-sourced layers and Compose-sourced (generative) layers. It doesn't care what produced the source texture. PASS 1.5 is a complete no-op for layers with empty effect chains -- no targets are allocated and no draw calls are issued.</p>
+
+  <p><strong>PASS 2 -- Unified composite per screen.</strong> For each visible screen, the compositor calls <code>ensureScreenRenderTarget</code> (R2D ack writes <code>Screen::renderTargetSlot</code> on the editor thread) and opens the screen's compose target. It then walks every <code>ContentLayerSnapshot</code> in <code>rf.contentLayers</code> -- already sorted by <code>zOrder</code> -- that is targeted at this screen, and calls <code>drawTexturedQuad</code> per layer. When a layer has <code>postEffectsSlot &gt;= 0</code>, PASS 2 reads from the effect-chain output instead of <code>sourceSlot</code>. The source-kind enum dispatches the descriptor pool: <code>Video</code> reads from the video-texture pool; <code>Compose</code> reads from the generative-layer RT pool. One PASS 2 implementation handles every content kind that exists today or will exist tomorrow.</p>
+
+  <div class="callout callout--show">
+    <p>This is the payoff of ADR-0018. Adding a new content-producing layer kind -- a Particle layer, a Shader layer, anything -- requires PASS 1 work to produce a texture in a compose-target slot, but PASS 2 does not change. The compositor is closed for modification, open for extension on the consumer side.</p>
+  </div>
+
+  <svg font-family="inherit" data-diagram="D6" viewBox="0 0 920 520" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d6-title d6-desc">
+    <title id="d6-title">Three-pass GPU compositor pipeline</title>
+    <desc id="d6-desc">Left-to-right pipeline: Input (SceneSnapshot to buildRenderFrame), PASS 1 (Generative producers), PASS 1.5 (Per-layer effect chains), PASS 2 (Unified composite per screen), Output (OutputManager to swap chains).</desc>
+    <defs>
+      <marker id="d6-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1E3A8A"/></marker>
+    </defs>
+    <!-- Stage columns: Input x=4, P1 x=188, P1.5 x=372, P2 x=556, Out x=740 -->
+    <!-- Input -->
+    <rect x="4" y="60" width="168" height="380" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="88" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">INPUT</text>
+    <rect x="14" y="92" width="148" height="44" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+    <text x="88" y="112" text-anchor="middle" font-size="10" font-weight="600" fill="#0F766E">bus::SceneSnapshot</text>
+    <text x="88" y="127" text-anchor="middle" font-size="9" fill="#0F766E">published by editor step 9</text>
+    <line x1="88" y1="136" x2="88" y2="158" stroke="#52525B" stroke-width="1.5" marker-end="url(#d6-arrow)"/>
+    <rect x="14" y="158" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="1"/>
+    <text x="88" y="178" text-anchor="middle" font-size="10" font-weight="600" fill="#1B1B1F">buildRenderFrame()</text>
+    <text x="88" y="193" text-anchor="middle" font-size="9" fill="#52525B">PlaybackTimeAuthority</text>
+    <g font-size="9" fill="#52525B">
+      <text x="14" y="222" font-weight="600">READS:</text>
+      <text x="14" y="236">  ClipCatalogEntry (clips)</text>
+      <text x="14" y="250">  AnimTrack bake</text>
+      <text x="14" y="264">  SectionPhase anchor</text>
+      <text x="14" y="278">  ScreenSnapshot list</text>
+      <text x="14" y="300" font-weight="600">PRODUCES:</text>
+      <text x="14" y="314">  RenderFrame</text>
+      <text x="14" y="328">  contentLayers[] (by zOrder)</text>
+    </g>
+    <line x1="172" y1="250" x2="184" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- PASS 1 -->
+    <rect x="188" y="0" width="168" height="460" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="272" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">PASS 1</text>
+    <text x="272" y="38" text-anchor="middle" font-size="10" fill="#1E3A8A">Generative producers</text>
+    <rect x="198" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1"/>
+    <text x="272" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#15803D">Per GenerativeLayer</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="272" y="82">ensureGenerativeRT()</text><text x="272" y="96">beginComposeTarget(slot)</text></g>
+    <rect x="198" y="118" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1"/>
+    <text x="272" y="138" text-anchor="middle" font-size="10" font-weight="600" fill="#15803D">drawMuncherPlayfield()</text>
+    <text x="272" y="153" text-anchor="middle" font-size="9" fill="#52525B">or TextLayerState slot</text>
+    <rect x="198" y="172" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+    <text x="272" y="190" text-anchor="middle" font-size="9" fill="#0F766E">endComposeTarget()</text>
+    <g font-size="9" fill="#52525B">
+      <text x="198" y="218" font-weight="600">READS:</text><text x="198" y="232">  GenerativeLayerSnapshot</text>
+      <text x="198" y="246">  MunchersGameState</text>
+      <text x="198" y="268" font-weight="600">WRITES:</text><text x="198" y="282">  Per-layer compose RT</text>
+    </g>
+    <rect x="198" y="300" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="272" y="318" text-anchor="middle" font-size="9" fill="#0F766E">R2D: GenLayerRTAllocated</text>
+    <g font-size="9" fill="#52525B" font-style="italic"><text x="198" y="344">Video clips skip PASS 1.</text><text x="198" y="358">Texture in pool via</text><text x="198" y="372">PlaybackPresenter.</text></g>
+    <line x1="356" y1="250" x2="368" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- PASS 1.5 -->
+    <rect x="372" y="0" width="168" height="460" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="2"/>
+    <text x="456" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">PASS 1.5</text>
+    <text x="456" y="38" text-anchor="middle" font-size="10" fill="#0891B2">Per-layer effect chains</text>
+    <rect x="382" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="456" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#0891B2">Per layer w/ EffectChain</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="456" y="82">ensureEffectPingTarget()</text><text x="456" y="96">ping-pong 2 compose RTs</text></g>
+    <rect x="382" y="118" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="456" y="136" text-anchor="middle" font-size="10" font-weight="600" fill="#0891B2">drawEffectPass()</text>
+    <text x="456" y="150" text-anchor="middle" font-size="9" fill="#52525B">per Effect in chain</text>
+    <rect x="382" y="172" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+    <text x="456" y="190" text-anchor="middle" font-size="9" fill="#0F766E">write postEffectsSlot</text>
+    <g font-size="9" fill="#52525B">
+      <text x="382" y="218" font-weight="600">READS:</text><text x="382" y="232">  ContentLayerSnapshot.effects</text>
+      <text x="382" y="256" font-weight="600">WRITES:</text><text x="382" y="270">  Ping-pong compose RTs</text>
+      <text x="382" y="284">  postEffectsSlot per layer</text>
+    </g>
+    <rect x="382" y="300" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="456" y="318" text-anchor="middle" font-size="9" fill="#0F766E">R2D: EffectChainRTAllocated</text>
+    <g font-size="9" fill="#52525B" font-style="italic"><text x="382" y="354">Kind-blind: Video + Compose.</text><text x="382" y="368">No-op if effects empty.</text></g>
+    <line x1="540" y1="250" x2="552" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- PASS 2 -->
+    <rect x="556" y="0" width="168" height="460" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="640" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">PASS 2</text>
+    <text x="640" y="38" text-anchor="middle" font-size="10" fill="#1E3A8A">Unified composite</text>
+    <rect x="566" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="640" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Per visible Screen</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="640" y="82">ensureScreenRT()</text><text x="640" y="96">beginComposeTarget(slot)</text></g>
+    <rect x="566" y="118" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="640" y="138" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">drawTexturedQuad()</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="640" y="152">per contentLayer (zOrder)</text><text x="640" y="166">Video | Compose srcKind</text></g>
+    <g font-size="9" fill="#52525B">
+      <text x="566" y="196" font-weight="600">READS:</text>
+      <text x="566" y="210">  RenderFrame.contentLayers</text>
+      <text x="566" y="224">  postEffectsSlot (if &gt;= 0)</text>
+      <text x="566" y="238">  else sourceSlot (video pool)</text>
+      <text x="566" y="258" font-weight="600">WRITES:</text>
+      <text x="566" y="272">  Per-screen compose RT</text>
+      <text x="566" y="294">opacity * sectionFadeMultiplier</text>
+      <text x="566" y="308">transform from ClipCatalogEntry</text>
+    </g>
+    <rect x="566" y="322" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="640" y="340" text-anchor="middle" font-size="9" fill="#0F766E">R2D: ScreenRTAllocated</text>
+    <line x1="724" y1="250" x2="736" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- Output -->
+    <rect x="740" y="60" width="176" height="380" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="828" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">OUTPUT STAGE</text>
+    <rect x="750" y="92" width="156" height="44" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="828" y="112" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">OutputManager</text>
+    <text x="828" y="127" text-anchor="middle" font-size="9" fill="#52525B">renderOutputs()</text>
+    <line x1="828" y1="136" x2="828" y2="158" stroke="#52525B" stroke-width="1.5" marker-end="url(#d6-arrow)"/>
+    <rect x="750" y="158" width="156" height="44" rx="3" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="1"/>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="828" y="176">Per enabled OutputDisplay:</text><text x="828" y="192">fan screen RT to swap chain</text></g>
+    <g font-size="9" fill="#52525B"><text x="750" y="224">UV crop (InputRegion)</text><text x="750" y="238">Warp via OutputSurface</text><text x="750" y="252">  (Plane B quad corners)</text><text x="750" y="272">Calibration overlay</text></g>
+    <rect x="750" y="288" width="156" height="44" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="828" y="308" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Present()</text>
+    <text x="828" y="324" text-anchor="middle" font-size="9" fill="#52525B">each output swap chain</text>
+    <!-- PlaybackPresenter feed note -->
+    <rect x="188" y="474" width="168" height="28" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="272" y="492" text-anchor="middle" font-size="9" fill="#525252">PlaybackPresenter feeds GPU textures</text>
+    <line x1="272" y1="470" x2="272" y2="460" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d6-arrow)"/>
+  </svg>
+
+  <p class="note">Source: ADR-0018 + ADR-0019. Implemented in <code>src/systems/CompositorSystem.cpp</code> + <code>src/render/D3D12Renderer.cpp</code>.</p>
+
+  <h3>The descriptor heap -- where every texture lives</h3>
+
+  <p>The show pipeline uses a single CBV/SRV/UAV descriptor heap allocated at startup. Slot ranges are fixed and collision-free since CRIT-04 was resolved in Phase A (2026-04-19). The layout groups resources by role so that each system can compute its slot from a base constant plus an index without coordinating with any other system at runtime. The slot constants live in <code>include/entity/render/D3D12Renderer.hpp</code>.</p>
+
+  <p>Slot 0 holds the ImGui font atlas SRV. Slot 1 is a legacy video upload slot retained for the transitional code path. The compose-target range starts at <code>COMPOSE_TARGET_BASE = 2</code> and spans 64 slots -- this covers screen render targets, generative-layer render targets, and the ping-pong pairs allocated by PASS 1.5 effect chains. The video-texture pool starts at <code>VIDEO_TEXTURE_BASE = 66</code> and provides 16 slots, one per active decoded clip -- <code>PlaybackPresenter</code> uploads each decoded frame here before the compositor runs. Above that, <code>SNAPSHOT_BASE = 82</code> marks the start of the per-frame constant buffer ring (64 CBV slots of 256 bytes each, one per frame-in-flight slot), which is what fixed the CRIT-04 multi-surface overwrite.</p>
+
+  <svg font-family="inherit" data-diagram="D7" viewBox="0 0 920 160" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d7-title d7-desc">
+    <title id="d7-title">D3D12 descriptor heap slot layout</title>
+    <desc id="d7-desc">Horizontal color-banded strip showing descriptor heap slot ranges: slot 0 ImGui font, slot 1 legacy video, slots 2-65 compose targets (64 slots), slots 66-81 video textures (16 slots), slots 82-97 snapshot buffer.</desc>
+
+    <!-- Slot 0: ImGui -->
+    <rect x="4" y="40" width="48" height="56" rx="2" fill="#FCE7F3" stroke="#BE185D" stroke-width="1.5"/>
+    <text x="28" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#BE185D">ImGui</text>
+    <text x="28" y="76" text-anchor="middle" font-size="9" fill="#BE185D">font</text>
+    <text x="28" y="106" text-anchor="middle" font-size="9" fill="#52525B">slot 0</text>
+
+    <!-- Slot 1: legacy -->
+    <rect x="56" y="40" width="48" height="56" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+    <text x="80" y="66" text-anchor="middle" font-size="9" font-weight="700" fill="#525252">legacy</text>
+    <text x="80" y="80" text-anchor="middle" font-size="9" fill="#525252">video</text>
+    <text x="80" y="106" text-anchor="middle" font-size="9" fill="#52525B">slot 1</text>
+
+    <!-- Compose targets: 64 slots (slots 2-65) -->
+    <rect x="108" y="24" width="360" height="72" rx="2" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="288" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#1E3A8A">COMPOSE TARGETS</text>
+    <text x="288" y="66" text-anchor="middle" font-size="9" fill="#1E3A8A">64 slots: screen RTs + generative layer RTs + effect ping-pong pairs</text>
+    <text x="288" y="80" text-anchor="middle" font-size="9" fill="#1E3A8A">COMPOSE_TARGET_BASE = 2</text>
+    <text x="108" y="108" font-size="9" fill="#52525B">slots 2-65</text>
+
+    <!-- Video textures: 16 slots (66-81) -->
+    <rect x="472" y="24" width="220" height="72" rx="2" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+    <text x="582" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#C2410C">VIDEO TEXTURES</text>
+    <text x="582" y="66" text-anchor="middle" font-size="9" fill="#C2410C">16 slots: per-clip decoded frame uploads</text>
+    <text x="582" y="80" text-anchor="middle" font-size="9" fill="#C2410C">VIDEO_TEXTURE_BASE = 66</text>
+    <text x="472" y="108" font-size="9" fill="#52525B">slots 66-81</text>
+
+    <!-- Snapshot: 16 slots (82-97) -->
+    <rect x="696" y="24" width="220" height="72" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+    <text x="806" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">SNAPSHOT BUFFER</text>
+    <text x="806" y="66" text-anchor="middle" font-size="9" fill="#0F766E">16 slots: per-frame constant buffer ring</text>
+    <text x="806" y="80" text-anchor="middle" font-size="9" fill="#0F766E">SNAPSHOT_BASE = 82</text>
+    <text x="696" y="108" font-size="9" fill="#52525B">slots 82-97</text>
+
+    <!-- Axis -->
+    <line x1="4" y1="120" x2="916" y2="120" stroke="#E4E2DA" stroke-width="1"/>
+    <text x="4" y="140" font-size="9" fill="#52525B">0</text>
+    <text x="108" y="140" font-size="9" fill="#52525B">2</text>
+    <text x="468" y="140" font-size="9" fill="#52525B">66</text>
+    <text x="692" y="140" font-size="9" fill="#52525B">82</text>
+    <text x="880" y="140" font-size="9" fill="#52525B">97+</text>
+
+    <text x="4" y="156" font-size="9" fill="#52525B" font-style="italic">
+      Slot ranges are illustrative; actual constants live in D3D12Renderer.hpp. FRAME_COUNT ring of 64 CBV slots sits above SNAPSHOT_BASE.
+    </text>
+  </svg>
+
+  <h3>Output stage -- from screen RT to projector pixel</h3>
+
+  <p>After PASS 2 finishes, each visible <code>Screen</code> has a filled compose target in the descriptor heap. <code>OutputManager::renderOutputs()</code> walks every enabled <code>OutputDisplay</code> entity and drives it to its swap chain.</p>
+
+  <p>For each <code>OutputDisplay</code>: the manager looks up the bound screen (via <code>sourceScreen</code>) or the bound projector (via <code>sourceProjector</code>, which takes priority). It reads the screen's <code>renderTargetSlot</code> -- the compose-target index assigned by <code>CompositorSystem</code> via the R2D ack. It then walks every visible <code>OutputSurface</code> for that output -- these are the Plane B warp quads per ADR-0021, renamed from <code>MappingSurface</code> in ADR-0021 M4 -- and for each quad draws a warped blit: source UV from <code>InputRegion</code>, destination from the quad's four corner positions, with soft-edge feathering at the quad margins.</p>
+
+  <p>When the output is bound through a <code>Projector</code> rather than a flat screen, an additional calibration pass applies before the warp. The calibration math per ADR-0011 (<code>docs/adr/0011-projector-calibration-architecture.md</code>) is a four-step pipeline: (1) intrinsic matrix (fx, fy, cx, cy) maps the screen to the projector's image plane; (2) extrinsic R|t is solved via Levenberg-Marquardt over the operator's correspondence point pairs; (3) radial distortion k1 and k2 correct lens barrel/pincushion; (4) an IDW (inverse-distance weighted) residual warp grid corrects whatever the analytic model misses. ADR-0011 flags five coupled sites in the codebase that must move together when this math changes -- touch them as a unit or the calibration will silently break.</p>
+
+  <p>After the warp, an OCIO color transform is applied per-output before <code>Present()</code>. The swap chains use <code>DXGI_SWAP_EFFECT_FLIP_DISCARD</code>.</p>
+
+  <svg font-family="inherit" data-diagram="D8" viewBox="0 0 920 300" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d8-title d8-desc">
+    <title id="d8-title">Output stage: Screen compose target to swap chain via OutputSurface warp</title>
+    <desc id="d8-desc">Left to right: Screen compose target feeds into OutputSurface warp quad (Plane B), then into OutputDisplay swap chain. Calibration math annotated on the warp box: intrinsics plus extrinsics plus k1/k2 radial plus IDW residual warp per ADR-0011.</desc>
+    <defs>
+      <marker id="d8-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#1E3A8A"/>
+      </marker>
+    </defs>
+
+    <!-- Screen compose RT -->
+    <rect x="16" y="60" width="180" height="160" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="106" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">Screen</text>
+    <text x="106" y="106" text-anchor="middle" font-size="11" fill="#1E3A8A">compose target</text>
+    <text x="106" y="130" text-anchor="middle" font-size="9" fill="#52525B">renderTargetSlot</text>
+    <text x="106" y="144" text-anchor="middle" font-size="9" fill="#52525B">assigned by CompositorSystem</text>
+    <text x="106" y="158" text-anchor="middle" font-size="9" fill="#52525B">via R2D ack</text>
+    <text x="106" y="180" text-anchor="middle" font-size="9" fill="#52525B">PASS 2 rendered into this</text>
+    <text x="106" y="196" text-anchor="middle" font-size="9" fill="#52525B">once per show frame</text>
+
+    <!-- Arrow -->
+    <line x1="196" y1="140" x2="240" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+    <!-- OutputSurface warp box -->
+    <rect x="240" y="20" width="280" height="240" rx="4" fill="#E5E5E5" stroke="#525252" stroke-width="2"/>
+    <text x="380" y="48" text-anchor="middle" font-size="12" font-weight="700" fill="#525252">OutputSurface (Plane B)</text>
+    <text x="380" y="64" text-anchor="middle" font-size="10" fill="#52525B">warp quad per output</text>
+
+    <!-- Calibration math block -->
+    <rect x="256" y="76" width="248" height="132" rx="3" fill="#FFFFFF" stroke="#E4E2DA" stroke-width="1"/>
+    <text x="380" y="96" text-anchor="middle" font-size="10" font-weight="600" fill="#1B1B1F">Calibration math (ADR-0011)</text>
+    <text x="268" y="114" font-size="9" fill="#52525B">1. Intrinsic matrix (fx, fy, cx, cy)</text>
+    <text x="268" y="130" font-size="9" fill="#52525B">2. Extrinsic R|t (LM solve over</text>
+    <text x="276" y="144" font-size="9" fill="#52525B">   correspondence point pairs)</text>
+    <text x="268" y="160" font-size="9" fill="#52525B">3. Radial distortion k1, k2</text>
+    <text x="268" y="176" font-size="9" fill="#52525B">4. IDW residual warp</text>
+    <text x="276" y="190" font-size="9" fill="#52525B">   (post-fit inverse-distance</text>
+    <text x="276" y="204" font-size="9" fill="#52525B">   weighted correction grid)</text>
+
+    <text x="256" y="230" font-size="9" fill="#52525B">src UV region: InputRegion crop</text>
+    <text x="256" y="244" font-size="9" fill="#52525B">soft edges blended at quad margins</text>
+
+    <!-- Arrow -->
+    <line x1="520" y1="140" x2="560" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+    <!-- OutputDisplay -->
+    <rect x="560" y="60" width="180" height="160" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="650" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">OutputDisplay</text>
+    <text x="650" y="106" text-anchor="middle" font-size="11" fill="#1E3A8A">swap chain</text>
+    <text x="650" y="132" text-anchor="middle" font-size="9" fill="#52525B">DXGI_SWAP_EFFECT</text>
+    <text x="650" y="146" text-anchor="middle" font-size="9" fill="#52525B">_FLIP_DISCARD</text>
+    <text x="650" y="168" text-anchor="middle" font-size="9" fill="#52525B">OCIO transform applied</text>
+    <text x="650" y="182" text-anchor="middle" font-size="9" fill="#52525B">before Present()</text>
+
+    <!-- Arrow to monitor icon -->
+    <line x1="740" y1="140" x2="780" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+    <!-- Monitor symbol -->
+    <rect x="780" y="96" width="120" height="88" rx="4" fill="#1B1B1F" stroke="#1B1B1F" stroke-width="2"/>
+    <rect x="790" y="106" width="100" height="68" rx="2" fill="#DBEAFE"/>
+    <text x="840" y="148" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Projector</text>
+    <rect x="820" y="184" width="40" height="8" rx="2" fill="#52525B"/>
+
+    <!-- Five-sites warning -->
+    <rect x="756" y="216" width="160" height="52" rx="3" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+    <text x="836" y="232" text-anchor="middle" font-size="9" font-weight="600" fill="#D97706">5 coupled calibration sites</text>
+    <text x="836" y="246" text-anchor="middle" font-size="9" fill="#52525B">must move together per</text>
+    <text x="836" y="260" text-anchor="middle" font-size="9" fill="#52525B">ADR-0011. Touch with care.</text>
+  </svg>
+
+  <div class="callout callout--show">
+    <p><strong>Plane A vs. Plane B -- don't conflate them.</strong> <code>OutputSurface</code> (renamed from <code>MappingSurface</code> in ADR-0021 M4) is a per-output warp quad -- Plane B. It describes how a screen's render target is physically deformed onto the projection surface. <code>ContentRoutingAsset</code> (ADR-0022) routes layer content to screens -- Plane A. It describes which clip goes where in logical screen space. The two planes are completely independent: a single screen can have many clips routed to it (Plane A), and that screen's render target can be warped by many output surfaces across many physical displays (Plane B).</p>
+  </div>
+
+  <h3>Triple-buffered everything</h3>
+
+  <p>The show pipeline uses D3D12 per-frame command allocators. <code>m_showAllocators</code> is an array indexed by frame-in-flight slot; <code>m_showFence</code> gates the CPU from reusing a slot before the GPU has finished with it. <code>beginShowFrame</code> resets the allocator for the current slot, opens the command list, and opens a Tracy GPU zone (a cross-function zone -- the <code>tracy::D3D12ZoneScope*</code> lives on the heap, allocated in <code>beginShowFrame</code> and deleted at the very top of <code>endShowFrame</code> before any early returns, per ADR-0015). <code>endShowFrame</code> closes the Tracy zone, executes the command list, and Presents all enabled output swap chains.</p>
+
+  <p>Compose targets follow the same discipline. Each target has a <code>lastStableIndex</code> that is acquire/release-fenced so the editor never reads a render target slot the show thread is currently writing into. This is particularly relevant for <code>Screen::renderTargetSlot</code> -- the slot is written on the editor thread (via the R2D ack drain in <code>drainRendererToDirector</code>) and read on the show thread in <code>ensureScreenRenderTarget</code>.</p>
+
+  <p>The editor and show threads share one D3D12 direct command queue. The D3D12 specification guarantees that <code>ExecuteCommandLists</code> and <code>Signal</code> are thread-safe on a single queue object -- that guarantee is the contract the editor/show split relies on. Both threads submit independently; the fence values keep them from stepping on each other's in-flight work.</p>
+
+  <h3>Closing</h3>
+
+  <p>That's the pipeline. A <code>SceneSnapshot</code> goes in; projector pixels come out, sixty times per second, regardless of what the editor thread is doing. The next section walks the surface the operator actually clicks on -- the 22 ImGui windows that decide what the next <code>SceneSnapshot</code> will contain.</p>
+
+</section>
+
+
+    <!-- SECTION:S5 -->
+<section id="s5" class="doc-section">
+  <h2>5. The Editor Surface</h2>
+
+  <p>
+    Twenty-two files in <code>src/ui/</code> decide what the next <code>bus::SceneSnapshot</code>
+    will look like. Each window holds a <code>Director*</code> pointer and reads registry components
+    directly for display &mdash; but it writes only through <code>CommandDispatcher</code>. Every
+    mutation is an undoable command with editor-thread affinity. This discipline is what lets the
+    editor thread remain the sole registry writer per <code>docs/adr/0014-editor-show-thread-split.md</code>:
+    there is no back-channel, no direct registry call from a UI event handler. The command is enqueued,
+    the dispatcher executes it at editor-thread step 8
+    (<code>CommandDispatcher::processQueue(Editor&nbsp;|&nbsp;Either)</code> per
+    <code>docs/reference/SYSTEM_ORDERING.md</code>), and the registry write happens exactly once,
+    in the right thread, at the right moment.
+  </p>
+
+  <h3>The 22 windows, grouped by purpose</h3>
+
+  <svg font-family="inherit" data-diagram="D9" viewBox="0 0 920 480" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d9-title d9-desc">
+    <title id="d9-title">UI window catalog grouped by purpose</title>
+    <desc id="d9-desc">Six grouped tiles: Authoring, Asset, Mapping and Output, Show Control, Effects, Frame. Each tile shows windows sized proportional to LOC. PropertyWindow and ProjectorCalibrationWindow are visibly larger.</desc>
+    <defs><style>.gh{font-size:11;font-weight:700;fill:#BE185D}.wn{font-size:10;font-weight:600;fill:#BE185D;text-anchor:middle}.ws{font-size:9;fill:#52525B;text-anchor:middle}</style></defs>
+    <g fill="#FFFFFF" stroke="#BE185D">
+    <!-- GROUP BACKGROUNDS -->
+    <rect x="4" y="4" width="310" height="220" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+    <rect x="322" y="4" width="270" height="220" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+    <rect x="600" y="4" width="316" height="220" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+    <rect x="4" y="232" width="250" height="140" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+    <rect x="262" y="232" width="200" height="140" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+    <rect x="470" y="232" width="446" height="140" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+    <!-- GROUP HEADERS -->
+    <text x="20" y="24" class="gh">AUTHORING</text>
+    <text x="338" y="24" class="gh">ASSET</text>
+    <text x="616" y="24" class="gh">MAPPING &amp; OUTPUT</text>
+    <text x="20" y="252" class="gh">SHOW CONTROL</text>
+    <text x="278" y="252" class="gh">EFFECTS</text>
+    <text x="486" y="252" class="gh">FRAME (infrastructure)</text>
+    <!-- AUTHORING windows -->
+    <rect x="12" y="32" width="184" height="88" rx="3" stroke-width="1.5"/>
+    <text x="104" y="62" class="wn">PropertyWindow</text><text x="104" y="76" class="ws">2,839 LOC</text>
+    <text x="104" y="90" class="ws">Edit all selected entity props</text><text x="104" y="104" class="ws">clips / screens / effects / text</text>
+    <rect x="202" y="32" width="104" height="88" rx="3" stroke-width="1"/>
+    <text x="254" y="58" class="wn">StageWindow</text><text x="254" y="72" class="ws">831 LOC</text>
+    <text x="254" y="86" class="ws">3D viz + place</text><text x="254" y="100" class="ws">screens/props</text>
+    <rect x="12" y="128" width="148" height="44" rx="3" stroke-width="1"/>
+    <text x="86" y="148" class="wn">TimelineWindow</text><text x="86" y="162" class="ws">16 LOC shell</text>
+    <rect x="166" y="128" width="140" height="44" rx="3" stroke-width="1"/>
+    <text x="236" y="148" class="wn">LayersWindow</text><text x="236" y="162" class="ws">134 LOC drag-source</text>
+    <text x="12" y="196" font-size="9" fill="#52525B">TimelineWidgetRender 1,606 LOC +</text>
+    <text x="12" y="210" font-size="9" fill="#52525B">TimelineWidgetInput 1,967 LOC (src/timeline/)</text>
+    <!-- ASSET windows -->
+    <rect x="330" y="32" width="160" height="80" rx="3" stroke-width="1.5"/>
+    <text x="410" y="58" class="wn">MediaBinWindow</text><text x="410" y="72" class="ws">956 LOC</text>
+    <text x="410" y="86" class="ws">Browse / import / transcode</text>
+    <rect x="498" y="32" width="86" height="80" rx="3" stroke-width="1"/>
+    <text x="541" y="58" class="wn">ModelBin</text><text x="541" y="72" class="ws">384 LOC</text>
+    <text x="541" y="86" class="ws">3D OBJ models</text>
+    <!-- MAPPING windows -->
+    <rect x="608" y="32" width="148" height="88" rx="3" stroke-width="1.5"/>
+    <text x="682" y="56" class="wn">Projector</text><text x="682" y="70" class="wn">Calibration</text>
+    <text x="682" y="86" class="ws">1,357 LOC</text><text x="682" y="100" class="ws">point editor + LM</text>
+    <rect x="762" y="32" width="146" height="88" rx="3" stroke-width="1.5"/>
+    <text x="835" y="62" class="wn">OutputsWindow</text><text x="835" y="76" class="ws">964 LOC</text>
+    <text x="835" y="90" class="ws">outputs + warp quads</text>
+    <g stroke-width="1">
+      <rect x="608" y="128" width="120" height="36" rx="3"/>
+      <text x="668" y="144" class="wn" font-size="9">ContentRoutingWindow</text><text x="668" y="158" class="ws">848 LOC</text>
+      <rect x="734" y="128" width="80" height="36" rx="3"/>
+      <text x="774" y="144" class="wn">RoutingCanvas</text><text x="774" y="158" class="ws">526 LOC</text>
+      <rect x="820" y="128" width="88" height="36" rx="3"/>
+      <text x="864" y="144" class="wn">ScreensWindow</text><text x="864" y="158" class="ws">249 LOC</text>
+      <rect x="608" y="172" width="104" height="28" rx="3"/>
+      <text x="660" y="190" font-size="9" fill="#BE185D" text-anchor="middle">FeedMapEditor 220 LOC</text>
+      <rect x="718" y="172" width="80" height="28" rx="3"/>
+      <text x="758" y="190" font-size="9" fill="#BE185D" text-anchor="middle">PropsWindow 133</text>
+    </g>
+    <!-- SHOW CONTROL windows -->
+    <rect x="12" y="260" width="150" height="60" rx="3" stroke-width="1.5"/>
+    <text x="87" y="282" class="wn">ShowControlWindow</text><text x="87" y="296" class="ws">694 LOC</text>
+    <text x="87" y="310" class="ws">transport + OSC tables</text>
+    <rect x="168" y="260" width="78" height="60" rx="3" stroke-width="1"/>
+    <text x="207" y="282" class="wn">CueList</text><text x="207" y="296" class="ws">214 LOC</text>
+    <text x="207" y="310" class="ws">section GO</text>
+    <!-- EFFECTS windows -->
+    <rect x="270" y="260" width="184" height="60" rx="3" stroke-width="1.5"/>
+    <text x="362" y="282" class="wn">EffectGraphWindow</text><text x="362" y="296" class="ws">253 LOC</text>
+    <text x="362" y="310" class="ws">node-graph editor for chains</text>
+    <!-- FRAME windows -->
+    <rect x="478" y="260" width="120" height="60" rx="3" stroke-width="1.5"/>
+    <text x="538" y="282" class="wn">WindowManager</text><text x="538" y="296" class="ws">1,324 LOC</text>
+    <text x="538" y="310" class="ws">docking + layout</text>
+    <g stroke-width="1">
+      <rect x="604" y="260" width="106" height="60" rx="3"/>
+      <text x="657" y="282" class="wn">SettingsWindow</text><text x="657" y="296" class="ws">582 LOC</text>
+      <text x="657" y="310" class="ws">prefs + OSC ports</text>
+      <rect x="716" y="260" width="96" height="60" rx="3"/>
+      <text x="764" y="282" class="wn">ProjectLauncher</text><text x="764" y="296" class="ws">375 LOC</text>
+      <text x="764" y="310" class="ws">new/open project</text>
+      <rect x="818" y="260" width="90" height="60" rx="3"/>
+      <text x="863" y="282" class="wn" font-size="9">FileDialog</text><text x="863" y="296" class="ws">269 LOC</text>
+      <text x="863" y="310" class="ws">system picker</text>
+    </g>
+    </g>
+    <text x="4" y="468" font-size="10" fill="#52525B" font-style="italic">22 files in src/ui/; tile area proportional to LOC. MathInput (532 LOC) is a utility widget, not a window.</text>
+  </svg>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Window</th>
+        <th>Source</th>
+        <th class="num">LOC</th>
+        <th>Group</th>
+        <th>What it does</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-family="ui"><td>PropertyWindow</td><td><code>src/ui/PropertyWindow.cpp</code></td><td class="num">2,839</td><td>Authoring</td><td>Edit properties of selected clip, screen, effect, or text layer</td></tr>
+      <tr data-family="ui"><td>StageWindow</td><td><code>src/ui/StageWindow.cpp</code></td><td class="num">831</td><td>Authoring</td><td>3D stage visualization with screen/projector/prop placement</td></tr>
+      <tr data-family="ui"><td>LayersWindow</td><td><code>src/ui/LayersWindow.cpp</code></td><td class="num">134</td><td>Authoring</td><td>Drag-source palette to add clip, OA, or generative layers to timeline</td></tr>
+      <tr data-family="ui"><td>TimelineWindow</td><td><code>src/ui/TimelineWindow.cpp</code></td><td class="num">16</td><td>Authoring</td><td>Thin shell hosting TimelineWidgetRender + TimelineWidgetInput</td></tr>
+      <tr data-family="ui"><td>MediaBinWindow</td><td><code>src/ui/MediaBinWindow.cpp</code></td><td class="num">956</td><td>Asset</td><td>Browse, import, and transcode media assets in the <code>content/</code> tree</td></tr>
+      <tr data-family="ui"><td>ModelBinWindow</td><td><code>src/ui/ModelBinWindow.cpp</code></td><td class="num">384</td><td>Asset</td><td>Browse and import 3D OBJ models for screens and props</td></tr>
+      <tr data-family="ui"><td>ProjectorCalibrationWindow</td><td><code>src/ui/ProjectorCalibrationWindow.cpp</code></td><td class="num">1,357</td><td>Mapping &amp; Output</td><td>Per-projector calibration point editor and LM solve trigger</td></tr>
+      <tr data-family="ui"><td>OutputsWindow</td><td><code>src/ui/OutputsWindow.cpp</code></td><td class="num">964</td><td>Mapping &amp; Output</td><td>Manage physical outputs, assign screens, configure warp quads</td></tr>
+      <tr data-family="ui"><td>ContentRoutingWindow</td><td><code>src/ui/ContentRoutingWindow.cpp</code></td><td class="num">848</td><td>Mapping &amp; Output</td><td>Library browser for named routing assets (Direct/Tiled/Feed Map)</td></tr>
+      <tr data-family="ui"><td>ContentRoutingCanvas</td><td><code>src/ui/ContentRoutingCanvas.cpp</code></td><td class="num">526</td><td>Mapping &amp; Output</td><td>Interactive canvas for dragging and resizing Feed Map regions</td></tr>
+      <tr data-family="ui"><td>ScreensWindow</td><td><code>src/ui/ScreensWindow.cpp</code></td><td class="num">249</td><td>Mapping &amp; Output</td><td>Create and configure projection screens</td></tr>
+      <tr data-family="ui"><td>FeedMapEditorWindow</td><td><code>src/ui/FeedMapEditorWindow.cpp</code></td><td class="num">220</td><td>Mapping &amp; Output</td><td>Author Feed Map regions; export SVG layout template for content creators</td></tr>
+      <tr data-family="ui"><td>PropsWindow</td><td><code>src/ui/PropsWindow.cpp</code></td><td class="num">133</td><td>Mapping &amp; Output</td><td>Manage stage props (editor pre-visualization geometry only)</td></tr>
+      <tr data-family="ui"><td>ShowControlWindow</td><td><code>src/ui/ShowControlWindow.cpp</code></td><td class="num">694</td><td>Show Control</td><td>Transport controls + OSC In/Out mapping tables</td></tr>
+      <tr data-family="ui"><td>CueListWindow</td><td><code>src/ui/CueListWindow.cpp</code></td><td class="num">214</td><td>Show Control</td><td>Section cue list: labels, GO buttons, active cue highlight</td></tr>
+      <tr data-family="ui"><td>EffectGraphWindow</td><td><code>src/ui/EffectGraphWindow.cpp</code></td><td class="num">253</td><td>Effects</td><td>Node-graph editor for per-layer effect chains</td></tr>
+      <tr data-family="ui"><td>WindowManager</td><td><code>src/ui/WindowManager.cpp</code></td><td class="num">1,324</td><td>Frame</td><td>Docking layout, per-window undock/dock, workspace serialization</td></tr>
+      <tr data-family="ui"><td>SettingsWindow</td><td><code>src/ui/SettingsWindow.cpp</code></td><td class="num">582</td><td>Frame</td><td>Global preferences: OSC ports, color management, Tracy, etc.</td></tr>
+      <tr data-family="ui"><td>ProjectLauncher</td><td><code>src/ui/ProjectLauncher.cpp</code></td><td class="num">375</td><td>Frame</td><td>New/Recent/Open project launcher dialog on startup</td></tr>
+      <tr data-family="ui"><td>FileDialog</td><td><code>src/ui/FileDialog.cpp</code></td><td class="num">269</td><td>Frame</td><td>Wrapper around system file picker for open/save dialogs</td></tr>
+      <tr data-family="ui"><td>WorkspaceStore</td><td><code>src/ui/WorkspaceStore.cpp</code></td><td class="num">189</td><td>Frame</td><td>Serializes/deserializes ImGui docking layout to JSON</td></tr>
+      <tr data-family="ui"><td>MathInput</td><td><code>src/ui/MathInput.cpp</code></td><td class="num">532</td><td>Frame</td><td>Expression-parsing numeric input widget (used inside property panels)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--ui">
+    <p>
+      <strong>TimelineWindow is only 16 lines.</strong> It is a thin shell. The real timeline code
+      lives in <code>src/timeline/TimelineWidgetRender.cpp</code> (1,606 lines) and
+      <code>src/timeline/TimelineWidgetInput.cpp</code> (1,967 lines). The LOC number on
+      <code>TimelineWindow.cpp</code> is not the cost of the timeline feature.
+    </p>
+    <p>
+      <strong>MathInput is a widget, not a window.</strong> It is an expression-parsing numeric
+      input used inside property panels, not a top-level ImGui window. It appears in the table
+      because it lives in <code>src/ui/</code> and contributes 532 lines to the UI subsystem.
+    </p>
+  </div>
+
+  <h3>Authoring loop &mdash; how a window mutation reaches the projector</h3>
+
+  <svg font-family="inherit" data-diagram="D10" viewBox="0 0 920 240" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d10-title d10-desc">
+    <title id="d10-title">Command path loop from UI to registry to show thread</title>
+    <desc id="d10-desc">Circular loop with five nodes: UI Window (rose), CommandDispatcher (system cyan), Registry write (component violet), buildSceneSnapshot (bus teal), Show thread (show indigo). Arrows connect them in sequence, closing the loop back to UI for R2D replies.</desc>
+    <defs>
+      <marker id="d10-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#52525B"/>
+      </marker>
+      <marker id="d10-arrow-bus" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#0F766E"/>
+      </marker>
+    </defs>
+
+    <!-- Node 1: UI Window -->
+    <rect x="20" y="80" width="150" height="60" rx="4" fill="#FCE7F3" stroke="#BE185D" stroke-width="2"/>
+    <text x="95" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#BE185D">UI Window</text>
+    <text x="95" y="124" text-anchor="middle" font-size="10" fill="#52525B">operator input</text>
+
+    <!-- Arrow 1-2 -->
+    <line x1="170" y1="110" x2="218" y2="110" stroke="#52525B" stroke-width="1.5" marker-end="url(#d10-arrow)"/>
+    <text x="194" y="104" text-anchor="middle" font-size="9" fill="#52525B">enqueue()</text>
+
+    <!-- Node 2: CommandDispatcher -->
+    <rect x="220" y="80" width="160" height="60" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="2"/>
+    <text x="300" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">Command</text>
+    <text x="300" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#0891B2">Dispatcher</text>
+
+    <!-- Arrow 2-3 -->
+    <line x1="380" y1="110" x2="428" y2="110" stroke="#52525B" stroke-width="1.5" marker-end="url(#d10-arrow)"/>
+    <text x="404" y="104" text-anchor="middle" font-size="9" fill="#52525B">execute()</text>
+
+    <!-- Node 3: Registry write -->
+    <rect x="430" y="80" width="140" height="60" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="2"/>
+    <text x="500" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#7C3AED">Registry</text>
+    <text x="500" y="122" text-anchor="middle" font-size="10" fill="#7C3AED">emplace / replace</text>
+
+    <!-- Arrow 3-4 -->
+    <line x1="570" y1="110" x2="618" y2="110" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d10-arrow-bus)"/>
+    <text x="594" y="104" text-anchor="middle" font-size="9" fill="#0F766E">next frame</text>
+
+    <!-- Node 4: buildSceneSnapshot -->
+    <rect x="620" y="80" width="150" height="60" rx="4" fill="#CCFBF1" stroke="#0F766E" stroke-width="2"/>
+    <text x="695" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">buildScene</text>
+    <text x="695" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">Snapshot()</text>
+
+    <!-- Arrow 4-5 -->
+    <line x1="770" y1="110" x2="818" y2="110" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d10-arrow-bus)"/>
+    <text x="794" y="104" text-anchor="middle" font-size="9" fill="#0F766E">D2R bus</text>
+
+    <!-- Node 5: Show thread -->
+    <rect x="820" y="80" width="90" height="60" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="865" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#1E3A8A">Show</text>
+    <text x="865" y="122" text-anchor="middle" font-size="10" fill="#1E3A8A">thread</text>
+
+    <!-- Return arrow: show -> UI (R2D), curved via bottom -->
+    <path d="M 865 140 Q 865 200 460 200 Q 95 200 95 140" fill="none" stroke="#0F766E"
+          stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d10-arrow-bus)"/>
+    <text x="460" y="222" text-anchor="middle" font-size="9" fill="#0F766E">R2D replies -&gt; drainRendererToDirector -&gt; editor registry write</text>
+  </svg>
+
+  <p>
+    Tracing one concrete action &mdash; the operator clicks "Add Effect" in <code>PropertyWindow</code>:
+  </p>
+  <ol>
+    <li><code>PropertyWindow</code> calls <code>CommandDispatcher::enqueue</code> with an <code>AddEffectCommand</code>.</li>
+    <li>Editor-thread step 8 executes the command. The registry write happens here: <code>EffectChain</code> and <code>Effect</code> components are emplaced.</li>
+    <li>Editor-thread step 9 (<code>buildSceneSnapshot</code>) bakes the new effect into <code>bus::SceneSnapshot::layerEffects</code>.</li>
+    <li>The snapshot publishes to the D2R bus. The show thread drains it on the next show frame.</li>
+    <li>The show thread's PASS 1.5 sees a non-empty effect chain and allocates ping-pong render targets, posting an R2D <code>EffectChainRenderTargetAllocated</code> reply.</li>
+    <li>Editor-thread step 10 drains the R2D bus and writes the allocated slot IDs back to <code>EffectChainRenderTargets</code> on the registry.</li>
+    <li>The next <code>buildSceneSnapshot</code> bakes those slot IDs. The show thread renders the effect starting that frame.</li>
+  </ol>
+  <p>
+    Every UI action takes 1&ndash;2 frames to reach the projector. That is the bus-roundtrip cost
+    the architecture pays for the thread-isolation guarantee. On a 60 Hz show thread it is under
+    34 ms &mdash; imperceptible in practice, and worth every microsecond given what it buys.
+  </p>
+
+  <h3>Project on disk</h3>
+
+  <p>
+    A project is a folder, not a single file. <code>ShowName.entity</code> is the JSON manifest
+    inside the folder; <code>content/</code> holds all media and is auto-discovered by
+    <code>ContentScanner</code> (filesystem watcher). Transcodes overwrite originals at the
+    canonical path; pre-transcode originals are archived in per-folder <code>.archive/</code>
+    sibling directories under <code>content/</code> as the fallback if a transcode goes wrong
+    (per <code>docs/adr/0010-structured-project-layout.md</code>). <code>presets/</code> and
+    <code>objects/</code> are user assets. <code>snapshots/</code> and <code>exports/</code>
+    are output artifacts. <code>.cache/</code> is machine-local and regenerable &mdash; it
+    does not travel with the project and is excluded from rsync or bundle operations.
+    The content/ tree uses <em>Managed</em> (project-relative) or <em>Linked</em> (absolute
+    path) path kinds, giving flexibility for large networked media libraries.
+  </p>
+
+  <pre><code>ShowName/
++-- ShowName.entity
++-- content/
+|   +-- unsorted/
+|   +-- act1/
+|   |   +-- intro.mov
+|   |   +-- .archive/
+|   |       +-- intro.mov
+|   +-- vj/loops/...
++-- presets/
++-- objects/
++-- exports/
++-- snapshots/
++-- .cache/
+    +-- thumbnails/</code></pre>
+
+  <p class="note">Source: <code>docs/reference/PROJECT_LAYOUT.md</code>. The <code>.cache/</code>
+  directory is machine-local and not included in project bundles or rsync transfers.</p>
+
+</section>
+
+
+    <!-- SECTION:S6 -->
+<section id="s6" class="doc-section">
+  <h2>6. Plugin Layer &amp; License Seam</h2>
+
+  <p>
+    Entity ships as open-core. The public repo at <code>C:\Entity\Entity</code> carries a GPLv3
+    core plus an Apache-2.0 plugin layer. A sibling private repo at <code>C:\Entity\Entity-Pro</code>
+    holds proprietary Pro plugins that fold into the public build at CMake configure time via the
+    <code>-DEXTRA_PLUGIN_DIRS</code> flag. This section explains where the seam is, what crosses
+    it legally, and what does not. Note: <code>C:\Entity\Entity-Pro</code> is not present on
+    this machine &mdash; the architecture is fully documented and the public build supports it,
+    but Pro plugin source content is on a separate machine.
+  </p>
+
+  <h3>Two plugin transport tiers</h3>
+
+  <p>
+    Per <code>docs/adr/0005-open-core-dual-license.md</code>, plugins fall into two tiers based
+    on their data path:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Control-plane plugins</strong> communicate via
+      <code>IPluginContext::enqueueCommand()</code> (per <code>docs/adr/0013-control-plane-plugins-route-via-command-dispatcher.md</code>)
+      or via <code>OutboundBridge::emit()</code> for emitting engine state outbound
+      (per <code>docs/adr/0023-control-plane-plugin-outbound-bridge.md</code>).
+      These plugins handle OSC, DMX, timecode, and telemetry &mdash; anything network-serializable.
+      The entity-bus itself stays Director-to-Renderer only. Future upgrade from static to
+      dynamic plugin loading is purely additive for this tier.
+    </li>
+    <li>
+      <strong>Hot-path plugins</strong> implement the <code>OutputDriver</code> or
+      <code>CodecProvider</code> C++ ABIs defined in
+      <code>plugin-api/include/entity/plugin/</code>. Static-link only; toolchain-locked.
+      These would handle per-frame GPU data paths: NDI/SDI output drivers, custom codec
+      providers, custom shader passes.
+    </li>
+  </ul>
+
+  <svg font-family="inherit" data-diagram="D11" viewBox="0 0 920 300" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d11-title d11-desc">
+    <title id="d11-title">Plugin transport tiers: control-plane vs hot-path</title>
+    <desc id="d11-desc">Two horizontal lanes. Top lane: Control-Plane plugins (osc-receiver, osc-sender, bus-logger, dmx-artnet) communicate via CommandDispatcher enqueue and OutboundBridge. Bottom lane: Hot-Path plugins use OutputDriver and CodecProvider C++ ABIs with static linkage only. Note: no public hot-path plugins exist today.</desc>
+
+    <!-- Lane 1: Control-plane -->
+    <rect x="4" y="4" width="912" height="132" rx="4" fill="#DCFCE7" stroke="#15803D" stroke-width="2"/>
+    <text x="20" y="26" font-size="12" font-weight="700" fill="#15803D">CONTROL-PLANE TIER (ADR-0013 / ADR-0023)</text>
+    <text x="20" y="42" font-size="10" fill="#52525B">Network-serializable data path. Plugins call IPluginContext::enqueueCommand() or OutboundBridge::emit().</text>
+    <text x="20" y="56" font-size="10" fill="#52525B">Bus stays Director-to-Renderer only. Future: static -&gt; dynamic plugin upgrade is purely additive.</text>
+
+    <!-- Plugin boxes -->
+    <rect x="20" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+    <text x="90" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">osc-receiver</text>
+    <text x="90" y="104" text-anchor="middle" font-size="9" fill="#52525B">Inbound OSC/UDP</text>
+    <text x="90" y="116" text-anchor="middle" font-size="9" fill="#52525B">-&gt; Director cmds</text>
+
+    <rect x="170" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+    <text x="240" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">osc-sender</text>
+    <text x="240" y="104" text-anchor="middle" font-size="9" fill="#52525B">Outbound OSC/UDP</text>
+    <text x="240" y="116" text-anchor="middle" font-size="9" fill="#52525B">30 Hz transport bcast</text>
+
+    <rect x="320" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+    <text x="390" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">dmx-artnet</text>
+    <text x="390" y="104" text-anchor="middle" font-size="9" fill="#52525B">DMX-512 Art-Net</text>
+    <text x="390" y="116" text-anchor="middle" font-size="9" fill="#52525B">+ sACN + Enttec USB</text>
+
+    <rect x="470" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+    <text x="540" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">bus-logger</text>
+    <text x="540" y="104" text-anchor="middle" font-size="9" fill="#52525B">Reference scaffold</text>
+    <text x="540" y="116" text-anchor="middle" font-size="9" fill="#52525B">template for new plugins</text>
+
+    <rect x="640" y="64" width="264" height="56" rx="3" fill="#F1EFE9" stroke="#E4E2DA" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="772" y="88" text-anchor="middle" font-size="10" fill="#52525B" font-style="italic">Pro-tier plugins (Entity-Pro sibling repo)</text>
+    <text x="772" y="104" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">folded in via -DEXTRA_PLUGIN_DIRS</text>
+    <text x="772" y="116" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">Apache 2.0 plugin-api boundary respected</text>
+
+    <!-- Lane 2: Hot-path -->
+    <rect x="4" y="152" width="912" height="132" rx="4" fill="#E5E5E5" stroke="#525252" stroke-width="2"/>
+    <text x="20" y="174" font-size="12" font-weight="700" fill="#525252">HOT-PATH TIER (ADR-0005)</text>
+    <text x="20" y="190" font-size="10" fill="#52525B">C++ ABI: OutputDriver / CodecProvider. Static-link only. Toolchain-locked. Per-frame GPU data path.</text>
+    <text x="20" y="206" font-size="10" fill="#52525B">No entt.hpp, no d3d12.h, no engine internals in plugin-api/ headers (CI-enforced).</text>
+
+    <!-- Placeholder -->
+    <rect x="20" y="216" width="320" height="56" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="180" y="244" text-anchor="middle" font-size="11" fill="#52525B" font-style="italic">No public hot-path plugins yet</text>
+    <text x="180" y="260" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">Reserved for NDI/SDI output, codec providers</text>
+
+    <rect x="360" y="216" width="240" height="56" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="480" y="244" text-anchor="middle" font-size="11" fill="#52525B" font-style="italic">OutputDriver ABI</text>
+    <text x="480" y="260" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">plugin-api/include/entity/plugin/</text>
+  </svg>
+
+  <div class="callout callout--plugin">
+    <p>
+      <strong>No public hot-path plugins exist today.</strong> All four first-party plugins
+      (<code>bus-logger</code>, <code>osc-receiver</code>, <code>osc-sender</code>,
+      <code>dmx-artnet</code>) are control-plane. The hot-path ABI is defined in
+      <code>plugin-api/include/entity/plugin/</code> and ready for plugins, but the public
+      repo has none. NDI output drivers, SDI providers, and Decklink-internal integrations
+      would be hot-path candidates when they land.
+    </p>
+  </div>
+
+  <h3>First-party plugins</h3>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Plugin</th>
+        <th>Manifest</th>
+        <th>Tier</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-family="plugin"><td>bus-logger</td><td><code>plugins/bus-logger/manifest.json</code></td><td>control-plane</td><td>Reference plugin; logs bus registration &mdash; used as scaffold template</td></tr>
+      <tr data-family="plugin"><td>osc-receiver</td><td><code>plugins/osc-receiver/manifest.json</code></td><td>control-plane</td><td>Inbound OSC/UDP; translates address namespace to Director commands</td></tr>
+      <tr data-family="plugin"><td>osc-sender</td><td><code>plugins/osc-sender/manifest.json</code></td><td>control-plane</td><td>Outbound OSC/UDP; broadcasts transport and section state at 30 Hz</td></tr>
+      <tr data-family="plugin"><td>dmx-artnet</td><td><code>plugins/dmx-artnet/manifest.json</code></td><td>control-plane</td><td>DMX-512 over Art-Net + sACN + Enttec USB; inbound and outbound</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Repo split and license map</h3>
+
+  <p>
+    The public repo at <code>C:\Entity\Entity</code> contains three internal license regions.
+    The <strong>GPLv3 core</strong> (with a linking exception) covers everything in
+    <code>src/</code> and <code>include/entity/</code> except the plugin-api headers and
+    the bus. The linking exception is what makes proprietary plugins legal: they may link
+    against the core without inheriting the GPL. The <strong>Apache 2.0</strong> region covers
+    <code>entity-bus/</code>, <code>plugin-api/</code>, and <code>plugins/</code>
+    (the first-party plugin implementations). A single root-level file
+    (<code>LICENSE-PLUGIN-API</code>) covers all of it. The
+    <code>plugin-api/</code> headers are forbidden from including
+    <code>&lt;entt/entt.hpp&gt;</code> or <code>&lt;d3d12.h&gt;</code> or reaching into
+    engine internals &mdash; CI enforces this boundary. That isolation is the legal seam.
+    License files at repo root: <code>LICENSE</code>, <code>LICENSE-PLUGIN-API</code>,
+    <code>LICENSING.md</code>, <code>THIRD_PARTY_LICENSES.md</code>.
+  </p>
+
+  <p>
+    The private <code>Entity-Pro</code> sibling repo has no <code>CMakeLists.txt</code> at
+    its own root. The public build folds it in via
+    <code>-DEXTRA_PLUGIN_DIRS=C:/Entity/Entity-Pro/plugins</code>, wired at
+    <code>CMakeLists.txt</code> lines 363&ndash;375. CI never references the Pro repo.
+    Pro plugin contents stay proprietary; the public build simply excludes them when the
+    flag is not passed.
+  </p>
+
+  <svg font-family="inherit" data-diagram="D12" viewBox="0 0 920 360" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d12-title d12-desc">
+    <title id="d12-title">Open-core repository and license map</title>
+    <desc id="d12-desc">Left half shows the public Entity repo with three internal areas: GPLv3 core (red tinted), Apache 2.0 plugin-api and entity-bus and first-party plugins (blue tinted). Right half shows the Entity-Pro sibling private repo (charcoal tinted, proprietary). A dotted arrow labeled -DEXTRA_PLUGIN_DIRS connects them.</desc>
+
+    <!-- Public repo outer box -->
+    <rect x="4" y="32" width="530" height="312" rx="6" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="2"/>
+    <text x="269" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">PUBLIC REPO</text>
+    <text x="269" y="60" text-anchor="middle" font-size="10" fill="#52525B">C:\Entity\Entity (github.com/duremovich/Entity)</text>
+
+    <!-- GPLv3 core area -->
+    <rect x="16" y="72" width="506" height="100" rx="4" fill="#FEE2E2" stroke="#7F1D1D" stroke-width="1.5"/>
+    <text x="269" y="92" text-anchor="middle" font-size="11" font-weight="700" fill="#7F1D1D">GPLv3 Core  (LICENSE)</text>
+    <text x="28" y="112" font-size="9" fill="#7F1D1D">src/  include/entity/core  include/entity/render  include/entity/systems</text>
+    <text x="28" y="128" font-size="9" fill="#7F1D1D">include/entity/components  include/entity/timeline  include/entity/director</text>
+    <text x="28" y="144" font-size="9" fill="#7F1D1D">include/entity/bus  tests/  apps/  docs/  scripts/</text>
+    <text x="28" y="160" font-size="9" fill="#52525B" font-style="italic">GPLv3 + linking exception: output-driver plugins may link without GPLv3 inheritance.</text>
+
+    <!-- Apache area -->
+    <rect x="16" y="184" width="506" height="148" rx="4" fill="#DBEAFE" stroke="#1D4ED8" stroke-width="1.5"/>
+    <text x="269" y="204" text-anchor="middle" font-size="11" font-weight="700" fill="#1D4ED8">Apache 2.0  (LICENSE-PLUGIN-API)</text>
+    <text x="28" y="224" font-size="9" fill="#1D4ED8">plugin-api/include/entity/plugin/   &lt;-- no entt.hpp, no d3d12.h (CI-enforced)</text>
+    <text x="28" y="240" font-size="9" fill="#1D4ED8">entity-bus/   (shared message-transport headers)</text>
+
+    <!-- First-party plugin sub-boxes -->
+    <rect x="28" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+    <text x="84" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">osc-receiver</text>
+    <text x="84" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+    <text x="84" y="296" text-anchor="middle" font-size="9" fill="#52525B">control-plane</text>
+
+    <rect x="148" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+    <text x="204" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">osc-sender</text>
+    <text x="204" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+    <text x="204" y="296" text-anchor="middle" font-size="9" fill="#52525B">control-plane</text>
+
+    <rect x="268" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+    <text x="324" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">dmx-artnet</text>
+    <text x="324" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+    <text x="324" y="296" text-anchor="middle" font-size="9" fill="#52525B">control-plane</text>
+
+    <rect x="388" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+    <text x="444" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">bus-logger</text>
+    <text x="444" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+    <text x="444" y="296" text-anchor="middle" font-size="9" fill="#52525B">scaffold template</text>
+
+    <!-- EXTRA_PLUGIN_DIRS arrow (dotted) -->
+    <defs>
+      <marker id="d12-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#3F3F46"/>
+      </marker>
+    </defs>
+    <line x1="534" y1="196" x2="622" y2="196" stroke="#3F3F46" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#d12-arrow)"/>
+    <text x="578" y="188" text-anchor="middle" font-size="8" fill="#3F3F46">-DEXTRA_PLUGIN_DIRS</text>
+    <text x="578" y="200" text-anchor="middle" font-size="8" fill="#3F3F46">=C:/Entity/Entity-Pro/plugins</text>
+
+    <!-- Pro repo outer box -->
+    <rect x="622" y="32" width="294" height="312" rx="6" fill="#FFFFFF" stroke="#3F3F46" stroke-width="2"/>
+    <text x="769" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#3F3F46">PRIVATE SIBLING REPO</text>
+
+    <rect x="634" y="72" width="270" height="260" rx="4" fill="#E5E5E5" stroke="#3F3F46" stroke-width="1.5"/>
+    <text x="769" y="100" text-anchor="middle" font-size="11" font-weight="700" fill="#3F3F46">Entity-Pro</text>
+    <text x="769" y="118" text-anchor="middle" font-size="10" fill="#3F3F46">Proprietary</text>
+    <text x="769" y="136" text-anchor="middle" font-size="10" fill="#52525B">C:\Entity\Entity-Pro</text>
+    <text x="769" y="154" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">(not present on this machine)</text>
+
+    <text x="645" y="184" font-size="9" fill="#52525B">Proprietary SDK integrations</text>
+    <text x="645" y="200" font-size="9" fill="#52525B">folded into the public build at</text>
+    <text x="645" y="216" font-size="9" fill="#52525B">configure time via the CMake</text>
+    <text x="645" y="232" font-size="9" fill="#52525B">EXTRA_PLUGIN_DIRS variable.</text>
+    <text x="645" y="256" font-size="9" fill="#52525B">CI never references this repo.</text>
+    <text x="645" y="272" font-size="9" fill="#52525B">Apache 2.0 plugin-api/ boundary</text>
+    <text x="645" y="288" font-size="9" fill="#52525B">is the legal seam that allows</text>
+    <text x="645" y="304" font-size="9" fill="#52525B">proprietary plugins to link</text>
+    <text x="645" y="320" font-size="9" fill="#52525B">against the GPLv3 core.</text>
+
+    <!-- LICENSING.md note -->
+    <text x="4" y="352" font-size="9" fill="#52525B" font-style="italic">See LICENSING.md at repo root for the full explainer. LICENSE = GPLv3 + linking exception. LICENSE-PLUGIN-API = Apache 2.0.</text>
+  </svg>
+
+  <h3>The open-core principle, briefly</h3>
+
+  <p>
+    Per <code>docs/adr/0007-open-core-feature-tiering.md</code>: gate Pro features by
+    <em>capability</em>, not by capacity or watermark. Public Entity is fully functional for
+    single-machine show work. There are no nag screens, no time-limited trial mode, no
+    watermarked output. You can run a real show on the open-core build.
+  </p>
+  <p>
+    Pro adds capabilities that the open core cannot offer cleanly given its scope: cluster
+    sync across multiple machines, proprietary vendor SDK integrations (Decklink-internal,
+    Notch, Quadro Sync II), and deeper show-control integrations. The principle keeps the
+    public version genuinely useful while making the Pro purchase a clean capability upgrade
+    rather than the unlocking of an artificial restriction.
+  </p>
+  <p>
+    The fact that Pro features land as plugins by default &mdash; rather than as
+    <code>#ifdef</code> blocks in the core &mdash; is itself a structural consequence of
+    the open-core model. The plugin layer is the right place for them, and it keeps the
+    core reviewable.
+  </p>
+
+  <div class="callout callout--plugin">
+    <p>
+      The plugin layer is the extension surface. If a feature can be plugin-shaped, it should
+      be &mdash; even Pro features default to plugins. The C++ ABI at
+      <code>plugin-api/include/entity/plugin/</code> is the tight contract for hot-path
+      plugins; the <code>IPluginContext::enqueueCommand</code> path is the looser one for
+      control-plane plugins. Both are stable surfaces. Adding a new plugin means copying from
+      <code>plugins/bus-logger/</code> &mdash; the scaffold template exists precisely for this.
+    </p>
+  </div>
+
+</section>
+
+
+    <!-- SECTION:FOOTER -->
+    <footer class="doc-footer">
+      <p>Generated from repo at commit <code>e7fc109</code> on 2026-05-23.</p>
+      <p>Synthesized from <code>docs/adr/</code> (26 ADRs), <code>docs/reference/</code>, and per-area <code>CLAUDE.md</code> files.</p>
+    </footer>
+
+  </main>
+</body>
+</html>

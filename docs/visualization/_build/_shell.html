@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Entity Media Server &mdash; Architecture Overview</title>
+  <style>
+    /* ===================================================================
+       ENTITY MEDIA SERVER — ARCHITECTURE OVERVIEW
+       Visual system v1.0 — designer-locked, 2026-05-23
+       Coders: touch ZERO CSS. Add only <section>, <table>, <p>, <svg>
+       using the classes defined here.
+    =================================================================== */
+
+    /* --- Reset & box model --- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* --- Custom properties — palette --- */
+    :root {
+      /* Surface neutrals */
+      --bg:        #FBFAF7;
+      --surface:   #FFFFFF;
+      --surface-2: #F1EFE9;
+      --ink:       #1B1B1F;
+      --ink-2:     #52525B;
+      --rule:      #E4E2DA;
+
+      /* Thread axis */
+      --editor:        #C2410C;
+      --editor-tint:   #FFEDD5;
+      --show:          #1E3A8A;
+      --show-tint:     #DBEAFE;
+      --workers:       #525252;
+      --workers-tint:  #E5E5E5;
+      --bus:           #0F766E;
+      --bus-tint:      #CCFBF1;
+
+      /* ECS-role axis */
+      --component:       #7C3AED;
+      --component-tint:  #EDE9FE;
+      --system:          #0891B2;
+      --system-tint:     #CFFAFE;
+      --archetype:       #D97706;
+      --archetype-tint:  #FEF3C7;
+      --ui:              #BE185D;
+      --ui-tint:         #FCE7F3;
+      --plugin:          #15803D;
+      --plugin-tint:     #DCFCE7;
+
+      /* License accents (S6 only) */
+      --gpl:         #7F1D1D;
+      --apache:      #1D4ED8;
+      --proprietary: #3F3F46;
+
+      /* Typography */
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, "SF Mono", ui-monospace, monospace;
+    }
+
+    /* --- Base typography & layout --- */
+    html { font-size: 15px; }
+
+    body {
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--ink);
+      background: var(--bg);
+    }
+
+    main.doc {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 24px;
+      background: var(--bg);
+    }
+
+    /* --- Type scale --- */
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+
+    h2 {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.25;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    h3 {
+      font-size: 17px;
+      font-weight: 600;
+      line-height: 1.3;
+      margin-top: 1.4rem;
+      margin-bottom: 0.5rem;
+    }
+
+    p {
+      margin-bottom: 0.75rem;
+    }
+
+    ul, ol {
+      margin-left: 1.4rem;
+      margin-bottom: 0.75rem;
+    }
+
+    li {
+      margin-bottom: 0.2rem;
+    }
+
+    /* --- Document header --- */
+    .doc-header {
+      padding-bottom: 1.5rem;
+      margin-bottom: 0.5rem;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .doc-subtitle {
+      font-size: 13px;
+      color: var(--ink-2);
+      margin-top: 4px;
+      margin-bottom: 0;
+    }
+
+    /* --- Section wrapper --- */
+    .doc-section {
+      margin-top: 0;
+    }
+
+    /* --- Card --- */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 16px;
+      margin: 12px 0;
+    }
+
+    /* --- Callout family --- */
+    .callout {
+      padding: 12px 16px;
+      border-radius: 4px;
+      margin: 12px 0;
+      border-left: 3px solid var(--rule);
+      background: var(--surface-2);
+    }
+    .callout p:last-child { margin-bottom: 0; }
+
+    .callout--editor   { background: var(--editor-tint);    border-left-color: var(--editor); }
+    .callout--show     { background: var(--show-tint);      border-left-color: var(--show); }
+    .callout--workers  { background: var(--workers-tint);   border-left-color: var(--workers); }
+    .callout--bus      { background: var(--bus-tint);        border-left-color: var(--bus); }
+    .callout--component { background: var(--component-tint); border-left-color: var(--component); }
+    .callout--system   { background: var(--system-tint);    border-left-color: var(--system); }
+    .callout--archetype { background: var(--archetype-tint); border-left-color: var(--archetype); }
+    .callout--ui       { background: var(--ui-tint);         border-left-color: var(--ui); }
+    .callout--plugin   { background: var(--plugin-tint);     border-left-color: var(--plugin); }
+
+    /* --- Pills --- */
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-radius: 3px;
+      padding: 2px 6px;
+      margin-right: 4px;
+      margin-bottom: 3px;
+      border: 1px solid var(--rule);
+      color: var(--ink-2);
+    }
+
+    .pill--editor    { border-color: var(--editor);    color: var(--editor); }
+    .pill--show      { border-color: var(--show);      color: var(--show); }
+    .pill--workers   { border-color: var(--workers);   color: var(--workers); }
+    .pill--bus       { border-color: var(--bus);        color: var(--bus); }
+    .pill--component { border-color: var(--component);  color: var(--component); }
+    .pill--system    { border-color: var(--system);     color: var(--system); }
+    .pill--archetype { border-color: var(--archetype);  color: var(--archetype); }
+    .pill--ui        { border-color: var(--ui);          color: var(--ui); }
+    .pill--plugin    { border-color: var(--plugin);      color: var(--plugin); }
+    /* Optional-component pill variant: dashed border */
+    .pill--optional  { border-style: dashed; opacity: 0.8; }
+
+    /* --- Tech badges (S1 strip) --- */
+    .tech-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-radius: 3px;
+      padding: 2px 6px;
+      margin-right: 4px;
+      margin-bottom: 3px;
+      background: var(--surface-2);
+      color: var(--ink-2);
+      border: 1px solid var(--rule);
+    }
+
+    /* --- kbd / path style --- */
+    .kbd, kbd {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--rule);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
+    /* --- inline code --- */
+    code {
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      background: var(--surface-2);
+      border-radius: 2px;
+      padding: 0 3px;
+    }
+
+    /* --- Note (provenance annotation) --- */
+    .note {
+      font-size: 12px;
+      font-style: italic;
+      color: var(--ink-2);
+      margin-top: 6px;
+      margin-bottom: 12px;
+    }
+
+    /* --- Stat strip --- */
+    .stat-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0;
+      margin: 12px 0;
+    }
+
+    .stat {
+      flex: 1 1 120px;
+      padding: 14px 18px;
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      margin: 4px;
+      text-align: center;
+    }
+
+    .stat__num {
+      display: block;
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+
+    .stat__label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--ink-2);
+      margin-top: 2px;
+    }
+
+    /* --- Tables --- */
+    .doc table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 13px;
+    }
+
+    .doc th {
+      background: var(--surface-2);
+      text-align: left;
+      padding: 8px 10px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+      color: var(--ink-2);
+    }
+
+    .doc td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--rule);
+      vertical-align: top;
+    }
+
+    .doc tr:last-child td {
+      border-bottom: none;
+    }
+
+    .doc td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    /* Family-colored left border on first td */
+    .doc tr[data-family="editor"]     td:first-child { border-left: 2px solid var(--editor);     padding-left: 12px; }
+    .doc tr[data-family="show"]       td:first-child { border-left: 2px solid var(--show);       padding-left: 12px; }
+    .doc tr[data-family="workers"]    td:first-child { border-left: 2px solid var(--workers);    padding-left: 12px; }
+    .doc tr[data-family="bus"]        td:first-child { border-left: 2px solid var(--bus);         padding-left: 12px; }
+    .doc tr[data-family="component"]  td:first-child { border-left: 2px solid var(--component);  padding-left: 12px; }
+    .doc tr[data-family="system"]     td:first-child { border-left: 2px solid var(--system);     padding-left: 12px; }
+    .doc tr[data-family="archetype"]  td:first-child { border-left: 2px solid var(--archetype);  padding-left: 12px; }
+    .doc tr[data-family="ui"]         td:first-child { border-left: 2px solid var(--ui);          padding-left: 12px; }
+    .doc tr[data-family="plugin"]     td:first-child { border-left: 2px solid var(--plugin);     padding-left: 12px; }
+    .doc tr[data-family="timeline"]   td:first-child { border-left: 2px solid var(--archetype);  padding-left: 12px; }
+    .doc tr[data-family="animation"]  td:first-child { border-left: 2px solid var(--component);  padding-left: 12px; }
+    .doc tr[data-family="media"]      td:first-child { border-left: 2px solid var(--workers);    padding-left: 12px; }
+    .doc tr[data-family="routing"]    td:first-child { border-left: 2px solid var(--bus);         padding-left: 12px; }
+    .doc tr[data-family="output"]     td:first-child { border-left: 2px solid var(--show);       padding-left: 12px; }
+    .doc tr[data-family="effects"]    td:first-child { border-left: 2px solid var(--system);     padding-left: 12px; }
+    .doc tr[data-family="kind"]       td:first-child { border-left: 2px solid var(--plugin);     padding-left: 12px; }
+
+    /* --- SVG block sizing --- */
+    .doc svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      margin: 16px 0;
+    }
+
+    /* --- Footer --- */
+    .doc-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--rule);
+      font-size: 12px;
+      color: var(--ink-2);
+    }
+
+    .doc-footer p {
+      margin-bottom: 0.3rem;
+    }
+
+    /* ===================================================================
+       PRINT STYLES
+    =================================================================== */
+    @media print {
+      body { font-size: 12px; background: #fff; }
+      main.doc { max-width: 100%; padding: 12px; }
+
+      h2 { margin-top: 1.5rem; }
+
+      .card { break-inside: avoid; }
+      .callout { break-inside: avoid; }
+      .stat-strip { break-inside: avoid; }
+
+      /* Don't break inside SVG diagrams if they fit on page */
+      svg { break-inside: avoid; max-height: 90vh; }
+
+      /* Don't print background tints — saves ink and avoids washed-out look */
+      .callout--editor,
+      .callout--show,
+      .callout--workers,
+      .callout--bus,
+      .callout--component,
+      .callout--system,
+      .callout--archetype,
+      .callout--ui,
+      .callout--plugin {
+        background: #fff;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .doc-header { border-bottom-color: #ccc; }
+      .doc-footer { border-top-color: #ccc; }
+    }
+  </style>
+</head>
+<body>
+  <main class="doc">
+
+    <!-- SECTION:HEADER -->
+    <header class="doc-header">
+      <h1>Entity Media Server</h1>
+      <p class="doc-subtitle">Architecture overview &middot; generated 2026-05-23 at e7fc109</p>
+    </header>
+
+    <!-- SECTION:S1 -->
+
+    <!-- SECTION:S2 -->
+
+    <!-- SECTION:S3 -->
+
+    <!-- SECTION:S4 -->
+
+    <!-- SECTION:S5 -->
+
+    <!-- SECTION:S6 -->
+
+    <!-- SECTION:FOOTER -->
+    <footer class="doc-footer">
+      <p>Generated from repo at commit <code>e7fc109</code> on 2026-05-23.</p>
+      <p>Synthesized from <code>docs/adr/</code> (26 ADRs), <code>docs/reference/</code>, and per-area <code>CLAUDE.md</code> files.</p>
+    </footer>
+
+  </main>
+</body>
+</html>

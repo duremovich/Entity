@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Entity Viz — Diagram Manifest</title></head>
+<body>
+<!--
+  ENTITY MEDIA SERVER — DIAGRAM MANIFEST
+  12 SVG diagrams. Coders: copy each SVG verbatim into the section indicated.
+  Do NOT modify the SVG. Do NOT add inline styles.
+  The arrow marker defined in D1 (<defs>) is redefined in every SVG
+  so each is self-contained.
+-->
+
+<!-- =================================================================== -->
+<!-- D1: Header banner — editor / snapshot / show three-box              -->
+<!-- Section: S1   Complexity: small                                      -->
+<!-- Coders: paste this svg verbatim into S1 after the stat strip.       -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D1" viewBox="0 0 920 140" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d1-title d1-desc">
+  <title id="d1-title">Thread architecture overview</title>
+  <desc id="d1-desc">Three boxes left to right: Editor Thread (orange), bus::SceneSnapshot (teal arrow), Show Thread (indigo). A lighter bar below shows Decode / Plugin workers in slate.</desc>
+  <defs>
+    <marker id="d1-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#0F766E"/>
+    </marker>
+    <marker id="d1-arrow-r" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+      <polygon points="8 0, 0 3, 8 6" fill="#0F766E"/>
+    </marker>
+  </defs>
+
+  <!-- Editor box -->
+  <rect x="12" y="12" width="260" height="72" rx="4" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+  <text x="142" y="36" text-anchor="middle" font-size="11" font-weight="600"
+        fill="#C2410C" text-transform="uppercase" letter-spacing="0.04em">EDITOR THREAD</text>
+  <text x="142" y="55" text-anchor="middle" font-size="12" fill="#1B1B1F">Sole registry writer</text>
+  <text x="142" y="73" text-anchor="middle" font-size="11" fill="#52525B">Engine::update  ~60 Hz</text>
+
+  <!-- Arrow D2R -->
+  <line x1="272" y1="42" x2="380" y2="42" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d1-arrow)"/>
+  <text x="326" y="36" text-anchor="middle" font-size="11" fill="#0F766E" font-weight="600">D2R bus</text>
+  <text x="326" y="56" text-anchor="middle" font-size="10" fill="#0F766E">SceneSnapshot</text>
+
+  <!-- Arrow R2D -->
+  <line x1="380" y1="62" x2="272" y2="62" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d1-arrow-r)"/>
+  <text x="326" y="79" text-anchor="middle" font-size="10" fill="#0F766E">R2D replies</text>
+
+  <!-- Show box -->
+  <rect x="380" y="12" width="260" height="72" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+  <text x="510" y="36" text-anchor="middle" font-size="11" font-weight="600"
+        fill="#1E3A8A" letter-spacing="0.04em">SHOW THREAD</text>
+  <text x="510" y="55" text-anchor="middle" font-size="12" fill="#1B1B1F">Snapshot reader + GPU</text>
+  <text x="510" y="73" text-anchor="middle" font-size="11" fill="#52525B">Engine::showThreadMain  60 Hz</text>
+
+  <!-- Workers bar -->
+  <rect x="12" y="98" width="628" height="30" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+  <text x="326" y="117" text-anchor="middle" font-size="11" fill="#525252" font-weight="600">
+    WORKER THREADS — Decode #N (per clip) &middot; ContentScanner &middot; MediaProbe &middot; Transcode &middot; OSC
+  </text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D2: Thread swim-lane (hero diagram)                                  -->
+<!-- Section: S2   Complexity: large                                      -->
+<!-- Coders: paste this svg verbatim into S2.                            -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D2" viewBox="0 0 920 660" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d2-title d2-desc">
+  <title id="d2-title">Per-frame system execution order across editor, show, and worker threads</title>
+  <desc id="d2-desc">Three vertical swim lanes. Editor (left, orange) lists 11 ordered steps. Show (centre, indigo) lists 8 steps. Workers (right, slate) shows 5 worker types. Cross-lane arrows show data flow.</desc>
+  <defs>
+    <marker id="d2-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#0F766E"/></marker>
+    <marker id="d2-arrow-w" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#525252"/></marker>
+    <marker id="d2-arrow-ed" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#C2410C"/></marker>
+  </defs>
+  <!-- Lane headers -->
+  <rect x="0" y="0" width="305" height="36" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+  <text x="152" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#C2410C">EDITOR THREAD — Engine::update</text>
+  <rect x="315" y="0" width="290" height="36" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+  <text x="460" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">SHOW THREAD — showThreadMain</text>
+  <rect x="615" y="0" width="302" height="36" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+  <text x="766" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#525252">WORKER THREADS</text>
+  <line x1="305" y1="36" x2="305" y2="660" stroke="#E4E2DA" stroke-width="1"/>
+  <line x1="615" y1="36" x2="615" y2="660" stroke="#E4E2DA" stroke-width="1"/>
+  <!-- Editor steps — shared style via group -->
+  <g fill="#FFEDD5" stroke="#C2410C" stroke-width="1">
+    <rect x="8" y="48" width="289" height="38" rx="3"/><rect x="8" y="96" width="289" height="38" rx="3"/>
+    <rect x="8" y="144" width="289" height="38" rx="3"/><rect x="8" y="192" width="289" height="38" rx="3"/>
+    <rect x="8" y="240" width="289" height="38" rx="3"/><rect x="8" y="288" width="289" height="38" rx="3"/>
+    <rect x="8" y="336" width="289" height="38" rx="3"/><rect x="8" y="384" width="289" height="38" rx="3"/>
+    <rect x="8" y="432" width="289" height="38" rx="3"/><rect x="8" y="480" width="289" height="38" rx="3"/>
+    <rect x="8" y="528" width="289" height="38" rx="3"/>
+    <rect x="8" y="620" width="140" height="30" rx="3"/><rect x="157" y="620" width="140" height="30" rx="3"/>
+  </g>
+  <rect x="8" y="576" width="289" height="38" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+  <!-- Editor step labels -->
+  <g font-size="11" font-weight="700" fill="#C2410C">
+    <text x="24" y="63">1</text><text x="24" y="111">2</text><text x="24" y="159">3</text>
+    <text x="24" y="207">3.5</text><text x="24" y="255">4</text><text x="24" y="303">5</text>
+    <text x="24" y="351">5.5</text><text x="24" y="399">5.6</text><text x="24" y="447">6</text>
+    <text x="24" y="495">7</text><text x="24" y="543">8</text>
+    <text x="24" y="633">10</text><text x="170" y="633">11</text>
+  </g>
+  <text x="24" y="591" font-size="11" font-weight="700" fill="#0F766E">9</text>
+  <!-- Editor step primary labels -->
+  <g font-size="12" fill="#1B1B1F">
+    <text x="38" y="63">Timeline::update(dt)</text>
+    <text x="38" y="111">SectionScheduler::tick()</text>
+    <text x="38" y="159">AnimationSystem::update(dt)</text>
+    <text x="46" y="207">TextSystem::update()</text>
+    <text x="38" y="255">drainContentScannerDeltas()</text>
+    <text x="38" y="303">DecodeSystem::update()</text>
+    <text x="46" y="351">AudioSystem::update()</text>
+    <text x="46" y="399">SeekSyncController::tick()</text>
+    <text x="38" y="447">m_lastEditorTickNs.store(now)</text>
+    <text x="38" y="495">ImGui + UI rendering</text>
+    <text x="38" y="543">CommandDispatcher::processQueue</text>
+    <text x="40" y="638">drainR2D replies</text>
+    <text x="184" y="638">Editor Present</text>
+  </g>
+  <text x="38" y="591" font-size="12" font-weight="600" fill="#0F766E">buildSceneSnapshot()</text>
+  <!-- Editor step sub-labels -->
+  <g font-size="10" fill="#52525B">
+    <text x="38" y="79">Advances m_currentTime (atomic write)</text>
+    <text x="38" y="127">Applies catch-up; break detection is show-side</text>
+    <text x="38" y="175">Keyframe tracks -&gt; Transform + ObjectAnimationOutput</text>
+    <text x="46" y="223">Rasterize dirty TextLayerState via DirectWrite</text>
+    <text x="38" y="271">Folds filesystem-watcher deltas into MediaBin</text>
+    <text x="38" y="319">Maps timeline -&gt; media frame; sets worker-&gt;targetFrame</text>
+    <text x="46" y="367">Steers AudioDecodeWorker; mirrors gain/mute to mixer</text>
+    <text x="46" y="415">Polls decoder readiness; releases seek-sync gate</text>
+    <text x="38" y="463">Editor heartbeat for show-thread stall detection</text>
+    <text x="38" y="511">Editor windows draw; writes via CommandDispatcher</text>
+    <text x="38" y="559">Drains Editor + Either affinity; writes registry</text>
+  </g>
+  <text x="38" y="607" font-size="10" fill="#0F766E">Bakes registry -&gt; bus::SceneSnapshot; publishes D2R</text>
+  <!-- Show steps -->
+  <g fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1">
+    <rect x="323" y="48" width="274" height="38" rx="3"/><rect x="323" y="96" width="274" height="38" rx="3"/>
+    <rect x="323" y="240" width="274" height="38" rx="3"/>
+    <rect x="323" y="336" width="274" height="38" rx="3"/><rect x="323" y="384" width="274" height="38" rx="3"/>
+    <rect x="323" y="432" width="274" height="38" rx="3"/><rect x="323" y="480" width="274" height="38" rx="3"/>
+    <rect x="323" y="528" width="274" height="38" rx="3"/>
+  </g>
+  <rect x="323" y="144" width="274" height="38" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+  <rect x="323" y="288" width="274" height="38" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+  <g font-size="11" font-weight="700" fill="#1E3A8A">
+    <text x="339" y="63">1</text><text x="339" y="111">1.1</text>
+    <text x="339" y="255">2</text><text x="339" y="351">4</text>
+    <text x="339" y="399">5</text><text x="339" y="447">6</text>
+    <text x="339" y="495">7</text><text x="339" y="543">8</text>
+  </g>
+  <text x="339" y="159" font-size="11" font-weight="700" fill="#525252">1.2</text>
+  <text x="339" y="303" font-size="11" font-weight="700" fill="#0F766E">3</text>
+  <g font-size="12" fill="#1B1B1F">
+    <text x="353" y="63">Timeline::update(dt)</text>
+    <text x="360" y="111">SectionDetect zone</text>
+    <text x="353" y="255">CommandDispatcher::processQueue</text>
+    <text x="353" y="351">beginShowFrame</text>
+    <text x="353" y="399">PlaybackPresenter::present()</text>
+    <text x="353" y="447">CompositorSystem::update()</text>
+    <text x="353" y="495">OutputManager::renderOutputs()</text>
+    <text x="353" y="543">endShowFrame</text>
+  </g>
+  <text x="360" y="159" font-size="12" fill="#52525B">Fallback if editor stale &gt;50 ms</text>
+  <text x="353" y="303" font-size="12" font-weight="600" fill="#0F766E">Drain D2R bus</text>
+  <g font-size="10" fill="#52525B">
+    <text x="353" y="79">Advances time unconditionally every show frame</text>
+    <text x="360" y="127">Break detection; posts R2D SectionBreakDetected</text>
+    <text x="360" y="175">DecodeSystem::update + AudioSystem::update</text>
+    <text x="353" y="271">Show affinity: Play/Pause/Seek/SectionGo</text>
+    <text x="353" y="367">Reset show allocator; open cmd list; Tracy D3D12 zone</text>
+    <text x="353" y="415">Upload decoded frames to GPU textures</text>
+    <text x="353" y="463">PASS 1 generative + PASS 1.5 effects + PASS 2 blit</text>
+    <text x="353" y="511">Composite screen targets to output swap chains</text>
+    <text x="353" y="559">Close Tracy zone; execute; Present all swap chains</text>
+  </g>
+  <text x="353" y="319" font-size="10" fill="#0F766E">Pull latest SceneSnapshot (latest-wins)</text>
+  <!-- Workers -->
+  <g fill="#E5E5E5" stroke="#525252" stroke-width="1">
+    <rect x="623" y="48" width="286" height="38" rx="3"/><rect x="623" y="96" width="286" height="38" rx="3"/>
+    <rect x="623" y="144" width="286" height="38" rx="3"/><rect x="623" y="192" width="286" height="38" rx="3"/>
+  </g>
+  <rect x="623" y="240" width="286" height="38" rx="3" fill="#DCFCE7" stroke="#15803D" stroke-width="1"/>
+  <g text-anchor="middle" font-size="12" font-weight="600">
+    <text x="766" y="67" fill="#525252">Decode #N (per clip entity)</text>
+    <text x="766" y="115" fill="#525252">AudioDecodeWorker (per clip)</text>
+    <text x="766" y="163" fill="#525252">ContentScanner</text>
+    <text x="766" y="211" fill="#525252">MediaProbe / Transcode</text>
+    <text x="766" y="259" fill="#15803D">Plugin workers (OSC, DMX, etc.)</text>
+  </g>
+  <g text-anchor="middle" font-size="10">
+    <text x="766" y="81" fill="#52525B">FFmpeg decode -&gt; FrameRingBuffer</text>
+    <text x="766" y="129" fill="#52525B">FFmpeg audio -&gt; ring; steered by AudioSystem</text>
+    <text x="766" y="177" fill="#52525B">Filesystem watcher -&gt; delta queue</text>
+    <text x="766" y="225" fill="#52525B">Probe metadata; transcode to delivery codec</text>
+    <text x="766" y="273" fill="#15803D">CommandDispatcher::enqueue via IPluginContext</text>
+  </g>
+  <!-- Cross-lane arrows -->
+  <line x1="297" y1="595" x2="323" y2="307" stroke="#0F766E" stroke-width="2" marker-end="url(#d2-arrow)"/>
+  <line x1="323" y1="120" x2="297" y2="635" stroke="#0F766E" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d2-arrow)"/>
+  <line x1="623" y1="67" x2="297" y2="307" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d2-arrow-w)"/>
+  <line x1="297" y1="451" x2="323" y2="163" stroke="#C2410C" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d2-arrow-ed)"/>
+  <!-- Legend -->
+  <line x1="660" y1="310" x2="696" y2="310" stroke="#0F766E" stroke-width="2"/>
+  <text x="702" y="314" font-size="10" fill="#0F766E">Current data flow</text>
+  <line x1="660" y1="328" x2="696" y2="328" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="702" y="332" font-size="10" fill="#52525B">Fallback / deferred</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D3: Snapshot-bake decision tree                                      -->
+<!-- Section: S2   Complexity: small                                      -->
+<!-- Coders: paste this svg verbatim into S2 after the fallback table.   -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D3" viewBox="0 0 920 320" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d3-title d3-desc">
+  <title id="d3-title">Snapshot-bake decision tree for editor-tick systems</title>
+  <desc id="d3-desc">Decision tree: root asks whether system drives output. If yes, asks whether it writes registry. Registry-writes branch leads to snapshot-bake leaves (AnimationSystem, SectionScheduler, TextSystem). Non-registry-write branch leads to show-fallback-tick leaves (Timeline, DecodeSystem, AudioSystem).</desc>
+  <defs>
+    <marker id="d3-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#52525B"/>
+    </marker>
+  </defs>
+
+  <!-- Root -->
+  <rect x="310" y="12" width="300" height="44" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+  <text x="460" y="30" text-anchor="middle" font-size="13" font-weight="600" fill="#1B1B1F">Editor-tick system</text>
+  <text x="460" y="48" text-anchor="middle" font-size="11" fill="#52525B">drives projector output?</text>
+  <line x1="460" y1="56" x2="460" y2="88" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+  <!-- Second node -->
+  <rect x="310" y="88" width="300" height="44" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+  <text x="460" y="106" text-anchor="middle" font-size="13" font-weight="600" fill="#1B1B1F">Writes registry</text>
+  <text x="460" y="124" text-anchor="middle" font-size="11" fill="#52525B">components each tick?</text>
+
+  <!-- YES branch (left -> snapshot-bake) -->
+  <line x1="360" y1="110" x2="220" y2="110" stroke="#52525B" stroke-width="1.5"/>
+  <line x1="220" y1="110" x2="220" y2="170" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+  <text x="290" y="103" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">YES</text>
+
+  <!-- NO branch (right -> show-fallback) -->
+  <line x1="560" y1="110" x2="700" y2="110" stroke="#52525B" stroke-width="1.5"/>
+  <line x1="700" y1="110" x2="700" y2="170" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+  <text x="630" y="103" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">NO</text>
+
+  <!-- Snapshot-bake box -->
+  <rect x="100" y="170" width="240" height="44" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+  <text x="220" y="191" text-anchor="middle" font-size="12" font-weight="700" fill="#7C3AED">Snapshot-bake</text>
+  <text x="220" y="208" text-anchor="middle" font-size="10" fill="#7C3AED">Bake result into ClipCatalogEntry;</text>
+
+  <!-- Show-fallback box -->
+  <rect x="580" y="170" width="240" height="44" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="1.5"/>
+  <text x="700" y="191" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">Show-fallback tick</text>
+  <text x="700" y="208" text-anchor="middle" font-size="10" fill="#0891B2">Show thread calls system directly</text>
+
+  <!-- Snapshot-bake leaves -->
+  <line x1="220" y1="214" x2="220" y2="248" stroke="#7C3AED" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+  <rect x="60" y="248" width="160" height="36" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1"/>
+  <text x="140" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">AnimationSystem</text>
+  <text x="140" y="278" text-anchor="middle" font-size="10" fill="#52525B">tracks -&gt; ClipCatalogEntry</text>
+
+  <rect x="230" y="248" width="150" height="36" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1"/>
+  <text x="305" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">SectionScheduler</text>
+  <text x="305" y="278" text-anchor="middle" font-size="10" fill="#52525B">anchor -&gt; CatalogEntry</text>
+
+  <!-- Show-fallback leaves -->
+  <line x1="700" y1="214" x2="700" y2="248" stroke="#0891B2" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+  <rect x="560" y="248" width="120" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+  <text x="620" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">Timeline</text>
+  <text x="620" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic m_currentTime</text>
+
+  <rect x="690" y="248" width="120" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+  <text x="750" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">DecodeSystem</text>
+  <text x="750" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic targetFrame</text>
+
+  <rect x="820" y="248" width="88" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+  <text x="864" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">AudioSystem</text>
+  <text x="864" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic workers</text>
+
+  <!-- No-stall-risk note -->
+  <text x="220" y="308" text-anchor="middle" font-size="10" fill="#52525B" font-style="italic">TextSystem: no fallback needed (text static per frame)</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D4: Component family grid                                            -->
+<!-- Section: S3   Complexity: medium                                     -->
+<!-- Coders: paste this svg verbatim into S3 after the systems table.    -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D4" viewBox="0 0 920 270" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d4-title d4-desc">
+  <title id="d4-title">Component families grid</title>
+  <desc id="d4-desc">Seven columns, one per component family. Families: Timeline (amber), Animation (violet), Media (slate), Routing (teal), Output (indigo), Effects (cyan), Kind-Specific (forest).</desc>
+  <!-- Column X centres: 68, 202, 333, 464, 598, 727, 854. Width 128 each except Media(122), Effects(118), Kind(124). -->
+  <!-- Headers -->
+  <g font-size="10" font-weight="700" text-anchor="middle">
+    <rect x="4" y="0" width="128" height="22" rx="2" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/><text x="68" y="15" fill="#D97706">TIMELINE</text>
+    <rect x="138" y="0" width="128" height="22" rx="2" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/><text x="202" y="15" fill="#7C3AED">ANIMATION</text>
+    <rect x="272" y="0" width="122" height="22" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/><text x="333" y="15" fill="#525252">MEDIA</text>
+    <rect x="400" y="0" width="128" height="22" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/><text x="464" y="15" fill="#0F766E">ROUTING</text>
+    <rect x="534" y="0" width="128" height="22" rx="2" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/><text x="598" y="15" fill="#1E3A8A">OUTPUT</text>
+    <rect x="668" y="0" width="118" height="22" rx="2" fill="#CFFAFE" stroke="#0891B2" stroke-width="1.5"/><text x="727" y="15" fill="#0891B2">EFFECTS</text>
+    <rect x="792" y="0" width="124" height="22" rx="2" fill="#DCFCE7" stroke="#15803D" stroke-width="1.5"/><text x="854" y="15" fill="#15803D">KIND-SPECIFIC</text>
+  </g>
+  <!-- Pills: fill=#FFFFFF stroke-width=1, shared via group per family -->
+  <!-- Timeline pills (amber) -->
+  <g fill="#FFFFFF" stroke="#D97706" stroke-width="1" font-size="10" text-anchor="middle" fill2="#D97706">
+    <rect x="4" y="28" width="128" height="20" rx="2"/><text x="68" y="43" fill="#D97706">Clip</text>
+    <rect x="4" y="54" width="128" height="20" rx="2"/><text x="68" y="69" fill="#D97706">Layer</text>
+    <rect x="4" y="80" width="128" height="20" rx="2"/><text x="68" y="95" fill="#D97706">MediaLayer</text>
+    <rect x="4" y="106" width="128" height="20" rx="2"/><text x="68" y="121" fill="#D97706">TimelineTrack</text>
+    <rect x="4" y="132" width="128" height="20" rx="2"/><text x="68" y="147" fill="#D97706">ClipDecodeState</text>
+    <rect x="4" y="158" width="128" height="20" rx="2"/><text x="68" y="173" fill="#D97706">ClipPlaybackPhase</text>
+    <rect x="4" y="184" width="128" height="20" rx="2"/><text x="68" y="199" fill="#D97706">AudioSource</text>
+    <rect x="4" y="210" width="128" height="20" rx="2"/><text x="68" y="225" fill="#D97706">FrameBuffer</text>
+  </g>
+  <!-- Animation pills (violet) -->
+  <g fill="#FFFFFF" stroke="#7C3AED" stroke-width="1" font-size="10" text-anchor="middle">
+    <rect x="138" y="28" width="128" height="20" rx="2"/><text x="202" y="43" fill="#7C3AED">AnimatedProperties</text>
+    <rect x="138" y="54" width="128" height="20" rx="2"/><text x="202" y="69" fill="#7C3AED">Transform</text>
+    <rect x="138" y="80" width="128" height="20" rx="2"/><text x="202" y="95" fill="#7C3AED">Camera</text>
+    <rect x="138" y="106" width="128" height="20" rx="2"/><text x="202" y="121" fill="#7C3AED">ObjectAnimationLayer</text>
+    <rect x="138" y="132" width="128" height="20" rx="2"/><text x="202" y="147" fill="#7C3AED">ObjectAnimationOutput</text>
+  </g>
+  <!-- Media pills (slate) -->
+  <g fill="#FFFFFF" stroke="#525252" stroke-width="1" font-size="10" text-anchor="middle">
+    <rect x="272" y="28" width="122" height="20" rx="2"/><text x="333" y="43" fill="#525252">VideoTexture</text>
+    <rect x="272" y="54" width="122" height="20" rx="2"/><text x="333" y="69" fill="#525252">Model</text>
+  </g>
+  <!-- Routing pills (teal) -->
+  <g fill="#FFFFFF" stroke="#0F766E" stroke-width="1" font-size="10" text-anchor="middle">
+    <rect x="400" y="28" width="128" height="20" rx="2"/><text x="464" y="43" fill="#0F766E">ContentRouting</text>
+    <rect x="400" y="54" width="128" height="20" rx="2"/><text x="464" y="69" fill="#0F766E">ContentRoutingAsset</text>
+    <rect x="400" y="80" width="128" height="20" rx="2"/><text x="464" y="95" fill="#0F766E">ContentRoutingRef</text>
+  </g>
+  <!-- Output pills (indigo) -->
+  <g fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1" font-size="10" text-anchor="middle">
+    <rect x="534" y="28" width="128" height="20" rx="2"/><text x="598" y="43" fill="#1E3A8A">Screen</text>
+    <rect x="534" y="54" width="128" height="20" rx="2"/><text x="598" y="69" fill="#1E3A8A">OutputDisplay</text>
+    <rect x="534" y="80" width="128" height="20" rx="2"/><text x="598" y="95" fill="#1E3A8A">OutputSurface</text>
+    <rect x="534" y="106" width="128" height="20" rx="2"/><text x="598" y="121" fill="#1E3A8A">Projector</text>
+    <rect x="534" y="132" width="128" height="20" rx="2"/><text x="598" y="147" fill="#1E3A8A">Prop</text>
+  </g>
+  <!-- Effects pills (cyan) -->
+  <g fill="#FFFFFF" stroke="#0891B2" stroke-width="1" font-size="10" text-anchor="middle">
+    <rect x="668" y="28" width="118" height="20" rx="2"/><text x="727" y="43" fill="#0891B2">Effect</text>
+    <rect x="668" y="54" width="118" height="20" rx="2"/><text x="727" y="69" fill="#0891B2">EffectChain</text>
+    <rect x="668" y="80" width="118" height="20" rx="2"/><text x="727" y="95" fill="#0891B2">EffectParameters</text>
+    <rect x="668" y="106" width="118" height="20" rx="2"/><text x="727" y="121" fill="#0891B2">EffectParam</text>
+    <rect x="668" y="132" width="118" height="20" rx="2"/><text x="727" y="147" fill="#0891B2">EffectChainRTs</text>
+    <rect x="668" y="158" width="118" height="20" rx="2"/><text x="727" y="173" fill="#0891B2">EffectAnimatedParams</text>
+  </g>
+  <!-- Kind-specific pills (forest) -->
+  <g fill="#FFFFFF" stroke="#15803D" stroke-width="1" font-size="10" text-anchor="middle">
+    <rect x="792" y="28" width="124" height="20" rx="2"/><text x="854" y="43" fill="#15803D">GenerativeLayer</text>
+    <rect x="792" y="54" width="124" height="20" rx="2"/><text x="854" y="69" fill="#15803D">MunchersGameState</text>
+    <rect x="792" y="80" width="124" height="20" rx="2"/><text x="854" y="95" fill="#15803D">TextLayerState</text>
+  </g>
+  <text x="4" y="262" font-size="10" fill="#52525B" font-style="italic">All components are POD structs except Clip (RAII FFmpeg handles). ContentRoutingAssetOps is a helper header, not a component.</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D5: Archetype recipe cards                                           -->
+<!-- Section: S3   Complexity: medium                                     -->
+<!-- Coders: paste this svg verbatim into S3 after the component grid.   -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D5" viewBox="0 0 920 460" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d5-title d5-desc">
+  <title id="d5-title">Archetype recipe cards for the five main entity archetypes</title>
+  <desc id="d5-desc">Five horizontal rows: Clip, Screen, Projector, OA Layer, Generative. Each shows required (solid) and optional (dashed) component pills.</desc>
+  <defs><style>.ra{font-size:9;font-weight:700}.la{font-size:14;font-weight:700;text-anchor:middle}.sub{font-size:10;text-anchor:middle;fill:#52525B}.it{font-size:10;font-style:italic;fill:#52525B}</style></defs>
+  <g fill="#FFFFFF" font-size="9" text-anchor="middle">
+  <!-- ROW 1: Clip -->
+  <rect x="0" y="0" width="920" height="76" rx="4" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+  <text x="90" y="30" class="la" fill="#D97706">Clip</text>
+  <text x="90" y="48" class="sub">video / image source</text>
+  <line x1="168" y1="8" x2="168" y2="68" stroke="#D97706" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="178" y="18" class="ra" fill="#7C3AED">REQUIRED</text>
+  <g stroke-width="1">
+    <rect x="178" y="22" width="52" height="16" rx="2" stroke="#D97706"/><text x="204" y="34" fill="#D97706">Clip</text>
+    <rect x="234" y="22" width="60" height="16" rx="2" stroke="#7C3AED"/><text x="264" y="34" fill="#7C3AED">Transform</text>
+    <rect x="298" y="22" width="90" height="16" rx="2" stroke="#D97706"/><text x="343" y="34" fill="#D97706">ClipDecodeState</text>
+    <rect x="392" y="22" width="72" height="16" rx="2" stroke="#525252"/><text x="428" y="34" fill="#525252">VideoTexture</text>
+  </g>
+  <text x="178" y="58" class="ra" fill="#52525B">OPTIONAL</text>
+  <g stroke-width="1" stroke-dasharray="3 2">
+    <rect x="178" y="62" width="62" height="14" rx="2" stroke="#D97706"/><text x="209" y="73" fill="#D97706">MediaLayer</text>
+    <rect x="244" y="62" width="92" height="14" rx="2" stroke="#7C3AED"/><text x="290" y="73" fill="#7C3AED">AnimatedProperties</text>
+    <rect x="340" y="62" width="96" height="14" rx="2" stroke="#D97706"/><text x="388" y="73" fill="#D97706">ClipPlaybackPhase</text>
+    <rect x="440" y="62" width="60" height="14" rx="2" stroke="#0891B2"/><text x="470" y="73" fill="#0891B2">EffectChain</text>
+    <rect x="504" y="62" width="96" height="14" rx="2" stroke="#0F766E"/><text x="552" y="73" fill="#0F766E">ContentRoutingRef</text>
+    <rect x="604" y="62" width="66" height="14" rx="2" stroke="#D97706"/><text x="637" y="73" fill="#D97706">AudioSource</text>
+  </g>
+  <!-- ROW 2: Screen -->
+  <rect x="0" y="88" width="920" height="76" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+  <text x="90" y="118" class="la" fill="#1E3A8A">Screen</text>
+  <text x="90" y="136" class="sub">projection surface</text>
+  <line x1="168" y1="96" x2="168" y2="156" stroke="#1E3A8A" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="178" y="106" class="ra" fill="#1E3A8A">REQUIRED</text>
+  <rect x="178" y="110" width="52" height="16" rx="2" stroke="#1E3A8A" stroke-width="1"/><text x="204" y="122" fill="#1E3A8A">Screen</text>
+  <text x="178" y="148" class="it">Single-component archetype. Position/rotation/scale embedded on Screen struct.</text>
+  <!-- ROW 3: Projector -->
+  <rect x="0" y="176" width="920" height="76" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+  <text x="90" y="206" class="la" fill="#1E3A8A">Projector</text>
+  <text x="90" y="224" class="sub">virtual camera</text>
+  <line x1="168" y1="184" x2="168" y2="244" stroke="#1E3A8A" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="178" y="194" class="ra" fill="#1E3A8A">REQUIRED</text>
+  <rect x="178" y="198" width="60" height="16" rx="2" stroke="#1E3A8A" stroke-width="1"/><text x="208" y="210" fill="#1E3A8A">Projector</text>
+  <text x="178" y="236" class="it">Single-component archetype. Carries calibration point list + fov/near/far internally.</text>
+  <!-- ROW 4: OA Layer -->
+  <rect x="0" y="264" width="920" height="76" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+  <text x="90" y="294" class="la" fill="#7C3AED" font-size="13">OA Layer</text>
+  <text x="90" y="312" class="sub">object animation</text>
+  <line x1="168" y1="272" x2="168" y2="332" stroke="#7C3AED" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="178" y="282" class="ra" fill="#7C3AED">REQUIRED</text>
+  <g stroke-width="1">
+    <rect x="178" y="286" width="108" height="16" rx="2" stroke="#D97706"/><text x="232" y="298" fill="#D97706">Layer (Kind::OA)</text>
+    <rect x="290" y="286" width="116" height="16" rx="2" stroke="#7C3AED"/><text x="348" y="298" fill="#7C3AED">ObjectAnimationLayer</text>
+  </g>
+  <text x="178" y="324" class="ra" fill="#52525B">OPTIONAL</text>
+  <g stroke-width="1" stroke-dasharray="3 2">
+    <rect x="178" y="328" width="92" height="14" rx="2" stroke="#7C3AED"/><text x="224" y="339" fill="#7C3AED">AnimatedProperties</text>
+    <rect x="274" y="328" width="112" height="14" rx="2" stroke="#7C3AED"/><text x="330" y="339" fill="#7C3AED">ObjectAnimationOutput</text>
+  </g>
+  <!-- ROW 5: Generative -->
+  <rect x="0" y="352" width="920" height="100" rx="4" fill="#DCFCE7" stroke="#15803D" stroke-width="1.5"/>
+  <text x="90" y="382" class="la" fill="#15803D" font-size="13">Generative</text>
+  <text x="90" y="400" class="sub">procedural layer</text>
+  <line x1="168" y1="360" x2="168" y2="444" stroke="#15803D" stroke-width="1" stroke-opacity="0.4"/>
+  <text x="178" y="372" class="ra" fill="#15803D">REQUIRED</text>
+  <g stroke-width="1">
+    <rect x="178" y="376" width="118" height="16" rx="2" stroke="#D97706"/><text x="237" y="388" fill="#D97706">Layer (Kind::Generative)</text>
+    <rect x="300" y="376" width="82" height="16" rx="2" stroke="#15803D"/><text x="341" y="388" fill="#15803D">GenerativeLayer</text>
+    <rect x="386" y="376" width="60" height="16" rx="2" stroke="#7C3AED"/><text x="416" y="388" fill="#7C3AED">Transform</text>
+    <rect x="450" y="376" width="70" height="16" rx="2" stroke="#D97706"/><text x="485" y="388" fill="#D97706">MediaLayer</text>
+  </g>
+  <text x="178" y="412" class="ra" fill="#15803D">KIND-SPECIFIC (one of)</text>
+  <g stroke-width="1">
+    <rect x="178" y="416" width="100" height="16" rx="2" stroke="#15803D"/><text x="228" y="428" fill="#15803D">MunchersGameState</text>
+    <text x="282" y="428" fill="#52525B">OR</text>
+    <rect x="298" y="416" width="80" height="16" rx="2" stroke="#15803D"/><text x="338" y="428" fill="#15803D">TextLayerState</text>
+  </g>
+  <text x="178" y="447" class="it">Sub-kind dispatched by component composition, not by a kind enum at runtime.</text>
+  </g>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D6: PASS 1 / 1.5 / 2 render pipeline (hero diagram)                -->
+<!-- Section: S4   Complexity: large                                      -->
+<!-- Coders: paste this svg verbatim into S4.                            -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D6" viewBox="0 0 920 520" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d6-title d6-desc">
+  <title id="d6-title">Three-pass GPU compositor pipeline</title>
+  <desc id="d6-desc">Left-to-right pipeline: Input (SceneSnapshot to buildRenderFrame), PASS 1 (Generative producers), PASS 1.5 (Per-layer effect chains), PASS 2 (Unified composite per screen), Output (OutputManager to swap chains).</desc>
+  <defs>
+    <marker id="d6-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1E3A8A"/></marker>
+  </defs>
+  <!-- Stage columns: Input x=4, P1 x=188, P1.5 x=372, P2 x=556, Out x=740 -->
+  <!-- Input -->
+  <rect x="4" y="60" width="168" height="380" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+  <text x="88" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">INPUT</text>
+  <rect x="14" y="92" width="148" height="44" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+  <text x="88" y="112" text-anchor="middle" font-size="10" font-weight="600" fill="#0F766E">bus::SceneSnapshot</text>
+  <text x="88" y="127" text-anchor="middle" font-size="9" fill="#0F766E">published by editor step 9</text>
+  <line x1="88" y1="136" x2="88" y2="158" stroke="#52525B" stroke-width="1.5" marker-end="url(#d6-arrow)"/>
+  <rect x="14" y="158" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="1"/>
+  <text x="88" y="178" text-anchor="middle" font-size="10" font-weight="600" fill="#1B1B1F">buildRenderFrame()</text>
+  <text x="88" y="193" text-anchor="middle" font-size="9" fill="#52525B">PlaybackTimeAuthority</text>
+  <g font-size="9" fill="#52525B">
+    <text x="14" y="222" font-weight="600">READS:</text>
+    <text x="14" y="236">  ClipCatalogEntry (clips)</text>
+    <text x="14" y="250">  AnimTrack bake</text>
+    <text x="14" y="264">  SectionPhase anchor</text>
+    <text x="14" y="278">  ScreenSnapshot list</text>
+    <text x="14" y="300" font-weight="600">PRODUCES:</text>
+    <text x="14" y="314">  RenderFrame</text>
+    <text x="14" y="328">  contentLayers[] (by zOrder)</text>
+  </g>
+  <line x1="172" y1="250" x2="184" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+  <!-- PASS 1 -->
+  <rect x="188" y="0" width="168" height="460" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+  <text x="272" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">PASS 1</text>
+  <text x="272" y="38" text-anchor="middle" font-size="10" fill="#1E3A8A">Generative producers</text>
+  <rect x="198" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1"/>
+  <text x="272" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#15803D">Per GenerativeLayer</text>
+  <g text-anchor="middle" font-size="9" fill="#52525B"><text x="272" y="82">ensureGenerativeRT()</text><text x="272" y="96">beginComposeTarget(slot)</text></g>
+  <rect x="198" y="118" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1"/>
+  <text x="272" y="138" text-anchor="middle" font-size="10" font-weight="600" fill="#15803D">drawMuncherPlayfield()</text>
+  <text x="272" y="153" text-anchor="middle" font-size="9" fill="#52525B">or TextLayerState slot</text>
+  <rect x="198" y="172" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+  <text x="272" y="190" text-anchor="middle" font-size="9" fill="#0F766E">endComposeTarget()</text>
+  <g font-size="9" fill="#52525B">
+    <text x="198" y="218" font-weight="600">READS:</text><text x="198" y="232">  GenerativeLayerSnapshot</text>
+    <text x="198" y="246">  MunchersGameState</text>
+    <text x="198" y="268" font-weight="600">WRITES:</text><text x="198" y="282">  Per-layer compose RT</text>
+  </g>
+  <rect x="198" y="300" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="272" y="318" text-anchor="middle" font-size="9" fill="#0F766E">R2D: GenLayerRTAllocated</text>
+  <g font-size="9" fill="#52525B" font-style="italic"><text x="198" y="344">Video clips skip PASS 1.</text><text x="198" y="358">Texture in pool via</text><text x="198" y="372">PlaybackPresenter.</text></g>
+  <line x1="356" y1="250" x2="368" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+  <!-- PASS 1.5 -->
+  <rect x="372" y="0" width="168" height="460" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="2"/>
+  <text x="456" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">PASS 1.5</text>
+  <text x="456" y="38" text-anchor="middle" font-size="10" fill="#0891B2">Per-layer effect chains</text>
+  <rect x="382" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+  <text x="456" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#0891B2">Per layer w/ EffectChain</text>
+  <g text-anchor="middle" font-size="9" fill="#52525B"><text x="456" y="82">ensureEffectPingTarget()</text><text x="456" y="96">ping-pong 2 compose RTs</text></g>
+  <rect x="382" y="118" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+  <text x="456" y="136" text-anchor="middle" font-size="10" font-weight="600" fill="#0891B2">drawEffectPass()</text>
+  <text x="456" y="150" text-anchor="middle" font-size="9" fill="#52525B">per Effect in chain</text>
+  <rect x="382" y="172" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+  <text x="456" y="190" text-anchor="middle" font-size="9" fill="#0F766E">write postEffectsSlot</text>
+  <g font-size="9" fill="#52525B">
+    <text x="382" y="218" font-weight="600">READS:</text><text x="382" y="232">  ContentLayerSnapshot.effects</text>
+    <text x="382" y="256" font-weight="600">WRITES:</text><text x="382" y="270">  Ping-pong compose RTs</text>
+    <text x="382" y="284">  postEffectsSlot per layer</text>
+  </g>
+  <rect x="382" y="300" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="456" y="318" text-anchor="middle" font-size="9" fill="#0F766E">R2D: EffectChainRTAllocated</text>
+  <g font-size="9" fill="#52525B" font-style="italic"><text x="382" y="354">Kind-blind: Video + Compose.</text><text x="382" y="368">No-op if effects empty.</text></g>
+  <line x1="540" y1="250" x2="552" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+  <!-- PASS 2 -->
+  <rect x="556" y="0" width="168" height="460" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+  <text x="640" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">PASS 2</text>
+  <text x="640" y="38" text-anchor="middle" font-size="10" fill="#1E3A8A">Unified composite</text>
+  <rect x="566" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1"/>
+  <text x="640" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Per visible Screen</text>
+  <g text-anchor="middle" font-size="9" fill="#52525B"><text x="640" y="82">ensureScreenRT()</text><text x="640" y="96">beginComposeTarget(slot)</text></g>
+  <rect x="566" y="118" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1"/>
+  <text x="640" y="138" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">drawTexturedQuad()</text>
+  <g text-anchor="middle" font-size="9" fill="#52525B"><text x="640" y="152">per contentLayer (zOrder)</text><text x="640" y="166">Video | Compose srcKind</text></g>
+  <g font-size="9" fill="#52525B">
+    <text x="566" y="196" font-weight="600">READS:</text>
+    <text x="566" y="210">  RenderFrame.contentLayers</text>
+    <text x="566" y="224">  postEffectsSlot (if &gt;= 0)</text>
+    <text x="566" y="238">  else sourceSlot (video pool)</text>
+    <text x="566" y="258" font-weight="600">WRITES:</text>
+    <text x="566" y="272">  Per-screen compose RT</text>
+    <text x="566" y="294">opacity * sectionFadeMultiplier</text>
+    <text x="566" y="308">transform from ClipCatalogEntry</text>
+  </g>
+  <rect x="566" y="322" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="640" y="340" text-anchor="middle" font-size="9" fill="#0F766E">R2D: ScreenRTAllocated</text>
+  <line x1="724" y1="250" x2="736" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+  <!-- Output -->
+  <rect x="740" y="60" width="176" height="380" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+  <text x="828" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">OUTPUT STAGE</text>
+  <rect x="750" y="92" width="156" height="44" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1"/>
+  <text x="828" y="112" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">OutputManager</text>
+  <text x="828" y="127" text-anchor="middle" font-size="9" fill="#52525B">renderOutputs()</text>
+  <line x1="828" y1="136" x2="828" y2="158" stroke="#52525B" stroke-width="1.5" marker-end="url(#d6-arrow)"/>
+  <rect x="750" y="158" width="156" height="44" rx="3" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="1"/>
+  <g text-anchor="middle" font-size="9" fill="#52525B"><text x="828" y="176">Per enabled OutputDisplay:</text><text x="828" y="192">fan screen RT to swap chain</text></g>
+  <g font-size="9" fill="#52525B"><text x="750" y="224">UV crop (InputRegion)</text><text x="750" y="238">Warp via OutputSurface</text><text x="750" y="252">  (Plane B quad corners)</text><text x="750" y="272">Calibration overlay</text></g>
+  <rect x="750" y="288" width="156" height="44" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1"/>
+  <text x="828" y="308" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Present()</text>
+  <text x="828" y="324" text-anchor="middle" font-size="9" fill="#52525B">each output swap chain</text>
+  <!-- PlaybackPresenter feed note -->
+  <rect x="188" y="474" width="168" height="28" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="272" y="492" text-anchor="middle" font-size="9" fill="#525252">PlaybackPresenter feeds GPU textures</text>
+  <line x1="272" y1="470" x2="272" y2="460" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d6-arrow)"/>
+</svg>
+
+
+
+<!-- =================================================================== -->
+<!-- D7: Descriptor heap strip                                            -->
+<!-- Section: S4   Complexity: small                                      -->
+<!-- Coders: paste this svg verbatim into S4 after PASS 2 description.  -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D7" viewBox="0 0 920 160" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d7-title d7-desc">
+  <title id="d7-title">D3D12 descriptor heap slot layout</title>
+  <desc id="d7-desc">Horizontal color-banded strip showing descriptor heap slot ranges: slot 0 ImGui font, slot 1 legacy video, slots 2-65 compose targets (64 slots), slots 66-81 video textures (16 slots), slots 82-97 snapshot buffer.</desc>
+
+  <!-- Slot 0: ImGui -->
+  <rect x="4" y="40" width="48" height="56" rx="2" fill="#FCE7F3" stroke="#BE185D" stroke-width="1.5"/>
+  <text x="28" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#BE185D">ImGui</text>
+  <text x="28" y="76" text-anchor="middle" font-size="9" fill="#BE185D">font</text>
+  <text x="28" y="106" text-anchor="middle" font-size="9" fill="#52525B">slot 0</text>
+
+  <!-- Slot 1: legacy -->
+  <rect x="56" y="40" width="48" height="56" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+  <text x="80" y="66" text-anchor="middle" font-size="9" font-weight="700" fill="#525252">legacy</text>
+  <text x="80" y="80" text-anchor="middle" font-size="9" fill="#525252">video</text>
+  <text x="80" y="106" text-anchor="middle" font-size="9" fill="#52525B">slot 1</text>
+
+  <!-- Compose targets: 64 slots (slots 2-65) -->
+  <rect x="108" y="24" width="360" height="72" rx="2" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+  <text x="288" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#1E3A8A">COMPOSE TARGETS</text>
+  <text x="288" y="66" text-anchor="middle" font-size="9" fill="#1E3A8A">64 slots: screen RTs + generative layer RTs + effect ping-pong pairs</text>
+  <text x="288" y="80" text-anchor="middle" font-size="9" fill="#1E3A8A">COMPOSE_TARGET_BASE = 2</text>
+  <text x="108" y="108" font-size="9" fill="#52525B">slots 2-65</text>
+
+  <!-- Video textures: 16 slots (66-81) -->
+  <rect x="472" y="24" width="220" height="72" rx="2" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+  <text x="582" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#C2410C">VIDEO TEXTURES</text>
+  <text x="582" y="66" text-anchor="middle" font-size="9" fill="#C2410C">16 slots: per-clip decoded frame uploads</text>
+  <text x="582" y="80" text-anchor="middle" font-size="9" fill="#C2410C">VIDEO_TEXTURE_BASE = 66</text>
+  <text x="472" y="108" font-size="9" fill="#52525B">slots 66-81</text>
+
+  <!-- Snapshot: 16 slots (82-97) -->
+  <rect x="696" y="24" width="220" height="72" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+  <text x="806" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">SNAPSHOT BUFFER</text>
+  <text x="806" y="66" text-anchor="middle" font-size="9" fill="#0F766E">16 slots: per-frame constant buffer ring</text>
+  <text x="806" y="80" text-anchor="middle" font-size="9" fill="#0F766E">SNAPSHOT_BASE = 82</text>
+  <text x="696" y="108" font-size="9" fill="#52525B">slots 82-97</text>
+
+  <!-- Axis -->
+  <line x1="4" y1="120" x2="916" y2="120" stroke="#E4E2DA" stroke-width="1"/>
+  <text x="4" y="140" font-size="9" fill="#52525B">0</text>
+  <text x="108" y="140" font-size="9" fill="#52525B">2</text>
+  <text x="468" y="140" font-size="9" fill="#52525B">66</text>
+  <text x="692" y="140" font-size="9" fill="#52525B">82</text>
+  <text x="880" y="140" font-size="9" fill="#52525B">97+</text>
+
+  <text x="4" y="156" font-size="9" fill="#52525B" font-style="italic">
+    Slot ranges are illustrative; actual constants live in D3D12Renderer.hpp. FRAME_COUNT ring of 64 CBV slots sits above SNAPSHOT_BASE.
+  </text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D8: Output stage detail                                              -->
+<!-- Section: S4   Complexity: medium                                     -->
+<!-- Coders: paste this svg verbatim into S4 after D7.                  -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D8" viewBox="0 0 920 300" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d8-title d8-desc">
+  <title id="d8-title">Output stage: Screen compose target to swap chain via OutputSurface warp</title>
+  <desc id="d8-desc">Left to right: Screen compose target feeds into OutputSurface warp quad (Plane B), then into OutputDisplay swap chain. Calibration math annotated on the warp box: intrinsics plus extrinsics plus k1/k2 radial plus IDW residual warp per ADR-0011.</desc>
+  <defs>
+    <marker id="d8-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#1E3A8A"/>
+    </marker>
+  </defs>
+
+  <!-- Screen compose RT -->
+  <rect x="16" y="60" width="180" height="160" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+  <text x="106" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">Screen</text>
+  <text x="106" y="106" text-anchor="middle" font-size="11" fill="#1E3A8A">compose target</text>
+  <text x="106" y="130" text-anchor="middle" font-size="9" fill="#52525B">renderTargetSlot</text>
+  <text x="106" y="144" text-anchor="middle" font-size="9" fill="#52525B">assigned by CompositorSystem</text>
+  <text x="106" y="158" text-anchor="middle" font-size="9" fill="#52525B">via R2D ack</text>
+  <text x="106" y="180" text-anchor="middle" font-size="9" fill="#52525B">PASS 2 rendered into this</text>
+  <text x="106" y="196" text-anchor="middle" font-size="9" fill="#52525B">once per show frame</text>
+
+  <!-- Arrow -->
+  <line x1="196" y1="140" x2="240" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+  <!-- OutputSurface warp box -->
+  <rect x="240" y="20" width="280" height="240" rx="4" fill="#E5E5E5" stroke="#525252" stroke-width="2"/>
+  <text x="380" y="48" text-anchor="middle" font-size="12" font-weight="700" fill="#525252">OutputSurface (Plane B)</text>
+  <text x="380" y="64" text-anchor="middle" font-size="10" fill="#52525B">warp quad per output</text>
+
+  <!-- Calibration math block -->
+  <rect x="256" y="76" width="248" height="132" rx="3" fill="#FFFFFF" stroke="#E4E2DA" stroke-width="1"/>
+  <text x="380" y="96" text-anchor="middle" font-size="10" font-weight="600" fill="#1B1B1F">Calibration math (ADR-0011)</text>
+  <text x="268" y="114" font-size="9" fill="#52525B">1. Intrinsic matrix (fx, fy, cx, cy)</text>
+  <text x="268" y="130" font-size="9" fill="#52525B">2. Extrinsic R|t (LM solve over</text>
+  <text x="276" y="144" font-size="9" fill="#52525B">   correspondence point pairs)</text>
+  <text x="268" y="160" font-size="9" fill="#52525B">3. Radial distortion k1, k2</text>
+  <text x="268" y="176" font-size="9" fill="#52525B">4. IDW residual warp</text>
+  <text x="276" y="190" font-size="9" fill="#52525B">   (post-fit inverse-distance</text>
+  <text x="276" y="204" font-size="9" fill="#52525B">   weighted correction grid)</text>
+
+  <text x="256" y="230" font-size="9" fill="#52525B">src UV region: InputRegion crop</text>
+  <text x="256" y="244" font-size="9" fill="#52525B">soft edges blended at quad margins</text>
+
+  <!-- Arrow -->
+  <line x1="520" y1="140" x2="560" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+  <!-- OutputDisplay -->
+  <rect x="560" y="60" width="180" height="160" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+  <text x="650" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">OutputDisplay</text>
+  <text x="650" y="106" text-anchor="middle" font-size="11" fill="#1E3A8A">swap chain</text>
+  <text x="650" y="132" text-anchor="middle" font-size="9" fill="#52525B">DXGI_SWAP_EFFECT</text>
+  <text x="650" y="146" text-anchor="middle" font-size="9" fill="#52525B">_FLIP_DISCARD</text>
+  <text x="650" y="168" text-anchor="middle" font-size="9" fill="#52525B">OCIO transform applied</text>
+  <text x="650" y="182" text-anchor="middle" font-size="9" fill="#52525B">before Present()</text>
+
+  <!-- Arrow to monitor icon -->
+  <line x1="740" y1="140" x2="780" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+  <!-- Monitor symbol -->
+  <rect x="780" y="96" width="120" height="88" rx="4" fill="#1B1B1F" stroke="#1B1B1F" stroke-width="2"/>
+  <rect x="790" y="106" width="100" height="68" rx="2" fill="#DBEAFE"/>
+  <text x="840" y="148" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Projector</text>
+  <rect x="820" y="184" width="40" height="8" rx="2" fill="#52525B"/>
+
+  <!-- Five-sites warning -->
+  <rect x="756" y="216" width="160" height="52" rx="3" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+  <text x="836" y="232" text-anchor="middle" font-size="9" font-weight="600" fill="#D97706">5 coupled calibration sites</text>
+  <text x="836" y="246" text-anchor="middle" font-size="9" fill="#52525B">must move together per</text>
+  <text x="836" y="260" text-anchor="middle" font-size="9" fill="#52525B">ADR-0011. Touch with care.</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D9: Window catalog grid                                              -->
+<!-- Section: S5   Complexity: medium                                     -->
+<!-- Coders: paste this svg verbatim into S5 after the window groups text.-->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D9" viewBox="0 0 920 480" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d9-title d9-desc">
+  <title id="d9-title">UI window catalog grouped by purpose</title>
+  <desc id="d9-desc">Six grouped tiles: Authoring, Asset, Mapping and Output, Show Control, Effects, Frame. Each tile shows windows sized proportional to LOC. PropertyWindow and ProjectorCalibrationWindow are visibly larger.</desc>
+  <defs><style>.gh{font-size:11;font-weight:700;fill:#BE185D}.wn{font-size:10;font-weight:600;fill:#BE185D;text-anchor:middle}.ws{font-size:9;fill:#52525B;text-anchor:middle}</style></defs>
+  <g fill="#FFFFFF" stroke="#BE185D">
+  <!-- GROUP BACKGROUNDS -->
+  <rect x="4" y="4" width="310" height="220" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+  <rect x="322" y="4" width="270" height="220" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+  <rect x="600" y="4" width="316" height="220" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+  <rect x="4" y="232" width="250" height="140" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+  <rect x="262" y="232" width="200" height="140" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+  <rect x="470" y="232" width="446" height="140" rx="4" fill="#FCE7F3" stroke-width="1.5"/>
+  <!-- GROUP HEADERS -->
+  <text x="20" y="24" class="gh">AUTHORING</text>
+  <text x="338" y="24" class="gh">ASSET</text>
+  <text x="616" y="24" class="gh">MAPPING &amp; OUTPUT</text>
+  <text x="20" y="252" class="gh">SHOW CONTROL</text>
+  <text x="278" y="252" class="gh">EFFECTS</text>
+  <text x="486" y="252" class="gh">FRAME (infrastructure)</text>
+  <!-- AUTHORING windows -->
+  <rect x="12" y="32" width="184" height="88" rx="3" stroke-width="1.5"/>
+  <text x="104" y="62" class="wn">PropertyWindow</text><text x="104" y="76" class="ws">2,839 LOC</text>
+  <text x="104" y="90" class="ws">Edit all selected entity props</text><text x="104" y="104" class="ws">clips / screens / effects / text</text>
+  <rect x="202" y="32" width="104" height="88" rx="3" stroke-width="1"/>
+  <text x="254" y="58" class="wn">StageWindow</text><text x="254" y="72" class="ws">831 LOC</text>
+  <text x="254" y="86" class="ws">3D viz + place</text><text x="254" y="100" class="ws">screens/props</text>
+  <rect x="12" y="128" width="148" height="44" rx="3" stroke-width="1"/>
+  <text x="86" y="148" class="wn">TimelineWindow</text><text x="86" y="162" class="ws">16 LOC shell</text>
+  <rect x="166" y="128" width="140" height="44" rx="3" stroke-width="1"/>
+  <text x="236" y="148" class="wn">LayersWindow</text><text x="236" y="162" class="ws">134 LOC drag-source</text>
+  <text x="12" y="196" font-size="9" fill="#52525B">TimelineWidgetRender 1,606 LOC +</text>
+  <text x="12" y="210" font-size="9" fill="#52525B">TimelineWidgetInput 1,967 LOC (src/timeline/)</text>
+  <!-- ASSET windows -->
+  <rect x="330" y="32" width="160" height="80" rx="3" stroke-width="1.5"/>
+  <text x="410" y="58" class="wn">MediaBinWindow</text><text x="410" y="72" class="ws">956 LOC</text>
+  <text x="410" y="86" class="ws">Browse / import / transcode</text>
+  <rect x="498" y="32" width="86" height="80" rx="3" stroke-width="1"/>
+  <text x="541" y="58" class="wn">ModelBin</text><text x="541" y="72" class="ws">384 LOC</text>
+  <text x="541" y="86" class="ws">3D OBJ models</text>
+  <!-- MAPPING windows -->
+  <rect x="608" y="32" width="148" height="88" rx="3" stroke-width="1.5"/>
+  <text x="682" y="56" class="wn">Projector</text><text x="682" y="70" class="wn">Calibration</text>
+  <text x="682" y="86" class="ws">1,357 LOC</text><text x="682" y="100" class="ws">point editor + LM</text>
+  <rect x="762" y="32" width="146" height="88" rx="3" stroke-width="1.5"/>
+  <text x="835" y="62" class="wn">OutputsWindow</text><text x="835" y="76" class="ws">964 LOC</text>
+  <text x="835" y="90" class="ws">outputs + warp quads</text>
+  <g stroke-width="1">
+    <rect x="608" y="128" width="120" height="36" rx="3"/>
+    <text x="668" y="144" class="wn" font-size="9">ContentRoutingWindow</text><text x="668" y="158" class="ws">848 LOC</text>
+    <rect x="734" y="128" width="80" height="36" rx="3"/>
+    <text x="774" y="144" class="wn">RoutingCanvas</text><text x="774" y="158" class="ws">526 LOC</text>
+    <rect x="820" y="128" width="88" height="36" rx="3"/>
+    <text x="864" y="144" class="wn">ScreensWindow</text><text x="864" y="158" class="ws">249 LOC</text>
+    <rect x="608" y="172" width="104" height="28" rx="3"/>
+    <text x="660" y="190" font-size="9" fill="#BE185D" text-anchor="middle">FeedMapEditor 220 LOC</text>
+    <rect x="718" y="172" width="80" height="28" rx="3"/>
+    <text x="758" y="190" font-size="9" fill="#BE185D" text-anchor="middle">PropsWindow 133</text>
+  </g>
+  <!-- SHOW CONTROL windows -->
+  <rect x="12" y="260" width="150" height="60" rx="3" stroke-width="1.5"/>
+  <text x="87" y="282" class="wn">ShowControlWindow</text><text x="87" y="296" class="ws">694 LOC</text>
+  <text x="87" y="310" class="ws">transport + OSC tables</text>
+  <rect x="168" y="260" width="78" height="60" rx="3" stroke-width="1"/>
+  <text x="207" y="282" class="wn">CueList</text><text x="207" y="296" class="ws">214 LOC</text>
+  <text x="207" y="310" class="ws">section GO</text>
+  <!-- EFFECTS windows -->
+  <rect x="270" y="260" width="184" height="60" rx="3" stroke-width="1.5"/>
+  <text x="362" y="282" class="wn">EffectGraphWindow</text><text x="362" y="296" class="ws">253 LOC</text>
+  <text x="362" y="310" class="ws">node-graph editor for chains</text>
+  <!-- FRAME windows -->
+  <rect x="478" y="260" width="120" height="60" rx="3" stroke-width="1.5"/>
+  <text x="538" y="282" class="wn">WindowManager</text><text x="538" y="296" class="ws">1,324 LOC</text>
+  <text x="538" y="310" class="ws">docking + layout</text>
+  <g stroke-width="1">
+    <rect x="604" y="260" width="106" height="60" rx="3"/>
+    <text x="657" y="282" class="wn">SettingsWindow</text><text x="657" y="296" class="ws">582 LOC</text>
+    <text x="657" y="310" class="ws">prefs + OSC ports</text>
+    <rect x="716" y="260" width="96" height="60" rx="3"/>
+    <text x="764" y="282" class="wn">ProjectLauncher</text><text x="764" y="296" class="ws">375 LOC</text>
+    <text x="764" y="310" class="ws">new/open project</text>
+    <rect x="818" y="260" width="90" height="60" rx="3"/>
+    <text x="863" y="282" class="wn" font-size="9">FileDialog</text><text x="863" y="296" class="ws">269 LOC</text>
+    <text x="863" y="310" class="ws">system picker</text>
+  </g>
+  </g>
+  <text x="4" y="468" font-size="10" fill="#52525B" font-style="italic">22 files in src/ui/; tile area proportional to LOC. MathInput (532 LOC) is a utility widget, not a window.</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D10: Command path loop                                               -->
+<!-- Section: S5   Complexity: small                                      -->
+<!-- Coders: paste this svg verbatim into S5 after the project layout.   -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D10" viewBox="0 0 920 240" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d10-title d10-desc">
+  <title id="d10-title">Command path loop from UI to registry to show thread</title>
+  <desc id="d10-desc">Circular loop with five nodes: UI Window (rose), CommandDispatcher (system cyan), Registry write (component violet), buildSceneSnapshot (bus teal), Show thread (show indigo). Arrows connect them in sequence, closing the loop back to UI for R2D replies.</desc>
+  <defs>
+    <marker id="d10-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#52525B"/>
+    </marker>
+    <marker id="d10-arrow-bus" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#0F766E"/>
+    </marker>
+  </defs>
+
+  <!-- Node 1: UI Window -->
+  <rect x="20" y="80" width="150" height="60" rx="4" fill="#FCE7F3" stroke="#BE185D" stroke-width="2"/>
+  <text x="95" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#BE185D">UI Window</text>
+  <text x="95" y="124" text-anchor="middle" font-size="10" fill="#52525B">operator input</text>
+
+  <!-- Arrow 1-2 -->
+  <line x1="170" y1="110" x2="218" y2="110" stroke="#52525B" stroke-width="1.5" marker-end="url(#d10-arrow)"/>
+  <text x="194" y="104" text-anchor="middle" font-size="9" fill="#52525B">enqueue()</text>
+
+  <!-- Node 2: CommandDispatcher -->
+  <rect x="220" y="80" width="160" height="60" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="2"/>
+  <text x="300" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">Command</text>
+  <text x="300" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#0891B2">Dispatcher</text>
+
+  <!-- Arrow 2-3 -->
+  <line x1="380" y1="110" x2="428" y2="110" stroke="#52525B" stroke-width="1.5" marker-end="url(#d10-arrow)"/>
+  <text x="404" y="104" text-anchor="middle" font-size="9" fill="#52525B">execute()</text>
+
+  <!-- Node 3: Registry write -->
+  <rect x="430" y="80" width="140" height="60" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="2"/>
+  <text x="500" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#7C3AED">Registry</text>
+  <text x="500" y="122" text-anchor="middle" font-size="10" fill="#7C3AED">emplace / replace</text>
+
+  <!-- Arrow 3-4 -->
+  <line x1="570" y1="110" x2="618" y2="110" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d10-arrow-bus)"/>
+  <text x="594" y="104" text-anchor="middle" font-size="9" fill="#0F766E">next frame</text>
+
+  <!-- Node 4: buildSceneSnapshot -->
+  <rect x="620" y="80" width="150" height="60" rx="4" fill="#CCFBF1" stroke="#0F766E" stroke-width="2"/>
+  <text x="695" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">buildScene</text>
+  <text x="695" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">Snapshot()</text>
+
+  <!-- Arrow 4-5 -->
+  <line x1="770" y1="110" x2="818" y2="110" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d10-arrow-bus)"/>
+  <text x="794" y="104" text-anchor="middle" font-size="9" fill="#0F766E">D2R bus</text>
+
+  <!-- Node 5: Show thread -->
+  <rect x="820" y="80" width="90" height="60" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+  <text x="865" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#1E3A8A">Show</text>
+  <text x="865" y="122" text-anchor="middle" font-size="10" fill="#1E3A8A">thread</text>
+
+  <!-- Return arrow: show -> UI (R2D), curved via bottom -->
+  <path d="M 865 140 Q 865 200 460 200 Q 95 200 95 140" fill="none" stroke="#0F766E"
+        stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d10-arrow-bus)"/>
+  <text x="460" y="222" text-anchor="middle" font-size="9" fill="#0F766E">R2D replies -&gt; drainRendererToDirector -&gt; editor registry write</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D11: Plugin transport tiers                                          -->
+<!-- Section: S6   Complexity: small                                      -->
+<!-- Coders: paste this svg verbatim into S6 at the plugin tiers section.-->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D11" viewBox="0 0 920 300" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d11-title d11-desc">
+  <title id="d11-title">Plugin transport tiers: control-plane vs hot-path</title>
+  <desc id="d11-desc">Two horizontal lanes. Top lane: Control-Plane plugins (osc-receiver, osc-sender, bus-logger, dmx-artnet) communicate via CommandDispatcher enqueue and OutboundBridge. Bottom lane: Hot-Path plugins use OutputDriver and CodecProvider C++ ABIs with static linkage only. Note: no public hot-path plugins exist today.</desc>
+
+  <!-- Lane 1: Control-plane -->
+  <rect x="4" y="4" width="912" height="132" rx="4" fill="#DCFCE7" stroke="#15803D" stroke-width="2"/>
+  <text x="20" y="26" font-size="12" font-weight="700" fill="#15803D">CONTROL-PLANE TIER (ADR-0013 / ADR-0023)</text>
+  <text x="20" y="42" font-size="10" fill="#52525B">Network-serializable data path. Plugins call IPluginContext::enqueueCommand() or OutboundBridge::emit().</text>
+  <text x="20" y="56" font-size="10" fill="#52525B">Bus stays Director-to-Renderer only. Future: static -&gt; dynamic plugin upgrade is purely additive.</text>
+
+  <!-- Plugin boxes -->
+  <rect x="20" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+  <text x="90" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">osc-receiver</text>
+  <text x="90" y="104" text-anchor="middle" font-size="9" fill="#52525B">Inbound OSC/UDP</text>
+  <text x="90" y="116" text-anchor="middle" font-size="9" fill="#52525B">-&gt; Director cmds</text>
+
+  <rect x="170" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+  <text x="240" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">osc-sender</text>
+  <text x="240" y="104" text-anchor="middle" font-size="9" fill="#52525B">Outbound OSC/UDP</text>
+  <text x="240" y="116" text-anchor="middle" font-size="9" fill="#52525B">30 Hz transport bcast</text>
+
+  <rect x="320" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+  <text x="390" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">dmx-artnet</text>
+  <text x="390" y="104" text-anchor="middle" font-size="9" fill="#52525B">DMX-512 Art-Net</text>
+  <text x="390" y="116" text-anchor="middle" font-size="9" fill="#52525B">+ sACN + Enttec USB</text>
+
+  <rect x="470" y="64" width="140" height="56" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1.5"/>
+  <text x="540" y="88" text-anchor="middle" font-size="11" font-weight="600" fill="#15803D">bus-logger</text>
+  <text x="540" y="104" text-anchor="middle" font-size="9" fill="#52525B">Reference scaffold</text>
+  <text x="540" y="116" text-anchor="middle" font-size="9" fill="#52525B">template for new plugins</text>
+
+  <rect x="640" y="64" width="264" height="56" rx="3" fill="#F1EFE9" stroke="#E4E2DA" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="772" y="88" text-anchor="middle" font-size="10" fill="#52525B" font-style="italic">Pro-tier plugins (Entity-Pro sibling repo)</text>
+  <text x="772" y="104" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">folded in via -DEXTRA_PLUGIN_DIRS</text>
+  <text x="772" y="116" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">Apache 2.0 plugin-api boundary respected</text>
+
+  <!-- Lane 2: Hot-path -->
+  <rect x="4" y="152" width="912" height="132" rx="4" fill="#E5E5E5" stroke="#525252" stroke-width="2"/>
+  <text x="20" y="174" font-size="12" font-weight="700" fill="#525252">HOT-PATH TIER (ADR-0005)</text>
+  <text x="20" y="190" font-size="10" fill="#52525B">C++ ABI: OutputDriver / CodecProvider. Static-link only. Toolchain-locked. Per-frame GPU data path.</text>
+  <text x="20" y="206" font-size="10" fill="#52525B">No entt.hpp, no d3d12.h, no engine internals in plugin-api/ headers (CI-enforced).</text>
+
+  <!-- Placeholder -->
+  <rect x="20" y="216" width="320" height="56" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="180" y="244" text-anchor="middle" font-size="11" fill="#52525B" font-style="italic">No public hot-path plugins yet</text>
+  <text x="180" y="260" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">Reserved for NDI/SDI output, codec providers</text>
+
+  <rect x="360" y="216" width="240" height="56" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="480" y="244" text-anchor="middle" font-size="11" fill="#52525B" font-style="italic">OutputDriver ABI</text>
+  <text x="480" y="260" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">plugin-api/include/entity/plugin/</text>
+</svg>
+
+
+<!-- =================================================================== -->
+<!-- D12: License + repo map                                              -->
+<!-- Section: S6   Complexity: medium                                     -->
+<!-- Coders: paste this svg verbatim into S6 at the license section.     -->
+<!-- =================================================================== -->
+<svg font-family="inherit" data-diagram="D12" viewBox="0 0 920 360" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d12-title d12-desc">
+  <title id="d12-title">Open-core repository and license map</title>
+  <desc id="d12-desc">Left half shows the public Entity repo with three internal areas: GPLv3 core (red tinted), Apache 2.0 plugin-api and entity-bus and first-party plugins (blue tinted). Right half shows the Entity-Pro sibling private repo (charcoal tinted, proprietary). A dotted arrow labeled -DEXTRA_PLUGIN_DIRS connects them.</desc>
+
+  <!-- Public repo outer box -->
+  <rect x="4" y="32" width="530" height="312" rx="6" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="2"/>
+  <text x="269" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">PUBLIC REPO</text>
+  <text x="269" y="60" text-anchor="middle" font-size="10" fill="#52525B">C:\Entity\Entity (github.com/duremovich/Entity)</text>
+
+  <!-- GPLv3 core area -->
+  <rect x="16" y="72" width="506" height="100" rx="4" fill="#FEE2E2" stroke="#7F1D1D" stroke-width="1.5"/>
+  <text x="269" y="92" text-anchor="middle" font-size="11" font-weight="700" fill="#7F1D1D">GPLv3 Core  (LICENSE)</text>
+  <text x="28" y="112" font-size="9" fill="#7F1D1D">src/  include/entity/core  include/entity/render  include/entity/systems</text>
+  <text x="28" y="128" font-size="9" fill="#7F1D1D">include/entity/components  include/entity/timeline  include/entity/director</text>
+  <text x="28" y="144" font-size="9" fill="#7F1D1D">include/entity/bus  tests/  apps/  docs/  scripts/</text>
+  <text x="28" y="160" font-size="9" fill="#52525B" font-style="italic">GPLv3 + linking exception: output-driver plugins may link without GPLv3 inheritance.</text>
+
+  <!-- Apache area -->
+  <rect x="16" y="184" width="506" height="148" rx="4" fill="#DBEAFE" stroke="#1D4ED8" stroke-width="1.5"/>
+  <text x="269" y="204" text-anchor="middle" font-size="11" font-weight="700" fill="#1D4ED8">Apache 2.0  (LICENSE-PLUGIN-API)</text>
+  <text x="28" y="224" font-size="9" fill="#1D4ED8">plugin-api/include/entity/plugin/   &lt;-- no entt.hpp, no d3d12.h (CI-enforced)</text>
+  <text x="28" y="240" font-size="9" fill="#1D4ED8">entity-bus/   (shared message-transport headers)</text>
+
+  <!-- First-party plugin sub-boxes -->
+  <rect x="28" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+  <text x="84" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">osc-receiver</text>
+  <text x="84" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+  <text x="84" y="296" text-anchor="middle" font-size="9" fill="#52525B">control-plane</text>
+
+  <rect x="148" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+  <text x="204" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">osc-sender</text>
+  <text x="204" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+  <text x="204" y="296" text-anchor="middle" font-size="9" fill="#52525B">control-plane</text>
+
+  <rect x="268" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+  <text x="324" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">dmx-artnet</text>
+  <text x="324" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+  <text x="324" y="296" text-anchor="middle" font-size="9" fill="#52525B">control-plane</text>
+
+  <rect x="388" y="252" width="112" height="52" rx="3" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1"/>
+  <text x="444" y="270" text-anchor="middle" font-size="9" font-weight="600" fill="#1D4ED8">bus-logger</text>
+  <text x="444" y="284" text-anchor="middle" font-size="9" fill="#52525B">Apache 2.0</text>
+  <text x="444" y="296" text-anchor="middle" font-size="9" fill="#52525B">scaffold template</text>
+
+  <!-- EXTRA_PLUGIN_DIRS arrow (dotted) -->
+  <defs>
+    <marker id="d12-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3F3F46"/>
+    </marker>
+  </defs>
+  <line x1="534" y1="196" x2="622" y2="196" stroke="#3F3F46" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#d12-arrow)"/>
+  <text x="578" y="188" text-anchor="middle" font-size="8" fill="#3F3F46">-DEXTRA_PLUGIN_DIRS</text>
+  <text x="578" y="200" text-anchor="middle" font-size="8" fill="#3F3F46">=C:/Entity/Entity-Pro/plugins</text>
+
+  <!-- Pro repo outer box -->
+  <rect x="622" y="32" width="294" height="312" rx="6" fill="#FFFFFF" stroke="#3F3F46" stroke-width="2"/>
+  <text x="769" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#3F3F46">PRIVATE SIBLING REPO</text>
+
+  <rect x="634" y="72" width="270" height="260" rx="4" fill="#E5E5E5" stroke="#3F3F46" stroke-width="1.5"/>
+  <text x="769" y="100" text-anchor="middle" font-size="11" font-weight="700" fill="#3F3F46">Entity-Pro</text>
+  <text x="769" y="118" text-anchor="middle" font-size="10" fill="#3F3F46">Proprietary</text>
+  <text x="769" y="136" text-anchor="middle" font-size="10" fill="#52525B">C:\Entity\Entity-Pro</text>
+  <text x="769" y="154" text-anchor="middle" font-size="9" fill="#52525B" font-style="italic">(not present on this machine)</text>
+
+  <text x="645" y="184" font-size="9" fill="#52525B">Proprietary SDK integrations</text>
+  <text x="645" y="200" font-size="9" fill="#52525B">folded into the public build at</text>
+  <text x="645" y="216" font-size="9" fill="#52525B">configure time via the CMake</text>
+  <text x="645" y="232" font-size="9" fill="#52525B">EXTRA_PLUGIN_DIRS variable.</text>
+  <text x="645" y="256" font-size="9" fill="#52525B">CI never references this repo.</text>
+  <text x="645" y="272" font-size="9" fill="#52525B">Apache 2.0 plugin-api/ boundary</text>
+  <text x="645" y="288" font-size="9" fill="#52525B">is the legal seam that allows</text>
+  <text x="645" y="304" font-size="9" fill="#52525B">proprietary plugins to link</text>
+  <text x="645" y="320" font-size="9" fill="#52525B">against the GPLv3 core.</text>
+
+  <!-- LICENSING.md note -->
+  <text x="4" y="352" font-size="9" fill="#52525B" font-style="italic">See LICENSING.md at repo root for the full explainer. LICENSE = GPLv3 + linking exception. LICENSE-PLUGIN-API = Apache 2.0.</text>
+</svg>
+
+</body>
+</html>
+

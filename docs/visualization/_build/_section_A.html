@@ -1,0 +1,543 @@
+<!-- BEGIN:S1 -->
+<section id="s1" class="doc-section">
+  <h2>1. Project at a Glance</h2>
+
+  <p>Entity is a C++20 media server for live projection mapping. The engine is
+  built around an Entity Component System (EnTT 3.x), a D3D12 renderer, and an
+  FFmpeg decode pipeline. A single editor executable hosts both the authoring UI
+  (ImGui, D3D12 swap chain) and the projector output pipeline (a parallel show
+  thread that keeps GPU presents running at 60&nbsp;Hz even while the editor
+  blocks). The codebase is dual-licensed open-core: a GPLv3 core with an
+  Apache&nbsp;2.0 plugin layer, plus a sibling private repository
+  (Entity-Pro) that folds in via <code>-DEXTRA_PLUGIN_DIRS</code>.</p>
+
+  <div class="stat-strip">
+    <div class="stat"><span class="stat__num">78,000</span><span class="stat__label">Lines of code</span></div>
+    <div class="stat"><span class="stat__num">89</span><span class="stat__label">.cpp files</span></div>
+    <div class="stat"><span class="stat__num">143</span><span class="stat__label">.hpp files</span></div>
+    <div class="stat"><span class="stat__num">11</span><span class="stat__label">Systems</span></div>
+    <div class="stat"><span class="stat__num">33</span><span class="stat__label">Components</span></div>
+    <div class="stat"><span class="stat__num">22</span><span class="stat__label">UI windows</span></div>
+    <div class="stat"><span class="stat__num">4</span><span class="stat__label">Plugins</span></div>
+    <div class="stat"><span class="stat__num">26</span><span class="stat__label">ADRs</span></div>
+    <div class="stat"><span class="stat__num">18</span><span class="stat__label">src/ subsystems</span></div>
+  </div>
+
+  <p>
+    <span class="tech-badge">C++20</span>
+    <span class="tech-badge">EnTT</span>
+    <span class="tech-badge">D3D12</span>
+    <span class="tech-badge">FFmpeg</span>
+    <span class="tech-badge">ImGui</span>
+    <span class="tech-badge">DirectWrite</span>
+    <span class="tech-badge">OCIO</span>
+    <span class="tech-badge">vcpkg</span>
+    <span class="tech-badge">Tracy</span>
+    <span class="tech-badge">CMake</span>
+  </p>
+
+  <svg font-family="inherit" data-diagram="D1" viewBox="0 0 920 140" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d1-title d1-desc">
+    <title id="d1-title">Thread architecture overview</title>
+    <desc id="d1-desc">Three boxes left to right: Editor Thread (orange), bus::SceneSnapshot (teal arrow), Show Thread (indigo). A lighter bar below shows Decode / Plugin workers in slate.</desc>
+    <defs>
+      <marker id="d1-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#0F766E"/>
+      </marker>
+      <marker id="d1-arrow-r" markerWidth="8" markerHeight="6" refX="1" refY="3" orient="auto">
+        <polygon points="8 0, 0 3, 8 6" fill="#0F766E"/>
+      </marker>
+    </defs>
+
+    <!-- Editor box -->
+    <rect x="12" y="12" width="260" height="72" rx="4" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+    <text x="142" y="36" text-anchor="middle" font-size="11" font-weight="600"
+          fill="#C2410C" text-transform="uppercase" letter-spacing="0.04em">EDITOR THREAD</text>
+    <text x="142" y="55" text-anchor="middle" font-size="12" fill="#1B1B1F">Sole registry writer</text>
+    <text x="142" y="73" text-anchor="middle" font-size="11" fill="#52525B">Engine::update  ~60 Hz</text>
+
+    <!-- Arrow D2R -->
+    <line x1="272" y1="42" x2="380" y2="42" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d1-arrow)"/>
+    <text x="326" y="36" text-anchor="middle" font-size="11" fill="#0F766E" font-weight="600">D2R bus</text>
+    <text x="326" y="56" text-anchor="middle" font-size="10" fill="#0F766E">SceneSnapshot</text>
+
+    <!-- Arrow R2D -->
+    <line x1="380" y1="62" x2="272" y2="62" stroke="#0F766E" stroke-width="1.5" marker-end="url(#d1-arrow-r)"/>
+    <text x="326" y="79" text-anchor="middle" font-size="10" fill="#0F766E">R2D replies</text>
+
+    <!-- Show box -->
+    <rect x="380" y="12" width="260" height="72" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="510" y="36" text-anchor="middle" font-size="11" font-weight="600"
+          fill="#1E3A8A" letter-spacing="0.04em">SHOW THREAD</text>
+    <text x="510" y="55" text-anchor="middle" font-size="12" fill="#1B1B1F">Snapshot reader + GPU</text>
+    <text x="510" y="73" text-anchor="middle" font-size="11" fill="#52525B">Engine::showThreadMain  60 Hz</text>
+
+    <!-- Workers bar -->
+    <rect x="12" y="98" width="628" height="30" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+    <text x="326" y="117" text-anchor="middle" font-size="11" fill="#525252" font-weight="600">
+      WORKER THREADS &#x2014; Decode #N (per clip) &middot; ContentScanner &middot; MediaProbe &middot; Transcode &middot; OSC
+    </text>
+  </svg>
+
+  <p>The architectural load-bearing story is the <strong>editor/show thread split</strong>: one thread
+  owns the registry, one thread owns the GPU and the projector outputs, and a teal bus
+  carries a baked snapshot between them. That split -- and the fallback machinery that
+  keeps the projector alive when the editor stalls -- is what S2 unpacks. This document
+  was generated at commit <code>e7fc109</code>. The Entity-Pro sibling repository is not
+  present on this machine, but the architecture it plugs into via
+  <code>-DEXTRA_PLUGIN_DIRS</code> is fully documented in S6.</p>
+</section>
+<!-- END:S1 -->
+
+<!-- BEGIN:S2 -->
+<section id="s2" class="doc-section">
+  <h2>2. The Architecture Spine</h2>
+
+  <h3>ECS + Data-Oriented Design -- the substrate</h3>
+
+  <p>Every piece of runtime state in Entity lives on one of three primitives:
+  an <strong>entity</strong> (just an integer ID -- no data, no behavior), a
+  <strong>component</strong> (a plain data struct attached to an entity), or a
+  <strong>system</strong> (a class that reads and writes components in bulk via
+  <code>registry.view&lt;Components...&gt;()</code>). EnTT's sparse-set storage
+  packs components contiguously in memory, so iterating a view is a sequential
+  walk through dense arrays rather than a pointer chase.</p>
+
+  <p>That layout buys three properties that matter in a realtime media server:</p>
+
+  <ul>
+    <li><strong>Cache coherency.</strong> When <code>CompositorSystem</code> iterates
+    <code>view&lt;Transform, MediaLayer&gt;()</code>, both component arrays march
+    through cache lines together. Putting logic or vtables inside components would
+    fragment those arrays and turn a predictable sequential read into a random walk.</li>
+    <li><strong>Threading discipline.</strong> Components are value types -- they are
+    cheap to copy and snapshot-bake across threads. The editor/show split (below) works
+    only because there are no embedded mutexes, no internal thread state, no
+    reference-counted shared ownership to reason about.</li>
+    <li><strong>Inspectability.</strong> Pure data is easy to print, diff, and
+    serialize. The project's multi-version project file (schema v1 to v22+) and the
+    <code>bus::SceneSnapshot</code> snapshot wire format both benefit directly from
+    components being flat structs.</li>
+  </ul>
+
+  <div class="callout callout--component">
+    <p><strong>Documented component exceptions.</strong> Three components carry methods
+    that would violate strict POD purity -- all three are explicitly reviewed and acceptable
+    under the rule: <em>a method is fine if it has no virtuals, touches only the component's
+    own fields, and adds no construction/destruction cost.</em></p>
+    <ul>
+      <li><strong><code>Clip</code></strong> -- has a destructor and move-only semantics
+      that free its FFmpeg <code>AVFormatContext</code> / <code>AVCodecContext</code>.
+      RAII is safer than a scattered "don't forget to call close()" contract. This is the
+      only component in the tree that owns heap resources.</li>
+      <li><strong><code>Transform</code></strong> -- has <code>updateMatrix()</code> /
+      <code>setPosition()</code> / <code>getMatrix()</code> etc. that cache a dirty-flag
+      matrix from the component's own position/rotation/scale fields. No virtuals,
+      no cross-component reach.</li>
+      <li><strong><code>AnimatedProperties</code></strong> / <code>KeyframeTrack</code>
+      -- have <code>addKeyframe()</code> / <code>evaluate()</code> that operate only on
+      their own track data. Cache-local, no virtuals, no external state.</li>
+    </ul>
+  </div>
+
+  <p>Everything that <em>does</em> reach outside a component -- input handling, multi-component
+  side effects, cross-system coordination -- lives in a system. The base class
+  <code>include/entity/systems/System.hpp</code> has virtuals (<code>update</code>,
+  <code>initialize</code>, <code>shutdown</code>, <code>getName</code>) which is fine
+  because systems are not iterated in packed arrays; one indirect call per system per frame
+  is trivial cost.</p>
+
+  <h3>The editor/show thread split</h3>
+
+  <p>The single most important architectural decision in Entity is that the
+  <strong>editor thread is the sole writer of the EnTT registry</strong>. Everything that
+  reads from the registry for rendering does so through a baked snapshot, never through a
+  live registry read. This is the subject of
+  <code>docs/adr/0014-editor-show-thread-split.md</code>.</p>
+
+  <p><strong>The editor thread</strong> (<code>Engine::update</code>, ~60 Hz) is responsible
+  for all registry mutations. Its per-frame order is:</p>
+
+  <ol>
+    <li>Time advance -- <code>Timeline::update(dt)</code> writes the atomic
+    <code>m_currentTime</code>.</li>
+    <li>Section scheduling -- <code>SectionScheduler::tick()</code> applies catch-up
+    continuation phase; break-crossing detection now runs on the show thread (see below).</li>
+    <li>Animation -- <code>AnimationSystem::update(dt)</code> evaluates keyframe tracks
+    and writes <code>Transform</code> + <code>ObjectAnimationOutput</code> registry
+    components.</li>
+    <li>Text rasterization -- <code>TextSystem::update()</code> rasterizes dirty
+    <code>TextLayerState</code> entries to video-pool textures via DirectWrite + D2D.</li>
+    <li>Content scanner -- <code>drainContentScannerDeltas()</code> folds
+    filesystem-watcher deltas into the media bin.</li>
+    <li>Decode steering -- <code>DecodeSystem::update()</code> maps the current timeline
+    frame to a media frame for each clip and writes the atomic
+    <code>worker-&gt;targetFrame</code>.</li>
+    <li>Audio steering -- <code>AudioSystem::update()</code> manages
+    <code>AudioDecodeWorker</code> threads; mirrors gain/mute/solo to the mixer.</li>
+    <li>Seek sync -- <code>SeekSyncController::tick()</code> polls decoder readiness
+    and releases the seek-sync gate when all active decoders reach the parked frame.</li>
+    <li>Heartbeat -- <code>m_lastEditorTickNs.store(now)</code> so the show thread can
+    detect editor stalls.</li>
+    <li>UI -- ImGui new-frame plus all editor window rendering. Writes go through
+    <code>CommandDispatcher</code>.</li>
+    <li>Command drain -- <code>CommandDispatcher::processQueue(Editor + Either affinity)</code>
+    applies all pending commands; this is the only other registry-write site.</li>
+    <li>Snapshot -- <code>buildSceneSnapshot()</code> bakes the registry into a
+    <code>bus::SceneSnapshot</code> and publishes it onto the D2R bus.</li>
+    <li>Reply drain -- <code>drainRendererToDirector()</code> reads R2D replies (for
+    example, <code>ScreenRenderTargetAllocated</code> -- the compose-target slot ack --
+    triggers a registry write of <code>Screen::renderTargetSlot</code>).</li>
+    <li>Present -- <code>beginEditorFrame</code> / <code>endEditorFrame</code> for the
+    editor swap chain.</li>
+  </ol>
+
+  <p><strong>The show thread</strong> (<code>Engine::showThreadMain</code>, 60 Hz output
+  framerate) never writes the registry. Its per-frame order is:</p>
+
+  <ol>
+    <li>Time advance -- <code>Timeline::update(dt)</code> unconditionally advances
+    <code>m_currentTime</code> every show frame, decoupled from editor health.</li>
+    <li>Section break detection -- the <code>SectionDetect</code> Tracy zone finds
+    any break-frame the playhead just crossed, snaps and pauses the playhead, and
+    posts an R2D <code>bus::SectionBreakDetected</code>. No registry writes.</li>
+    <li>Editor-stall fallback -- if the editor heartbeat is stale by more than 50 ms,
+    the show thread calls <code>DecodeSystem::update()</code> and
+    <code>AudioSystem::update()</code> directly.</li>
+    <li>Command drain -- <code>CommandDispatcher::processQueue(Show affinity)</code>
+    drains Play / Pause / Seek / SectionGo; writes only atomics on
+    <code>Timeline</code>, never the registry.</li>
+    <li>Snapshot drain -- pull the latest <code>SceneSnapshot</code> from the D2R bus
+    (latest-wins delivery; superseded snapshots are discarded).</li>
+    <li>GPU upload -- <code>PlaybackPresenter::present()</code> uploads decoded frames
+    from <code>FrameRingBuffer</code> to GPU textures.</li>
+    <li>Composite -- <code>CompositorSystem::update(renderFrame)</code>, three passes
+    (see S4 for detail).</li>
+    <li>Output -- <code>OutputManager::renderOutputs()</code> fans each screen's compose
+    target to its assigned output swap chain.</li>
+    <li>Present -- <code>endShowFrame</code> closes the Tracy D3D12 zone, executes the
+    command list, and calls <code>Present()</code> on all output swap chains.</li>
+  </ol>
+
+  <p><strong>The bus.</strong> D2R (Director-to-Renderer) carries the
+  <code>bus::SceneSnapshot</code> with latest-wins delivery -- if the editor publishes
+  two snapshots before the show thread drains one, the older snapshot is silently
+  superseded. R2D (Renderer-to-Director) is FIFO and carries reply messages: compose-target
+  slot acks (<code>ScreenRenderTargetAllocated</code>,
+  <code>GenerativeLayerRenderTargetAllocated</code>), effect-chain slot acks
+  (<code>EffectChainRenderTargetAllocated</code>), and section-break crossing events
+  (<code>SectionBreakDetected</code>). Decode / transcode / scanner / plugin workers are
+  independent of both threads -- they write atomics that the editor reads each tick.</p>
+
+  <p class="note">Source: <code>docs/reference/SYSTEM_ORDERING.md</code></p>
+
+  <svg font-family="inherit" data-diagram="D2" viewBox="0 0 920 660" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d2-title d2-desc">
+    <title id="d2-title">Per-frame system execution order across editor, show, and worker threads</title>
+    <desc id="d2-desc">Three vertical swim lanes. Editor (left, orange) lists 11 ordered steps. Show (centre, indigo) lists 8 steps. Workers (right, slate) shows 5 worker types. Cross-lane arrows show data flow.</desc>
+    <defs>
+      <marker id="d2-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#0F766E"/></marker>
+      <marker id="d2-arrow-w" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#525252"/></marker>
+      <marker id="d2-arrow-ed" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#C2410C"/></marker>
+    </defs>
+    <!-- Lane headers -->
+    <rect x="0" y="0" width="305" height="36" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+    <text x="152" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#C2410C">EDITOR THREAD &#x2014; Engine::update</text>
+    <rect x="315" y="0" width="290" height="36" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="460" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">SHOW THREAD &#x2014; showThreadMain</text>
+    <rect x="615" y="0" width="302" height="36" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+    <text x="766" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#525252">WORKER THREADS</text>
+    <line x1="305" y1="36" x2="305" y2="660" stroke="#E4E2DA" stroke-width="1"/>
+    <line x1="615" y1="36" x2="615" y2="660" stroke="#E4E2DA" stroke-width="1"/>
+    <!-- Editor steps — shared style via group -->
+    <g fill="#FFEDD5" stroke="#C2410C" stroke-width="1">
+      <rect x="8" y="48" width="289" height="38" rx="3"/><rect x="8" y="96" width="289" height="38" rx="3"/>
+      <rect x="8" y="144" width="289" height="38" rx="3"/><rect x="8" y="192" width="289" height="38" rx="3"/>
+      <rect x="8" y="240" width="289" height="38" rx="3"/><rect x="8" y="288" width="289" height="38" rx="3"/>
+      <rect x="8" y="336" width="289" height="38" rx="3"/><rect x="8" y="384" width="289" height="38" rx="3"/>
+      <rect x="8" y="432" width="289" height="38" rx="3"/><rect x="8" y="480" width="289" height="38" rx="3"/>
+      <rect x="8" y="528" width="289" height="38" rx="3"/>
+      <rect x="8" y="620" width="140" height="30" rx="3"/><rect x="157" y="620" width="140" height="30" rx="3"/>
+    </g>
+    <rect x="8" y="576" width="289" height="38" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+    <!-- Editor step labels -->
+    <g font-size="11" font-weight="700" fill="#C2410C">
+      <text x="24" y="63">1</text><text x="24" y="111">2</text><text x="24" y="159">3</text>
+      <text x="24" y="207">3.5</text><text x="24" y="255">4</text><text x="24" y="303">5</text>
+      <text x="24" y="351">5.5</text><text x="24" y="399">5.6</text><text x="24" y="447">6</text>
+      <text x="24" y="495">7</text><text x="24" y="543">8</text>
+      <text x="24" y="633">10</text><text x="170" y="633">11</text>
+    </g>
+    <text x="24" y="591" font-size="11" font-weight="700" fill="#0F766E">9</text>
+    <!-- Editor step primary labels -->
+    <g font-size="12" fill="#1B1B1F">
+      <text x="38" y="63">Timeline::update(dt)</text>
+      <text x="38" y="111">SectionScheduler::tick()</text>
+      <text x="38" y="159">AnimationSystem::update(dt)</text>
+      <text x="46" y="207">TextSystem::update()</text>
+      <text x="38" y="255">drainContentScannerDeltas()</text>
+      <text x="38" y="303">DecodeSystem::update()</text>
+      <text x="46" y="351">AudioSystem::update()</text>
+      <text x="46" y="399">SeekSyncController::tick()</text>
+      <text x="38" y="447">m_lastEditorTickNs.store(now)</text>
+      <text x="38" y="495">ImGui + UI rendering</text>
+      <text x="38" y="543">CommandDispatcher::processQueue</text>
+      <text x="40" y="638">drainR2D replies</text>
+      <text x="184" y="638">Editor Present</text>
+    </g>
+    <text x="38" y="591" font-size="12" font-weight="600" fill="#0F766E">buildSceneSnapshot()</text>
+    <!-- Editor step sub-labels -->
+    <g font-size="10" fill="#52525B">
+      <text x="38" y="79">Advances m_currentTime (atomic write)</text>
+      <text x="38" y="127">Applies catch-up; break detection is show-side</text>
+      <text x="38" y="175">Keyframe tracks -&gt; Transform + ObjectAnimationOutput</text>
+      <text x="46" y="223">Rasterize dirty TextLayerState via DirectWrite</text>
+      <text x="38" y="271">Folds filesystem-watcher deltas into MediaBin</text>
+      <text x="38" y="319">Maps timeline -&gt; media frame; sets worker-&gt;targetFrame</text>
+      <text x="46" y="367">Steers AudioDecodeWorker; mirrors gain/mute to mixer</text>
+      <text x="46" y="415">Polls decoder readiness; releases seek-sync gate</text>
+      <text x="38" y="463">Editor heartbeat for show-thread stall detection</text>
+      <text x="38" y="511">Editor windows draw; writes via CommandDispatcher</text>
+      <text x="38" y="559">Drains Editor + Either affinity; writes registry</text>
+    </g>
+    <text x="38" y="607" font-size="10" fill="#0F766E">Bakes registry -&gt; bus::SceneSnapshot; publishes D2R</text>
+    <!-- Show steps -->
+    <g fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1">
+      <rect x="323" y="48" width="274" height="38" rx="3"/><rect x="323" y="96" width="274" height="38" rx="3"/>
+      <rect x="323" y="240" width="274" height="38" rx="3"/>
+      <rect x="323" y="336" width="274" height="38" rx="3"/><rect x="323" y="384" width="274" height="38" rx="3"/>
+      <rect x="323" y="432" width="274" height="38" rx="3"/><rect x="323" y="480" width="274" height="38" rx="3"/>
+      <rect x="323" y="528" width="274" height="38" rx="3"/>
+    </g>
+    <rect x="323" y="144" width="274" height="38" rx="3" fill="#E5E5E5" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+    <rect x="323" y="288" width="274" height="38" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+    <g font-size="11" font-weight="700" fill="#1E3A8A">
+      <text x="339" y="63">1</text><text x="339" y="111">1.1</text>
+      <text x="339" y="255">2</text><text x="339" y="351">4</text>
+      <text x="339" y="399">5</text><text x="339" y="447">6</text>
+      <text x="339" y="495">7</text><text x="339" y="543">8</text>
+    </g>
+    <text x="339" y="159" font-size="11" font-weight="700" fill="#525252">1.2</text>
+    <text x="339" y="303" font-size="11" font-weight="700" fill="#0F766E">3</text>
+    <g font-size="12" fill="#1B1B1F">
+      <text x="353" y="63">Timeline::update(dt)</text>
+      <text x="360" y="111">SectionDetect zone</text>
+      <text x="353" y="255">CommandDispatcher::processQueue</text>
+      <text x="353" y="351">beginShowFrame</text>
+      <text x="353" y="399">PlaybackPresenter::present()</text>
+      <text x="353" y="447">CompositorSystem::update()</text>
+      <text x="353" y="495">OutputManager::renderOutputs()</text>
+      <text x="353" y="543">endShowFrame</text>
+    </g>
+    <text x="360" y="159" font-size="12" fill="#52525B">Fallback if editor stale &gt;50 ms</text>
+    <text x="353" y="303" font-size="12" font-weight="600" fill="#0F766E">Drain D2R bus</text>
+    <g font-size="10" fill="#52525B">
+      <text x="353" y="79">Advances time unconditionally every show frame</text>
+      <text x="360" y="127">Break detection; posts R2D SectionBreakDetected</text>
+      <text x="360" y="175">DecodeSystem::update + AudioSystem::update</text>
+      <text x="353" y="271">Show affinity: Play/Pause/Seek/SectionGo</text>
+      <text x="353" y="367">Reset show allocator; open cmd list; Tracy D3D12 zone</text>
+      <text x="353" y="415">Upload decoded frames to GPU textures</text>
+      <text x="353" y="463">PASS 1 generative + PASS 1.5 effects + PASS 2 blit</text>
+      <text x="353" y="511">Composite screen targets to output swap chains</text>
+      <text x="353" y="559">Close Tracy zone; execute; Present all swap chains</text>
+    </g>
+    <text x="353" y="319" font-size="10" fill="#0F766E">Pull latest SceneSnapshot (latest-wins)</text>
+    <!-- Workers -->
+    <g fill="#E5E5E5" stroke="#525252" stroke-width="1">
+      <rect x="623" y="48" width="286" height="38" rx="3"/><rect x="623" y="96" width="286" height="38" rx="3"/>
+      <rect x="623" y="144" width="286" height="38" rx="3"/><rect x="623" y="192" width="286" height="38" rx="3"/>
+    </g>
+    <rect x="623" y="240" width="286" height="38" rx="3" fill="#DCFCE7" stroke="#15803D" stroke-width="1"/>
+    <g text-anchor="middle" font-size="12" font-weight="600">
+      <text x="766" y="67" fill="#525252">Decode #N (per clip entity)</text>
+      <text x="766" y="115" fill="#525252">AudioDecodeWorker (per clip)</text>
+      <text x="766" y="163" fill="#525252">ContentScanner</text>
+      <text x="766" y="211" fill="#525252">MediaProbe / Transcode</text>
+      <text x="766" y="259" fill="#15803D">Plugin workers (OSC, DMX, etc.)</text>
+    </g>
+    <g text-anchor="middle" font-size="10">
+      <text x="766" y="81" fill="#52525B">FFmpeg decode -&gt; FrameRingBuffer</text>
+      <text x="766" y="129" fill="#52525B">FFmpeg audio -&gt; ring; steered by AudioSystem</text>
+      <text x="766" y="177" fill="#52525B">Filesystem watcher -&gt; delta queue</text>
+      <text x="766" y="225" fill="#52525B">Probe metadata; transcode to delivery codec</text>
+      <text x="766" y="273" fill="#15803D">CommandDispatcher::enqueue via IPluginContext</text>
+    </g>
+    <!-- Cross-lane arrows -->
+    <line x1="297" y1="595" x2="323" y2="307" stroke="#0F766E" stroke-width="2" marker-end="url(#d2-arrow)"/>
+    <line x1="323" y1="120" x2="297" y2="635" stroke="#0F766E" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d2-arrow)"/>
+    <line x1="623" y1="67" x2="297" y2="307" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d2-arrow-w)"/>
+    <line x1="297" y1="451" x2="323" y2="163" stroke="#C2410C" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d2-arrow-ed)"/>
+    <!-- Legend -->
+    <line x1="660" y1="310" x2="696" y2="310" stroke="#0F766E" stroke-width="2"/>
+    <text x="702" y="314" font-size="10" fill="#0F766E">Current data flow</text>
+    <line x1="660" y1="328" x2="696" y2="328" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="702" y="332" font-size="10" fill="#52525B">Fallback / deferred</text>
+  </svg>
+
+  <p class="note">Source: <code>docs/reference/SYSTEM_ORDERING.md</code></p>
+
+  <h3>Editor-stall fallbacks -- keeping the projector alive</h3>
+
+  <p>When the editor thread blocks for more than ~50 ms -- a native file-picker dialog,
+  an OS resize/move loop, a slow project load -- <code>Engine::update</code> stops running.
+  Every editor-tick system stops with it. Without a counter-measure, the projector output
+  freezes on whatever frame the user last saw. In a live show, that is a failure.</p>
+
+  <p>The show thread polls <code>m_lastEditorTickNs</code> (the heartbeat written at editor
+  step 6) to detect staleness. Two counter-measure shapes cover all the systems that matter:</p>
+
+  <ul>
+    <li><strong>Show-fallback tick.</strong> When the system's per-frame work writes only
+    atomics and never the registry, the show thread can call the system's <code>update()</code>
+    directly on the stall path. Systems using this shape:
+    <ul>
+      <li><strong>Timeline</strong> -- <code>m_currentTime</code> is an atomic; the show
+      thread has called <code>Timeline::update(dt)</code> unconditionally since commit
+      <code>ee99a99</code>, not just during editor stalls.</li>
+      <li><strong>DecodeSystem</strong> -- writes only the atomic <code>worker-&gt;targetFrame</code>;
+      the show-thread fallback has been in place since commit <code>a9bcd8b</code>.</li>
+      <li><strong>AudioSystem</strong> -- writes only atomic worker fields
+      (<code>seekTarget</code>, <code>active</code>) and <code>MixSource</code>
+      mixer-slot fields; fallback fires on the same 50 ms heartbeat gate as DecodeSystem.</li>
+    </ul>
+    </li>
+    <li><strong>Snapshot-bake and re-derive.</strong> When the system writes registry
+    components, the show thread cannot call it at all. Instead, the editor bakes the
+    system's output into <code>bus::SceneSnapshot::clipCatalog</code> once per editor
+    frame, and the show thread re-evaluates from those baked inputs each render frame
+    in <code>buildRenderFrame()</code>. Systems using this shape:
+    <ul>
+      <li><strong>AnimationSystem</strong> (<strong>NEW-07</strong>, closed 2026-05-11).
+      Keyframe tracks for each clip are baked into <code>bus::ClipCatalogEntry</code>.
+      The show thread re-evaluates them in <code>buildRenderFrame</code>, overriding
+      <code>ClipRenderState::transformMatrix</code> / <code>opacity</code> for animated
+      clips. Design doc: <code>docs/design/animation-snapshot-bake.md</code>.</li>
+      <li><strong>SectionScheduler</strong> (<strong>NEW-08</strong>, closed 2026-05-20).
+      Because SectionScheduler is a state machine -- not a stateless evaluator like
+      AnimationSystem -- snapshot-bake alone is not sufficient. The solution splits the
+      work: break-crossing <em>detection</em> runs on the show thread (the
+      <code>SectionDetect</code> zone, step 1.1); the registry-mutating
+      <em>application</em> (<code>SectionScheduler::handleBreakAt</code>) stays on the
+      editor thread, triggered by an R2D <code>bus::SectionBreakDetected</code> message
+      drain. Continuation phase is re-derived show-side from a wall-clock anchor baked
+      into <code>ClipCatalogEntry</code> fields
+      (<code>phase_continuationStartTimeNs</code> /
+      <code>phase_continuationSeedFrames</code>), so Loop and PingPong clips keep
+      cycling at a parked break even during a multi-second editor stall. Design doc:
+      <code>docs/design/section-scheduler-snapshot-bake.md</code>.</li>
+    </ul>
+    </li>
+  </ul>
+
+  <p><strong>TextSystem</strong> does not need either mechanism. Text content only changes
+  on explicit authoring commands -- it does not advance with wall time. The last-baked
+  texture remains valid at the GPU indefinitely during a stall.</p>
+
+  <div class="callout callout--show">
+    <p><strong>Diagnostic recipe: "is the output frozen?"</strong> Before chasing
+    display-layer theories (DWM composition, Independent Flip, swap-chain fullscreen
+    mode, driver bugs), add ~20 lines to render an independent per-frame counter quad
+    to the output -- a small color-cycling square in a corner that is totally
+    independent of <code>Timeline</code>, <code>SceneSnapshot</code>, and decode state.
+    Then trigger the suspected stall and observe:</p>
+    <ul>
+      <li><strong>Counter keeps cycling</strong> -- the swap chain is fine. The freeze
+      is in the content pipeline: some editor-tick system stopped feeding the show
+      thread. Check whether it has a show-thread fallback per
+      <code>docs/adr/0014-editor-show-thread-split.md</code>.</li>
+      <li><strong>Counter freezes too</strong> -- the freeze really is in the swap
+      chain or display path. Use PresentMon to confirm whether the OS is completing
+      your presents. Genuinely rare on this codebase given the editor/show split.</li>
+    </ul>
+    <p>This recipe was learned the hard way (commit <code>a9bcd8b</code>): ~6 hours of
+    display-layer investigation before the marker test pivoted to the actual
+    six-line content-pipeline fix.</p>
+  </div>
+
+  <svg font-family="inherit" data-diagram="D3" viewBox="0 0 920 320" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d3-title d3-desc">
+    <title id="d3-title">Snapshot-bake decision tree for editor-tick systems</title>
+    <desc id="d3-desc">Decision tree: root asks whether system drives output. If yes, asks whether it writes registry. Registry-writes branch leads to snapshot-bake leaves (AnimationSystem, SectionScheduler, TextSystem). Non-registry-write branch leads to show-fallback-tick leaves (Timeline, DecodeSystem, AudioSystem).</desc>
+    <defs>
+      <marker id="d3-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#52525B"/>
+      </marker>
+    </defs>
+
+    <!-- Root -->
+    <rect x="310" y="12" width="300" height="44" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="460" y="30" text-anchor="middle" font-size="13" font-weight="600" fill="#1B1B1F">Editor-tick system</text>
+    <text x="460" y="48" text-anchor="middle" font-size="11" fill="#52525B">drives projector output?</text>
+    <line x1="460" y1="56" x2="460" y2="88" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+    <!-- Second node -->
+    <rect x="310" y="88" width="300" height="44" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="460" y="106" text-anchor="middle" font-size="13" font-weight="600" fill="#1B1B1F">Writes registry</text>
+    <text x="460" y="124" text-anchor="middle" font-size="11" fill="#52525B">components each tick?</text>
+
+    <!-- YES branch (left -> snapshot-bake) -->
+    <line x1="360" y1="110" x2="220" y2="110" stroke="#52525B" stroke-width="1.5"/>
+    <line x1="220" y1="110" x2="220" y2="170" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+    <text x="290" y="103" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">YES</text>
+
+    <!-- NO branch (right -> show-fallback) -->
+    <line x1="560" y1="110" x2="700" y2="110" stroke="#52525B" stroke-width="1.5"/>
+    <line x1="700" y1="110" x2="700" y2="170" stroke="#52525B" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+    <text x="630" y="103" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">NO</text>
+
+    <!-- Snapshot-bake box -->
+    <rect x="100" y="170" width="240" height="44" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+    <text x="220" y="191" text-anchor="middle" font-size="12" font-weight="700" fill="#7C3AED">Snapshot-bake</text>
+    <text x="220" y="208" text-anchor="middle" font-size="10" fill="#7C3AED">Bake result into ClipCatalogEntry;</text>
+
+    <!-- Show-fallback box -->
+    <rect x="580" y="170" width="240" height="44" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="1.5"/>
+    <text x="700" y="191" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">Show-fallback tick</text>
+    <text x="700" y="208" text-anchor="middle" font-size="10" fill="#0891B2">Show thread calls system directly</text>
+
+    <!-- Snapshot-bake leaves -->
+    <line x1="220" y1="214" x2="220" y2="248" stroke="#7C3AED" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+    <rect x="60" y="248" width="160" height="36" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1"/>
+    <text x="140" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">AnimationSystem</text>
+    <text x="140" y="278" text-anchor="middle" font-size="10" fill="#52525B">tracks -&gt; ClipCatalogEntry</text>
+
+    <rect x="230" y="248" width="150" height="36" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1"/>
+    <text x="305" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#7C3AED">SectionScheduler</text>
+    <text x="305" y="278" text-anchor="middle" font-size="10" fill="#52525B">anchor -&gt; CatalogEntry</text>
+
+    <!-- Show-fallback leaves -->
+    <line x1="700" y1="214" x2="700" y2="248" stroke="#0891B2" stroke-width="1.5" marker-end="url(#d3-arrow)"/>
+
+    <rect x="560" y="248" width="120" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="620" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">Timeline</text>
+    <text x="620" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic m_currentTime</text>
+
+    <rect x="690" y="248" width="120" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="750" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">DecodeSystem</text>
+    <text x="750" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic targetFrame</text>
+
+    <rect x="820" y="248" width="88" height="36" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="864" y="264" text-anchor="middle" font-size="11" font-weight="600" fill="#0891B2">AudioSystem</text>
+    <text x="864" y="278" text-anchor="middle" font-size="10" fill="#52525B">atomic workers</text>
+
+    <!-- No-stall-risk note -->
+    <text x="220" y="308" text-anchor="middle" font-size="10" fill="#52525B" font-style="italic">TextSystem: no fallback needed (text static per frame)</text>
+  </svg>
+
+  <p>The fallback coverage is now complete. There are no known editor-stall gaps -- NEW-07
+  (AnimationSystem) closed 2026-05-11 and NEW-08 (SectionScheduler) closed 2026-05-20
+  were the last two. Any new editor-tick system that drives the projector output must
+  choose one of these two shapes before shipping: show-fallback tick (if registry-write-free)
+  or snapshot-bake (if it writes registry components). The checklist is in
+  <code>docs/adr/0014-editor-show-thread-split.md</code> under
+  "Show-Thread Fallback Pattern."</p>
+
+  <p>With the spine established -- two threads, one registry, one baked snapshot, two
+  fallback shapes -- the next three sections walk down it. S3 inventories what is actually
+  inside the components and systems. S4 follows the render path from snapshot drain through
+  the three-pass compositor to the output swap chains. S5 catalogs the 22 editor windows
+  and the command loop that connects operator input back to registry state.</p>
+</section>
+<!-- END:S2 -->

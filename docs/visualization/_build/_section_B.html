@@ -1,0 +1,610 @@
+<!-- BEGIN:S3 -->
+<section id="s3" class="doc-section">
+  <h2>3. Catalog: Systems, Components, Archetypes</h2>
+
+  <p>Now we open the toolbox. Three tables and a recipe-card grid. The systems table is the behavior; the components table is the data; the archetypes are the contracts between them. Every number and path below comes from a live HEAD scan at commit <code>e7fc109</code> (2026-05-23); see the fact sheet at <code>docs/reference/</code> for the full methodology. Systems are documented in <code>include/entity/systems/</code>, components in <code>include/entity/components/</code>, and archetypes are defined in <code>docs/reference/ENTITY_ARCHETYPES.md</code>.</p>
+
+  <h3>Systems (10)</h3>
+
+  <table>
+    <thead>
+      <tr>
+        <th>System</th>
+        <th>Header</th>
+        <th>Thread</th>
+        <th>What it does</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-family="system">
+        <td><code>AnimationSystem</code></td>
+        <td><code>include/entity/systems/AnimationSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Evaluates keyframe tracks; writes <code>Transform</code> + <code>ObjectAnimationOutput</code> each tick. Tracks are also baked into <code>ClipCatalogEntry</code> so the show thread can re-evaluate during editor stalls (NEW-07 closed 2026-05-11).</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>AudioSystem</code></td>
+        <td><code>include/entity/systems/AudioSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span> <span class="pill pill--show">Show fallback</span></td>
+        <td>Manages <code>AudioDecodeWorker</code> threads per clip; steers seek and gain; mirrors mute/solo to the audio mixer. Show-thread fallback fires when editor heartbeat is stale &gt;50 ms.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>CameraControlSystem</code></td>
+        <td><code>include/entity/systems/CameraControlSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Handles orbit/pan/zoom input for the Stage 3D viewport camera.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>CompositorSystem</code></td>
+        <td><code>include/entity/systems/CompositorSystem.hpp</code></td>
+        <td><span class="pill pill--show">Show</span></td>
+        <td>Three-pass GPU compositor (ADR-0018 + ADR-0019): PASS 1 draws generative layer content into per-layer compose targets; PASS 1.5 runs per-layer effect chains via ping-pong; PASS 2 unifies all content kinds onto each screen's compose target.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>DecodeSystem</code></td>
+        <td><code>include/entity/systems/DecodeSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span> <span class="pill pill--show">Show fallback</span></td>
+        <td>Maps timeline frame to media frame per clip; owns per-clip <code>DecodeWorker</code> threads; writes only the atomic <code>worker->targetFrame</code>. Show-thread fallback since commit <code>a9bcd8b</code>. Also runs a sliding-window prefetch (5 s ahead) to warm decode workers before clips become active.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>GenerativeSystem</code></td>
+        <td><code>include/entity/systems/GenerativeSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Ticks procedural layer state components each editor frame (Muncher tick counter, etc.).</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>RoutingLibrarySystem</code></td>
+        <td><code>include/entity/systems/RoutingLibrarySystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Reconciles the <code>ContentRoutingAsset</code> library each editor tick: creates one auto-direct asset per <code>Screen</code>, name-syncs from <code>Screen::name</code>, cascade-deletes orphan assets when a screen is destroyed.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>TextSystem</code></td>
+        <td><code>include/entity/systems/TextSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Rasterizes dirty <code>TextLayerState</code> entries to video-pool textures via DirectWrite + D2D. No show-thread fallback needed: text only changes on explicit authoring commands, so the last-baked texture stays valid during editor stalls.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>TimelineSystem</code></td>
+        <td><code>include/entity/systems/TimelineSystem.hpp</code></td>
+        <td><span class="pill pill--editor">Editor</span></td>
+        <td>Legacy utility system: timeline-clip sync helpers used during track operations.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>TestSystem</code></td>
+        <td><code>include/entity/systems/TestSystem.hpp</code></td>
+        <td><span class="pill pill--workers">Utility</span></td>
+        <td>Skeleton integration-test harness. Placeholder only (CODE_ISSUES NEW-05); not wired into the production loop.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="note">Plus an abstract <code>System</code> base class (<code>include/entity/systems/System.hpp</code>) providing the virtual <code>update</code> / <code>initialize</code> / <code>shutdown</code> / <code>getName</code> contract. Not a system in its own right, so not counted above.</p>
+
+  <div class="callout callout--system">
+    <p>Most systems are editor-affinity: the editor thread is the sole registry writer, and systems that write <code>emplace</code> / <code>replace</code> / <code>destroy</code> can only run there. The two exceptions are <code>CompositorSystem</code> and <code>PlaybackPresenter</code>, which are show-affinity and never touch the registry. <code>DecodeSystem</code> and <code>AudioSystem</code> have both: they run on the editor thread in the normal case and fall back to the show thread when the editor is stalled, because they write only atomic fields rather than registry components.</p>
+  </div>
+
+  <h3>Components (33), grouped</h3>
+
+  <svg font-family="inherit" data-diagram="D4" viewBox="0 0 920 270" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d4-title d4-desc">
+    <title id="d4-title">Component families grid</title>
+    <desc id="d4-desc">Seven columns, one per component family. Families: Timeline (amber), Animation (violet), Media (slate), Routing (teal), Output (indigo), Effects (cyan), Kind-Specific (forest).</desc>
+    <!-- Column X centres: 68, 202, 333, 464, 598, 727, 854. Width 128 each except Media(122), Effects(118), Kind(124). -->
+    <!-- Headers -->
+    <g font-size="10" font-weight="700" text-anchor="middle">
+      <rect x="4" y="0" width="128" height="22" rx="2" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/><text x="68" y="15" fill="#D97706">TIMELINE</text>
+      <rect x="138" y="0" width="128" height="22" rx="2" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/><text x="202" y="15" fill="#7C3AED">ANIMATION</text>
+      <rect x="272" y="0" width="122" height="22" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/><text x="333" y="15" fill="#525252">MEDIA</text>
+      <rect x="400" y="0" width="128" height="22" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/><text x="464" y="15" fill="#0F766E">ROUTING</text>
+      <rect x="534" y="0" width="128" height="22" rx="2" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/><text x="598" y="15" fill="#1E3A8A">OUTPUT</text>
+      <rect x="668" y="0" width="118" height="22" rx="2" fill="#CFFAFE" stroke="#0891B2" stroke-width="1.5"/><text x="727" y="15" fill="#0891B2">EFFECTS</text>
+      <rect x="792" y="0" width="124" height="22" rx="2" fill="#DCFCE7" stroke="#15803D" stroke-width="1.5"/><text x="854" y="15" fill="#15803D">KIND-SPECIFIC</text>
+    </g>
+    <!-- Pills: fill=#FFFFFF stroke-width=1, shared via group per family -->
+    <!-- Timeline pills (amber) -->
+    <g fill="#FFFFFF" stroke="#D97706" stroke-width="1" font-size="10" text-anchor="middle" fill2="#D97706">
+      <rect x="4" y="28" width="128" height="20" rx="2"/><text x="68" y="43" fill="#D97706">Clip</text>
+      <rect x="4" y="54" width="128" height="20" rx="2"/><text x="68" y="69" fill="#D97706">Layer</text>
+      <rect x="4" y="80" width="128" height="20" rx="2"/><text x="68" y="95" fill="#D97706">MediaLayer</text>
+      <rect x="4" y="106" width="128" height="20" rx="2"/><text x="68" y="121" fill="#D97706">TimelineTrack</text>
+      <rect x="4" y="132" width="128" height="20" rx="2"/><text x="68" y="147" fill="#D97706">ClipDecodeState</text>
+      <rect x="4" y="158" width="128" height="20" rx="2"/><text x="68" y="173" fill="#D97706">ClipPlaybackPhase</text>
+      <rect x="4" y="184" width="128" height="20" rx="2"/><text x="68" y="199" fill="#D97706">AudioSource</text>
+      <rect x="4" y="210" width="128" height="20" rx="2"/><text x="68" y="225" fill="#D97706">FrameBuffer</text>
+    </g>
+    <!-- Animation pills (violet) -->
+    <g fill="#FFFFFF" stroke="#7C3AED" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="138" y="28" width="128" height="20" rx="2"/><text x="202" y="43" fill="#7C3AED">AnimatedProperties</text>
+      <rect x="138" y="54" width="128" height="20" rx="2"/><text x="202" y="69" fill="#7C3AED">Transform</text>
+      <rect x="138" y="80" width="128" height="20" rx="2"/><text x="202" y="95" fill="#7C3AED">Camera</text>
+      <rect x="138" y="106" width="128" height="20" rx="2"/><text x="202" y="121" fill="#7C3AED">ObjectAnimationLayer</text>
+      <rect x="138" y="132" width="128" height="20" rx="2"/><text x="202" y="147" fill="#7C3AED">ObjectAnimationOutput</text>
+    </g>
+    <!-- Media pills (slate) -->
+    <g fill="#FFFFFF" stroke="#525252" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="272" y="28" width="122" height="20" rx="2"/><text x="333" y="43" fill="#525252">VideoTexture</text>
+      <rect x="272" y="54" width="122" height="20" rx="2"/><text x="333" y="69" fill="#525252">Model</text>
+    </g>
+    <!-- Routing pills (teal) -->
+    <g fill="#FFFFFF" stroke="#0F766E" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="400" y="28" width="128" height="20" rx="2"/><text x="464" y="43" fill="#0F766E">ContentRouting</text>
+      <rect x="400" y="54" width="128" height="20" rx="2"/><text x="464" y="69" fill="#0F766E">ContentRoutingAsset</text>
+      <rect x="400" y="80" width="128" height="20" rx="2"/><text x="464" y="95" fill="#0F766E">ContentRoutingRef</text>
+    </g>
+    <!-- Output pills (indigo) -->
+    <g fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="534" y="28" width="128" height="20" rx="2"/><text x="598" y="43" fill="#1E3A8A">Screen</text>
+      <rect x="534" y="54" width="128" height="20" rx="2"/><text x="598" y="69" fill="#1E3A8A">OutputDisplay</text>
+      <rect x="534" y="80" width="128" height="20" rx="2"/><text x="598" y="95" fill="#1E3A8A">OutputSurface</text>
+      <rect x="534" y="106" width="128" height="20" rx="2"/><text x="598" y="121" fill="#1E3A8A">Projector</text>
+      <rect x="534" y="132" width="128" height="20" rx="2"/><text x="598" y="147" fill="#1E3A8A">Prop</text>
+    </g>
+    <!-- Effects pills (cyan) -->
+    <g fill="#FFFFFF" stroke="#0891B2" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="668" y="28" width="118" height="20" rx="2"/><text x="727" y="43" fill="#0891B2">Effect</text>
+      <rect x="668" y="54" width="118" height="20" rx="2"/><text x="727" y="69" fill="#0891B2">EffectChain</text>
+      <rect x="668" y="80" width="118" height="20" rx="2"/><text x="727" y="95" fill="#0891B2">EffectParameters</text>
+      <rect x="668" y="106" width="118" height="20" rx="2"/><text x="727" y="121" fill="#0891B2">EffectParam</text>
+      <rect x="668" y="132" width="118" height="20" rx="2"/><text x="727" y="147" fill="#0891B2">EffectChainRTs</text>
+      <rect x="668" y="158" width="118" height="20" rx="2"/><text x="727" y="173" fill="#0891B2">EffectAnimatedParams</text>
+    </g>
+    <!-- Kind-specific pills (forest) -->
+    <g fill="#FFFFFF" stroke="#15803D" stroke-width="1" font-size="10" text-anchor="middle">
+      <rect x="792" y="28" width="124" height="20" rx="2"/><text x="854" y="43" fill="#15803D">GenerativeLayer</text>
+      <rect x="792" y="54" width="124" height="20" rx="2"/><text x="854" y="69" fill="#15803D">MunchersGameState</text>
+      <rect x="792" y="80" width="124" height="20" rx="2"/><text x="854" y="95" fill="#15803D">TextLayerState</text>
+    </g>
+    <text x="4" y="262" font-size="10" fill="#52525B" font-style="italic">All components are POD structs except Clip (RAII FFmpeg handles). ContentRoutingAssetOps is a helper header, not a component.</text>
+  </svg>
+
+  <p>The seven families cluster by purpose. <strong>Timeline</strong> components hold the raw authoring data for things that live on tracks: start frame, duration, loop mode, decode state, section-break continuation anchor. <strong>Animation</strong> components encode keyframe tracks and the output of evaluating them, plus the editor viewport camera. <strong>Media</strong> is thin by design: <code>VideoTexture</code> holds the descriptor-pool slot and the decoded frame pointer; <code>Model</code> holds the GPU mesh. <strong>Routing</strong> (introduced ADR-0022) is the Plane A content-routing library: named reusable <code>ContentRoutingAsset</code> entities that clips reference via <code>ContentRoutingRef</code>, replacing the old inline <code>ContentRouting</code> component. <strong>Output</strong> is everything from a physical display to a virtual projector to a stage prop used only for editor pre-visualization. <strong>Effects</strong> are entities in their own right (per ADR-0019): <code>Effect</code> + <code>EffectParameters</code> sit on separate entities referenced by an <code>EffectChain</code> on the layer. <strong>Kind-specific</strong> components discriminate generative sub-kinds at the component-composition level rather than at a runtime enum switch.</p>
+
+  <div class="callout callout--component">
+    <p><strong>Note:</strong> <code>ContentRoutingAssetOps</code> (<code>include/entity/components/ContentRoutingAssetOps.hpp</code>) is a header of free helper functions for creating, looking up, and applying routing assets. It lives in the components directory for locality but is not a component struct and is never attached to an entity. Do not model it as a component in architecture diagrams.</p>
+  </div>
+
+  <h3>Archetypes -- what makes a Clip a Clip</h3>
+
+  <p>EnTT will happily attach any component to any entity; the actual archetypes are conventions enforced by the systems that read them. No archetype is hard-coded at the type-system level. What makes a <code>Clip</code> a Clip is that <code>CompositorSystem</code>, <code>DecodeSystem</code>, and <code>PlaybackTimeAuthority</code> all operate on the combination of <code>Clip + Transform + ClipDecodeState + VideoTexture</code> -- if one of those components is absent, that entity silently falls outside the system's view. The five archetypes below cover roughly 95% of timeline-resident entities on any real show project.</p>
+
+  <svg font-family="inherit" data-diagram="D5" viewBox="0 0 920 460" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d5-title d5-desc">
+    <title id="d5-title">Archetype recipe cards for the five main entity archetypes</title>
+    <desc id="d5-desc">Five horizontal rows: Clip, Screen, Projector, OA Layer, Generative. Each shows required (solid) and optional (dashed) component pills.</desc>
+    <defs><style>.ra{font-size:9;font-weight:700}.la{font-size:14;font-weight:700;text-anchor:middle}.sub{font-size:10;text-anchor:middle;fill:#52525B}.it{font-size:10;font-style:italic;fill:#52525B}</style></defs>
+    <g fill="#FFFFFF" font-size="9" text-anchor="middle">
+    <!-- ROW 1: Clip -->
+    <rect x="0" y="0" width="920" height="76" rx="4" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+    <text x="90" y="30" class="la" fill="#D97706">Clip</text>
+    <text x="90" y="48" class="sub">video / image source</text>
+    <line x1="168" y1="8" x2="168" y2="68" stroke="#D97706" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="18" class="ra" fill="#7C3AED">REQUIRED</text>
+    <g stroke-width="1">
+      <rect x="178" y="22" width="52" height="16" rx="2" stroke="#D97706"/><text x="204" y="34" fill="#D97706">Clip</text>
+      <rect x="234" y="22" width="60" height="16" rx="2" stroke="#7C3AED"/><text x="264" y="34" fill="#7C3AED">Transform</text>
+      <rect x="298" y="22" width="90" height="16" rx="2" stroke="#D97706"/><text x="343" y="34" fill="#D97706">ClipDecodeState</text>
+      <rect x="392" y="22" width="72" height="16" rx="2" stroke="#525252"/><text x="428" y="34" fill="#525252">VideoTexture</text>
+    </g>
+    <text x="178" y="58" class="ra" fill="#52525B">OPTIONAL</text>
+    <g stroke-width="1" stroke-dasharray="3 2">
+      <rect x="178" y="62" width="62" height="14" rx="2" stroke="#D97706"/><text x="209" y="73" fill="#D97706">MediaLayer</text>
+      <rect x="244" y="62" width="92" height="14" rx="2" stroke="#7C3AED"/><text x="290" y="73" fill="#7C3AED">AnimatedProperties</text>
+      <rect x="340" y="62" width="96" height="14" rx="2" stroke="#D97706"/><text x="388" y="73" fill="#D97706">ClipPlaybackPhase</text>
+      <rect x="440" y="62" width="60" height="14" rx="2" stroke="#0891B2"/><text x="470" y="73" fill="#0891B2">EffectChain</text>
+      <rect x="504" y="62" width="96" height="14" rx="2" stroke="#0F766E"/><text x="552" y="73" fill="#0F766E">ContentRoutingRef</text>
+      <rect x="604" y="62" width="66" height="14" rx="2" stroke="#D97706"/><text x="637" y="73" fill="#D97706">AudioSource</text>
+    </g>
+    <!-- ROW 2: Screen -->
+    <rect x="0" y="88" width="920" height="76" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="90" y="118" class="la" fill="#1E3A8A">Screen</text>
+    <text x="90" y="136" class="sub">projection surface</text>
+    <line x1="168" y1="96" x2="168" y2="156" stroke="#1E3A8A" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="106" class="ra" fill="#1E3A8A">REQUIRED</text>
+    <rect x="178" y="110" width="52" height="16" rx="2" stroke="#1E3A8A" stroke-width="1"/><text x="204" y="122" fill="#1E3A8A">Screen</text>
+    <text x="178" y="148" class="it">Single-component archetype. Position/rotation/scale embedded on Screen struct.</text>
+    <!-- ROW 3: Projector -->
+    <rect x="0" y="176" width="920" height="76" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="90" y="206" class="la" fill="#1E3A8A">Projector</text>
+    <text x="90" y="224" class="sub">virtual camera</text>
+    <line x1="168" y1="184" x2="168" y2="244" stroke="#1E3A8A" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="194" class="ra" fill="#1E3A8A">REQUIRED</text>
+    <rect x="178" y="198" width="60" height="16" rx="2" stroke="#1E3A8A" stroke-width="1"/><text x="208" y="210" fill="#1E3A8A">Projector</text>
+    <text x="178" y="236" class="it">Single-component archetype. Carries calibration point list + fov/near/far internally.</text>
+    <!-- ROW 4: OA Layer -->
+    <rect x="0" y="264" width="920" height="76" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+    <text x="90" y="294" class="la" fill="#7C3AED" font-size="13">OA Layer</text>
+    <text x="90" y="312" class="sub">object animation</text>
+    <line x1="168" y1="272" x2="168" y2="332" stroke="#7C3AED" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="282" class="ra" fill="#7C3AED">REQUIRED</text>
+    <g stroke-width="1">
+      <rect x="178" y="286" width="108" height="16" rx="2" stroke="#D97706"/><text x="232" y="298" fill="#D97706">Layer (Kind::OA)</text>
+      <rect x="290" y="286" width="116" height="16" rx="2" stroke="#7C3AED"/><text x="348" y="298" fill="#7C3AED">ObjectAnimationLayer</text>
+    </g>
+    <text x="178" y="324" class="ra" fill="#52525B">OPTIONAL</text>
+    <g stroke-width="1" stroke-dasharray="3 2">
+      <rect x="178" y="328" width="92" height="14" rx="2" stroke="#7C3AED"/><text x="224" y="339" fill="#7C3AED">AnimatedProperties</text>
+      <rect x="274" y="328" width="112" height="14" rx="2" stroke="#7C3AED"/><text x="330" y="339" fill="#7C3AED">ObjectAnimationOutput</text>
+    </g>
+    <!-- ROW 5: Generative -->
+    <rect x="0" y="352" width="920" height="100" rx="4" fill="#DCFCE7" stroke="#15803D" stroke-width="1.5"/>
+    <text x="90" y="382" class="la" fill="#15803D" font-size="13">Generative</text>
+    <text x="90" y="400" class="sub">procedural layer</text>
+    <line x1="168" y1="360" x2="168" y2="444" stroke="#15803D" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="178" y="372" class="ra" fill="#15803D">REQUIRED</text>
+    <g stroke-width="1">
+      <rect x="178" y="376" width="118" height="16" rx="2" stroke="#D97706"/><text x="237" y="388" fill="#D97706">Layer (Kind::Generative)</text>
+      <rect x="300" y="376" width="82" height="16" rx="2" stroke="#15803D"/><text x="341" y="388" fill="#15803D">GenerativeLayer</text>
+      <rect x="386" y="376" width="60" height="16" rx="2" stroke="#7C3AED"/><text x="416" y="388" fill="#7C3AED">Transform</text>
+      <rect x="450" y="376" width="70" height="16" rx="2" stroke="#D97706"/><text x="485" y="388" fill="#D97706">MediaLayer</text>
+    </g>
+    <text x="178" y="412" class="ra" fill="#15803D">KIND-SPECIFIC (one of)</text>
+    <g stroke-width="1">
+      <rect x="178" y="416" width="100" height="16" rx="2" stroke="#15803D"/><text x="228" y="428" fill="#15803D">MunchersGameState</text>
+      <text x="282" y="428" fill="#52525B">OR</text>
+      <rect x="298" y="416" width="80" height="16" rx="2" stroke="#15803D"/><text x="338" y="428" fill="#15803D">TextLayerState</text>
+    </g>
+    <text x="178" y="447" class="it">Sub-kind dispatched by component composition, not by a kind enum at runtime.</text>
+    </g>
+  </svg>
+
+  <p>The design principle here is composition-not-inheritance, per ADR-0016 and ADR-0018. Systems select entity kinds by component combination -- <code>view&lt;Layer, Clip&gt;</code> vs. <code>view&lt;Layer, ObjectAnimationLayer&gt;</code> -- never by reading <code>Layer::kind</code> at runtime. The <code>Kind</code> enum on <code>Layer</code> exists for three things only: UI kind badges in the timeline, serialization disambiguation in the project file, and human-readable log output. For the Generative archetype this goes one level deeper: the presence of <code>MunchersGameState</code> versus <code>TextLayerState</code> is the discriminator between the Muncher and Text sub-kinds. There is no sub-kind field to switch on. Adding a new sub-kind means adding a new kind-specific component and wiring it into <code>GenerativeSystem</code> and the compositor's PASS 1 -- PASS 2 doesn't care.</p>
+
+  <h3>Largest files -- what's overgrown</h3>
+
+  <p>Eight files cross 1,000 lines. Some of that is justified domain complexity; some of it is genuine god-file accumulation that the roadmap is working through. Either way, these are the files where a reviewer should look first when something breaks, and the files most likely to be involved in a messy merge conflict.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th class="num">Lines</th>
+        <th>Why it's big</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-family="system">
+        <td><code>src/render/D3D12Renderer.cpp</code></td>
+        <td class="num">6,044</td>
+        <td>Full D3D12 renderer: swap chains, command lists, GPU resource management, all compositor passes. True god-file -- touches every GPU resource type and the entire pipeline in one translation unit.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>src/command/Commands.cpp</code></td>
+        <td class="num">5,626</td>
+        <td>All undoable command implementations (~100+ command types) in one file. Large by design -- it's a registry pattern, not accumulation. Every new feature adds command types here.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>src/core/Engine.cpp</code></td>
+        <td class="num">5,290</td>
+        <td>Main engine: ECS initialization, editor thread loop, show thread, all system wiring. This is the trunk file -- it knows about everything. Phase B Engine decomposition has been on the roadmap for a while.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/ui/PropertyWindow.cpp</code></td>
+        <td class="num">2,839</td>
+        <td>Per-component property editing UI for every archetype (clips, screens, effects, text layers). Grows linearly as new component types are added.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/project/ProjectSerializer.cpp</code></td>
+        <td class="num">2,328</td>
+        <td>Full project schema read/write + multi-version migration (v1 through v22+). Every schema version bump adds code here.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/timeline/TimelineWidgetInput.cpp</code></td>
+        <td class="num">1,967</td>
+        <td>All timeline hit-testing: drag, trim, scrub, rubber-band, keyframe picking. Complex but focused domain.</td>
+      </tr>
+      <tr data-family="system">
+        <td><code>src/director/PlaybackTimeAuthority.cpp</code></td>
+        <td class="num">1,613</td>
+        <td>SceneSnapshot bake + RenderFrame build + show-side re-evaluation of animation tracks and section phase. Genuinely complex: it straddles the editor/show boundary.</td>
+      </tr>
+      <tr data-family="ui">
+        <td><code>src/timeline/TimelineWidgetRender.cpp</code></td>
+        <td class="num">1,606</td>
+        <td>All timeline drawing: tracks, clips, keyframe diamonds, ruler, waveforms. Paired with the input file -- together they're the timeline widget.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--archetype">
+    <p>The top three are the ones worth knowing about for architecture work. <code>D3D12Renderer.cpp</code> at 6,044 lines is a genuine decomposition target -- every GPU resource type lives in one file, and adding a new rendering pass means navigating thousands of lines of unrelated resource management. <code>Commands.cpp</code> at 5,626 is large but intentional: all undoable commands in one place is a registry pattern, and splitting it would scatter the undo stack across multiple files with no obvious benefit. <code>Engine.cpp</code> at 5,290 is the wiring trunk -- it's large because it wires everything together, not because the logic is dense. The Phase B Engine decomposition work on the roadmap would carve it into subsystem-specific initializers.</p>
+  </div>
+
+  <h3>UI windows (22)</h3>
+
+  <p>S5 walks through all 22 windows in detail. They live in <code>src/ui/</code> and total ~13,889 LOC -- a substantial fraction of the codebase. The largest is <code>PropertyWindow</code> at 2,839 lines; the smallest is <code>TimelineWindow</code> at 16 lines (a thin shell that hosts the two <code>src/timeline/</code> widget files). Note that <code>MathInput</code> (532 LOC) is a utility input widget that lives in <code>src/ui/</code> but is not an operator-visible window.</p>
+
+</section>
+<!-- END:S3 -->
+
+<!-- BEGIN:S4 -->
+<section id="s4" class="doc-section">
+  <h2>4. The Render Pipeline</h2>
+
+  <p>Once the editor publishes a <code>bus::SceneSnapshot</code>, the show thread takes over. Everything from here lives on the show thread and writes only to GPU memory -- the registry is read-only on this side, per ADR-0014. The three-pass compositor is specified in <code>docs/adr/0018-content-layer-unification.md</code> (the kind-blind PASS 2 contract) and <code>docs/adr/0019-per-layer-effects.md</code> (the PASS 1.5 ping-pong effect chain). The implementation lives in <code>src/systems/CompositorSystem.cpp</code> and <code>src/render/D3D12Renderer.cpp</code>.</p>
+
+  <h3>Three passes, kind-blind composite</h3>
+
+  <p>The compositor's job is to go from a <code>RenderFrame</code> -- a list of <code>ContentLayerSnapshot</code> structs sorted by z-order -- to one filled compose-target texture per visible screen. It does this in three passes.</p>
+
+  <p><strong>PASS 1 -- Generative producers.</strong> For each active <code>GenerativeLayerSnapshot</code> in the render frame, the compositor calls <code>ensureGenerativeRenderTarget</code> to lazily allocate a compose-target slot (the allocation is confirmed via an R2D <code>GenerativeLayerRenderTargetAllocated</code> ack that the editor writes back to <code>GenerativeLayer::renderTargetSlot</code> on the next editor tick). It then opens that compose target, draws the kind-specific content in layer-local NDC -- the Muncher playfield for Muncher layers, or the texture already rasterized into the video-pool by <code>TextSystem</code> for Text layers -- and closes the target. Output: one compose-target texture per active generative layer. Video clips do not go through PASS 1; their textures are already in the video-pool, uploaded by <code>PlaybackPresenter::present()</code> before the compositor runs.</p>
+
+  <p><strong>PASS 1.5 -- Per-layer effect chains.</strong> For each <code>ContentLayerSnapshot</code> whose <code>effects</code> list is non-empty, the compositor ensures two ping-pong compose targets exist (<code>EffectChainRenderTargets</code>, again via R2D ack). It then walks the effect chain, calling <code>drawEffectPass</code> per enabled <code>Effect</code>, ping-ponging input and output targets each pass. The final result lands in <code>postEffectsSlot</code> on the layer snapshot. The kind-blind contract here is strict: PASS 1.5 operates identically on Video-sourced layers and Compose-sourced (generative) layers. It doesn't care what produced the source texture. PASS 1.5 is a complete no-op for layers with empty effect chains -- no targets are allocated and no draw calls are issued.</p>
+
+  <p><strong>PASS 2 -- Unified composite per screen.</strong> For each visible screen, the compositor calls <code>ensureScreenRenderTarget</code> (R2D ack writes <code>Screen::renderTargetSlot</code> on the editor thread) and opens the screen's compose target. It then walks every <code>ContentLayerSnapshot</code> in <code>rf.contentLayers</code> -- already sorted by <code>zOrder</code> -- that is targeted at this screen, and calls <code>drawTexturedQuad</code> per layer. When a layer has <code>postEffectsSlot &gt;= 0</code>, PASS 2 reads from the effect-chain output instead of <code>sourceSlot</code>. The source-kind enum dispatches the descriptor pool: <code>Video</code> reads from the video-texture pool; <code>Compose</code> reads from the generative-layer RT pool. One PASS 2 implementation handles every content kind that exists today or will exist tomorrow.</p>
+
+  <div class="callout callout--show">
+    <p>This is the payoff of ADR-0018. Adding a new content-producing layer kind -- a Particle layer, a Shader layer, anything -- requires PASS 1 work to produce a texture in a compose-target slot, but PASS 2 does not change. The compositor is closed for modification, open for extension on the consumer side.</p>
+  </div>
+
+  <svg font-family="inherit" data-diagram="D6" viewBox="0 0 920 520" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d6-title d6-desc">
+    <title id="d6-title">Three-pass GPU compositor pipeline</title>
+    <desc id="d6-desc">Left-to-right pipeline: Input (SceneSnapshot to buildRenderFrame), PASS 1 (Generative producers), PASS 1.5 (Per-layer effect chains), PASS 2 (Unified composite per screen), Output (OutputManager to swap chains).</desc>
+    <defs>
+      <marker id="d6-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1E3A8A"/></marker>
+    </defs>
+    <!-- Stage columns: Input x=4, P1 x=188, P1.5 x=372, P2 x=556, Out x=740 -->
+    <!-- Input -->
+    <rect x="4" y="60" width="168" height="380" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="88" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">INPUT</text>
+    <rect x="14" y="92" width="148" height="44" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+    <text x="88" y="112" text-anchor="middle" font-size="10" font-weight="600" fill="#0F766E">bus::SceneSnapshot</text>
+    <text x="88" y="127" text-anchor="middle" font-size="9" fill="#0F766E">published by editor step 9</text>
+    <line x1="88" y1="136" x2="88" y2="158" stroke="#52525B" stroke-width="1.5" marker-end="url(#d6-arrow)"/>
+    <rect x="14" y="158" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="1"/>
+    <text x="88" y="178" text-anchor="middle" font-size="10" font-weight="600" fill="#1B1B1F">buildRenderFrame()</text>
+    <text x="88" y="193" text-anchor="middle" font-size="9" fill="#52525B">PlaybackTimeAuthority</text>
+    <g font-size="9" fill="#52525B">
+      <text x="14" y="222" font-weight="600">READS:</text>
+      <text x="14" y="236">  ClipCatalogEntry (clips)</text>
+      <text x="14" y="250">  AnimTrack bake</text>
+      <text x="14" y="264">  SectionPhase anchor</text>
+      <text x="14" y="278">  ScreenSnapshot list</text>
+      <text x="14" y="300" font-weight="600">PRODUCES:</text>
+      <text x="14" y="314">  RenderFrame</text>
+      <text x="14" y="328">  contentLayers[] (by zOrder)</text>
+    </g>
+    <line x1="172" y1="250" x2="184" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- PASS 1 -->
+    <rect x="188" y="0" width="168" height="460" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="272" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">PASS 1</text>
+    <text x="272" y="38" text-anchor="middle" font-size="10" fill="#1E3A8A">Generative producers</text>
+    <rect x="198" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1"/>
+    <text x="272" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#15803D">Per GenerativeLayer</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="272" y="82">ensureGenerativeRT()</text><text x="272" y="96">beginComposeTarget(slot)</text></g>
+    <rect x="198" y="118" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#15803D" stroke-width="1"/>
+    <text x="272" y="138" text-anchor="middle" font-size="10" font-weight="600" fill="#15803D">drawMuncherPlayfield()</text>
+    <text x="272" y="153" text-anchor="middle" font-size="9" fill="#52525B">or TextLayerState slot</text>
+    <rect x="198" y="172" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+    <text x="272" y="190" text-anchor="middle" font-size="9" fill="#0F766E">endComposeTarget()</text>
+    <g font-size="9" fill="#52525B">
+      <text x="198" y="218" font-weight="600">READS:</text><text x="198" y="232">  GenerativeLayerSnapshot</text>
+      <text x="198" y="246">  MunchersGameState</text>
+      <text x="198" y="268" font-weight="600">WRITES:</text><text x="198" y="282">  Per-layer compose RT</text>
+    </g>
+    <rect x="198" y="300" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="272" y="318" text-anchor="middle" font-size="9" fill="#0F766E">R2D: GenLayerRTAllocated</text>
+    <g font-size="9" fill="#52525B" font-style="italic"><text x="198" y="344">Video clips skip PASS 1.</text><text x="198" y="358">Texture in pool via</text><text x="198" y="372">PlaybackPresenter.</text></g>
+    <line x1="356" y1="250" x2="368" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- PASS 1.5 -->
+    <rect x="372" y="0" width="168" height="460" rx="4" fill="#CFFAFE" stroke="#0891B2" stroke-width="2"/>
+    <text x="456" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0891B2">PASS 1.5</text>
+    <text x="456" y="38" text-anchor="middle" font-size="10" fill="#0891B2">Per-layer effect chains</text>
+    <rect x="382" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="456" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#0891B2">Per layer w/ EffectChain</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="456" y="82">ensureEffectPingTarget()</text><text x="456" y="96">ping-pong 2 compose RTs</text></g>
+    <rect x="382" y="118" width="148" height="44" rx="3" fill="#FFFFFF" stroke="#0891B2" stroke-width="1"/>
+    <text x="456" y="136" text-anchor="middle" font-size="10" font-weight="600" fill="#0891B2">drawEffectPass()</text>
+    <text x="456" y="150" text-anchor="middle" font-size="9" fill="#52525B">per Effect in chain</text>
+    <rect x="382" y="172" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1"/>
+    <text x="456" y="190" text-anchor="middle" font-size="9" fill="#0F766E">write postEffectsSlot</text>
+    <g font-size="9" fill="#52525B">
+      <text x="382" y="218" font-weight="600">READS:</text><text x="382" y="232">  ContentLayerSnapshot.effects</text>
+      <text x="382" y="256" font-weight="600">WRITES:</text><text x="382" y="270">  Ping-pong compose RTs</text>
+      <text x="382" y="284">  postEffectsSlot per layer</text>
+    </g>
+    <rect x="382" y="300" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="456" y="318" text-anchor="middle" font-size="9" fill="#0F766E">R2D: EffectChainRTAllocated</text>
+    <g font-size="9" fill="#52525B" font-style="italic"><text x="382" y="354">Kind-blind: Video + Compose.</text><text x="382" y="368">No-op if effects empty.</text></g>
+    <line x1="540" y1="250" x2="552" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- PASS 2 -->
+    <rect x="556" y="0" width="168" height="460" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="640" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">PASS 2</text>
+    <text x="640" y="38" text-anchor="middle" font-size="10" fill="#1E3A8A">Unified composite</text>
+    <rect x="566" y="48" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="640" y="68" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Per visible Screen</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="640" y="82">ensureScreenRT()</text><text x="640" y="96">beginComposeTarget(slot)</text></g>
+    <rect x="566" y="118" width="148" height="60" rx="3" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="640" y="138" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">drawTexturedQuad()</text>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="640" y="152">per contentLayer (zOrder)</text><text x="640" y="166">Video | Compose srcKind</text></g>
+    <g font-size="9" fill="#52525B">
+      <text x="566" y="196" font-weight="600">READS:</text>
+      <text x="566" y="210">  RenderFrame.contentLayers</text>
+      <text x="566" y="224">  postEffectsSlot (if &gt;= 0)</text>
+      <text x="566" y="238">  else sourceSlot (video pool)</text>
+      <text x="566" y="258" font-weight="600">WRITES:</text>
+      <text x="566" y="272">  Per-screen compose RT</text>
+      <text x="566" y="294">opacity * sectionFadeMultiplier</text>
+      <text x="566" y="308">transform from ClipCatalogEntry</text>
+    </g>
+    <rect x="566" y="322" width="148" height="28" rx="3" fill="#CCFBF1" stroke="#0F766E" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="640" y="340" text-anchor="middle" font-size="9" fill="#0F766E">R2D: ScreenRTAllocated</text>
+    <line x1="724" y1="250" x2="736" y2="250" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d6-arrow)"/>
+    <!-- Output -->
+    <rect x="740" y="60" width="176" height="380" rx="4" fill="#F1EFE9" stroke="#1B1B1F" stroke-width="1.5"/>
+    <text x="828" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#1B1B1F">OUTPUT STAGE</text>
+    <rect x="750" y="92" width="156" height="44" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="828" y="112" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">OutputManager</text>
+    <text x="828" y="127" text-anchor="middle" font-size="9" fill="#52525B">renderOutputs()</text>
+    <line x1="828" y1="136" x2="828" y2="158" stroke="#52525B" stroke-width="1.5" marker-end="url(#d6-arrow)"/>
+    <rect x="750" y="158" width="156" height="44" rx="3" fill="#FFFFFF" stroke="#1B1B1F" stroke-width="1"/>
+    <g text-anchor="middle" font-size="9" fill="#52525B"><text x="828" y="176">Per enabled OutputDisplay:</text><text x="828" y="192">fan screen RT to swap chain</text></g>
+    <g font-size="9" fill="#52525B"><text x="750" y="224">UV crop (InputRegion)</text><text x="750" y="238">Warp via OutputSurface</text><text x="750" y="252">  (Plane B quad corners)</text><text x="750" y="272">Calibration overlay</text></g>
+    <rect x="750" y="288" width="156" height="44" rx="3" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1"/>
+    <text x="828" y="308" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Present()</text>
+    <text x="828" y="324" text-anchor="middle" font-size="9" fill="#52525B">each output swap chain</text>
+    <!-- PlaybackPresenter feed note -->
+    <rect x="188" y="474" width="168" height="28" rx="3" fill="#FFFFFF" stroke="#525252" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="272" y="492" text-anchor="middle" font-size="9" fill="#525252">PlaybackPresenter feeds GPU textures</text>
+    <line x1="272" y1="470" x2="272" y2="460" stroke="#525252" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#d6-arrow)"/>
+  </svg>
+
+  <p class="note">Source: ADR-0018 + ADR-0019. Implemented in <code>src/systems/CompositorSystem.cpp</code> + <code>src/render/D3D12Renderer.cpp</code>.</p>
+
+  <h3>The descriptor heap -- where every texture lives</h3>
+
+  <p>The show pipeline uses a single CBV/SRV/UAV descriptor heap allocated at startup. Slot ranges are fixed and collision-free since CRIT-04 was resolved in Phase A (2026-04-19). The layout groups resources by role so that each system can compute its slot from a base constant plus an index without coordinating with any other system at runtime. The slot constants live in <code>include/entity/render/D3D12Renderer.hpp</code>.</p>
+
+  <p>Slot 0 holds the ImGui font atlas SRV. Slot 1 is a legacy video upload slot retained for the transitional code path. The compose-target range starts at <code>COMPOSE_TARGET_BASE = 2</code> and spans 64 slots -- this covers screen render targets, generative-layer render targets, and the ping-pong pairs allocated by PASS 1.5 effect chains. The video-texture pool starts at <code>VIDEO_TEXTURE_BASE = 66</code> and provides 16 slots, one per active decoded clip -- <code>PlaybackPresenter</code> uploads each decoded frame here before the compositor runs. Above that, <code>SNAPSHOT_BASE = 82</code> marks the start of the per-frame constant buffer ring (64 CBV slots of 256 bytes each, one per frame-in-flight slot), which is what fixed the CRIT-04 multi-surface overwrite.</p>
+
+  <svg font-family="inherit" data-diagram="D7" viewBox="0 0 920 160" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d7-title d7-desc">
+    <title id="d7-title">D3D12 descriptor heap slot layout</title>
+    <desc id="d7-desc">Horizontal color-banded strip showing descriptor heap slot ranges: slot 0 ImGui font, slot 1 legacy video, slots 2-65 compose targets (64 slots), slots 66-81 video textures (16 slots), slots 82-97 snapshot buffer.</desc>
+
+    <!-- Slot 0: ImGui -->
+    <rect x="4" y="40" width="48" height="56" rx="2" fill="#FCE7F3" stroke="#BE185D" stroke-width="1.5"/>
+    <text x="28" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#BE185D">ImGui</text>
+    <text x="28" y="76" text-anchor="middle" font-size="9" fill="#BE185D">font</text>
+    <text x="28" y="106" text-anchor="middle" font-size="9" fill="#52525B">slot 0</text>
+
+    <!-- Slot 1: legacy -->
+    <rect x="56" y="40" width="48" height="56" rx="2" fill="#E5E5E5" stroke="#525252" stroke-width="1.5"/>
+    <text x="80" y="66" text-anchor="middle" font-size="9" font-weight="700" fill="#525252">legacy</text>
+    <text x="80" y="80" text-anchor="middle" font-size="9" fill="#525252">video</text>
+    <text x="80" y="106" text-anchor="middle" font-size="9" fill="#52525B">slot 1</text>
+
+    <!-- Compose targets: 64 slots (slots 2-65) -->
+    <rect x="108" y="24" width="360" height="72" rx="2" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="1.5"/>
+    <text x="288" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#1E3A8A">COMPOSE TARGETS</text>
+    <text x="288" y="66" text-anchor="middle" font-size="9" fill="#1E3A8A">64 slots: screen RTs + generative layer RTs + effect ping-pong pairs</text>
+    <text x="288" y="80" text-anchor="middle" font-size="9" fill="#1E3A8A">COMPOSE_TARGET_BASE = 2</text>
+    <text x="108" y="108" font-size="9" fill="#52525B">slots 2-65</text>
+
+    <!-- Video textures: 16 slots (66-81) -->
+    <rect x="472" y="24" width="220" height="72" rx="2" fill="#FFEDD5" stroke="#C2410C" stroke-width="1.5"/>
+    <text x="582" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#C2410C">VIDEO TEXTURES</text>
+    <text x="582" y="66" text-anchor="middle" font-size="9" fill="#C2410C">16 slots: per-clip decoded frame uploads</text>
+    <text x="582" y="80" text-anchor="middle" font-size="9" fill="#C2410C">VIDEO_TEXTURE_BASE = 66</text>
+    <text x="472" y="108" font-size="9" fill="#52525B">slots 66-81</text>
+
+    <!-- Snapshot: 16 slots (82-97) -->
+    <rect x="696" y="24" width="220" height="72" rx="2" fill="#CCFBF1" stroke="#0F766E" stroke-width="1.5"/>
+    <text x="806" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#0F766E">SNAPSHOT BUFFER</text>
+    <text x="806" y="66" text-anchor="middle" font-size="9" fill="#0F766E">16 slots: per-frame constant buffer ring</text>
+    <text x="806" y="80" text-anchor="middle" font-size="9" fill="#0F766E">SNAPSHOT_BASE = 82</text>
+    <text x="696" y="108" font-size="9" fill="#52525B">slots 82-97</text>
+
+    <!-- Axis -->
+    <line x1="4" y1="120" x2="916" y2="120" stroke="#E4E2DA" stroke-width="1"/>
+    <text x="4" y="140" font-size="9" fill="#52525B">0</text>
+    <text x="108" y="140" font-size="9" fill="#52525B">2</text>
+    <text x="468" y="140" font-size="9" fill="#52525B">66</text>
+    <text x="692" y="140" font-size="9" fill="#52525B">82</text>
+    <text x="880" y="140" font-size="9" fill="#52525B">97+</text>
+
+    <text x="4" y="156" font-size="9" fill="#52525B" font-style="italic">
+      Slot ranges are illustrative; actual constants live in D3D12Renderer.hpp. FRAME_COUNT ring of 64 CBV slots sits above SNAPSHOT_BASE.
+    </text>
+  </svg>
+
+  <h3>Output stage -- from screen RT to projector pixel</h3>
+
+  <p>After PASS 2 finishes, each visible <code>Screen</code> has a filled compose target in the descriptor heap. <code>OutputManager::renderOutputs()</code> walks every enabled <code>OutputDisplay</code> entity and drives it to its swap chain.</p>
+
+  <p>For each <code>OutputDisplay</code>: the manager looks up the bound screen (via <code>sourceScreen</code>) or the bound projector (via <code>sourceProjector</code>, which takes priority). It reads the screen's <code>renderTargetSlot</code> -- the compose-target index assigned by <code>CompositorSystem</code> via the R2D ack. It then walks every visible <code>OutputSurface</code> for that output -- these are the Plane B warp quads per ADR-0021, renamed from <code>MappingSurface</code> in ADR-0021 M4 -- and for each quad draws a warped blit: source UV from <code>InputRegion</code>, destination from the quad's four corner positions, with soft-edge feathering at the quad margins.</p>
+
+  <p>When the output is bound through a <code>Projector</code> rather than a flat screen, an additional calibration pass applies before the warp. The calibration math per ADR-0011 (<code>docs/adr/0011-projector-calibration-architecture.md</code>) is a four-step pipeline: (1) intrinsic matrix (fx, fy, cx, cy) maps the screen to the projector's image plane; (2) extrinsic R|t is solved via Levenberg-Marquardt over the operator's correspondence point pairs; (3) radial distortion k1 and k2 correct lens barrel/pincushion; (4) an IDW (inverse-distance weighted) residual warp grid corrects whatever the analytic model misses. ADR-0011 flags five coupled sites in the codebase that must move together when this math changes -- touch them as a unit or the calibration will silently break.</p>
+
+  <p>After the warp, an OCIO color transform is applied per-output before <code>Present()</code>. The swap chains use <code>DXGI_SWAP_EFFECT_FLIP_DISCARD</code>.</p>
+
+  <svg font-family="inherit" data-diagram="D8" viewBox="0 0 920 300" preserveAspectRatio="xMidYMid meet"
+       xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="d8-title d8-desc">
+    <title id="d8-title">Output stage: Screen compose target to swap chain via OutputSurface warp</title>
+    <desc id="d8-desc">Left to right: Screen compose target feeds into OutputSurface warp quad (Plane B), then into OutputDisplay swap chain. Calibration math annotated on the warp box: intrinsics plus extrinsics plus k1/k2 radial plus IDW residual warp per ADR-0011.</desc>
+    <defs>
+      <marker id="d8-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#1E3A8A"/>
+      </marker>
+    </defs>
+
+    <!-- Screen compose RT -->
+    <rect x="16" y="60" width="180" height="160" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="106" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">Screen</text>
+    <text x="106" y="106" text-anchor="middle" font-size="11" fill="#1E3A8A">compose target</text>
+    <text x="106" y="130" text-anchor="middle" font-size="9" fill="#52525B">renderTargetSlot</text>
+    <text x="106" y="144" text-anchor="middle" font-size="9" fill="#52525B">assigned by CompositorSystem</text>
+    <text x="106" y="158" text-anchor="middle" font-size="9" fill="#52525B">via R2D ack</text>
+    <text x="106" y="180" text-anchor="middle" font-size="9" fill="#52525B">PASS 2 rendered into this</text>
+    <text x="106" y="196" text-anchor="middle" font-size="9" fill="#52525B">once per show frame</text>
+
+    <!-- Arrow -->
+    <line x1="196" y1="140" x2="240" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+    <!-- OutputSurface warp box -->
+    <rect x="240" y="20" width="280" height="240" rx="4" fill="#E5E5E5" stroke="#525252" stroke-width="2"/>
+    <text x="380" y="48" text-anchor="middle" font-size="12" font-weight="700" fill="#525252">OutputSurface (Plane B)</text>
+    <text x="380" y="64" text-anchor="middle" font-size="10" fill="#52525B">warp quad per output</text>
+
+    <!-- Calibration math block -->
+    <rect x="256" y="76" width="248" height="132" rx="3" fill="#FFFFFF" stroke="#E4E2DA" stroke-width="1"/>
+    <text x="380" y="96" text-anchor="middle" font-size="10" font-weight="600" fill="#1B1B1F">Calibration math (ADR-0011)</text>
+    <text x="268" y="114" font-size="9" fill="#52525B">1. Intrinsic matrix (fx, fy, cx, cy)</text>
+    <text x="268" y="130" font-size="9" fill="#52525B">2. Extrinsic R|t (LM solve over</text>
+    <text x="276" y="144" font-size="9" fill="#52525B">   correspondence point pairs)</text>
+    <text x="268" y="160" font-size="9" fill="#52525B">3. Radial distortion k1, k2</text>
+    <text x="268" y="176" font-size="9" fill="#52525B">4. IDW residual warp</text>
+    <text x="276" y="190" font-size="9" fill="#52525B">   (post-fit inverse-distance</text>
+    <text x="276" y="204" font-size="9" fill="#52525B">   weighted correction grid)</text>
+
+    <text x="256" y="230" font-size="9" fill="#52525B">src UV region: InputRegion crop</text>
+    <text x="256" y="244" font-size="9" fill="#52525B">soft edges blended at quad margins</text>
+
+    <!-- Arrow -->
+    <line x1="520" y1="140" x2="560" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+    <!-- OutputDisplay -->
+    <rect x="560" y="60" width="180" height="160" rx="4" fill="#DBEAFE" stroke="#1E3A8A" stroke-width="2"/>
+    <text x="650" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#1E3A8A">OutputDisplay</text>
+    <text x="650" y="106" text-anchor="middle" font-size="11" fill="#1E3A8A">swap chain</text>
+    <text x="650" y="132" text-anchor="middle" font-size="9" fill="#52525B">DXGI_SWAP_EFFECT</text>
+    <text x="650" y="146" text-anchor="middle" font-size="9" fill="#52525B">_FLIP_DISCARD</text>
+    <text x="650" y="168" text-anchor="middle" font-size="9" fill="#52525B">OCIO transform applied</text>
+    <text x="650" y="182" text-anchor="middle" font-size="9" fill="#52525B">before Present()</text>
+
+    <!-- Arrow to monitor icon -->
+    <line x1="740" y1="140" x2="780" y2="140" stroke="#1E3A8A" stroke-width="2" marker-end="url(#d8-arrow)"/>
+
+    <!-- Monitor symbol -->
+    <rect x="780" y="96" width="120" height="88" rx="4" fill="#1B1B1F" stroke="#1B1B1F" stroke-width="2"/>
+    <rect x="790" y="106" width="100" height="68" rx="2" fill="#DBEAFE"/>
+    <text x="840" y="148" text-anchor="middle" font-size="10" font-weight="600" fill="#1E3A8A">Projector</text>
+    <rect x="820" y="184" width="40" height="8" rx="2" fill="#52525B"/>
+
+    <!-- Five-sites warning -->
+    <rect x="756" y="216" width="160" height="52" rx="3" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+    <text x="836" y="232" text-anchor="middle" font-size="9" font-weight="600" fill="#D97706">5 coupled calibration sites</text>
+    <text x="836" y="246" text-anchor="middle" font-size="9" fill="#52525B">must move together per</text>
+    <text x="836" y="260" text-anchor="middle" font-size="9" fill="#52525B">ADR-0011. Touch with care.</text>
+  </svg>
+
+  <div class="callout callout--show">
+    <p><strong>Plane A vs. Plane B -- don't conflate them.</strong> <code>OutputSurface</code> (renamed from <code>MappingSurface</code> in ADR-0021 M4) is a per-output warp quad -- Plane B. It describes how a screen's render target is physically deformed onto the projection surface. <code>ContentRoutingAsset</code> (ADR-0022) routes layer content to screens -- Plane A. It describes which clip goes where in logical screen space. The two planes are completely independent: a single screen can have many clips routed to it (Plane A), and that screen's render target can be warped by many output surfaces across many physical displays (Plane B).</p>
+  </div>
+
+  <h3>Triple-buffered everything</h3>
+
+  <p>The show pipeline uses D3D12 per-frame command allocators. <code>m_showAllocators</code> is an array indexed by frame-in-flight slot; <code>m_showFence</code> gates the CPU from reusing a slot before the GPU has finished with it. <code>beginShowFrame</code> resets the allocator for the current slot, opens the command list, and opens a Tracy GPU zone (a cross-function zone -- the <code>tracy::D3D12ZoneScope*</code> lives on the heap, allocated in <code>beginShowFrame</code> and deleted at the very top of <code>endShowFrame</code> before any early returns, per ADR-0015). <code>endShowFrame</code> closes the Tracy zone, executes the command list, and Presents all enabled output swap chains.</p>
+
+  <p>Compose targets follow the same discipline. Each target has a <code>lastStableIndex</code> that is acquire/release-fenced so the editor never reads a render target slot the show thread is currently writing into. This is particularly relevant for <code>Screen::renderTargetSlot</code> -- the slot is written on the editor thread (via the R2D ack drain in <code>drainRendererToDirector</code>) and read on the show thread in <code>ensureScreenRenderTarget</code>.</p>
+
+  <p>The editor and show threads share one D3D12 direct command queue. The D3D12 specification guarantees that <code>ExecuteCommandLists</code> and <code>Signal</code> are thread-safe on a single queue object -- that guarantee is the contract the editor/show split relies on. Both threads submit independently; the fence values keep them from stepping on each other's in-flight work.</p>
+
+  <h3>Closing</h3>
+
+  <p>That's the pipeline. A <code>SceneSnapshot</code> goes in; projector pixels come out, sixty times per second, regardless of what the editor thread is doing. The next section walks the surface the operator actually clicks on -- the 22 ImGui windows that decide what the next <code>SceneSnapshot</code> will contain.</p>
+
+</section>
+<!-- END:S4 -->
