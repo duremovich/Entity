@@ -333,9 +333,9 @@ public:
     // Phase D activates it as the auto-fade envelope around boundary clips.
     // ============================================================================
     struct Section {
-        Timecode    breakFrame{0};      // Single point on the timeline (microseconds)
+        FrameNumber breakFrame{0};      // Single point on the timeline (integer timeline frame)
         uint32_t    color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
-        double      fadeSeconds{0.0};   // Phase D will use; serialized now
+        double      fadeSeconds{0.0};   // auto-fade envelope duration, in seconds
     };
 
     const std::vector<Section>& getSections() const { return m_sections; }
@@ -358,27 +358,27 @@ public:
                                  int&      outNextIdx,
                                  int64_t&  outNextFrame) const;
 
-    /** Insert a section break at the given frame. Returns false if a break
-     *  already exists at that exact frame. Sorted-insert; no snapping
-     *  (callers snap to the tick grid before invoking). */
-    bool addSectionBreak(Timecode breakFrame,
+    /** Insert a section break at the given integer timeline frame. Returns
+     *  false if a break already exists at that exact frame. Sorted-insert; no
+     *  snapping (callers snap to the tick grid before invoking). */
+    bool addSectionBreak(FrameNumber breakFrame,
                          uint32_t color = 0xFF6090C8, double fadeSeconds = 0.0);
 
     /** Remove the break at `breakFrame`. Returns true on success. */
-    bool removeSectionBreak(Timecode breakFrame);
+    bool removeSectionBreak(FrameNumber breakFrame);
 
     /** Edit an existing break. If `newBreakFrame != oldBreakFrame`, fails when
      *  another break already sits at `newBreakFrame`. Re-sorts on change. */
-    bool editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
+    bool editSectionBreak(FrameNumber oldBreakFrame, FrameNumber newBreakFrame,
                           uint32_t newColor, double newFadeSeconds);
 
-    /** Look up the first break strictly after `time`. Binary search (hot path
-     *  called every tick by SectionScheduler). nullptr if none. */
-    const Section* findNextBreakAfter(Timecode time) const;
+    /** Look up the first break strictly after `afterFrame`. Binary search.
+     *  nullptr if none. */
+    const Section* findNextBreakAfter(FrameNumber afterFrame) const;
 
-    /** Find a break within ±tolerance microseconds of `time`. Used by the
-     *  ruler hit-test for right-click on a break line. nullptr if none. */
-    const Section* findSectionBreakNear(Timecode time, Timecode tolerance) const;
+    /** Find a break within ±tolerance frames of `frame`. Used by the ruler
+     *  hit-test for right-click on a break line. nullptr if none. */
+    const Section* findSectionBreakNear(FrameNumber frame, FrameNumber tolerance) const;
 
     /** Drop every section. Used by Timeline::clear() and the project loader. */
     void clearSections(); // non-inline: takes exclusive lock on m_sectionsMutex
@@ -393,7 +393,7 @@ public:
     // (mirrors the cue-selection slot from Phase A). Setting a break clears the
     // others; setting any of the others clears this. Selection is stored by
     // breakFrame because vector indices shift across edits.
-    void setSelectedSectionBreak(std::optional<Timecode> breakFrame) {
+    void setSelectedSectionBreak(std::optional<FrameNumber> breakFrame) {
         m_selectedSectionBreakFrame = breakFrame;
         if (breakFrame.has_value()) {
             m_selectedClip = entt::null;
@@ -403,7 +403,7 @@ public:
             m_selectedCueNumber.reset();
         }
     }
-    std::optional<Timecode> getSelectedSectionBreak() const {
+    std::optional<FrameNumber> getSelectedSectionBreak() const {
         return m_selectedSectionBreakFrame;
     }
 
@@ -428,7 +428,7 @@ public:
      *  another cue already uses `newNumber`. Re-sorts the vector if the
      *  number changed. Returns true on success. */
     bool editCueTag(double oldNumber, double newNumber,
-                    Timecode newTimestamp, std::string newLabel);
+                    FrameNumber newFrame, std::string newLabel);
 
     /** Drop every cue. Used by Timeline::clear() and the project loader. */
     void clearCueTags() { m_cueTags.clear(); }
@@ -579,7 +579,7 @@ private:
     // Section breaks are identified by their breakFrame because vector
     // indices shift across edits and break entries don't have a stable
     // identifier other than their position in time.
-    std::optional<Timecode> m_selectedSectionBreakFrame;
+    std::optional<FrameNumber> m_selectedSectionBreakFrame;
     std::unordered_set<uint32_t> m_expandedTracks;
     std::unordered_set<uint32_t> m_expandedClips;
 

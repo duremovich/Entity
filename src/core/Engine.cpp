@@ -1273,11 +1273,15 @@ void Engine::showThreadMain() {
                         : static_cast<Timecode>(0);
                     const Timecode threshold = std::max(oneFrame * 2, tickAdvance * 5);
                     if (cur - showSectionLastSeen <= threshold) {
-                        // First break in (showSectionLastSeen, cur].
-                        Timecode hitFrame = -1;
+                        // First break in (showSectionLastSeen, cur]. Sections
+                        // store an integer timeline frame; compare against the
+                        // microsecond playhead via frameToTime so the crossing
+                        // fires exactly when the playhead reaches the break.
+                        FrameNumber hitFrame = -1;
                         for (const auto& s : sections) {
-                            if (s.breakFrame > showSectionLastSeen &&
-                                s.breakFrame <= cur &&
+                            const Timecode bUS = m_timeline->frameToTime(s.breakFrame);
+                            if (bUS > showSectionLastSeen &&
+                                bUS <= cur &&
                                 (hitFrame < 0 || s.breakFrame < hitFrame)) {
                                 hitFrame = s.breakFrame;
                             }
@@ -1287,12 +1291,12 @@ void Engine::showThreadMain() {
                             // projector parks this very frame and the spacebar
                             // gate dispatches SectionGo during the window
                             // before the editor drains the message.
-                            m_timeline->seek(hitFrame);
+                            m_timeline->seekToFrame(hitFrame);
                             m_timeline->setSectionAtBreak(true);
                             m_transport->send(bus::Direction::R2D,
                                 bus::serialize(bus::Message{
                                     bus::SectionBreakDetected{hitFrame}}));
-                            showSectionLastSeen = hitFrame;
+                            showSectionLastSeen = m_timeline->frameToTime(hitFrame);
                             std::cout << "[SectionDetect] break crossing at frame="
                                       << hitFrame << " (show thread)" << std::endl;
                         } else {

@@ -38,7 +38,7 @@
         },
         {
             "type": "AddSectionBreak",
-            "breakFrame": 2000000,
+            "breakFrame": 60,
             "name": "AudioBreak"
         },
         {

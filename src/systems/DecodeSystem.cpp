@@ -72,24 +72,6 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
     FrameNumber currentTimelineFrame = m_timeline->getCurrentFrame();
 
-    // [SBG] diag — helper to flag clips aligned with any section break.
-    // REMOVE after section-break-glitch fix lands.
-    const auto& sbgSections = m_timeline->getSections();
-    const double sbgTLFrameRate = m_timeline->getFrameRate() > 0.0
-        ? m_timeline->getFrameRate() : 30.0;
-    auto sbgIsAligned = [&](const Clip& c) -> bool {
-        for (const auto& sec : sbgSections) {
-            const FrameNumber bf = static_cast<FrameNumber>(
-                (static_cast<double>(sec.breakFrame) * sbgTLFrameRate) / 1000000.0);
-            const FrameNumber start = c.startFrame;
-            const FrameNumber end   = c.startFrame + c.duration;
-            const FrameNumber dStart = (start >= bf) ? start - bf : bf - start;
-            const FrameNumber dEnd   = (end   >= bf) ? end   - bf : bf - end;
-            if (dStart <= 1 || dEnd <= 1) return true;
-        }
-        return false;
-    };
-
     auto view = registry.view<Clip, FrameBuffer>();
     // FrameBuffer is an empty marker type; entt elides empty components from
     // view::each's tuple, so the binding here is (entity, clip) only.
@@ -114,15 +96,6 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
                 FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
                 initialMediaFrame = clip.mediaStartFrame + sourceLocalFrame;
-            }
-            // [SBG] diag — REMOVE after fix lands.
-            if (sbgIsAligned(clip)) {
-                std::cout << "[SBG][decode-bootstrap] entity=" << static_cast<uint32_t>(entity)
-                          << " clipStart=" << clip.startFrame
-                          << " currentTLFrame=" << currentTimelineFrame
-                          << " initialMediaFrame=" << initialMediaFrame
-                          << " state=" << static_cast<int>(m_timeline->getPlaybackState())
-                          << std::endl;
             }
             createWorker(entity, registry, initialMediaFrame);
             workerIt = m_workers.find(entity);
@@ -217,19 +190,6 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 worker->targetFrame.store(mediaFrame);
             } else {
                 worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
-            }
-
-            // [SBG] diag — REMOVE after fix lands. Only log for break-aligned
-            // clips so volume stays bounded.
-            if (sbgIsAligned(clip)) {
-                std::cout << "[SBG][decode-target] entity=" << static_cast<uint32_t>(entity)
-                          << " currentTLFrame=" << currentTimelineFrame
-                          << " mediaFrame=" << mediaFrame
-                          << " target=" << worker->targetFrame.load()
-                          << " workerCurrent=" << worker->currentFrame.load()
-                          << " initialized=" << (worker->initialized.load() ? 1 : 0)
-                          << " state=" << static_cast<int>(m_timeline->getPlaybackState())
-                          << std::endl;
             }
 
             // Seek-on-discontinuity. Same thresholds during scrubbing as

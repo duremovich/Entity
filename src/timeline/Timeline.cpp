@@ -1077,11 +1077,11 @@ void Timeline::clearSections() {
     m_sections.clear();
 }
 
-bool Timeline::addSectionBreak(Timecode breakFrame,
+bool Timeline::addSectionBreak(FrameNumber breakFrame,
                                uint32_t color, double fadeSeconds) {
     std::unique_lock lock(m_sectionsMutex);
     auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
-        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+        [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
     if (it != m_sections.end() && it->breakFrame == breakFrame) {
         std::cerr << "[Timeline] addSectionBreak: rejected duplicate break at "
                   << breakFrame << std::endl;
@@ -1095,10 +1095,10 @@ bool Timeline::addSectionBreak(Timecode breakFrame,
     return true;
 }
 
-bool Timeline::removeSectionBreak(Timecode breakFrame) {
+bool Timeline::removeSectionBreak(FrameNumber breakFrame) {
     std::unique_lock lock(m_sectionsMutex);
     auto it = std::lower_bound(m_sections.begin(), m_sections.end(), breakFrame,
-        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+        [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
     if (it == m_sections.end() || it->breakFrame != breakFrame) {
         return false;
     }
@@ -1109,11 +1109,11 @@ bool Timeline::removeSectionBreak(Timecode breakFrame) {
     return true;
 }
 
-bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
+bool Timeline::editSectionBreak(FrameNumber oldBreakFrame, FrameNumber newBreakFrame,
                                 uint32_t newColor, double newFadeSeconds) {
     std::unique_lock lock(m_sectionsMutex);
     auto oldIt = std::lower_bound(m_sections.begin(), m_sections.end(), oldBreakFrame,
-        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+        [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
     if (oldIt == m_sections.end() || oldIt->breakFrame != oldBreakFrame) {
         std::cerr << "[Timeline] editSectionBreak: no break at "
                   << oldBreakFrame << std::endl;
@@ -1122,7 +1122,7 @@ bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
 
     if (newBreakFrame != oldBreakFrame) {
         auto collide = std::lower_bound(m_sections.begin(), m_sections.end(), newBreakFrame,
-            [](const Section& s, Timecode v) { return s.breakFrame < v; });
+            [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
         if (collide != m_sections.end() && collide->breakFrame == newBreakFrame) {
             std::cerr << "[Timeline] editSectionBreak: a break already exists at "
                       << newBreakFrame << std::endl;
@@ -1140,7 +1140,7 @@ bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
         updated.fadeSeconds = newFadeSeconds;
         m_sections.erase(oldIt);
         auto insertIt = std::lower_bound(m_sections.begin(), m_sections.end(), updated.breakFrame,
-            [](const Section& s, Timecode v) { return s.breakFrame < v; });
+            [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
         m_sections.insert(insertIt, std::move(updated));
         if (m_selectedSectionBreakFrame == oldBreakFrame) {
             m_selectedSectionBreakFrame = newBreakFrame;
@@ -1149,24 +1149,24 @@ bool Timeline::editSectionBreak(Timecode oldBreakFrame, Timecode newBreakFrame,
     return true;
 }
 
-const Timeline::Section* Timeline::findNextBreakAfter(Timecode time) const {
+const Timeline::Section* Timeline::findNextBreakAfter(FrameNumber afterFrame) const {
     // Editor-thread-only caller; no lock needed here.
-    auto it = std::upper_bound(m_sections.begin(), m_sections.end(), time,
-        [](Timecode v, const Section& s) { return v < s.breakFrame; });
+    auto it = std::upper_bound(m_sections.begin(), m_sections.end(), afterFrame,
+        [](FrameNumber v, const Section& s) { return v < s.breakFrame; });
     if (it == m_sections.end()) return nullptr;
     return &(*it);
 }
 
-const Timeline::Section* Timeline::findSectionBreakNear(Timecode time, Timecode tolerance) const {
+const Timeline::Section* Timeline::findSectionBreakNear(FrameNumber frame, FrameNumber tolerance) const {
     // Editor-thread-only caller; no lock needed here.
     if (m_sections.empty()) return nullptr;
-    auto it = std::lower_bound(m_sections.begin(), m_sections.end(), time,
-        [](const Section& s, Timecode v) { return s.breakFrame < v; });
+    auto it = std::lower_bound(m_sections.begin(), m_sections.end(), frame,
+        [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
     const Section* best = nullptr;
-    Timecode bestDelta = std::numeric_limits<Timecode>::max();
+    FrameNumber bestDelta = std::numeric_limits<FrameNumber>::max();
     auto consider = [&](std::vector<Section>::const_iterator candidate) {
         if (candidate == m_sections.end()) return;
-        Timecode delta = std::llabs(static_cast<long long>(candidate->breakFrame - time));
+        FrameNumber delta = std::llabs(static_cast<long long>(candidate->breakFrame - frame));
         if (delta <= tolerance && delta < bestDelta) {
             bestDelta = delta;
             best = &(*candidate);
@@ -1196,9 +1196,8 @@ void Timeline::snapshotSectionsAndRate(FrameNumber currentFrame,
     outActiveFrame = 0;
     outNextFrame   = 0;
     for (int i = 0; i < static_cast<int>(m_sections.size()); ++i) {
-        auto bf = static_cast<int64_t>(
-            static_cast<FrameNumber>(std::round(
-                (m_sections[i].breakFrame / 1000000.0) * m_frameRate)));
+        // breakFrame is already an integer timeline frame.
+        auto bf = static_cast<int64_t>(m_sections[i].breakFrame);
         if (bf <= static_cast<int64_t>(currentFrame)) {
             outActiveIdx   = i;
             outActiveFrame = bf;
@@ -1244,7 +1243,7 @@ const CueTag* Timeline::findCueTag(double number) const {
 }
 
 bool Timeline::editCueTag(double oldNumber, double newNumber,
-                          Timecode newTimestamp, std::string newLabel) {
+                          FrameNumber newFrame, std::string newLabel) {
     auto oldIt = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), oldNumber,
         [](const CueTag& c, double v) { return c.number < v; });
     if (oldIt == m_cueTags.end() || oldIt->number != oldNumber) {
@@ -1266,10 +1265,10 @@ bool Timeline::editCueTag(double oldNumber, double newNumber,
 
     // Mutate in place when number didn't change; otherwise erase + sorted-insert.
     if (newNumber == oldNumber) {
-        oldIt->timestamp = newTimestamp;
+        oldIt->frame = newFrame;
         oldIt->label = std::move(newLabel);
     } else {
-        CueTag updated{newNumber, newTimestamp, std::move(newLabel)};
+        CueTag updated{newNumber, newFrame, std::move(newLabel)};
         m_cueTags.erase(oldIt);
         auto insertIt = std::lower_bound(m_cueTags.begin(), m_cueTags.end(), updated.number,
             [](const CueTag& c, double v) { return c.number < v; });

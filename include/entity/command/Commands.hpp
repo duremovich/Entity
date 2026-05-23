@@ -1279,12 +1279,12 @@ private:
 /**
  * Add a section break at the given timeline frame. Undoable.
  *
- * JSON: {"type":"AddSectionBreak","breakFrame":<usec>,
+ * JSON: {"type":"AddSectionBreak","breakFrame":<frame>,
  *        "color":4286074559,"fadeSeconds":0.0}
  */
 class AddSectionBreakCommand : public UndoableCommand {
 public:
-    AddSectionBreakCommand(Timecode breakFrame,
+    AddSectionBreakCommand(FrameNumber breakFrame,
                            uint32_t color = 0xFF6090C8, double fadeSeconds = 0.0)
         : m_breakFrame(breakFrame),
           m_color(color), m_fadeSeconds(fadeSeconds) {}
@@ -1298,7 +1298,7 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
-    Timecode    m_breakFrame;
+    FrameNumber m_breakFrame;
     uint32_t    m_color;
     double      m_fadeSeconds;
     bool        m_inserted{false};
@@ -1306,11 +1306,11 @@ private:
 
 /**
  * Remove a section break at the given timeline frame. Captures pre-state
- * for undo. JSON: {"type":"RemoveSectionBreak","breakFrame":<usec>}
+ * for undo. JSON: {"type":"RemoveSectionBreak","breakFrame":<frame>}
  */
 class RemoveSectionBreakCommand : public UndoableCommand {
 public:
-    explicit RemoveSectionBreakCommand(Timecode breakFrame) : m_breakFrame(breakFrame) {}
+    explicit RemoveSectionBreakCommand(FrameNumber breakFrame) : m_breakFrame(breakFrame) {}
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -1321,8 +1321,8 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
-    Timecode m_breakFrame;
-    bool     m_captured{false};
+    FrameNumber m_breakFrame;
+    bool        m_captured{false};
     Timeline::Section m_previousState;
 };
 
@@ -1335,7 +1335,7 @@ private:
  */
 class EditSectionBreakCommand : public UndoableCommand {
 public:
-    EditSectionBreakCommand(Timecode oldBreakFrame, Timecode newBreakFrame,
+    EditSectionBreakCommand(FrameNumber oldBreakFrame, FrameNumber newBreakFrame,
                             uint32_t newColor, double newFadeSeconds)
         : m_oldBreakFrame(oldBreakFrame), m_newBreakFrame(newBreakFrame),
           m_newColor(newColor), m_newFadeSeconds(newFadeSeconds) {}
@@ -1354,8 +1354,8 @@ public:
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
-    Timecode    m_oldBreakFrame;
-    Timecode    m_newBreakFrame;
+    FrameNumber m_oldBreakFrame;
+    FrameNumber m_newBreakFrame;
     uint32_t    m_newColor;
     double      m_newFadeSeconds;
     bool        m_hasPreviousState{false};
@@ -1664,15 +1664,15 @@ private:
 };
 
 /**
- * Add a cue tag at the given timestamp. Fails if a cue with the same
- * number already exists. Undo removes the cue.
+ * Add a cue tag at the given integer timeline frame. Fails if a cue with
+ * the same number already exists. Undo removes the cue.
  *
- * JSON: {"type":"AddCueAt","number":1.5,"timestamp":1000000,"label":""}
+ * JSON: {"type":"AddCueAt","number":1.5,"frame":30,"label":""}
  */
 class AddCueAtCommand : public UndoableCommand {
 public:
-    AddCueAtCommand(double number, Timecode timestamp, std::string label)
-        : m_number(number), m_timestamp(timestamp), m_label(std::move(label)) {}
+    AddCueAtCommand(double number, FrameNumber frame, std::string label)
+        : m_number(number), m_frame(frame), m_label(std::move(label)) {}
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -1684,7 +1684,7 @@ public:
 
 private:
     double      m_number;
-    Timecode    m_timestamp;
+    FrameNumber m_frame;
     std::string m_label;
     bool        m_inserted{false};
 };
@@ -1721,14 +1721,14 @@ private:
  * Fails if `newNumber` collides with another cue (unless == oldNumber).
  *
  * JSON: {"type":"EditCue","oldNumber":1.0,"newNumber":1.5,
- *        "newTimestamp":2000000,"newLabel":"Verse 1"}
+ *        "newFrame":60,"newLabel":"Verse 1"}
  */
 class EditCueCommand : public UndoableCommand {
 public:
     EditCueCommand(double oldNumber, double newNumber,
-                   Timecode newTimestamp, std::string newLabel)
+                   FrameNumber newFrame, std::string newLabel)
         : m_oldNumber(oldNumber), m_newNumber(newNumber),
-          m_newTimestamp(newTimestamp), m_newLabel(std::move(newLabel)) {}
+          m_newFrame(newFrame), m_newLabel(std::move(newLabel)) {}
 
     void setPreviousState(CueTag prev) {
         m_previousState = std::move(prev);
@@ -1746,7 +1746,7 @@ public:
 private:
     double      m_oldNumber;
     double      m_newNumber;
-    Timecode    m_newTimestamp;
+    FrameNumber m_newFrame;
     std::string m_newLabel;
     bool        m_hasPreviousState{false};
     CueTag      m_previousState;

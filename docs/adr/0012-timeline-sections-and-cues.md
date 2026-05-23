@@ -801,3 +801,65 @@ priority-1 short-circuit.
 PostBreakAnchor` 8/8 passing, including the renamed
 `AtBreakAlignedClipAnchorIsStamped` and the four spanning-anchor
 guards.
+
+## Amendment 2026-05-22: frame-native section breaks + cue tags (PROJECT_VERSION 24)
+
+Section breaks and cue tags were stored as `Timecode` microseconds even
+though both are frame-quantized — a break sits on an integer timeline
+frame, never between two. The microsecond representation forced every
+consumer to convert back with a hand-rolled
+`static_cast<FrameNumber>(us * fps / 1e6)`, which *truncates*. A
+round-tripped value (`frameToTime(N)` is `round(N/fps*1e6)`) can land
+fractionally below the integer, so truncation reads it back as `N-1`:
+frame 250 @ 30fps → 8333333us → truncates to 249.
+
+The visible bugs: a clip whose `startFrame` equalled a section break
+stayed fully visible while parked at the break (the at-break gate's exact
+`breakFrame == currentFrame` test compared 249 against 250 and missed);
+and a layer drag-snapped to a break landed one frame early.
+
+**Decision — markers are frame-native.** `Timeline::Section::breakFrame`
+and `CueTag::frame` (renamed from `timestamp`) are now `FrameNumber`
+integers. The playhead (`Timeline::m_currentTime`) stays `Timecode`
+microseconds — it legitimately needs sub-frame precision during playback.
+The only microsecond↔frame conversions are at the playhead boundary, and
+they all route through the rounding helpers `Timeline::timeToFrame` /
+`frameToTime`. Every hand-rolled `* fps / 1e6` conversion is deleted.
+This revises D1 (`breakFrame` is now an integer frame) and D5 (cue
+payload `{number, frame, label}`).
+
+**Snap tolerances tightened to exact.** The `±1`-frame tolerances earlier
+amendments relied on (`kAtBreakSnapTol`, the at-break `gateSnapTol`, the
+fade-in/out and tail-hold `snapTol`, `sectionFadeTailFrames`) existed
+only to absorb the truncation fuzz. With exact integer frames they would
+over-match — a clip starting one real frame past a break would wrongly
+get the at-break gate or a fade envelope. All section alignment is now
+exact equality: a clip is "at a break" iff its start/end frame equals the
+break frame exactly. Deliberate behavior change.
+
+**Schema v24.** `PROJECT_VERSION` 23 → 24. Section `breakFrame` and cue
+`frame` are written as integer frames. The loader migrates pre-v24 files:
+microsecond `breakFrame` / `timestamp` values convert via `timeToFrame`
+at the project's frame rate (parsed before sections/cues). The
+pre-Phase-B `{start, end}` legacy section form migrates the same way.
+
+**Script command JSON is frame-native.** `AddSectionBreak` /
+`RemoveSectionBreak` / `EditSectionBreak` and `AddCueAt` / `EditCue` take
+integer frames; the cue position key is renamed `timestamp` → `frame`.
+The deprecated `AddSectionCommand` keeps its legacy microsecond `{start,
+end}` JSON and converts internally on execute.
+
+**Clip drag/trim rounding.** Separately, the clip drag-commit and
+trim-commit converted the dragged microsecond position to a frame with a
+`float`-precision truncating cast. Those now route through
+`Timeline::timeToFrame` (rounding) so a clip snapped to a break / cue /
+grid line lands exactly on it.
+
+**Tests:** new `SectionFadeTest.AtBreakGate_*` cases (the headline-bug
+red test), `MessageBusSerialization.SectionBreakDetectedRoundTrip`,
+`ProjectSerializer.SectionsAndCuesRoundTripV24` +
+`PreV24SectionsAndCuesMigrateMicrosecondsToFrames`. `SectionFadeTests`
+case 5 rewritten for exact alignment; `PostBreakAnchorTests` /
+`CueTagTests` updated to the frame-native API; section/cue integration
+scripts rewritten microseconds → frames. 543/543 unit tests green; all
+27 section + cue integration scripts green.

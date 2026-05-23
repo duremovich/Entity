@@ -267,7 +267,7 @@ void TimelineWidget::renderTimeRuler() {
         const auto& sections = m_timeline->getSections();
         const float bandH = 4.0f;
         const float bandY = rulerMin.y + 1.0f;
-        const Timecode currentT = m_timeline->getCurrentTime();
+        const FrameNumber currentFrame = m_timeline->getCurrentFrame();
         const bool atBreak = m_timeline->sectionAtBreak();
         const Timecode duration = m_timeline->getDuration();
         // Truly-empty timeline (no breaks AND no clips) gets the neutral
@@ -298,14 +298,17 @@ void TimelineWidget::renderTimeRuler() {
         if (sections.empty()) {
             drawSpan(0, duration, implicitFirstColor);
         } else {
-            // Pre-first-break span IS the implicit first section.
+            // Pre-first-break span IS the implicit first section. Section
+            // breaks are integer frames; convert to the microsecond axis
+            // drawSpan / timeToPixel work in.
             if (sections.front().breakFrame > 0) {
-                drawSpan(0, sections.front().breakFrame, implicitFirstColor);
+                drawSpan(0, m_timeline->frameToTime(sections.front().breakFrame),
+                         implicitFirstColor);
             }
             for (size_t i = 0; i < sections.size(); ++i) {
-                const Timecode startT = sections[i].breakFrame;
+                const Timecode startT = m_timeline->frameToTime(sections[i].breakFrame);
                 const Timecode endT = (i + 1 < sections.size())
-                                      ? sections[i + 1].breakFrame
+                                      ? m_timeline->frameToTime(sections[i + 1].breakFrame)
                                       : duration;
                 drawSpan(startT, endT, sections[i].color);
             }
@@ -313,12 +316,11 @@ void TimelineWidget::renderTimeRuler() {
 
         // Break lines.
         for (const auto& sec : sections) {
-            const float x = windowPos.x + timeToPixel(sec.breakFrame);
+            const float x = windowPos.x + frameToPixel(sec.breakFrame);
             if (x < windowPos.x - 4.0f || x > rulerMax.x + 4.0f) continue;
 
-            const bool playheadAtThisBreak = atBreak &&
-                std::llabs(static_cast<long long>(currentT - sec.breakFrame))
-                  < static_cast<long long>(1000000.0 / std::max(1.0, m_timeline->getFrameRate()));
+            const bool playheadAtThisBreak =
+                atBreak && currentFrame == sec.breakFrame;
 
             const ImU32 lineColor = playheadAtThisBreak
                 ? IM_COL32(255, 240, 120, 255)
@@ -1424,9 +1426,9 @@ void TimelineWidget::renderCueLane(ImVec2 laneOriginPos, float laneHeight, float
         const CueTag& cue = cues[slot.cueIndex];
 
         // While dragging, render the dragged cue at its drag-current
-        // position instead of cue.timestamp. The original timestamp slot
-        // is skipped so it doesn't ghost-render in two places.
-        Timecode renderT = cue.timestamp;
+        // position instead of its stored frame. The original slot is
+        // skipped so it doesn't ghost-render in two places.
+        Timecode renderT = m_timeline->frameToTime(cue.frame);
         if (m_isDraggingCue && cue.number == m_draggedCueNumber) {
             renderT = m_dragCurrentCueTime;
         }
@@ -1486,11 +1488,11 @@ void TimelineWidget::renderCueModal() {
     entity::ui::InputDouble("Number", &m_cueModalNumber, 0.1, 1.0, "%.2f");
     ImGui::InputText("Label", m_cueModalLabelBuf, sizeof(m_cueModalLabelBuf));
 
-    FrameNumber frame = m_timeline->timeToFrame(m_cueModalTimestamp);
-    long long frameLL = static_cast<long long>(frame);
+    // m_cueModalFrame is an integer timeline frame — bind directly.
+    long long frameLL = static_cast<long long>(m_cueModalFrame);
     if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
         if (frameLL < 0) frameLL = 0;
-        m_cueModalTimestamp = m_timeline->frameToTime(static_cast<FrameNumber>(frameLL));
+        m_cueModalFrame = static_cast<FrameNumber>(frameLL);
     }
 
     ImGui::Separator();
@@ -1499,7 +1501,7 @@ void TimelineWidget::renderCueModal() {
         if (m_commandDispatcher) {
             if (m_cueModalMode == CueModalMode::Edit) {
                 auto cmd = std::make_unique<EditCueCommand>(
-                    m_cueModalOldNumber, m_cueModalNumber, m_cueModalTimestamp,
+                    m_cueModalOldNumber, m_cueModalNumber, m_cueModalFrame,
                     std::string(m_cueModalLabelBuf));
                 if (const CueTag* live = m_timeline->findCueTag(m_cueModalOldNumber)) {
                     cmd->setPreviousState(*live);
@@ -1507,7 +1509,7 @@ void TimelineWidget::renderCueModal() {
                 m_commandDispatcher->enqueue(std::move(cmd));
             } else {
                 m_commandDispatcher->enqueue(std::make_unique<AddCueAtCommand>(
-                    m_cueModalNumber, m_cueModalTimestamp, std::string(m_cueModalLabelBuf)));
+                    m_cueModalNumber, m_cueModalFrame, std::string(m_cueModalLabelBuf)));
             }
         }
         m_cueModalMode = CueModalMode::None;
@@ -1540,11 +1542,11 @@ void TimelineWidget::renderSectionBreakModal() {
     ImGui::Text(isEdit ? "Edit Section Break" : "Add Section Break");
     ImGui::Separator();
 
-    FrameNumber frame = m_timeline->timeToFrame(m_sectionBreakModalFrame);
-    long long frameLL = static_cast<long long>(frame);
+    // m_sectionBreakModalFrame is an integer timeline frame — bind directly.
+    long long frameLL = static_cast<long long>(m_sectionBreakModalFrame);
     if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
         if (frameLL < 0) frameLL = 0;
-        m_sectionBreakModalFrame = m_timeline->frameToTime(static_cast<FrameNumber>(frameLL));
+        m_sectionBreakModalFrame = static_cast<FrameNumber>(frameLL);
     }
 
     // Color picker. Stored as ABGR ImU32; ImGui::ColorEdit4 wants float[4] RGBA.

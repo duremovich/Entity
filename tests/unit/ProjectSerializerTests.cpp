@@ -1608,3 +1608,93 @@ TEST(ProjectSerializer, ContentRoutingTiledRoundTrip) {
     }
     EXPECT_EQ(tiledClipCount, 1) << "Expected one Tiled-routed clip after reload";
 }
+
+// --- v24 — frame-native section breaks + cue tags ------------------------
+
+TEST(ProjectSerializer, SectionsAndCuesRoundTripV24) {
+    // v24 stores section breaks and cue tags as integer timeline frames.
+    // Save three of each, reload, assert frames + metadata survive.
+    TempFile tf("v24_sections_cues_roundtrip");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        timeline.setFrameRate(30.0);
+
+        ASSERT_TRUE(timeline.addSectionBreak(60,  0xFF112233u, 0.0));
+        ASSERT_TRUE(timeline.addSectionBreak(250, 0xFF445566u, 0.5));
+        ASSERT_TRUE(timeline.addSectionBreak(900, 0xFF778899u, 1.0));
+
+        ASSERT_TRUE(timeline.addCueTag({1.0, 30,   "Intro"}));
+        ASSERT_TRUE(timeline.addCueTag({2.5, 250,  "Drop"}));
+        ASSERT_TRUE(timeline.addCueTag({9.0, 1234, "Outro"}));
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        const auto& secs = timeline.getSections();
+        ASSERT_EQ(secs.size(), 3u);
+        EXPECT_EQ(secs[0].breakFrame, 60);
+        EXPECT_EQ(secs[1].breakFrame, 250);
+        EXPECT_EQ(secs[2].breakFrame, 900);
+        EXPECT_EQ(secs[1].color, 0xFF445566u);
+        EXPECT_DOUBLE_EQ(secs[2].fadeSeconds, 1.0);
+
+        const auto& cues = timeline.getCueTags();
+        ASSERT_EQ(cues.size(), 3u);
+        EXPECT_EQ(cues[0].frame, 30);
+        EXPECT_EQ(cues[1].frame, 250);
+        EXPECT_EQ(cues[2].frame, 1234);
+        EXPECT_EQ(cues[2].label, "Outro");
+    }
+}
+
+TEST(ProjectSerializer, PreV24SectionsAndCuesMigrateMicrosecondsToFrames) {
+    // A pre-v24 project stored section breaks and cue positions in
+    // microseconds. The loader must convert them to integer frames via
+    // timeToFrame at the project's frame rate. Frame 250 @ 30fps round-trips
+    // as 8333333us — the exact value a truncating reader misreads as 249,
+    // which is the bug this whole migration fixes.
+    TempFile tf("v23_section_cue_migration");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 23,
+  "timeline": { "framerate": 30.0 },
+  "tracks": [],
+  "sections": [
+    { "breakFrame": 2000000, "color": 4278190080, "fadeSeconds": 0.0 },
+    { "breakFrame": 8333333, "color": 4278190080, "fadeSeconds": 0.5 }
+  ],
+  "cues": [
+    { "number": 1.0, "timestamp": 1000000, "label": "Intro" },
+    { "number": 2.0, "timestamp": 8333333, "label": "Drop" }
+  ]
+})";
+    }
+    ASSERT_TRUE(fs::exists(tf.path));
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    const auto& secs = timeline.getSections();
+    ASSERT_EQ(secs.size(), 2u);
+    EXPECT_EQ(secs[0].breakFrame, 60)  << "2000000us @ 30fps must migrate to frame 60";
+    EXPECT_EQ(secs[1].breakFrame, 250) << "8333333us @ 30fps must migrate to frame 250";
+
+    const auto& cues = timeline.getCueTags();
+    ASSERT_EQ(cues.size(), 2u);
+    EXPECT_EQ(cues[0].frame, 30)  << "1000000us @ 30fps must migrate to frame 30";
+    EXPECT_EQ(cues[1].frame, 250) << "8333333us @ 30fps must migrate to frame 250";
+}

@@ -2608,8 +2608,9 @@ std::string AddSectionBreakCommand::getDescription() const {
 }
 
 CommandPtr AddSectionBreakCommand::fromJson(const nlohmann::json& j) {
+    // breakFrame is an integer timeline frame (v24+ frame-native markers).
     // Pre-Phase-4 payloads carried a "name" string; ignored on load.
-    Timecode breakFrame = j.value("breakFrame", static_cast<Timecode>(0));
+    FrameNumber breakFrame = j.value("breakFrame", FrameNumber{0});
     uint32_t color = j.value("color", static_cast<uint32_t>(0xFF6090C8));
     double fadeSeconds = j.value("fadeSeconds", 0.0);
     return std::make_unique<AddSectionBreakCommand>(breakFrame, color, fadeSeconds);
@@ -2663,7 +2664,7 @@ std::string RemoveSectionBreakCommand::getDescription() const {
 }
 
 CommandPtr RemoveSectionBreakCommand::fromJson(const nlohmann::json& j) {
-    Timecode breakFrame = j.value("breakFrame", static_cast<Timecode>(0));
+    FrameNumber breakFrame = j.value("breakFrame", FrameNumber{0});
     return std::make_unique<RemoveSectionBreakCommand>(breakFrame);
 }
 
@@ -2719,9 +2720,10 @@ std::string EditSectionBreakCommand::getDescription() const {
 }
 
 CommandPtr EditSectionBreakCommand::fromJson(const nlohmann::json& j) {
+    // breakFrame values are integer timeline frames (v24+ frame-native).
     // Pre-Phase-4 payloads carried a "newName" string; ignored on load.
-    Timecode oldBreakFrame = j.value("oldBreakFrame", static_cast<Timecode>(0));
-    Timecode newBreakFrame = j.value("newBreakFrame", oldBreakFrame);
+    FrameNumber oldBreakFrame = j.value("oldBreakFrame", FrameNumber{0});
+    FrameNumber newBreakFrame = j.value("newBreakFrame", oldBreakFrame);
     uint32_t newColor = j.value("newColor", static_cast<uint32_t>(0xFF6090C8));
     double newFadeSeconds = j.value("newFadeSeconds", 0.0);
     return std::make_unique<EditSectionBreakCommand>(oldBreakFrame, newBreakFrame,
@@ -2794,14 +2796,18 @@ bool AddSectionCommand::execute(Engine& engine) {
         std::cerr << "[AddSection] FAIL: bad range [" << m_start << ", " << m_end << ")" << std::endl;
         return false;
     }
-    bool okStart = timeline->addSectionBreak(m_start, m_color, 0.0);
-    bool okEnd   = timeline->addSectionBreak(m_end, m_color, 0.0);
+    // Legacy command: m_start/m_end are microsecond positions. Convert to
+    // integer timeline frames (the frame-native section-break storage).
+    const FrameNumber startFrame = timeline->timeToFrame(m_start);
+    const FrameNumber endFrame   = timeline->timeToFrame(m_end);
+    bool okStart = timeline->addSectionBreak(startFrame, m_color, 0.0);
+    bool okEnd   = timeline->addSectionBreak(endFrame, m_color, 0.0);
     if (!okStart && !okEnd) {
         std::cerr << "[AddSection] FAIL: both break points already existed" << std::endl;
         return false;
     }
     std::cout << "[AddSection] OK (legacy) '" << m_name << "' breaks at "
-              << m_start << " + " << m_end << std::endl;
+              << startFrame << " + " << endFrame << std::endl;
     return true;
 }
 
@@ -3091,10 +3097,10 @@ bool FireCueCommand::execute(Engine& engine) {
         std::cerr << "[FireCue] WARN: no cue with number " << m_number << std::endl;
         return false;
     }
-    timeline->seek(cue->timestamp);
+    timeline->seekToFrame(cue->frame);
     timeline->play();
     std::cout << "[FireCue] OK number=" << m_number
-              << " timestamp=" << cue->timestamp << std::endl;
+              << " frame=" << cue->frame << std::endl;
     return true;
 }
 
@@ -3184,7 +3190,7 @@ bool AddCueAtCommand::execute(Engine& engine) {
     if (!timeline) return false;
     CueTag tag;
     tag.number = m_number;
-    tag.timestamp = m_timestamp;
+    tag.frame = m_frame;
     tag.label = m_label;
     m_inserted = timeline->addCueTag(std::move(tag));
     if (!m_inserted) {
@@ -3192,7 +3198,7 @@ bool AddCueAtCommand::execute(Engine& engine) {
         return false;
     }
     std::cout << "[AddCueAt] OK number=" << m_number
-              << " timestamp=" << m_timestamp << std::endl;
+              << " frame=" << m_frame << std::endl;
     return true;
 }
 
@@ -3211,20 +3217,20 @@ bool AddCueAtCommand::redo(Engine& engine) {
 nlohmann::json AddCueAtCommand::toJson() const {
     return {{"type", "AddCueAt"},
             {"number", m_number},
-            {"timestamp", m_timestamp},
+            {"frame", m_frame},
             {"label", m_label}};
 }
 
 std::string AddCueAtCommand::getDescription() const {
     return "Add cue " + std::to_string(m_number) +
-           " at " + std::to_string(m_timestamp);
+           " at frame " + std::to_string(m_frame);
 }
 
 CommandPtr AddCueAtCommand::fromJson(const nlohmann::json& j) {
     double number = j.value("number", 0.0);
-    Timecode timestamp = j.value("timestamp", static_cast<Timecode>(0));
+    FrameNumber frame = j.value("frame", FrameNumber{0});
     std::string label = j.value("label", std::string{});
-    return std::make_unique<AddCueAtCommand>(number, timestamp, std::move(label));
+    return std::make_unique<AddCueAtCommand>(number, frame, std::move(label));
 }
 
 bool RemoveCueCommand::execute(Engine& engine) {
@@ -3282,7 +3288,7 @@ bool EditCueCommand::execute(Engine& engine) {
         m_previousState = *live;
         m_hasPreviousState = true;
     }
-    bool ok = timeline->editCueTag(m_oldNumber, m_newNumber, m_newTimestamp, m_newLabel);
+    bool ok = timeline->editCueTag(m_oldNumber, m_newNumber, m_newFrame, m_newLabel);
     if (!ok) {
         std::cerr << "[EditCue] FAIL: editCueTag rejected (old=" << m_oldNumber
                   << ", new=" << m_newNumber << ")" << std::endl;
@@ -3295,7 +3301,7 @@ bool EditCueCommand::undo(Engine& engine) {
     if (!timeline || !m_hasPreviousState) return false;
     // Restore by editing from the new state back to the captured pre-state.
     return timeline->editCueTag(m_newNumber, m_previousState.number,
-                                m_previousState.timestamp, m_previousState.label);
+                                m_previousState.frame, m_previousState.label);
 }
 
 bool EditCueCommand::redo(Engine& engine) {
@@ -3306,7 +3312,7 @@ nlohmann::json EditCueCommand::toJson() const {
     return {{"type", "EditCue"},
             {"oldNumber", m_oldNumber},
             {"newNumber", m_newNumber},
-            {"newTimestamp", m_newTimestamp},
+            {"newFrame", m_newFrame},
             {"newLabel", m_newLabel}};
 }
 
@@ -3318,9 +3324,9 @@ std::string EditCueCommand::getDescription() const {
 CommandPtr EditCueCommand::fromJson(const nlohmann::json& j) {
     double oldNumber = j.value("oldNumber", 0.0);
     double newNumber = j.value("newNumber", oldNumber);
-    Timecode newTimestamp = j.value("newTimestamp", static_cast<Timecode>(0));
+    FrameNumber newFrame = j.value("newFrame", FrameNumber{0});
     std::string newLabel = j.value("newLabel", std::string{});
-    return std::make_unique<EditCueCommand>(oldNumber, newNumber, newTimestamp,
+    return std::make_unique<EditCueCommand>(oldNumber, newNumber, newFrame,
                                             std::move(newLabel));
 }
 

@@ -16,10 +16,12 @@
 namespace entity {
 
 namespace {
-    constexpr FrameNumber kAtBreakSnapTol = 1;
+    // A clip is "at the break" iff its start frame is exactly the break
+    // frame. Frame-native section storage makes this an exact integer test;
+    // the pre-migration ±1 tolerance only existed to absorb us->frame
+    // truncation fuzz, which no longer exists.
     inline bool isAtBreakAlignedStart(FrameNumber clipStart, FrameNumber breakTimelineFrame) {
-        const FrameNumber d = clipStart >= breakTimelineFrame ? clipStart - breakTimelineFrame : breakTimelineFrame - clipStart;
-        return d <= kAtBreakSnapTol;
+        return clipStart == breakTimelineFrame;
     }
 
 }
@@ -127,7 +129,7 @@ void SectionScheduler::tick(double deltaTimeSeconds) {
     m_lastTickFrame = currentTime;
 }
 
-void SectionScheduler::handleBreakAt(Timecode breakFrameTime) {
+void SectionScheduler::handleBreakAt(FrameNumber breakFrame) {
     // NEW-08 — apply a crossing the show thread detected. The show thread
     // has already snapped the playhead to the break, paused, and raised
     // Timeline::sectionAtBreak(); this runs the registry-mutating tail on
@@ -144,29 +146,30 @@ void SectionScheduler::handleBreakAt(Timecode breakFrameTime) {
 
     // Idempotency: already parked at this exact break (e.g. the editor's own
     // path raced the drain). Re-seeding would reset the wall-clock anchors.
-    if (m_atBreak && m_lastBreakHitFrame == breakFrameTime) return;
+    if (m_atBreak && m_lastBreakHitFrame == breakFrame) return;
 
     m_atBreak           = true;
-    m_lastBreakHitFrame = breakFrameTime;
+    m_lastBreakHitFrame = breakFrame;
     // m_lastTickFrame / m_haveLastTickFrame must move with the playhead —
     // otherwise the next tick() reads a bogus discontinuity off a stale
-    // previous-frame value.
-    m_lastTickFrame     = breakFrameTime;
+    // previous-frame value. m_lastTickFrame is the microsecond playhead, so
+    // convert the integer break frame through frameToTime.
+    m_lastTickFrame     = m_timeline->frameToTime(breakFrame);
     m_haveLastTickFrame = true;
     // Seed Normal clips with the source-frame phase they had at the break so
     // their continuation picks up smoothly.
-    seedContinuationAt(breakFrameTime);
+    seedContinuationAt(breakFrame);
 
-    std::cout << "[SectionScheduler] At break frame=" << breakFrameTime
+    std::cout << "[SectionScheduler] At break frame=" << breakFrame
               << " (applied from show-thread detection)" << std::endl;
 }
 
 void SectionScheduler::go() {
     if (!m_timeline || !m_atBreak) return;
 
-    const double frameRate = m_timeline->getFrameRate() > 0.0 ? m_timeline->getFrameRate() : 30.0;
-    const Timecode oneFrame = static_cast<Timecode>(1000000.0 / frameRate);
-    const Timecode resumeFrame = m_lastBreakHitFrame + oneFrame;
+    // breakFrame and resumeFrame are integer timeline frames — resume one
+    // frame past the break.
+    const FrameNumber resumeFrame = m_lastBreakHitFrame + 1;
 
     // NEW-08 — recompute continuation phase from the wall-clock anchor
     // BEFORE the snapshot helpers below. advanceContinuation's wall-clock
@@ -201,26 +204,19 @@ void SectionScheduler::go() {
 
     m_atBreak = false;
     m_timeline->setSectionAtBreak(false);
-    m_timeline->seek(resumeFrame);
+    m_timeline->seekToFrame(resumeFrame);
     m_timeline->play();
-    m_lastTickFrame = resumeFrame;
+    m_lastTickFrame = m_timeline->frameToTime(resumeFrame);
     m_haveLastTickFrame = true;
 
     std::cout << "[SectionScheduler] GO from break " << m_lastBreakHitFrame
               << " -> resume at " << resumeFrame << std::endl;
-    // [SBG] diag — REMOVE after section-break-glitch fix lands.
-    std::cout << "[SBG][go] from=" << m_lastBreakHitFrame
-              << " resumeFrame=" << resumeFrame << std::endl;
 }
 
-void SectionScheduler::seedContinuationAt(Timecode breakFrameTime) {
+void SectionScheduler::seedContinuationAt(FrameNumber breakTimelineFrame) {
     if (!m_timeline) return;
     const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
         ? m_timeline->getFrameRate() : 30.0;
-
-    // Convert the break point from microseconds to timeline frames.
-    const FrameNumber breakTimelineFrame = static_cast<FrameNumber>(
-        (static_cast<double>(breakFrameTime) * timelineFrameRate) / 1000000.0);
 
     auto view = m_registry.view<Clip>();
     for (auto entity : view) {
@@ -369,19 +365,8 @@ void SectionScheduler::clearAllContinuation() {
     }
 }
 
-void SectionScheduler::snapshotTailHoldFrames(Timecode breakFrameTime) {
+void SectionScheduler::snapshotTailHoldFrames(FrameNumber breakTimelineFrame) {
     if (!m_timeline) return;
-    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
-        ? m_timeline->getFrameRate() : 30.0;
-
-    const FrameNumber breakTimelineFrame = static_cast<FrameNumber>(
-        (static_cast<double>(breakFrameTime) * timelineFrameRate) / 1000000.0);
-
-    // ±1 timeline-frame snap tolerance, mirroring sectionFadeTailFrames.
-    constexpr FrameNumber snapTol = 1;
-    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
-        return a >= b ? a - b : b - a;
-    };
 
     auto view = m_registry.view<Clip, ClipPlaybackPhase>();
     for (auto entity : view) {
@@ -392,10 +377,10 @@ void SectionScheduler::snapshotTailHoldFrames(Timecode breakFrameTime) {
         if (clip.sectionBehavior != SectionBehavior::Normal) continue;
         if (clip.framerate <= 0.0) continue;
 
-        // Only clips whose end aligns with this break get a tail snapshot;
-        // others won't enter the post-end fade window in the first place.
+        // Only clips whose end is exactly on this break get a tail
+        // snapshot; others won't enter the post-end fade window at all.
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
-        if (absDiff(clipEnd, breakTimelineFrame) > snapTol) continue;
+        if (clipEnd != breakTimelineFrame) continue;
 
         const FrameNumber sourceLength = effectivePlaybackLength(clip);
         if (sourceLength <= 0) continue;
@@ -424,19 +409,8 @@ void SectionScheduler::snapshotTailHoldFrames(Timecode breakFrameTime) {
     }
 }
 
-void SectionScheduler::snapshotPostBreakAnchors(Timecode breakFrameTime) {
+void SectionScheduler::snapshotPostBreakAnchors(FrameNumber breakTimelineFrame) {
     if (!m_timeline) return;
-    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
-        ? m_timeline->getFrameRate() : 30.0;
-
-    const FrameNumber breakTimelineFrame = static_cast<FrameNumber>(
-        (static_cast<double>(breakFrameTime) * timelineFrameRate) / 1000000.0);
-
-    // ±1 timeline-frame snap tolerance, mirroring snapshotTailHoldFrames.
-    constexpr FrameNumber snapTol = 1;
-    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
-        return a >= b ? a - b : b - a;
-    };
 
     auto view = m_registry.view<Clip, ClipPlaybackPhase>();
     for (auto entity : view) {
@@ -446,10 +420,11 @@ void SectionScheduler::snapshotPostBreakAnchors(Timecode breakFrameTime) {
         if (clip.sectionBehavior != SectionBehavior::Normal) continue;
         if (clip.framerate <= 0.0) continue;
 
-        // Skip clips ending AT the break — those are owned by tail-hold,
-        // they don't play past the break, so they don't need an anchor.
+        // Skip clips ending exactly AT the break — those are owned by
+        // tail-hold, they don't play past the break, so they don't need
+        // an anchor.
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
-        if (absDiff(clipEnd, breakTimelineFrame) <= snapTol) continue;
+        if (clipEnd == breakTimelineFrame) continue;
 
         if (isAtBreakAlignedStart(clip.startFrame, breakTimelineFrame)) {
             // Queued clip — first visible post-GO tick is clipStart+1,
@@ -507,10 +482,7 @@ void SectionScheduler::snapshotPostBreakAnchors(Timecode breakFrameTime) {
 
 void SectionScheduler::resetAnchorsAcrossScrub(Timecode currentTime) {
     if (!m_timeline) return;
-    const double timelineFrameRate = m_timeline->getFrameRate() > 0.0
-        ? m_timeline->getFrameRate() : 30.0;
-    const FrameNumber currentTimelineFrame = static_cast<FrameNumber>(
-        (static_cast<double>(currentTime) * timelineFrameRate) / 1000000.0);
+    const FrameNumber currentTimelineFrame = m_timeline->timeToFrame(currentTime);
 
     auto view = m_registry.view<ClipPlaybackPhase>();
     for (auto entity : view) {

@@ -146,7 +146,9 @@ public:
     //     through a typed schema in the GPL serializer would create the
     //     same boundary problem (see ADR-0024).
     // v23: per-clip AudioSource (gain/mute/solo); project master gain/mute.
-    static constexpr int PROJECT_VERSION = 23;
+    // v24: section breaks + cue tags stored as integer timeline frames
+    //      (was microseconds). Loader migrates pre-v24 files via timeToFrame.
+    static constexpr int PROJECT_VERSION = 24;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

@@ -399,6 +399,11 @@ Timecode TimelineWidget::pixelToTime(float pixel) const {
     return static_cast<Timecode>(seconds * 1000000.0f);  // Timecode is in microseconds
 }
 
+float TimelineWidget::frameToPixel(FrameNumber frame) const {
+    if (!m_timeline) return 0.0f;
+    return timeToPixel(m_timeline->frameToTime(frame));
+}
+
 entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const {
     if (!m_timeline) return entt::null;
     auto& registry = m_timeline->getRegistry();
@@ -577,10 +582,13 @@ Timecode TimelineWidget::snapTimeToCues(Timecode t, Timecode tol) const {
         // Skip the cue currently being dragged so it can't snap to its own
         // pre-drag position (which would freeze the drag in place).
         if (m_isDraggingCue && cue.number == m_draggedCueNumber) continue;
-        const Timecode d = std::llabs(static_cast<long long>(cue.timestamp - t));
+        // Cues are stored as integer frames; convert to the microsecond
+        // axis for the pixel-distance snap test.
+        const Timecode cueTime = m_timeline->frameToTime(cue.frame);
+        const Timecode d = std::llabs(static_cast<long long>(cueTime - t));
         if (d <= tol && d < bestDist) {
             bestDist = d;
-            best = cue.timestamp;
+            best = cueTime;
         }
     }
     return best;
@@ -592,10 +600,13 @@ Timecode TimelineWidget::snapTimeToSections(Timecode t, Timecode tol) const {
     Timecode best = t;
     Timecode bestDist = tol + 1;
     for (const auto& sec : sections) {
-        const Timecode d = std::llabs(static_cast<long long>(sec.breakFrame - t));
+        // Section breaks are stored as integer frames; convert to the
+        // microsecond axis for the pixel-distance snap test.
+        const Timecode secTime = m_timeline->frameToTime(sec.breakFrame);
+        const Timecode d = std::llabs(static_cast<long long>(secTime - t));
         if (d <= tol && d < bestDist) {
             bestDist = d;
-            best = sec.breakFrame;
+            best = secTime;
         }
     }
     return best;
@@ -703,7 +714,7 @@ void TimelineWidget::computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, in
     order.reserve(cues.size());
     for (size_t i = 0; i < cues.size(); ++i) order.push_back(i);
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-        return cues[a].timestamp < cues[b].timestamp;
+        return cues[a].frame < cues[b].frame;
     });
 
     // Greedy left-to-right with per-row "rightmost-end" trackers. For each
@@ -730,7 +741,7 @@ void TimelineWidget::computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, in
     outSlots.reserve(order.size());
     for (size_t idx : order) {
         const CueTag& cue = cues[idx];
-        const float x = timeToPixel(cue.timestamp);
+        const float x = frameToPixel(cue.frame);
 
         bool useLong = !cue.label.empty();
         float w = measureLabel(cue, useLong);

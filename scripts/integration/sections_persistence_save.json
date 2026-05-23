@@ -1,10 +1,10 @@
 {
     "version": 1,
-    "description": "Phase B — Sections persistence round-trip (save half). Uses the new break-point AddSectionBreak commands. Three breaks at frames 30, 90, 150 (microsec @ 30fps) with names + colors + fadeSeconds. The load half asserts all three survive the JSON serializer round-trip.",
+    "description": "Phase B — Sections persistence round-trip (save half). Uses the break-point AddSectionBreak commands with frame-native breakFrame values. Three breaks at frames 30, 90, 150 with names + colors + fadeSeconds. The load half asserts all three survive the JSON serializer round-trip.",
     "commands": [
-        {"type": "AddSectionBreak", "breakFrame": 1000000, "name": "Verse 1",  "color": 4286074559, "fadeSeconds": 0.0},
-        {"type": "AddSectionBreak", "breakFrame": 3000000, "name": "Chorus",   "color": 4286074559, "fadeSeconds": 0.5},
-        {"type": "AddSectionBreak", "breakFrame": 5000000, "name": "Bridge",   "color": 4286074559, "fadeSeconds": 1.0},
+        {"type": "AddSectionBreak", "breakFrame": 30, "name": "Verse 1",  "color": 4286074559, "fadeSeconds": 0.0},
+        {"type": "AddSectionBreak", "breakFrame": 90, "name": "Chorus",   "color": 4286074559, "fadeSeconds": 0.5},
+        {"type": "AddSectionBreak", "breakFrame": 150, "name": "Bridge",   "color": 4286074559, "fadeSeconds": 1.0},
         {"type": "WaitFrames", "count": 2},
         {"type": "SaveProject", "filepath": "test_output/sections_persistence/test.entity"},
         {"type": "WaitFrames", "count": 2},

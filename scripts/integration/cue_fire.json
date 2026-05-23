@@ -2,9 +2,9 @@
     "version": 1,
     "description": "Phase A — Cue tags. Adds three cues at known timestamps, asserts presence + lookup, then fires each cue and verifies the playhead landed on the cue's frame and the transport moved to Playing. Cues at 1s/2s/4s @ 30 fps timeline -> frames 30/60/120. AssertPlayheadAtFrame checked immediately after FireCue, before WaitFrames advances playback. No media (no ImportVideo) — pure timeline-state integration test.",
     "commands": [
-        {"type": "AddCueAt",   "number": 1.0, "timestamp": 1000000, "label": "Intro"},
-        {"type": "AddCueAt",   "number": 1.5, "timestamp": 2000000, "label": "Verse"},
-        {"type": "AddCueAt",   "number": 2.0, "timestamp": 4000000, "label": "Drop"},
+        {"type": "AddCueAt",   "number": 1.0, "frame": 30, "label": "Intro"},
+        {"type": "AddCueAt",   "number": 1.5, "frame": 60, "label": "Verse"},
+        {"type": "AddCueAt",   "number": 2.0, "frame": 120, "label": "Drop"},
         {"type": "WaitFrames", "count": 2},
 
         {"type": "AssertCueCount",  "count": 3},

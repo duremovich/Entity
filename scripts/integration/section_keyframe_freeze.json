@@ -8,7 +8,7 @@
         {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 120},
         {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0.0},
         {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 120, "value": 1.0},
-        {"type": "AddSectionBreak", "breakFrame": 2000000, "name": "Mid"},
+        {"type": "AddSectionBreak", "breakFrame": 60, "name": "Mid"},
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},

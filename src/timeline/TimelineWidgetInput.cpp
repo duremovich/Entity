@@ -161,9 +161,8 @@ void TimelineWidget::handleInteraction() {
             if (registry.valid(m_selectedClip)) {
                 auto* clip = registry.try_get<Clip>(m_selectedClip);
                 if (clip) {
-                    float newStartSeconds = newStartTime / 1000000.0f;
-                    double timelineFrameRate = m_timeline->getFrameRate();
-                    clip->startFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
+                    // Round the microsecond drag position to the nearest frame.
+                    clip->startFrame = m_timeline->timeToFrame(newStartTime);
                 }
             }
         } else {
@@ -546,15 +545,15 @@ void TimelineWidget::handleRulerInteraction() {
         const auto& cues = m_timeline->getCueTags();
         for (const CueLaneSlot& slot : slots) {
             const CueTag& cue = cues[slot.cueIndex];
-            const float cx = windowPos.x + timeToPixel(cue.timestamp);
+            const float cx = windowPos.x + frameToPixel(cue.frame);
             const float rowTop = laneTopY + slot.row * kCueRowH;
             const float rowBot = rowTop + kCueRowH;
             if (mousePos.x >= cx && mousePos.x <= cx + slot.labelW &&
                 mousePos.y >= rowTop && mousePos.y <= rowBot) {
                 m_isDraggingCue = true;
                 m_draggedCueNumber = cue.number;
-                m_dragOriginalCueTime = cue.timestamp;
-                m_dragCurrentCueTime = cue.timestamp;
+                m_dragOriginalCueTime = m_timeline->frameToTime(cue.frame);
+                m_dragCurrentCueTime = m_dragOriginalCueTime;
                 break;
             }
         }
@@ -610,7 +609,7 @@ void TimelineWidget::handleRulerInteraction() {
                 }
                 auto cmd = std::make_unique<EditCueCommand>(
                     m_draggedCueNumber, m_draggedCueNumber,
-                    m_dragCurrentCueTime, existingLabel);
+                    newF, existingLabel);
                 if (const CueTag* live = m_timeline->findCueTag(m_draggedCueNumber)) {
                     cmd->setPreviousState(*live);
                 }
@@ -708,7 +707,7 @@ void TimelineWidget::handleRulerInteraction() {
         const auto& cues = m_timeline->getCueTags();
         for (const CueLaneSlot& slot : slots) {
             const CueTag& cue = cues[slot.cueIndex];
-            const float cx = windowPos.x + timeToPixel(cue.timestamp);
+            const float cx = windowPos.x + frameToPixel(cue.frame);
             const float rowTop = laneTopY + slot.row * kCueRowH;
             const float rowBot = rowTop + kCueRowH;
             if (mousePos.x >= cx && mousePos.x <= cx + slot.labelW &&
@@ -732,12 +731,12 @@ void TimelineWidget::handleRulerInteraction() {
 
         // Section break hit-test (Phase B). Hit-tests against the rendered
         // break line at ±6px. Selects the captured break frame for the
-        // popup; vector indices shift on edit, so we key by Timecode.
+        // popup; vector indices shift on edit, so we key by frame.
         m_rightClickedSectionBreakFrame.reset();
         const float kBreakHitPx = 6.0f;
         const auto& sections = m_timeline->getSections();
         for (const auto& sec : sections) {
-            const float bx = windowPos.x + timeToPixel(sec.breakFrame);
+            const float bx = windowPos.x + frameToPixel(sec.breakFrame);
             if (std::abs(mousePos.x - bx) <= kBreakHitPx) {
                 m_rightClickedSectionBreakFrame = sec.breakFrame;
                 break;
@@ -764,9 +763,9 @@ void TimelineWidget::handleRulerInteraction() {
         if (m_range.active && m_range.end > m_range.start) {
             if (ImGui::MenuItem("Create Section Breaks at Range Endpoints") && m_commandDispatcher) {
                 m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_range.start, 0xFF6090C8u, 0.0));
+                    m_timeline->timeToFrame(m_range.start), 0xFF6090C8u, 0.0));
                 m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_range.end, 0xFF6090C8u, 0.0));
+                    m_timeline->timeToFrame(m_range.end), 0xFF6090C8u, 0.0));
             }
             ImGui::Separator();
             FrameNumber inF = m_timeline->timeToFrame(m_range.start);
@@ -782,16 +781,17 @@ void TimelineWidget::handleRulerInteraction() {
     // Section break right-click: edit / delete / jump.
     if (ImGui::BeginPopup("SectionBreakContextMenu")) {
         if (m_rightClickedSectionBreakFrame.has_value()) {
-            const Timecode brkT = *m_rightClickedSectionBreakFrame;
+            const FrameNumber brkT = *m_rightClickedSectionBreakFrame;
             const Timeline::Section* live = m_timeline->findSectionBreakNear(brkT, 0);
             if (live) {
                 char hdr[64];
                 std::snprintf(hdr, sizeof(hdr), "Break @ F%lld",
-                              static_cast<long long>(m_timeline->timeToFrame(live->breakFrame)));
+                              static_cast<long long>(live->breakFrame));
                 ImGui::TextDisabled("%s", hdr);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Jump to Break") && m_commandDispatcher) {
-                    m_commandDispatcher->enqueue(std::make_unique<SeekCommand>(brkT));
+                    m_commandDispatcher->enqueue(std::make_unique<SeekCommand>(
+                        m_timeline->frameToTime(brkT)));
                 }
                 if (ImGui::MenuItem("Edit Break...")) {
                     m_sectionBreakModalMode = SectionBreakModalMode::Edit;
@@ -832,7 +832,7 @@ void TimelineWidget::handleRulerInteraction() {
                 m_cueModalMode = CueModalMode::Edit;
                 m_cueModalOldNumber = cue.number;
                 m_cueModalNumber = cue.number;
-                m_cueModalTimestamp = cue.timestamp;
+                m_cueModalFrame = cue.frame;
                 std::strncpy(m_cueModalLabelBuf, cue.label.c_str(),
                              sizeof(m_cueModalLabelBuf) - 1);
                 m_cueModalLabelBuf[sizeof(m_cueModalLabelBuf) - 1] = '\0';
@@ -857,7 +857,8 @@ void TimelineWidget::handleRulerInteraction() {
             // front line of the division the hover band is showing.
             // snapTimeToBest is avoided here: it would prefer an existing
             // nearby section break, producing a near-duplicate.
-            const Timecode at = snapTimeToTickGrid(m_rulerRightClickTime);
+            const FrameNumber at =
+                m_timeline->timeToFrame(snapTimeToTickGrid(m_rulerRightClickTime));
             // Auto-color: index = current section count + 1, so the first
             // user-added break gets palette[1] (palette[0] is reserved for
             // the implicit first segment).
@@ -875,7 +876,7 @@ void TimelineWidget::handleRulerInteraction() {
             const auto& cues = m_timeline->getCueTags();
             m_cueModalOldNumber = 0.0;
             m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
-            m_cueModalTimestamp = snapTimeToTickGrid(m_rulerRightClickTime);
+            m_cueModalFrame = m_timeline->timeToFrame(snapTimeToTickGrid(m_rulerRightClickTime));
             m_cueModalLabelBuf[0] = '\0';
             m_cueModalOpenRequested = true;
         }
@@ -892,7 +893,7 @@ void TimelineWidget::handleRulerInteraction() {
             m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
             // Grid-only snap: snapTimeToBest would prefer an existing nearby
             // cue, producing a near-duplicate.
-            m_cueModalTimestamp = snapTimeToTickGrid(m_rulerRightClickTime);
+            m_cueModalFrame = m_timeline->timeToFrame(snapTimeToTickGrid(m_rulerRightClickTime));
             m_cueModalLabelBuf[0] = '\0';
             m_cueModalOpenRequested = true;
         }
@@ -933,8 +934,8 @@ void TimelineWidget::handleTracksInteraction() {
             if (registry.valid(m_trimClip)) {
                 auto* clip = registry.try_get<Clip>(m_trimClip);
                 if (clip) {
-                    double timelineFrameRate = m_timeline->getFrameRate();
-                    FrameNumber mouseFrame = static_cast<FrameNumber>(mouseTime / 1000000.0f * timelineFrameRate);
+                    // Round the microsecond mouse position to the nearest frame.
+                    FrameNumber mouseFrame = m_timeline->timeToFrame(mouseTime);
 
                     // Find the track this clip is on for collision detection
                     int trimTrackIndex = -1;
@@ -1235,9 +1236,10 @@ void TimelineWidget::handleTracksInteraction() {
             // Update placement (start frame). Routes to Clip or Layer-only
             // storage depending on the entity's archetype.
             if (registry.valid(m_selectedClip)) {
-                float newStartSeconds = newStartTime / 1000000.0f;
-                double timelineFrameRate = m_timeline->getFrameRate();
-                FrameNumber newStartFrame = static_cast<FrameNumber>(newStartSeconds * timelineFrameRate);
+                // Round the microsecond drag position to the nearest frame so a
+                // clip snapped to a section break / cue / grid line lands exactly
+                // on it (truncation would land it one frame early).
+                FrameNumber newStartFrame = m_timeline->timeToFrame(newStartTime);
                 writeStartFrame(registry, m_selectedClip, newStartFrame);
             }
 

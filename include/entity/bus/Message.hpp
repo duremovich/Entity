@@ -751,7 +751,7 @@ struct OutputWindowReady {
 // ClipPlaybackPhase, raise the scheduler's at-break latch). This keeps
 // section breaks firing on time even while the editor thread is stalled.
 struct SectionBreakDetected {
-    Timecode breakFrame{0};
+    FrameNumber breakFrame{0};  // integer timeline frame
 };
 
 using Message = std::variant<

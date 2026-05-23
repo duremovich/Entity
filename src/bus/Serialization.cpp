@@ -1287,7 +1287,7 @@ ojson encode(const SectionBreakDetected& m) {
 
 SectionBreakDetected decodeSectionBreakDetected(const json& j) {
     SectionBreakDetected m;
-    m.breakFrame = j.at("breakFrame").get<Timecode>();
+    m.breakFrame = j.at("breakFrame").get<FrameNumber>();
     return m;
 }
 

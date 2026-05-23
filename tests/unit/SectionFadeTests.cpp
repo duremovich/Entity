@@ -2,16 +2,19 @@
 // PlaybackTimeAuthority::computeSectionFadeMultiplier directly, against a
 // Timeline with section breaks set up via Timeline::addSectionBreak.
 //
-// The helper is pure: given the timeline's current frame plus the clip's
-// start/end, it scans the section vector for breaks aligned (±1 timeline
-// frame) with either edge and returns the ramp value. The cases here cover:
+// Section breaks are frame-native: addSectionBreak takes an integer timeline
+// frame. The helper is pure — given the timeline's current frame plus the
+// clip's start/end, it scans the section vector for breaks aligned exactly
+// with either edge and returns the ramp value. The cases here cover:
 //   1. No aligned breaks      -> 1.0
 //   2. fadeSeconds == 0       -> 1.0 (break exists but is inert)
 //   3. Fade-in mid-ramp       -> proportional ramp
 //   4. Fade-out mid-ramp      -> proportional ramp
-//   5. Snap tolerance         -> ±1 frame counts; ±2 frames does not
+//   5. Alignment is exact     -> clip start ON the break aligns; off does not
 //   6. Both ends aligned      -> min-combine of both ramps
 //   7. Outside fade window    -> 1.0 (clip plays normally between fades)
+//   8. Empty section list     -> 1.0
+//   9. At-break visibility gate -> a clip starting on a parked break is hidden
 
 #include <gtest/gtest.h>
 
@@ -24,14 +27,6 @@
 using namespace entity;
 
 namespace {
-
-// 30 fps timeline -> 1 frame == 33333.33... microseconds. Helper to
-// compute the exact microsecond value Timeline::frameToTime would yield
-// for a given frame, so addSectionBreak lands at the same frame when
-// queried via timeToFrame.
-Timecode toTimelineMicros(double frame, double fps) {
-    return static_cast<Timecode>(std::round((frame / fps) * 1000000.0));
-}
 
 void fillClip(Clip& c,
               FrameNumber start,
@@ -70,7 +65,7 @@ TEST_F(SectionFadeTest, NoAlignedBreak_ReturnsOne) {
     fillClip(c, /*start*/0, /*duration*/60);
 
     // Add a break far away from the clip's edges with non-zero fade.
-    timeline.addSectionBreak(toTimelineMicros(120, 30.0), 0xFF6090C8, 1.0);
+    timeline.addSectionBreak(120, 0xFF6090C8, 1.0);
 
     seekToFrame(30);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
@@ -82,7 +77,7 @@ TEST_F(SectionFadeTest, ZeroFadeSeconds_NoEnvelope) {
     fillClip(c, /*start*/30, /*duration*/60);
 
     // Break exactly at clip start, but fadeSeconds = 0.
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 0.0);
+    timeline.addSectionBreak(30, 0xFF6090C8, 0.0);
 
     seekToFrame(30);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
@@ -94,7 +89,7 @@ TEST_F(SectionFadeTest, FadeIn_MidRamp_ProportionalValue) {
     fillClip(c, /*start*/30, /*duration*/120);
 
     // Break at clip's start, 1.0 second fade -> 30 frames at 30fps.
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
+    timeline.addSectionBreak(30, 0xFF6090C8, 1.0);
 
     // Frame 30 = clip start, t = 0/30 -> 0.0.
     seekToFrame(30);
@@ -122,7 +117,7 @@ TEST_F(SectionFadeTest, FadeOut_MidRamp_ProportionalValue) {
 
     // Break at clip end, 0.5s fade -> 15 frames at 30fps.
     // New fade-out window: [60, 75).
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.5);
+    timeline.addSectionBreak(60, 0xFF6090C8, 0.5);
 
     // Frame 45 = well inside the clip, no envelope -> 1.0.
     seekToFrame(45);
@@ -146,30 +141,32 @@ TEST_F(SectionFadeTest, FadeOut_MidRamp_ProportionalValue) {
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }
 
-// 5a. Snap tolerance: clip start ±1 frame from break still aligns.
-TEST_F(SectionFadeTest, SnapTolerance_OneFrameOff_StillAligns) {
+// 5a. Exact alignment: clip start sits exactly on the break -> envelope.
+// Frame-native section storage means alignment is an exact integer match;
+// the pre-migration ±1 snap tolerance is gone.
+TEST_F(SectionFadeTest, ExactStartAlignment_GetsEnvelope) {
     Clip c;
-    // Clip starts at frame 31, break at frame 30 -> diff = 1, within ±1.
-    fillClip(c, /*start*/31, /*duration*/120);
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
+    fillClip(c, /*start*/30, /*duration*/120);
+    timeline.addSectionBreak(30, 0xFF6090C8, 1.0);
 
-    // Frame 31 = clip start + 0; ramp t = 0/30 -> 0.0.
-    seekToFrame(31);
+    seekToFrame(30);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 0.0f, 1e-5f);
 
-    seekToFrame(46);
+    seekToFrame(45);
     EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 15.0f / 30.0f, 1e-5f);
 }
 
-// 5b. Snap tolerance: 2 frames off does NOT align (no envelope).
-TEST_F(SectionFadeTest, SnapTolerance_TwoFramesOff_NoEnvelope) {
+// 5b. One frame off the break does NOT align -> no envelope.
+TEST_F(SectionFadeTest, OneFrameOff_NoEnvelope) {
     Clip c;
-    fillClip(c, /*start*/32, /*duration*/120);
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
+    // Clip starts at frame 31, break at frame 30 -> not exactly aligned.
+    fillClip(c, /*start*/31, /*duration*/120);
+    timeline.addSectionBreak(30, 0xFF6090C8, 1.0);
 
-    // Frame 32 (clip start). With no alignment, multiplier should be 1.0
-    // even though the timeline frame is right at the clip boundary.
-    seekToFrame(32);
+    seekToFrame(31);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
+
+    seekToFrame(46);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }
 
@@ -182,8 +179,8 @@ TEST_F(SectionFadeTest, BothEndsAligned_MinCombine) {
     Clip c;
     fillClip(c, /*start*/30, /*duration*/30);
 
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 0.5);
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF7060C8, 0.5);
+    timeline.addSectionBreak(30, 0xFF6090C8, 0.5);
+    timeline.addSectionBreak(60, 0xFF7060C8, 0.5);
 
     // Frame 30: t = 0/15 fade-in -> 0.0. Fade-out window not yet open.
     seekToFrame(30);
@@ -221,8 +218,8 @@ TEST_F(SectionFadeTest, BothEndsAligned_ShortClip_FadeInDominates) {
     Clip c;
     fillClip(c, /*start*/30, /*duration*/10);
 
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 1.0);
-    timeline.addSectionBreak(toTimelineMicros(40, 30.0), 0xFF7060C8, 1.0);
+    timeline.addSectionBreak(30, 0xFF6090C8, 1.0);
+    timeline.addSectionBreak(40, 0xFF7060C8, 1.0);
 
     // At frame 35: fade-in t = 5/30. Fade-out not yet open.
     seekToFrame(35);
@@ -250,8 +247,8 @@ TEST_F(SectionFadeTest, OutsideFadeWindow_ReturnsOne) {
     Clip c;
     fillClip(c, /*start*/30, /*duration*/120);
 
-    timeline.addSectionBreak(toTimelineMicros(30, 30.0), 0xFF6090C8, 0.5);   // fade-in window [30, 45)
-    timeline.addSectionBreak(toTimelineMicros(150, 30.0), 0xFF7060C8, 0.5);  // fade-out window [150, 165)
+    timeline.addSectionBreak(30, 0xFF6090C8, 0.5);    // fade-in window [30, 45)
+    timeline.addSectionBreak(150, 0xFF7060C8, 0.5);   // fade-out window [150, 165)
 
     // Frame 75 is well past fade-in close (45) and well before fade-out
     // open (150). Result must be identity.
@@ -264,5 +261,49 @@ TEST_F(SectionFadeTest, NoSections_ReturnsOne) {
     Clip c;
     fillClip(c, /*start*/0, /*duration*/60);
     seekToFrame(15);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
+}
+
+// 9. At-break visibility gate. A clip whose startFrame coincides with a
+// section break must be hidden (multiplier 0) while the playhead is parked
+// at that break — "things after the break shouldn't start until GO".
+// Regression for the microsecond-storage truncation bug: frame 250 round-
+// trips through frameToTime as 8333333us, which a truncating us->frame
+// conversion read back as 249, so the gate's exact breakFrame==currentFrame
+// test missed and the clip rendered at full opacity.
+TEST_F(SectionFadeTest, AtBreakGate_ClipStartsOnBreakFrame_HiddenUntilGo) {
+    Clip c;
+    fillClip(c, /*start*/250, /*duration*/150);
+
+    timeline.addSectionBreak(250, 0xFF6090C8, 0.0);
+
+    seekToFrame(250);
+    timeline.setSectionAtBreak(true);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 0.0f);
+}
+
+// 9b. Same gate at another truncation-prone frame — proves the bug was a
+// systematic conversion fault, not specific to frame 250.
+TEST_F(SectionFadeTest, AtBreakGate_ClipStartsOnBreakFrame_SecondFrame) {
+    Clip c;
+    fillClip(c, /*start*/7, /*duration*/120);
+
+    timeline.addSectionBreak(7, 0xFF6090C8, 0.0);
+
+    seekToFrame(7);
+    timeline.setSectionAtBreak(true);
+    EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 0.0f);
+}
+
+// 9c. A clip one frame past a parked break is NOT gated — it is a distinct
+// clip, not "the clip that starts on the break".
+TEST_F(SectionFadeTest, AtBreakGate_ClipOneFrameAfterBreak_NotGated) {
+    Clip c;
+    fillClip(c, /*start*/251, /*duration*/150);
+
+    timeline.addSectionBreak(250, 0xFF6090C8, 0.0);
+
+    seekToFrame(250);
+    timeline.setSectionAtBreak(true);
     EXPECT_FLOAT_EQ(auth.computeSectionFadeMultiplier(c), 1.0f);
 }

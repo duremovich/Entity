@@ -988,9 +988,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["projectors"] = projectorsJson;
 
-        // Serialize timeline sections. Phase B refactored from regions to
-        // break-points; the loader migrates pre-Phase-B `{start, end}` entries
-        // by emitting two break points with the same name/color.
+        // Serialize timeline sections. breakFrame is an integer timeline
+        // frame (v24+). The loader migrates pre-v24 microsecond values and
+        // pre-Phase-B `{start, end}` regional entries.
         json sectionsJson = json::array();
         for (const auto& sec : timeline.getSections()) {
             json sj;
@@ -1002,13 +1002,13 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         project["sections"] = sectionsJson;
 
         // Serialize cue tags (Phase A — numbered timeline markers, v9).
-        // Forward-compatible: v8 loaders ignore the unknown "cues" key.
+        // v24+: cue position is an integer timeline frame under "frame".
         json cuesJson = json::array();
         for (const auto& cue : timeline.getCueTags()) {
             json cj;
-            cj["number"]    = cue.number;
-            cj["timestamp"] = cue.timestamp;
-            cj["label"]     = cue.label;
+            cj["number"] = cue.number;
+            cj["frame"]  = cue.frame;
+            cj["label"]  = cue.label;
             cuesJson.push_back(cj);
         }
         project["cues"] = cuesJson;
@@ -2259,24 +2259,30 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             }
         }
 
-        // Load timeline sections. v10 shape: each entry is a break-point
-        // marker `{breakFrame, color, fadeSeconds}`. Pre-v10 entries may
-        // also carry a "name" string (silently ignored — Phase 4 dropped
-        // section names). Pre-Phase-B `{start, end}` entries migrate
-        // inline to TWO break points (start and end) with the same color
-        // and fadeSeconds=0.
+        // Load timeline sections. v24+ shape: each entry is a break-point
+        // marker `{breakFrame, color, fadeSeconds}` with breakFrame an
+        // integer timeline frame. Pre-v24 stored breakFrame in microseconds
+        // — migrate via timeToFrame (the frame rate was applied above).
+        // Pre-v10 entries may also carry a "name" string (silently ignored).
+        // Pre-Phase-B `{start, end}` entries migrate inline to TWO break
+        // points (start and end), always from pre-v24 microseconds.
         timeline.clearSections();
         if (project.contains("sections")) {
             for (const auto& sj : project["sections"]) {
                 if (sj.contains("breakFrame")) {
+                    const FrameNumber breakFrame = (version >= 24)
+                        ? sj.value("breakFrame", FrameNumber{0})
+                        : timeline.timeToFrame(sj.value("breakFrame", Timecode{0}));
                     timeline.addSectionBreak(
-                        sj.value("breakFrame", static_cast<Timecode>(0)),
+                        breakFrame,
                         sj.value("color", static_cast<uint32_t>(0xFF6090C8)),
                         sj.value("fadeSeconds", 0.0));
                 } else if (sj.contains("start") && sj.contains("end")) {
                     const auto color = sj.value("color", static_cast<uint32_t>(0xFF6090C8));
-                    const auto start = sj.value("start", static_cast<Timecode>(0));
-                    const auto end   = sj.value("end", static_cast<Timecode>(0));
+                    const FrameNumber start =
+                        timeline.timeToFrame(sj.value("start", Timecode{0}));
+                    const FrameNumber end =
+                        timeline.timeToFrame(sj.value("end", Timecode{0}));
                     timeline.addSectionBreak(start, color, 0.0);
                     if (end > start) {
                         timeline.addSectionBreak(end, color, 0.0);
@@ -2292,9 +2298,13 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
         if (project.contains("cues")) {
             for (const auto& cj : project["cues"]) {
                 CueTag cue;
-                cue.number    = cj.value("number", 0.0);
-                cue.timestamp = cj.value("timestamp", static_cast<Timecode>(0));
-                cue.label     = cj.value("label", std::string{});
+                cue.number = cj.value("number", 0.0);
+                // v24+ stores the cue position as an integer frame under
+                // "frame"; pre-v24 stored microseconds under "timestamp".
+                cue.frame = (version >= 24)
+                    ? cj.value("frame", FrameNumber{0})
+                    : timeline.timeToFrame(cj.value("timestamp", Timecode{0}));
+                cue.label = cj.value("label", std::string{});
                 timeline.addCueTag(std::move(cue));
             }
             std::cout << "[ProjectSerializer] Loaded " << timeline.getCueTags().size()

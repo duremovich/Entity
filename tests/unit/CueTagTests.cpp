@@ -22,10 +22,10 @@ protected:
         timeline = std::make_unique<Timeline>(registry);
     }
 
-    void add(double number, Timecode ts, std::string label = {}) {
+    void add(double number, FrameNumber frame, std::string label = {}) {
         CueTag c;
         c.number = number;
-        c.timestamp = ts;
+        c.frame = frame;
         c.label = std::move(label);
         ASSERT_TRUE(timeline->addCueTag(std::move(c)));
     }
@@ -51,13 +51,13 @@ TEST_F(CueTagTest, AddDuplicateNumber_Rejected) {
     add(1.0, 1000000);
     CueTag dup;
     dup.number = 1.0;
-    dup.timestamp = 9999999;
+    dup.frame = 9999999;
     EXPECT_FALSE(timeline->addCueTag(dup));
 
     // Original entry untouched.
     const CueTag* live = timeline->findCueTag(1.0);
     ASSERT_NE(live, nullptr);
-    EXPECT_EQ(live->timestamp, 1000000);
+    EXPECT_EQ(live->frame, 1000000);
 }
 
 TEST_F(CueTagTest, FindCueTag_BinarySearchHitsAndMisses) {
@@ -95,7 +95,7 @@ TEST_F(CueTagTest, EditCueTag_ChangeFields_NumberUnchanged) {
 
     const CueTag* live = timeline->findCueTag(1.0);
     ASSERT_NE(live, nullptr);
-    EXPECT_EQ(live->timestamp, 5000);
+    EXPECT_EQ(live->frame, 5000);
     EXPECT_EQ(live->label, "new");
 }
 

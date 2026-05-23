@@ -9,7 +9,7 @@
         {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 1, "position": 2000000},
         {"type": "WaitFrames", "count": 5},
         {"type": "SetClipDuration", "trackIndex": 1, "clipIndex": 0, "duration": 60},
-        {"type": "AddSectionBreak", "breakFrame": 2000000, "fadeSeconds": 0.0},
+        {"type": "AddSectionBreak", "breakFrame": 60, "fadeSeconds": 0.0},
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},

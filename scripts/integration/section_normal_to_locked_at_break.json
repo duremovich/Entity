@@ -8,7 +8,7 @@
         {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
         {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
         {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
-        {"type": "AddSectionBreak", "breakFrame": 266666, "name": "FlipBreak"},
+        {"type": "AddSectionBreak", "breakFrame": 8, "name": "FlipBreak"},
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},

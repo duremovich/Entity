@@ -33,7 +33,8 @@ namespace entity {
 
 namespace {
 
-// Mirrors SectionFadeTests' helper. 30 fps timeline -> 33333... us / frame.
+// Convert a frame to the microsecond playhead position — for seek-style
+// arguments (resetAnchorsAcrossScrub takes the microsecond playhead).
 Timecode toTimelineMicros(double frame, double fps) {
     return static_cast<Timecode>(std::round((frame / fps) * 1000000.0));
 }
@@ -69,11 +70,11 @@ protected:
     // Friend-access wrappers so TEST_F bodies (which live in derived
     // classes that don't inherit the friendship) can drive the private
     // SectionScheduler helpers via the fixture.
-    void callSnapshotPostBreakAnchors(Timecode breakFrameTime) {
-        scheduler.snapshotPostBreakAnchors(breakFrameTime);
+    void callSnapshotPostBreakAnchors(FrameNumber breakFrame) {
+        scheduler.snapshotPostBreakAnchors(breakFrame);
     }
-    void callSeedContinuationAt(Timecode breakFrameTime) {
-        scheduler.seedContinuationAt(breakFrameTime);
+    void callSeedContinuationAt(FrameNumber breakFrame) {
+        scheduler.seedContinuationAt(breakFrame);
     }
     void callAdvanceContinuation(double deltaTimeSeconds) {
         scheduler.advanceContinuation(deltaTimeSeconds);
@@ -179,8 +180,8 @@ TEST_F(PostBreakAnchorTest, MultiBreakAccumulatedAnchorIsReseed) {
     fillSpanningClip(clip, /*start*/0, /*dur*/240, /*srcLen*/300,
                      /*fps*/30.0, PlaybackMode::Loop);
 
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.0);
-    timeline.addSectionBreak(toTimelineMicros(120, 30.0), 0xFF7060C8, 0.0);
+    timeline.addSectionBreak(FrameNumber{60}, 0xFF6090C8, 0.0);
+    timeline.addSectionBreak(120, 0xFF7060C8, 0.0);
 
     // Simulate "GO from break-A" landing-state: anchor stamped at
     // anchorTimelineFrame=61, source frame 90 (the user saw 30 seconds of
@@ -191,9 +192,9 @@ TEST_F(PostBreakAnchorTest, MultiBreakAccumulatedAnchorIsReseed) {
     phase.inContinuation       = false;
     phase.sourcePhaseFrames    = 0.0;
 
-    // Now break-B fires. seedContinuationAt at breakFrameTime=120/30s
+    // Now break-B fires. seedContinuationAt at break frame 120
     // should consult the carry-forward anchor.
-    callSeedContinuationAt(toTimelineMicros(120, 30.0));
+    callSeedContinuationAt(120);
 
     // Expected sourcePhaseFrames = (90 - 0) + (120 - 61) * (30/30) = 149.
     // Without the anchor branch it would be (120 - 0) * 1.0 = 120 — visibly
@@ -219,9 +220,9 @@ TEST_F(PostBreakAnchorTest, AtBreakAlignedClipDoesNotAccumulatePhase) {
     fillSpanningClip(clip, /*start*/60, /*dur*/120, /*srcLen*/60,
                      /*fps*/30.0, PlaybackMode::Loop);
 
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.0);
+    timeline.addSectionBreak(FrameNumber{60}, 0xFF6090C8, 0.0);
 
-    callSeedContinuationAt(toTimelineMicros(60, 30.0));
+    callSeedContinuationAt(FrameNumber{60});
     // Drive ~5 seconds of at-break ticks; the helper would advance any
     // continuing clip by 5 * 30 = 150 source frames.
     for (int i = 0; i < 300; ++i) {
@@ -247,10 +248,10 @@ TEST_F(PostBreakAnchorTest, AtBreakAlignedClipAnchorIsStamped) {
     fillSpanningClip(clip, /*start*/60, /*dur*/120, /*srcLen*/60,
                      /*fps*/30.0, PlaybackMode::Loop);
 
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.0);
+    timeline.addSectionBreak(FrameNumber{60}, 0xFF6090C8, 0.0);
 
-    callSeedContinuationAt(toTimelineMicros(60, 30.0));
-    callSnapshotPostBreakAnchors(toTimelineMicros(60, 30.0));
+    callSeedContinuationAt(FrameNumber{60});
+    callSnapshotPostBreakAnchors(FrameNumber{60});
 
     const auto* phase = registry.try_get<ClipPlaybackPhase>(entity);
     ASSERT_NE(phase, nullptr) << "Queued clip MUST have a phase emplaced.";
@@ -267,7 +268,7 @@ TEST_F(PostBreakAnchorTest, AtBreakAlignedClipAnchorIsStamped) {
 // stamps (mediaStartFrame, clipStart+1), and the existing anchor branch
 // in mapToMediaFrame delivers the post-GO mapping.
 TEST_F(PostBreakAnchorTest, AtBreakAlignedPostGoMappingFirstVisibleEqualsInPoint) {
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.0);
+    timeline.addSectionBreak(FrameNumber{60}, 0xFF6090C8, 0.0);
 
     // Case A: mediaStartFrame = 0. At post-GO tick (timelineFrame = 61),
     // the first visible source frame must be 0.
@@ -278,8 +279,8 @@ TEST_F(PostBreakAnchorTest, AtBreakAlignedPostGoMappingFirstVisibleEqualsInPoint
                          /*fps*/30.0, PlaybackMode::Loop);
         clip.mediaStartFrame = 0;
 
-        callSeedContinuationAt(toTimelineMicros(60, 30.0));
-        callSnapshotPostBreakAnchors(toTimelineMicros(60, 30.0));
+        callSeedContinuationAt(FrameNumber{60});
+        callSnapshotPostBreakAnchors(FrameNumber{60});
 
         // At-break tick (timelineFrame == clipStart == 60): also expected
         // to be in-point so the at-break gate can hold the first frame.
@@ -299,8 +300,8 @@ TEST_F(PostBreakAnchorTest, AtBreakAlignedPostGoMappingFirstVisibleEqualsInPoint
                          /*fps*/30.0, PlaybackMode::Loop);
         clip.mediaStartFrame = 42;
 
-        callSeedContinuationAt(toTimelineMicros(60, 30.0));
-        callSnapshotPostBreakAnchors(toTimelineMicros(60, 30.0));
+        callSeedContinuationAt(FrameNumber{60});
+        callSnapshotPostBreakAnchors(FrameNumber{60});
 
         EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 60), 42);
         EXPECT_EQ(auth.mapToMediaFrame(entity, clip, 61), 42);
@@ -319,13 +320,13 @@ TEST_F(PostBreakAnchorTest, SpanningClipStillUsesAnchor) {
     fillSpanningClip(clip, /*start*/30, /*dur*/200, /*srcLen*/200,
                      /*fps*/30.0, PlaybackMode::Loop);
 
-    timeline.addSectionBreak(toTimelineMicros(60, 30.0), 0xFF6090C8, 0.0);
+    timeline.addSectionBreak(FrameNumber{60}, 0xFF6090C8, 0.0);
 
     // Park 5 seconds at the break; advanceContinuation accumulates
     // 5 * 30 = 150 source frames on top of the natural break-time delta
     // of (60 - 30) * 1.0 = 30. Post-snapshot the source frame the user
     // is watching should reflect that.
-    callSeedContinuationAt(toTimelineMicros(60, 30.0));
+    callSeedContinuationAt(FrameNumber{60});
     auto* phase = registry.try_get<ClipPlaybackPhase>(entity);
     ASSERT_NE(phase, nullptr) << "Spanning clip MUST receive a continuation phase.";
     EXPECT_TRUE(phase->inContinuation);
@@ -344,7 +345,7 @@ TEST_F(PostBreakAnchorTest, SpanningClipStillUsesAnchor) {
     EXPECT_NEAR(phase->sourcePhaseFrames, 180.0, 1e-3);
 
     // Now snapshot the anchor at GO from this break.
-    callSnapshotPostBreakAnchors(toTimelineMicros(60, 30.0));
+    callSnapshotPostBreakAnchors(FrameNumber{60});
 
     // Anchor MUST be stamped (clip is spanning, not queued). The captured
     // source frame is mediaStartFrame + (180 % 200) = 0 + 180 = 180.

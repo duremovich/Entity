@@ -243,6 +243,15 @@ TEST(MessageBusSerialization, FrameDroppedRoundTrip) {
     expectByteStable(m);
 }
 
+TEST(MessageBusSerialization, SectionBreakDetectedRoundTrip) {
+    // breakFrame is an integer timeline frame (frame-native markers).
+    SectionBreakDetected m{};
+    m.breakFrame = 250;
+    auto out = roundTripExpect(m);
+    EXPECT_EQ(out.breakFrame, m.breakFrame);
+    expectByteStable(m);
+}
+
 TEST(MessageBusSerialization, AllPlayStates) {
     for (auto ps : {TransportState::Stopped, TransportState::Playing, TransportState::Paused}) {
         RenderFrame rf;

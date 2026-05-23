@@ -548,15 +548,11 @@ FrameNumber PlaybackTimeAuthority::sectionFadeTailFrames(FrameNumber endFrame) c
     auto [sections, rawFps] = m_timeline->copySectionsAndRate();
     if (sections.empty()) return 0;
     const double timelineFrameRate = rawFps > 0.0 ? rawFps : 30.0;
-    constexpr FrameNumber snapTol = 1;
-    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
-        return a >= b ? a - b : b - a;
-    };
     for (const auto& sec : sections) {
         if (sec.fadeSeconds <= 0.0) continue;
-        const FrameNumber breakFrame = static_cast<FrameNumber>(
-            (static_cast<double>(sec.breakFrame) * timelineFrameRate) / 1000000.0);
-        if (absDiff(breakFrame, endFrame) <= snapTol) {
+        // breakFrame is an integer timeline frame; the clip's end must be
+        // exactly on the break to get a post-end fade tail.
+        if (sec.breakFrame == endFrame) {
             return static_cast<FrameNumber>(std::ceil(sec.fadeSeconds * timelineFrameRate));
         }
     }
@@ -733,30 +729,8 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
     const FrameNumber clipStart    = clip.startFrame;
     const FrameNumber clipEnd      = clip.startFrame + clip.duration;
     const double timelineFrameRate = rawFps > 0.0 ? rawFps : 30.0;
-    // ±1 timeline-frame snap tolerance — matches the boundary semantics
-    // documented in the Phase D plan; clips that merely cross a break
-    // (>1 frame off either end) get no envelope.
-    const FrameNumber snapTol = 1;
 
     float multiplier = 1.0f;
-
-    auto absDiff = [](FrameNumber a, FrameNumber b) -> FrameNumber {
-        return a >= b ? a - b : b - a;
-    };
-
-    // [SBG] diag — flag clips whose start or end aligns with any section
-    // break, so the bottom return can log a single line per call. Volume
-    // stays bounded (only break-aligned clips are noisy). REMOVE after
-    // section-break-glitch fix lands.
-    bool sbgClipAlignedWithBreak = false;
-    for (const auto& sec : sections) {
-        const FrameNumber bf = static_cast<FrameNumber>(
-            (static_cast<double>(sec.breakFrame) * timelineFrameRate) / 1000000.0);
-        if (absDiff(clipStart, bf) <= snapTol || absDiff(clipEnd, bf) <= snapTol) {
-            sbgClipAlignedWithBreak = true;
-            break;
-        }
-    }
 
     // At-break visibility gate. Clips that START at the current break stay
     // invisible until GO, regardless of fadeSeconds. User requirement:
@@ -779,15 +753,11 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
         const bool isPlaying =
             m_timeline->getPlaybackState() == PlaybackState::Playing;
         if (atBreakLatched || isPlaying) {
-            constexpr FrameNumber gateSnapTol = 1;
-            auto absDiffGate = [](FrameNumber a, FrameNumber b) -> FrameNumber {
-                return a >= b ? a - b : b - a;
-            };
             for (const auto& sec : sections) {
-                const FrameNumber breakFrame = static_cast<FrameNumber>(
-                    (static_cast<double>(sec.breakFrame) * timelineFrameRate) / 1000000.0);
-                if (breakFrame == currentFrame &&
-                    absDiffGate(clip.startFrame, breakFrame) <= gateSnapTol) {
+                // breakFrame is an integer timeline frame — an exact match
+                // on both the playhead and the clip's start gates the clip.
+                if (sec.breakFrame == currentFrame &&
+                    clip.startFrame == sec.breakFrame) {
                     multiplier = 0.0f;
                     break;
                 }
@@ -797,14 +767,13 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
 
     for (const auto& sec : sections) {
         if (sec.fadeSeconds <= 0.0) continue;
-        const FrameNumber breakFrame = static_cast<FrameNumber>(
-            (static_cast<double>(sec.breakFrame) * timelineFrameRate) / 1000000.0);
+        const FrameNumber breakFrame = sec.breakFrame;
         const FrameNumber fadeFrames = static_cast<FrameNumber>(
             std::ceil(sec.fadeSeconds * timelineFrameRate));
         if (fadeFrames <= 0) continue;
 
-        // Fade in: clip's start coincides with this break.
-        if (absDiff(breakFrame, clipStart) <= snapTol) {
+        // Fade in: clip's start sits exactly on this break.
+        if (breakFrame == clipStart) {
             if (currentFrame >= clipStart &&
                 currentFrame < clipStart + fadeFrames) {
                 const float t = static_cast<float>(currentFrame - clipStart)
@@ -821,7 +790,7 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
         // open upper edge. The post-end window can't overlap the
         // at-start fade-in window of the *same* clip, so the min-combine
         // for both-aligned clips still works cleanly.
-        if (absDiff(breakFrame, clipEnd) <= snapTol) {
+        if (breakFrame == clipEnd) {
             if (currentFrame >= clipEnd &&
                 currentFrame < clipEnd + fadeFrames) {
                 const float t = 1.0f - static_cast<float>(currentFrame - clipEnd)
@@ -830,17 +799,7 @@ float PlaybackTimeAuthority::computeSectionFadeMultiplier(const Clip& clip) cons
             }
         }
     }
-    const float sbgResult = std::clamp(multiplier, 0.0f, 1.0f);
-    // [SBG] diag — REMOVE after section-break-glitch fix lands.
-    if (sbgClipAlignedWithBreak) {
-        std::cout << "[SBG][gate] clipStart=" << clipStart
-                  << " clipEnd=" << clipEnd
-                  << " currentFrame=" << currentFrame
-                  << " atBreak=" << (m_timeline->sectionAtBreak() ? 1 : 0)
-                  << " mult=" << sbgResult
-                  << std::endl;
-    }
-    return sbgResult;
+    return std::clamp(multiplier, 0.0f, 1.0f);
 }
 
 void PlaybackTimeAuthority::buildActiveSet(std::vector<ActiveClip>& out) const {

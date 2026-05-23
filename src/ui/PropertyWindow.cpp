@@ -1995,7 +1995,7 @@ void PropertyWindow::renderCueProperties() {
         editNumber = live->number;
         std::strncpy(editLabel, live->label.c_str(), sizeof(editLabel) - 1);
         editLabel[sizeof(editLabel) - 1] = '\0';
-        editFrame = static_cast<long long>(m_timeline->timeToFrame(live->timestamp));
+        editFrame = static_cast<long long>(live->frame);
         snapshotValid = false;
     }
 
@@ -2009,9 +2009,9 @@ void PropertyWindow::renderCueProperties() {
 
     auto commitEdit = [&]() {
         if (!m_dispatcher) return;
-        Timecode newTs = m_timeline->frameToTime(static_cast<FrameNumber>(editFrame));
+        const FrameNumber newFrame = static_cast<FrameNumber>(editFrame);
         auto cmd = std::make_unique<EditCueCommand>(
-            selectedNumber, editNumber, newTs, std::string(editLabel));
+            selectedNumber, editNumber, newFrame, std::string(editLabel));
         if (snapshotValid) cmd->setPreviousState(preEditSnapshot);
         m_dispatcher->enqueue(std::move(cmd));
         snapshotValid = false;
@@ -2071,7 +2071,7 @@ void PropertyWindow::renderSectionBreakProperties() {
         ImGui::TextDisabled("No section break selected");
         return;
     }
-    const Timecode selFrame = *sel;
+    const FrameNumber selFrame = *sel;
     const Timeline::Section* live = m_timeline->findSectionBreakNear(selFrame, 0);
     if (!live) {
         ImGui::TextDisabled("Section break at %lld no longer exists",
@@ -2085,7 +2085,7 @@ void PropertyWindow::renderSectionBreakProperties() {
     ImGui::Text("Section Break");
     ImGui::Separator();
 
-    static Timecode trackedFrame = -1;
+    static FrameNumber trackedFrame = -1;
     static long long editFrame = 0;
     static float editColor[4] = {0, 0, 0, 0};
     static double editFadeSeconds = 0.0;
@@ -2094,7 +2094,7 @@ void PropertyWindow::renderSectionBreakProperties() {
 
     if (trackedFrame != selFrame) {
         trackedFrame = selFrame;
-        editFrame = static_cast<long long>(m_timeline->timeToFrame(live->breakFrame));
+        editFrame = static_cast<long long>(live->breakFrame);
         editColor[0] = ((live->color >> 0)  & 0xFFu) / 255.0f;
         editColor[1] = ((live->color >> 8)  & 0xFFu) / 255.0f;
         editColor[2] = ((live->color >> 16) & 0xFFu) / 255.0f;
@@ -2121,7 +2121,7 @@ void PropertyWindow::renderSectionBreakProperties() {
 
     auto commitEdit = [&]() {
         if (!m_dispatcher) return;
-        Timecode newFrame = m_timeline->frameToTime(static_cast<FrameNumber>(editFrame));
+        const FrameNumber newFrame = static_cast<FrameNumber>(editFrame);
         auto cmd = std::make_unique<EditSectionBreakCommand>(
             selFrame, newFrame, packColor(), editFadeSeconds);
         if (snapshotValid) cmd->setPreviousState(preEditSnapshot);

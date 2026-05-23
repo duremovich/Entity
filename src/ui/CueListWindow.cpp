@@ -46,7 +46,7 @@ void CueListWindow::render() {
         m_editOldNumber = 0.0;
         const auto& cues = timeline->getCueTags();
         m_editNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
-        m_editTimestamp = timeline->getCurrentTime();
+        m_editFrame = timeline->getCurrentFrame();
         m_editLabelBuf[0] = '\0';
         m_openEditModal = true;
     }
@@ -103,7 +103,8 @@ void CueListWindow::render() {
             }
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(formatSmpte(cue.timestamp, frameRate).c_str());
+            ImGui::TextUnformatted(
+                formatSmpte(timeline->frameToTime(cue.frame), frameRate).c_str());
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                 rightClickedNumber = cue.number;
                 rightClickedValid = true;
@@ -121,7 +122,7 @@ void CueListWindow::render() {
                 m_isEditMode = true;
                 m_editOldNumber = cue.number;
                 m_editNumber = cue.number;
-                m_editTimestamp = cue.timestamp;
+                m_editFrame = cue.frame;
                 std::strncpy(m_editLabelBuf, cue.label.c_str(), sizeof(m_editLabelBuf) - 1);
                 m_editLabelBuf[sizeof(m_editLabelBuf) - 1] = '\0';
                 m_openEditModal = true;
@@ -144,7 +145,7 @@ void CueListWindow::render() {
                         m_isEditMode = true;
                         m_editOldNumber = live->number;
                         m_editNumber = live->number;
-                        m_editTimestamp = live->timestamp;
+                        m_editFrame = live->frame;
                         std::strncpy(m_editLabelBuf, live->label.c_str(),
                                      sizeof(m_editLabelBuf) - 1);
                         m_editLabelBuf[sizeof(m_editLabelBuf) - 1] = '\0';
@@ -174,14 +175,14 @@ void CueListWindow::render() {
         entity::ui::InputDouble("Number", &m_editNumber, 0.1, 1.0, "%.2f");
         ImGui::InputText("Label", m_editLabelBuf, sizeof(m_editLabelBuf));
 
-        // Timestamp shown as SMPTE; editable through frame number.
-        FrameNumber frame = timeline->timeToFrame(m_editTimestamp);
-        long long frameLL = static_cast<long long>(frame);
+        // Cue position is an integer timeline frame; bind directly.
+        long long frameLL = static_cast<long long>(m_editFrame);
         if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
             if (frameLL < 0) frameLL = 0;
-            m_editTimestamp = timeline->frameToTime(static_cast<FrameNumber>(frameLL));
+            m_editFrame = static_cast<FrameNumber>(frameLL);
         }
-        ImGui::TextDisabled("%s", formatSmpte(m_editTimestamp, frameRate).c_str());
+        ImGui::TextDisabled("%s",
+            formatSmpte(timeline->frameToTime(m_editFrame), frameRate).c_str());
 
         ImGui::Separator();
 
@@ -189,7 +190,7 @@ void CueListWindow::render() {
             if (dispatcher) {
                 if (m_isEditMode) {
                     auto cmd = std::make_unique<EditCueCommand>(
-                        m_editOldNumber, m_editNumber, m_editTimestamp,
+                        m_editOldNumber, m_editNumber, m_editFrame,
                         std::string(m_editLabelBuf));
                     if (const CueTag* live = timeline->findCueTag(m_editOldNumber)) {
                         cmd->setPreviousState(*live);
@@ -197,7 +198,7 @@ void CueListWindow::render() {
                     dispatcher->enqueue(std::move(cmd));
                 } else {
                     dispatcher->enqueue(std::make_unique<AddCueAtCommand>(
-                        m_editNumber, m_editTimestamp, std::string(m_editLabelBuf)));
+                        m_editNumber, m_editFrame, std::string(m_editLabelBuf)));
                 }
             }
             ImGui::CloseCurrentPopup();

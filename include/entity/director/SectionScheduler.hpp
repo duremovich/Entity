@@ -55,7 +55,7 @@ public:
      *  latch and seed `ClipPlaybackPhase` on every Normal-mode active
      *  clip. Idempotent; drops the call if the message is stale (a seek
      *  or Play landed before the editor drained it). */
-    void handleBreakAt(Timecode breakFrameTime);
+    void handleBreakAt(FrameNumber breakFrame);
 
     /** Spacebar GO when at a break: clear the at-break flag, advance one
      *  frame past the break, resume play. Also clears `inContinuation`
@@ -64,7 +64,7 @@ public:
     void go();
 
     bool atBreak() const { return m_atBreak; }
-    Timecode lastBreakHitFrame() const { return m_lastBreakHitFrame; }
+    FrameNumber lastBreakHitFrame() const { return m_lastBreakHitFrame; }
 
     /** Wire the active PlaybackTimeAuthority so the continuation-phase
      *  wall-clock anchor uses the same RateSource as the main timeline
@@ -76,7 +76,7 @@ private:
     // Runs once when a break-crossing is detected. Walks Clip + Section
     // behavior, allocates ClipPlaybackPhase on Normal clips, seeds
     // `sourcePhaseFrames` from the break-time delta.
-    void seedContinuationAt(Timecode breakFrameTime);
+    void seedContinuationAt(FrameNumber breakTimelineFrame);
 
     // Runs every at-break tick. Adds `dt * clip.framerate` (in source
     // frames) to each clip currently in continuation.
@@ -94,7 +94,7 @@ private:
     // false — otherwise the math falls back to the timeline-frozen path
     // and we snapshot the wrong frame. No-op for clips that aren't
     // ending at this break (their tail hold is irrelevant).
-    void snapshotTailHoldFrames(Timecode breakFrameTime);
+    void snapshotTailHoldFrames(FrameNumber breakTimelineFrame);
 
     // Round-2 fixup, Phase 4 — capture a post-break source-frame anchor
     // for every Normal-mode continuing clip that SPANS this break (clip
@@ -106,7 +106,7 @@ private:
     // as `anchor + (timelineFrame - anchorTimelineFrame) * frameRateRatio`
     // wrapped per playbackMode, so post-GO playback resumes without the
     // rewind that natural-mapping (clipStart-derived) would produce.
-    void snapshotPostBreakAnchors(Timecode breakFrameTime);
+    void snapshotPostBreakAnchors(FrameNumber breakTimelineFrame);
 
     // Round-2 fixup, Phase 4 — invalidate post-break anchors when the
     // user scrubs backward past the timeline frame that set them, or
@@ -120,7 +120,7 @@ private:
     Timeline*              m_timeline{nullptr};
     PlaybackTimeAuthority* m_timeAuthority{nullptr};
     bool                   m_atBreak{false};
-    Timecode        m_lastBreakHitFrame{0};
+    FrameNumber     m_lastBreakHitFrame{0};
     Timecode        m_lastTickFrame{0};
     bool            m_haveLastTickFrame{false};  // First-tick guard: skip crossing detection.
 

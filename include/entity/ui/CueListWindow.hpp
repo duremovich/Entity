@@ -34,7 +34,7 @@ private:
     bool   m_isEditMode{false};
     double m_editOldNumber{0.0};
     double m_editNumber{1.0};
-    Timecode m_editTimestamp{0};
+    FrameNumber m_editFrame{0};
     char   m_editLabelBuf[256]{0};
 };
 

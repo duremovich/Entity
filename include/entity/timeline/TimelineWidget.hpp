@@ -207,6 +207,12 @@ private:
     float timeToPixel(Timecode time) const;
 
     /**
+     * Convert an integer timeline frame to a screen x position (pixels).
+     * Used for frame-native markers (section breaks, cues).
+     */
+    float frameToPixel(FrameNumber frame) const;
+
+    /**
      * Convert screen x position (pixels) to timeline time (milliseconds).
      */
     Timecode pixelToTime(float pixel) const;
@@ -509,15 +515,15 @@ private:
     // Section break context-menu state. nullopt = nothing right-clicked;
     // otherwise the breakFrame of the right-clicked break (the vector
     // index isn't stable across edits, but the breakFrame is).
-    std::optional<Timecode> m_rightClickedSectionBreakFrame;
+    std::optional<FrameNumber> m_rightClickedSectionBreakFrame;
     bool m_rangeContextMenuRequested{false};
 
     // Pending modal state for "Add Section Break Here..." / "Edit Break..."
     enum class SectionBreakModalMode { None, Add, Edit };
     SectionBreakModalMode m_sectionBreakModalMode{SectionBreakModalMode::None};
-    bool      m_sectionBreakModalOpenRequested{false};
-    Timecode  m_sectionBreakModalOldFrame{0};
-    Timecode  m_sectionBreakModalFrame{0};
+    bool        m_sectionBreakModalOpenRequested{false};
+    FrameNumber m_sectionBreakModalOldFrame{0};
+    FrameNumber m_sectionBreakModalFrame{0};
     uint32_t  m_sectionBreakModalColor{0xFF6090C8u};
     double    m_sectionBreakModalFadeSeconds{0.0};
 
@@ -534,7 +540,7 @@ private:
     bool   m_cueModalOpenRequested{false};
     double m_cueModalOldNumber{0.0};
     double m_cueModalNumber{1.0};
-    Timecode m_cueModalTimestamp{0};
+    FrameNumber m_cueModalFrame{0};
     char   m_cueModalLabelBuf[256]{0};
 
     // Time captured when the user opens the right-click ruler menu (used
