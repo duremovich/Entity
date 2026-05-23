@@ -57,6 +57,51 @@ TEST_F(PlaybackTimeAuthorityTest, IsClipActiveAtFrame_ZeroDurationIsAlwaysInacti
     EXPECT_FALSE(auth.isClipActiveAtFrame(c, 5));
 }
 
+TEST_F(PlaybackTimeAuthorityTest, IsClipActiveAtFrame_TrailingEdge_IncludesBreakFrameWithZeroFade) {
+    // Regression: a clip whose end aligns exactly with a section break used
+    // to drop out of the active set the moment the playhead reached the break
+    // when fadeSeconds == 0. sectionFadeTailFrames now always returns >= 1
+    // for break-aligned ends, so the clip stays visible for the at-break park
+    // frame and only drops on the next frame (instant cut after GO).
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(/*breakFrame*/60, /*color*/0u, /*fadeSeconds*/0.0);
+    Clip c;
+    fillClip(c, /*start*/0, /*duration*/60, /*total*/60, 30.0);
+
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 59));  // inside clip, normal
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 60));  // at break - one-frame hold
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 61));  // post-GO, instant cut
+}
+
+TEST_F(PlaybackTimeAuthorityTest, IsClipActiveAtFrame_TrailingEdge_PreservesFadeTailWindow) {
+    // With fadeSeconds > 0, the tail window covers ceil(fadeSeconds * fps)
+    // frames -- unchanged by the Fix 1 minimum-1 rule (max(1, ceil(...)) ==
+    // ceil(...) whenever ceil(...) >= 1, which it is for any positive ramp).
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(60, 0u, /*fadeSeconds*/0.5);  // 15 frames at 30fps
+    Clip c;
+    fillClip(c, 0, 60, 60, 30.0);
+
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 60));  // at break
+    EXPECT_TRUE (auth.isClipActiveAtFrame(c, 74));  // last frame in fade tail
+    EXPECT_FALSE(auth.isClipActiveAtFrame(c, 75));  // tail closed
+}
+
+TEST_F(PlaybackTimeAuthorityTest, ComputeSectionFadeMultiplier_TrailingEdge_HoldsAtBreakWithZeroFade) {
+    // At the at-break park frame the multiplier must be 1.0 even when
+    // fadeSeconds == 0. The fade-ramp branches are skipped (fadeSeconds gate)
+    // and the at-break visibility gate only fires for clips that START at
+    // the break, so the multiplier defaults to 1.0 -- which is exactly the
+    // "held visible while parked" behavior we want.
+    timeline.setFrameRate(30.0);
+    timeline.addSectionBreak(60, 0u, /*fadeSeconds*/0.0);
+    Clip c;
+    fillClip(c, 0, 60, 60, 30.0);
+    timeline.seekToFrame(60);
+
+    EXPECT_NEAR(auth.computeSectionFadeMultiplier(c), 1.0f, 1e-4f);
+}
+
 // --- mapToMediaFrame ------------------------------------------------------
 
 TEST_F(PlaybackTimeAuthorityTest, MapToMediaFrame_SameFrameRate_IsIdentityFromOffset) {
