@@ -191,6 +191,67 @@ returning the trimmed-source-end was the only formula in the codebase
 that produced numbers like that.** The DecodeSystem/AudioSystem tail
 steering and shared helper are quality-of-implementation on top.
 
+**Fix 6 — cache thrashing through the fade after Fix 5 closed the
+freeze.** Operator confirmed Fix 5 made playback start instantly,
+but the projector output chugged visibly through the 5-second fade
+tail with two overlapping clips (one fading out at the break, one
+fading in). Editor FPS stayed high — the stutter was on output,
+with the decode threads doing the extra work off the editor's
+critical path. Terminal showed ~50+ `Seek: X → X` lines per fade,
+in two patterns: `Seek: 4710 → 4710` (held tail clip repeatedly
+force-seeked to the same frame) and `Seek: NNNN → NNNN+1`
+immediately followed by `Seek: NNNN+1 → NNNN+1` (advancing clip's
+just-decoded frame already evicted from cache by the time the next
+tick checked).
+
+**Root cause: Fix 5 + Fix 4 interacting badly under cache pressure.**
+Fix 5 Change 2 left `worker->targetFrame = mediaFrame +
+DECODE_AHEAD_FRAMES` for tail-window clips, decoding 9 frames per
+seek (only one of which would ever display). Those eight extra
+frames pressured the global `FrameCache` LRU and evicted the other
+active clip's working set. Fix 4's cache-miss recovery then fired
+for the evicted clip → force-seek → its decode pressure evicted
+the held tail frame → Fix 4 fired for the tail clip → force-seek
+the held frame → repeat. Each cycle paid an `avcodec_flush_buffers`
++ `av_seek_frame` + decode (~10–50 ms on 4K ProRes).
+
+**Fix**: two surgical edits in `src/systems/DecodeSystem.cpp`, both
+scoped to the existing `inTail` flag from Fix 5:
+1. Held tail clips target exactly `mediaFrame`, no
+   `DECODE_AHEAD_FRAMES`. There's no "ahead" to decode past
+   `clipEnd`; eight wasted frames per seek is pure cache pressure.
+2. Skip the cache-miss recovery (Fix 4) for held tail clips. The
+   held frame was uploaded to its GPU texture during normal play;
+   `TextureUploader` keeps the texture resource resident across
+   cache misses, `CompositorSystem` samples the SRV
+   unconditionally, and `drawTexturedQuad` draws whatever pixels
+   are in the texture. So the projector keeps showing the held
+   frame even after `FrameCache` evicts the entry — re-seeking to
+   repopulate buys nothing visual and creates the thrash loop.
+   Trace: `PlaybackPresenter.cpp:89-139`, `TextureUploader.cpp:287-311`,
+   `CompositorSystem.cpp:247-250`,
+   `D3D12Renderer::resolveTextureHandle` at 4059-4075.
+
+`AudioSystem` doesn't need a parallel change: its seek-detection at
+`AudioSystem.cpp:230-249` triggers on sample-space delta, which is
+zero tick-over-tick for a held sample, so no seeks fire; and the
+audio ring buffer is per-worker, not a shared LRU, so the
+cache-thrash dynamic doesn't apply.
+
+**Files.** `src/systems/DecodeSystem.cpp` only — two conditional
+edits (~10 lines incl. comment). No header changes, no new files,
+no test changes (existing single-clip
+`section_break_tail_no_freeze.json` still passes; multi-clip cache-
+pressure regression would need a seek-counter instrumentation that
+doesn't exist yet — filed as follow-up). 615/615 ctest green at
+`-j 1`.
+
+**Audio fade follow-up.** The section fade multiplier doesn't yet
+drive audio mixer gain. During the visual fade-out, audio currently
+plays at full level until the clip falls out of `shouldSteer` (at
+which point `mixSource.active` goes false and audio cuts). Should
+be wired so audio fades synchronously with video — separate change.
+
 ### Seek-Sync Preroll Gate — ADR-0026 (2026-05-22)
 
 Adds a seek-sync preroll gate so playback after a seek starts cleanly. On

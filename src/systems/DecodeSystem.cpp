@@ -213,7 +213,15 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // Decode-ahead target: in ping-pong reverse, target the current
             // mediaFrame (we need frames at and below this one); otherwise
             // run ahead by DECODE_AHEAD_FRAMES.
-            if (clip.playbackMode == PlaybackMode::PingPong && isReverse) {
+            //
+            // Fix 6 (2026-05-23 follow-up to Fix 5) — held tail clips target
+            // exactly mediaFrame, no decode-ahead. Past clipEnd there is no
+            // "ahead" to decode; eight extra frames per seek would just
+            // pressure the global FrameCache LRU and evict other active
+            // clips' working sets — which is what caused the visible chug
+            // through the fade after Fix 5 closed the freeze (~50 force-
+            // seeks per 5s tail, decoder thrashing).
+            if ((clip.playbackMode == PlaybackMode::PingPong && isReverse) || inTail) {
                 worker->targetFrame.store(mediaFrame);
             } else {
                 worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
@@ -245,7 +253,18 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // mediaFrame and the cache transiently misses because the decode
             // hasn't landed yet. In that case currentFrame < mediaFrame and
             // we let the worker work.
-            if (!worker->seekPending.load() && m_frameCache &&
+            //
+            // Fix 6 (2026-05-23) — skip cache-miss recovery for held tail
+            // clips (inTail). The held frame was uploaded to the GPU
+            // texture during normal play; TextureUploader keeps the
+            // texture resource resident across cache misses (only
+            // freeSlot() releases it), and CompositorSystem samples the
+            // existing SRV unconditionally — so the projector keeps
+            // drawing the held frame even if FrameCache evicts the
+            // entry. Force-seeking to repopulate the cache buys nothing
+            // visually and creates a thrash loop with another active
+            // clip's working set under cache pressure.
+            if (!inTail && !worker->seekPending.load() && m_frameCache &&
                     !m_frameCache->has(entity, mediaFrame) &&
                     worker->currentFrame.load() >= mediaFrame) {
                 needsSeek = true;
