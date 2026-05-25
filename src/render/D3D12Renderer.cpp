@@ -9,6 +9,7 @@
 #include "entity/render/D3D12Device.hpp"
 #include "entity/render/DescriptorHeapLayout.hpp"
 #include "entity/render/TextureUploader.hpp"
+#include "entity/render/UploadHeapBufferPool.hpp"
 #include "entity/render/MeshUploader.hpp"
 #include "entity/color/OcioManager.hpp"
 #include "entity/color/OcioGpuProcessor.hpp"
@@ -538,6 +539,25 @@ void D3D12Renderer::beginShowFrame() {
         }
     }
 
+    // Drain deferred video texture slot frees. The editor thread's
+    // on_destroy<VideoTexture> observer enqueues slots into
+    // m_deferredVideoTextureFrees. We drain here, after the show fence wait,
+    // so the GPU is guaranteed not to be sampling those slots' textures.
+    {
+        std::vector<uint32_t> toFree;
+        {
+            std::lock_guard<std::mutex> lk(m_deferredVideoTextureFreesMutex);
+            toFree.swap(m_deferredVideoTextureFrees);
+        }
+        if (m_textureUploader) {
+            for (uint32_t slot : toFree) {
+                m_textureUploader->freeSlot(slot);
+                std::cout << "Freed video texture slot " << slot
+                          << " (deferred)" << std::endl;
+            }
+        }
+    }
+
     // CRIT-04: reset the per-frame mapping-surface CB ring cursor. Fence sync
     // above has ensured the GPU is done with this frame's show region.
     m_mappingSurfaceDrawIndex = 0;
@@ -861,6 +881,14 @@ void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
 
 ID3D12Device* D3D12Renderer::getDevice() const {
     return m_gpu ? m_gpu->device() : nullptr;
+}
+
+ID3D12CommandQueue* D3D12Renderer::getCommandQueue() const {
+    return m_gpu ? m_gpu->commandQueue() : nullptr;
+}
+
+ID3D12Fence* D3D12Renderer::getShowFence() const {
+    return m_showFence.Get();
 }
 
 Result D3D12Renderer::createSwapChain(void* windowHandle, uint32_t width, uint32_t height) {
@@ -1978,6 +2006,20 @@ void D3D12Renderer::freeVideoTextureSlot(uint32_t slot) {
     std::cout << "Freed video texture slot " << slot << std::endl;
 }
 
+void D3D12Renderer::scheduleVideoTextureSlotFree(uint32_t slot) {
+    // Safe to call from the editor thread (on_destroy<VideoTexture> observer).
+    // The slot will be freed on the show thread at the top of beginShowFrame
+    // after the show fence wait, ensuring the GPU is no longer sampling it.
+    if (slot == UINT32_MAX) return;
+    std::lock_guard<std::mutex> lk(m_deferredVideoTextureFreesMutex);
+    m_deferredVideoTextureFrees.push_back(slot);
+}
+
+uint32_t D3D12Renderer::getVideoTextureSlotsAllocated() const {
+    if (!m_textureUploader) return 0;
+    return m_textureUploader->allocatedSlotCount();
+}
+
 bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                            const uint8_t* data,
                                            uint32_t width, uint32_t height,
@@ -1999,6 +2041,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
     // Phase C.11: record into the COPY queue's command list. endShowFrame()
     // executes it on the copy queue and inserts a cross-queue fence wait so
     // the direct queue doesn't sample the texture until the copy completes.
+    //
     if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data, width, height, format)) {
         return false;
     }
@@ -4187,6 +4230,78 @@ bool D3D12Renderer::uploadVideoFrameToSlotImmediate(uint32_t slot,
     // Cross-queue wait: the direct queue must not sample the texture until
     // the copy queue has finished writing it.
     m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
+    return true;
+}
+
+bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
+        uint32_t slot,
+        UploadHeapBuffer* buf,
+        uint32_t width,
+        uint32_t height,
+        TextureFormat format) {
+    if (!m_initialized || !m_textureUploader || !buf || !buf->resource) {
+        return false;
+    }
+    // Must be called from the show thread inside a beginShowFrame/endShowFrame
+    // pair — tl_activeCmdList is the open show command list.
+    if (!tl_activeCmdList) {
+        std::cerr << "D3D12Renderer::copyUploadBufferToVideoTextureSlot: called outside show frame\n";
+        return false;
+    }
+
+    // Guard against resize / format change: if ensureTexture inside
+    // recordDirectCopy would recreate the texture, the old GPU resources
+    // must be idle first.
+    //
+    // In steady state (post-prepareVideoTextureSlot at project load) this never
+    // fires — the texture is pre-allocated at the correct dimensions. The path
+    // exists as a safety net for mid-stream resolution changes. waitForGpu()
+    // blocks the show thread for up to the fence timeout (2 s); acceptable only
+    // because it is expected to be extremely rare (resolution change mid-clip).
+    if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
+        m_textureUploader->hasTexture(slot)) {
+        waitForGpu();
+    }
+
+    // Record CopyTextureRegion from the UploadHeapBuffer into the slot's
+    // DEFAULT-heap texture on the DIRECT (show) queue's command list.
+    //
+    // Why DIRECT queue, not COPY queue:
+    //   The show thread samples the texture immediately after via the compositor
+    //   draw calls in the SAME command list. If CopyTextureRegion were on the
+    //   COPY queue, we'd need a cross-queue fence Wait on the DIRECT queue before
+    //   the draw — exactly what the per-frame upload() path does (lines 619-624).
+    //   Using the same command list avoids that overhead and is semantically
+    //   correct: the copy and the draw are sequenced by command-list order on a
+    //   single queue.
+    //
+    // Implicit state promotion (D3D12 spec, Table D.1):
+    //   UPLOAD-heap source (COMMON) → GENERIC_READ promoted implicitly on DIRECT.
+    //   DEFAULT-heap destination (COMMON) → COPY_DEST promoted implicitly on DIRECT.
+    //   Both decay back to COMMON at ExecuteCommandLists boundary.
+    //   No explicit ResourceBarrier calls needed.
+    //
+    // m_uploadsRecordedThisFrame is NOT set here — that flag controls the COPY
+    // queue path in endShowFrame (lines 619-624). This path uses the show list
+    // directly and needs no separate Execute/Signal/Wait sequence.
+    if (!m_textureUploader->recordDirectCopy(tl_activeCmdList,
+                                              slot,
+                                              buf->resource.Get(),
+                                              buf->footprint,
+                                              width, height, format)) {
+        return false;
+    }
+
+    // Stamp the fence value so the UploadHeapBuffer's shared_ptr deleter
+    // fence-waits before recycling. The DIRECT queue signals m_showFence with
+    // m_showFenceValues[m_showBackBufferIndex] at the end of endShowFrame
+    // (line ~658). That signal covers both the CopyTextureRegion recorded above
+    // AND the compositor draws that follow — so the buffer is safe to recycle
+    // once that value is completed.
+    if (m_uploadHeapPool) {
+        const uint64_t fenceValue = m_showFenceValues[m_showBackBufferIndex];
+        m_uploadHeapPool->recordCopyDone(*buf, fenceValue);
+    }
     return true;
 }
 

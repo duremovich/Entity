@@ -58,10 +58,11 @@ Result PNGSequenceDecoder::open(const std::string& filepath) {
     // Detect alpha channel from first frame data
     // If all alpha values are 255 (fully opaque), assume no meaningful alpha
     bool hasAlpha = false;
-    if (!firstFrame.data.empty() && m_width > 0 && m_height > 0) {
+    if (firstFrame.size() > 0 && m_width > 0 && m_height > 0) {
+        const uint8_t* px = firstFrame.data();
         size_t pixelCount = static_cast<size_t>(m_width) * m_height;
-        for (size_t i = 3; i < firstFrame.data.size(); i += 4) {
-            if (firstFrame.data[i] != 255) {
+        for (size_t i = 3; i < pixelCount * 4; i += 4) {
+            if (px[i] != 255) {
                 hasAlpha = true;
                 break;
             }
@@ -247,13 +248,60 @@ Result PNGSequenceDecoder::loadPNG(const std::string& filepath, DecodedFrame& ou
         return Result::DecoderError;
     }
 
-    // Allocate output frame
-    outFrame.allocate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    // Ensure the output frame has a writable pixel buffer of the right size.
+    // Use the wired allocator when available so the decode writes directly into
+    // the correct backing store (CPU heap or D3D12 UPLOAD heap). Fall back to
+    // outFrame.allocate() when no allocator is wired (e.g. unit tests).
+    if (m_allocator) {
+        m_allocator->prepareDecodeBuffer(outFrame,
+                                         static_cast<uint32_t>(width),
+                                         static_cast<uint32_t>(height),
+                                         TextureFormat::RGBA8_UNORM);
+    } else if (outFrame.size() < static_cast<size_t>(width) * height * 4) {
+        outFrame.allocate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    }
+    // prepareDecodeBuffer only sets storage + backing buffer; always stamp
+    // width/height/format so downstream code (open()'s m_width = firstFrame.width,
+    // etc.) sees the right values regardless of which path ran above.
+    outFrame.width  = static_cast<uint32_t>(width);
+    outFrame.height = static_cast<uint32_t>(height);
+    outFrame.format = TextureFormat::RGBA8_UNORM;
 
-    // Copy RGBA data and premultiply alpha
-    size_t pixelDataSize = static_cast<size_t>(width) * height * 4;
-    std::memcpy(outFrame.data.data(), imageData, pixelDataSize);
-    premultiplyAlpha(outFrame.data.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    // Copy RGBA data into the destination buffer. Upload-heap buffers have
+    // 256-byte-aligned RowPitch (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) so the
+    // source (tight-packed stb_image bytes) must be copied row-by-row.
+    // CPU-heap buffers are tight-packed — a single memcpy is correct and fast.
+    const size_t srcRowBytes = static_cast<size_t>(width) * 4;
+    const uint32_t uploadPitch = outFrame.uploadRowPitch();
+    if (uploadPitch > 0) {
+        uint8_t* dst = outFrame.mutableData();
+        const uint8_t* src = imageData;
+        for (int row = 0; row < height; ++row) {
+            std::memcpy(dst, src, srcRowBytes);
+            dst += uploadPitch;
+            src += srcRowBytes;
+        }
+    } else {
+        std::memcpy(outFrame.mutableData(), imageData, srcRowBytes * static_cast<size_t>(height));
+    }
+
+    // Premultiply alpha. premultiplyAlpha uses tight-packed stride internally;
+    // for upload-heap frames call the strided version inline.
+    if (uploadPitch > 0) {
+        uint8_t* base = outFrame.mutableData();
+        for (int row = 0; row < height; ++row) {
+            uint8_t* rowPtr = base + static_cast<size_t>(row) * uploadPitch;
+            for (int col = 0; col < width; ++col) {
+                const size_t off = static_cast<size_t>(col) * 4;
+                const uint32_t a = rowPtr[off + 3];
+                rowPtr[off + 0] = static_cast<uint8_t>((static_cast<uint32_t>(rowPtr[off + 0]) * a + 127) / 255);
+                rowPtr[off + 1] = static_cast<uint8_t>((static_cast<uint32_t>(rowPtr[off + 1]) * a + 127) / 255);
+                rowPtr[off + 2] = static_cast<uint8_t>((static_cast<uint32_t>(rowPtr[off + 2]) * a + 127) / 255);
+            }
+        }
+    } else {
+        premultiplyAlpha(outFrame.mutableData(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    }
 
     // Free stb_image memory
     stbi_image_free(imageData);

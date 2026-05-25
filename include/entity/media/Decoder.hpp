@@ -2,6 +2,7 @@
 
 #include "entity/core/Types.hpp"
 #include "entity/media/DecodedFrame.hpp"
+#include "entity/media/IDecodeBufferAllocator.hpp"
 #include <string>
 #include <memory>
 
@@ -93,6 +94,19 @@ public:
      * Get file path of currently opened media.
      */
     virtual const std::string& getFilePath() const = 0;
+
+    /**
+     * Wire in a buffer allocator so the decoder writes into the correct
+     * backing store (CPU heap or D3D12 UPLOAD heap).
+     *
+     * Called by DecodeSystem::createWorker immediately after construction.
+     * Decoders that have not been wired (e.g. unit-test scenarios) fall back
+     * to DecodedFrame::allocate() which always uses CpuHeap storage.
+     *
+     * The allocator lifetime is owned by the caller (DecodeSystem/Renderer);
+     * it outlives all decoder instances.
+     */
+    virtual void setAllocator(IDecodeBufferAllocator* allocator) { (void)allocator; }
 };
 
 /**

@@ -237,9 +237,15 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetContentRouting", SetContentRoutingCommand::fromJson);
     registerFactory("AssertScreenExists", AssertScreenExistsCommand::fromJson);
     registerFactory("AssertScreenCount", AssertScreenCountCommand::fromJson);
+    registerFactory("AssertVideoTextureSlotsAllocated", AssertVideoTextureSlotsAllocatedCommand::fromJson);
     registerFactory("AssertFrameCached", AssertFrameCachedCommand::fromJson);
     registerFactory("SetFrameCacheBudget", SetFrameCacheBudgetCommand::fromJson);
     registerFactory("AssertFrameCacheBudgetOK", AssertFrameCacheBudgetOKCommand::fromJson);
+
+    // Output / display assignment commands (B2 — multi-display stress test)
+    registerFactory("EnumerateDisplays",     EnumerateDisplaysCommand::fromJson);
+    registerFactory("AssignScreenToDisplay", AssignScreenToDisplayCommand::fromJson);
+    registerFactory("SetOutputEnabled",      SetOutputEnabledCommand::fromJson);
 
     // UI commands
     registerFactory("SelectTab", SelectTabCommand::fromJson);

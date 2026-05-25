@@ -235,6 +235,12 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // GPU mesh lifecycle: deferred-free on model destruction.
     m_registry.on_destroy<Model>().connect<&Engine::onModelDestroyed>(this);
 
+    // GPU video texture lifecycle: deferred-free on clip/VideoTexture destruction.
+    // The observer fires on the editor thread before the component is erased;
+    // the slot is placed onto D3D12Renderer's deferred-free queue and released
+    // by the show thread at the next beginShowFrame (after its fence wait).
+    m_registry.on_destroy<VideoTexture>().connect<&Engine::onVideoTextureDestroyed>(this);
+
     // Phase D entry: Director owns Timeline, ProjectManager,
     // TranscodeManager, CommandDispatcher, AnimationSystem,
     // PlaybackTimeAuthority. Constructed here -- after the renderer (so
@@ -861,6 +867,12 @@ void Engine::shutdown() {
     if (m_windowManager) {
         m_windowManager->shutdown();
     }
+
+    // Disconnect the VideoTexture destroy observer before the renderer goes
+    // down. After this point the renderer pointer is dangling; any on_destroy
+    // signal that fires during registry teardown (component mass-erasure in
+    // Project::clear or registry destruction) must not reach scheduleVideoTextureSlotFree.
+    m_registry.on_destroy<VideoTexture>().disconnect<&Engine::onVideoTextureDestroyed>(this);
 
     // Tear down Renderer-service-owned subsystems explicitly. Order inside
     // Renderer::shutdown(): PlaybackPresenter -> DecodeSystem (joins
@@ -5194,6 +5206,24 @@ void Engine::drainRendererToDirector() {
                     if (body.ok && body.descriptorSlot >= 0) {
                         videoTex->descriptorSlot =
                             static_cast<uint32_t>(body.descriptorSlot);
+                        // Pre-allocate the D3D12 texture for this slot so the
+                        // show thread's first uploadVideoFrameToSlot does NOT
+                        // hit uploadWouldResize → waitForGpu(). Mirrors the
+                        // ProjectManager::loadMedia path (Fix 9) for clips
+                        // created via ImportVideo / drag-drop (which bypass
+                        // the project-load path). Editor thread is safe here
+                        // — slot is freshly allocated and no GPU work is in
+                        // flight on it yet.
+                        if (m_renderer) {
+                            if (auto* clip = m_registry.try_get<Clip>(entity);
+                                clip && clip->width > 0 && clip->height > 0) {
+                                m_renderer->prepareVideoTextureSlot(
+                                    videoTex->descriptorSlot,
+                                    clip->width,
+                                    clip->height,
+                                    TextureFormat::RGBA8_UNORM);
+                            }
+                        }
                     } else {
                         std::cerr << "[Engine] ResourcesProvisioned failed for entity="
                                   << static_cast<uint32_t>(entity)
@@ -5285,6 +5315,13 @@ void Engine::onModelDestroyed(entt::registry& reg, entt::entity e) {
     if (!m.gpuResourcesValid) return;
     if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr)
         d3d->scheduleMeshSlotFree(m.vertexBufferSlot);
+}
+
+void Engine::onVideoTextureDestroyed(entt::registry& reg, entt::entity e) {
+    const VideoTexture& vt = reg.get<VideoTexture>(e);
+    if (!vt.isAllocated()) return;
+    if (m_renderer)
+        m_renderer->scheduleVideoTextureSlotFree(vt.descriptorSlot);
 }
 
 } // namespace entity

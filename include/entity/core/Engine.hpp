@@ -1091,6 +1091,12 @@ private:
     // schedule deferred GPU slot release before the component data is gone.
     void onModelDestroyed(entt::registry& reg, entt::entity e);
 
+    // EnTT signal: fires before a VideoTexture component is removed (clip
+    // deleted, project cleared, etc.). Schedules a deferred GPU slot release
+    // via IRenderer::scheduleVideoTextureSlotFree so the show thread can drain
+    // it at beginShowFrame after the fence wait — no editor-thread GPU stall.
+    void onVideoTextureDestroyed(entt::registry& reg, entt::entity e);
+
     // The show thread's body.
     void showThreadMain();
 

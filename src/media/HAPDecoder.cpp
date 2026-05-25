@@ -297,15 +297,16 @@ Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
     }
 
     // Parse the raw HAP packet into BC block data + format metadata.
-    // Reuse outFrame.data for the decompressed blocks (capacity is preserved
+    // Reuse outFrame.cpuData for the decompressed blocks (capacity is preserved
     // across ring-buffer push/pop, so steady state is allocation-free).
     HapFrame hap;
-    hap.textureData = std::move(outFrame.data);
+    hap.textureData = std::move(outFrame.cpuData);
     hap.alphaData   = {};
 
     if (!parseHapPacket(m_packet->data, static_cast<size_t>(m_packet->size),
                         m_width, m_height, hap)) {
-        outFrame.data = std::move(hap.textureData); // restore for retry
+        outFrame.cpuData = std::move(hap.textureData); // restore for retry
+        outFrame.storage = DecodedFrame::Storage::CpuHeap;
         outFrame.valid.store(false, std::memory_order_release);
         std::cerr << "HAPDecoder: parseHapPacket failed at frame " << frameNumber << std::endl;
         return Result::DecoderError;
@@ -324,7 +325,8 @@ Result HAPDecoder::decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) 
         }
     }
 
-    outFrame.data = std::move(hap.textureData);
+    outFrame.cpuData = std::move(hap.textureData);
+    outFrame.storage = DecodedFrame::Storage::CpuHeap;
     outFrame.frameNumber = frameNumber;
     outFrame.width = m_width;
     outFrame.height = m_height;

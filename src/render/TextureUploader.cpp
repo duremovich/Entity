@@ -102,6 +102,15 @@ bool TextureUploader::isAllocated(uint32_t slot) const {
     return m_slots[slot].allocated;
 }
 
+uint32_t TextureUploader::allocatedSlotCount() const {
+    std::lock_guard<std::mutex> lk(m_slotMutex);
+    uint32_t count = 0;
+    for (const auto& s : m_slots) {
+        if (s.allocated) count++;
+    }
+    return count;
+}
+
 bool TextureUploader::prepareTexture(uint32_t slot, uint32_t width, uint32_t height,
                                       TextureFormat format) {
     if (slot >= MAX_SLOTS) {
@@ -158,7 +167,7 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
         return true;
     }
 
-    // Dimensions or format changed — release old resources. Caller was
+    // Dimensions or format changed — release old GPU resources. Caller was
     // responsible for GPU synchronization (waitForGpu) before calling us.
     if (slot.texture) {
         slot.texture.Reset();
@@ -194,24 +203,25 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
         return false;
     }
 
-    // Create the staging upload buffer (UPLOAD heap, GENERIC_READ state).
-    // GetCopyableFootprints handles BC-block row-pitch alignment automatically —
-    // the staging buffer size it returns already covers the compressed case.
-    UINT64 uploadBufferSize = 0;
-    m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+    // Create per-slot UPLOAD-heap staging buffer sized for the texture footprint.
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT numRows = 0;
+    UINT64 rowSizeInBytes = 0;
+    UINT64 totalBytes = 0;
+    m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
 
     D3D12_HEAP_PROPERTIES uploadHeapProps = {};
     uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC uploadBufferDesc = {};
-    uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    uploadBufferDesc.Width = uploadBufferSize;
-    uploadBufferDesc.Height = 1;
+    uploadBufferDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    uploadBufferDesc.Width            = totalBytes;
+    uploadBufferDesc.Height           = 1;
     uploadBufferDesc.DepthOrArraySize = 1;
-    uploadBufferDesc.MipLevels = 1;
-    uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uploadBufferDesc.MipLevels        = 1;
+    uploadBufferDesc.Format           = DXGI_FORMAT_UNKNOWN;
     uploadBufferDesc.SampleDesc.Count = 1;
-    uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    uploadBufferDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     hr = m_device->CreateCommittedResource(
         &uploadHeapProps, D3D12_HEAP_FLAG_NONE,
@@ -255,6 +265,7 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
                                            TextureFormat format) {
     (void)format; // pitch is derived from footprint below; format selected the texture desc earlier
     (void)width;
+    (void)height;
 
     // Query upload buffer footprint (handles row-pitch alignment automatically
     // for BOTH RGBA and BC formats — rowSizeInBytes is the unpadded source
@@ -266,9 +277,9 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
     UINT64 totalBytes = 0;
     m_device->GetCopyableFootprints(&textureDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
 
-    // Map upload buffer and memcpy source with row-pitch fix-up. Source stride
-    // is rowSizeInBytes (unpadded); destination stride is footprint.RowPitch
-    // (aligned to D3D12_TEXTURE_DATA_PITCH_ALIGNMENT = 256).
+    // Map per-slot upload buffer and memcpy source with row-pitch fix-up.
+    // Source stride is rowSizeInBytes (unpadded); destination stride is
+    // footprint.RowPitch (aligned to D3D12_TEXTURE_DATA_PITCH_ALIGNMENT=256).
     void* mappedData = nullptr;
     D3D12_RANGE readRange = { 0, 0 };
     HRESULT hr = slot.uploadBuffer->Map(0, &readRange, &mappedData);
@@ -280,30 +291,29 @@ bool TextureUploader::copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
 
     uint8_t* dst = static_cast<uint8_t*>(mappedData) + footprint.Offset;
     const uint8_t* src = data;
-
     for (UINT row = 0; row < numRows; ++row) {
         std::memcpy(dst + row * footprint.Footprint.RowPitch,
                     src + row * rowSizeInBytes,
                     rowSizeInBytes);
     }
     slot.uploadBuffer->Unmap(0, nullptr);
-    (void)height;
 
     // No explicit barriers (Phase C.11). Texture rests in COMMON; implicit
     // promotion handles COMMON → COPY_DEST here, and the direct queue's draw
     // later promotes COMMON → PIXEL_SHADER_RESOURCE. Decay returns to COMMON
     // at each queue's ExecuteCommandLists boundary.
     D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-    srcLocation.pResource = slot.uploadBuffer.Get();
-    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLocation.pResource      = slot.uploadBuffer.Get();
+    srcLocation.Type           = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     srcLocation.PlacedFootprint = footprint;
 
     D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
-    dstLocation.pResource = slot.texture.Get();
-    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLocation.pResource        = slot.texture.Get();
+    dstLocation.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     dstLocation.SubresourceIndex = 0;
 
     cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+
     return true;
 }
 
@@ -326,11 +336,64 @@ bool TextureUploader::upload(ID3D12GraphicsCommandList* cmdList,
         std::cerr << "TextureUploader: slot " << slot << " not allocated" << std::endl;
         return false;
     }
-
     if (!ensureTexture(s, slot, width, height, format)) {
         return false;
     }
     return copyPixelsAndRecord(cmdList, s, data, width, height, format);
+}
+
+
+bool TextureUploader::recordDirectCopy(ID3D12GraphicsCommandList* cmdList,
+                                        uint32_t slot,
+                                        ID3D12Resource* uploadResource,
+                                        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
+                                        uint32_t width,
+                                        uint32_t height,
+                                        TextureFormat format) {
+    if (!m_device || !cmdList || !uploadResource || width == 0 || height == 0) {
+        return false;
+    }
+    if (slot >= MAX_SLOTS) {
+        std::cerr << "TextureUploader: recordDirectCopy slot " << slot
+                  << " out of bounds" << std::endl;
+        return false;
+    }
+    Slot& s = m_slots[slot];
+    if (!s.allocated) {
+        std::cerr << "TextureUploader: recordDirectCopy slot " << slot
+                  << " not allocated" << std::endl;
+        return false;
+    }
+
+    // Ensure the GPU texture exists with the correct dimensions + format.
+    // On a cold slot this creates the texture (matching prepareTexture).
+    // On a dimension change it recreates — caller should have called
+    // waitForGpu() before this (same contract as upload()).
+    if (!ensureTexture(s, slot, width, height, format)) {
+        return false;
+    }
+
+    // Source: the UploadHeapBuffer resource with the pre-computed footprint.
+    // The footprint was produced by UploadHeapBufferPool::acquireForTexture
+    // (stored in UploadHeapBuffer::footprint) and the decoder wrote data with
+    // RowPitch stride — so this layout exactly matches the buffer contents.
+    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+    srcLocation.pResource        = uploadResource;
+    srcLocation.Type             = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLocation.PlacedFootprint  = footprint;
+
+    // Destination: the slot's DEFAULT-heap texture, subresource 0.
+    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+    dstLocation.pResource        = s.texture.Get();
+    dstLocation.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLocation.SubresourceIndex = 0;
+
+    // No explicit barriers needed. CopyTextureRegion runs on the DIRECT queue's
+    // command list (the show list, not the COPY list). Implicit state promotion:
+    // UPLOAD-heap source (COMMON → GENERIC_READ); DEFAULT-heap destination
+    // (COMMON → COPY_DEST). Both decay back to COMMON at ExecuteCommandLists.
+    cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    return true;
 }
 
 } // namespace entity

@@ -42,6 +42,8 @@ add_executable(EntityMediaTests
     unit/AssetIdTests.cpp
     unit/MathInputTests.cpp
     unit/DecodeBufferPoolTests.cpp
+    unit/DecodeBufferAllocatorTests.cpp
+    unit/DecodedFrameTests.cpp
     unit/CalibrationSolverTests.cpp
     unit/WaitForGpuEarlyOutTests.cpp
     unit/DmxMappingTests.cpp
@@ -65,6 +67,31 @@ target_link_libraries(EntityMediaTests
 
 include(GoogleTest)
 gtest_discover_tests(EntityMediaTests)
+
+# ============================================================================
+# D3D12-device-requiring unit tests.
+#
+# Gated on ENTITY_HAVE_D3D12_TESTS (default OFF) so the standard ctest sweep
+# stays clean on machines without a GPU / in headless CI. Set the option ON to
+# build UploadHeapBufferPoolTests and run it against a real D3D12 device.
+# Each individual test calls GTEST_SKIP() if D3D12CreateDevice fails.
+# ============================================================================
+
+if(ENTITY_HAVE_D3D12_TESTS)
+    add_executable(UploadHeapBufferPoolTests
+        unit/UploadHeapBufferPoolTests.cpp
+    )
+    target_compile_definitions(UploadHeapBufferPoolTests
+        PRIVATE ENTITY_HAVE_D3D12_TESTS
+    )
+    target_link_libraries(UploadHeapBufferPoolTests
+        PRIVATE
+            EntityMediaCore
+            GTest::gtest
+            GTest::gtest_main
+    )
+    gtest_discover_tests(UploadHeapBufferPoolTests)
+endif()
 
 # Dev-time fixture regeneration tool (not wired into CTest).
 # Pure FFmpeg consumers — gate on HAVE_FFMPEG and attach FFmpeg explicitly.
@@ -262,6 +289,13 @@ set_tests_properties(integration_show_thread_advances PROPERTIES
 # If the bug recurs the GPU wedges, DeviceLost is posted, the show thread
 # stalls, and the frame-count assertion fires before Exit.
 entity_add_integration_test(screen_no_double_allocation screen_no_double_allocation.json)
+
+# Phase 1 (stress_16screen follow-up 2026-05-23) — video texture slot leak fix.
+# Before the fix, deleting a Clip left its VideoTexture slot allocated until
+# process exit. The fix adds an on_destroy<VideoTexture> observer that defers
+# the free to the show thread's next beginShowFrame (after its fence wait).
+# Asserts: import allocates 1 slot, delete + WaitSeconds reduces it back to 0.
+entity_add_integration_test(video_texture_slot_leak video_texture_slot_leak.json)
 
 # Phase 1 mesh-upload pacing: cold-start gate + one-per-tick steady-state cap.
 # No pixel comparison needed; asserts upload counts directly.

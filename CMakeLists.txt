@@ -27,6 +27,10 @@ endif()
 option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_D3D12_DEBUG "Enable D3D12 debug layer" ON)
 option(ENTITY_ENABLE_TRACY "Enable Tracy profiler instrumentation" ON)
+# Gate D3D12-device-requiring unit tests. Default OFF keeps the standard
+# ctest sweep clean on machines without a GPU / in headless CI. Set ON
+# to build and run UploadHeapBufferPoolTests against a real D3D12 device.
+option(ENTITY_HAVE_D3D12_TESTS "Build unit tests that require a real D3D12 device" OFF)
 
 # Add CMake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -162,6 +166,7 @@ target_sources(EntityMediaCore
         src/color/OcioManager.cpp
 
         # Media
+        src/media/DecodedFrame.cpp
         src/media/DecodeBufferPool.cpp
         src/media/FrameCache.cpp
         src/media/Decoder.cpp
@@ -184,6 +189,7 @@ target_sources(EntityMediaCore
         src/render/Stage3DRenderer.cpp
         src/render/MeshUploader.cpp
         src/render/TextureUploader.cpp
+        src/render/UploadHeapBufferPool.cpp
 
         # Timeline
         src/timeline/SectionFade.cpp

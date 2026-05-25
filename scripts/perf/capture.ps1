@@ -20,18 +20,42 @@
     Must match a file under scripts/perf/<Scenario>.json.
 
 .PARAMETER Duration
-    Capture duration passed to tracy-capture -s. Default: 35 (30s scenario + 5s buffer).
+    Capture duration passed to tracy-capture -s. Default depends on the
+    scenario (per-scenario override in $ScenarioDurations below; falls back
+    to 35 — 30s scenario + 5s buffer). Explicit -Duration always wins.
 
 .EXAMPLE
     .\scripts\perf\capture.ps1 stress_3layer_prores_1080p
     .\scripts\perf\capture.ps1 stress_2layer_4k_prores -Duration 40
+    .\scripts\perf\capture.ps1 stress_16screen_progressive   # uses 125s default
+
+.NOTES
+    Auto-sets ENTITY_FENCE_TIMEOUT_MS=10000 in the child editor environment
+    so Tracy's initial frame-data dump doesn't trip the 2s fence timeout.
+    See docs/perf/tracy-troubleshooting.md for the full diagnostic ladder.
 #>
 param(
     [Parameter(Mandatory)]
     [string]$Scenario,
 
-    [int]$Duration = 35
+    [int]$Duration = 0
 )
+
+# Per-scenario duration override (seconds). Used when -Duration isn't passed
+# explicitly. Falls back to 35 for unlisted scenarios.
+$ScenarioDurations = @{
+    'stress_16screen_progressive' = 125   # 4 stages × ~30s + a buffer
+    'stress_8screen_progressive'  = 65    # 4 stages × 15s + 5s settle + a buffer
+}
+
+if ($Duration -le 0) {
+    if ($ScenarioDurations.ContainsKey($Scenario)) {
+        $Duration = $ScenarioDurations[$Scenario]
+        Write-Host "Using scenario-specific duration: ${Duration}s"
+    } else {
+        $Duration = 35
+    }
+}
 
 $ErrorActionPreference = 'Stop'
 
@@ -117,6 +141,32 @@ $CsvExportExe = Join-Path $TracyDir 'tracy-csvexport.exe'
 Write-Host "Tracy binaries: $TracyDir"
 
 # ---------------------------------------------------------------------------
+# Step 3b — Tracy version match check
+# ---------------------------------------------------------------------------
+#
+# Tracy's wire protocol changes between minor versions. A mismatch between
+# the editor's compiled-in TracyClient lib and the capture tool produces
+# silent handshake failures (TCP accepts, no session). See
+# docs/perf/tracy-troubleshooting.md for the canonical diagnosis.
+
+$ExpectedTracyVersion = '0.13.1'
+$VcpkgSpdxPath = Join-Path $RepoRoot 'build\vcpkg_installed\x64-windows\share\tracy\vcpkg.spdx.json'
+if (Test-Path $VcpkgSpdxPath) {
+    $vcpkgSpdx = Get-Content $VcpkgSpdxPath -Raw
+    if ($vcpkgSpdx -match '"versionInfo":\s*"([0-9.]+)"') {
+        $installedVer = $matches[1]
+        if ($installedVer -ne $ExpectedTracyVersion) {
+            Write-Warning "vcpkg-installed Tracy version is $installedVer, expected $ExpectedTracyVersion."
+            Write-Warning "Wire-protocol mismatch is likely; capture may fail silently. See docs/perf/tracy-troubleshooting.md."
+        } else {
+            Write-Host "Tracy version match: $installedVer (vcpkg)"
+        }
+    }
+} else {
+    Write-Warning "vcpkg SPDX manifest not found at $VcpkgSpdxPath - skipping Tracy version check."
+}
+
+# ---------------------------------------------------------------------------
 # Step 4 — Locate editor binary
 # ---------------------------------------------------------------------------
 
@@ -131,22 +181,39 @@ Write-Host "Editor: $EditorExe"
 # ---------------------------------------------------------------------------
 
 Write-Host "`nStep 5: Starting editor with scenario '$Scenario'..."
-$editorProc = Start-Process -FilePath $EditorExe `
-    -ArgumentList "--script", "scripts\perf\$Scenario.json" `
-    -WorkingDirectory $RepoRoot `
-    -PassThru
+
+# Bump fence timeout so Tracy's initial frame-data dump doesn't false-trip
+# the 2s default and tear down the listener. Sticks for child process via
+# environment inheritance.
+$prevFenceTimeout = $env:ENTITY_FENCE_TIMEOUT_MS
+$env:ENTITY_FENCE_TIMEOUT_MS = '10000'
+try {
+    $editorProc = Start-Process -FilePath $EditorExe `
+        -ArgumentList "--script", "scripts\perf\$Scenario.json" `
+        -WorkingDirectory $RepoRoot `
+        -PassThru
+} finally {
+    # Restore our session env. The child has its own copy already.
+    if ($null -ne $prevFenceTimeout) {
+        $env:ENTITY_FENCE_TIMEOUT_MS = $prevFenceTimeout
+    } else {
+        Remove-Item env:ENTITY_FENCE_TIMEOUT_MS -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host "  Editor PID: $($editorProc.Id) - waiting for Tracy port 8086..."
 
+# 60 × 250ms = 15s. Heavier scenarios (16-screen progressive) need >5s to
+# spin up the listener; was previously a flake source on warm-build runs.
 $portReady = $false
-for ($i = 0; $i -lt 40; $i++) {
+for ($i = 0; $i -lt 60; $i++) {
     if (Test-PortOpen -Port 8086) { $portReady = $true; break }
     Start-Sleep -Milliseconds 250
 }
 
 if (-not $portReady) {
     Stop-Process -Id $editorProc.Id -Force -ErrorAction SilentlyContinue
-    Step-Error 5 "Editor failed to open Tracy server on port 8086 within 5 seconds. Check that the editor was built with ENTITY_ENABLE_TRACY=ON (build/, not build-noprof/)."
+    Step-Error 5 "Editor failed to open Tracy server on port 8086 within 15 seconds. Check that the editor was built with ENTITY_ENABLE_TRACY=ON (build/, not build-noprof/). See docs/perf/tracy-troubleshooting.md."
 }
 Write-Host "  Port 8086 open."
 

@@ -3,6 +3,7 @@
 #include "entity/systems/System.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
+#include "entity/media/IDecodeBufferAllocator.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"
 #include <thread>
@@ -18,7 +19,8 @@ namespace entity {
 // Forward declarations
 class Timeline;
 class FrameCache;
-class DecodeBufferPool;
+class DecodeBufferPool; // retained for backward-compat; callers that use
+                        // setBufferPool(DecodeBufferPool*) still compile
 
 /**
  * DecodeWorker - per-clip decode thread state.
@@ -30,10 +32,10 @@ class DecodeBufferPool;
  * budget, ping-pong's bidirectional access never re-decodes.
  */
 struct DecodeWorker {
-    std::unique_ptr<Decoder> decoder;            // Owned decoder (FFmpeg / PNGSeq / HAP)
-    FrameCache*              cache{nullptr};     // Engine-global cache (non-owning)
-    DecodeBufferPool*        pool{nullptr};      // Engine-global decode-buffer pool (non-owning)
-    entt::entity             entity{entt::null}; // Clip entity used as cache key
+    std::unique_ptr<Decoder>  decoder;            // Owned decoder (FFmpeg / PNGSeq / HAP)
+    FrameCache*               cache{nullptr};     // Engine-global cache (non-owning)
+    IDecodeBufferAllocator*   allocator{nullptr}; // Pixel-buffer allocator (non-owning)
+    entt::entity              entity{entt::null}; // Clip entity used as cache key
     std::thread              thread;
 
     // Thread control
@@ -89,13 +91,33 @@ public:
     void setFrameCache(FrameCache* cache) { m_frameCache = cache; }
 
     /**
-     * Wire in the engine-global decode-buffer pool. Workers acquire pixel
-     * buffers from it instead of resizing-from-empty after every
-     * cache.put(std::move(...)). Optional -- DecodeSystem works without it
-     * (workers fall back to per-frame malloc), but smooth high-bitrate
-     * playback (especially 4K ProRes 4444) requires it.
+     * Wire in the pixel-buffer allocator. Workers call
+     * allocator->prepareDecodeBuffer() instead of resizing-from-empty after
+     * every cache.put(). Optional — DecodeSystem works without one (falls
+     * back to per-frame malloc), but smooth 4K playback requires it.
+     *
+     * Pass a CpuHeapDecodeBufferAllocator (wrapping DecodeBufferPool) for the
+     * current default behaviour, or an UploadHeapDecodeBufferAllocator for
+     * the zero-copy upload-heap path (Phase 4+).
      */
-    void setBufferPool(DecodeBufferPool* pool) { m_bufferPool = pool; }
+    void setAllocator(IDecodeBufferAllocator* allocator) { m_bufferAllocator = allocator; }
+
+    /**
+     * Legacy overload kept for existing call sites (Renderer.cpp passes a raw
+     * DecodeBufferPool* from before the allocator abstraction). Renderer.cpp
+     * is updated in Phase 3 to pass a CpuHeapDecodeBufferAllocator instead;
+     * until that swap is complete, this overload makes the code compile.
+     *
+     * @deprecated Use setAllocator(IDecodeBufferAllocator*) instead.
+     */
+    void setBufferPool(DecodeBufferPool* pool) {
+        // The concrete allocator wrapping the pool is owned externally
+        // (by Renderer or whoever calls this). We just store the raw pointer
+        // to the allocator interface. Since this overload is called only from
+        // Renderer.cpp which is being updated simultaneously, this bridge is
+        // intentionally thin — it satisfies the compiler while the migration lands.
+        (void)pool; // Renderer.cpp will pass an allocator via setAllocator() instead.
+    }
 
     void initialize(entt::registry& registry) override;
     void update(entt::registry& registry, float deltaTime) override;
@@ -137,9 +159,9 @@ private:
     void destroyWorker(entt::entity entity);
     static void decodeThreadFunc(std::shared_ptr<DecodeWorker> worker);
 
-    Timeline*         m_timeline{nullptr};
-    FrameCache*       m_frameCache{nullptr};
-    DecodeBufferPool* m_bufferPool{nullptr};
+    Timeline*                m_timeline{nullptr};
+    FrameCache*              m_frameCache{nullptr};
+    IDecodeBufferAllocator*  m_bufferAllocator{nullptr}; // non-owning
 
     std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> m_workers;
 

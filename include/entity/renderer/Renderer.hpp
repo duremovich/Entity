@@ -16,6 +16,8 @@ class D3D12Renderer;
 class OutputManager;
 class FrameCache;
 class DecodeBufferPool;
+class IDecodeBufferAllocator;
+class UploadHeapBufferPool;
 class OcioManager;
 class CompositorSystem;
 class DecodeSystem;
@@ -113,8 +115,24 @@ private:
     // pool alive on tear-down (they do `weak_ptr.lock()` to recycle the
     // freed pixel buffer; if the pool is gone they fall through to `delete`,
     // safe but loses the recycle on the final shutdown wave).
-    std::shared_ptr<DecodeBufferPool>  m_decodeBufferPool;
-    std::unique_ptr<FrameCache>        m_frameCache;
+    std::shared_ptr<DecodeBufferPool>           m_decodeBufferPool;
+    // Phase 5 — UploadHeap buffer pool. Decode workers write into
+    // persistently-mapped D3D12 UPLOAD-heap buffers; PlaybackPresenter
+    // records CopyTextureRegion directly from the buffer, bypassing the
+    // CPU memcpy. Declared AFTER m_d3d12Renderer (constructs after, destructs
+    // BEFORE) so the pool is stopped/drained before the device goes away.
+    // Must destruct BEFORE m_d3d12Renderer (guaranteed by declaration order —
+    // unique_ptr destructors run in reverse-declaration order). The pool's
+    // recycle worker calls fence->GetCompletedValue() on the show fence;
+    // the fence must be alive for that. D3D12Renderer owns the fence.
+    std::shared_ptr<UploadHeapBufferPool>       m_uploadHeapPool;
+    // Allocator wired into DecodeSystem. Workers call
+    // allocator->prepareDecodeBuffer() to obtain an UploadHeap buffer;
+    // they write pixels into it via frame.mutableData(). Must destruct
+    // AFTER DecodeSystem workers are joined (guaranteed: m_decodeSystem
+    // is declared below and destructs first).
+    std::unique_ptr<IDecodeBufferAllocator>     m_uploadHeapAllocator;
+    std::unique_ptr<FrameCache>                 m_frameCache;
     std::unique_ptr<OcioManager>       m_ocioManager;
     std::unique_ptr<CompositorSystem>  m_compositorSystem;
     std::unique_ptr<TestSystem>        m_testSystem;

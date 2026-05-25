@@ -22,6 +22,13 @@ struct GLFWwindow;
 
 namespace entity {
 
+// Forward declaration — UploadHeapBuffer is defined in UploadHeapBufferPool.hpp.
+// IRenderer.hpp forward-declares it so the copyUploadBufferToVideoTextureSlot
+// default no-op compiles without pulling in D3D12 headers (UploadHeapBufferPool.hpp
+// includes <d3d12.h>). Concrete backends that override the method include the
+// full header in their own header (D3D12Renderer.hpp already does so).
+struct UploadHeapBuffer;
+
 /**
  * Opaque texture reference — which pool the handle indexes is encoded in Kind.
  * Callers pass these around; the renderer resolves to backend-specific
@@ -96,6 +103,15 @@ public:
     // ------------------------------------------------------------------------
     virtual uint32_t   allocateVideoTextureSlot() = 0;
     virtual void       freeVideoTextureSlot(uint32_t slot) = 0;
+    // Defer a slot free to the show thread's beginShowFrame (after the show
+    // fence wait). Safe to call from the editor thread's on_destroy<VideoTexture>
+    // observer — avoids freeing a slot while the GPU may still be sampling it.
+    // Default no-op for mock/test renderers.
+    virtual void       scheduleVideoTextureSlotFree(uint32_t /*slot*/) {}
+    // Returns the number of currently allocated video texture slots (including
+    // pre-allocated but not yet freed). Useful for integration tests that
+    // verify slot leak detection (AssertVideoTextureSlotsAllocated command).
+    virtual uint32_t   getVideoTextureSlotsAllocated() const { return 0; }
     // 2026-05-23 — Proactively create the slot's GPU texture + upload buffer
     // so the first uploadVideoFrameToSlot doesn't pay two CreateCommittedResource
     // calls (~33MB each for 4K) on the show thread. Closes the section-break
@@ -138,6 +154,30 @@ public:
                                                        const uint8_t* rgba,
                                                        uint32_t width,
                                                        uint32_t height) = 0;
+
+    // Phase 5 — GPU-direct copy path for UploadHeap-backed FrameCache frames.
+    //
+    // Records a CopyTextureRegion from `buf->resource` (an UploadHeapBuffer
+    // written by a decode worker) into the video slot's DEFAULT-heap texture,
+    // bypassing the show-thread CPU memcpy that `uploadVideoFrameToSlot` performs.
+    // After recording, calls `UploadHeapBufferPool::recordCopyDone` on the buffer
+    // so its fence-guarded deleter waits for GPU completion before recycling.
+    //
+    // The concrete backend (D3D12Renderer) reads its current show-fence value
+    // internally — callers do not need to pass it. Default no-op for mock/test
+    // renderers (they never receive UploadHeap frames because the allocator
+    // isn't wired). D3D12Renderer overrides this.
+    //
+    // Returns true if the copy was recorded into the show command list (caller
+    // may advance lastDecodedFrame). Returns false if the call was skipped or
+    // failed (no copy recorded; caller should NOT advance lastDecodedFrame —
+    // retry next tick). Mocks return false because they record nothing.
+    virtual bool       copyUploadBufferToVideoTextureSlot(
+                           uint32_t /*slot*/,
+                           struct UploadHeapBuffer* /*buf*/,
+                           uint32_t /*width*/,
+                           uint32_t /*height*/,
+                           TextureFormat /*format*/) { return false; }
     virtual TextureRef getVideoTexture(uint32_t slot) const = 0;
 
     // ------------------------------------------------------------------------

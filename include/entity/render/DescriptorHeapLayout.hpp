@@ -36,7 +36,10 @@ namespace entity {
 class DescriptorHeapLayout {
 public:
     // Capacity limits. Must match IRenderer's public constants.
-    static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS = 16;
+    // See IRenderer.hpp for the rationale for 256. Slots are now freed via
+    // Engine::onVideoTextureDestroyed (on_destroy<VideoTexture> deferred-free
+    // path, NEW-10) so they return to the pool when clips are deleted.
+    static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS = 256;
     // Must match IRenderer::MAX_COMPOSE_TARGETS. Compose-target pool is
     // shared between screens, generative-layer RTs (ADR-0018), and
     // per-layer effect ping-pongs (issue #54). Bumped to 64 with the

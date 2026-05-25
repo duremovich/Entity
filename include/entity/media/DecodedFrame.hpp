@@ -4,10 +4,15 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace entity {
+
+// Forward-declared so DecodedFrame.hpp stays out of D3D12 headers — only
+// UploadHeap frames carry a non-null uploadBuf; CpuHeap frames leave it null.
+struct UploadHeapBuffer;
 
 /**
  * DecodedFrame — single decoded video frame with metadata.
@@ -17,13 +22,36 @@ namespace entity {
  * buffer. The cache (FrameCache.hpp) holds these via shared_ptr; decoders
  * write into a freshly-allocated one each tick.
  *
- * `data` is either RGBA8 pixels OR a pre-compressed BCn block payload —
- * `format` says which. `valid` is atomic to support the older ring-buffer
- * read pattern; the cache treats entries as immutable so the field is
- * effectively a constant `true` once a frame is in the cache.
+ * Pixel bytes are held in one of two storage modes:
+ *
+ *   CpuHeap   — `cpuData` (std::vector<uint8_t>) — the current default. The
+ *               FrameCache's custom deleter recycles the vector into the
+ *               DecodeBufferPool to avoid per-frame malloc.
+ *
+ *   UploadHeap — `uploadBuf` (shared_ptr<UploadHeapBuffer>) — a D3D12
+ *               UPLOAD-heap persistently-mapped buffer owned by
+ *               UploadHeapBufferPool. The GPU-fence-wait before recycle is
+ *               handled by the UploadHeapBuffer shared_ptr deleter (Phase 1).
+ *               The FrameCache deleter does NOT touch uploadBuf; it just lets
+ *               the shared_ptr decrement naturally on `delete p`.
+ *
+ * Use data() / mutableData() / size() for all pixel access — they dispatch
+ * to the active storage without the caller needing to know which mode is live.
+ *
+ * `format` says which pixel encoding the bytes hold (RGBA8 or BCn blocks).
+ * `valid` is atomic to support the older ring-buffer read pattern; the cache
+ * treats entries as immutable so the field is effectively a constant `true`
+ * once a frame is in the cache.
  */
 struct DecodedFrame {
-    std::vector<uint8_t> data;                       // RGBA pixels OR BC blocks, see `format`
+    // Storage discriminator. CpuHeap is the current default; UploadHeap is
+    // used once decoders are wired to UploadHeapBufferPool (Phase 3+).
+    enum class Storage { CpuHeap, UploadHeap };
+
+    Storage              storage{Storage::CpuHeap};
+    std::vector<uint8_t> cpuData;                    // CpuHeap path: RGBA pixels OR BC blocks
+    std::shared_ptr<UploadHeapBuffer> uploadBuf;     // UploadHeap path: mapped D3D12 buffer
+
     FrameNumber          frameNumber{-1};            // Source frame index
     uint32_t             width{0};
     uint32_t             height{0};
@@ -39,10 +67,41 @@ struct DecodedFrame {
     std::string          ocioColorSpace;
     std::atomic<bool>    valid{false};               // Holds-meaningful-data flag
 
+    // -----------------------------------------------------------------------
+    // Pixel-buffer accessors — always use these; never access cpuData /
+    // uploadBuf directly in production code.
+    // -----------------------------------------------------------------------
+
+    // Read-only pointer to the start of pixel data.
+    const uint8_t* data() const;
+
+    // Writable pointer to the start of pixel data. Only valid when the frame
+    // is being written by a decoder (before FrameCache::put). After put() the
+    // shared_ptr<const DecodedFrame> lease makes the frame immutable — callers
+    // should not call mutableData() on a cache lease.
+    uint8_t* mutableData();
+
+    // Byte count of the pixel buffer. Corresponds to bytesFor(width, height, format)
+    // for CPU-heap frames; for upload-heap frames may be larger due to row-pitch
+    // alignment. Callers that only need to know the logical frame size should use
+    // bytesFor() instead.
+    size_t size() const;
+
+    // Returns the row pitch (bytes per row) of the upload-heap buffer, as
+    // populated by UploadHeapBufferPool::acquireForTexture. The pitch is
+    // 256-byte-aligned (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT). Returns 0 for
+    // CpuHeap frames (tight-packed; callers use width*bytesPerPixel directly).
+    // Defined in DecodedFrame.cpp so this header stays D3D12-header-free.
+    uint32_t uploadRowPitch() const;
+
+    // -----------------------------------------------------------------------
+
     DecodedFrame() = default;
 
     DecodedFrame(const DecodedFrame& other)
-        : data(other.data)
+        : storage(other.storage)
+        , cpuData(other.cpuData)
+        , uploadBuf(other.uploadBuf)
         , frameNumber(other.frameNumber)
         , width(other.width)
         , height(other.height)
@@ -55,7 +114,9 @@ struct DecodedFrame {
 
     DecodedFrame& operator=(const DecodedFrame& other) {
         if (this != &other) {
-            data = other.data;
+            storage = other.storage;
+            cpuData = other.cpuData;
+            uploadBuf = other.uploadBuf;
             frameNumber = other.frameNumber;
             width = other.width;
             height = other.height;
@@ -69,27 +130,31 @@ struct DecodedFrame {
     }
 
     DecodedFrame(DecodedFrame&& other) noexcept
-        : data(std::move(other.data))
+        : storage(other.storage)
+        , cpuData(std::move(other.cpuData))
+        , uploadBuf(std::move(other.uploadBuf))
         , frameNumber(other.frameNumber)
         , width(other.width)
         , height(other.height)
         , pts(other.pts)
         , format(other.format)
         , colorSpace(other.colorSpace)
-        , ocioColorSpace(other.ocioColorSpace)
+        , ocioColorSpace(std::move(other.ocioColorSpace))
         , valid(other.valid.load(std::memory_order_acquire))
     {}
 
     DecodedFrame& operator=(DecodedFrame&& other) noexcept {
         if (this != &other) {
-            data = std::move(other.data);
+            storage = other.storage;
+            cpuData = std::move(other.cpuData);
+            uploadBuf = std::move(other.uploadBuf);
             frameNumber = other.frameNumber;
             width = other.width;
             height = other.height;
             pts = other.pts;
             format = other.format;
             colorSpace = other.colorSpace;
-            ocioColorSpace = other.ocioColorSpace;
+            ocioColorSpace = std::move(other.ocioColorSpace);
             valid.store(other.valid.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
@@ -98,6 +163,8 @@ struct DecodedFrame {
     /**
      * Bytes required for a frame of (w, h) in the given format.
      * RGBA8 → w*h*4. BC formats use 4×4 blocks (8 or 16 bytes per block).
+     * Note: upload-heap frames may allocate more than this (pitch alignment);
+     * use size() for the actual allocation size.
      */
     static size_t bytesFor(uint32_t w, uint32_t h, TextureFormat fmt) {
         switch (fmt) {
@@ -121,15 +188,20 @@ struct DecodedFrame {
         return 0;
     }
 
+    // Allocate a CpuHeap frame. Always uses cpuData; storage set to CpuHeap.
     void allocate(uint32_t w, uint32_t h, TextureFormat fmt = TextureFormat::RGBA8_UNORM) {
         width = w;
         height = h;
         format = fmt;
-        data.resize(bytesFor(w, h, fmt));
+        storage = Storage::CpuHeap;
+        uploadBuf.reset();  // release any prior UploadHeap slot before switching paths
+        cpuData.resize(bytesFor(w, h, fmt));
     }
 
     void clear() {
-        data.clear();
+        storage = Storage::CpuHeap;
+        cpuData.clear();
+        uploadBuf.reset();
         frameNumber = -1;
         width = 0;
         height = 0;

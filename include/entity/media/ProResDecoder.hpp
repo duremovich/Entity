@@ -43,6 +43,7 @@ public:
     void close() override;
     Result decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) override;
     Result seek(FrameNumber frameNumber) override;
+    void setAllocator(IDecodeBufferAllocator* allocator) override { m_allocator = allocator; }
 
     // Media properties
     MediaType getMediaType() const override { return MediaType::VideoProRes4444; }
@@ -100,6 +101,10 @@ private:
     void cleanupFFmpeg();
 
 private:
+    // Buffer allocator — set by DecodeSystem::createWorker via setAllocator().
+    // Null until wired; convertToRGBA falls back to outFrame.allocate() when null.
+    IDecodeBufferAllocator* m_allocator{nullptr};
+
     // File information
     std::string m_filepath;
     bool m_isOpen{false};

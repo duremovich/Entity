@@ -17,7 +17,7 @@ void FrameCache::put(entt::entity clip, FrameNumber frame, DecodedFrame&& data) 
     // function (next get() returns a miss, decoder gets re-asked).
     if (m_maxBytes == 0) return;
 
-    const size_t bytes = data.data.size();
+    const size_t bytes = data.size();
     // A zero-byte frame is almost certainly a decode error; refuse to cache
     // it so a bad decode doesn't pollute the cache with phantom hits that
     // upload empty buffers.
@@ -36,9 +36,16 @@ void FrameCache::put(entt::entity clip, FrameNumber frame, DecodedFrame&& data) 
     auto framePtr = std::shared_ptr<DecodedFrame>(
         new DecodedFrame(std::move(data)),
         [poolWeak = m_pool](DecodedFrame* p) {
-            if (auto pool = poolWeak.lock()) {
-                if (!p->data.empty()) {
-                    pool->release(std::move(p->data));
+            // CpuHeap frames: recycle the pixel vector into the DecodeBufferPool
+            // so the next frame can reuse the allocation without a malloc.
+            // UploadHeap frames: the uploadBuf shared_ptr drops naturally when
+            // `delete p` runs below; the UploadHeapBufferPool deleter (Phase 1)
+            // handles the GPU fence-wait and pool recycle internally.
+            if (p->storage == DecodedFrame::Storage::CpuHeap) {
+                if (auto pool = poolWeak.lock()) {
+                    if (!p->cpuData.empty()) {
+                        pool->release(std::move(p->cpuData));
+                    }
                 }
             }
             delete p;

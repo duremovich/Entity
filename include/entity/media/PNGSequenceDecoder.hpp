@@ -39,6 +39,7 @@ public:
     void close() override;
     Result decodeFrame(FrameNumber frameNumber, DecodedFrame& outFrame) override;
     Result seek(FrameNumber frameNumber) override;
+    void setAllocator(IDecodeBufferAllocator* allocator) override { m_allocator = allocator; }
 
     // Media properties
     MediaType getMediaType() const override { return MediaType::PNGSequence; }
@@ -80,6 +81,10 @@ private:
     void premultiplyAlpha(uint8_t* rgba, uint32_t width, uint32_t height);
 
 private:
+    // Buffer allocator — set by DecodeSystem::createWorker via setAllocator().
+    // Null until wired; loadPNG falls back to outFrame.allocate() when null.
+    IDecodeBufferAllocator* m_allocator{nullptr};
+
     std::string m_basePath;     // Base directory containing PNG files
     std::vector<std::string> m_fileList;  // List of PNG files in sequence order
     bool m_isOpen{false};

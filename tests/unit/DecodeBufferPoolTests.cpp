@@ -104,7 +104,11 @@ DecodedFrame makeFrame(std::size_t bytes, entity::FrameNumber frameNum) {
     f.frameNumber = frameNum;
     f.width = 1;
     f.height = 1;
-    f.data.resize(bytes);
+    // Explicitly use the CpuHeap path so this test helper doesn't depend on
+    // D3D12 availability. Storage::CpuHeap is the default; set explicitly for
+    // clarity.
+    f.storage = DecodedFrame::Storage::CpuHeap;
+    f.cpuData.resize(bytes);
     f.valid.store(true);
     return f;
 }

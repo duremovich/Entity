@@ -1086,6 +1086,34 @@ private:
 };
 
 /**
+ * Assert that the renderer's video texture slot pool currently has exactly N
+ * allocated slots. Used to verify the on_destroy<VideoTexture> deferred-free
+ * path (Phase 1 of the stress_16screen follow-up). The count updates after the
+ * show thread drains its deferred-free queue, so call after a WaitFrames/WaitSeconds
+ * to give the show thread time to process.
+ *
+ * JSON format:
+ * {
+ *     "type": "AssertVideoTextureSlotsAllocated",
+ *     "count": 1
+ * }
+ */
+class AssertVideoTextureSlotsAllocatedCommand : public Command {
+public:
+    explicit AssertVideoTextureSlotsAllocatedCommand(uint32_t count) : m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertVideoTextureSlotsAllocated"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint32_t m_count;
+};
+
+/**
  * Assert that the engine-global FrameCache currently holds an exact entry
  * for (clipEntity at trackIndex/clipIndex, sourceFrame). This is the gate
  * for the click-to-recently-viewed-frame fast path — Phase C.10's promise
@@ -2711,6 +2739,109 @@ private:
     bool        m_isFloat;
     float       m_expectedFloat;
     float       m_tolerance;
+};
+
+// ============================================================================
+// Output / Display Assignment Commands (B2 — multi-display stress test)
+// ============================================================================
+
+/**
+ * EnumerateDisplaysCommand — diagnostic, non-undoable.
+ *
+ * Logs available physical displays from OutputManager::getAvailableDisplays()
+ * to stdout as a single JSON object so a script or human can parse it.
+ *
+ * Output format:
+ *   [EnumerateDisplays] {"count":2,"displays":[{"index":0,"name":"DELL U2718Q",
+ *     "device":"\\\\.\\DISPLAY1","width":3840,"height":2160,"refreshRate":60,
+ *     "primary":true}, ...]}
+ *
+ * JSON format:
+ * { "type": "EnumerateDisplays" }
+ */
+class EnumerateDisplaysCommand : public Command {
+public:
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "EnumerateDisplays"; }
+    nlohmann::json toJson() const override { return {{"type", "EnumerateDisplays"}}; }
+    std::string getDescription() const override { return "Enumerate physical displays"; }
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+};
+
+/**
+ * AssignScreenToDisplayCommand — undoable.
+ *
+ * Finds the Screen entity named `screenName`, then creates or reuses an
+ * OutputDisplay entity targeting that screen, and calls
+ * OutputManager::assignDisplay(outputEntity, displayIndex).
+ *
+ * If displayIndex >= available display count, logs a warning and returns
+ * true (script keeps running — different machines have different counts).
+ *
+ * Undo reverses the assignment: restores prior enabled/sourceScreen/
+ * physicalDisplayIndex state, or destroys the OutputDisplay entity if it
+ * was created by execute().
+ *
+ * JSON format:
+ * { "type": "AssignScreenToDisplay", "screenName": "Wall_R0C0", "displayIndex": 0 }
+ */
+class AssignScreenToDisplayCommand : public UndoableCommand {
+public:
+    AssignScreenToDisplayCommand(std::string screenName, int32_t displayIndex)
+        : m_screenName(std::move(screenName)), m_displayIndex(displayIndex) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "AssignScreenToDisplay"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string  m_screenName;
+    int32_t      m_displayIndex;
+
+    // Undo state — captured on first execute.
+    bool         m_executed{false};
+    bool         m_createdOutput{false};          // true → undo destroys the entity
+    entt::entity m_outputEntity{entt::null};      // entity that was created/found
+    bool         m_prevEnabled{false};
+    entt::entity m_prevSourceScreen{entt::null};
+    int32_t      m_prevPhysicalDisplayIndex{-1};
+};
+
+/**
+ * SetOutputEnabledCommand — undoable.
+ *
+ * Finds the OutputDisplay entity named `outputName` and sets its `enabled`
+ * flag via the Engine::publishSetOutputEnabled bus path so the show thread
+ * handles swap-chain lifecycle safely (per ADR-0014).
+ *
+ * Undo restores the previous enabled value via the same bus path.
+ *
+ * JSON format:
+ * { "type": "SetOutputEnabled", "outputName": "Output_Wall_R0C0", "enabled": true }
+ */
+class SetOutputEnabledCommand : public UndoableCommand {
+public:
+    SetOutputEnabledCommand(std::string outputName, bool enabled)
+        : m_outputName(std::move(outputName)), m_enabled(enabled) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetOutputEnabled"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string          m_outputName;
+    bool                 m_enabled;
+    std::optional<bool>  m_previousEnabled;
+    entt::entity         m_outputEntity{entt::null};
 };
 
 /**

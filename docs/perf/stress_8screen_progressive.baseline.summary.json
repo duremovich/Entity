@@ -1,0 +1,453 @@
+{
+  "scenario": "stress_8screen_progressive",
+  "target_fps": 60,
+  "frame_budget_ms": 16.67,
+  "captured_at": "2026-05-24T12:44:20Z",
+  "duration_seconds": 30.0,
+  "tracy_file": "C:\\Entity\\Entity\\docs\\perf\\stress_8screen_progressive-2026-05-24T124304Z.tracy",
+  "cpu_zones": {
+    "TextSystem": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "GPU fence wait": {
+      "count": 9288,
+      "median_ms": 6.2,
+      "p95_ms": 6.5,
+      "p99_ms": 6.6,
+      "mean_ms": 6.2,
+      "stddev_ms": 0.6,
+      "tail_jitter_ms": 0.1
+    },
+    "drainR2D": {
+      "count": 9298,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Compositor::pass2_screens": {
+      "count": 3882,
+      "median_ms": 0.1,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.1,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "endShowFrame": {
+      "count": 3882,
+      "median_ms": 0.3,
+      "p95_ms": 0.4,
+      "p99_ms": 0.6,
+      "mean_ms": 0.3,
+      "stddev_ms": 0.2,
+      "tail_jitter_ms": 0.2
+    },
+    "GenerativeSystem::update": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "AudioSystem": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Show iter": {
+      "count": 3881,
+      "median_ms": 16.6,
+      "p95_ms": 17.7,
+      "p99_ms": 18.1,
+      "mean_ms": 16.7,
+      "stddev_ms": 0.7,
+      "tail_jitter_ms": 0.4
+    },
+    "Engine::update": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "AnimationSystem::update": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "DecodeSystem::prefetchUpcoming": {
+      "count": 8630,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "DecodeSystem::update": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "endEditorFrame": {
+      "count": 9297,
+      "median_ms": 6.4,
+      "p95_ms": 6.6,
+      "p99_ms": 6.8,
+      "mean_ms": 6.4,
+      "stddev_ms": 0.6,
+      "tail_jitter_ms": 0.2
+    },
+    "Engine::render": {
+      "count": 9297,
+      "median_ms": 6.7,
+      "p95_ms": 6.9,
+      "p99_ms": 7.1,
+      "mean_ms": 6.7,
+      "stddev_ms": 0.6,
+      "tail_jitter_ms": 0.2
+    },
+    "Decode": {
+      "count": 13254,
+      "median_ms": 21.6,
+      "p95_ms": 26.5,
+      "p99_ms": 29.0,
+      "mean_ms": 14.2,
+      "stddev_ms": 12.1,
+      "tail_jitter_ms": 2.5
+    },
+    "PlaybackPresenter::present": {
+      "count": 3882,
+      "median_ms": 2.1,
+      "p95_ms": 3.6,
+      "p99_ms": 4.8,
+      "mean_ms": 2.2,
+      "stddev_ms": 1.0,
+      "tail_jitter_ms": 1.2
+    },
+    "RoutingLibrarySystem::reconcile": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "PP::upload_record": {
+      "count": 18066,
+      "median_ms": 0.5,
+      "p95_ms": 0.9,
+      "p99_ms": 1.1,
+      "mean_ms": 0.5,
+      "stddev_ms": 0.3,
+      "tail_jitter_ms": 0.2
+    },
+    "SectionDetect": {
+      "count": 3881,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "beginEditorFrame": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "RoutingLibrarySystem": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "SeekSyncController::tick": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Compositor::pass1_5_effects": {
+      "count": 3882,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "CompositorSystem::update": {
+      "count": 3882,
+      "median_ms": 0.1,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.1,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "tracy::D3D12QueueCtx::Collect": {
+      "count": 3883,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "beginShowFrame": {
+      "count": 3882,
+      "median_ms": 0.0,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.1,
+      "stddev_ms": 0.2,
+      "tail_jitter_ms": 0.0
+    },
+    "buildSceneSnapshot": {
+      "count": 9297,
+      "median_ms": 0.2,
+      "p95_ms": 0.3,
+      "p99_ms": 0.4,
+      "mean_ms": 0.2,
+      "stddev_ms": 0.1,
+      "tail_jitter_ms": 0.1
+    },
+    "buildRenderFrame": {
+      "count": 3881,
+      "median_ms": 0.2,
+      "p95_ms": 0.2,
+      "p99_ms": 0.3,
+      "mean_ms": 0.2,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.1
+    },
+    "Compositor::pass1_generative": {
+      "count": 3882,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "PP::cache_lookup": {
+      "count": 29166,
+      "median_ms": 0.0,
+      "p95_ms": 0.8,
+      "p99_ms": 1.1,
+      "mean_ms": 0.3,
+      "stddev_ms": 0.3,
+      "tail_jitter_ms": 0.3
+    },
+    "tracy::D3D12QueueCtx::~D3D12QueueCtx": {
+      "count": 1,
+      "median_ms": 0.2,
+      "p95_ms": 0.2,
+      "p99_ms": 0.2,
+      "mean_ms": 0.2,
+      "stddev_ms": null,
+      "tail_jitter_ms": 0.0
+    },
+    "Timeline::update": {
+      "count": 3881,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Engine::run iter": {
+      "count": 9297,
+      "median_ms": 6.9,
+      "p95_ms": 7.1,
+      "p99_ms": 7.4,
+      "mean_ms": 7.0,
+      "stddev_ms": 0.7,
+      "tail_jitter_ms": 0.3
+    },
+    "processEvents": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.4,
+      "tail_jitter_ms": 0.0
+    },
+    "AudioSystem::prefetchUpcoming": {
+      "count": 8630,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "SectionScheduler::tick": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "AudioMix": {
+      "count": 6497,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "D2R drain (pre-frame)": {
+      "count": 3881,
+      "median_ms": 0.2,
+      "p95_ms": 0.3,
+      "p99_ms": 0.3,
+      "mean_ms": 0.2,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "ContentScanner::drainDeltas": {
+      "count": 9297,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "moveToNextFrame": {
+      "count": 9297,
+      "median_ms": 6.2,
+      "p95_ms": 6.5,
+      "p99_ms": 6.6,
+      "mean_ms": 6.2,
+      "stddev_ms": 0.6,
+      "tail_jitter_ms": 0.1
+    },
+    "OutputManager::renderOutputs": {
+      "count": 3882,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    }
+  },
+  "gpu_zones": {
+    "Show GPU": {
+      "count": 3881,
+      "median_ms": 0.2,
+      "p95_ms": 0.2,
+      "p99_ms": 1.9,
+      "mean_ms": 0.2,
+      "stddev_ms": 0.3,
+      "tail_jitter_ms": 1.7
+    }
+  },
+  "plots": {
+    "Frame": {
+      "median": 53.7,
+      "p5": 5.8,
+      "p95": 61.7
+    },
+    "Decode queue depth": {
+      "median": 39,
+      "p5": 0,
+      "p95": 57
+    },
+    "Cache-miss recoveries / tick": {
+      "median": 0,
+      "p5": 0,
+      "p95": 0
+    },
+    "Editor frame ms": {
+      "median": 0,
+      "p5": 0,
+      "p95": 0
+    },
+    "Uploads / show frame": {
+      "median": 3,
+      "p5": 0,
+      "p95": 8
+    },
+    "Show frame ms": {
+      "median": 3.3,
+      "p5": 0.9,
+      "p95": 4.9
+    },
+    "FrameCache bytes used": {
+      "median": 3218350080,
+      "p5": 373358592,
+      "p95": 3218411520
+    },
+    "FrameCache hit rate %": {
+      "median": 50,
+      "p5": 0,
+      "p95": 72.7
+    },
+    "FrameCache entries": {
+      "median": 418,
+      "p5": 72,
+      "p95": 433
+    },
+    "FPS": {
+      "median": 143,
+      "p5": 143,
+      "p95": 144
+    }
+  },
+  "notes": "Frame marks not in tracy-csvexport. For frame-time proxies prefer `Engine::run iter` p95 (editor frame budget, ~7 ms typical) and `Show iter` p95 (show-thread frame budget, ~17 ms = 60 fps cap when running v-synced; uncapped headless ~7 ms). `Engine::update` and `DecodeSystem::update` are instrumented but consistently 0 ms \u2014 they are no-op proxies, do not use.",
+  "environment": {
+    "cpu_model": "Intel(R) Core(TM) Ultra 9 285K",
+    "gpu_model": "NVIDIA GeForce RTX 5090",
+    "gpu_driver": "32.0.15.9174",
+    "ram_gb": 63,
+    "os_build": "Microsoft Windows 11 Pro 26200",
+    "git_sha": "7bd8b3f",
+    "build_config": "Release",
+    "tracy_enabled": true
+  }
+}

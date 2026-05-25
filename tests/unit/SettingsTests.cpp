@@ -38,12 +38,13 @@ struct TempFile {
 
 TEST(Settings, DefaultsHaveExpectedFrameCacheBudget) {
     entity::Settings s;
-    // Default bumped from 512 MiB → 2 GiB on 2026-05-23 to size the cache
-    // for 4K H.264 multi-clip workloads (2× 4K crossfade ≈ 594 MB, which
-    // thrashed at 512 MiB). Original plan was Decision 2 of
-    // ~/.claude/plans/so-even-with-hap-cosmic-glacier.md. Test gates the
-    // contract so a future refactor can't quietly drop the budget.
-    EXPECT_EQ(s.frameCacheBytes, 2048ull * 1024ull * 1024ull);
+    // Default bumped from 2 GiB -> 3 GiB (2026-05-24 Phase 3b): 3 GiB
+    // eliminates the Fix 4 cache-miss-recovery thrash at
+    // stress_16screen_progressive without committing memory we can't
+    // justify (hit rate stays flat past 3 GiB -- decode throughput is
+    // the real bottleneck). See Settings.hpp field comment for the full
+    // sweep evidence.
+    EXPECT_EQ(s.frameCacheBytes, 3072ull * 1024ull * 1024ull);
 }
 
 TEST(Settings, MissingFileReturnsDefaults) {
@@ -51,7 +52,7 @@ TEST(Settings, MissingFileReturnsDefaults) {
     ASSERT_FALSE(fs::exists(tf.path));
 
     auto loaded = entity::loadSettings(tf.path);
-    EXPECT_EQ(loaded.frameCacheBytes, 2048ull * 1024ull * 1024ull);
+    EXPECT_EQ(loaded.frameCacheBytes, 3072ull * 1024ull * 1024ull);
 }
 
 TEST(Settings, RoundTripPreservesValue) {
@@ -75,7 +76,7 @@ TEST(Settings, CorruptJsonFallsBackToDefaults) {
     ASSERT_TRUE(fs::exists(tf.path));
 
     auto loaded = entity::loadSettings(tf.path);
-    EXPECT_EQ(loaded.frameCacheBytes, 2048ull * 1024ull * 1024ull);
+    EXPECT_EQ(loaded.frameCacheBytes, 3072ull * 1024ull * 1024ull);
 }
 
 TEST(Settings, MissingKeyKeepsDefault) {
@@ -87,7 +88,7 @@ TEST(Settings, MissingKeyKeepsDefault) {
         out << R"({"version": 1})";
     }
     auto loaded = entity::loadSettings(tf.path);
-    EXPECT_EQ(loaded.frameCacheBytes, 2048ull * 1024ull * 1024ull);
+    EXPECT_EQ(loaded.frameCacheBytes, 3072ull * 1024ull * 1024ull);
 }
 
 TEST(Settings, WrongTypedKeyKeepsDefault) {
@@ -99,7 +100,7 @@ TEST(Settings, WrongTypedKeyKeepsDefault) {
         out << R"({"frameCacheBytes": "not a number"})";
     }
     auto loaded = entity::loadSettings(tf.path);
-    EXPECT_EQ(loaded.frameCacheBytes, 2048ull * 1024ull * 1024ull);
+    EXPECT_EQ(loaded.frameCacheBytes, 3072ull * 1024ull * 1024ull);
 }
 
 TEST(Settings, SaveCreatesParentDir) {

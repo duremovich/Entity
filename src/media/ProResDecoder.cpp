@@ -400,10 +400,21 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
         return Result::InvalidParameter;
     }
 
-    // Allocate output frame if needed
-    if (outFrame.width != m_width || outFrame.height != m_height) {
+    // Ensure the output frame has a writable pixel buffer of the right size.
+    // Use the wired allocator when available so the decode writes directly into
+    // the correct backing store (CPU heap or D3D12 UPLOAD heap). Fall back to
+    // outFrame.allocate() when no allocator is wired (e.g. unit tests).
+    if (m_allocator) {
+        m_allocator->prepareDecodeBuffer(outFrame, m_width, m_height, TextureFormat::RGBA8_UNORM);
+    } else if (outFrame.size() < static_cast<size_t>(m_width) * m_height * 4) {
         outFrame.allocate(m_width, m_height);
     }
+    // prepareDecodeBuffer only sets storage + backing buffer; always stamp
+    // width/height/format so downstream code (PlaybackPresenter, FrameCache
+    // consumers) sees the correct values regardless of which path ran above.
+    outFrame.width  = m_width;
+    outFrame.height = m_height;
+    outFrame.format = TextureFormat::RGBA8_UNORM;
 
     // Create SwsContext if not already created
     if (!m_swsContext) {
@@ -431,17 +442,27 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
         return Result::DecoderError;
     }
 
-    // Validate output buffer size to prevent overflow
+    // Validate output buffer size to prevent overflow. Upload-heap frames may
+    // be larger than tight-packed due to 256-byte row-pitch alignment; check
+    // against the tight-packed size only (the actual allocation is always >=).
     size_t expectedSize = static_cast<size_t>(m_width) * m_height * 4;
-    if (outFrame.data.size() < expectedSize) {
-        std::cerr << "ProResDecoder: Output buffer too small: " << outFrame.data.size()
+    if (outFrame.size() < expectedSize) {
+        std::cerr << "ProResDecoder: Output buffer too small: " << outFrame.size()
                   << " bytes, need " << expectedSize << std::endl;
         return Result::DecoderError;
     }
 
+    // Row pitch for sws_scale output: upload-heap buffers require 256-byte-aligned
+    // RowPitch (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) so CopyTextureRegion reads
+    // correctly. CPU-heap buffers use tight-packed stride.
+    const uint32_t pitch = outFrame.uploadRowPitch();
+    const int dstRowPitch = (pitch > 0)
+        ? static_cast<int>(pitch)
+        : static_cast<int>(m_width * 4);
+
     // Setup output buffer for swscale
-    uint8_t* outData[1] = {outFrame.data.data()};
-    int outLinesize[1] = {static_cast<int>(m_width * 4)};
+    uint8_t* outData[1] = {outFrame.mutableData()};
+    int outLinesize[1] = {dstRowPitch};
 
     // Perform color space conversion
     int height = sws_scale(
@@ -461,15 +482,23 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
     // with round-to-nearest. Exact for a==255 (identity). Enables auto-vectorization (AVX2) —
     // the previous if (a<255) branch blocked SIMD and the integer divide was expensive.
     // At 4K × 3 streams, this loop runs ~24M pixels/frame — vectorization is critical.
+    //
+    // Row-stride-aware: upload-heap buffers have 256-byte-aligned RowPitch (padding
+    // after each row). Use dstRowPitch to step between rows; within a row each
+    // pixel is still 4 contiguous bytes so the inner loop is tight-packed.
     if (m_hasAlpha) {
-        uint8_t* rgba = outFrame.data.data();
-        const size_t pixelCount = static_cast<size_t>(m_width) * m_height;
-        for (size_t i = 0; i < pixelCount; ++i) {
-            const size_t off = i * 4;
-            const uint32_t a = rgba[off + 3];
-            uint32_t t0 = rgba[off + 0] * a + 128; rgba[off + 0] = static_cast<uint8_t>((t0 + (t0 >> 8)) >> 8);
-            uint32_t t1 = rgba[off + 1] * a + 128; rgba[off + 1] = static_cast<uint8_t>((t1 + (t1 >> 8)) >> 8);
-            uint32_t t2 = rgba[off + 2] * a + 128; rgba[off + 2] = static_cast<uint8_t>((t2 + (t2 >> 8)) >> 8);
+        uint8_t* base = outFrame.mutableData();
+        // dstRowPitch is already set above (aligned for UploadHeap, tight-packed otherwise).
+        const uint32_t rowStride = static_cast<uint32_t>(dstRowPitch);
+        for (uint32_t row = 0; row < m_height; ++row) {
+            uint8_t* rgba = base + static_cast<size_t>(row) * rowStride;
+            for (uint32_t col = 0; col < m_width; ++col) {
+                const size_t off = static_cast<size_t>(col) * 4;
+                const uint32_t a = rgba[off + 3];
+                uint32_t t0 = rgba[off + 0] * a + 128; rgba[off + 0] = static_cast<uint8_t>((t0 + (t0 >> 8)) >> 8);
+                uint32_t t1 = rgba[off + 1] * a + 128; rgba[off + 1] = static_cast<uint8_t>((t1 + (t1 >> 8)) >> 8);
+                uint32_t t2 = rgba[off + 2] * a + 128; rgba[off + 2] = static_cast<uint8_t>((t2 + (t2 >> 8)) >> 8);
+            }
         }
     }
 

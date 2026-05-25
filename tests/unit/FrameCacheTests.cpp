@@ -28,7 +28,8 @@ DecodedFrame makeFrame(FrameNumber n, size_t bytes, uint8_t fill = 0) {
     f.width  = 64;
     f.height = 64;
     f.format = TextureFormat::RGBA8_UNORM;
-    f.data.assign(bytes, fill);
+    f.storage = DecodedFrame::Storage::CpuHeap;
+    f.cpuData.assign(bytes, fill);
     f.valid.store(true, std::memory_order_release);
     return f;
 }
@@ -61,8 +62,8 @@ TEST(FrameCache, PutThenGetRoundTrips) {
     auto lease = c.get(kClipA, 5);
     ASSERT_TRUE(lease.valid());
     EXPECT_EQ(lease->frameNumber, 5);
-    EXPECT_EQ(lease->data.size(), 128u);
-    EXPECT_EQ(lease->data[0], 0xAB);
+    EXPECT_EQ(lease->size(), 128u);
+    EXPECT_EQ(lease->data()[0], 0xAB);
 }
 
 TEST(FrameCache, ZeroByteFrameIsRejected) {
@@ -94,8 +95,8 @@ TEST(FrameCache, ReinsertReplacesAndKeepsByteCountConsistent) {
 
     auto lease = c.get(kClipA, 5);
     ASSERT_TRUE(lease.valid());
-    EXPECT_EQ(lease->data.size(), 200u);
-    EXPECT_EQ(lease->data[0], 0x22);
+    EXPECT_EQ(lease->size(), 200u);
+    EXPECT_EQ(lease->data()[0], 0x22);
 }
 
 TEST(FrameCache, LRUEvictsOldestUnderPressure) {
@@ -195,8 +196,8 @@ TEST(FrameCache, LeasePinsFrameThroughEviction) {
     EXPECT_EQ(c.bytesUsed(), 100u);        // budget reflects what's in cache, not lease
 
     // Lease still works — the underlying buffer hasn't been freed.
-    EXPECT_EQ(raw->data.size(), 100u);
-    EXPECT_EQ(raw->data[0], 0x77);
+    EXPECT_EQ(raw->size(), 100u);
+    EXPECT_EQ(raw->data()[0], 0x77);
     EXPECT_EQ(lease->frameNumber, 0);
 }
 
@@ -254,7 +255,7 @@ TEST(FrameCache, ConcurrentProducerAndConsumerSmoke) {
             if (lease.valid()) {
                 hits.fetch_add(1);
                 // Touch the data to make TSan/ASan flag a use-after-free.
-                volatile uint8_t v = lease->data.empty() ? 0 : lease->data[0];
+                volatile uint8_t v = (lease->size() == 0) ? 0 : lease->data()[0];
                 (void)v;
             }
             (void)c.nearestTo(kClipA, i);

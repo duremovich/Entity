@@ -67,6 +67,12 @@ public:
     bool isAllocated(uint32_t slot) const;
 
     /**
+     * Returns the count of currently allocated slots. Used by
+     * AssertVideoTextureSlotsAllocated integration tests.
+     */
+    uint32_t allocatedSlotCount() const;
+
+    /**
      * True if an upload has succeeded for this slot. IRenderer uses this
      * to decide whether getVideoTexture(slot) should yield a valid ref.
      */
@@ -87,15 +93,15 @@ public:
                            TextureFormat format = TextureFormat::RGBA8_UNORM) const;
 
     /**
-     * Proactively create the GPU texture + upload buffer + SRV descriptor for
+     * Proactively create the GPU (DEFAULT-heap) texture + SRV descriptor for
      * `slot` without copying any pixels. Use this from the editor thread at
      * project load (when the source dimensions are known) to avoid paying the
-     * two CreateCommittedResource calls (texture + upload buffer, ~33MB each
-     * for 4K) on the show thread at the first uploadVideoFrameToSlot call.
+     * CreateCommittedResource call (~33MB for 4K) on the show thread at the
+     * first upload call.
      *
      * That first lazy creation was the cause of the section-break stutter
      * (2026-05-23): a queued-at-break clip's slot was allocated at project
-     * load but the underlying D3D12 resources weren't created until the
+     * load but the underlying D3D12 texture wasn't created until the
      * playhead reached the break and PlaybackPresenter::present made the
      * first upload — blocking the show frame for ~30-100ms.
      *
@@ -123,12 +129,11 @@ public:
     /**
      * Perform an upload. Records copy commands into `cmdList`:
      *  1. If first upload, dimensions changed, or format changed, (re)creates
-     *     the GPU texture, upload buffer, and SRV descriptor using the DXGI
+     *     the GPU texture, upload-buffer, and SRV descriptor using the DXGI
      *     format that matches `format`.
-     *  2. memcpy source data into the upload buffer (with row-pitch fix-up
-     *     that correctly handles BC-block row pitch for compressed formats).
-     *  3. Records: transition COPY_DEST, CopyTextureRegion, transition
-     *     PIXEL_SHADER_RESOURCE.
+     *  2. Memcpys source data into the upload buffer (with row-pitch fix-up
+     *     for BC-block formats) and records CopyTextureRegion.
+     *  3. No explicit barriers (Phase C.11 implicit-state promotion applies).
      * Caller is responsible for executing the command list and fence-signaling.
      *
      * `data` is RGBA for RGBA8_UNORM, or densely-packed BC blocks for BC*.
@@ -143,6 +148,37 @@ public:
                 uint32_t width,
                 uint32_t height,
                 TextureFormat format = TextureFormat::RGBA8_UNORM);
+
+
+    /**
+     * Direct-copy variant for upload-heap-backed FrameCache frames (Phase 5).
+     *
+     * Records a CopyTextureRegion from `uploadResource` (an UPLOAD-heap resource
+     * already written by a decode worker) into the slot's DEFAULT-heap texture
+     * without any CPU memcpy. `uploadResource` must be the persistently-mapped
+     * resource from UploadHeapBuffer and must have been written with the correct
+     * pitch alignment (acquireForTexture / acquireForTexture-derived footprint).
+     *
+     * Calls ensureTexture so the first call for a new slot still creates the
+     * GPU texture + SRV. Falls back to a no-op (returns false) if the slot
+     * is invalid or the GPU texture hasn't been created yet (uploadWouldResize
+     * returns true AND hasTexture returns false — caller should call upload()
+     * or prepareTexture() first for that slot).
+     *
+     * The footprint must be the one returned by
+     * UploadHeapBufferPool::acquireForTexture (stored in UploadHeapBuffer::footprint).
+     * Passing the pre-computed footprint avoids a redundant GetCopyableFootprints
+     * call on the show-thread hot path.
+     *
+     * Returns true on success.
+     */
+    bool recordDirectCopy(ID3D12GraphicsCommandList* cmdList,
+                          uint32_t slot,
+                          ID3D12Resource* uploadResource,
+                          const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
+                          uint32_t width,
+                          uint32_t height,
+                          TextureFormat format = TextureFormat::RGBA8_UNORM);
 
 private:
     struct Slot {

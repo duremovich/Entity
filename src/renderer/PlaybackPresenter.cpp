@@ -6,6 +6,7 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/media/DecodedFrame.hpp"
+#include "entity/render/UploadHeapBufferPool.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/render/IRenderer.hpp"
@@ -59,6 +60,7 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
     int cacheHits = 0;
     int cacheMisses = 0;
     int nearestFallbacks = 0;
+    [[maybe_unused]] int uploadCount = 0;
 
     // playState arrives stamped on the message by the Director-side
     // PlaybackTimeAuthority. Subtask 8 closed the prior HIGH-02 read
@@ -88,22 +90,42 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
 
         // Exact cache hit -- the common path on steady-state playback
         // and on click-to-recently-viewed-frame.
-        if (auto lease = m_frameCache->get(entity, ac.mediaFrame)) {
-            const DecodedFrame& f = *lease;
-            bool ok = m_renderer->uploadVideoFrameToSlot(
-                slot, f.data.data(), f.width, f.height, f.format);
-            if (ok) {
-                display.colorSpace = f.colorSpace;
-                // Per-clip MediaBin OCIO override wins over the decoder
-                // tag when set (Phase C.12 #9). Director side already
-                // resolved the override string in the message body.
-                display.ocioColorSpace = ac.ocioOverride.empty()
-                    ? f.ocioColorSpace
-                    : ac.ocioOverride;
-                display.lastDecodedFrame = ac.mediaFrame;
+        {
+            ZoneScopedN("PP::cache_lookup");
+            if (auto lease = m_frameCache->get(entity, ac.mediaFrame)) {
+                const DecodedFrame& f = *lease;
+                bool ok = [&] {
+                    ZoneScopedN("PP::upload_record");
+                    // Phase 5: UploadHeap frames go through the GPU-direct path
+                    // (CopyTextureRegion from the persistently-mapped buffer),
+                    // bypassing the CPU memcpy in uploadVideoFrameToSlot.
+                    // CpuHeap frames use the existing memcpy path.
+                    if (f.storage == DecodedFrame::Storage::UploadHeap && f.uploadBuf) {
+                        // Returns false if the call was skipped (e.g. called
+                        // outside a show frame so tl_activeCmdList is null) —
+                        // propagate honestly so we don't bump lastDecodedFrame
+                        // on a no-op and freeze the clip's display until the
+                        // playhead moves elsewhere.
+                        return m_renderer->copyUploadBufferToVideoTextureSlot(
+                            slot, f.uploadBuf.get(), f.width, f.height, f.format);
+                    }
+                    return m_renderer->uploadVideoFrameToSlot(
+                        slot, f.data(), f.width, f.height, f.format);
+                }();
+                if (ok) {
+                    display.colorSpace = f.colorSpace;
+                    // Per-clip MediaBin OCIO override wins over the decoder
+                    // tag when set (Phase C.12 #9). Director side already
+                    // resolved the override string in the message body.
+                    display.ocioColorSpace = ac.ocioOverride.empty()
+                        ? f.ocioColorSpace
+                        : ac.ocioOverride;
+                    display.lastDecodedFrame = ac.mediaFrame;
+                    uploadCount++;
+                }
+                cacheHits++;
+                continue;
             }
-            cacheHits++;
-            continue;
         }
         cacheMisses++;
 
@@ -121,49 +143,65 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
         // again.
         if (playState != TransportState::Playing) continue;
 
-        if (auto nearestN = m_frameCache->nearestTo(entity, ac.mediaFrame)) {
-            if (auto nearestLease = m_frameCache->get(entity, *nearestN)) {
-                const DecodedFrame& f = *nearestLease;
-                bool ok = m_renderer->uploadVideoFrameToSlot(
-                    slot, f.data.data(), f.width, f.height, f.format);
-                if (ok) {
-                    display.colorSpace = f.colorSpace;
-                    display.ocioColorSpace = ac.ocioOverride.empty()
-                        ? f.ocioColorSpace
-                        : ac.ocioOverride;
-                    // Don't bump lastDecodedFrame -- we want to re-try
-                    // the exact frame next tick now that decoder has
-                    // more time.
+        {
+            ZoneScopedN("PP::cache_lookup");
+            if (auto nearestN = m_frameCache->nearestTo(entity, ac.mediaFrame)) {
+                if (auto nearestLease = m_frameCache->get(entity, *nearestN)) {
+                    const DecodedFrame& f = *nearestLease;
+                    bool ok = [&] {
+                        ZoneScopedN("PP::upload_record");
+                        // Phase 5: same UploadHeap branch as the exact-hit path.
+                        // Propagate the bool return honestly (see the exact-hit
+                        // comment above for why hardcoding true is wrong).
+                        if (f.storage == DecodedFrame::Storage::UploadHeap && f.uploadBuf) {
+                            return m_renderer->copyUploadBufferToVideoTextureSlot(
+                                slot, f.uploadBuf.get(), f.width, f.height, f.format);
+                        }
+                        return m_renderer->uploadVideoFrameToSlot(
+                            slot, f.data(), f.width, f.height, f.format);
+                    }();
+                    if (ok) {
+                        display.colorSpace = f.colorSpace;
+                        display.ocioColorSpace = ac.ocioOverride.empty()
+                            ? f.ocioColorSpace
+                            : ac.ocioOverride;
+                        // Don't bump lastDecodedFrame -- we want to re-try
+                        // the exact frame next tick now that decoder has
+                        // more time.
+                        uploadCount++;
+                    }
+                    nearestFallbacks++;
                 }
-                nearestFallbacks++;
-            }
-        } else {
-            // 2026-05-23 diagnostic — clip is in activeClips, slot is
-            // valid, but the cache has ZERO frames for this entity
-            // (nearestTo returned null). That means the decoder hasn't
-            // produced anything yet, OR the worker doesn't exist /
-            // isn't being steered. Texture stays at whatever was
-            // there before (black if never uploaded since slot create).
-            // Rate-limit to 1 line/sec/entity. Gated on
-            // ENTITY_DECODE_VERBOSE.
-            if (const char* v = std::getenv("ENTITY_DECODE_VERBOSE");
-                v && v[0] == '1') {
-                static thread_local std::unordered_map<entt::entity, int64_t> lastLogNs;
-                const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count();
-                auto& last = lastLogNs[entity];
-                if (nowNs - last > 1'000'000'000LL) {
-                    last = nowNs;
-                    std::cout << "[PRESENT EMPTY] entity="
-                              << static_cast<uint32_t>(entity)
-                              << " slot=" << slot
-                              << " mediaFrame=" << ac.mediaFrame
-                              << " (cache has 0 frames for this entity)"
-                              << std::endl;
+            } else {
+                // 2026-05-23 diagnostic — clip is in activeClips, slot is
+                // valid, but the cache has ZERO frames for this entity
+                // (nearestTo returned null). That means the decoder hasn't
+                // produced anything yet, OR the worker doesn't exist /
+                // isn't being steered. Texture stays at whatever was
+                // there before (black if never uploaded since slot create).
+                // Rate-limit to 1 line/sec/entity. Gated on
+                // ENTITY_DECODE_VERBOSE.
+                if (const char* v = std::getenv("ENTITY_DECODE_VERBOSE");
+                    v && v[0] == '1') {
+                    static thread_local std::unordered_map<entt::entity, int64_t> lastLogNs;
+                    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    auto& last = lastLogNs[entity];
+                    if (nowNs - last > 1'000'000'000LL) {
+                        last = nowNs;
+                        std::cout << "[PRESENT EMPTY] entity="
+                                  << static_cast<uint32_t>(entity)
+                                  << " slot=" << slot
+                                  << " mediaFrame=" << ac.mediaFrame
+                                  << " (cache has 0 frames for this entity)"
+                                  << std::endl;
+                    }
                 }
             }
         }
     }
+
+    TracyPlot("Uploads / show frame", static_cast<int64_t>(uploadCount));
 
     auto funcMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now() - funcStart).count();

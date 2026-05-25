@@ -67,6 +67,8 @@ public:
 
     uint32_t allocateVideoTextureSlot() override { return 0; }
     void     freeVideoTextureSlot(uint32_t) override {}
+    void     scheduleVideoTextureSlotFree(uint32_t) override {}
+    uint32_t getVideoTextureSlotsAllocated() const override { return 0; }
     bool     uploadVideoFrameToSlot(uint32_t slot,
                                     const uint8_t* rgba,
                                     uint32_t width,
@@ -158,7 +160,8 @@ DecodedFrame makeFrame(uint32_t width, uint32_t height, uint8_t fillByte) {
     f.format = TextureFormat::RGBA8_UNORM;
     f.colorSpace = TextureColorSpace::Linear;
     f.ocioColorSpace = "Linear Rec.709 (sRGB)";
-    f.data.assign(static_cast<size_t>(width) * height * 4, fillByte);
+    f.storage = DecodedFrame::Storage::CpuHeap;
+    f.cpuData.assign(static_cast<size_t>(width) * height * 4, fillByte);
     f.valid.store(true);
     return f;
 }

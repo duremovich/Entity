@@ -608,9 +608,9 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
 
     auto workerCreateStart = std::chrono::high_resolution_clock::now();
     auto worker = std::make_shared<DecodeWorker>();
-    worker->cache  = m_frameCache;
-    worker->pool   = m_bufferPool;  // may be nullptr; worker falls back to per-frame malloc
-    worker->entity = entity;
+    worker->cache     = m_frameCache;
+    worker->allocator = m_bufferAllocator; // may be nullptr; worker falls back to per-frame malloc
+    worker->entity   = entity;
     worker->running.store(true);
     worker->currentFrame.store(initialFrame);
     worker->targetFrame.store(initialFrame + DECODE_AHEAD_FRAMES);
@@ -710,6 +710,10 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
         return;
     }
 
+    // Wire the allocator before open() so the decoder uses the correct backing
+    // store (CPU heap or D3D12 UPLOAD heap) from the very first decodeFrame call.
+    decoder->setAllocator(worker->allocator);
+
     Result openResult = decoder->open(worker->filepath);
     if (openResult != Result::Success) {
         std::cerr << "Decode thread: Failed to open media file: " << worker->filepath << std::endl;
@@ -721,8 +725,17 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
     worker->initialized.store(true);
     std::cout << "Decode thread: Decoder initialized for " << worker->filepath << std::endl;
 
+    // Pre-allocate the scratch frame via the allocator (same backing store as
+    // the decoder will use). Falls back to CpuHeap when no allocator is wired.
     DecodedFrame frame;
-    frame.allocate(worker->decoder->getWidth(), worker->decoder->getHeight());
+    if (worker->allocator) {
+        worker->allocator->prepareDecodeBuffer(frame,
+                                               worker->decoder->getWidth(),
+                                               worker->decoder->getHeight(),
+                                               TextureFormat::RGBA8_UNORM);
+    } else {
+        frame.allocate(worker->decoder->getWidth(), worker->decoder->getHeight());
+    }
 
     FrameNumber nextFrame = 0;
 
@@ -819,18 +832,20 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
         // route those buffers back to the pool, and steady-state acquire
         // is a free-list pop.
         //
-        // For RGBA8 this is the obvious w*h*4; HAP's BC* paths set the
-        // right size internally during decode. Conservative size here is
-        // fine -- BC payloads are smaller than RGBA8 of the same w*h.
-        const size_t expectedBytes = static_cast<size_t>(
-            worker->decoder->getWidth()) * worker->decoder->getHeight() * 4;
-        if (frame.data.size() != expectedBytes) {
-            if (worker->pool) {
-                frame.data = worker->pool->acquire(expectedBytes);
-            } else {
-                // Fallback path when no pool wired (e.g. unit tests).
-                frame.data.resize(expectedBytes);
-            }
+        // Ensure the scratch frame has a backing buffer of the right dimensions.
+        // The allocator handles both CpuHeap (tight-packed) and UploadHeap
+        // (256-byte-aligned RowPitch) paths, including reuse when dimensions
+        // haven't changed (the common case). Fallback path when no allocator
+        // is wired (e.g. unit tests) retains the old size-check behaviour.
+        const uint32_t decW = worker->decoder->getWidth();
+        const uint32_t decH = worker->decoder->getHeight();
+        if (worker->allocator) {
+            worker->allocator->prepareDecodeBuffer(frame, decW, decH,
+                                                   TextureFormat::RGBA8_UNORM);
+        } else if (frame.size() < static_cast<size_t>(decW) * decH * 4) {
+            // Fallback path when no allocator wired (e.g. unit tests).
+            frame.storage = DecodedFrame::Storage::CpuHeap;
+            frame.cpuData.resize(static_cast<size_t>(decW) * decH * 4);
         }
 
         // [DECODE PACE] only fires when adaptive pacing kicked in (nextFrame
@@ -853,6 +868,7 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
 
         if (result == Result::Success && frame.valid.load(std::memory_order_acquire)) {
             frame.frameNumber = nextFrame;
+
             worker->cache->put(worker->entity, nextFrame, std::move(frame));
             // After move, frame.data is empty — top of loop re-allocates.
             worker->currentFrame.store(nextFrame);

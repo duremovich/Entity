@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -81,6 +82,8 @@ public:
 
     uint32_t   allocateVideoTextureSlot() override;
     void       freeVideoTextureSlot(uint32_t slot) override;
+    void       scheduleVideoTextureSlotFree(uint32_t slot) override;
+    uint32_t   getVideoTextureSlotsAllocated() const override;
     bool       prepareVideoTextureSlot(uint32_t slot,
                                        uint32_t width,
                                        uint32_t height,
@@ -99,6 +102,22 @@ public:
                                                const uint8_t* rgba,
                                                uint32_t width,
                                                uint32_t height) override;
+    bool       copyUploadBufferToVideoTextureSlot(
+                   uint32_t slot,
+                   UploadHeapBuffer* buf,
+                   uint32_t width,
+                   uint32_t height,
+                   TextureFormat format) override;
+
+    // Phase 5 — wire the UploadHeapBufferPool so copyUploadBufferToVideoTextureSlot
+    // can call recordCopyDone on buffers after recording CopyTextureRegion.
+    // Called by Renderer::initialize after both the D3D12 backend and the pool
+    // are constructed. The pool outlives the renderer (Renderer owns both;
+    // m_uploadHeapPool destructs before m_d3d12Renderer in reverse-declaration
+    // order — safe because D3D12Renderer only holds a weak raw pointer here).
+    void       setUploadHeapPool(class UploadHeapBufferPool* pool) {
+        m_uploadHeapPool = pool;
+    }
     TextureRef getVideoTexture(uint32_t slot) const override;
 
     uint32_t   createComposeTarget(uint32_t width, uint32_t height) override;
@@ -347,6 +366,13 @@ public:
      *  Going away in Phase B once callers use IRenderer. */
     ID3D12Device* getDevice() const;  // Defined in .cpp so the header doesn't need D3D12Device.hpp.
 
+    // Accessors for the direct command queue and show fence.
+    // Used by Engine to wire UploadHeapBufferPool (Phase 5+) without
+    // creating a circular dependency on D3D12Renderer internals.
+    // Both return nullptr when the renderer is uninitialized.
+    ID3D12CommandQueue* getCommandQueue() const;
+    ID3D12Fence*        getShowFence() const;
+
 private:
     // Helper methods for initialization
     // (createDevice / createCommandQueue moved to D3D12Device class)
@@ -496,6 +522,22 @@ private:
     // Declared here as std::unique_ptr so we don't have to include the header,
     // keeping the public D3D12Renderer.hpp lean. See destructor for ordering.
     std::unique_ptr<class TextureUploader> m_textureUploader;
+
+    // Phase 5 — non-owning raw pointer to the UploadHeapBufferPool wired in
+    // by Renderer::initialize via setUploadHeapPool(). Used by
+    // copyUploadBufferToVideoTextureSlot to call recordCopyDone so the
+    // buffer's GPU-fence-wait deleter fires correctly. Null until wired;
+    // the method degrades to no-op when null (safe because frames are
+    // CpuHeap until the pool is available). Renderer owns the pool's
+    // lifetime — it constructs it before passing the pointer here and
+    // destructs it after D3D12Renderer is shut down.
+    class UploadHeapBufferPool* m_uploadHeapPool{nullptr};
+
+    // Deferred video-texture slot frees. Editor thread's on_destroy<VideoTexture>
+    // observer pushes here; show thread drains at beginShowFrame after the show
+    // fence wait so the GPU is idle before TextureUploader::freeSlot runs.
+    std::mutex              m_deferredVideoTextureFreesMutex;
+    std::vector<uint32_t>   m_deferredVideoTextureFrees;
 
     // Mesh vertex/index buffer pool (Phase 4+). Wired up in Phase 7 lifecycle.
     std::unique_ptr<class MeshUploader> m_meshUploader;

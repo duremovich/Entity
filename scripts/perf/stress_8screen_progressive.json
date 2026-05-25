@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "description": "8-screen (2x4) progressive multi-codec regression baseline. 4 escalating stages over 60s: 2 -> 4 -> 6 -> 8 active clips. Codec mix: 3 ProRes + 3 HAP + 2 H.264 at peak. Screens auto-assigned to physical displays (1:1 up to 8 available; rest composite but not physical). Half-scale sibling of stress_16screen_progressive — sized to stay under 16.7 ms p95 Show iter so compare.ps1 can reliably flag 5% regressions.",
+  "target_fps": 60,
+  "commands": [
+    { "type": "AddTrack" },
+    { "type": "AddTrack" },
+    { "type": "AddTrack" },
+
+    { "type": "AddScreen", "name": "Wall_R0C0", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R0C1", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R0C2", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R0C3", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R1C0", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R1C1", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R1C2", "width": 1920, "height": 1080 },
+    { "type": "AddScreen", "name": "Wall_R1C3", "width": 1920, "height": 1080 },
+
+    { "type": "EnumerateDisplays" },
+
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R0C0", "displayIndex": 0 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R0C1", "displayIndex": 1 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R0C2", "displayIndex": 2 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R0C3", "displayIndex": 3 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R1C0", "displayIndex": 4 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R1C1", "displayIndex": 5 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R1C2", "displayIndex": 6 },
+    { "type": "AssignScreenToDisplay", "screenName": "Wall_R1C3", "displayIndex": 7 },
+
+    { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 0, "position": 0 },
+    { "type": "ImportVideo", "filepath": "test_media/perf/testpat_1080p_hap.mov",  "trackIndex": 1, "position": 0 },
+
+    { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 2, "position": 900 },
+    { "type": "ImportVideo", "filepath": "test_media/perf/testpat_1080p_h264.mp4", "trackIndex": 3, "position": 900 },
+
+    { "type": "ImportVideo", "filepath": "test_media/perf/noise_1080p_prores.mov", "trackIndex": 4, "position": 1800 },
+    { "type": "ImportVideo", "filepath": "test_media/perf/testpat_1080p_hap.mov",  "trackIndex": 5, "position": 1800 },
+
+    { "type": "ImportVideo", "filepath": "test_media/perf/testpat_1080p_hap.mov",  "trackIndex": 6, "position": 2700 },
+    { "type": "ImportVideo", "filepath": "test_media/perf/testpat_1080p_h264.mp4", "trackIndex": 7, "position": 2700 },
+
+    { "type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 1, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 2, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 3, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 4, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 5, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 6, "clipIndex": 0, "mode": "Loop" },
+    { "type": "SetClipPlaybackMode", "trackIndex": 7, "clipIndex": 0, "mode": "Loop" },
+
+    { "type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 3600 },
+    { "type": "SetClipDuration", "trackIndex": 1, "clipIndex": 0, "duration": 3600 },
+    { "type": "SetClipDuration", "trackIndex": 2, "clipIndex": 0, "duration": 2700 },
+    { "type": "SetClipDuration", "trackIndex": 3, "clipIndex": 0, "duration": 2700 },
+    { "type": "SetClipDuration", "trackIndex": 4, "clipIndex": 0, "duration": 1800 },
+    { "type": "SetClipDuration", "trackIndex": 5, "clipIndex": 0, "duration": 1800 },
+    { "type": "SetClipDuration", "trackIndex": 6, "clipIndex": 0, "duration": 900 },
+    { "type": "SetClipDuration", "trackIndex": 7, "clipIndex": 0, "duration": 900 },
+
+    { "type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "Wall_R0C0" },
+    { "type": "SetClipTargetScreen", "trackIndex": 1, "clipIndex": 0, "screenName": "Wall_R0C1" },
+    { "type": "SetClipTargetScreen", "trackIndex": 2, "clipIndex": 0, "screenName": "Wall_R0C2" },
+    { "type": "SetClipTargetScreen", "trackIndex": 3, "clipIndex": 0, "screenName": "Wall_R0C3" },
+    { "type": "SetClipTargetScreen", "trackIndex": 4, "clipIndex": 0, "screenName": "Wall_R1C0" },
+    { "type": "SetClipTargetScreen", "trackIndex": 5, "clipIndex": 0, "screenName": "Wall_R1C1" },
+    { "type": "SetClipTargetScreen", "trackIndex": 6, "clipIndex": 0, "screenName": "Wall_R1C2" },
+    { "type": "SetClipTargetScreen", "trackIndex": 7, "clipIndex": 0, "screenName": "Wall_R1C3" },
+
+    { "type": "WaitSeconds", "count": 5 },
+
+    { "type": "Play" },
+    { "type": "WaitSeconds", "count": 60 },
+    { "type": "Pause" },
+
+    { "type": "Exit" }
+  ]
+}

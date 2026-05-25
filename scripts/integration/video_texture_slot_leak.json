@@ -1,0 +1,23 @@
+{
+    "version": 1,
+    "description": "Phase 1 (2026-05-23 follow-up) regression guard for the video texture slot leak fix. Before the fix, allocating a VideoTexture slot via ImportVideo and then deleting the clip left the slot permanently allocated until process exit (no on_destroy<VideoTexture> observer was wired). The fix adds a deferred-free observer: the editor thread's on_destroy fires and enqueues the slot; the show thread drains the queue at the top of beginShowFrame after the show fence wait. This test verifies: (1) importing a clip allocates a slot, (2) deleting the clip schedules its release, (3) after giving the show thread time to drain, the slot count returns to zero.",
+    "commands": [
+        {"type": "WaitFrames", "count": 5},
+
+        {"type": "AssertVideoTextureSlotsAllocated", "count": 0},
+
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "AssertVideoTextureSlotsAllocated", "count": 1},
+
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0},
+        {"type": "DeleteClip"},
+
+        {"type": "WaitSeconds", "count": 0.5},
+
+        {"type": "AssertVideoTextureSlotsAllocated", "count": 0},
+
+        {"type": "Exit"}
+    ]
+}

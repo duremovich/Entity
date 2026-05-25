@@ -1,6 +1,10 @@
 #include "entity/command/Commands.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/render/OutputManager.hpp"
+#include "entity/components/OutputDisplay.hpp"
+#include "entity/bus/Message.hpp"
+#include "entity/bus/Serialization.hpp"
 #include "entity/dmx/OutboundBridge.hpp"
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
@@ -2124,6 +2128,39 @@ std::string AssertScreenCountCommand::getDescription() const {
 CommandPtr AssertScreenCountCommand::fromJson(const nlohmann::json& j) {
     size_t count = j.value("count", static_cast<size_t>(0));
     return std::make_unique<AssertScreenCountCommand>(count);
+}
+
+// ============================================================================
+// AssertVideoTextureSlotsAllocatedCommand
+// ============================================================================
+
+bool AssertVideoTextureSlotsAllocatedCommand::execute(Engine& engine) {
+    auto* renderer = engine.getRenderer();
+    if (!renderer) {
+        std::cerr << "[AssertVideoTextureSlotsAllocated] No renderer" << std::endl;
+        return false;
+    }
+    uint32_t actual = renderer->getVideoTextureSlotsAllocated();
+    if (actual == m_count) {
+        std::cout << "[AssertVideoTextureSlotsAllocated] OK count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertVideoTextureSlotsAllocated] FAIL: expected " << m_count
+              << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertVideoTextureSlotsAllocatedCommand::toJson() const {
+    return {{"type", "AssertVideoTextureSlotsAllocated"}, {"count", m_count}};
+}
+
+std::string AssertVideoTextureSlotsAllocatedCommand::getDescription() const {
+    return "Assert video texture slots allocated == " + std::to_string(m_count);
+}
+
+CommandPtr AssertVideoTextureSlotsAllocatedCommand::fromJson(const nlohmann::json& j) {
+    uint32_t count = j.value("count", static_cast<uint32_t>(0));
+    return std::make_unique<AssertVideoTextureSlotsAllocatedCommand>(count);
 }
 
 // ============================================================================
@@ -5621,6 +5658,250 @@ CommandPtr AssertAudioWorkerSeekFrameCommand::fromJson(const nlohmann::json& j) 
         j.value("clipIndex",  0),
         j.value("expected",  int64_t{0}),
         j.value("tolerance", int64_t{5}));
+}
+
+// ============================================================================
+// EnumerateDisplaysCommand
+// ============================================================================
+
+bool EnumerateDisplaysCommand::execute(Engine& engine) {
+    auto* om = engine.getOutputManager();
+    if (!om) {
+        std::cerr << "[EnumerateDisplays] OutputManager not available" << std::endl;
+        return false;
+    }
+
+    const auto& displays = om->getAvailableDisplays();
+
+    nlohmann::json result;
+    result["count"] = displays.size();
+    result["displays"] = nlohmann::json::array();
+    for (const auto& d : displays) {
+        nlohmann::json entry;
+        entry["index"]       = d.index;
+        entry["name"]        = d.displayName;
+        entry["device"]      = d.deviceName;
+        entry["width"]       = d.width;
+        entry["height"]      = d.height;
+        entry["refreshRate"] = static_cast<int>(d.refreshRate);
+        entry["primary"]     = d.isPrimary;
+        result["displays"].push_back(std::move(entry));
+    }
+
+    std::cout << "[EnumerateDisplays] " << result.dump() << std::endl;
+    return true;
+}
+
+CommandPtr EnumerateDisplaysCommand::fromJson(const nlohmann::json& /*j*/) {
+    return std::make_unique<EnumerateDisplaysCommand>();
+}
+
+// ============================================================================
+// AssignScreenToDisplayCommand
+// ============================================================================
+
+bool AssignScreenToDisplayCommand::execute(Engine& engine) {
+    auto* om = engine.getOutputManager();
+    if (!om) {
+        std::cerr << "[AssignScreenToDisplay] OutputManager not available" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+
+    // Find screen by name.
+    entt::entity screenEntity = entt::null;
+    for (auto [e, s] : registry.view<Screen>().each()) {
+        if (s.name == m_screenName) {
+            screenEntity = e;
+            break;
+        }
+    }
+    if (screenEntity == entt::null) {
+        std::cerr << "[AssignScreenToDisplay] Screen not found: " << m_screenName << std::endl;
+        return false;
+    }
+
+    // Check display index — skip gracefully when out of range so the same
+    // stress-test script runs on any machine regardless of display count.
+    const auto& displays = om->getAvailableDisplays();
+    if (m_displayIndex < 0 || m_displayIndex >= static_cast<int32_t>(displays.size())) {
+        std::cout << "[AssignScreenToDisplay] Skipping " << m_screenName
+                  << ": displayIndex " << m_displayIndex << " out of range ("
+                  << displays.size() << " displays available)" << std::endl;
+        // Return true — not a script failure, just skipped on this machine.
+        return true;
+    }
+
+    // Find an existing OutputDisplay that already sources this screen, or
+    // create a fresh one named "Output_<screenName>".
+    entt::entity outputEntity = entt::null;
+    for (auto [e, od] : registry.view<OutputDisplay>().each()) {
+        if (od.sourceScreen == screenEntity) {
+            outputEntity = e;
+            break;
+        }
+    }
+
+    bool createdNow = false;
+    if (outputEntity == entt::null) {
+        outputEntity = om->createOutput("Output_" + m_screenName, OutputType::Physical);
+        createdNow = true;
+    }
+
+    // Capture undo state before mutating (only on first execute).
+    if (!m_executed) {
+        m_outputEntity  = outputEntity;
+        m_createdOutput = createdNow;
+        if (!createdNow) {
+            const auto& od          = registry.get<OutputDisplay>(outputEntity);
+            m_prevEnabled           = od.enabled;
+            m_prevSourceScreen      = od.sourceScreen;
+            m_prevPhysicalDisplayIndex = od.physicalDisplayIndex;
+        }
+        m_executed = true;
+    }
+
+    // Set sourceScreen and enable before assigning the display, so that
+    // assignDisplay's transport path picks up the correct enabled state.
+    {
+        auto& od        = registry.get<OutputDisplay>(outputEntity);
+        od.sourceScreen = screenEntity;
+        od.enabled      = true;
+    }
+
+    om->assignDisplay(outputEntity, m_displayIndex);
+
+    std::cout << "[AssignScreenToDisplay] Screen '" << m_screenName
+              << "' -> display " << m_displayIndex
+              << " (output entity=" << static_cast<uint32_t>(outputEntity)
+              << (createdNow ? ", created" : ", reused") << ")" << std::endl;
+    return true;
+}
+
+bool AssignScreenToDisplayCommand::undo(Engine& engine) {
+    if (!m_executed || m_outputEntity == entt::null) return false;
+
+    auto* om = engine.getOutputManager();
+    if (!om) return false;
+
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_outputEntity)) return false;
+
+    if (m_createdOutput) {
+        // Output didn't exist before — destroy it.
+        om->removeOutput(m_outputEntity);
+        std::cout << "[AssignScreenToDisplay] Undo: destroyed output for '"
+                  << m_screenName << "'" << std::endl;
+    } else {
+        // Restore prior state.
+        auto& od = registry.get<OutputDisplay>(m_outputEntity);
+        od.sourceScreen = m_prevSourceScreen;
+        od.enabled      = m_prevEnabled;
+        if (m_prevPhysicalDisplayIndex >= 0) {
+            om->assignDisplay(m_outputEntity, m_prevPhysicalDisplayIndex);
+        }
+        // Sync enabled state through the bus so the show thread sees it.
+        bus::SetOutputEnabled msg{
+            static_cast<std::uint64_t>(m_outputEntity),
+            m_prevEnabled
+        };
+        engine.publishSetOutputEnabled(msg);
+        std::cout << "[AssignScreenToDisplay] Undo: restored output for '"
+                  << m_screenName << "'" << std::endl;
+    }
+    return true;
+}
+
+nlohmann::json AssignScreenToDisplayCommand::toJson() const {
+    return {{"type", "AssignScreenToDisplay"},
+            {"screenName", m_screenName},
+            {"displayIndex", m_displayIndex}};
+}
+
+std::string AssignScreenToDisplayCommand::getDescription() const {
+    return "Assign screen '" + m_screenName + "' to display " + std::to_string(m_displayIndex);
+}
+
+CommandPtr AssignScreenToDisplayCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssignScreenToDisplayCommand>(
+        j.value("screenName", ""),
+        j.value("displayIndex", 0));
+}
+
+// ============================================================================
+// SetOutputEnabledCommand
+// ============================================================================
+
+bool SetOutputEnabledCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+
+    // Find OutputDisplay by name.
+    entt::entity found = entt::null;
+    for (auto [e, od] : registry.view<OutputDisplay>().each()) {
+        if (od.name == m_outputName) {
+            found = e;
+            break;
+        }
+    }
+    if (found == entt::null) {
+        std::cerr << "[SetOutputEnabled] OutputDisplay not found: " << m_outputName << std::endl;
+        return false;
+    }
+
+    // Capture previous state on first execute for undo.
+    if (!m_previousEnabled.has_value()) {
+        m_previousEnabled = registry.get<OutputDisplay>(found).enabled;
+        m_outputEntity    = found;
+    }
+
+    // Update registry and route through the bus so the show thread handles
+    // swap-chain lifecycle safely (ADR-0014).
+    registry.get<OutputDisplay>(found).enabled = m_enabled;
+    engine.publishSetOutputEnabled(bus::SetOutputEnabled{
+        static_cast<std::uint64_t>(found),
+        m_enabled
+    });
+
+    std::cout << "[SetOutputEnabled] '" << m_outputName << "' -> "
+              << (m_enabled ? "enabled" : "disabled") << std::endl;
+    return true;
+}
+
+bool SetOutputEnabledCommand::undo(Engine& engine) {
+    if (!m_previousEnabled.has_value()) return false;
+    if (m_outputEntity == entt::null) return false;
+
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_outputEntity)) return false;
+
+    const bool prev = *m_previousEnabled;
+    registry.get<OutputDisplay>(m_outputEntity).enabled = prev;
+    engine.publishSetOutputEnabled(bus::SetOutputEnabled{
+        static_cast<std::uint64_t>(m_outputEntity),
+        prev
+    });
+
+    std::cout << "[SetOutputEnabled] Undo: '" << m_outputName << "' -> "
+              << (prev ? "enabled" : "disabled") << std::endl;
+    return true;
+}
+
+nlohmann::json SetOutputEnabledCommand::toJson() const {
+    return {{"type", "SetOutputEnabled"},
+            {"outputName", m_outputName},
+            {"enabled", m_enabled}};
+}
+
+std::string SetOutputEnabledCommand::getDescription() const {
+    return std::string("Set output '") + m_outputName + "' " +
+           (m_enabled ? "enabled" : "disabled");
+}
+
+CommandPtr SetOutputEnabledCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetOutputEnabledCommand>(
+        j.value("outputName", ""),
+        j.value("enabled", true));
 }
 
 } // namespace entity
