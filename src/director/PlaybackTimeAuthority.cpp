@@ -306,48 +306,11 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
 // AnimationSystem). Math mirrors entity::KeyframeTrack::evaluate in
 // include/entity/components/AnimatedProperties.hpp — keep them in sync.
 
-// Mirror of KeyframeTrack::interpolate but operating on entity::Keyframe
-// (in-memory format). Used by the effect-bake path; the matching show-side
-// re-evaluator works on bus::BakedKeyframe via interpolateBakedKeyframes
-// below — same math, two forms of the input.
-float interpolateInMemoryKeyframes(const Keyframe& a, const Keyframe& b, float t) {
-    if (a.interpolation == InterpolationType::Step) return a.value;
-    const float delta = b.value - a.value;
-    switch (b.interpolation) {
-        case InterpolationType::Step:      return a.value + delta * t;
-        case InterpolationType::EaseIn:    return a.value + delta * (t * t);
-        case InterpolationType::EaseOut: {
-            const float inv = 1.0f - t;
-            return a.value + delta * (1.0f - inv * inv);
-        }
-        case InterpolationType::EaseInOut: {
-            const float mt  = 1.0f - t;
-            const float t2  = t * t;
-            const float t3  = t2 * t;
-            const float y   = 3.0f * mt * t2 + t3;
-            return a.value + delta * y;
-        }
-        case InterpolationType::Linear:
-        default:                           return a.value + delta * t;
-    }
-}
-
-float evaluateInMemoryKeyframes(const std::vector<Keyframe>& kfs,
-                                  FrameNumber frame,
-                                  float defaultIfEmpty) {
-    if (kfs.empty()) return defaultIfEmpty;
-    if (frame <= kfs.front().frame) return kfs.front().value;
-    if (frame >= kfs.back().frame)  return kfs.back().value;
-    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
-        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
-    if (it != kfs.end() && it->frame == frame) return it->value;
-    if (it == kfs.begin() || it == kfs.end()) return kfs.back().value;
-    const auto& prev = *(it - 1);
-    const auto& next = *it;
-    const float t = static_cast<float>(frame - prev.frame)
-                  / static_cast<float>(next.frame - prev.frame);
-    return interpolateInMemoryKeyframes(prev, next, t);
-}
+// In-memory keyframe evaluation moved to a public free function
+// `entity::evaluateKeyframes` in AnimatedProperties.hpp — shared with
+// AnimationSystem now that editor-side effect-param eval also needs it.
+// The show-side re-evaluator on `bus::BakedKeyframe` is still
+// `interpolateBakedKeyframes` below — same math, different wire form.
 
 // Marshal one ParamValue into its 16-byte cbuffer slot. Slot layout per
 // shaders/effects/_effect_common.hlsli: Float→.x, Vec2→.xy, Vec3→.xyz,
@@ -1382,7 +1345,7 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                             schema.defaultValue.type == ParamValue::Type::Float
                                 ? schema.defaultValue.f4[0]
                                 : 0.0f;
-                        const float v = evaluateInMemoryKeyframes(
+                        const float v = evaluateKeyframes(
                             src.keyframes, localFrame, def);
 
                         // v1: only Float params are animatable; write to

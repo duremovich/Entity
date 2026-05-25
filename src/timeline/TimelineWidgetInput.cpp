@@ -335,6 +335,12 @@ TimelineWidget::findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const 
 
                 const auto properties = propertyListForEntity(clipAtPlayhead);
                 for (size_t p = 0; p < properties.size(); ++p) {
+                    // Effect-keyframe drag-to-move + right-click is a
+                    // Phase 4 follow-up. For now, skip non-Transform
+                    // rows so the right-pane hit-test stays consistent
+                    // with what renderPropertyTracks draws ring-able.
+                    if (properties[p].source !=
+                        TimelinePropertyDef::Source::Transform) continue;
                     const KeyframeTrack* kfTrack =
                         animProps->getTrack(properties[p].prop);
                     if (!kfTrack || !kfTrack->hasKeyframes()) continue;
@@ -536,9 +542,18 @@ void TimelineWidget::handleRulerInteraction() {
         m_hoverDivisionIndex = -1;
     }
 
-    // ── Cue lane left-click: hit-test cue flags for drag-to-move. Done
-    // before ruler scrub so cue drag gets first shot at the click.
-    if (overCueLane && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !m_isDraggingCue) {
+    // ── Cue lane gestures (issue 2026-05-25):
+    //   single-click on label/triangle → seek playhead to cue.frame
+    //   drag past io.MouseDragThreshold → move cue (EditCueCommand)
+    //   double-click → open the Edit Cue modal
+    // The full label rect is the gesture-initiation zone for all three.
+    // Drag-from-the-label is intentional, so we can't just narrow the
+    // hit-rect to "fix" the bare-click-moves-cue bug — we disambiguate
+    // click from drag with a candidate-then-upgrade state machine on
+    // m_cueClickCandidate.
+    auto hitTestCueAt = [&](ImVec2 pos, double& outNumber,
+                            FrameNumber& outFrame,
+                            std::string& outLabel) -> bool {
         std::vector<CueLaneSlot> slots;
         int rowsUsed = 0;
         computeCueLaneLayout(slots, rowsUsed);
@@ -548,18 +563,90 @@ void TimelineWidget::handleRulerInteraction() {
             const float cx = windowPos.x + frameToPixel(cue.frame);
             const float rowTop = laneTopY + slot.row * kCueRowH;
             const float rowBot = rowTop + kCueRowH;
-            if (mousePos.x >= cx && mousePos.x <= cx + slot.labelW &&
-                mousePos.y >= rowTop && mousePos.y <= rowBot) {
-                m_isDraggingCue = true;
-                m_draggedCueNumber = cue.number;
-                m_dragOriginalCueTime = m_timeline->frameToTime(cue.frame);
-                m_dragCurrentCueTime = m_dragOriginalCueTime;
-                break;
+            if (pos.x >= cx && pos.x <= cx + slot.labelW &&
+                pos.y >= rowTop && pos.y <= rowBot) {
+                outNumber = cue.number;
+                outFrame  = cue.frame;
+                outLabel  = cue.label;
+                return true;
             }
+        }
+        return false;
+    };
+
+    // (1) Mouse-down inside any cue's label rect → record a click
+    // candidate. Do NOT set m_isDraggingCue yet; that flips only when
+    // the gesture crosses io.MouseDragThreshold below.
+    if (overCueLane && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !m_isDraggingCue && !m_cueClickCandidate.has_value()) {
+        double      cueNum   = 0.0;
+        FrameNumber cueFrame = 0;
+        std::string cueLabel;
+        if (hitTestCueAt(mousePos, cueNum, cueFrame, cueLabel)) {
+            m_cueClickCandidate   = cueNum;
+            m_dragOriginalCueTime = m_timeline->frameToTime(cueFrame);
+            m_dragCurrentCueTime  = m_dragOriginalCueTime;
         }
     }
 
-    // ── Cue drag updates / release. While dragging we DON'T enqueue any
+    // (2) Double-click on a cue label/triangle → open the edit modal.
+    // ImGui fires this on the SECOND click of the pair; the first
+    // click already ran (3)'s single-click seek-to-cue-frame branch on
+    // its release. Clearing m_cueClickCandidate prevents the second
+    // release from firing a redundant seek.
+    if (overCueLane && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        double      cueNum   = 0.0;
+        FrameNumber cueFrame = 0;
+        std::string cueLabel;
+        if (hitTestCueAt(mousePos, cueNum, cueFrame, cueLabel)) {
+            m_cueModalMode      = CueModalMode::Edit;
+            m_cueModalOldNumber = cueNum;
+            m_cueModalNumber    = cueNum;
+            m_cueModalFrame     = cueFrame;
+            std::snprintf(m_cueModalLabelBuf, sizeof(m_cueModalLabelBuf),
+                          "%s", cueLabel.c_str());
+            m_cueModalOpenRequested = true;
+            m_cueClickCandidate.reset();
+            return;
+        }
+    }
+
+    // (3) Click-candidate state machine. While held without crossing
+    // the drag threshold we sit here. On release we resolve as a
+    // single-click seek; on threshold-cross we upgrade to
+    // m_isDraggingCue and the existing drag-update block (4) takes
+    // over (same frame, via fall-through).
+    if (m_cueClickCandidate.has_value() && !m_isDraggingCue) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // -1.0f → use io.MouseDragThreshold (default 6 px), the
+            // natural "slight click vs real drag" boundary.
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, -1.0f)) {
+                m_isDraggingCue    = true;
+                m_draggedCueNumber = *m_cueClickCandidate;
+                m_cueClickCandidate.reset();
+                // Fall through to block (4) so the snap-update path
+                // also runs on the upgrade frame.
+            } else {
+                // Still candidate — no drag yet, no seek yet. Suppress
+                // ruler scrub for this frame and wait.
+                return;
+            }
+        } else {
+            // Released without ever crossing the drag threshold →
+            // seek playhead to the cue's frame. Cue itself does NOT
+            // move; no EditCueCommand.
+            if (const CueTag* live = m_timeline->findCueTag(*m_cueClickCandidate)) {
+                m_timeline->seekToFrame(live->frame);
+            }
+            m_cueClickCandidate.reset();
+            m_dragOriginalCueTime = 0;
+            m_dragCurrentCueTime  = 0;
+            return;
+        }
+    }
+
+    // (4) Active-drag update + release. Reached only after block (3)
+    // promoted to m_isDraggingCue. While dragging we DON'T enqueue any
     // commands; renderCueLane() reads m_dragCurrentCueTime to draw the
     // cue at its visual position. Release commits one EditCueCommand.
     if (m_isDraggingCue) {

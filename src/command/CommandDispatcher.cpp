@@ -227,6 +227,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetKeyframeInterpolation", SetKeyframeInterpolationCommand::fromJson);
     registerFactory("MoveKeyframe", MoveKeyframeCommand::fromJson);
     registerFactory("RemoveKeyframe", RemoveKeyframeCommand::fromJson);
+    registerFactory("UpsertEffectKeyframe", UpsertEffectKeyframeCommand::fromJson);
+    registerFactory("RemoveEffectKeyframe", RemoveEffectKeyframeCommand::fromJson);
 
     // Timeline structure commands
     registerFactory("AddTrack", AddTrackCommand::fromJson);

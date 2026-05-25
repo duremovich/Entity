@@ -964,6 +964,11 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
             m_dispatcher->enqueue(std::move(cmd));
         }
         ImGui::SameLine();
+        // SetNextItemAllowOverlap lets the X SmallButton below claim its
+        // own click instead of having it eaten by CollapsingHeader's
+        // full-row toggle hitbox (issue 2026-05-25 — X was twirling the
+        // header instead of removing the effect).
+        ImGui::SetNextItemAllowOverlap();
         const bool open = ImGui::CollapsingHeader(displayName,
                                                    ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 28.0f);
@@ -992,16 +997,72 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
                                   ? params->values[slot].f4[0]
                                   : schema.defaultValue.f4[0];
                     ImGui::PushID(static_cast<int>(slot));
+
+                    // Keyframe controls row + label, matching the clip-
+                    // Transform idiom (renderKeyframeControls + SameLine +
+                    // Text + full-width hidden-label slider).
+                    renderEffectKeyframeControls(fxEnt, schema, v);
+                    ImGui::SameLine();
+                    ImGui::Text("%s", schema.displayName.c_str());
                     ImGui::SetNextItemWidth(-1);
-                    const bool changed = entity::ui::SliderFloat(schema.displayName.c_str(),
+                    const bool changed = entity::ui::SliderFloat("##param",
                                                             &v, schema.min, schema.max, "%.3f");
+
+                    // Resolve the layer-local frame from fx->ownerLayer so
+                    // the live keyframe writes below can land at the right
+                    // place. -1 = playhead outside the layer window.
+                    FrameNumber localFrame = -1;
+                    if (fx->ownerLayer != entt::null && registry.valid(fx->ownerLayer)) {
+                        FrameNumber layerStart = 0;
+                        bool haveLayer = false;
+                        if (const auto* clip = registry.try_get<Clip>(fx->ownerLayer)) {
+                            layerStart = clip->startFrame;
+                            haveLayer = true;
+                        } else if (const auto* lay = registry.try_get<Layer>(fx->ownerLayer)) {
+                            layerStart = lay->startFrame;
+                            haveLayer = true;
+                        }
+                        if (haveLayer) {
+                            const FrameNumber currentFrame = m_timeline
+                                ? m_timeline->getCurrentFrame() : 0;
+                            localFrame = currentFrame - layerStart;
+                        }
+                    }
+
+                    // Detect whether this param is currently keyframed.
+                    const std::uint32_t paramHash = effects::fnv1a32(schema.name);
+                    const auto* anim = registry.try_get<EffectAnimatedParameters>(fxEnt);
+                    bool isKeyframed = false;
+                    std::optional<float> existingKfValue;
+                    if (anim) {
+                        for (const auto& t : anim->tracks) {
+                            if (t.paramKeyHash == paramHash) {
+                                if (!t.keyframes.empty()) isKeyframed = true;
+                                if (localFrame >= 0) {
+                                    for (const auto& kf : t.keyframes) {
+                                        if (kf.frame == localFrame) {
+                                            existingKfValue = kf.value;
+                                            break;
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+
                     if (ImGui::IsItemActivated()) {
-                        m_preEditEffectFloat = (slot < params->values.size())
+                        m_preEditEffect.scalarValue = (slot < params->values.size())
                             ? params->values[slot].f4[0]
                             : schema.defaultValue.f4[0];
+                        m_preEditEffect.wasKeyframed   = isKeyframed && localFrame >= 0;
+                        m_preEditEffect.keyframeFrame  = localFrame;
+                        m_preEditEffect.keyframeValue  = existingKfValue;
+                        m_preEditEffect.paramName      = schema.name;
+                        m_preEditEffect.effectEntity   = fxEnt;
                     }
                     if (changed) {
-                        // Live-update local state so the slider tracks the
+                        // Live-update the slot so the slider tracks the
                         // user's drag without waiting for the dispatched
                         // command to land on next tick.
                         if (slot >= params->values.size()) {
@@ -1016,12 +1077,56 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
                             }
                         }
                         params->values[slot] = ParamValue::makeFloat(v);
+
+                        // AE-style auto-keyframe — when the param is
+                        // keyframed, every slider tick upserts a kf at
+                        // the current layer-local frame so the live
+                        // motion is keyframed-not-scalar. AnimationSystem
+                        // would otherwise overwrite the slot from the
+                        // existing track on the next tick.
+                        if (m_preEditEffect.wasKeyframed && localFrame >= 0) {
+                            auto& a = registry.get_or_emplace<EffectAnimatedParameters>(fxEnt);
+                            EffectAnimatedParameters::NamedTrack* t = nullptr;
+                            for (auto& nt : a.tracks) {
+                                if (nt.paramKeyHash == paramHash) { t = &nt; break; }
+                            }
+                            if (!t) {
+                                a.tracks.push_back({});
+                                a.tracks.back().paramKeyHash = paramHash;
+                                t = &a.tracks.back();
+                            }
+                            // Binary-search insert / replace at localFrame.
+                            auto it = std::lower_bound(t->keyframes.begin(), t->keyframes.end(),
+                                localFrame,
+                                [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+                            if (it != t->keyframes.end() && it->frame == localFrame) {
+                                it->value = v;
+                            } else {
+                                t->keyframes.insert(it, Keyframe{localFrame, v, InterpolationType::Linear});
+                            }
+                        }
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
-                        auto cmd = std::make_unique<SetEffectFloatParamCommand>(
-                            fxEnt, schema.name, v);
-                        cmd->setPreviousValue(m_preEditEffectFloat);
-                        m_dispatcher->enqueue(std::move(cmd));
+                        if (m_preEditEffect.wasKeyframed &&
+                            m_preEditEffect.effectEntity == fxEnt &&
+                            m_preEditEffect.keyframeFrame >= 0)
+                        {
+                            // Keyframed edit — wrap the live in-place
+                            // upsert in an undoable command. setPreviousValue
+                            // carries the pre-drag kf state (nullopt = no
+                            // kf existed at this frame; undo removes the
+                            // one the drag created).
+                            auto cmd = std::make_unique<UpsertEffectKeyframeCommand>(
+                                fxEnt, m_preEditEffect.paramName,
+                                m_preEditEffect.keyframeFrame, v);
+                            cmd->setPreviousValue(m_preEditEffect.keyframeValue);
+                            m_dispatcher->enqueue(std::move(cmd));
+                        } else {
+                            auto cmd = std::make_unique<SetEffectFloatParamCommand>(
+                                fxEnt, schema.name, v);
+                            cmd->setPreviousValue(m_preEditEffect.scalarValue);
+                            m_dispatcher->enqueue(std::move(cmd));
+                        }
                     }
                     ImGui::PopID();
                 }
@@ -1576,6 +1681,139 @@ void PropertyWindow::renderKeyframeControls(AnimatableProperty property, const c
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Go to next keyframe");
     }
+
+    ImGui::PopID();
+}
+
+void PropertyWindow::renderEffectKeyframeControls(
+    entt::entity effectEntity,
+    const effects::ParamSchema& schema,
+    float currentValue)
+{
+    if (!m_timeline) return;
+    auto& reg = m_timeline->getRegistry();
+    if (!reg.valid(effectEntity)) return;
+    const auto* fx = reg.try_get<Effect>(effectEntity);
+    if (!fx) return;
+
+    // Layer-local frame from fx->ownerLayer. Disable all the controls
+    // (greyed-out) when the playhead is outside the layer window — the
+    // diamond / arrows have no well-defined target frame there.
+    FrameNumber layerStart = 0;
+    bool haveLayer = false;
+    if (fx->ownerLayer != entt::null && reg.valid(fx->ownerLayer)) {
+        if (const auto* clip = reg.try_get<Clip>(fx->ownerLayer)) {
+            layerStart = clip->startFrame; haveLayer = true;
+        } else if (const auto* lay = reg.try_get<Layer>(fx->ownerLayer)) {
+            layerStart = lay->startFrame; haveLayer = true;
+        }
+    }
+    const FrameNumber currentFrame = m_timeline->getCurrentFrame();
+    const FrameNumber localFrame = haveLayer ? (currentFrame - layerStart) : -1;
+
+    // Find the track + keyframe-at-current-frame status.
+    const std::uint32_t hash = effects::fnv1a32(schema.name);
+    const auto* anim = reg.try_get<EffectAnimatedParameters>(effectEntity);
+    const EffectAnimatedParameters::NamedTrack* track = nullptr;
+    if (anim) {
+        for (const auto& t : anim->tracks) {
+            if (t.paramKeyHash == hash) { track = &t; break; }
+        }
+    }
+    const bool hasKeyframes = track && !track->keyframes.empty();
+    bool hasKeyframeAtCurrentFrame = false;
+    if (track && localFrame >= 0) {
+        for (const auto& kf : track->keyframes) {
+            if (kf.frame == localFrame) { hasKeyframeAtCurrentFrame = true; break; }
+        }
+    }
+
+    ImGui::PushID(static_cast<int>(hash));
+
+    // Stopwatch — toggles a keyframe at the current frame (add if none
+    // exist, or remove if one exists at this exact frame).
+    ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255)
+                                        : IM_COL32(128, 128, 128, 255);
+    ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
+    if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
+        if (localFrame >= 0 && m_dispatcher) {
+            if (hasKeyframeAtCurrentFrame) {
+                m_dispatcher->enqueue(std::make_unique<RemoveEffectKeyframeCommand>(
+                    effectEntity, schema.name, localFrame));
+            } else {
+                m_dispatcher->enqueue(std::make_unique<UpsertEffectKeyframeCommand>(
+                    effectEntity, schema.name, localFrame, currentValue));
+            }
+        }
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(hasKeyframes
+            ? "Toggle keyframe at current frame"
+            : "Click to add keyframe at current frame");
+    }
+
+    ImGui::SameLine();
+
+    // Prev keyframe arrow
+    const bool canGoPrev = hasKeyframes && localFrame > 0;
+    if (!canGoPrev) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("<")) {
+        if (track) {
+            FrameNumber prevFrame = -1;
+            for (const auto& kf : track->keyframes) {
+                if (kf.frame < localFrame && kf.frame > prevFrame) prevFrame = kf.frame;
+            }
+            if (prevFrame >= 0) {
+                m_timeline->seekToFrame(prevFrame + layerStart);
+            }
+        }
+    }
+    if (!canGoPrev) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Go to previous keyframe");
+
+    ImGui::SameLine();
+
+    // Diamond — add/remove keyframe at current frame
+    ImU32 diamondColor = hasKeyframeAtCurrentFrame ? IM_COL32(255, 180, 50, 255)
+                                                   : IM_COL32(128, 128, 128, 255);
+    ImGui::PushStyleColor(ImGuiCol_Text, diamondColor);
+    if (ImGui::SmallButton("<>")) {
+        if (localFrame >= 0 && m_dispatcher) {
+            if (hasKeyframeAtCurrentFrame) {
+                m_dispatcher->enqueue(std::make_unique<RemoveEffectKeyframeCommand>(
+                    effectEntity, schema.name, localFrame));
+            } else {
+                m_dispatcher->enqueue(std::make_unique<UpsertEffectKeyframeCommand>(
+                    effectEntity, schema.name, localFrame, currentValue));
+            }
+        }
+    }
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(hasKeyframeAtCurrentFrame
+            ? "Remove keyframe at current frame"
+            : "Add keyframe at current frame");
+    }
+
+    ImGui::SameLine();
+
+    // Next keyframe arrow
+    const bool canGoNext = hasKeyframes;
+    if (!canGoNext) ImGui::BeginDisabled();
+    if (ImGui::SmallButton(">")) {
+        if (track) {
+            FrameNumber nextFrame = std::numeric_limits<FrameNumber>::max();
+            for (const auto& kf : track->keyframes) {
+                if (kf.frame > localFrame && kf.frame < nextFrame) nextFrame = kf.frame;
+            }
+            if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
+                m_timeline->seekToFrame(nextFrame + layerStart);
+            }
+        }
+    }
+    if (!canGoNext) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Go to next keyframe");
 
     ImGui::PopID();
 }

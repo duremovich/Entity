@@ -15,7 +15,7 @@ namespace entity {
 class Timeline;
 class CommandDispatcher;
 class Engine;
-namespace effects { class EffectKindRegistry; }
+namespace effects { class EffectKindRegistry; struct ParamSchema; }
 
 /**
  * PropertyWindow - Displays and edits properties of the selected clip.
@@ -217,6 +217,18 @@ private:
      */
     void updateKeyframeOnValueChange(AnimatableProperty property, float newValue);
 
+    /**
+     * Render keyframe controls (stopwatch / prev / diamond / next) for a
+     * single effect parameter on a specific effect entity. Hash-keyed
+     * sibling of renderKeyframeControls — operates on
+     * EffectAnimatedParameters (FNV-1a of schema.name) instead of the
+     * AnimatableProperty enum on AnimatedProperties. Diamond / stopwatch
+     * dispatch Upsert/Remove EffectKeyframeCommand.
+     */
+    void renderEffectKeyframeControls(entt::entity effectEntity,
+                                      const effects::ParamSchema& schema,
+                                      float currentValue);
+
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
     CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
@@ -265,9 +277,20 @@ private:
     FrameNumber m_preEditMediaOutFrame{0};
     FrameNumber m_preEditDuration{0};
 
-    // Pre-edit capture for the active Effect-parameter slider (only one
-    // slider is active in ImGui at a time, so a single scalar is enough).
-    float m_preEditEffectFloat{0.0f};
+    // Pre-edit capture for the active Effect-parameter slider. Mirrors
+    // PreEditState above — if the param is keyframed at drag-start, the
+    // undoable unit is the keyframe (UpsertEffectKeyframeCommand) not
+    // the scalar (SetEffectFloatParamCommand). Only one slider is
+    // active in ImGui at a time, so a single struct is enough.
+    struct EffectPreEditState {
+        float                scalarValue{0.0f};
+        bool                 wasKeyframed{false};      // dispatch Upsert vs scalar set
+        FrameNumber          keyframeFrame{0};         // layer-local frame at drag start
+        std::optional<float> keyframeValue;            // nullopt = no kf existed pre-edit
+        std::string          paramName;                // schema.name (FNV-1a key)
+        entt::entity         effectEntity{entt::null};
+    };
+    EffectPreEditState m_preEditEffect;
 
     // Filter text for the Media combo dropdown. Cleared on dropdown open
     // (see IsWindowAppearing branch in renderPlaybackSection).

@@ -1674,6 +1674,217 @@ CommandPtr RemoveKeyframeCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// UpsertEffectKeyframeCommand / RemoveEffectKeyframeCommand
+//
+// Hash-keyed effect-param keyframe commands (Phase 3, 2026-05-25).
+// Operate on EffectAnimatedParameters::tracks, keyed by FNV-1a hash of
+// the param name. paramName goes on the wire as a string so the JSON
+// stays human-readable and wire-stable across builds.
+// ============================================================================
+
+namespace {
+
+EffectAnimatedParameters::NamedTrack*
+findEffectTrack(EffectAnimatedParameters& anim, std::uint32_t hash) {
+    for (auto& t : anim.tracks) {
+        if (t.paramKeyHash == hash) return &t;
+    }
+    return nullptr;
+}
+
+EffectAnimatedParameters::NamedTrack&
+getOrCreateEffectTrack(EffectAnimatedParameters& anim, std::uint32_t hash) {
+    if (auto* t = findEffectTrack(anim, hash)) return *t;
+    anim.tracks.push_back({});
+    anim.tracks.back().paramKeyHash = hash;
+    return anim.tracks.back();
+}
+
+void upsertKeyframeInTrack(EffectAnimatedParameters::NamedTrack& track,
+                           FrameNumber frame, float value,
+                           InterpolationType interp) {
+    // Mirrors KeyframeTrack::addKeyframe: binary-search insert / replace.
+    auto it = std::lower_bound(track.keyframes.begin(), track.keyframes.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != track.keyframes.end() && it->frame == frame) {
+        it->value = value;
+        it->interpolation = interp;
+        return;
+    }
+    track.keyframes.insert(it, Keyframe{frame, value, interp});
+}
+
+bool removeKeyframeFromTrack(EffectAnimatedParameters::NamedTrack& track,
+                             FrameNumber frame) {
+    auto it = std::lower_bound(track.keyframes.begin(), track.keyframes.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != track.keyframes.end() && it->frame == frame) {
+        track.keyframes.erase(it);
+        return true;
+    }
+    return false;
+}
+
+const Keyframe* findKeyframeAt(const EffectAnimatedParameters::NamedTrack& track,
+                               FrameNumber frame) {
+    for (const auto& kf : track.keyframes) {
+        if (kf.frame == frame) return &kf;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+bool UpsertEffectKeyframeCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity) || !registry.all_of<Effect>(m_effectEntity)) {
+        std::cerr << "[UpsertEffectKeyframe] invalid effect entity" << std::endl;
+        return false;
+    }
+    auto& anim = registry.get_or_emplace<EffectAnimatedParameters>(m_effectEntity);
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+
+    // Auto-capture pre-edit state if the caller didn't (script path).
+    if (!m_hasPreviousState) {
+        if (const auto* t = findEffectTrack(anim, hash)) {
+            const Keyframe* existing = findKeyframeAt(*t, m_frame);
+            m_previousValue = existing
+                ? std::optional<float>(existing->value)
+                : std::nullopt;
+        } else {
+            m_previousValue = std::nullopt;
+        }
+        m_hasPreviousState = true;
+    }
+
+    auto& track = getOrCreateEffectTrack(anim, hash);
+    upsertKeyframeInTrack(track, m_frame, m_newValue, m_interp);
+    return true;
+}
+
+bool UpsertEffectKeyframeCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto& registry = engine.getRegistry();
+    auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity);
+    if (!anim) return false;
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    auto* track = findEffectTrack(*anim, hash);
+    if (!track) return false;
+
+    if (m_previousValue.has_value()) {
+        // Overwrite with the prior value.
+        upsertKeyframeInTrack(*track, m_frame, *m_previousValue, m_interp);
+    } else {
+        // No keyframe existed before — remove the one we just added.
+        removeKeyframeFromTrack(*track, m_frame);
+        // If the track is now empty, drop it so EffectAnimatedParameters
+        // stays minimal (mirrors what an explicit Remove would have done).
+        if (track->keyframes.empty()) {
+            anim->tracks.erase(std::remove_if(anim->tracks.begin(), anim->tracks.end(),
+                [hash](const EffectAnimatedParameters::NamedTrack& t) {
+                    return t.paramKeyHash == hash && t.keyframes.empty();
+                }), anim->tracks.end());
+        }
+    }
+    return true;
+}
+
+nlohmann::json UpsertEffectKeyframeCommand::toJson() const {
+    return {
+        {"type", "UpsertEffectKeyframe"},
+        {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+        {"paramName", m_paramName},
+        {"frame", m_frame},
+        {"value", m_newValue}
+    };
+}
+
+std::string UpsertEffectKeyframeCommand::getDescription() const {
+    return std::string("Upsert effect keyframe ") + m_paramName +
+           " @ frame " + std::to_string(m_frame) +
+           " = " + std::to_string(m_newValue);
+}
+
+CommandPtr UpsertEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
+    const auto effEnt = static_cast<entt::entity>(
+        j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    FrameNumber frame = j.value("frame", 0);
+    float value = j.value("value", 0.0f);
+    return std::make_unique<UpsertEffectKeyframeCommand>(effEnt, std::move(paramName), frame, value);
+}
+
+bool RemoveEffectKeyframeCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+    auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity);
+    if (!anim) return false;
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    auto* track = findEffectTrack(*anim, hash);
+    if (!track) return false;
+    const Keyframe* kf = findKeyframeAt(*track, m_frame);
+    if (!kf) return false;
+
+    if (!m_hasPreviousState) {
+        m_removedValue    = kf->value;
+        m_removedInterp   = kf->interpolation;
+        m_removedEaseIn   = kf->easeIn;
+        m_removedEaseOut  = kf->easeOut;
+        m_hasPreviousState = true;
+    }
+    removeKeyframeFromTrack(*track, m_frame);
+    // Drop empty tracks so the component stays minimal.
+    if (track->keyframes.empty()) {
+        anim->tracks.erase(std::remove_if(anim->tracks.begin(), anim->tracks.end(),
+            [hash](const EffectAnimatedParameters::NamedTrack& t) {
+                return t.paramKeyHash == hash && t.keyframes.empty();
+            }), anim->tracks.end());
+    }
+    return true;
+}
+
+bool RemoveEffectKeyframeCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto& registry = engine.getRegistry();
+    auto& anim = registry.get_or_emplace<EffectAnimatedParameters>(m_effectEntity);
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    auto& track = getOrCreateEffectTrack(anim, hash);
+    upsertKeyframeInTrack(track, m_frame, m_removedValue, m_removedInterp);
+    // Restore bezier tangents — upsertKeyframeInTrack only carries
+    // value + interp (matches KeyframeTrack::addKeyframe contract).
+    for (auto& kf : track.keyframes) {
+        if (kf.frame == m_frame) {
+            kf.easeIn  = m_removedEaseIn;
+            kf.easeOut = m_removedEaseOut;
+            break;
+        }
+    }
+    return true;
+}
+
+nlohmann::json RemoveEffectKeyframeCommand::toJson() const {
+    return {
+        {"type", "RemoveEffectKeyframe"},
+        {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+        {"paramName", m_paramName},
+        {"frame", m_frame}
+    };
+}
+
+std::string RemoveEffectKeyframeCommand::getDescription() const {
+    return std::string("Remove effect keyframe ") + m_paramName +
+           " @ frame " + std::to_string(m_frame);
+}
+
+CommandPtr RemoveEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
+    const auto effEnt = static_cast<entt::entity>(
+        j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    FrameNumber frame = j.value("frame", 0);
+    return std::make_unique<RemoveEffectKeyframeCommand>(effEnt, std::move(paramName), frame);
+}
+
+// ============================================================================
 // AddScreenCommand
 // ============================================================================
 
@@ -4006,10 +4217,11 @@ bool AddEffectCommand::execute(Engine& engine) {
     // Create the effect entity and attach the standard component bundle.
     entt::entity fxEnt = registry.create();
     Effect& fx = registry.emplace<Effect>(fxEnt);
-    fx.kindId  = kindHash;
-    fx.enabled = true;
-    fx.graphX  = 0.0f;
-    fx.graphY  = 0.0f;
+    fx.kindId     = kindHash;
+    fx.enabled    = true;
+    fx.graphX     = 0.0f;
+    fx.graphY     = 0.0f;
+    fx.ownerLayer = m_layerEntity;
 
     EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
     params.values.reserve(kind->params.size());
@@ -4113,10 +4325,11 @@ bool RemoveEffectCommand::undo(Engine& engine) {
     // entity. JSON-recorded references to the old ID would dangle though.
     entt::entity fxEnt = registry.create();
     auto& fx = registry.emplace<Effect>(fxEnt);
-    fx.kindId  = m_savedKindId;
-    fx.enabled = m_savedEnabled;
-    fx.graphX  = m_savedGraphX;
-    fx.graphY  = m_savedGraphY;
+    fx.kindId     = m_savedKindId;
+    fx.enabled    = m_savedEnabled;
+    fx.graphX     = m_savedGraphX;
+    fx.graphY     = m_savedGraphY;
+    fx.ownerLayer = m_layerEntity;
     auto& params = registry.emplace<EffectParameters>(fxEnt);
     params.values = m_savedParams;
     registry.emplace<EffectAnimatedParameters>(fxEnt);

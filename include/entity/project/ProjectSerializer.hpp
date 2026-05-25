@@ -148,7 +148,10 @@ public:
     // v23: per-clip AudioSource (gain/mute/solo); project master gain/mute.
     // v24: section breaks + cue tags stored as integer timeline frames
     //      (was microseconds). Loader migrates pre-v24 files via timeToFrame.
-    static constexpr int PROJECT_VERSION = 24;
+    // v25: per-layer LayerTrackUiState (timeline twirl-down collapsed
+    //      group paths). Pre-v25 files load with empty state — all
+    //      groups expanded. Editor-only; never reaches the bus.
+    static constexpr int PROJECT_VERSION = 25;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

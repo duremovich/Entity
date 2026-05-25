@@ -23,6 +23,7 @@
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/LayerTrackUiState.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -43,6 +44,37 @@ using json = nlohmann::json;
 namespace entity {
 
 std::string ProjectSerializer::s_lastError;
+
+// v25 — emit the LayerTrackUiState component to the layer JSON when it
+// holds any collapsed groups. Editor-only; never reaches the bus.
+static void emitCollapsedGroupsJson(const entt::registry& registry,
+                                    entt::entity layerEntity,
+                                    json& layerJson) {
+    const auto* ui = registry.try_get<LayerTrackUiState>(layerEntity);
+    if (!ui || ui->collapsedGroups.empty()) return;
+    json arr = json::array();
+    for (const auto& p : ui->collapsedGroups) arr.push_back(p);
+    layerJson["collapsedGroups"] = std::move(arr);
+}
+
+// v25 — re-attach the LayerTrackUiState component on a freshly loaded
+// layer entity if the JSON carries any collapsed-group entries.
+static void applyCollapsedGroupsJson(entt::registry& registry,
+                                     entt::entity layerEntity,
+                                     const json& layerJson) {
+    if (!layerJson.contains("collapsedGroups")) return;
+    const auto& arr = layerJson["collapsedGroups"];
+    if (!arr.is_array() || arr.empty()) return;
+    auto& ui = registry.get_or_emplace<LayerTrackUiState>(layerEntity);
+    ui.collapsedGroups.clear();
+    ui.collapsedGroups.reserve(arr.size());
+    for (const auto& s : arr) {
+        if (s.is_string()) ui.collapsedGroups.push_back(s.get<std::string>());
+    }
+    if (ui.collapsedGroups.empty()) {
+        registry.remove<LayerTrackUiState>(layerEntity);
+    }
+}
 
 // Helper: MediaType to string for JSON
 static std::string mediaTypeToJson(MediaType type) {
@@ -247,10 +279,11 @@ static void deserializeEffectChain(const json& entryJson,
         const auto fxEnt = registry.create();
 
         Effect& fx = registry.emplace<Effect>(fxEnt);
-        fx.kindId  = fxJson.value("kindIdHash", std::uint32_t{0});
-        fx.enabled = fxJson.value("enabled",    true);
-        fx.graphX  = fxJson.value("graphX",     0.0f);
-        fx.graphY  = fxJson.value("graphY",     0.0f);
+        fx.kindId     = fxJson.value("kindIdHash", std::uint32_t{0});
+        fx.enabled    = fxJson.value("enabled",    true);
+        fx.graphX     = fxJson.value("graphX",     0.0f);
+        fx.graphY     = fxJson.value("graphY",     0.0f);
+        fx.ownerLayer = layerEntity;
 
         EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
         if (fxJson.contains("params") && fxJson["params"].is_array()) {
@@ -481,6 +514,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         clipJson["audio"] = std::move(audioJson);
                     }
 
+                    // v25 — twirl-down collapsed group paths.
+                    emitCollapsedGroupsJson(registry, layerEntity, clipJson);
+
                     layersJson.push_back(clipJson);
 
                 } else if (oal) {
@@ -526,6 +562,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     // AnimatedProperties keyframe tracks
                     const auto* ap = registry.try_get<AnimatedProperties>(layerEntity);
                     oaJson["animatedProperties"] = serializeAnimatedProperties(ap);
+
+                    // v25 — twirl-down collapsed group paths.
+                    emitCollapsedGroupsJson(registry, layerEntity, oaJson);
 
                     layersJson.push_back(oaJson);
 
@@ -603,6 +642,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                             registry.try_get<AnimatedProperties>(layerEntity);
                         genJson["animatedProperties"] = serializeAnimatedProperties(ap);
                     }
+
+                    // v25 — twirl-down collapsed group paths.
+                    emitCollapsedGroupsJson(registry, layerEntity, genJson);
 
                     layersJson.push_back(genJson);
                 }
@@ -1655,6 +1697,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 deserializeAnimatedProperties(entryJson, ap);
                             }
 
+                            // v25 — twirl-down collapsed group paths.
+                            applyCollapsedGroupsJson(registry, layerEntity, entryJson);
+
                             track->layers.push_back(layerEntity);
                             std::cout << "[ProjectSerializer] Loaded OA layer: "
                                       << lay.name << std::endl;
@@ -1759,6 +1804,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 auto& ap = registry.emplace<AnimatedProperties>(layerEntity);
                                 deserializeAnimatedProperties(entryJson, ap);
                             }
+
+                            // v25 — twirl-down collapsed group paths.
+                            applyCollapsedGroupsJson(registry, layerEntity, entryJson);
 
                             track->layers.push_back(layerEntity);
                             std::cout << "[ProjectSerializer] Loaded generative layer ("
@@ -2022,6 +2070,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             as.mute = aj.value("mute", false);
                             as.solo = aj.value("solo", false);
                         }
+
+                        // v25 — twirl-down collapsed group paths.
+                        applyCollapsedGroupsJson(registry, clipEntity, clipJson);
 
                         // Add layer to track
                         track->layers.push_back(clipEntity);

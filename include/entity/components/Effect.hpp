@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <entt/entt.hpp>
 
 namespace entity {
 
@@ -19,11 +20,19 @@ namespace entity {
 // graphX / graphY are the node's position in the node graph editor.
 // Stored on the component so they round-trip through save/load and
 // undo/redo without a parallel UI-state map.
+//
+// `ownerLayer` is a back-pointer to the layer entity whose EffectChain
+// contains this effect. Set at creation (AddEffectCommand,
+// RemoveEffectCommand::undo, clipboard paste, project load); used by
+// AnimationSystem to resolve the clip-local frame when evaluating
+// EffectAnimatedParameters tracks. Cheaper than reverse-scanning
+// every EffectChain each tick. Editor-thread only — not on the bus.
 struct Effect {
     std::uint32_t kindId{0};
     bool          enabled{true};
     float         graphX{0.0f};
     float         graphY{0.0f};
+    entt::entity  ownerLayer{entt::null};
 };
 
 } // namespace entity

@@ -270,6 +270,9 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     if (m_timeAuthority) {
         m_timeAuthority->setEffectKindRegistry(m_effectKindRegistry.get());
     }
+    if (m_animationSystem) {
+        m_animationSystem->setEffectKindRegistry(m_effectKindRegistry.get());
+    }
     if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
         d3d->setEffectKindRegistry(m_effectKindRegistry.get());
     }
@@ -517,6 +520,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         timelineWidget->setCommandDispatcher(m_commandDispatcher);
         // Clip context menu needs Engine for clipboard state + media library.
         timelineWidget->setEngine(this);
+        // Effect-param rows in the expanded-track view need schema lookups.
+        if (m_effectKindRegistry) {
+            timelineWidget->setEffectKindRegistry(m_effectKindRegistry.get());
+        }
         // Drop-ghost media-duration lookup — drag payload carries the logical
         // path; the probe cache may have been seeded under either the logical
         // or the absolute path depending on the enqueue site. Try both; return
@@ -4944,7 +4951,11 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
         newNodes.reserve(snap.effectNodes.size());
         for (const auto& ns : snap.effectNodes) {
             entt::entity neff = m_registry.create();
-            m_registry.emplace<Effect>(neff) = ns.effect;
+            auto& fx = (m_registry.emplace<Effect>(neff) = ns.effect);
+            // The snapshot's `ownerLayer` points to the SOURCE layer
+            // entity; rebind to the paste destination so AnimationSystem
+            // can resolve clip-local frames for this effect's tracks.
+            fx.ownerLayer = dst;
             if (ns.hasParams) {
                 m_registry.emplace<EffectParameters>(neff) = ns.params;
             }

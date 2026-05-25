@@ -17,6 +17,12 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/components/EffectChain.hpp"
+#include "entity/components/LayerTrackUiState.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/effects/EffectKind.hpp"
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -123,33 +129,147 @@ void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
 // keep the 2D set (6 channels). Shared by renderPropertyTracks (body),
 // renderClipPropertyPanel (header) and findKeyframeAtPosition so they all
 // stay in lockstep.
+bool TimelineWidget::isGroupCollapsed(entt::entity layerEntity,
+                                      const std::string& groupPath) const {
+    if (!m_timeline) return false;
+    auto& reg = m_timeline->getRegistry();
+    if (!reg.valid(layerEntity)) return false;
+    const auto* ui = reg.try_get<LayerTrackUiState>(layerEntity);
+    if (!ui) return false;
+    for (const auto& p : ui->collapsedGroups) {
+        if (p == groupPath) return true;
+    }
+    return false;
+}
+
+void TimelineWidget::toggleGroupCollapsed(entt::entity layerEntity,
+                                          const std::string& groupPath) {
+    if (!m_timeline) return;
+    auto& reg = m_timeline->getRegistry();
+    if (!reg.valid(layerEntity)) return;
+    auto& ui = reg.get_or_emplace<LayerTrackUiState>(layerEntity);
+    for (auto it = ui.collapsedGroups.begin(); it != ui.collapsedGroups.end(); ++it) {
+        if (*it == groupPath) {
+            ui.collapsedGroups.erase(it);
+            // Drop the component when empty so we don't leave dead
+            // state on layers that never collapse anything.
+            if (ui.collapsedGroups.empty()) {
+                reg.remove<LayerTrackUiState>(layerEntity);
+            }
+            return;
+        }
+    }
+    ui.collapsedGroups.push_back(groupPath);
+}
+
 std::vector<TimelineWidget::TimelinePropertyDef>
 TimelineWidget::propertyListForEntity(entt::entity e) const {
-    if (m_timeline && m_timeline->getRegistry().all_of<ObjectAnimationLayer>(e)) {
-        return {
-            {AnimatableProperty::PositionX, "Pos X",    0.0f},
-            {AnimatableProperty::PositionY, "Pos Y",    0.0f},
-            {AnimatableProperty::PositionZ, "Pos Z",    0.0f},
-            {AnimatableProperty::RotationX, "Rot X",    0.0f},
-            {AnimatableProperty::RotationY, "Rot Y",    0.0f},
-            {AnimatableProperty::RotationZ, "Rot Z",    0.0f},
-            {AnimatableProperty::ScaleX,    "Scale X",  1.0f},
-            {AnimatableProperty::ScaleY,    "Scale Y",  1.0f},
-            {AnimatableProperty::ScaleZ,    "Scale Z",  1.0f},
-        };
-    }
-    return {
-        {AnimatableProperty::PositionX, "Pos X",    0.0f},
-        {AnimatableProperty::PositionY, "Pos Y",    0.0f},
-        {AnimatableProperty::ScaleX,    "Scale X",  1.0f},
-        {AnimatableProperty::ScaleY,    "Scale Y",  1.0f},
-        {AnimatableProperty::Rotation,  "Rotation", 0.0f},
-        {AnimatableProperty::Opacity,   "Opacity",  1.0f},
+    std::vector<TimelinePropertyDef> out;
+    if (!m_timeline) return out;
+    auto& registry = m_timeline->getRegistry();
+    if (!registry.valid(e)) return out;
+
+    // Local row factories — TimelinePropertyDef is a private nested
+    // type so we can't put these in an anonymous namespace; lambdas
+    // inside this member function have access.
+    auto groupHeader = [](int depth, std::string path, std::string label) {
+        TimelinePropertyDef d;
+        d.source     = TimelinePropertyDef::Source::GroupHeader;
+        d.depth      = depth;
+        d.groupPath  = std::move(path);
+        d.groupLabel = std::move(label);
+        return d;
     };
+    auto transformRow = [](int depth, AnimatableProperty prop,
+                           std::string name, float def) {
+        TimelinePropertyDef d;
+        d.source       = TimelinePropertyDef::Source::Transform;
+        d.depth        = depth;
+        d.prop         = prop;
+        d.shortName    = std::move(name);
+        d.defaultValue = def;
+        return d;
+    };
+    auto effectParamRow = [](int depth, entt::entity fxEnt,
+                             const effects::ParamSchema& schema) {
+        TimelinePropertyDef d;
+        d.source       = TimelinePropertyDef::Source::EffectParam;
+        d.depth        = depth;
+        d.effectEntity = fxEnt;
+        d.shortName    = schema.displayName;
+        d.paramName    = schema.name;
+        d.paramHash    = effects::fnv1a32(schema.name);
+        d.defaultValue = schema.defaultValue.f4[0];
+        return d;
+    };
+
+    // ── Transform group (Pos / Scale / Rotation / Opacity for clip+generative;
+    // 9-channel set for OA layers).
+    const bool isOA = registry.all_of<ObjectAnimationLayer>(e);
+    const std::string transformPath = "Transform";
+    out.push_back(groupHeader(0, transformPath, "Transform"));
+    const bool transformCollapsed = isGroupCollapsed(e, transformPath);
+    if (!transformCollapsed) {
+        if (isOA) {
+            out.push_back(transformRow(1, AnimatableProperty::PositionX, "Pos X",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::PositionY, "Pos Y",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::PositionZ, "Pos Z",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::RotationX, "Rot X",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::RotationY, "Rot Y",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::RotationZ, "Rot Z",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::ScaleX,    "Scale X",  1.0f));
+            out.push_back(transformRow(1, AnimatableProperty::ScaleY,    "Scale Y",  1.0f));
+            out.push_back(transformRow(1, AnimatableProperty::ScaleZ,    "Scale Z",  1.0f));
+        } else {
+            out.push_back(transformRow(1, AnimatableProperty::PositionX, "Pos X",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::PositionY, "Pos Y",    0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::ScaleX,    "Scale X",  1.0f));
+            out.push_back(transformRow(1, AnimatableProperty::ScaleY,    "Scale Y",  1.0f));
+            out.push_back(transformRow(1, AnimatableProperty::Rotation,  "Rotation", 0.0f));
+            out.push_back(transformRow(1, AnimatableProperty::Opacity,   "Opacity",  1.0f));
+        }
+    }
+
+    // ── Effects group (only if the entity has a non-empty EffectChain
+    // AND we have a registry for kind/schema lookups).
+    if (m_effectKindRegistry) {
+        const auto* chain = registry.try_get<EffectChain>(e);
+        if (chain && !chain->nodes.empty()) {
+            const std::string effectsPath = "Effects";
+            out.push_back(groupHeader(0, effectsPath, "Effects"));
+            const bool effectsCollapsed = isGroupCollapsed(e, effectsPath);
+            if (!effectsCollapsed) {
+                for (entt::entity fxEnt : chain->nodes) {
+                    if (!registry.valid(fxEnt)) continue;
+                    const auto* fx = registry.try_get<Effect>(fxEnt);
+                    if (!fx) continue;
+                    const effects::EffectKind* kind = m_effectKindRegistry->find(fx->kindId);
+                    if (!kind) continue;
+                    // Sub-group path uses kind display name; entity ID
+                    // appended to disambiguate same-kind duplicates on
+                    // one layer.
+                    std::string subPath = effectsPath + "/" + kind->displayName +
+                                          "#" + std::to_string(static_cast<std::uint32_t>(fxEnt));
+                    out.push_back(groupHeader(1, subPath, kind->displayName));
+                    const bool subCollapsed = isGroupCollapsed(e, subPath);
+                    if (!subCollapsed) {
+                        for (const auto& schema : kind->params) {
+                            if (schema.type != ParamValue::Type::Float) continue; // v1
+                            out.push_back(effectParamRow(2, fxEnt, schema));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return out;
 }
 
 // Public accessor — also used by the input/expand code in TimelineWidget.cpp
-// to compute the expanded track height.
+// to compute the expanded track height. Counts visible rows (group
+// headers + non-collapsed properties) so the panel height shrinks /
+// grows as the user toggles groups.
 std::size_t TimelineWidget::expandedPropertyRowCount(entt::entity layerEntity) const {
     if (!m_timeline) return 0;
     return propertyListForEntity(layerEntity).size();
@@ -971,56 +1091,81 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
     const int numProperties = static_cast<int>(properties.size());
 
     for (int i = 0; i < numProperties; i++) {
+        const TimelinePropertyDef& row = properties[i];
         float rowY = startY + i * PROPERTY_ROW_HEIGHT;
 
-        // Draw property row background (scrollable track area)
+        // Row background — slightly darker for group headers so the
+        // hierarchy reads at a glance.
         ImVec2 rowMin(baseWindowPos.x, rowY);
         ImVec2 rowMax(baseWindowPos.x + 4000.0f, rowY + PROPERTY_ROW_HEIGHT);
-        drawList->AddRectFilled(rowMin, rowMax, IM_COL32(35, 40, 50, 255));
+        drawList->AddRectFilled(rowMin, rowMax,
+            row.isGroupHeader() ? IM_COL32(25, 28, 36, 255)
+                                : IM_COL32(35, 40, 50, 255));
 
-        // Draw property track area background under clip (slightly lighter)
+        // Group-header rows are visual separators only — no clip-area
+        // lighter background, no diamonds, no track area.
+        if (row.isGroupHeader()) continue;
+
+        // Property-track area background under clip (slightly lighter)
         ImVec2 trackMin(clipX, rowY);
         ImVec2 trackMax(clipX + clipWidth, rowY + PROPERTY_ROW_HEIGHT);
         drawList->AddRectFilled(trackMin, trackMax, IM_COL32(50, 55, 65, 255));
 
-        // Draw keyframe shapes on the timeline. Keyframe left-click select /
-        // drag and right-click menu are routed through findKeyframeAtPosition
-        // in handleTracksInteraction — the draw pass only paints.
-        const KeyframeTrack* track = animProps ? animProps->getTrack(properties[i].prop) : nullptr;
-        if (track && track->hasKeyframes()) {
-            const float size = 5.0f;
-            const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
-
-            for (const auto& kf : track->keyframes) {
-                // While this keyframe is being dragged, draw it at the live
-                // drag frame instead of its (still-unmutated) data frame.
-                const bool isDragged = m_isDraggingKeyframe &&
-                    m_dragKeyframeClip == clipEntity &&
-                    m_dragKeyframeProperty == properties[i].prop &&
-                    m_dragKeyframeOriginalFrame == kf.frame;
-                const FrameNumber drawFrame =
-                    isDragged ? m_dragKeyframeCurrentFrame : kf.frame;
-
-                // drawFrame is layer-local in *timeline* frames for Clip-backed,
-                // OA and Generative layers alike (AnimationSystem evaluates with
-                // localFrame = currentFrame - startFrame, both timeline frames).
-                const float kfSeconds =
-                    static_cast<float>(drawFrame) / static_cast<float>(timelineFrameRate);
-                const float kfX = clipX + (kfSeconds * m_pixelsPerSecond);
-
-                // Only draw if within clip bounds
-                if (kfX >= clipX && kfX <= clipX + clipWidth) {
-                    drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
-
-                    // Emphasis ring on the selected keyframe (and the one
-                    // mid-drag) so the grabbed keyframe is visible.
-                    const bool isSelected = m_selectedKeyframeClip == clipEntity &&
-                        m_selectedKeyframeProperty == properties[i].prop &&
-                        m_selectedKeyframeFrame == kf.frame;
-                    if (isSelected || isDragged) {
-                        drawList->AddCircle(ImVec2(kfX, keyframeY), size + 3.0f,
-                                            IM_COL32(255, 255, 255, 255), 0, 2.0f);
+        // Resolve the keyframe vector for this row. Transform rows read
+        // AnimatedProperties (enum-keyed); EffectParam rows read
+        // EffectAnimatedParameters (hash-keyed). drawKeyframeShape +
+        // selection-ring emphasis logic is identical past that point.
+        const std::vector<Keyframe>* kfs = nullptr;
+        if (row.source == TimelinePropertyDef::Source::Transform) {
+            const KeyframeTrack* track = animProps
+                ? animProps->getTrack(row.prop) : nullptr;
+            if (track && track->hasKeyframes()) kfs = &track->keyframes;
+        } else { // EffectParam
+            if (registry.valid(row.effectEntity)) {
+                if (const auto* eap =
+                        registry.try_get<EffectAnimatedParameters>(row.effectEntity))
+                {
+                    for (const auto& nt : eap->tracks) {
+                        if (nt.paramKeyHash == row.paramHash) {
+                            if (!nt.keyframes.empty()) kfs = &nt.keyframes;
+                            break;
+                        }
                     }
+                }
+            }
+        }
+        if (!kfs) continue;
+
+        const float size = 5.0f;
+        const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
+
+        for (const auto& kf : *kfs) {
+            // Drag-preview only applies to Transform rows in v1
+            // (effect-keyframe drag-to-move lands in a follow-up).
+            const bool isDragged =
+                row.source == TimelinePropertyDef::Source::Transform &&
+                m_isDraggingKeyframe &&
+                m_dragKeyframeClip == clipEntity &&
+                m_dragKeyframeProperty == row.prop &&
+                m_dragKeyframeOriginalFrame == kf.frame;
+            const FrameNumber drawFrame =
+                isDragged ? m_dragKeyframeCurrentFrame : kf.frame;
+
+            const float kfSeconds =
+                static_cast<float>(drawFrame) / static_cast<float>(timelineFrameRate);
+            const float kfX = clipX + (kfSeconds * m_pixelsPerSecond);
+
+            if (kfX >= clipX && kfX <= clipX + clipWidth) {
+                drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
+
+                const bool isSelected =
+                    row.source == TimelinePropertyDef::Source::Transform &&
+                    m_selectedKeyframeClip == clipEntity &&
+                    m_selectedKeyframeProperty == row.prop &&
+                    m_selectedKeyframeFrame == kf.frame;
+                if (isSelected || isDragged) {
+                    drawList->AddCircle(ImVec2(kfX, keyframeY), size + 3.0f,
+                                        IM_COL32(255, 255, 255, 255), 0, 2.0f);
                 }
             }
         }
@@ -1228,66 +1373,175 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
         return 0.0f;
     }
 
-    // Render property rows directly under the track, one INDENT_WIDTH in.
+    // Render rows directly under the track, one INDENT_WIDTH in. AE-style
+    // hierarchy: group-header rows are clickable to collapse/expand;
+    // property rows render the keyframe controls at their right edge.
     {
         float propY = rowY;
-        float propX = windowPos.x + 2 + INDENT_WIDTH;
-        float propWidth = TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH;
+        const float baseX = windowPos.x + 2 + INDENT_WIDTH;
+        const float baseWidth = TRACK_HEADER_WIDTH - 8 - INDENT_WIDTH;
+        constexpr float kDepthIndent = 12.0f;  // px per depth level
 
-        // Get animation data
         auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+        const FrameNumber currentFrame = m_timeline->getCurrentFrame();
+        const FrameNumber localFrame = currentFrame - layerStart;
 
-        // Get current frame relative to the layer start.
-        FrameNumber currentFrame = m_timeline->getCurrentFrame();
-        FrameNumber localFrame = currentFrame - layerStart;
-
-        // Property list varies by archetype. propertyListForEntity returns the
-        // 6-channel set for Clip-backed / Generative entities and the 9-channel
-        // 3D set for OA layers — kept in lockstep with renderPropertyTracks.
-        const std::vector<TimelinePropertyDef> properties =
+        const std::vector<TimelinePropertyDef> rows =
             propertyListForEntity(clipEntity);
-        const int kNumProperties = static_cast<int>(properties.size());
 
-        for (int i = 0; i < kNumProperties; ++i) {
-            // Property row background
-            ImVec2 propMin(propX, propY);
-            ImVec2 propMax(propX + propWidth, propY + PROPERTY_ROW_HEIGHT);
-            drawList->AddRectFilled(propMin, propMax, IM_COL32(42, 44, 50, 255));
+        for (const TimelinePropertyDef& row : rows) {
+            const float depthIndent = static_cast<float>(row.depth) * kDepthIndent;
+            const float propX = baseX + depthIndent;
+            const float propWidth = baseWidth - depthIndent;
+            const ImVec2 propMin(propX, propY);
+            const ImVec2 propMax(propX + propWidth, propY + PROPERTY_ROW_HEIGHT);
+            const float centerY = propY + PROPERTY_ROW_HEIGHT / 2.0f;
 
-            // Get keyframe track info
-            const KeyframeTrack* track = animProps ? animProps->getTrack(properties[i].prop) : nullptr;
-            bool hasKeyframes = track && track->hasKeyframes();
-            bool atKeyframe = track && track->getKeyframeAt(localFrame) != nullptr;
+            if (row.source == TimelinePropertyDef::Source::GroupHeader) {
+                // Group header: clickable row with twirl arrow + label.
+                drawList->AddRectFilled(propMin, propMax, IM_COL32(30, 32, 38, 255));
+                const bool collapsed = isGroupCollapsed(clipEntity, row.groupPath);
+                // Twirl arrow (right when collapsed, down when expanded).
+                const float ax = propX + 4.0f;
+                const float ay = centerY;
+                const float as = 4.0f;
+                ImVec2 tri[3];
+                if (collapsed) {
+                    tri[0] = ImVec2(ax,        ay - as);
+                    tri[1] = ImVec2(ax + as,   ay);
+                    tri[2] = ImVec2(ax,        ay + as);
+                } else {
+                    tri[0] = ImVec2(ax - as,   ay - as / 2.0f);
+                    tri[1] = ImVec2(ax + as,   ay - as / 2.0f);
+                    tri[2] = ImVec2(ax,        ay + as);
+                }
+                drawList->AddTriangleFilled(tri[0], tri[1], tri[2],
+                                            IM_COL32(190, 190, 190, 255));
+                drawList->AddText(ImVec2(propX + 18.0f, propY + 2),
+                                  IM_COL32(210, 210, 210, 255),
+                                  row.groupLabel.c_str());
 
-            // Get current value
-            float currentValue = properties[i].defaultValue;
-            if (animProps) {
-                currentValue = animProps->evaluate(properties[i].prop, localFrame);
+                // Click anywhere on the row toggles collapse.
+                if (ImGui::IsMouseClicked(0)) {
+                    const ImVec2 mp = ImGui::GetMousePos();
+                    if (mp.x >= propX && mp.x <= propX + propWidth &&
+                        mp.y >= propY && mp.y <= propY + PROPERTY_ROW_HEIGHT)
+                    {
+                        toggleGroupCollapsed(clipEntity, row.groupPath);
+                    }
+                }
+
+                propY += PROPERTY_ROW_HEIGHT;
+                continue;
             }
 
-            float centerY = propY + PROPERTY_ROW_HEIGHT / 2.0f;
+            // ── Property row: Transform or EffectParam ─────────────────────
+            drawList->AddRectFilled(propMin, propMax, IM_COL32(42, 44, 50, 255));
+
+            // Resolve keyframe state — different source for Transform vs
+            // EffectParam, same shape of output (hasKeyframes / atKeyframe /
+            // currentValue).
+            bool hasKeyframes = false;
+            bool atKeyframe   = false;
+            float currentValue = row.defaultValue;
+            // For Transform rows, neighbour-keyframe lookup walks
+            // AnimatedProperties. For EffectParam rows, we walk the
+            // matching NamedTrack on EffectAnimatedParameters.
+            std::vector<Keyframe> kfSnapshot;  // small, hot-path-ok copy
+
+            if (row.source == TimelinePropertyDef::Source::Transform) {
+                const KeyframeTrack* track = animProps
+                    ? animProps->getTrack(row.prop) : nullptr;
+                if (track && track->hasKeyframes()) {
+                    hasKeyframes = true;
+                    atKeyframe = track->getKeyframeAt(localFrame) != nullptr;
+                    kfSnapshot = track->keyframes;
+                }
+                if (animProps) {
+                    currentValue = animProps->evaluate(row.prop, localFrame);
+                }
+            } else { // EffectParam
+                if (registry.valid(row.effectEntity)) {
+                    if (const auto* eap =
+                            registry.try_get<EffectAnimatedParameters>(row.effectEntity))
+                    {
+                        for (const auto& nt : eap->tracks) {
+                            if (nt.paramKeyHash == row.paramHash) {
+                                if (!nt.keyframes.empty()) {
+                                    hasKeyframes = true;
+                                    kfSnapshot = nt.keyframes;
+                                    for (const auto& kf : nt.keyframes) {
+                                        if (kf.frame == localFrame) {
+                                            atKeyframe = true; break;
+                                        }
+                                    }
+                                    currentValue = evaluateKeyframes(
+                                        nt.keyframes, localFrame, row.defaultValue);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    // Fallback to the static EffectParameters slot value
+                    // if no keyframes (so the panel mirrors what
+                    // PropertyWindow shows).
+                    if (!hasKeyframes) {
+                        if (const auto* ep =
+                                registry.try_get<EffectParameters>(row.effectEntity))
+                        {
+                            // Match the slot by re-hashing param names
+                            // against the registry — we don't store slot
+                            // index on TimelinePropertyDef.
+                            if (m_effectKindRegistry) {
+                                if (const auto* fx =
+                                        registry.try_get<Effect>(row.effectEntity))
+                                {
+                                    const effects::EffectKind* kind =
+                                        m_effectKindRegistry->find(fx->kindId);
+                                    if (kind) {
+                                        for (std::size_t i = 0;
+                                             i < kind->params.size(); ++i)
+                                        {
+                                            if (effects::fnv1a32(kind->params[i].name) ==
+                                                row.paramHash)
+                                            {
+                                                if (i < ep->values.size() &&
+                                                    ep->values[i].type ==
+                                                    ParamValue::Type::Float)
+                                                {
+                                                    currentValue = ep->values[i].f4[0];
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // === PROPERTY NAME ===
             drawList->AddText(ImVec2(propX + 4, propY + 2),
-                              IM_COL32(140, 140, 140, 255), properties[i].shortName);
+                              IM_COL32(140, 140, 140, 255), row.shortName.c_str());
 
             // === KEYFRAME CONTROLS (right side of row) ===
-            float controlsX = propX + propWidth - 70;  // Position for controls
-            float arrowSize = 3.0f;
-            float diamondSize = 4.0f;
+            const float controlsX = propX + propWidth - 70;
+            const float arrowSize = 3.0f;
+            const float diamondSize = 4.0f;
 
-            // Left arrow (prev keyframe)
-            float leftArrowX = controlsX;
+            const float leftArrowX = controlsX;
             ImVec2 leftArrow[3] = {
                 ImVec2(leftArrowX - arrowSize, centerY),
                 ImVec2(leftArrowX + arrowSize, centerY - arrowSize),
                 ImVec2(leftArrowX + arrowSize, centerY + arrowSize)
             };
-            ImU32 arrowColor = hasKeyframes ? IM_COL32(180, 180, 180, 255) : IM_COL32(80, 80, 80, 255);
+            const ImU32 arrowColor = hasKeyframes
+                ? IM_COL32(180, 180, 180, 255) : IM_COL32(80, 80, 80, 255);
             drawList->AddTriangleFilled(leftArrow[0], leftArrow[1], leftArrow[2], arrowColor);
 
-            // Diamond (keyframe indicator)
-            float diamondX = controlsX + 14;
+            const float diamondX = controlsX + 14;
             ImVec2 diamond[4] = {
                 ImVec2(diamondX, centerY - diamondSize),
                 ImVec2(diamondX + diamondSize, centerY),
@@ -1297,13 +1551,14 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             if (atKeyframe) {
                 drawList->AddConvexPolyFilled(diamond, 4, IM_COL32(255, 200, 50, 255));
             } else if (hasKeyframes) {
-                drawList->AddPolyline(diamond, 4, IM_COL32(180, 180, 180, 255), ImDrawFlags_Closed, 1.0f);
+                drawList->AddPolyline(diamond, 4, IM_COL32(180, 180, 180, 255),
+                                      ImDrawFlags_Closed, 1.0f);
             } else {
-                drawList->AddPolyline(diamond, 4, IM_COL32(80, 80, 80, 255), ImDrawFlags_Closed, 1.0f);
+                drawList->AddPolyline(diamond, 4, IM_COL32(80, 80, 80, 255),
+                                      ImDrawFlags_Closed, 1.0f);
             }
 
-            // Right arrow (next keyframe)
-            float rightArrowX = controlsX + 28;
+            const float rightArrowX = controlsX + 28;
             ImVec2 rightArrow[3] = {
                 ImVec2(rightArrowX + arrowSize, centerY),
                 ImVec2(rightArrowX - arrowSize, centerY - arrowSize),
@@ -1313,9 +1568,11 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
 
             // === CURRENT VALUE ===
             char valueStr[32];
-            if (properties[i].prop == AnimatableProperty::Opacity) {
+            if (row.source == TimelinePropertyDef::Source::Transform &&
+                row.prop == AnimatableProperty::Opacity) {
                 snprintf(valueStr, sizeof(valueStr), "%.0f%%", currentValue * 100.0f);
-            } else if (properties[i].prop == AnimatableProperty::Rotation) {
+            } else if (row.source == TimelinePropertyDef::Source::Transform &&
+                       row.prop == AnimatableProperty::Rotation) {
                 snprintf(valueStr, sizeof(valueStr), "%.1f", currentValue);
             } else {
                 snprintf(valueStr, sizeof(valueStr), "%.2f", currentValue);
@@ -1325,50 +1582,63 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
 
             // === HANDLE CLICKS ===
             if (ImGui::IsMouseClicked(0)) {
-                ImVec2 mousePos = ImGui::GetMousePos();
+                const ImVec2 mp = ImGui::GetMousePos();
 
                 // Left arrow click (prev keyframe)
                 if (hasKeyframes &&
-                    mousePos.x >= leftArrowX - arrowSize - 4 && mousePos.x <= leftArrowX + arrowSize + 4 &&
-                    mousePos.y >= centerY - arrowSize - 4 && mousePos.y <= centerY + arrowSize + 4) {
-                    // Find previous keyframe
+                    mp.x >= leftArrowX - arrowSize - 4 && mp.x <= leftArrowX + arrowSize + 4 &&
+                    mp.y >= centerY - arrowSize - 4 && mp.y <= centerY + arrowSize + 4)
+                {
                     FrameNumber prevFrame = -1;
-                    for (const auto& kf : track->keyframes) {
-                        if (kf.frame < localFrame && kf.frame > prevFrame) {
-                            prevFrame = kf.frame;
-                        }
+                    for (const auto& kf : kfSnapshot) {
+                        if (kf.frame < localFrame && kf.frame > prevFrame) prevFrame = kf.frame;
                     }
-                    if (prevFrame >= 0) {
-                        m_timeline->seekToFrame(prevFrame + layerStart);
-                    }
+                    if (prevFrame >= 0) m_timeline->seekToFrame(prevFrame + layerStart);
                 }
 
-                // Diamond click (add/remove keyframe)
-                if (mousePos.x >= diamondX - diamondSize - 4 && mousePos.x <= diamondX + diamondSize + 4 &&
-                    mousePos.y >= centerY - diamondSize - 4 && mousePos.y <= centerY + diamondSize + 4) {
-                    if (atKeyframe && animProps) {
-                        // Remove keyframe
-                        auto* mutableTrack = animProps->getTrack(properties[i].prop);
-                        if (mutableTrack) {
-                            mutableTrack->removeKeyframe(localFrame);
+                // Diamond click (add/remove keyframe). Transform path
+                // uses direct AnimatedProperties writes (matches the
+                // existing un-commanded UI shape). EffectParam path
+                // dispatches the new undoable commands.
+                if (mp.x >= diamondX - diamondSize - 4 && mp.x <= diamondX + diamondSize + 4 &&
+                    mp.y >= centerY - diamondSize - 4 && mp.y <= centerY + diamondSize + 4)
+                {
+                    if (row.source == TimelinePropertyDef::Source::Transform) {
+                        if (atKeyframe && animProps) {
+                            if (auto* mt = animProps->getTrack(row.prop)) {
+                                mt->removeKeyframe(localFrame);
+                            }
+                        } else {
+                            auto& props = registry.get_or_emplace<AnimatedProperties>(clipEntity);
+                            props.addKeyframe(row.prop, localFrame, currentValue,
+                                              InterpolationType::Linear);
                         }
-                    } else {
-                        // Add keyframe at current position
-                        auto& props = registry.get_or_emplace<AnimatedProperties>(clipEntity);
-                        props.addKeyframe(properties[i].prop, localFrame, currentValue, InterpolationType::Linear);
+                    } else { // EffectParam
+                        if (m_commandDispatcher && localFrame >= 0 &&
+                            registry.valid(row.effectEntity))
+                        {
+                            if (atKeyframe) {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<RemoveEffectKeyframeCommand>(
+                                        row.effectEntity, row.paramName, localFrame));
+                            } else {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<UpsertEffectKeyframeCommand>(
+                                        row.effectEntity, row.paramName,
+                                        localFrame, currentValue));
+                            }
+                        }
                     }
                 }
 
                 // Right arrow click (next keyframe)
                 if (hasKeyframes &&
-                    mousePos.x >= rightArrowX - arrowSize - 4 && mousePos.x <= rightArrowX + arrowSize + 4 &&
-                    mousePos.y >= centerY - arrowSize - 4 && mousePos.y <= centerY + arrowSize + 4) {
-                    // Find next keyframe
+                    mp.x >= rightArrowX - arrowSize - 4 && mp.x <= rightArrowX + arrowSize + 4 &&
+                    mp.y >= centerY - arrowSize - 4 && mp.y <= centerY + arrowSize + 4)
+                {
                     FrameNumber nextFrame = std::numeric_limits<FrameNumber>::max();
-                    for (const auto& kf : track->keyframes) {
-                        if (kf.frame > localFrame && kf.frame < nextFrame) {
-                            nextFrame = kf.frame;
-                        }
+                    for (const auto& kf : kfSnapshot) {
+                        if (kf.frame > localFrame && kf.frame < nextFrame) nextFrame = kf.frame;
                     }
                     if (nextFrame != std::numeric_limits<FrameNumber>::max()) {
                         m_timeline->seekToFrame(nextFrame + layerStart);

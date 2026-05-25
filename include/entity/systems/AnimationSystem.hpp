@@ -8,6 +8,7 @@ namespace entity {
 
 // Forward declarations
 class Timeline;
+namespace effects { class EffectKindRegistry; }
 
 /**
  * AnimationSystem - Evaluates keyframes and updates animated properties
@@ -28,6 +29,16 @@ public:
      */
     void setTimeline(Timeline* timeline) { m_timeline = timeline; }
 
+    /**
+     * Set the effect-kind registry. Needed only for the effect-param
+     * evaluation pass (EffectAnimatedParameters → EffectParameters
+     * write-back). The Transform/MediaLayer branches don't use it.
+     * Optional — leaving null disables effect-param eval.
+     */
+    void setEffectKindRegistry(effects::EffectKindRegistry* reg) {
+        m_effectKindRegistry = reg;
+    }
+
     void initialize(entt::registry& registry) override;
     void update(entt::registry& registry, float deltaTime) override;
     void shutdown(entt::registry& registry) override;
@@ -40,6 +51,7 @@ public:
 
 private:
     Timeline* m_timeline{nullptr};
+    effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
     bool m_debugLogging{false};
 };
 

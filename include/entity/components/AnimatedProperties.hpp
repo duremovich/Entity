@@ -229,10 +229,16 @@ private:
         }
     }
 
+public:
     /**
      * Interpolate between two keyframes
      * Note: Uses kf2's interpolation type (incoming behavior) - setting ease
      * on a keyframe affects how motion arrives at that keyframe.
+     *
+     * Public so the free-function evaluator at the bottom of this header —
+     * used for hash-keyed effect-param tracks where the AnimatableProperty
+     * enum doesn't apply — can share this math. AnimationSystem +
+     * PlaybackTimeAuthority both go through that free function.
      */
     static float interpolate(const Keyframe& kf1, const Keyframe& kf2, float t) {
         // Step is special - check kf1 for hold behavior (hold until next keyframe)
@@ -394,5 +400,34 @@ struct AnimatedProperties {
         tracks.clear();
     }
 };
+
+/**
+ * Evaluate an unkeyed Keyframe vector at a given frame. Same math as
+ * KeyframeTrack::evaluate but without an AnimatableProperty default
+ * lookup — caller passes the fallback value to use when the vector is
+ * empty.
+ *
+ * Used by hash-keyed tracks (EffectAnimatedParameters::NamedTrack)
+ * which can't be ranged through the AnimatableProperty enum. Shared
+ * by AnimationSystem (editor-thread per-tick eval) and
+ * PlaybackTimeAuthority::buildSceneSnapshot (editor bake of show-side
+ * effect params). Keeping it inline-in-header avoids a one-function .cpp.
+ */
+inline float evaluateKeyframes(const std::vector<Keyframe>& kfs,
+                               FrameNumber frame,
+                               float defaultIfEmpty) {
+    if (kfs.empty()) return defaultIfEmpty;
+    if (frame <= kfs.front().frame) return kfs.front().value;
+    if (frame >= kfs.back().frame)  return kfs.back().value;
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == frame) return it->value;
+    if (it == kfs.begin() || it == kfs.end()) return kfs.back().value;
+    const Keyframe& prev = *(it - 1);
+    const Keyframe& next = *it;
+    const float t = static_cast<float>(frame - prev.frame)
+                  / static_cast<float>(next.frame - prev.frame);
+    return KeyframeTrack::interpolate(prev, next, t);
+}
 
 } // namespace entity

@@ -22,6 +22,11 @@ class CommandDispatcher;
 // Engine::getProjectManager()'s media library for the Change Media modal.
 class Engine;
 
+// Forward declaration — TimelineWidget reads ParamSchema from the
+// EffectKindRegistry to build effect-param rows for the AE-style
+// hierarchy in the expanded-track view.
+namespace effects { class EffectKindRegistry; struct ParamSchema; }
+
 // Callback for when a media file is dropped onto a track
 // Parameters: filepath, track index, timecode position
 using MediaDropCallback = std::function<void(const std::string&, int, Timecode)>;
@@ -148,6 +153,13 @@ public:
      * menu items are inert (the menu still draws).
      */
     void setCommandDispatcher(CommandDispatcher* dispatcher) { m_commandDispatcher = dispatcher; }
+    /** Effect-kind registry pointer. Needed for the expanded-track
+     *  view to surface effect-param schemas as rows under
+     *  Effects > <kind> in the AE-style hierarchy. Optional —
+     *  leaving null hides effect-param rows from the twirl-down. */
+    void setEffectKindRegistry(const effects::EffectKindRegistry* reg) {
+        m_effectKindRegistry = reg;
+    }
 
     /**
      * Optional — wire Engine so the clip context menu can query the
@@ -547,8 +559,20 @@ private:
     // is under the cursor).
     Timecode m_rulerRightClickTime{0};
 
-    // Cue-drag state (left-click on a cue flag in the lane drags it to a
-    // new timestamp). Edit emitted on release if the frame moved by >1.
+    // Cue gesture state (left-click on a cue label/triangle in the lane).
+    // Two-stage to disambiguate single-click vs drag (issue 2026-05-25):
+    //   - On mouse-down inside a cue's label rect we record a click
+    //     candidate (m_cueClickCandidate = cue.number). m_isDraggingCue
+    //     stays false.
+    //   - When the gesture crosses io.MouseDragThreshold (default 6 px)
+    //     we upgrade: clear m_cueClickCandidate, set m_isDraggingCue +
+    //     m_draggedCueNumber, run the existing snap+commit path.
+    //   - On release without ever crossing the threshold we seek the
+    //     playhead to the cue's frame and emit no command. The cue
+    //     itself does NOT move; drag-from-the-label rect is preserved.
+    // EditCueCommand still only fires on release after a real drag if
+    // the frame moved by >1.
+    std::optional<double> m_cueClickCandidate;   // cue.number, set on mouse-down
     bool       m_isDraggingCue{false};
     double     m_draggedCueNumber{0.0};
     Timecode   m_dragOriginalCueTime{0};
@@ -565,6 +589,7 @@ private:
 
     // Optional dispatcher for ruler-menu cue commands.
     CommandDispatcher* m_commandDispatcher{nullptr};
+    const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
 
     // Optional Engine pointer. Used by the clip context menu for
     // clipboard state (Paste enable/disable) and by the Change Media
@@ -634,18 +659,65 @@ private:
      *  findClipAtPosition. */
     std::size_t expandedPropertyRowCount(entt::entity layerEntity) const;
 
-    /** One animatable channel surfaced in the expanded-track view. */
+    /** One row in the expanded-track view. AE-style two-level hierarchy:
+     *  group headers ("Transform" / "Effects" / "<effect kind>") are
+     *  interleaved with property rows. The visible-only list is what
+     *  propertyListForEntity returns — collapsed-group children are
+     *  filtered out, so all consumers (sidebar header, right-pane
+     *  diamonds, keyframe hit-test) iterate the same shape. */
     struct TimelinePropertyDef {
-        AnimatableProperty prop;
-        const char*        shortName;     // Header-panel label
-        float              defaultValue;  // Fallback when no keyframe track exists
+        enum class Source { Transform, EffectParam, GroupHeader };
+        Source             source{Source::Transform};
+
+        /** Indent depth (0 = top-level group, 1 = property inside one,
+         *  2 = property inside a nested group like Effects > <kind>). */
+        int                depth{0};
+
+        /** Source::GroupHeader: "Transform" or "Effects/Brightness & Contrast"
+         *  (slash-joined canonical path used as the collapse-state key).
+         *  Empty for property rows. */
+        std::string        groupPath;
+        /** Source::GroupHeader: display label without parents (e.g.
+         *  "Brightness & Contrast"). Empty for property rows. */
+        std::string        groupLabel;
+
+        /** Source::Transform / Source::EffectParam: the row's display
+         *  name ("Pos X", "Brightness"). Empty for group headers. */
+        std::string        shortName;
+        /** Source::Transform / Source::EffectParam: fallback value when
+         *  no keyframe track exists. */
+        float              defaultValue{0.0f};
+
+        /** Source::Transform: the channel this row represents. */
+        AnimatableProperty prop{AnimatableProperty::PositionX};
+
+        /** Source::EffectParam: which effect entity owns the track and
+         *  what FNV-1a hash to look up in EffectAnimatedParameters.
+         *  paramName is the wire-stable string form (for command dispatch). */
+        entt::entity       effectEntity{entt::null};
+        std::uint32_t      paramHash{0};
+        std::string        paramName;
+
+        bool isGroupHeader() const { return source == Source::GroupHeader; }
+        bool isPropertyRow() const { return !isGroupHeader(); }
     };
 
-    /** Channels shown under an expanded layer: 9 for OA layers (Pos/Rot/Scale
-     *  × X/Y/Z), 6 for Clip-backed and Generative layers (2D set + Opacity).
-     *  Shared by renderPropertyTracks (body), renderClipPropertyPanel (header)
-     *  and findKeyframeAtPosition so they stay in lockstep. */
+    /** Visible rows shown under an expanded layer. Walks Transform / OA
+     *  channels for the layer's archetype, then EffectChain → per-effect
+     *  param schemas. Group headers ("Transform" / "Effects" / "<kind>")
+     *  are interleaved; rows inside collapsed groups are filtered out so
+     *  all consumers iterate the same flat visible list. Shared by
+     *  renderPropertyTracks (body), renderClipPropertyPanel (header) and
+     *  findKeyframeAtPosition. */
     std::vector<TimelinePropertyDef> propertyListForEntity(entt::entity e) const;
+
+    /** True iff the group at this canonical path is currently collapsed
+     *  for this layer. Default = expanded. */
+    bool isGroupCollapsed(entt::entity layerEntity,
+                          const std::string& groupPath) const;
+    /** Toggle the collapse state of a group on a layer. */
+    void toggleGroupCollapsed(entt::entity layerEntity,
+                              const std::string& groupPath);
 
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};

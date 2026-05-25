@@ -18,6 +18,11 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
+#include "entity/components/Effect.hpp"
+#include "entity/components/EffectParameters.hpp"
+#include "entity/components/EffectAnimatedParameters.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/effects/EffectKind.hpp"
 
 #include <iostream>
 
@@ -267,6 +272,91 @@ void AnimationSystem::update(entt::registry& registry, float deltaTime) {
                     break;
                 case AnimatableProperty::Opacity:
                     break;  // opacity on OA layers is not yet surfaced
+            }
+        }
+    }
+
+    // -- Effect-param eval (Phase 3, 2026-05-25) ----------------------------
+    //
+    // EffectAnimatedParameters carries hash-keyed Keyframe vectors per
+    // animated param. Mirror the Transform/Opacity write-back: evaluate
+    // each track at the layer-local frame, store the result in
+    // EffectParameters.values[slot] so PropertyWindow sliders display the
+    // evaluated value and the next snapshot bake sees the same number.
+    //
+    // The show-side bake in PlaybackTimeAuthority::buildSceneSnapshot also
+    // evaluates these tracks for its own paramBlob writes — redundant but
+    // cheap, and necessary because PTA's bake also ships the keyframes
+    // through BakedEffectTrack for show-thread re-derivation during editor
+    // stalls.
+    if (m_effectKindRegistry) {
+        auto effectView = registry.view<Effect, EffectAnimatedParameters, EffectParameters>();
+        for (auto fxEnt : effectView) {
+            const auto& fx    = effectView.get<Effect>(fxEnt);
+            const auto& anim  = effectView.get<EffectAnimatedParameters>(fxEnt);
+            auto&       params = effectView.get<EffectParameters>(fxEnt);
+
+            if (anim.tracks.empty() || !fx.enabled) continue;
+            if (fx.ownerLayer == entt::null || !registry.valid(fx.ownerLayer)) {
+                continue;
+            }
+
+            // Same layer-local frame resolution as the Transform branch
+            // above. Clip-backed entities source from Clip; Layer-backed
+            // (Generative / OA) source from Layer. Don't evaluate when
+            // the layer is outside its active window — the static
+            // EffectParameters value should hold (effect is off-screen
+            // anyway, but keeping behavior consistent matches "tracks
+            // only contribute while the layer is active").
+            FrameNumber layerStart = 0;
+            FrameNumber layerEnd   = 0;
+            if (const auto* clip = registry.try_get<Clip>(fx.ownerLayer)) {
+                layerStart = clip->startFrame;
+                layerEnd   = clip->startFrame + clip->duration;
+            } else if (const auto* lay = registry.try_get<Layer>(fx.ownerLayer)) {
+                layerStart = lay->startFrame;
+                layerEnd   = lay->startFrame + lay->duration;
+            } else {
+                continue;
+            }
+            if (currentFrame < layerStart || currentFrame >= layerEnd) continue;
+            const FrameNumber localFrame = currentFrame - layerStart;
+
+            const effects::EffectKind* kind = m_effectKindRegistry->find(fx.kindId);
+            if (!kind) continue;
+
+            for (const auto& track : anim.tracks) {
+                if (!track.enabled || track.keyframes.empty()) continue;
+
+                // Find the schema slot matching this track's param-name hash.
+                std::size_t slotN = SIZE_MAX;
+                for (std::size_t i = 0; i < kind->params.size(); ++i) {
+                    if (effects::fnv1a32(kind->params[i].name) == track.paramKeyHash) {
+                        slotN = i;
+                        break;
+                    }
+                }
+                if (slotN == SIZE_MAX) continue;
+                const auto& schema = kind->params[slotN];
+                if (schema.type != ParamValue::Type::Float) continue; // v1
+
+                // Ensure the values vector is sized to the schema before
+                // we write — newly-created effects sometimes have an
+                // empty `values` until first edit lands.
+                if (params.values.size() < kind->params.size()) {
+                    params.values.resize(kind->params.size(), ParamValue::makeFloat(0.0f));
+                    for (std::size_t i = 0; i < kind->params.size(); ++i) {
+                        if (params.values[i].type == ParamValue::Type::Float &&
+                            params.values[i].f4[0] == 0.0f && params.values[i].i == 0)
+                        {
+                            params.values[i] = kind->params[i].defaultValue;
+                        }
+                    }
+                }
+
+                const float def = schema.defaultValue.f4[0];
+                const float v   = evaluateKeyframes(track.keyframes, localFrame, def);
+                params.values[slotN] = ParamValue::makeFloat(v);
             }
         }
     }

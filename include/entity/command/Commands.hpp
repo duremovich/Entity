@@ -879,6 +879,93 @@ private:
 };
 
 /**
+ * Insert / overwrite a keyframe on an effect parameter (hash-keyed, on
+ * EffectAnimatedParameters). Parallel to UpsertKeyframeCommand but
+ * keyed by (effectEntity, paramName) — the effect param namespace is
+ * open (Brightness / Contrast / Radius / …) so we don't have a closed
+ * enum like AnimatableProperty to use. paramName goes on the wire as
+ * a string; FNV-1a-rehashed on receipt.
+ *
+ * JSON format:
+ * {
+ *     "type": "UpsertEffectKeyframe",
+ *     "effectEntity": 17,
+ *     "paramName": "brightness",
+ *     "frame": 30,
+ *     "value": 0.5
+ * }
+ */
+class UpsertEffectKeyframeCommand : public UndoableCommand {
+public:
+    UpsertEffectKeyframeCommand(entt::entity effectEntity, std::string paramName,
+                                FrameNumber frame, float newValue,
+                                InterpolationType interp = InterpolationType::Linear)
+        : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
+          m_frame(frame), m_newValue(newValue), m_interp(interp) {}
+
+    void setPreviousValue(std::optional<float> prev) {
+        m_previousValue = prev;
+        m_hasPreviousState = true;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "UpsertEffectKeyframe"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity      m_effectEntity;
+    std::string       m_paramName;
+    FrameNumber       m_frame;
+    float             m_newValue;
+    InterpolationType m_interp;
+    bool                 m_hasPreviousState{false};
+    std::optional<float> m_previousValue;  // nullopt = no kf at this frame before exec
+};
+
+/**
+ * Remove a keyframe from an effect parameter track (hash-keyed,
+ * EffectAnimatedParameters). Parallel to RemoveKeyframeCommand.
+ * Snapshots value/interp/tangents on execute so undo can restore.
+ *
+ * JSON format:
+ * {
+ *     "type": "RemoveEffectKeyframe",
+ *     "effectEntity": 17,
+ *     "paramName": "brightness",
+ *     "frame": 30
+ * }
+ */
+class RemoveEffectKeyframeCommand : public UndoableCommand {
+public:
+    RemoveEffectKeyframeCommand(entt::entity effectEntity, std::string paramName,
+                                FrameNumber frame)
+        : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
+          m_frame(frame) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveEffectKeyframe"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity      m_effectEntity;
+    std::string       m_paramName;
+    FrameNumber       m_frame;
+    bool                m_hasPreviousState{false};
+    float               m_removedValue{0.0f};
+    InterpolationType   m_removedInterp{InterpolationType::Linear};
+    float               m_removedEaseIn{0.42f};
+    float               m_removedEaseOut{0.58f};
+};
+
+/**
  * Clear all keyframes from a clip.
  *
  * JSON format:
