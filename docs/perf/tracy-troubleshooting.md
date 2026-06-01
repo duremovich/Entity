@@ -67,6 +67,43 @@ other than 0.13.1 will silently fail the handshake against this build.
 Put it somewhere stable like `C:\Tools\Tracy-0.13.1\Tracy.exe` so the
 skill can find it.
 
+### 4. "No Tracy symbols in the binary" is almost always a `strings` false-negative
+
+**Do not use `strings` to check whether the editor was built with Tracy.**
+The git-bash / GNU `strings` build silently fails on MSVC COFF/PE binaries —
+it returns **zero** strings for a fully-populated 486 KB `.obj` — so
+`strings EntityMediaEditor.exe | grep tracy` reports 0 hits even when Tracy
+is correctly compiled in. This exact false negative is what misdiagnosed
+issue #62 as a "Tracy build regression" when the build was fine.
+
+The reliable check (reads the bytes, literal substring scan):
+
+```powershell
+# Canonical: the helper script (exit 0 = present, 1 = absent)
+pwsh scripts/perf/verify-tracy-build.ps1
+
+# Equivalent one-liners if you don't have the script handy:
+findstr /c:"Show iter" build\bin\Release\EntityMediaEditor.exe >NUL; if ($?) { "present" } else { "ABSENT" }
+Select-String -Path build\bin\Release\EntityMediaEditor.exe -Pattern "Show iter" -SimpleMatch -Quiet
+
+# From git-bash, grep -a (treat binary as text) works; `strings` does NOT:
+grep -ac "Show iter" build/bin/Release/EntityMediaEditor.exe   # >0 = present
+```
+
+`"Show iter"` is the `ZoneScopedN` literal for the show-thread frame loop
+(`Engine.cpp`); it is only in the binary when `ENTITY_ENABLE_TRACY` was
+defined at compile time. `capture.ps1` runs `verify-tracy-build.ps1` as a
+preflight so a no-Tracy binary fails fast with a clear message.
+
+**Also:** a *small* `.tracy` file (6 KB–130 KB) is not a build problem — it's
+the on-demand one-session-per-process gotcha (item 1). A healthy capture
+contains the `endShowFrame` / `Compositor*` / `PP::*` show-thread zones; a
+degraded one has none of them. `capture.ps1` now detects this and
+auto-restarts the editor to retry. Note that ON-vs-OFF binary *size* is a
+poor signal: with a shared `TracyClient.dll` (on-demand), the recording
+runtime lives in the DLL, so the `.exe` barely grows — a near-identical size
+to a Tracy-OFF build is expected, not evidence of a missing build.
+
 ---
 
 ## Pre-flight checklist (paste-ready)
@@ -84,7 +121,10 @@ Test-Path "C:\Entity\Entity\build\vcpkg_installed\x64-windows\tools\tracy\tracy-
 Get-Content "C:\Entity\Entity\build\vcpkg_installed\x64-windows\share\tracy\vcpkg.spdx.json" `
   | Select-String '"versionInfo": "[0-9.]+"'  # should match 0.13.1
 
-# 4. Editor built with -DENTITY_ENABLE_TRACY=ON?
+# 4. Editor built with Tracy? Check the BINARY, not just the cache flag.
+#    (The cache can say ON while you inspect a stale/other binary - verify
+#     the actual .exe. Do NOT use `strings`; see big-one #4.)
+pwsh "C:\Entity\Entity\scripts\perf\verify-tracy-build.ps1"  # exit 0 = present
 Get-Content "C:\Entity\Entity\build\CMakeCache.txt" `
   | Select-String "ENTITY_ENABLE_TRACY"  # should be :BOOL=ON
 

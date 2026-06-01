@@ -4,9 +4,10 @@
     Run a single perf scenario and produce a .tracy capture + summary JSON.
 
 .DESCRIPTION
-    Orchestrates: start editor with scenario script → wait for Tracy server
-    socket → start tracy-capture → wait for capture to finish → kill editor →
-    run csvexport (3x) → run summarize.py → print summary table.
+    Orchestrates: verify editor has Tracy symbols → start editor with scenario
+    script → wait for Tracy server socket → start tracy-capture → guard against
+    a degraded/empty capture (auto-restart + retry) → kill editor → run
+    csvexport (3x) → run summarize.py → print summary table.
 
     Outputs under docs/perf/:
         <scenario>-<timestamp>.tracy
@@ -33,6 +34,14 @@
     Auto-sets ENTITY_FENCE_TIMEOUT_MS=10000 in the child editor environment
     so Tracy's initial frame-data dump doesn't trip the 2s fence timeout.
     See docs/perf/tracy-troubleshooting.md for the full diagnostic ladder.
+
+    Degraded-capture guard: Tracy's on-demand listener serves ONE usable
+    session per process lifetime. A second capture against the same editor
+    process returns an empty/tiny trace (real data absent — only the
+    bootstrap zones). This script detects that (the cpu export lacks the
+    'endShowFrame' show-thread zone) and restarts the editor to retry, so a
+    degraded capture never silently produces a hollow summary that looks
+    like data. See issue #62 for the misdiagnosis this prevents.
 #>
 param(
     [Parameter(Mandatory)]
@@ -56,6 +65,15 @@ if ($Duration -le 0) {
         $Duration = 35
     }
 }
+
+# Degraded-capture guard tunables.
+$MaxCaptureAttempts = 3
+# A healthy show-thread zone that runs every show frame regardless of content.
+# Its presence in the CPU export is the authoritative "this is a real capture"
+# signal. File size is NOT a reliable signal — a lean valid capture can be
+# ~0.2 MB while a degraded one can be ~0.13 MB; the zone gate distinguishes
+# them where size cannot.
+$ShowThreadCanaryZone = 'endShowFrame'
 
 $ErrorActionPreference = 'Stop'
 
@@ -81,6 +99,43 @@ function Test-PortOpen {
     } catch {
         return $false
     }
+}
+
+# Start the editor under the scenario script and wait for the Tracy listener
+# on $Port. Returns the process object on success, or $null (after killing the
+# process) if the port never opened. Bumps ENTITY_FENCE_TIMEOUT_MS for the
+# child so Tracy's initial frame-data dump doesn't false-trip the 2s default.
+function Start-EditorWaitingForPort {
+    param(
+        [string]$EditorExe,
+        [string]$RepoRoot,
+        [string]$Scenario,
+        [int]$Port = 8086
+    )
+    $prevFenceTimeout = $env:ENTITY_FENCE_TIMEOUT_MS
+    $env:ENTITY_FENCE_TIMEOUT_MS = '10000'
+    try {
+        $proc = Start-Process -FilePath $EditorExe `
+            -ArgumentList "--script", "scripts\perf\$Scenario.json" `
+            -WorkingDirectory $RepoRoot `
+            -PassThru
+    } finally {
+        if ($null -ne $prevFenceTimeout) {
+            $env:ENTITY_FENCE_TIMEOUT_MS = $prevFenceTimeout
+        } else {
+            Remove-Item env:ENTITY_FENCE_TIMEOUT_MS -ErrorAction SilentlyContinue
+        }
+    }
+
+    Write-Host "  Editor PID: $($proc.Id) - waiting for Tracy port $Port..."
+    # 60 × 250ms = 15s. Heavier scenarios (16-screen progressive) need >5s to
+    # spin up the listener; was previously a flake source on warm-build runs.
+    for ($i = 0; $i -lt 60; $i++) {
+        if (Test-PortOpen -Port $Port) { Write-Host "  Port $Port open."; return $proc }
+        Start-Sleep -Milliseconds 250
+    }
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    return $null
 }
 
 # ---------------------------------------------------------------------------
@@ -177,96 +232,108 @@ if (-not (Test-Path $EditorExe)) {
 Write-Host "Editor: $EditorExe"
 
 # ---------------------------------------------------------------------------
-# Step 5 — Start editor, wait for Tracy port 8086
+# Step 4b — Verify the editor was actually built with Tracy symbols
+# ---------------------------------------------------------------------------
+#
+# Fails fast if the binary has no Tracy instrumentation (e.g. a build-noprof
+# binary, or ENTITY_ENABLE_TRACY=OFF). This is the reliable byte-scan check —
+# NOT `strings`, which gives false negatives on MSVC binaries and is exactly
+# what misdiagnosed issue #62 as a "build regression".
+
+$VerifyScript = Join-Path $PSScriptRoot 'verify-tracy-build.ps1'
+if (Test-Path $VerifyScript) {
+    & $VerifyScript -EditorExe $EditorExe
+    if ($LASTEXITCODE -ne 0) {
+        Step-Error 4 "Editor binary has no Tracy symbols (see message above). Rebuild build/ with ENTITY_ENABLE_TRACY=ON (not build-noprof/)."
+    }
+} else {
+    Write-Warning "verify-tracy-build.ps1 not found at $VerifyScript - skipping build-symbol preflight."
+}
+
+# ---------------------------------------------------------------------------
+# Steps 5-13 — guarded by finally so the editor is always cleaned up
 # ---------------------------------------------------------------------------
 
-Write-Host "`nStep 5: Starting editor with scenario '$Scenario'..."
+$editorProc     = $null
+$captureProc    = $null
+$EnvJson        = $null
+$captureHealthy = $false
 
-# Bump fence timeout so Tracy's initial frame-data dump doesn't false-trip
-# the 2s default and tear down the listener. Sticks for child process via
-# environment inheritance.
-$prevFenceTimeout = $env:ENTITY_FENCE_TIMEOUT_MS
-$env:ENTITY_FENCE_TIMEOUT_MS = '10000'
 try {
-    $editorProc = Start-Process -FilePath $EditorExe `
-        -ArgumentList "--script", "scripts\perf\$Scenario.json" `
+
+# ---------------------------------------------------------------------------
+# Steps 5-7 — Start editor + capture, with degraded-capture retry
+# ---------------------------------------------------------------------------
+#
+# Each attempt uses a FRESH editor process: the Tracy on-demand listener only
+# yields one usable session per process lifetime, so retrying against the same
+# process can never recover. We restart the editor between attempts.
+
+for ($attempt = 1; $attempt -le $MaxCaptureAttempts; $attempt++) {
+    Write-Host "`n=== Capture attempt $attempt / $MaxCaptureAttempts ==="
+
+    # Step 5 — start editor, wait for Tracy port 8086
+    $editorProc = Start-EditorWaitingForPort -EditorExe $EditorExe -RepoRoot $RepoRoot -Scenario $Scenario
+    if (-not $editorProc) {
+        Write-Warning "Editor failed to open Tracy port 8086 within 15s on attempt $attempt."
+        continue
+    }
+
+    # Step 6 — start tracy-capture
+    Write-Host "Step 6: Starting tracy-capture (duration ${Duration}s)..."
+    $captureProc = Start-Process -FilePath $CaptureExe `
+        -ArgumentList "-o", $TracyFile, "-s", $Duration, "-f" `
         -WorkingDirectory $RepoRoot `
         -PassThru
-} finally {
-    # Restore our session env. The child has its own copy already.
-    if ($null -ne $prevFenceTimeout) {
-        $env:ENTITY_FENCE_TIMEOUT_MS = $prevFenceTimeout
-    } else {
-        Remove-Item env:ENTITY_FENCE_TIMEOUT_MS -ErrorAction SilentlyContinue
+
+    # Step 7 — wait for capture to finish
+    Write-Host "  Waiting up to $($Duration + 15)s for capture to complete..."
+    $captureProc.WaitForExit(($Duration + 15) * 1000) | Out-Null
+    if (-not $captureProc.HasExited) {
+        Stop-Process -Id $captureProc.Id -Force -ErrorAction SilentlyContinue
+        Stop-Process -Id $editorProc.Id  -Force -ErrorAction SilentlyContinue
+        Write-Warning "tracy-capture did not exit within the expected window on attempt $attempt; retrying."
+        continue
     }
-}
+    if ($captureProc.ExitCode -ne 0) {
+        Stop-Process -Id $editorProc.Id -Force -ErrorAction SilentlyContinue
+        Write-Warning "tracy-capture exited with code $($captureProc.ExitCode) on attempt $attempt; retrying."
+        continue
+    }
+    Write-Host "  Capture complete: $TracyFile"
 
-Write-Host "  Editor PID: $($editorProc.Id) - waiting for Tracy port 8086..."
-
-# 60 × 250ms = 15s. Heavier scenarios (16-screen progressive) need >5s to
-# spin up the listener; was previously a flake source on warm-build runs.
-$portReady = $false
-for ($i = 0; $i -lt 60; $i++) {
-    if (Test-PortOpen -Port 8086) { $portReady = $true; break }
-    Start-Sleep -Milliseconds 250
-}
-
-if (-not $portReady) {
+    # The .tracy is now written; the editor is no longer needed for this attempt.
     Stop-Process -Id $editorProc.Id -Force -ErrorAction SilentlyContinue
-    Step-Error 5 "Editor failed to open Tracy server on port 8086 within 15 seconds. Check that the editor was built with ENTITY_ENABLE_TRACY=ON (build/, not build-noprof/). See docs/perf/tracy-troubleshooting.md."
+
+    # Degraded-capture gate — export CPU zones (this is also Step 9's output,
+    # reused below) and require the show-thread canary zone to be present.
+    Write-Host "  Checking capture health (looking for '$ShowThreadCanaryZone' zone)..."
+    & $CsvExportExe -u $TracyFile | Out-File -Encoding utf8 $CpuCsv
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "tracy-csvexport -u failed (exit $LASTEXITCODE) on attempt $attempt; retrying."
+        continue
+    }
+
+    $tracyBytes = (Get-Item $TracyFile).Length
+    $hasCanary  = Select-String -Path $CpuCsv -Pattern $ShowThreadCanaryZone -SimpleMatch -Quiet
+    if ($hasCanary) {
+        Write-Host ("  Capture healthy: {0:N2} MB, '{1}' zone present." -f ($tracyBytes / 1MB), $ShowThreadCanaryZone)
+        $captureHealthy = $true
+        break
+    }
+
+    Write-Warning ("Attempt {0} produced a DEGRADED capture ({1:N0} bytes, no '{2}' zone) - the Tracy on-demand one-session-per-process gotcha. Restarting editor." -f $attempt, $tracyBytes, $ShowThreadCanaryZone)
 }
-Write-Host "  Port 8086 open."
 
-# ---------------------------------------------------------------------------
-# Steps 6-13 — guarded by finally so editor is always cleaned up
-# ---------------------------------------------------------------------------
-
-$captureProc = $null
-$EnvJson = $null
-try {
-
-# ---------------------------------------------------------------------------
-# Step 6 — Start tracy-capture
-# ---------------------------------------------------------------------------
-
-Write-Host "`nStep 6: Starting tracy-capture (duration ${Duration}s)..."
-$captureProc = Start-Process -FilePath $CaptureExe `
-    -ArgumentList "-o", $TracyFile, "-s", $Duration, "-f" `
-    -WorkingDirectory $RepoRoot `
-    -PassThru
-
-# ---------------------------------------------------------------------------
-# Step 7 — Wait for capture to finish
-# ---------------------------------------------------------------------------
-
-Write-Host "  Waiting up to $($Duration + 15)s for capture to complete..."
-$captureProc.WaitForExit(($Duration + 15) * 1000) | Out-Null
-if (-not $captureProc.HasExited) {
-    Stop-Process -Id $captureProc.Id -Force -ErrorAction SilentlyContinue
-    Step-Error 7 "tracy-capture did not exit within the expected window."
+if (-not $captureHealthy) {
+    Step-Error 7 "All $MaxCaptureAttempts attempts produced degraded/empty captures (no '$ShowThreadCanaryZone' show-thread zone). This is usually the Tracy on-demand 'one usable session per process lifetime' gotcha, or a runtime handshake issue. See docs/perf/tracy-troubleshooting.md."
 }
-if ($captureProc.ExitCode -ne 0) {
-    Step-Error 7 "tracy-capture exited with code $($captureProc.ExitCode)."
-}
-Write-Host "  Capture complete: $TracyFile"
 
 # ---------------------------------------------------------------------------
-# Step 8 — Kill editor
+# Steps 10-11 — csvexport plots + GPU (CPU export already done by the gate)
 # ---------------------------------------------------------------------------
 
-Write-Host "`nStep 8: Stopping editor (PID $($editorProc.Id))..."
-Stop-Process -Id $editorProc.Id -Force -ErrorAction SilentlyContinue
-Write-Host "  Editor stopped."
-
-# ---------------------------------------------------------------------------
-# Steps 9-11 — csvexport (3x)
-# ---------------------------------------------------------------------------
-
-Write-Host "`nStep 9: Exporting CPU zones..."
-& $CsvExportExe -u $TracyFile | Out-File -Encoding utf8 $CpuCsv
-if ($LASTEXITCODE -ne 0) { Step-Error 9 "tracy-csvexport -u failed (exit $LASTEXITCODE)." }
-
-Write-Host "Step 10: Exporting CPU zones + plots..."
+Write-Host "`nStep 10: Exporting CPU zones + plots..."
 & $CsvExportExe -u -p $TracyFile | Out-File -Encoding utf8 $PlotCsv
 if ($LASTEXITCODE -ne 0) { Step-Error 10 "tracy-csvexport -u -p failed (exit $LASTEXITCODE)." }
 
@@ -326,6 +393,13 @@ Write-Host "  Summary: $SummaryJson"
 # ---------------------------------------------------------------------------
 
 $summary = ($pyOutput -join "`n") | ConvertFrom-Json
+
+# Belt-and-suspenders: the gate above already required the canary in the CPU
+# export, but assert it survived into the summary too (catches a summarize.py
+# regression that silently drops show-thread zones).
+if (-not $summary.cpu_zones.PSObject.Properties[$ShowThreadCanaryZone]) {
+    Step-Error 13 "Summary is missing the '$ShowThreadCanaryZone' show-thread zone despite a healthy capture - summarize.py may have dropped it. Inspect $CpuCsv and $SummaryJson."
+}
 
 Write-Host "`n=========================================="
 Write-Host " Perf summary: $Scenario"
