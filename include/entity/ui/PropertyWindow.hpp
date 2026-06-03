@@ -127,6 +127,16 @@ private:
     void renderGenerativeLayerProperties(entt::entity entity);
 
     /**
+     * Render Signal Output Layer properties: identity (name/color), OSC
+     * address, mode combo (Momentary/Continuous), arg list editor (type,
+     * literal value, value-bound checkbox), continuous-only: value-source
+     * combo + range-mapping scalars. Called when the selected entity has
+     * SignalLayer but no Clip. Direct-mutation style (v1; undo/command
+     * wrapping is a follow-on, mirrors Generative layer authoring).
+     */
+    void renderSignalLayerProperties(entt::entity entity);
+
+    /**
      * Render the per-layer effects section (issue #54). Lists the current
      * EffectChain entries with parameter sliders + enable/remove. Shows an
      * "Add Effect" popup populated from the EffectKindRegistry.

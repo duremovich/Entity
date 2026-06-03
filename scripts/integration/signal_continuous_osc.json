@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "description": "Phase 8 integration (DEFERRED -- needs physical display + osc-sender to 127.0.0.1:53111). Continuous signal layer streams a progress-mapped int (0..255) to /entity/signal/continuous while playing. Run with scripts/signal_continuous_osc_check.py 53111. WaitSeconds sized to (100 frames / 30fps) + 0.5s margin = 3.8s. NOTE: layerEntity=5 assumes a fresh headless launch (default 5 tracks take IDs 0-4); verify with the actual ID if the project is not empty.",
+    "commands": [
+        {"type": "CreateSignalLayer",    "trackIndex": 0, "startFrame": 0, "duration": 100},
+        {"type": "AssertTrackLayerCount","trackIndex": 0, "count": 1},
+        {"type": "SetSignalMode",        "layerEntity": 5, "mode": "Continuous"},
+        {"type": "SetSignalAddress",     "layerEntity": 5, "address": "/entity/signal/continuous"},
+        {"type": "SetSignalArgs",        "layerEntity": 5, "args": "[{\"type\":\"int\",\"i\":0,\"isValueBound\":true}]"},
+        {"type": "SetSignalValueSource", "layerEntity": 5, "valueSource": "Progress"},
+        {"type": "SetSignalMapping",     "layerEntity": 5, "srcMin": 0.0, "srcMax": 1.0, "outMin": 0.0, "outMax": 255.0, "outType": "Int"},
+        {"type": "SeekToFrame",          "frame": 0},
+        {"type": "Play"},
+        {"type": "WaitSeconds",          "count": 3.8},
+        {"type": "Exit"}
+    ]
+}

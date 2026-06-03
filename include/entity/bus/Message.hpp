@@ -201,6 +201,56 @@ struct BakedTrack {
     std::vector<BakedKeyframe> keyframes;
 };
 
+// One typed argument carried inside a SignalEmit (plugin event) or
+// SignalLayerSnapshot (bake). Defined early so both can use it.
+// Enums serialize as strings per bus rule 2.
+struct SignalArg {
+    enum class Type : int { Int = 0, Float = 1, String = 2 };
+
+    Type    type{Type::Int};
+    int32_t i{0};
+    float   f{0.0f};
+    std::string s;
+};
+
+// Editor → Show (D2R, in SceneSnapshot). One active Signal Output layer
+// baked by PlaybackTimeAuthority::buildSceneSnapshot for SignalOutputSystem
+// (Phase 5/6). Fields mirror SignalLayer + Layer window. Enums serialized
+// as strings per bus rule 2. Break-tolerant decode: every field has a default.
+//
+// mode: 0=Momentary (fire once on crossing), 1=Continuous (every tick).
+// transport: 0=OSC.
+// valueSource: 0=Progress, 1=Keyframe (Continuous only).
+// args: literal + value-bound args. valueBoundArgIndex == -1 if no bound arg.
+// tracks: baked AnimatableProperty::SignalValue keyframes (Keyframe mode).
+struct SignalLayerSnapshot {
+    std::uint64_t entity{0};
+    FrameNumber   startFrame{0};
+    FrameNumber   duration{0};
+
+    int           mode{0};          // SignalLayer::Mode as int
+    int           transport{0};     // SignalLayer::Transport as int
+    int           valueSource{0};   // SignalLayer::ValueSource as int
+
+    std::string   address;
+
+    // Args carried as SignalArg so SignalOutputSystem can hand them
+    // directly to Engine::postSignalEmit without further conversion.
+    std::vector<SignalArg>  args;
+    int                     valueBoundArgIndex{-1};   // -1 = no bound arg
+
+    // Range mapping for the value-bound arg.
+    float srcMin{0.0f};
+    float srcMax{1.0f};
+    float outMin{0.0f};
+    float outMax{1.0f};
+    int   outType{0};   // SignalArg::Type as int
+
+    // Baked keyframe tracks (SignalValue property) for Keyframe mode.
+    // Show thread re-evaluates these per tick (NEW-07 pattern).
+    std::vector<BakedTrack> tracks;
+};
+
 // One-frame snapshot of a Generative layer (Muncher v1; future kinds add
 // optional fields here, never rename existing ones — bus rule 3). Baked by
 // the editor thread in buildSceneSnapshot; consumed by CompositorSystem on
@@ -620,6 +670,11 @@ struct SceneSnapshot {
     // thread builds each ContentLayerSnapshot in buildRenderFrame. Issue
     // #54. Absent entries = no effects.
     std::vector<LayerEffectsSnapshot>          layerEffects;
+    // Signal Output Layer catalog — all active signal layers baked by
+    // PlaybackTimeAuthority::buildSceneSnapshot. Show thread's
+    // SignalOutputSystem (Phase 5/6) consumes this list directly without
+    // re-checking the registry. Empty when no signal layers are on-timeline.
+    std::vector<SignalLayerSnapshot>            signalLayers;
 };
 
 // Director → Renderer. Triggers the existing capture-pass pipeline; reply
@@ -778,6 +833,20 @@ struct SectionBreakDetected {
     FrameNumber breakFrame{0};  // integer timeline frame
 };
 
+// Show → Plugin (D2R, FIFO). Transport-neutral signal event posted by the
+// show thread (SignalOutputSystem) and consumed by the OSC sender plugin.
+// `address` is the OSC address pattern (e.g. "/entity/signal/foo").
+// `args` is the ordered argument list. `transport` selects the outbound
+// adapter (only OSC in Phase 1; MIDI, ArtNet, etc. are reserved values).
+// Enums serialize as strings per bus rule 2.
+struct SignalEmit {
+    enum class Transport : int { OSC = 0 };
+
+    Transport           transport{Transport::OSC};
+    std::string         address;
+    std::vector<SignalArg> args;
+};
+
 using Message = std::variant<
     RenderFrame,
     SceneSnapshot,
@@ -795,7 +864,8 @@ using Message = std::variant<
     FrameDropped,
     CreateOutputWindowRequest,
     OutputWindowReady,
-    SectionBreakDetected
+    SectionBreakDetected,
+    SignalEmit
 >;
 
 // Stable wire identifier. Mirrors the CommandDispatcher "type" string

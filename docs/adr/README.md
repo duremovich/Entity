@@ -36,6 +36,7 @@ that have moved on.
 | 0024 | [getStringSetting bridge for project-scoped plugin state](0024-string-settings-bridge-for-project-scoped-plugin-state.md) | Accepted | 2026-05-19 |
 | 0025 | [Timeline clock — separate rate authority from position authority](0025-clock-rate-vs-position-authority.md) | Accepted | 2026-05-21 |
 | 0026 | [Seek-sync preroll gate — hold playhead until all decoders reach the target frame](0026-seek-sync-preroll-gate.md) | Accepted | 2026-05-22 |
+| 0027 | [Signal Output Layer — timeline-driven OSC/plugin event dispatch](0027-signal-output-layer.md) | Accepted | 2026-06-02 |
 
 ## Format
 

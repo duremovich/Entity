@@ -219,6 +219,9 @@ int main(int argc, char** argv) {
     // that called `entity_register_plugin()` in its CMakeLists.txt.
     entity::core::EnginePluginContext pluginCtx(&engine, "engine");
     entity::plugin::registerStaticPlugins(&pluginCtx);
+    // Wire the context into Engine so postSignalEmit() is reachable from
+    // the show thread (Phase 6) and script command handlers (Phase 2+).
+    engine.setPluginContext(&pluginCtx);
 
     // Run script if specified
     if (!scriptPath.empty()) {

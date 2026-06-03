@@ -126,8 +126,15 @@ void LayersWindow::render() {
     }
 
     // === Control ===
-    if (ImGui::CollapsingHeader("Control")) {
-        categoryComingSoon("(no control layer kinds yet)");
+    if (ImGui::CollapsingHeader("Control", ImGuiTreeNodeFlags_DefaultOpen)) {
+        layerPaletteRow(
+            "Signal Output",
+            "Drag onto a track to create a Signal Output layer.\n"
+            "Emits OSC packets at a keyframed or progress-mapped value\n"
+            "while the playhead is inside the layer window.\n"
+            "Set address, mode, and args in the Properties panel.",
+            Layer::Kind::Signal,
+            ImVec4(0.90f, 0.60f, 0.20f, 1.0f));
     }
 }
 

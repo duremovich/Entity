@@ -23,6 +23,15 @@ struct GLFWwindow;
 // Included for bus::SceneSnapshot cached in Engine (show thread).
 #include "entity/bus/Message.hpp"
 
+// Included for entity::plugin::SignalEmitPod used in postSignalEmit().
+#include "entity/plugin/PluginContext.hpp"
+// Included for SignalOutputSystem show-thread member.
+#include "entity/systems/SignalOutputSystem.hpp"
+
+namespace entity::core {
+class EnginePluginContext;
+} // namespace entity::core
+
 namespace entity {
 
 // Forward declarations
@@ -220,6 +229,43 @@ public:
     void addPluginShutdownHook(void (*hook)()) {
         if (hook) m_pluginShutdownHooks.push_back(hook);
     }
+
+    /**
+     * Wire the active EnginePluginContext into Engine so postSignalEmit()
+     * can reach it. Called from main.cpp after registerStaticPlugins().
+     * Non-owning: Engine does not delete the context.
+     */
+    void setPluginContext(entity::core::EnginePluginContext* ctx) {
+        m_pluginCtx = ctx;
+    }
+
+    /**
+     * Request a SignalOutputSystem reset on the next show-thread tick.
+     * Call on any timeline discontinuity (seek, load, stop) so the
+     * crossing-detector arm state and continuous rate-limit don't carry over.
+     * Thread-safe: sets an atomic flag; the show thread applies it.
+     */
+    void requestSignalReset() noexcept {
+        m_signalResetPending.store(true, std::memory_order_release);
+    }
+
+    /**
+     * Post a SignalEmit event for consumption by registered plugins
+     * (Phase 2+). Thread-safe: delegates to EnginePluginContext which
+     * guards its queue with a mutex. Safe to call from the show thread
+     * (Phase 6) or from editor-thread command handlers (Phase 2 test hook).
+     * No-op when no plugin context has been wired in.
+     */
+    void postSignalEmit(const entity::plugin::SignalEmitPod& emit) noexcept;
+
+    /**
+     * Convenience overload: converts bus::SignalEmit -> SignalEmitPod internally
+     * so the show-thread signal pipeline can pass the bus type directly without
+     * manually constructing a pod. Truncates args beyond kMaxArgs and strings
+     * beyond kMaxStringLen; address is clamped to kMaxAddressLen.
+     * Thread-safe (delegates to the pod overload).
+     */
+    void postSignalEmit(const bus::SignalEmit& emit) noexcept;
 
     /**
      * Get the GLFW window.
@@ -1054,6 +1100,29 @@ private:
     // Populated by EnginePluginContext::registerShutdownHook().
     std::vector<void(*)()> m_pluginShutdownHooks;
 
+    // Non-owning pointer to the active EnginePluginContext. Set by
+    // setPluginContext() after registerStaticPlugins() in main.cpp; valid
+    // until Engine::shutdown() clears it. Used by postSignalEmit() so the
+    // show thread (Phase 6) and script commands (Phase 2 verification) can
+    // push signal events without knowing the concrete context type.
+    entity::core::EnginePluginContext* m_pluginCtx{nullptr};
+
+    // Show-thread Signal Output System. Owned here so prevFrame tracking and
+    // armed/rate-limit state survive across ticks. ADR-0014: no registry
+    // reads/writes; pure snapshot consumer.
+    SignalOutputSystem m_signalOutputSystem;
+
+    // When true, showThreadMain resets m_signalOutputSystem at the top of its
+    // next evaluate() call. Set from the editor thread on seek/load/stop.
+    // Atomic so the editor thread can write it without holding the show mutex.
+    std::atomic<bool> m_signalResetPending{false};
+
+    // Reusable per-tick output buffer for SignalOutputSystem::evaluate().
+    // Hoisted out of showThreadMain so it retains capacity across ticks —
+    // zero allocation in steady state when signal layers are active.
+    // Accessed only from the show thread.
+    std::vector<bus::SignalEmit> m_signalEmitsBuffer;
+
     // FPS display tracking (window title only)
     double m_fpsAccumulator{0.0};
     uint32_t m_fpsFrameCount{0};
@@ -1131,6 +1200,16 @@ public:
                                             int trackIndex,
                                             FrameNumber startFrame,
                                             FrameNumber duration);
+
+    /**
+     * Create a Signal Output layer on the given track at the given start frame
+     * and duration. Archetype: Layer (Kind::Signal) + SignalLayer +
+     * AnimatedProperties. Deliberately NO MediaLayer, NO Transform — not a
+     * content layer. Returns the created entity, or entt::null on failure.
+     */
+    entt::entity createSignalLayer(int trackIndex,
+                                   FrameNumber startFrame,
+                                   FrameNumber duration);
 
     /**
      * Create a Clip layer entity with no media (filepath empty). Used when the

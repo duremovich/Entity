@@ -20,6 +20,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/render/TextRasterizer.hpp"
@@ -166,6 +167,13 @@ void PropertyWindow::render() {
     if (registry.all_of<GenerativeLayer>(selectedClip) &&
         !registry.all_of<Clip>(selectedClip)) {
         renderGenerativeLayerProperties(selectedClip);
+        return;
+    }
+
+    // Signal Output Layer path: entity has SignalLayer but no Clip component
+    if (registry.all_of<SignalLayer>(selectedClip) &&
+        !registry.all_of<Clip>(selectedClip)) {
+        renderSignalLayerProperties(selectedClip);
         return;
     }
 
@@ -3013,6 +3021,180 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     if (ImGui::CollapsingHeader("Timing")) {
         ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
         ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
+    }
+
+    ImGui::PopID();
+}
+
+// ============================================================================
+// Signal Output Layer properties
+// ============================================================================
+
+void PropertyWindow::renderSignalLayerProperties(entt::entity entity) {
+    if (!m_timeline) return;
+    auto& registry = m_timeline->getRegistry();
+
+    auto* sig = registry.try_get<SignalLayer>(entity);
+    auto* lay = registry.try_get<Layer>(entity);
+    if (!sig || !lay) return;
+
+    ImGui::PushID(static_cast<int>(entity));
+
+    ImGui::Text("Signal Layer");
+    ImGui::Separator();
+
+    // -- Identity ----------------------------------------------------------
+    if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+        char nameBuf[128];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", lay->name.c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+            lay->name = nameBuf;
+
+        float col[4] = {lay->color[0], lay->color[1], lay->color[2], lay->color[3]};
+        if (ImGui::ColorEdit4("Color", col, ImGuiColorEditFlags_NoAlpha))
+            lay->color = {col[0], col[1], col[2], col[3]};
+    }
+
+    // -- Signal parameters -------------------------------------------------
+    if (ImGui::CollapsingHeader("Signal", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+        // Mode combo
+        {
+            const char* modeItems[] = {"Momentary", "Continuous"};
+            int modeIdx = sig->mode == SignalLayer::Mode::Momentary ? 0 : 1;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("Mode", &modeIdx, modeItems, 2))
+                sig->mode = (modeIdx == 0) ? SignalLayer::Mode::Momentary
+                                           : SignalLayer::Mode::Continuous;
+            // Carry-forward hint (Phase 5 review): momentary fires on forward crossing.
+            // ASCII-only tooltip per project rules.
+            if (sig->mode == SignalLayer::Mode::Momentary) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Cue fires when the playhead crosses the layer start\n"
+                        "during forward play. Seek before the marker to arm.");
+            }
+        }
+
+        // Transport combo (OSC only in v1; reserved for MIDI etc.)
+        {
+            const char* transportItems[] = {"OSC"};
+            int tIdx = 0; // only OSC exists
+            ImGui::SetNextItemWidth(-1);
+            ImGui::Combo("Transport", &tIdx, transportItems, 1);
+            sig->transport = SignalLayer::Transport::OSC;
+        }
+
+        // OSC address
+        {
+            char addrBuf[256];
+            std::snprintf(addrBuf, sizeof(addrBuf), "%s", sig->address.c_str());
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("OSC Address", addrBuf, sizeof(addrBuf)))
+                sig->address = addrBuf;
+        }
+
+        // Continuous-only: value source + range mapping
+        if (sig->mode == SignalLayer::Mode::Continuous) {
+            ImGui::Separator();
+            ImGui::TextDisabled("Value Source");
+
+            const char* vsItems[] = {"Progress", "Keyframe"};
+            int vsIdx = sig->valueSource == SignalLayer::ValueSource::Progress ? 0 : 1;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("Value Source", &vsIdx, vsItems, 2))
+                sig->valueSource = (vsIdx == 0) ? SignalLayer::ValueSource::Progress
+                                                : SignalLayer::ValueSource::Keyframe;
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Range Mapping  src -> out");
+
+            float srcRange[2] = {sig->srcMin, sig->srcMax};
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::DragFloat2("Src Min/Max", srcRange, 0.01f)) {
+                sig->srcMin = srcRange[0];
+                sig->srcMax = srcRange[1];
+            }
+            float outRange[2] = {sig->outMin, sig->outMax};
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::DragFloat2("Out Min/Max", outRange, 0.01f)) {
+                sig->outMin = outRange[0];
+                sig->outMax = outRange[1];
+            }
+
+            const char* outTypeItems[] = {"Int", "Float", "String"};
+            int otIdx = static_cast<int>(sig->outType);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("Out Type", &otIdx, outTypeItems, 3))
+                sig->outType = static_cast<SignalLayer::Arg::Type>(otIdx);
+        }
+    }
+
+    // -- Arg list editor ---------------------------------------------------
+    if (ImGui::CollapsingHeader("Args", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const char* argTypeNames[] = {"Int", "Float", "String"};
+        const bool isContinuous = (sig->mode == SignalLayer::Mode::Continuous);
+
+        for (int ai = 0; ai < static_cast<int>(sig->args.size()); ++ai) {
+            auto& arg = sig->args[ai];
+            ImGui::PushID(ai);
+
+            // Type combo
+            int typeIdx = static_cast<int>(arg.type);
+            ImGui::SetNextItemWidth(80.0f);
+            if (ImGui::Combo("##type", &typeIdx, argTypeNames, 3))
+                arg.type = static_cast<SignalLayer::Arg::Type>(typeIdx);
+
+            ImGui::SameLine();
+
+            // Value field, width adjusted for Remove button
+            ImGui::SetNextItemWidth(-140.0f);
+            switch (arg.type) {
+                case SignalLayer::Arg::Type::Int: {
+                    ImGui::DragInt("##ival", &arg.i);
+                    break;
+                }
+                case SignalLayer::Arg::Type::Float: {
+                    ImGui::DragFloat("##fval", &arg.f, 0.01f);
+                    break;
+                }
+                case SignalLayer::Arg::Type::String: {
+                    char sbuf[256];
+                    std::snprintf(sbuf, sizeof(sbuf), "%s", arg.s.c_str());
+                    if (ImGui::InputText("##sval", sbuf, sizeof(sbuf)))
+                        arg.s = sbuf;
+                    break;
+                }
+            }
+
+            // Value-bound checkbox (continuous only; at most one per layer)
+            if (isContinuous) {
+                ImGui::SameLine();
+                bool bound = arg.isValueBound;
+                if (ImGui::Checkbox("Bound", &bound)) {
+                    if (bound) {
+                        // Clear all others first (enforce at-most-one invariant)
+                        for (auto& other : sig->args) other.isValueBound = false;
+                    }
+                    arg.isValueBound = bound;
+                }
+            }
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) {
+                sig->args.erase(sig->args.begin() + ai);
+                ImGui::PopID();
+                break; // iterator invalidated -- restart next frame
+            }
+
+            ImGui::PopID();
+        }
+
+        if (ImGui::SmallButton("+ Add Arg"))
+            sig->args.push_back(SignalLayer::Arg{});
     }
 
     ImGui::PopID();

@@ -4,6 +4,8 @@
 
 #include "entity/plugin/PluginContext.hpp"
 
+#include <mutex>
+#include <queue>
 #include <string>
 
 namespace entity {
@@ -45,9 +47,32 @@ public:
                                                       std::string_view defaultValue) const noexcept override;
     entity::plugin::TransportSnapshot getTransportSnapshot() const noexcept override;
 
+    // IPluginContext v1: drain accumulated SignalEmit events. Thread-safe.
+    std::size_t drainSignalEmits(entity::plugin::SignalEmitPod* out,
+                                  std::size_t max) noexcept override;
+
+    // Called by the show thread (SignalOutputSystem, Phase 5/6) or by test
+    // script commands (Phase 2 verification) to enqueue a signal for plugin
+    // consumption. Thread-safe.
+    void postSignalEmit(const entity::plugin::SignalEmitPod& emit) noexcept;
+
 private:
     Engine*     m_engine;
     std::string m_pluginName;
+
+    // Pending signal emits queued for plugin drain. Written by the show thread
+    // (or script command dispatch), read by any plugin worker that calls
+    // drainSignalEmits(). Capacity-capped at 256 to bound memory under a
+    // misbehaving producer; excess events are dropped with a log.
+    //
+    // m_signalQueueSaturated: set true (under m_signalMutex) on the first drop
+    // event per saturation episode; reset to false in drainSignalEmits when
+    // the queue empties back below kMaxQueueDepth. The log call happens OUTSIDE
+    // the lock so the osc-sender drain path is never blocked by console I/O.
+    static constexpr std::size_t kMaxQueueDepth = 256;
+    mutable std::mutex                              m_signalMutex;
+    std::queue<entity::plugin::SignalEmitPod>       m_signalQueue;
+    bool                                            m_signalQueueSaturated{false};
 };
 
 } // namespace entity::core

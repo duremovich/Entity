@@ -47,6 +47,10 @@ using GenerativeLayerDropCallback = std::function<void(int, FrameNumber, FrameNu
 // Parameters: track index, start frame (timeline), duration in frames
 using TextLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
+// Callback for when a Signal Output layer is dropped onto a track.
+// Parameters: track index, start frame (timeline), duration in frames
+using SignalLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
 // Lookup callback wired by Engine — given a logical media path, returns
 // the media's timeline-frame duration (seconds × timeline fps). Used to
 // size the drop ghost. Returns 0.0 when the path isn't probed yet; the
@@ -138,6 +142,7 @@ public:
     void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
     void setGenerativeLayerDropCallback(GenerativeLayerDropCallback callback) { m_generativeLayerDropCallback = std::move(callback); }
     void setTextLayerDropCallback(TextLayerDropCallback callback) { m_textLayerDropCallback = std::move(callback); }
+    void setSignalLayerDropCallback(SignalLayerDropCallback callback) { m_signalLayerDropCallback = std::move(callback); }
 
     /**
      * Optional — Engine-supplied lookup mapping a logical media path to
@@ -615,6 +620,7 @@ private:
     ClipLayerDropCallback m_clipLayerDropCallback;
     GenerativeLayerDropCallback m_generativeLayerDropCallback;
     TextLayerDropCallback m_textLayerDropCallback;
+    SignalLayerDropCallback m_signalLayerDropCallback;
     MediaDurationLookup m_mediaDurationLookup;
 
     /**

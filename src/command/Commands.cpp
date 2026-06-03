@@ -33,6 +33,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/audio/AudioEngine.hpp"
@@ -46,6 +47,7 @@
 #include "entity/media/ObjLoader.hpp"
 #include <imgui.h>
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
@@ -104,6 +106,7 @@ CommandPtr TogglePlayPauseCommand::fromJson(const nlohmann::json& j) {
 bool SeekCommand::execute(Engine& engine) {
     if (auto* timeline = engine.getTimeline()) {
         timeline->seek(m_time);
+        engine.requestSignalReset();
         return true;
     }
     return false;
@@ -122,6 +125,7 @@ bool SeekToFrameCommand::execute(Engine& engine) {
     auto* timeline = engine.getTimeline();
     if (!timeline) return false;
     timeline->seekToFrame(m_frame);
+    engine.requestSignalReset();
     return true;
 }
 
@@ -141,6 +145,7 @@ CommandPtr SeekToFrameCommand::fromJson(const nlohmann::json& j) {
 bool SeekToStartCommand::execute(Engine& engine) {
     if (auto* timeline = engine.getTimeline()) {
         timeline->seek(0);
+        engine.requestSignalReset();
         return true;
     }
     return false;
@@ -154,6 +159,7 @@ CommandPtr SeekToStartCommand::fromJson(const nlohmann::json& j) {
 bool SeekToEndCommand::execute(Engine& engine) {
     if (auto* timeline = engine.getTimeline()) {
         timeline->seek(timeline->getDuration());
+        engine.requestSignalReset();
         return true;
     }
     return false;
@@ -6115,6 +6121,315 @@ CommandPtr SetOutputEnabledCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetOutputEnabledCommand>(
         j.value("outputName", ""),
         j.value("enabled", true));
+}
+
+// ============================================================================
+// CreateSignalLayerCommand (Phase 3)
+// ============================================================================
+
+bool CreateSignalLayerCommand::execute(Engine& engine) {
+    m_createdEntity = engine.createSignalLayer(m_trackIndex, m_startFrame, m_duration);
+    if (m_createdEntity == entt::null) {
+        std::cerr << "[CreateSignalLayer] FAIL: createSignalLayer returned null"
+                  << std::endl;
+        return false;
+    }
+    std::cout << "[CreateSignalLayer] OK track=" << m_trackIndex
+              << " start=" << m_startFrame
+              << " duration=" << m_duration
+              << " entity=" << static_cast<uint32_t>(m_createdEntity)
+              << std::endl;
+    return true;
+}
+
+nlohmann::json CreateSignalLayerCommand::toJson() const {
+    return {{"type", "CreateSignalLayer"},
+            {"trackIndex", m_trackIndex},
+            {"startFrame", m_startFrame},
+            {"duration",   m_duration}};
+}
+
+std::string CreateSignalLayerCommand::getDescription() const {
+    return "Create Signal layer on track " + std::to_string(m_trackIndex) +
+           " at " + std::to_string(m_startFrame) +
+           " dur=" + std::to_string(m_duration);
+}
+
+CommandPtr CreateSignalLayerCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<CreateSignalLayerCommand>(
+        j.value("trackIndex", 0),
+        j.value("startFrame", FrameNumber{0}),
+        j.value("duration",   FrameNumber{60}));
+}
+
+// ============================================================================
+// TestSignalEmitCommand
+// ============================================================================
+
+bool TestSignalEmitCommand::execute(Engine& engine) {
+    entity::plugin::SignalEmitPod pod;
+
+    // Copy address into the fixed buffer, clamped to kMaxAddressLen.
+    const std::size_t addrLen =
+        std::min(m_address.size(), entity::plugin::SignalEmitPod::kMaxAddressLen);
+    std::memcpy(pod.address, m_address.c_str(), addrLen);
+    pod.address[addrLen] = '\0';
+
+    std::size_t argIdx = 0;
+    if (m_hasI && argIdx < entity::plugin::SignalEmitPod::kMaxArgs) {
+        auto& a = pod.args[argIdx++];
+        a.type = entity::plugin::SignalArgPod::Type::Int;
+        a.i    = m_i;
+    }
+    if (m_hasF && argIdx < entity::plugin::SignalEmitPod::kMaxArgs) {
+        auto& a = pod.args[argIdx++];
+        a.type = entity::plugin::SignalArgPod::Type::Float;
+        a.f    = m_f;
+    }
+    if (m_hasS && argIdx < entity::plugin::SignalEmitPod::kMaxArgs) {
+        auto& a = pod.args[argIdx++];
+        a.type = entity::plugin::SignalArgPod::Type::String;
+        const std::size_t sLen =
+            std::min(m_s.size(), entity::plugin::SignalArgPod::kMaxStringLen);
+        std::memcpy(a.s, m_s.c_str(), sLen);
+        a.s[sLen] = '\0';
+    }
+    pod.argCount = argIdx;
+
+    engine.postSignalEmit(pod);
+    return true;
+}
+
+nlohmann::json TestSignalEmitCommand::toJson() const {
+    nlohmann::json j = {{"type", "TestSignalEmit"}, {"address", m_address}};
+    if (m_hasI) j["iArg"] = m_i;
+    if (m_hasF) j["fArg"] = m_f;
+    if (m_hasS) j["sArg"] = m_s;
+    return j;
+}
+
+std::string TestSignalEmitCommand::getDescription() const {
+    return std::string("TestSignalEmit ") + m_address;
+}
+
+CommandPtr TestSignalEmitCommand::fromJson(const nlohmann::json& j) {
+    const std::string address = j.value("address", "/entity/signal/test");
+    const bool hasI = j.contains("iArg") && j["iArg"].is_number_integer();
+    const bool hasF = j.contains("fArg") && j["fArg"].is_number();
+    const bool hasS = j.contains("sArg") && j["sArg"].is_string();
+    return std::make_unique<TestSignalEmitCommand>(
+        address,
+        hasI, hasI ? j["iArg"].get<int32_t>() : int32_t{0},
+        hasF, hasF ? j["fArg"].get<float>()    : 0.0f,
+        hasS, hasS ? j["sArg"].get<std::string>() : std::string{});
+}
+
+// ============================================================================
+// SetSignal* commands (Phase 8)
+// ============================================================================
+
+namespace {
+static SignalLayer* getSignalLayer(Engine& engine, entt::entity e) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(e)) return nullptr;
+    return registry.try_get<SignalLayer>(e);
+}
+} // namespace
+
+// -- SetSignalModeCommand --
+
+bool SetSignalModeCommand::execute(Engine& engine) {
+    auto* sig = getSignalLayer(engine, m_layerEntity);
+    if (!sig) return false;
+    sig->mode = static_cast<SignalLayer::Mode>(m_mode);
+    return true;
+}
+
+nlohmann::json SetSignalModeCommand::toJson() const {
+    return {{"type", "SetSignalMode"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"mode", m_mode}};
+}
+
+std::string SetSignalModeCommand::getDescription() const {
+    return std::string("Set signal mode to ") + (m_mode == 0 ? "Momentary" : "Continuous");
+}
+
+CommandPtr SetSignalModeCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    // Accept int or string mode
+    int mode = 0;
+    if (j.contains("mode")) {
+        if (j["mode"].is_string()) {
+            mode = (j["mode"].get<std::string>() == "Continuous") ? 1 : 0;
+        } else {
+            mode = j["mode"].get<int>();
+        }
+    }
+    return std::make_unique<SetSignalModeCommand>(e, mode);
+}
+
+// -- SetSignalAddressCommand --
+
+bool SetSignalAddressCommand::execute(Engine& engine) {
+    auto* sig = getSignalLayer(engine, m_layerEntity);
+    if (!sig) return false;
+    sig->address = m_address;
+    return true;
+}
+
+nlohmann::json SetSignalAddressCommand::toJson() const {
+    return {{"type", "SetSignalAddress"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"address", m_address}};
+}
+
+std::string SetSignalAddressCommand::getDescription() const {
+    return "Set signal address to " + m_address;
+}
+
+CommandPtr SetSignalAddressCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    return std::make_unique<SetSignalAddressCommand>(
+        e, j.value("address", std::string{"/entity/signal"}));
+}
+
+// -- SetSignalArgsCommand --
+
+bool SetSignalArgsCommand::execute(Engine& engine) {
+    auto* sig = getSignalLayer(engine, m_layerEntity);
+    if (!sig) return false;
+
+    // Parse the args JSON string defensively.
+    nlohmann::json jArgs;
+    try {
+        jArgs = nlohmann::json::parse(m_argsJson);
+    } catch (const std::exception& ex) {
+        std::cerr << "[SetSignalArgs] malformed args JSON: " << ex.what() << std::endl;
+        return false;
+    }
+    if (!jArgs.is_array()) {
+        std::cerr << "[SetSignalArgs] args must be a JSON array" << std::endl;
+        return false;
+    }
+
+    std::vector<SignalLayer::Arg> args;
+    for (const auto& aj : jArgs) {
+        SignalLayer::Arg a;
+        // type field maps "int"/"float"/"string" to enum
+        const std::string typeStr = aj.value("type", std::string{"int"});
+        if (typeStr == "float")       a.type = SignalLayer::Arg::Type::Float;
+        else if (typeStr == "string") a.type = SignalLayer::Arg::Type::String;
+        else                          a.type = SignalLayer::Arg::Type::Int;
+        a.i           = aj.value("i",            std::int32_t{0});
+        a.f           = aj.value("f",            0.0f);
+        a.s           = aj.value("s",            std::string{});
+        a.isValueBound = aj.value("isValueBound", false);
+        args.push_back(std::move(a));
+    }
+    sig->args = std::move(args);
+    return true;
+}
+
+nlohmann::json SetSignalArgsCommand::toJson() const {
+    return {{"type", "SetSignalArgs"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"args", m_argsJson}};
+}
+
+std::string SetSignalArgsCommand::getDescription() const {
+    return "Set signal args";
+}
+
+CommandPtr SetSignalArgsCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    std::string argsJson = "[]";
+    if (j.contains("args")) {
+        if (j["args"].is_string()) {
+            argsJson = j["args"].get<std::string>();
+        } else if (j["args"].is_array()) {
+            argsJson = j["args"].dump();
+        }
+    }
+    return std::make_unique<SetSignalArgsCommand>(e, std::move(argsJson));
+}
+
+// -- SetSignalValueSourceCommand --
+
+bool SetSignalValueSourceCommand::execute(Engine& engine) {
+    auto* sig = getSignalLayer(engine, m_layerEntity);
+    if (!sig) return false;
+    sig->valueSource = static_cast<SignalLayer::ValueSource>(m_valueSource);
+    return true;
+}
+
+nlohmann::json SetSignalValueSourceCommand::toJson() const {
+    return {{"type", "SetSignalValueSource"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"valueSource", m_valueSource}};
+}
+
+std::string SetSignalValueSourceCommand::getDescription() const {
+    return std::string("Set signal value source to ") +
+           (m_valueSource == 0 ? "Progress" : "Keyframe");
+}
+
+CommandPtr SetSignalValueSourceCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    int vs = 0;
+    if (j.contains("valueSource")) {
+        if (j["valueSource"].is_string()) {
+            vs = (j["valueSource"].get<std::string>() == "Keyframe") ? 1 : 0;
+        } else {
+            vs = j["valueSource"].get<int>();
+        }
+    }
+    return std::make_unique<SetSignalValueSourceCommand>(e, vs);
+}
+
+// -- SetSignalMappingCommand --
+
+bool SetSignalMappingCommand::execute(Engine& engine) {
+    auto* sig = getSignalLayer(engine, m_layerEntity);
+    if (!sig) return false;
+    sig->srcMin  = m_srcMin;
+    sig->srcMax  = m_srcMax;
+    sig->outMin  = m_outMin;
+    sig->outMax  = m_outMax;
+    sig->outType = static_cast<SignalLayer::Arg::Type>(m_outType);
+    return true;
+}
+
+nlohmann::json SetSignalMappingCommand::toJson() const {
+    return {{"type", "SetSignalMapping"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"srcMin", m_srcMin}, {"srcMax", m_srcMax},
+            {"outMin", m_outMin}, {"outMax", m_outMax},
+            {"outType", m_outType}};
+}
+
+std::string SetSignalMappingCommand::getDescription() const {
+    return "Set signal mapping";
+}
+
+CommandPtr SetSignalMappingCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    int outType = 0;
+    if (j.contains("outType")) {
+        if (j["outType"].is_string()) {
+            const std::string s = j["outType"].get<std::string>();
+            if (s == "Float")  outType = 1;
+            else if (s == "String") outType = 2;
+            else               outType = 0; // Int default
+        } else {
+            outType = j["outType"].get<int>();
+        }
+    }
+    return std::make_unique<SetSignalMappingCommand>(
+        e,
+        j.value("srcMin", 0.0f), j.value("srcMax", 1.0f),
+        j.value("outMin", 0.0f), j.value("outMax", 1.0f),
+        outType);
 }
 
 } // namespace entity

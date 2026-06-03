@@ -151,7 +151,10 @@ public:
     // v25: per-layer LayerTrackUiState (timeline twirl-down collapsed
     //      group paths). Pre-v25 files load with empty state — all
     //      groups expanded. Editor-only; never reaches the bus.
-    static constexpr int PROJECT_VERSION = 25;
+    // v26: Signal Output Layer persistence (ADR-0027). New "signal" kind
+    //      carries mode/transport/valueSource/address/args/mapping.
+    //      Pre-v26 files load with no signal layers (break-tolerant).
+    static constexpr int PROJECT_VERSION = 26;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

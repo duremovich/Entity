@@ -15,6 +15,7 @@
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/OutputSurface.hpp"
 #include "entity/components/Model.hpp"
@@ -1240,6 +1241,71 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         }
 
         out.generativeLayers.push_back(std::move(snap));
+    }
+
+    // Signal Output Layer catalog — baked for SignalOutputSystem (Phase 5/6).
+    // Momentary: active for the single frame equal to startFrame so the show
+    // thread can detect the playhead crossing into the layer. Continuous:
+    // active while currentFrameForOA is in [startFrame, startFrame+duration).
+    out.signalLayers.clear();
+    for (auto [sigEntity, sigLayer, sigLay] :
+            m_registry.view<SignalLayer, Layer>().each()) {
+        const FrameNumber layStart = sigLay.startFrame;
+        const FrameNumber layEnd   = layStart + sigLay.duration;
+        const bool isMomentary = (sigLayer.mode == SignalLayer::Mode::Momentary);
+
+        bool active = false;
+        if (isMomentary) {
+            // ±2-frame straddling window around startFrame. The headless loop
+            // runs at thousands of fps and cue-jumps advance the playhead by
+            // many frames in one tick, so exact equality (== layStart) silently
+            // drops cues whenever the tick steps over startFrame. The ±2-frame
+            // window ensures the layer appears in the snapshot for prev=start-1
+            // → cur=start+2 skips. Phase 5's crossing detector re-arms once the
+            // layer exits the window so it still fires exactly once per crossing.
+            active = (currentFrameForOA >= layStart - 2 &&
+                      currentFrameForOA <= layEnd   + 2);
+        } else {
+            // Continuous: any frame inside [start, end).
+            active = (currentFrameForOA >= layStart && currentFrameForOA < layEnd);
+        }
+        if (!active) continue;
+
+        bus::SignalLayerSnapshot sl;
+        sl.entity     = static_cast<std::uint64_t>(sigEntity);
+        sl.startFrame = sigLay.startFrame;
+        sl.duration   = sigLay.duration;
+        sl.mode       = static_cast<int>(sigLayer.mode);
+        sl.transport  = static_cast<int>(sigLayer.transport);
+        sl.valueSource = static_cast<int>(sigLayer.valueSource);
+        sl.address    = sigLayer.address;
+        sl.srcMin     = sigLayer.srcMin;
+        sl.srcMax     = sigLayer.srcMax;
+        sl.outMin     = sigLayer.outMin;
+        sl.outMax     = sigLayer.outMax;
+        sl.outType    = static_cast<int>(sigLayer.outType);
+
+        // Bake args: translate SignalLayer::Arg -> bus::SignalArg.
+        // Track the value-bound arg index for SignalOutputSystem.
+        sl.valueBoundArgIndex = -1;
+        for (std::size_t ai = 0; ai < sigLayer.args.size(); ++ai) {
+            const auto& src = sigLayer.args[ai];
+            bus::SignalArg dst;
+            // SignalLayer::Arg::Type matches bus::SignalArg::Type by value (0/1/2).
+            dst.type = static_cast<bus::SignalArg::Type>(static_cast<int>(src.type));
+            dst.i    = src.i;
+            dst.f    = src.f;
+            dst.s    = src.s;
+            sl.args.push_back(dst);
+            if (src.isValueBound && sl.valueBoundArgIndex < 0)
+                sl.valueBoundArgIndex = static_cast<int>(ai);
+        }
+
+        // Bake AnimatedProperties tracks (NEW-07 pattern) so the show thread
+        // can re-evaluate SignalValue keyframes during editor stalls.
+        bakeTracks(m_registry.try_get<AnimatedProperties>(sigEntity), sl.tracks);
+
+        out.signalLayers.push_back(std::move(sl));
     }
 
     // Effect-chain bake — one LayerEffectsSnapshot per entity that

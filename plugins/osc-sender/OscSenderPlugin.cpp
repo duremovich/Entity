@@ -61,6 +61,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -71,6 +72,8 @@ namespace {
 
 using entity::plugin::IPluginContext;
 using entity::plugin::LogLevel;
+using entity::plugin::SignalArgPod;
+using entity::plugin::SignalEmitPod;
 using entity::plugin::TransportSnapshot;
 using entity::plugin::TransportState;
 
@@ -108,6 +111,12 @@ struct SenderState {
     // sendto failure rate-limiting: log at most once per second.
     int           sendFailsSinceLastLog{0};
     int           sendFailTicksSinceLog{0}; // ticks since last failure-log emit
+
+    // Inbound signal emit queue. Filled by the host via drainSignalEmits()
+    // at the top of each worker tick. Capacity bounded in the host; no
+    // secondary cap here — the host's 256-deep limit is authoritative.
+    static constexpr std::size_t kDrainBatch = 64;
+    SignalEmitPod signalBatch[kDrainBatch]{};
 };
 
 SenderState& state() {
@@ -601,6 +610,91 @@ std::vector<std::uint8_t> buildTickPacket(const TransportSnapshot& snap,
 }
 
 // ---------------------------------------------------------------------------
+// Build a single OSC message from a SignalEmitPod. Encodes the typetag
+// string from arg types then appends each arg value. Handles any mix of
+// Int, Float, and String args in order.
+//
+// OSC wire layout for a multi-arg message:
+//   [address\0 padded] [typetags\0 padded] [arg0] [arg1] ...
+// Single-arg messages use the existing buildOscMessage* helpers (which
+// produce identical bytes but are more readable for the single-arg case).
+
+void buildOscSignalMessage(std::vector<std::uint8_t>& out,
+                            const SignalEmitPod& emit) {
+    out.clear();
+    if (emit.argCount == 0) {
+        // No-arg bang: address + bare typetag ",".
+        writeOscString(out, emit.address);
+        writeOscString(out, ",");
+        return;
+    }
+    if (emit.argCount == 1) {
+        // Use the single-arg builders for the common case.
+        const auto& a = emit.args[0];
+        switch (a.type) {
+            case SignalArgPod::Type::Int:
+                buildOscMessageInt(out, emit.address, a.i);
+                return;
+            case SignalArgPod::Type::Float:
+                buildOscMessageFloat(out, emit.address, a.f);
+                return;
+            case SignalArgPod::Type::String:
+                buildOscMessageString(out, emit.address, a.s);
+                return;
+        }
+        return;
+    }
+
+    // Multi-arg: build typetag string then serialize each arg.
+    writeOscString(out, emit.address);
+
+    // Typetag string: "," followed by one char per arg.
+    std::string typetags(",");
+    const std::size_t count = emit.argCount < SignalEmitPod::kMaxArgs
+                                ? emit.argCount : SignalEmitPod::kMaxArgs;
+    for (std::size_t i = 0; i < count; ++i) {
+        switch (emit.args[i].type) {
+            case SignalArgPod::Type::Int:    typetags += 'i'; break;
+            case SignalArgPod::Type::Float:  typetags += 'f'; break;
+            case SignalArgPod::Type::String: typetags += 's'; break;
+        }
+    }
+    writeOscString(out, typetags);
+
+    // Arg values in order.
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& a = emit.args[i];
+        switch (a.type) {
+            case SignalArgPod::Type::Int:    writeI32BE(out, a.i);                break;
+            case SignalArgPod::Type::Float:  writeF32BE(out, a.f);                break;
+            case SignalArgPod::Type::String: writeOscString(out, a.s);            break;
+        }
+    }
+}
+
+// Drain the host's pending signal emits and transmit each to all destinations.
+// Called at the top of each worker tick. Signal emits are polled every ~33ms
+// (the worker's natural sleep interval); the producer path does not notify the
+// cv, so up to one tick of latency is expected and accepted for Phase 1.
+void drainAndSendSignals(SenderState& s) {
+    if (!s.ctx || s.destinations.empty()) return;
+
+    const std::size_t n = s.ctx->drainSignalEmits(s.signalBatch,
+                                                   SenderState::kDrainBatch);
+    if (n == 0) return;
+
+    std::vector<std::uint8_t> msg;
+    for (std::size_t i = 0; i < n; ++i) {
+        buildOscSignalMessage(msg, s.signalBatch[i]);
+        if (!msg.empty()) {
+            for (const auto& dest : s.destinations) {
+                sendPacket(s, dest, msg);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Worker thread — 30 Hz poll loop.
 
 void workerLoop() {
@@ -613,6 +707,11 @@ void workerLoop() {
 
     while (s.running.load(std::memory_order_acquire)) {
         if (s.ctx) {
+            // Drain and send any pending SignalEmit events first. The poll
+            // runs every ~33ms tick; the host producer does not notify the cv
+            // so latency is bounded by one tick interval (accepted for v1).
+            drainAndSendSignals(s);
+
             // Hot-reload outbound mapping overrides — poll each tick,
             // rebuild only when the JSON changes (FNV-1a hash gate).
             std::string mappingsJson =

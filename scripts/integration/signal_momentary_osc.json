@@ -1,0 +1,11 @@
+{
+    "version": 1,
+    "description": "Phase 8 integration (DEFERRED -- needs physical display + osc-sender to 127.0.0.1:53111). Momentary signal layer fires once when playhead crosses startFrame=10. Run with scripts/signal_momentary_osc_check.py 53111. WaitSeconds sized to (10/30fps) + 0.5s = 0.85s margin.",
+    "commands": [
+        {"type": "CreateSignalLayer", "trackIndex": 0, "startFrame": 10, "duration": 1},
+        {"type": "SeekToFrame",       "frame": 8},
+        {"type": "Play"},
+        {"type": "WaitSeconds",       "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

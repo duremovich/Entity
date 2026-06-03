@@ -21,6 +21,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/LayerTrackUiState.hpp"
@@ -647,8 +648,51 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     emitCollapsedGroupsJson(registry, layerEntity, genJson);
 
                     layersJson.push_back(genJson);
+                } else if (const auto* sigLayer = registry.try_get<SignalLayer>(layerEntity)) {
+                    // --- kind: "signal" (v26+) ---
+                    json sigJson;
+                    sigJson["kind"] = "signal";
+
+                    const auto* lay = registry.try_get<Layer>(layerEntity);
+                    sigJson["startFrame"] = lay ? lay->startFrame : 0;
+                    sigJson["duration"]   = lay ? lay->duration   : 0;
+                    sigJson["name"]       = lay ? lay->name       : "";
+                    if (lay) {
+                        sigJson["color"] = { lay->color[0], lay->color[1],
+                                             lay->color[2], lay->color[3] };
+                    }
+
+                    sigJson["mode"]        = static_cast<int>(sigLayer->mode);
+                    sigJson["transport"]   = static_cast<int>(sigLayer->transport);
+                    sigJson["valueSource"] = static_cast<int>(sigLayer->valueSource);
+                    sigJson["address"]     = sigLayer->address;
+                    sigJson["srcMin"]      = sigLayer->srcMin;
+                    sigJson["srcMax"]      = sigLayer->srcMax;
+                    sigJson["outMin"]      = sigLayer->outMin;
+                    sigJson["outMax"]      = sigLayer->outMax;
+                    sigJson["outType"]     = static_cast<int>(sigLayer->outType);
+
+                    json argsArr = json::array();
+                    for (const auto& a : sigLayer->args) {
+                        json aj;
+                        aj["type"]         = static_cast<int>(a.type);
+                        aj["i"]            = a.i;
+                        aj["f"]            = a.f;
+                        aj["s"]            = a.s;
+                        aj["isValueBound"] = a.isValueBound;
+                        argsArr.push_back(aj);
+                    }
+                    sigJson["args"] = argsArr;
+
+                    // AnimatedProperties (Keyframe value source).
+                    {
+                        const auto* ap = registry.try_get<AnimatedProperties>(layerEntity);
+                        sigJson["animatedProperties"] = serializeAnimatedProperties(ap);
+                    }
+
+                    layersJson.push_back(sigJson);
                 }
-                // Entities with neither Clip, ObjectAnimationLayer, nor GenerativeLayer
+                // Entities with neither Clip, ObjectAnimationLayer, GenerativeLayer, nor SignalLayer
                 // are unrecognized and skipped — forward-compat guard.
             }
 
@@ -1811,6 +1855,69 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             track->layers.push_back(layerEntity);
                             std::cout << "[ProjectSerializer] Loaded generative layer ("
                                       << subKind << "): " << lay.name << std::endl;
+                            continue;
+                        }
+
+                        // --- kind: "signal" (v26+) ---
+                        if (kind == "signal") {
+                            entt::entity layerEntity = registry.create();
+
+                            auto& lay = registry.emplace<Layer>(layerEntity);
+                            lay.kind       = Layer::Kind::Signal;
+                            lay.startFrame = entryJson.value("startFrame", static_cast<FrameNumber>(0));
+                            lay.duration   = entryJson.value("duration",   static_cast<FrameNumber>(1));
+                            lay.name       = entryJson.value("name", std::string{});
+                            if (auto* tt = registry.try_get<TimelineTrack>(trackEntity))
+                                lay.trackIndex = tt->trackIndex;
+                            if (entryJson.contains("color") && entryJson["color"].is_array()
+                                && entryJson["color"].size() >= 4) {
+                                lay.color = { entryJson["color"][0].get<float>(),
+                                              entryJson["color"][1].get<float>(),
+                                              entryJson["color"][2].get<float>(),
+                                              entryJson["color"][3].get<float>() };
+                            }
+
+                            auto& sig = registry.emplace<SignalLayer>(layerEntity);
+                            sig.mode        = static_cast<SignalLayer::Mode>(
+                                entryJson.value("mode", 0));
+                            sig.transport   = static_cast<SignalLayer::Transport>(
+                                entryJson.value("transport", 0));
+                            sig.valueSource = static_cast<SignalLayer::ValueSource>(
+                                entryJson.value("valueSource", 0));
+                            sig.address     = entryJson.value("address", std::string{"/entity/signal"});
+                            sig.srcMin      = entryJson.value("srcMin", 0.0f);
+                            sig.srcMax      = entryJson.value("srcMax", 1.0f);
+                            sig.outMin      = entryJson.value("outMin", 0.0f);
+                            sig.outMax      = entryJson.value("outMax", 1.0f);
+                            sig.outType     = static_cast<SignalLayer::Arg::Type>(
+                                entryJson.value("outType", 0));
+
+                            if (entryJson.contains("args") && entryJson["args"].is_array()) {
+                                for (const auto& aj : entryJson["args"]) {
+                                    SignalLayer::Arg a;
+                                    a.type = static_cast<SignalLayer::Arg::Type>(
+                                        aj.value("type", 0));
+                                    a.i    = aj.value("i", std::int32_t{0});
+                                    a.f    = aj.value("f", 0.0f);
+                                    a.s    = aj.value("s", std::string{});
+                                    a.isValueBound = aj.value("isValueBound", false);
+                                    sig.args.push_back(a);
+                                }
+                            }
+
+                            // AnimatedProperties (Keyframe value source).
+                            if (entryJson.contains("animatedProperties")
+                                && entryJson["animatedProperties"].is_array()
+                                && !entryJson["animatedProperties"].empty()) {
+                                auto& ap = registry.emplace<AnimatedProperties>(layerEntity);
+                                deserializeAnimatedProperties(entryJson, ap);
+                            } else {
+                                registry.emplace<AnimatedProperties>(layerEntity);
+                            }
+
+                            track->layers.push_back(layerEntity);
+                            std::cout << "[ProjectSerializer] Loaded signal layer: "
+                                      << lay.name << std::endl;
                             continue;
                         }
 

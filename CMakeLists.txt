@@ -236,6 +236,7 @@ target_sources(EntityMediaCore
         src/systems/TextSystem.cpp
         src/systems/CameraControlSystem.cpp
         src/systems/AudioSystem.cpp
+        src/systems/SignalOutputSystem.cpp
 
         # Effects (issue #54)
         src/effects/EffectKindRegistry.cpp

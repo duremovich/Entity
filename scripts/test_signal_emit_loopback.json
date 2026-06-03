@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "description": "Phase 2 loopback: posts a TestSignalEmit and exits. Run with osc_smoke_listen.py 53111 in another shell. Requires oscSenderEnabled + destination 127.0.0.1:53111 in Settings.",
+    "commands": [
+        {"type": "TestSignalEmit", "address": "/entity/signal/test", "iArg": 42, "fArg": 1.5, "sArg": "hello"},
+        {"type": "WaitSeconds", "count": 0.15},
+        {"type": "Exit"}
+    ]
+}

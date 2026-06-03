@@ -16,6 +16,7 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/command/CommandDispatcher.hpp"
@@ -422,7 +423,8 @@ entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const 
             duration   = clip->duration;
         } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
                    lay && (registry.all_of<ObjectAnimationLayer>(clipEntity) ||
-                           registry.all_of<GenerativeLayer>(clipEntity))) {
+                           registry.all_of<GenerativeLayer>(clipEntity)       ||
+                           registry.all_of<SignalLayer>(clipEntity))) {
             startFrame = lay->startFrame;
             duration   = lay->duration;
         } else {
@@ -476,7 +478,8 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
         }
         if (const auto* lay = registry.try_get<Layer>(e);
             lay && (registry.all_of<ObjectAnimationLayer>(e) ||
-                    registry.all_of<GenerativeLayer>(e))) {
+                    registry.all_of<GenerativeLayer>(e)       ||
+                    registry.all_of<SignalLayer>(e))) {
             return {lay->duration, true};
         }
         return {0, false};
@@ -487,7 +490,8 @@ Timecode TimelineWidget::checkClipCollision(entt::entity clipEntity, Timecode ne
         }
         if (const auto* lay = registry.try_get<Layer>(e);
             lay && (registry.all_of<ObjectAnimationLayer>(e) ||
-                    registry.all_of<GenerativeLayer>(e))) {
+                    registry.all_of<GenerativeLayer>(e)       ||
+                    registry.all_of<SignalLayer>(e))) {
             return {lay->startFrame, lay->duration, true};
         }
         return {0, 0, false};
@@ -655,7 +659,8 @@ bool TimelineWidget::wouldOverlapAnyClip(int trackIndex, Timecode startTime,
         }
         if (const auto* lay = registry.try_get<Layer>(e);
             lay && (registry.all_of<ObjectAnimationLayer>(e) ||
-                    registry.all_of<GenerativeLayer>(e))) {
+                    registry.all_of<GenerativeLayer>(e)       ||
+                    registry.all_of<SignalLayer>(e))) {
             return {lay->startFrame, lay->duration, true};
         }
         return {0, 0, false};

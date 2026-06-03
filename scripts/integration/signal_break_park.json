@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "Phase 8 integration (DEFERRED -- needs physical display + osc-sender to 127.0.0.1:53111). Momentary signal cue at a section break: play to the break, assert NO cue fires while parked; SectionGo, assert cue fires exactly once after resume. WaitSeconds sized to (startFrame/fps) + 0.5s margin. Run with scripts/signal_break_park_check.py 53111 in another shell.",
+    "commands": [
+        {"type": "CreateSignalLayer", "trackIndex": 0, "startFrame": 30, "duration": 1},
+        {"type": "AddSectionBreak",   "breakFrame": 30, "color": 0, "fadeSeconds": 0.0},
+        {"type": "AssertSectionCount","count": 1},
+        {"type": "SeekToFrame",       "frame": 0},
+        {"type": "Play"},
+        {"type": "WaitSeconds",       "count": 1.5},
+        {"type": "AssertPlaybackState","state": "Paused"},
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds",       "count": 1.0},
+        {"type": "Exit"}
+    ]
+}

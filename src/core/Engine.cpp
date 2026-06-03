@@ -1,4 +1,5 @@
 #include "entity/core/Engine.hpp"
+#include "entity/core/EnginePluginContext.hpp"
 #include "entity/profile/Tracy.hpp"
 #include "entity/bus/InMemoryMessageTransport.hpp"
 #include "entity/bus/Message.hpp"
@@ -58,6 +59,7 @@
 #include "entity/components/FrameBuffer.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/EffectChainRenderTargets.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
@@ -512,6 +514,12 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             auto screenView = m_registry.view<Screen>();
             if (!screenView.empty()) target = *screenView.begin();
             entt::entity created = this->createTextLayer(target, trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
+        timelineWidget->setSignalLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            entt::entity created = this->createSignalLayer(trackIndex, startFrame, duration);
             if (created != entt::null && m_timeline) {
                 m_timeline->setSelectedClip(created);
             }
@@ -1272,6 +1280,13 @@ void Engine::showThreadMain() {
     Timecode showSectionLastSeen     = 0;
     bool     showSectionHaveLastSeen = false;
 
+    // Signal Output System — show-thread-local prev-frame tracking.
+    // Initialized to curFrame on the first tick so there is never a spurious
+    // crossing on startup. Owned here (not in the member) because the member
+    // tracks armed/rate-limit state; prevFrame is purely a tick-to-tick delta.
+    FrameNumber signalPrevFrame     = 0;
+    bool        signalPrevFrameInit = false;
+
     while (!m_showStopRequested.load(std::memory_order_acquire)) {
         ZoneScopedN("Show iter");
         const auto showIterStart = Clock::now();
@@ -1372,6 +1387,51 @@ void Engine::showThreadMain() {
                 showSectionLastSeen     = cur;
                 showSectionHaveLastSeen = true;
             }
+        }
+
+        // Signal Output System — evaluate active signal layers from the
+        // cached SceneSnapshot and post any resulting emits. Runs
+        // unconditionally on the show thread (ADR-0014 compliant: no
+        // registry reads/writes) so signals fire through editor stalls.
+        if (m_timeline) {
+            ZoneScopedN("SignalOutputSystem");
+            const FrameNumber sigCur     = m_timeline->getCurrentFrame();
+            const PlaybackState sigSt    = m_timeline->getPlaybackState();
+            const bool sigPlaying        = (sigSt == PlaybackState::Playing);
+            const bool sigAtBreak        = m_timeline->sectionAtBreak();
+
+            if (!signalPrevFrameInit) {
+                // First tick: init prevFrame = curFrame so no spurious crossing.
+                signalPrevFrame     = sigCur;
+                signalPrevFrameInit = true;
+            }
+
+            // Reset edge state when a discontinuity (seek/load/stop) was
+            // flagged by the editor thread. Happens show-thread-side so the
+            // maps are only ever mutated from one thread.
+            if (m_signalResetPending.exchange(false, std::memory_order_acq_rel)) {
+                m_signalOutputSystem.reset();
+                signalPrevFrame     = sigCur;
+                signalPrevFrameInit = true;
+            }
+
+            // Early-out when no signal layers are baked this tick.
+            if (!m_cachedSceneSnapshot.signalLayers.empty()) {
+                m_signalEmitsBuffer.clear();
+                m_signalOutputSystem.evaluate(
+                    m_cachedSceneSnapshot.signalLayers,
+                    signalPrevFrame,
+                    sigCur,
+                    sigPlaying,
+                    sigAtBreak,
+                    m_signalEmitsBuffer);
+
+                for (const auto& e : m_signalEmitsBuffer) {
+                    postSignalEmit(e);
+                }
+            }
+
+            signalPrevFrame = sigCur;
         }
 
         // DecodeSystem still ticks on the editor thread (Engine::update).
@@ -3795,6 +3855,43 @@ entt::entity Engine::createObjectAnimationLayer(entt::entity targetScreen,
     return layerEntity;
 }
 
+entt::entity Engine::createSignalLayer(int trackIndex,
+                                       FrameNumber startFrame,
+                                       FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createSignalLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::Signal;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    lay.color      = {0.90f, 0.60f, 0.20f, 1.0f}; // amber — distinct from OA purple
+
+    m_registry.emplace<SignalLayer>(layerEntity);
+    m_registry.emplace<AnimatedProperties>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created Signal layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
+}
+
 entt::entity Engine::createEmptyClipLayer(int trackIndex,
                                           FrameNumber startFrame,
                                           FrameNumber duration) {
@@ -4187,6 +4284,9 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
 bool Engine::loadProject(const std::filesystem::path& filepath) {
     if (!m_projectManager) return false;
 
+    // Reset signal arm/rate-limit state on load so cues don't mis-fire.
+    requestSignalReset();
+
     // Pre-load: tear down any currently-active physical output windows. The
     // load will clear the OutputDisplay entities that hold the slot IDs; if
     // we don't release them first, those renderer slots leak for the rest
@@ -4452,6 +4552,9 @@ void Engine::closeProject() {
     // Idempotent: each step below tolerates an already-clear state, so
     // calling closeProject() with nothing open just lands the user in
     // the launcher.
+
+    // Reset signal arm/rate-limit state on close.
+    requestSignalReset();
 
     // 1. Disable physical output windows. Same prelude as loadProject —
     //    OutputDisplay components hold renderer slot IDs; clearing the
@@ -5319,6 +5422,36 @@ void Engine::drainRendererToDirector() {
             // informational or deferred — no action needed in this path.
         }, *msg);
     });
+}
+
+void Engine::postSignalEmit(const entity::plugin::SignalEmitPod& emit) noexcept {
+    if (m_pluginCtx) m_pluginCtx->postSignalEmit(emit);
+}
+
+void Engine::postSignalEmit(const bus::SignalEmit& emit) noexcept {
+    // Convert bus::SignalEmit -> SignalEmitPod so the show thread can call this
+    // directly without touching plugin-api types explicitly.
+    entity::plugin::SignalEmitPod pod;
+    const std::size_t addrLen =
+        std::min(emit.address.size(), entity::plugin::SignalEmitPod::kMaxAddressLen);
+    std::memcpy(pod.address, emit.address.c_str(), addrLen);
+    pod.address[addrLen] = '\0';
+    const std::size_t argCount =
+        std::min(emit.args.size(), entity::plugin::SignalEmitPod::kMaxArgs);
+    for (std::size_t i = 0; i < argCount; ++i) {
+        const auto& src = emit.args[i];
+        auto& dst = pod.args[i];
+        dst.type = static_cast<entity::plugin::SignalArgPod::Type>(
+            static_cast<int>(src.type));
+        dst.i = src.i;
+        dst.f = src.f;
+        const std::size_t sLen =
+            std::min(src.s.size(), entity::plugin::SignalArgPod::kMaxStringLen);
+        std::memcpy(dst.s, src.s.c_str(), sLen);
+        dst.s[sLen] = '\0';
+    }
+    pod.argCount = argCount;
+    postSignalEmit(pod);
 }
 
 void Engine::onModelDestroyed(entt::registry& reg, entt::entity e) {

@@ -53,6 +53,12 @@ add_executable(EntityMediaTests
     unit/AudioMixerTest.cpp
     unit/RateSourceSelectorTest.cpp
     unit/SeekSyncControllerTest.cpp
+    unit/SignalEmitSerializationTest.cpp
+    unit/SignalLayerTest.cpp
+    unit/SignalSnapshotBakeTest.cpp
+    unit/SignalOutputSystemTest.cpp
+    unit/SignalCommandsTest.cpp
+    unit/SignalPersistenceTest.cpp
     test_Decoder.cpp
 )
 

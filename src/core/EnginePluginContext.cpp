@@ -139,6 +139,45 @@ std::string EnginePluginContext::getStringSetting(std::string_view key,
     return std::string(defaultValue);
 }
 
+std::size_t EnginePluginContext::drainSignalEmits(
+        entity::plugin::SignalEmitPod* out, std::size_t max) noexcept {
+    if (!out || max == 0) return 0;
+    std::lock_guard<std::mutex> lk(m_signalMutex);
+    std::size_t n = 0;
+    while (n < max && !m_signalQueue.empty()) {
+        out[n++] = m_signalQueue.front();
+        m_signalQueue.pop();
+    }
+    // Reset the saturation flag once the queue is below the cap so the
+    // next saturation episode logs exactly once again.
+    if (m_signalQueue.size() < kMaxQueueDepth) {
+        m_signalQueueSaturated = false;
+    }
+    return n;
+}
+
+void EnginePluginContext::postSignalEmit(
+        const entity::plugin::SignalEmitPod& emit) noexcept {
+    bool shouldLog = false;
+    {
+        std::lock_guard<std::mutex> lk(m_signalMutex);
+        if (m_signalQueue.size() >= kMaxQueueDepth) {
+            // Log at most once per saturation episode; decision made under lock,
+            // actual I/O happens outside (so the drain path never blocks on cout).
+            if (!m_signalQueueSaturated) {
+                m_signalQueueSaturated = true;
+                shouldLog = true;
+            }
+            return;
+        }
+        m_signalQueue.push(emit);
+    }
+    if (shouldLog) {
+        log(entity::plugin::LogLevel::Warn,
+            "EnginePluginContext: signal emit queue full (256), dropping");
+    }
+}
+
 entity::plugin::TransportSnapshot
 EnginePluginContext::getTransportSnapshot() const noexcept {
     using entity::plugin::TransportSnapshot;

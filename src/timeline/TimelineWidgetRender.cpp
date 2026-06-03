@@ -16,6 +16,7 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
@@ -708,6 +709,7 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     case Layer::Kind::Generative:
                         ghostLabel = (subKind == 1) ? "Text Layer" : "Muncher Layer";
                         break;
+                    case Layer::Kind::Signal:          ghostLabel = "Signal Layer"; break;
                     default: ghostLabel = "Layer"; break;
                 }
             }
@@ -768,6 +770,10 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                             m_generativeLayerDropCallback(trackIndex, startFrame, defaultDuration);
                         }
                     }
+                } else if (static_cast<Layer::Kind>(kind) == Layer::Kind::Signal) {
+                    if (m_signalLayerDropCallback) {
+                        m_signalLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                    }
                 }
             }
             m_ghost.active = false;
@@ -817,9 +823,108 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     // component (ObjectAnimationLayer or GenerativeLayer). Renders a
     // colored rectangle using Layer::color + Layer::name. Same hit-test
     // and selection as Clip rendering.
-    const auto* layer = registry.try_get<Layer>(clipEntity);
-    const auto* oal   = registry.try_get<ObjectAnimationLayer>(clipEntity);
-    const auto* gen   = registry.try_get<GenerativeLayer>(clipEntity);
+    const auto* layer  = registry.try_get<Layer>(clipEntity);
+    const auto* oal    = registry.try_get<ObjectAnimationLayer>(clipEntity);
+    const auto* gen    = registry.try_get<GenerativeLayer>(clipEntity);
+    const auto* sigLay = registry.try_get<SignalLayer>(clipEntity);
+
+    // Signal Output Layer: momentary renders as a diamond marker at startFrame;
+    // continuous renders as a colored span block (same as OA/Generative).
+    if (!clip && layer && sigLay) {
+        const double fps = m_timeline->getFrameRate();
+        const float trackY = baseWindowPos.y;
+        const float startX = baseWindowPos.x
+            + static_cast<float>(layer->startFrame) / static_cast<float>(fps)
+            * m_pixelsPerSecond;
+        const bool isMomentary = (sigLay->mode == SignalLayer::Mode::Momentary);
+        const bool isSelected = (clipEntity == m_selectedClip)
+                             || (clipEntity == m_timeline->getSelectedClip());
+
+        const auto& c = layer->color;
+        const ImU32 fillCol = isSelected
+            ? IM_COL32(static_cast<int>(std::min(c[0] * 1.35f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[1] * 1.35f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[2] * 1.35f, 1.0f) * 255), 255)
+            : IM_COL32(static_cast<int>(c[0] * 255), static_cast<int>(c[1] * 255),
+                       static_cast<int>(c[2] * 255), 255);
+        const ImU32 borderCol = isSelected
+            ? IM_COL32(static_cast<int>(std::min(c[0] * 1.6f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[1] * 1.6f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[2] * 1.6f, 1.0f) * 255), 255)
+            : IM_COL32(static_cast<int>(std::min(c[0] * 1.25f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[1] * 1.25f, 1.0f) * 255),
+                       static_cast<int>(std::min(c[2] * 1.25f, 1.0f) * 255), 255);
+
+        if (isMomentary) {
+            // Diamond marker centered at startFrame. Half-size based on track height.
+            const float cx = startX;
+            const float cy = trackY + TRACK_HEIGHT * 0.5f;
+            const float r  = TRACK_HEIGHT * 0.3f;
+            drawList->AddQuadFilled(
+                ImVec2(cx,     cy - r),   // top
+                ImVec2(cx + r, cy),       // right
+                ImVec2(cx,     cy + r),   // bottom
+                ImVec2(cx - r, cy),       // left
+                fillCol);
+            drawList->AddQuad(
+                ImVec2(cx,     cy - r),
+                ImVec2(cx + r, cy),
+                ImVec2(cx,     cy + r),
+                ImVec2(cx - r, cy),
+                borderCol, 1.5f);
+            // Hit area: invisible button centered on the diamond.
+            const ImVec2 btnMin(cx - r, trackY + CLIP_PADDING);
+            const ImVec2 btnMax(cx + r, trackY + TRACK_HEIGHT - CLIP_PADDING);
+            ImGui::SetCursorScreenPos(btnMin);
+            char hitId[32];
+            std::snprintf(hitId, sizeof(hitId), "##signal%u",
+                          static_cast<uint32_t>(clipEntity));
+            ImGui::SetNextItemAllowOverlap();
+            if (ImGui::InvisibleButton(hitId, ImVec2(btnMax.x - btnMin.x,
+                                                     btnMax.y - btnMin.y))) {
+                m_selectedClip = clipEntity;
+                m_timeline->setSelectedClip(clipEntity);
+            }
+        } else {
+            // Continuous: span block identical to OA/Generative path.
+            const float durationX = static_cast<float>(layer->duration)
+                / static_cast<float>(fps) * m_pixelsPerSecond;
+            const ImVec2 clipMin(startX, trackY + CLIP_PADDING);
+            const ImVec2 clipMax(startX + durationX, trackY + TRACK_HEIGHT - CLIP_PADDING);
+            drawList->AddRectFilled(clipMin, clipMax, fillCol, 3.0f);
+            drawList->AddRect(clipMin, clipMax, borderCol, 3.0f, 0, 2.0f);
+            // Label
+            const std::string& lbl = layer->name.empty() ? std::string("Signal") : layer->name;
+            constexpr float kPad = 5.0f;
+            const float availW = (clipMax.x - clipMin.x) - kPad * 2.0f;
+            if (availW > 0.0f) {
+                std::string disp = lbl;
+                ImVec2 sz = ImGui::CalcTextSize(lbl.c_str());
+                if (sz.x > availW) {
+                    while (!disp.empty() &&
+                           ImGui::CalcTextSize((disp + "...").c_str()).x > availW)
+                        disp.pop_back();
+                    disp = disp.empty() ? std::string() : disp + "...";
+                }
+                if (!disp.empty())
+                    drawList->AddText(ImVec2(clipMin.x + kPad, clipMin.y + 4.0f),
+                                      IM_COL32(255, 255, 255, 255), disp.c_str());
+            }
+            // Hit area
+            ImGui::SetCursorScreenPos(clipMin);
+            char hitId[32];
+            std::snprintf(hitId, sizeof(hitId), "##signal%u",
+                          static_cast<uint32_t>(clipEntity));
+            ImGui::SetNextItemAllowOverlap();
+            if (ImGui::InvisibleButton(hitId, ImVec2(durationX,
+                                                     TRACK_HEIGHT - CLIP_PADDING * 2))) {
+                m_selectedClip = clipEntity;
+                m_timeline->setSelectedClip(clipEntity);
+            }
+        }
+        return TRACK_HEIGHT;
+    }
+
     if (!clip && layer && (oal || gen)) {
         float trackY = baseWindowPos.y;
         double timelineFrameRate = m_timeline->getFrameRate();

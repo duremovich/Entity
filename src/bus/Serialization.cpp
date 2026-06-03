@@ -979,6 +979,12 @@ ObjectAnimationLayerSnapshot decodeObjectAnimationLayerSnapshot(const json& j) {
     return oa;
 }
 
+// Forward declarations for SignalLayerSnapshot codec — defined after
+// SignalEmit at the bottom of this anon namespace (requires signalArgType*
+// helpers), called from encode/decode SceneSnapshot above.
+ojson encode(const SignalLayerSnapshot& s);
+SignalLayerSnapshot decodeSignalLayerSnapshot(const json& j);
+
 ojson encode(const SceneSnapshot& s) {
     ojson j = ojson::object();
     auto screens = ojson::array();
@@ -1008,6 +1014,9 @@ ojson encode(const SceneSnapshot& s) {
     auto layerFx = ojson::array();
     for (const auto& le : s.layerEffects) layerFx.push_back(encode(le));
     j["layerEffects"] = std::move(layerFx);
+    auto signalLayersArr = ojson::array();
+    for (const auto& sl : s.signalLayers) signalLayersArr.push_back(encode(sl));
+    j["signalLayers"] = std::move(signalLayersArr);
     return j;
 }
 
@@ -1035,6 +1044,9 @@ SceneSnapshot decodeSceneSnapshot(const json& j) {
     if (j.contains("layerEffects"))
         for (const auto& le : j.at("layerEffects"))
             s.layerEffects.push_back(decodeLayerEffectsSnapshot(le));
+    if (j.contains("signalLayers"))
+        for (const auto& sl : j.at("signalLayers"))
+            s.signalLayers.push_back(decodeSignalLayerSnapshot(sl));
     return s;
 }
 
@@ -1301,6 +1313,126 @@ SectionBreakDetected decodeSectionBreakDetected(const json& j) {
     return m;
 }
 
+// ---------------------------------------------------------------------------
+// SignalArg / SignalEmit — transport-neutral signal event (Phase 1).
+// ---------------------------------------------------------------------------
+
+const char* signalArgTypeName(SignalArg::Type t) {
+    switch (t) {
+        case SignalArg::Type::Int:    return "Int";
+        case SignalArg::Type::Float:  return "Float";
+        case SignalArg::Type::String: return "String";
+    }
+    return "Int";
+}
+
+SignalArg::Type signalArgTypeFromString(std::string_view s) {
+    if (s == "Int")    return SignalArg::Type::Int;
+    if (s == "Float")  return SignalArg::Type::Float;
+    if (s == "String") return SignalArg::Type::String;
+    throw std::invalid_argument("unknown SignalArg::Type: " + std::string(s));
+}
+
+const char* signalTransportName(SignalEmit::Transport t) {
+    switch (t) {
+        case SignalEmit::Transport::OSC: return "OSC";
+    }
+    return "OSC";
+}
+
+SignalEmit::Transport signalTransportFromString(std::string_view s) {
+    if (s == "OSC") return SignalEmit::Transport::OSC;
+    throw std::invalid_argument("unknown SignalEmit::Transport: " + std::string(s));
+}
+
+ojson encode(const SignalArg& a) {
+    ojson j = ojson::object();
+    j["type"] = signalArgTypeName(a.type);
+    j["i"]    = a.i;
+    j["f"]    = a.f;
+    j["s"]    = a.s;
+    return j;
+}
+
+SignalArg decodeSignalArg(const json& j) {
+    SignalArg a;
+    a.type = signalArgTypeFromString(j.at("type").get<std::string>());
+    a.i    = j.at("i").get<std::int32_t>();
+    a.f    = j.at("f").get<float>();
+    a.s    = j.at("s").get<std::string>();
+    return a;
+}
+
+ojson encode(const SignalEmit& m) {
+    ojson j = ojson::object();
+    j["transport"] = signalTransportName(m.transport);
+    j["address"]   = m.address;
+    auto argsArr = ojson::array();
+    for (const auto& a : m.args) argsArr.push_back(encode(a));
+    j["args"] = std::move(argsArr);
+    return j;
+}
+
+SignalEmit decodeSignalEmit(const json& j) {
+    SignalEmit m;
+    m.transport = signalTransportFromString(j.at("transport").get<std::string>());
+    m.address   = j.at("address").get<std::string>();
+    for (const auto& a : j.at("args")) m.args.push_back(decodeSignalArg(a));
+    return m;
+}
+
+// ---------------------------------------------------------------------------
+// SignalLayerSnapshot — Phase 4 bake (editor → show for SignalOutputSystem).
+// Break-tolerant: every field uses j.value() with a safe default so older
+// payloads (pre-Phase-4 SceneSnapshot) silently produce empty signalLayers.
+// ---------------------------------------------------------------------------
+
+ojson encode(const SignalLayerSnapshot& s) {
+    ojson j = ojson::object();
+    j["entity"]             = s.entity;
+    j["startFrame"]         = s.startFrame;
+    j["duration"]           = s.duration;
+    j["mode"]               = s.mode;
+    j["transport"]          = s.transport;
+    j["valueSource"]        = s.valueSource;
+    j["address"]            = s.address;
+    auto argsArr = ojson::array();
+    for (const auto& a : s.args) argsArr.push_back(encode(a));
+    j["args"]               = std::move(argsArr);
+    j["valueBoundArgIndex"] = s.valueBoundArgIndex;
+    j["srcMin"]             = s.srcMin;
+    j["srcMax"]             = s.srcMax;
+    j["outMin"]             = s.outMin;
+    j["outMax"]             = s.outMax;
+    j["outType"]            = s.outType;
+    auto tracksArr = ojson::array();
+    for (const auto& t : s.tracks) tracksArr.push_back(encode(t));
+    j["tracks"]             = std::move(tracksArr);
+    return j;
+}
+
+SignalLayerSnapshot decodeSignalLayerSnapshot(const json& j) {
+    SignalLayerSnapshot s;
+    s.entity             = j.value("entity",             std::uint64_t{0});
+    s.startFrame         = j.value("startFrame",         FrameNumber{0});
+    s.duration           = j.value("duration",           FrameNumber{0});
+    s.mode               = j.value("mode",               0);
+    s.transport          = j.value("transport",          0);
+    s.valueSource        = j.value("valueSource",        0);
+    s.address            = j.value("address",            std::string{});
+    if (j.contains("args"))
+        for (const auto& a : j.at("args")) s.args.push_back(decodeSignalArg(a));
+    s.valueBoundArgIndex = j.value("valueBoundArgIndex", std::int32_t{-1});
+    s.srcMin             = j.value("srcMin",             0.0f);
+    s.srcMax             = j.value("srcMax",             1.0f);
+    s.outMin             = j.value("outMin",             0.0f);
+    s.outMax             = j.value("outMax",             1.0f);
+    s.outType            = j.value("outType",            0);
+    if (j.contains("tracks"))
+        for (const auto& t : j.at("tracks")) s.tracks.push_back(decodeBakedTrack(t));
+    return s;
+}
+
 } // namespace
 
 const char* messageTypeName(const Message& msg) noexcept {
@@ -1323,6 +1455,7 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, CreateOutputWindowRequest>)   return "CreateOutputWindowRequest";
         else if constexpr (std::is_same_v<T, OutputWindowReady>)           return "OutputWindowReady";
         else if constexpr (std::is_same_v<T, SectionBreakDetected>)        return "SectionBreakDetected";
+        else if constexpr (std::is_same_v<T, SignalEmit>)                  return "SignalEmit";
         else return "Unknown";
     }, msg);
 }
@@ -1365,6 +1498,7 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
         if (type == "SectionBreakDetected")          return Message{decodeSectionBreakDetected(data)};
+        if (type == "SignalEmit")                    return Message{decodeSignalEmit(data)};
     } catch (const std::exception&) {
         return std::nullopt;
     }

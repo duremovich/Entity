@@ -29,7 +29,7 @@ namespace entity::plugin {
 
 // Bumped on any incompatible change to plugin-api/. A plugin whose manifest
 // declares a different requiredApiVersion is refused at load time.
-constexpr int PLUGIN_API_VERSION = 0;
+constexpr int PLUGIN_API_VERSION = 1;
 
 class IPluginContext;
 

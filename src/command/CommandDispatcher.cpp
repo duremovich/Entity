@@ -310,6 +310,19 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertKeyframeCount", AssertKeyframeCountCommand::fromJson);
     registerFactory("AssertTextLayerState", AssertTextLayerStateCommand::fromJson);
     registerFactory("SetTextLayerProperties", SetTextLayerPropertiesCommand::fromJson);
+
+    // Signal Output Layer commands (Phase 3 + Phase 8).
+    registerFactory("CreateSignalLayer",      CreateSignalLayerCommand::fromJson);
+    registerFactory("SetSignalMode",          SetSignalModeCommand::fromJson);
+    registerFactory("SetSignalAddress",       SetSignalAddressCommand::fromJson);
+    registerFactory("SetSignalArgs",          SetSignalArgsCommand::fromJson);
+    registerFactory("SetSignalValueSource",   SetSignalValueSourceCommand::fromJson);
+    registerFactory("SetSignalMapping",       SetSignalMappingCommand::fromJson);
+
+    // Signal output diagnostic (Phase 2 transport prover).
+    // Posts a hard-coded SignalEmit through Engine::postSignalEmit so the
+    // osc-sender loopback can be exercised from a headless script.
+    registerFactory("TestSignalEmit", TestSignalEmitCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {

@@ -4,6 +4,8 @@
 
 #include "Plugin.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -41,6 +43,34 @@ enum class LogLevel : int {
     Info  = 1,
     Warn  = 2,
     Error = 3,
+};
+
+// POD mirror of bus::SignalArg — primitives only so this Apache-2.0 header
+// never needs to include the GPL bus/Message.hpp. The host converts
+// bus::SignalEmit -> SignalEmitPod before handing it to plugins.
+struct SignalArgPod {
+    enum class Type : int { Int = 0, Float = 1, String = 2 };
+
+    Type    type{Type::Int};
+    int32_t i{0};
+    float   f{0.0f};
+    // Inline storage for the string value. Fixed-size avoids heap allocation
+    // in the hot path; 128 bytes covers typical OSC string args.
+    static constexpr std::size_t kMaxStringLen = 127;
+    char    s[kMaxStringLen + 1]{};
+};
+
+// POD mirror of bus::SignalEmit. `address` is the OSC address pattern.
+// `argCount` is the number of valid entries in `args`.
+struct SignalEmitPod {
+    // Address pattern, e.g. "/entity/signal/foo". NUL-terminated.
+    static constexpr std::size_t kMaxAddressLen = 255;
+    char        address[kMaxAddressLen + 1]{};
+
+    // Argument list. Up to 8 typed args per signal (OSC practical limit).
+    static constexpr std::size_t kMaxArgs = 8;
+    SignalArgPod args[kMaxArgs]{};
+    std::size_t  argCount{0};
 };
 
 // Handed to a plugin's register function at startup. Implemented by the
@@ -147,6 +177,17 @@ public:
     //
     // Same ABI rule: bottom of vtable, no PLUGIN_API_VERSION bump.
     virtual TransportSnapshot getTransportSnapshot() const noexcept = 0;
+
+    // Drain pending SignalEmit events into `out` (capacity `max`). Returns
+    // the number of entries written (always <= max). Thread-safe: the
+    // implementation guards its queue with a mutex so the osc-sender worker
+    // thread may call this without racing the show thread's enqueue.
+    //
+    // ABI: PLUGIN_API_VERSION 1. Bottom-of-vtable append per the ABI rule
+    // above — existing plugins compiled against version 0 keep working
+    // because their vtables stop at getTransportSnapshot().
+    virtual std::size_t drainSignalEmits(SignalEmitPod* out,
+                                         std::size_t    max) noexcept = 0;
 };
 
 } // namespace entity::plugin

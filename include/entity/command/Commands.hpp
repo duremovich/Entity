@@ -2171,6 +2171,43 @@ private:
 };
 
 // ============================================================================
+// Signal Output Layer commands (Phase 3)
+// ============================================================================
+
+/**
+ * CreateSignalLayerCommand — script / UI command for creating a Signal Output
+ * layer on the timeline.
+ *
+ * Archetype: Layer (Kind::Signal) + SignalLayer + AnimatedProperties.
+ * NO MediaLayer, NO Transform — not a content layer. Mirrors
+ * CreateObjectAnimationLayerCommand.
+ *
+ * Params:
+ *   trackIndex — 0-based index into timeline tracks
+ *   startFrame — first frame of the layer on the timeline
+ *   duration   — length in timeline frames
+ */
+class CreateSignalLayerCommand : public Command {
+public:
+    CreateSignalLayerCommand(int trackIndex, FrameNumber startFrame,
+                             FrameNumber duration)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreateSignalLayer"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int          m_trackIndex;
+    FrameNumber  m_startFrame;
+    FrameNumber  m_duration;
+    entt::entity m_createdEntity{entt::null};
+};
+
+// ============================================================================
 // Input Bus commands
 // ============================================================================
 
@@ -3240,6 +3277,194 @@ private:
     int     m_clipIndex;
     int64_t m_expected;
     int64_t m_tolerance;
+};
+
+// ============================================================================
+// Signal Output Layer authoring commands (Phase 8)
+// ============================================================================
+
+/**
+ * SetSignalModeCommand -- set SignalLayer::mode on a signal layer entity.
+ *
+ * JSON format:
+ * { "type": "SetSignalMode", "layerEntity": 12345, "mode": "Momentary" }
+ * mode: "Momentary" | "Continuous"
+ */
+class SetSignalModeCommand : public Command {
+public:
+    SetSignalModeCommand(entt::entity layerEntity, int mode)
+        : m_layerEntity(layerEntity), m_mode(mode) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSignalMode"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    int          m_mode{0}; // SignalLayer::Mode as int
+};
+
+/**
+ * SetSignalAddressCommand -- set SignalLayer::address on a signal layer entity.
+ *
+ * JSON format:
+ * { "type": "SetSignalAddress", "layerEntity": 12345, "address": "/foo/bar" }
+ */
+class SetSignalAddressCommand : public Command {
+public:
+    SetSignalAddressCommand(entt::entity layerEntity, std::string address)
+        : m_layerEntity(layerEntity), m_address(std::move(address)) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSignalAddress"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::string  m_address;
+};
+
+/**
+ * SetSignalArgsCommand -- replace the full arg list on a signal layer entity.
+ *
+ * JSON format:
+ * { "type": "SetSignalArgs", "layerEntity": 12345,
+ *   "args": "[{\"type\":\"int\",\"i\":12},{\"type\":\"float\",\"f\":1.0,\"isValueBound\":true}]" }
+ *
+ * Each arg object: { "type": "int"|"float"|"string", "i": N, "f": F, "s": "...",
+ *                    "isValueBound": bool }
+ * All fields except "type" are optional (default 0/0.0/""/false).
+ * Malformed JSON fails the command cleanly (returns false, no crash).
+ */
+class SetSignalArgsCommand : public Command {
+public:
+    SetSignalArgsCommand(entt::entity layerEntity, std::string argsJson)
+        : m_layerEntity(layerEntity), m_argsJson(std::move(argsJson)) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSignalArgs"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::string  m_argsJson;
+};
+
+/**
+ * SetSignalValueSourceCommand -- set SignalLayer::valueSource (Continuous only).
+ *
+ * JSON format:
+ * { "type": "SetSignalValueSource", "layerEntity": 12345, "valueSource": "Progress" }
+ * valueSource: "Progress" | "Keyframe"
+ */
+class SetSignalValueSourceCommand : public Command {
+public:
+    SetSignalValueSourceCommand(entt::entity layerEntity, int valueSource)
+        : m_layerEntity(layerEntity), m_valueSource(valueSource) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSignalValueSource"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    int          m_valueSource{0}; // SignalLayer::ValueSource as int
+};
+
+/**
+ * SetSignalMappingCommand -- set the range-mapping scalars + outType on a signal layer.
+ *
+ * JSON format:
+ * { "type": "SetSignalMapping", "layerEntity": 12345,
+ *   "srcMin": 0.0, "srcMax": 1.0, "outMin": 0.0, "outMax": 255.0,
+ *   "outType": "Int" }
+ * outType: "Int" | "Float" | "String"
+ */
+class SetSignalMappingCommand : public Command {
+public:
+    SetSignalMappingCommand(entt::entity layerEntity,
+                             float srcMin, float srcMax,
+                             float outMin, float outMax,
+                             int   outType)
+        : m_layerEntity(layerEntity)
+        , m_srcMin(srcMin), m_srcMax(srcMax)
+        , m_outMin(outMin), m_outMax(outMax)
+        , m_outType(outType) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSignalMapping"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    float m_srcMin{0.0f}, m_srcMax{1.0f};
+    float m_outMin{0.0f}, m_outMax{1.0f};
+    int   m_outType{0}; // SignalLayer::Arg::Type as int
+};
+
+// ============================================================================
+// Signal output diagnostic commands (Phase 2 transport prover)
+// ============================================================================
+
+/**
+ * TestSignalEmitCommand -- post a hard-coded SignalEmit through the
+ * Engine::postSignalEmit() path so the osc-sender loopback (Phase 2
+ * verification) can be exercised from a headless script.
+ *
+ * JSON format:
+ * {
+ *     "type":    "TestSignalEmit",
+ *     "address": "/entity/signal/test",    // OSC address pattern; default above
+ *     "iArg":    42,                       // optional int arg (omit to skip)
+ *     "fArg":    1.5,                      // optional float arg (omit to skip)
+ *     "sArg":    "hello"                   // optional string arg (omit to skip)
+ * }
+ *
+ * The command is diagnostic / integration-test only. It is a permanent
+ * registration so the loopback check can be scripted in CI without needing
+ * the full SignalLayer authoring stack. See scripts/CLAUDE.md for usage.
+ */
+class TestSignalEmitCommand : public Command {
+public:
+    TestSignalEmitCommand(std::string address,
+                          bool hasI, int32_t iArg,
+                          bool hasF, float   fArg,
+                          bool hasS, std::string sArg)
+        : m_address(std::move(address))
+        , m_hasI(hasI), m_i(iArg)
+        , m_hasF(hasF), m_f(fArg)
+        , m_hasS(hasS), m_s(std::move(sArg)) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "TestSignalEmit"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_address;
+    bool        m_hasI{false};
+    int32_t     m_i{0};
+    bool        m_hasF{false};
+    float       m_f{0.0f};
+    bool        m_hasS{false};
+    std::string m_s;
 };
 
 } // namespace entity

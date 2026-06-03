@@ -43,6 +43,8 @@ enum class AnimatableProperty {
     RotationY,
     ScaleZ,
     RotationZ,     // Z-axis (roll) for OA layers. No-op on Clip's 2D branch.
+    // Signal Output Layer. Appended last — wire-stable index (do not reorder).
+    SignalValue,   // Scalar value keyframed on a SignalLayer arg track.
 };
 
 /**
@@ -60,7 +62,8 @@ inline const char* getPropertyName(AnimatableProperty prop) {
         case AnimatableProperty::RotationX: return "Rotation X";
         case AnimatableProperty::RotationY: return "Rotation Y";
         case AnimatableProperty::ScaleZ:    return "Scale Z";
-        case AnimatableProperty::RotationZ: return "Rotation Z";
+        case AnimatableProperty::RotationZ:    return "Rotation Z";
+        case AnimatableProperty::SignalValue:  return "Signal Value";
         default: return "Unknown";
     }
 }

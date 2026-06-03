@@ -16,6 +16,7 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/SignalLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/ContentRouting.hpp"
 #include "entity/components/ContentRoutingAsset.hpp"
@@ -77,7 +78,8 @@ TimelinePlacement readPlacement(entt::registry& registry, entt::entity e) {
     }
     if (const auto* lay = registry.try_get<Layer>(e);
         lay && (registry.all_of<ObjectAnimationLayer>(e) ||
-                registry.all_of<GenerativeLayer>(e))) {
+                registry.all_of<GenerativeLayer>(e)       ||
+                registry.all_of<SignalLayer>(e))) {
         return {lay->startFrame, lay->duration, true};
     }
     return {};
@@ -94,7 +96,8 @@ void writeStartFrame(entt::registry& registry, entt::entity e, FrameNumber f) {
     }
     if (auto* lay = registry.try_get<Layer>(e);
         lay && (registry.all_of<ObjectAnimationLayer>(e) ||
-                registry.all_of<GenerativeLayer>(e))) {
+                registry.all_of<GenerativeLayer>(e)       ||
+                registry.all_of<SignalLayer>(e))) {
         lay->startFrame = f;
     }
 }
@@ -249,7 +252,8 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
                     durationFrames = clip->duration;
                 } else if (const auto* lay = registry.try_get<Layer>(clipEntity);
                            lay && (registry.all_of<ObjectAnimationLayer>(clipEntity) ||
-                                   registry.all_of<GenerativeLayer>(clipEntity))) {
+                                   registry.all_of<GenerativeLayer>(clipEntity)       ||
+                                   registry.all_of<SignalLayer>(clipEntity))) {
                     startFrame = lay->startFrame;
                     durationFrames = lay->duration;
                 } else {

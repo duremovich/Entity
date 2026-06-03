@@ -36,6 +36,7 @@ struct Layer {
         Clip            = 0,
         ObjectAnimation = 1,
         Generative      = 2,  // procedural texture source (Muncher mini-game, future particles, ...)
+        Signal          = 3,  // signal output layer (OSC / plugin event dispatch)
     };
 
     FrameNumber startFrame{0};
@@ -54,6 +55,7 @@ inline const char* layerKindName(Layer::Kind k) {
         case Layer::Kind::Clip:            return "Clip";
         case Layer::Kind::ObjectAnimation: return "Object Animation";
         case Layer::Kind::Generative:      return "Generative";
+        case Layer::Kind::Signal:          return "Signal";
     }
     return "Unknown";
 }
