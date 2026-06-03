@@ -1171,7 +1171,15 @@ void D3D12Renderer::waitForGpu() {
         m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
         if (m_uploadFence->GetCompletedValue() < copyTarget) {
             m_uploadFence->SetEventOnCompletion(copyTarget, localEvent);
-            WaitForSingleObject(localEvent, INFINITE);
+            DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
+            if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
+                HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
+                    ? m_gpu->device()->GetDeviceRemovedReason()
+                    : DXGI_ERROR_DEVICE_HUNG;
+                handleDeviceLost(removedReason, "waitForGpu copy-queue drain timeout");
+                CloseHandle(localEvent);
+                return;
+            }
         }
     }
 
@@ -1189,7 +1197,15 @@ void D3D12Renderer::waitForGpu() {
         const uint64_t drainValue = m_showFence->GetCompletedValue() + 1;
         m_gpu->commandQueue()->Signal(m_showFence.Get(), drainValue);
         m_showFence->SetEventOnCompletion(drainValue, localEvent);
-        WaitForSingleObject(localEvent, INFINITE);
+        DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
+        if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
+            HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
+                ? m_gpu->device()->GetDeviceRemovedReason()
+                : DXGI_ERROR_DEVICE_HUNG;
+            handleDeviceLost(removedReason, "waitForGpu show-fence drain timeout");
+            CloseHandle(localEvent);
+            return;
+        }
     }
 
     if (m_editorFence) {
@@ -1197,7 +1213,15 @@ void D3D12Renderer::waitForGpu() {
         const uint64_t drainValue = m_editorFence->GetCompletedValue() + 1;
         m_gpu->commandQueue()->Signal(m_editorFence.Get(), drainValue);
         m_editorFence->SetEventOnCompletion(drainValue, localEvent);
-        WaitForSingleObject(localEvent, INFINITE);
+        DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
+        if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
+            HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
+                ? m_gpu->device()->GetDeviceRemovedReason()
+                : DXGI_ERROR_DEVICE_HUNG;
+            handleDeviceLost(removedReason, "waitForGpu editor-fence drain timeout");
+            CloseHandle(localEvent);
+            return;
+        }
     }
 
     CloseHandle(localEvent);
