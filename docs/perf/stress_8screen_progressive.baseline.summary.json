@@ -2,93 +2,39 @@
   "scenario": "stress_8screen_progressive",
   "target_fps": 60,
   "frame_budget_ms": 16.67,
-  "captured_at": "2026-05-24T12:44:20Z",
+  "captured_at": "2026-05-25T00:08:44Z",
   "duration_seconds": 30.0,
-  "tracy_file": "C:\\Entity\\Entity\\docs\\perf\\stress_8screen_progressive-2026-05-24T124304Z.tracy",
+  "tracy_file": "C:\\Entity\\Entity\\docs\\perf\\stress_8screen_progressive-2026-05-25T000726Z.tracy",
   "cpu_zones": {
-    "TextSystem": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "GPU fence wait": {
-      "count": 9288,
-      "median_ms": 6.2,
-      "p95_ms": 6.5,
-      "p99_ms": 6.6,
-      "mean_ms": 6.2,
-      "stddev_ms": 0.6,
-      "tail_jitter_ms": 0.1
-    },
-    "drainR2D": {
-      "count": 9298,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "Compositor::pass2_screens": {
-      "count": 3882,
+    "PlaybackPresenter::present": {
+      "count": 3886,
       "median_ms": 0.1,
       "p95_ms": 0.1,
-      "p99_ms": 0.1,
+      "p99_ms": 0.2,
       "mean_ms": 0.1,
       "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
+      "tail_jitter_ms": 0.1
     },
-    "endShowFrame": {
-      "count": 3882,
-      "median_ms": 0.3,
-      "p95_ms": 0.4,
-      "p99_ms": 0.6,
-      "mean_ms": 0.3,
-      "stddev_ms": 0.2,
+    "GPU fence wait": {
+      "count": 9294,
+      "median_ms": 6.2,
+      "p95_ms": 6.4,
+      "p99_ms": 6.6,
+      "mean_ms": 6.1,
+      "stddev_ms": 0.6,
       "tail_jitter_ms": 0.2
     },
+    "tracy::D3D12QueueCtx::Collect": {
+      "count": 3887,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
     "GenerativeSystem::update": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "AudioSystem": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "Show iter": {
-      "count": 3881,
-      "median_ms": 16.6,
-      "p95_ms": 17.7,
-      "p99_ms": 18.1,
-      "mean_ms": 16.7,
-      "stddev_ms": 0.7,
-      "tail_jitter_ms": 0.4
-    },
-    "Engine::update": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "AnimationSystem::update": {
-      "count": 9297,
+      "count": 9291,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -97,7 +43,7 @@
       "tail_jitter_ms": 0.0
     },
     "DecodeSystem::prefetchUpcoming": {
-      "count": 8630,
+      "count": 8632,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -106,106 +52,7 @@
       "tail_jitter_ms": 0.0
     },
     "DecodeSystem::update": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "endEditorFrame": {
-      "count": 9297,
-      "median_ms": 6.4,
-      "p95_ms": 6.6,
-      "p99_ms": 6.8,
-      "mean_ms": 6.4,
-      "stddev_ms": 0.6,
-      "tail_jitter_ms": 0.2
-    },
-    "Engine::render": {
-      "count": 9297,
-      "median_ms": 6.7,
-      "p95_ms": 6.9,
-      "p99_ms": 7.1,
-      "mean_ms": 6.7,
-      "stddev_ms": 0.6,
-      "tail_jitter_ms": 0.2
-    },
-    "Decode": {
-      "count": 13254,
-      "median_ms": 21.6,
-      "p95_ms": 26.5,
-      "p99_ms": 29.0,
-      "mean_ms": 14.2,
-      "stddev_ms": 12.1,
-      "tail_jitter_ms": 2.5
-    },
-    "PlaybackPresenter::present": {
-      "count": 3882,
-      "median_ms": 2.1,
-      "p95_ms": 3.6,
-      "p99_ms": 4.8,
-      "mean_ms": 2.2,
-      "stddev_ms": 1.0,
-      "tail_jitter_ms": 1.2
-    },
-    "RoutingLibrarySystem::reconcile": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "PP::upload_record": {
-      "count": 18066,
-      "median_ms": 0.5,
-      "p95_ms": 0.9,
-      "p99_ms": 1.1,
-      "mean_ms": 0.5,
-      "stddev_ms": 0.3,
-      "tail_jitter_ms": 0.2
-    },
-    "SectionDetect": {
-      "count": 3881,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "beginEditorFrame": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.1,
-      "p99_ms": 0.1,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "RoutingLibrarySystem": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "SeekSyncController::tick": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "Compositor::pass1_5_effects": {
-      "count": 3882,
+      "count": 9291,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -214,7 +61,7 @@
       "tail_jitter_ms": 0.0
     },
     "CompositorSystem::update": {
-      "count": 3882,
+      "count": 3886,
       "median_ms": 0.1,
       "p95_ms": 0.1,
       "p99_ms": 0.1,
@@ -222,8 +69,17 @@
       "stddev_ms": 0.0,
       "tail_jitter_ms": 0.0
     },
-    "tracy::D3D12QueueCtx::Collect": {
-      "count": 3883,
+    "Compositor::pass2_screens": {
+      "count": 3886,
+      "median_ms": 0.1,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.1,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "SeekSyncController::tick": {
+      "count": 9291,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -231,26 +87,17 @@
       "stddev_ms": 0.0,
       "tail_jitter_ms": 0.0
     },
-    "beginShowFrame": {
-      "count": 3882,
+    "SectionDetect": {
+      "count": 3886,
       "median_ms": 0.0,
-      "p95_ms": 0.1,
-      "p99_ms": 0.1,
-      "mean_ms": 0.1,
-      "stddev_ms": 0.2,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
       "tail_jitter_ms": 0.0
     },
-    "buildSceneSnapshot": {
-      "count": 9297,
-      "median_ms": 0.2,
-      "p95_ms": 0.3,
-      "p99_ms": 0.4,
-      "mean_ms": 0.2,
-      "stddev_ms": 0.1,
-      "tail_jitter_ms": 0.1
-    },
     "buildRenderFrame": {
-      "count": 3881,
+      "count": 3886,
       "median_ms": 0.2,
       "p95_ms": 0.2,
       "p99_ms": 0.3,
@@ -258,71 +105,17 @@
       "stddev_ms": 0.0,
       "tail_jitter_ms": 0.1
     },
-    "Compositor::pass1_generative": {
-      "count": 3882,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
     "PP::cache_lookup": {
-      "count": 29166,
+      "count": 29289,
       "median_ms": 0.0,
-      "p95_ms": 0.8,
-      "p99_ms": 1.1,
-      "mean_ms": 0.3,
-      "stddev_ms": 0.3,
-      "tail_jitter_ms": 0.3
-    },
-    "tracy::D3D12QueueCtx::~D3D12QueueCtx": {
-      "count": 1,
-      "median_ms": 0.2,
-      "p95_ms": 0.2,
-      "p99_ms": 0.2,
-      "mean_ms": 0.2,
-      "stddev_ms": null,
-      "tail_jitter_ms": 0.0
-    },
-    "Timeline::update": {
-      "count": 3881,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
       "mean_ms": 0.0,
       "stddev_ms": 0.0,
       "tail_jitter_ms": 0.0
     },
-    "Engine::run iter": {
-      "count": 9297,
-      "median_ms": 6.9,
-      "p95_ms": 7.1,
-      "p99_ms": 7.4,
-      "mean_ms": 7.0,
-      "stddev_ms": 0.7,
-      "tail_jitter_ms": 0.3
-    },
-    "processEvents": {
-      "count": 9297,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.4,
-      "tail_jitter_ms": 0.0
-    },
-    "AudioSystem::prefetchUpcoming": {
-      "count": 8630,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
-    },
-    "SectionScheduler::tick": {
-      "count": 9297,
+    "Compositor::pass1_5_effects": {
+      "count": 3886,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -331,7 +124,178 @@
       "tail_jitter_ms": 0.0
     },
     "AudioMix": {
-      "count": 6497,
+      "count": 6512,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "processEvents": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.2,
+      "tail_jitter_ms": 0.0
+    },
+    "Engine::update": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.1,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.1
+    },
+    "AnimationSystem::update": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Engine::render": {
+      "count": 9291,
+      "median_ms": 6.7,
+      "p95_ms": 6.8,
+      "p99_ms": 7.0,
+      "mean_ms": 6.7,
+      "stddev_ms": 0.5,
+      "tail_jitter_ms": 0.2
+    },
+    "moveToNextFrame": {
+      "count": 9292,
+      "median_ms": 6.2,
+      "p95_ms": 6.4,
+      "p99_ms": 6.6,
+      "mean_ms": 6.1,
+      "stddev_ms": 0.6,
+      "tail_jitter_ms": 0.2
+    },
+    "beginShowFrame": {
+      "count": 3886,
+      "median_ms": 0.0,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.1,
+      "stddev_ms": 0.7,
+      "tail_jitter_ms": 0.0
+    },
+    "OutputManager::renderOutputs": {
+      "count": 3886,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.1,
+      "tail_jitter_ms": 0.0
+    },
+    "TextSystem": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "RoutingLibrarySystem": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "AudioSystem": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Decode": {
+      "count": 13013,
+      "median_ms": 21.7,
+      "p95_ms": 27.4,
+      "p99_ms": 31.6,
+      "mean_ms": 14.1,
+      "stddev_ms": 12.9,
+      "tail_jitter_ms": 4.2
+    },
+    "endShowFrame": {
+      "count": 3886,
+      "median_ms": 0.2,
+      "p95_ms": 0.4,
+      "p99_ms": 0.5,
+      "mean_ms": 0.3,
+      "stddev_ms": 0.2,
+      "tail_jitter_ms": 0.1
+    },
+    "endEditorFrame": {
+      "count": 9291,
+      "median_ms": 6.3,
+      "p95_ms": 6.6,
+      "p99_ms": 6.7,
+      "mean_ms": 6.3,
+      "stddev_ms": 0.6,
+      "tail_jitter_ms": 0.1
+    },
+    "RoutingLibrarySystem::reconcile": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "SectionScheduler::tick": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "buildSceneSnapshot": {
+      "count": 9291,
+      "median_ms": 0.2,
+      "p95_ms": 0.3,
+      "p99_ms": 0.4,
+      "mean_ms": 0.2,
+      "stddev_ms": 0.1,
+      "tail_jitter_ms": 0.1
+    },
+    "PP::upload_record": {
+      "count": 18122,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Show iter": {
+      "count": 3886,
+      "median_ms": 16.6,
+      "p95_ms": 17.8,
+      "p99_ms": 18.5,
+      "mean_ms": 16.6,
+      "stddev_ms": 1.6,
+      "tail_jitter_ms": 0.7
+    },
+    "Timeline::update": {
+      "count": 3886,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -340,16 +304,52 @@
       "tail_jitter_ms": 0.0
     },
     "D2R drain (pre-frame)": {
-      "count": 3881,
+      "count": 3886,
       "median_ms": 0.2,
       "p95_ms": 0.3,
-      "p99_ms": 0.3,
+      "p99_ms": 0.4,
       "mean_ms": 0.2,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.1
+    },
+    "AudioSystem::prefetchUpcoming": {
+      "count": 8632,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "beginEditorFrame": {
+      "count": 9291,
+      "median_ms": 0.0,
+      "p95_ms": 0.1,
+      "p99_ms": 0.1,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "Compositor::pass1_generative": {
+      "count": 3886,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "stddev_ms": 0.0,
+      "tail_jitter_ms": 0.0
+    },
+    "drainR2D": {
+      "count": 9292,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
       "stddev_ms": 0.0,
       "tail_jitter_ms": 0.0
     },
     "ContentScanner::drainDeltas": {
-      "count": 9297,
+      "count": 9291,
       "median_ms": 0.0,
       "p95_ms": 0.0,
       "p99_ms": 0.0,
@@ -357,66 +357,37 @@
       "stddev_ms": 0.0,
       "tail_jitter_ms": 0.0
     },
-    "moveToNextFrame": {
-      "count": 9297,
-      "median_ms": 6.2,
-      "p95_ms": 6.5,
-      "p99_ms": 6.6,
-      "mean_ms": 6.2,
-      "stddev_ms": 0.6,
-      "tail_jitter_ms": 0.1
-    },
-    "OutputManager::renderOutputs": {
-      "count": 3882,
-      "median_ms": 0.0,
-      "p95_ms": 0.0,
-      "p99_ms": 0.0,
-      "mean_ms": 0.0,
-      "stddev_ms": 0.0,
-      "tail_jitter_ms": 0.0
+    "Engine::run iter": {
+      "count": 9291,
+      "median_ms": 6.9,
+      "p95_ms": 7.1,
+      "p99_ms": 7.3,
+      "mean_ms": 7.0,
+      "stddev_ms": 0.5,
+      "tail_jitter_ms": 0.2
     }
   },
   "gpu_zones": {
     "Show GPU": {
-      "count": 3881,
-      "median_ms": 0.2,
-      "p95_ms": 0.2,
-      "p99_ms": 1.9,
-      "mean_ms": 0.2,
-      "stddev_ms": 0.3,
-      "tail_jitter_ms": 1.7
+      "count": 3884,
+      "median_ms": 1.0,
+      "p95_ms": 1.7,
+      "p99_ms": 2.0,
+      "mean_ms": 1.1,
+      "stddev_ms": 0.4,
+      "tail_jitter_ms": 0.3
     }
   },
   "plots": {
     "Frame": {
-      "median": 53.7,
-      "p5": 5.8,
-      "p95": 61.7
-    },
-    "Decode queue depth": {
-      "median": 39,
-      "p5": 0,
-      "p95": 57
-    },
-    "Cache-miss recoveries / tick": {
-      "median": 0,
-      "p5": 0,
-      "p95": 0
-    },
-    "Editor frame ms": {
-      "median": 0,
-      "p5": 0,
-      "p95": 0
-    },
-    "Uploads / show frame": {
-      "median": 3,
-      "p5": 0,
-      "p95": 8
+      "median": 54.8,
+      "p5": 9.8,
+      "p95": 63.4
     },
     "Show frame ms": {
-      "median": 3.3,
+      "median": 1.2,
       "p5": 0.9,
-      "p95": 4.9
+      "p95": 1.6
     },
     "FrameCache bytes used": {
       "median": 3218350080,
@@ -433,10 +404,30 @@
       "p5": 72,
       "p95": 433
     },
+    "Uploads / show frame": {
+      "median": 3,
+      "p5": 0,
+      "p95": 8
+    },
+    "Decode queue depth": {
+      "median": 40,
+      "p5": 0,
+      "p95": 57
+    },
+    "Cache-miss recoveries / tick": {
+      "median": 0,
+      "p5": 0,
+      "p95": 0
+    },
+    "Editor frame ms": {
+      "median": 0,
+      "p5": 0,
+      "p95": 0
+    },
     "FPS": {
       "median": 143,
       "p5": 143,
-      "p95": 144
+      "p95": 143
     }
   },
   "notes": "Frame marks not in tracy-csvexport. For frame-time proxies prefer `Engine::run iter` p95 (editor frame budget, ~7 ms typical) and `Show iter` p95 (show-thread frame budget, ~17 ms = 60 fps cap when running v-synced; uncapped headless ~7 ms). `Engine::update` and `DecodeSystem::update` are instrumented but consistently 0 ms \u2014 they are no-op proxies, do not use.",
