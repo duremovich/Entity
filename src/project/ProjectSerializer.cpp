@@ -23,6 +23,7 @@
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/AudioSource.hpp"
+#include "entity/components/RemotePatch.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/LayerTrackUiState.hpp"
 #include "entity/components/TimelineTrack.hpp"
@@ -515,6 +516,14 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         clipJson["audio"] = std::move(audioJson);
                     }
 
+                    // v27 — RemotePatch (optional; only when layer is patched).
+                    if (const auto* rp = registry.try_get<RemotePatch>(layerEntity)) {
+                        json rpJson;
+                        rpJson["id"]    = rp->patchId;
+                        rpJson["armed"] = rp->armedByDefault;
+                        clipJson["remotePatch"] = std::move(rpJson);
+                    }
+
                     // v25 — twirl-down collapsed group paths.
                     emitCollapsedGroupsJson(registry, layerEntity, clipJson);
 
@@ -642,6 +651,14 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         const auto* ap =
                             registry.try_get<AnimatedProperties>(layerEntity);
                         genJson["animatedProperties"] = serializeAnimatedProperties(ap);
+                    }
+
+                    // v27 — RemotePatch (optional; only when layer is patched).
+                    if (const auto* rp = registry.try_get<RemotePatch>(layerEntity)) {
+                        json rpJson;
+                        rpJson["id"]    = rp->patchId;
+                        rpJson["armed"] = rp->armedByDefault;
+                        genJson["remotePatch"] = std::move(rpJson);
                     }
 
                     // v25 — twirl-down collapsed group paths.
@@ -1852,6 +1869,17 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             // v25 — twirl-down collapsed group paths.
                             applyCollapsedGroupsJson(registry, layerEntity, entryJson);
 
+                            // v27 — RemotePatch. storeSlot stays -1 here;
+                            // Engine::bindRemotePatchesAfterLoad() rebinds.
+                            if (entryJson.contains("remotePatch") &&
+                                entryJson["remotePatch"].is_object()) {
+                                const auto& rj = entryJson["remotePatch"];
+                                auto& rp = registry.emplace_or_replace<RemotePatch>(layerEntity);
+                                rp.patchId        = rj.value("id", std::string{});
+                                rp.armedByDefault = rj.value("armed", false);
+                                rp.storeSlot      = -1;
+                            }
+
                             track->layers.push_back(layerEntity);
                             std::cout << "[ProjectSerializer] Loaded generative layer ("
                                       << subKind << "): " << lay.name << std::endl;
@@ -2176,6 +2204,18 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             as.gain = aj.value("gain", 1.0f);
                             as.mute = aj.value("mute", false);
                             as.solo = aj.value("solo", false);
+                        }
+
+                        // v27 — RemotePatch. storeSlot stays -1 here;
+                        // Engine::bindRemotePatchesAfterLoad() rebinds all
+                        // patches against the RemoteControlStore after load.
+                        if (clipJson.contains("remotePatch") &&
+                            clipJson["remotePatch"].is_object()) {
+                            const auto& rj = clipJson["remotePatch"];
+                            auto& rp = registry.emplace_or_replace<RemotePatch>(clipEntity);
+                            rp.patchId        = rj.value("id", std::string{});
+                            rp.armedByDefault = rj.value("armed", false);
+                            rp.storeSlot      = -1;
                         }
 
                         // v25 — twirl-down collapsed group paths.

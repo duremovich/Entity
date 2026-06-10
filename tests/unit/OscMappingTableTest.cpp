@@ -287,3 +287,118 @@ TEST(OscMappingTable, ExpandTemplate_UnknownToken_Passthrough) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(*result, "$unknown");
 }
+
+// ---------------------------------------------------------------------------
+// defaultRoutes — muncher routes removed (ADR-0028)
+
+TEST(OscMappingTable, DefaultRoutesHasNoMuncher) {
+    auto routes = defaultRoutes();
+    for (const auto& r : routes) {
+        EXPECT_EQ(r.addressPattern.find("/entity/muncher"), std::string::npos)
+            << "Unexpected muncher route: " << r.addressPattern;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// parseLayerAddress
+
+TEST(OscLayerAddress, ParsesCoreParams) {
+    auto a = parseLayerAddress("/entity/layer/video1/opacity");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->id, "video1");
+    EXPECT_EQ(a->kind, LayerParamKind::Opacity);
+
+    auto b = parseLayerAddress("/entity/layer/wall_left/pos/x");
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(b->kind, LayerParamKind::PosX);
+
+    auto c = parseLayerAddress("/entity/layer/m1/remote");
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(c->kind, LayerParamKind::Remote);
+
+    auto d = parseLayerAddress("/entity/layer/t1/text");
+    ASSERT_TRUE(d.has_value());
+    EXPECT_EQ(d->kind, LayerParamKind::Text);
+
+    auto e = parseLayerAddress("/entity/layer/wall_left/scale/y");
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->kind, LayerParamKind::ScaleY);
+
+    auto f = parseLayerAddress("/entity/layer/r1/rotation");
+    ASSERT_TRUE(f.has_value());
+    EXPECT_EQ(f->kind, LayerParamKind::Rotation);
+    EXPECT_STREQ(f->paramString, "rotation");
+}
+
+TEST(OscLayerAddress, RejectsBadInput) {
+    EXPECT_FALSE(parseLayerAddress("/entity/play").has_value());
+    EXPECT_FALSE(parseLayerAddress("/entity/layer/").has_value());
+    EXPECT_FALSE(parseLayerAddress("/entity/layer/video1").has_value());
+    EXPECT_FALSE(parseLayerAddress("/entity/layer/Video1/opacity").has_value());
+    EXPECT_FALSE(parseLayerAddress("/entity/layer/video1/bogus").has_value());
+    EXPECT_FALSE(parseLayerAddress("").has_value());
+    EXPECT_FALSE(parseLayerAddress("/entity/layer//opacity").has_value());
+}
+
+TEST(OscLayerAddress, IsLayerNamespacePositive) {
+    // These have the /entity/layer/ prefix — dispatch must trap them even
+    // when parseLayerAddress returns nullopt (unknown param, bad id charset).
+    EXPECT_TRUE(isLayerNamespace("/entity/layer/video1/bogus"));
+    EXPECT_TRUE(isLayerNamespace("/entity/layer/Video1/opacity"));  // uppercase id
+    EXPECT_TRUE(isLayerNamespace("/entity/layer/video1/opacity"));
+    EXPECT_TRUE(isLayerNamespace("/entity/layer/x/text"));
+}
+
+TEST(OscLayerAddress, IsLayerNamespaceNegative) {
+    // Non-layer addresses must not be caught by the prefix check.
+    EXPECT_FALSE(isLayerNamespace("/entity/play"));
+    EXPECT_FALSE(isLayerNamespace("/entity/layer/"));  // exactly the prefix, no trailing content
+    EXPECT_FALSE(isLayerNamespace("/entity/muncher/up"));
+    EXPECT_FALSE(isLayerNamespace(""));
+    EXPECT_FALSE(isLayerNamespace("/other/layer/video1/opacity"));
+}
+
+TEST(OscLayerAddress, IdAndParamStringRoundTrip) {
+    auto a = parseLayerAddress("/entity/layer/my_layer_1/pos/y");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->id, "my_layer_1");
+    EXPECT_EQ(a->kind, LayerParamKind::PosY);
+    EXPECT_STREQ(a->paramString, "pos/y");
+}
+
+// ---------------------------------------------------------------------------
+// firstStringArg
+
+TEST(OscLayerAddress, FirstStringArgFindsString) {
+    // Build a wire-format OSC 's' argument: null-terminated + 4-byte pad.
+    // "hello" = 5 chars + null = 6, padded to 8 bytes.
+    std::vector<std::uint8_t> args = {
+        'h','e','l','l','o','\0','\0','\0'
+    };
+    auto result = firstStringArg(",s", args.data(), args.data() + args.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "hello");
+}
+
+TEST(OscLayerAddress, FirstStringArgSkipsPrecedingNumericArg) {
+    // typeTag ",fs" — first arg is float (4 bytes), second is string.
+    std::vector<std::uint8_t> args;
+    // float 0.0 = 4 zero bytes
+    args.insert(args.end(), {0,0,0,0});
+    // "hi" + null padded to 4
+    args.insert(args.end(), {'h','i','\0','\0'});
+    auto result = firstStringArg(",fs", args.data(), args.data() + args.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "hi");
+}
+
+TEST(OscLayerAddress, FirstStringArgNoStringReturnsNullopt) {
+    std::vector<std::uint8_t> args = {0,0,0,0};
+    auto result = firstStringArg(",f", args.data(), args.data() + args.size());
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(OscLayerAddress, FirstStringArgEmptyTypeTagReturnsNullopt) {
+    auto result = firstStringArg("", nullptr, nullptr);
+    EXPECT_FALSE(result.has_value());
+}

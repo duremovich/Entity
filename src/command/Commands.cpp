@@ -35,7 +35,10 @@
 #include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/RemotePatch.hpp"
 #include "entity/components/AudioSource.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
+#include "entity/remote/RemotePatchUtil.hpp"
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/audio/LoopbackDevice.hpp"
 #include "entity/systems/AudioSystem.hpp"
@@ -951,6 +954,245 @@ CommandPtr SetClipOpacityCommand::fromJson(const nlohmann::json& j) {
     int clipIndex = j.value("clipIndex", 0);
     float opacity = j.value("opacity", 1.0f);
     return std::make_unique<SetClipOpacityCommand>(trackIndex, clipIndex, opacity);
+}
+
+// ============================================================================
+// Remote-control patch commands (ADR-0028)
+// ============================================================================
+
+// Resolves a (trackIndex, layerIndex) pair to the layer entity, or
+// entt::null with a stderr line. Mirrors SetClipOpacityCommand's walk.
+static entt::entity resolveLayerEntity(Engine& engine, int trackIndex,
+                                       int layerIndex, const char* who) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return entt::null;
+    const auto& tracks = timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << who << ": invalid track index " << trackIndex << "\n";
+        return entt::null;
+    }
+    auto& registry = engine.getRegistry();
+    auto* track = registry.try_get<TimelineTrack>(tracks[static_cast<std::size_t>(trackIndex)]);
+    if (!track || layerIndex < 0 || layerIndex >= static_cast<int>(track->layers.size())) {
+        std::cerr << who << ": invalid layer index " << layerIndex << "\n";
+        return entt::null;
+    }
+    return track->layers[static_cast<std::size_t>(layerIndex)];
+}
+
+bool PatchLayerRemoteCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "PatchLayerRemote");
+    if (e == entt::null) return false;
+    if (registry.all_of<RemotePatch>(e)) {
+        std::cerr << "PatchLayerRemote: layer already patched\n";
+        return false;
+    }
+    auto* store = engine.getRemoteControlStore();
+    if (!store) return false;
+
+    std::string id = m_assignedId.empty()
+        ? (m_explicitId.empty() ? remote::makeAutoPatchId(registry, e)
+                                : m_explicitId)
+        : m_assignedId;  // redo path reuses the original id
+    if (!remote::isValidPatchId(id) || remote::patchIdInUse(registry, id)) {
+        std::cerr << "PatchLayerRemote: invalid or duplicate id '"
+                  << id << "'\n";
+        return false;
+    }
+    const int slot = store->allocateSlot(id);
+    if (slot < 0) {
+        std::cerr << "PatchLayerRemote: store full ("
+                  << remote::kMaxRemotePatches << " patches max)\n";
+        return false;
+    }
+    auto& rp = registry.emplace<RemotePatch>(e);
+    rp.patchId = id;
+    rp.storeSlot = slot;
+    rp.armedByDefault = false;
+    m_assignedId = id;
+    std::cout << "[PatchLayerRemote] '" << id << "' -> slot " << slot << "\n";
+    return true;
+}
+
+bool PatchLayerRemoteCommand::undo(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "PatchLayerRemote.undo");
+    if (e == entt::null) return false;
+    auto* rp = registry.try_get<RemotePatch>(e);
+    if (!rp) return false;
+    if (auto* store = engine.getRemoteControlStore()) {
+        store->freeSlot(rp->storeSlot);
+    }
+    registry.remove<RemotePatch>(e);
+    return true;
+}
+
+nlohmann::json PatchLayerRemoteCommand::toJson() const {
+    return {{"type", "PatchLayerRemote"}, {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex}, {"patchId", m_explicitId}};
+}
+
+std::string PatchLayerRemoteCommand::getDescription() const {
+    return "Patch layer to remote control";
+}
+
+CommandPtr PatchLayerRemoteCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<PatchLayerRemoteCommand>(
+        j.value("trackIndex", 0), j.value("layerIndex", 0),
+        j.value("patchId", std::string{}));
+}
+
+bool UnpatchLayerRemoteCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "UnpatchLayerRemote");
+    if (e == entt::null) return false;
+    auto* rp = registry.try_get<RemotePatch>(e);
+    if (!rp) {
+        std::cerr << "UnpatchLayerRemote: layer is not patched\n";
+        return false;
+    }
+    m_previousId   = rp->patchId;
+    m_previousArmed = rp->armedByDefault;
+    if (auto* store = engine.getRemoteControlStore()) {
+        store->freeSlot(rp->storeSlot);
+    }
+    registry.remove<RemotePatch>(e);
+    std::cout << "[UnpatchLayerRemote] removed patch '" << m_previousId << "'\n";
+    return true;
+}
+
+bool UnpatchLayerRemoteCommand::undo(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "UnpatchLayerRemote.undo");
+    if (e == entt::null) return false;
+    if (registry.all_of<RemotePatch>(e)) return false;  // already patched somehow
+    auto* store = engine.getRemoteControlStore();
+    if (!store) return false;
+    const int slot = store->allocateSlot(m_previousId);
+    if (slot < 0) return false;
+    auto& rp = registry.emplace<RemotePatch>(e);
+    rp.patchId        = m_previousId;
+    rp.storeSlot      = slot;
+    rp.armedByDefault = m_previousArmed;
+    return true;
+}
+
+nlohmann::json UnpatchLayerRemoteCommand::toJson() const {
+    return {{"type", "UnpatchLayerRemote"}, {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex}};
+}
+
+std::string UnpatchLayerRemoteCommand::getDescription() const {
+    return "Unpatch layer from remote control";
+}
+
+CommandPtr UnpatchLayerRemoteCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<UnpatchLayerRemoteCommand>(
+        j.value("trackIndex", 0), j.value("layerIndex", 0));
+}
+
+bool RenameRemotePatchCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "RenameRemotePatch");
+    if (e == entt::null) return false;
+    auto* rp = registry.try_get<RemotePatch>(e);
+    if (!rp) {
+        std::cerr << "RenameRemotePatch: layer is not patched\n";
+        return false;
+    }
+    if (!remote::isValidPatchId(m_newId) || remote::patchIdInUse(registry, m_newId)) {
+        std::cerr << "RenameRemotePatch: invalid or duplicate id '" << m_newId << "'\n";
+        return false;
+    }
+    auto* store = engine.getRemoteControlStore();
+    if (!store) return false;
+    if (!store->renameSlot(rp->storeSlot, m_newId)) return false;
+    m_previousId = rp->patchId;
+    rp->patchId  = m_newId;
+    std::cout << "[RenameRemotePatch] '" << m_previousId << "' -> '" << m_newId << "'\n";
+    return true;
+}
+
+bool RenameRemotePatchCommand::undo(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "RenameRemotePatch.undo");
+    if (e == entt::null) return false;
+    auto* rp = registry.try_get<RemotePatch>(e);
+    if (!rp) return false;
+    auto* store = engine.getRemoteControlStore();
+    if (!store) return false;
+    if (!store->renameSlot(rp->storeSlot, m_previousId)) return false;
+    rp->patchId = m_previousId;
+    return true;
+}
+
+nlohmann::json RenameRemotePatchCommand::toJson() const {
+    return {{"type", "RenameRemotePatch"}, {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex}, {"newId", m_newId}};
+}
+
+std::string RenameRemotePatchCommand::getDescription() const {
+    return "Rename remote patch to '" + m_newId + "'";
+}
+
+CommandPtr RenameRemotePatchCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<RenameRemotePatchCommand>(
+        j.value("trackIndex", 0), j.value("layerIndex", 0),
+        j.value("newId", std::string{}));
+}
+
+bool SetRemotePatchArmedCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "SetRemotePatchArmed");
+    if (e == entt::null) return false;
+    auto* rp = registry.try_get<RemotePatch>(e);
+    if (!rp) {
+        std::cerr << "SetRemotePatchArmed: layer is not patched\n";
+        return false;
+    }
+    m_previousArmed    = rp->armedByDefault;
+    rp->armedByDefault = m_armed;
+    if (auto* store = engine.getRemoteControlStore()) {
+        store->setEngaged(rp->storeSlot, m_armed);
+    }
+    return true;
+}
+
+bool SetRemotePatchArmedCommand::undo(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const auto e = resolveLayerEntity(engine, m_trackIndex, m_layerIndex,
+                                      "SetRemotePatchArmed.undo");
+    if (e == entt::null) return false;
+    auto* rp = registry.try_get<RemotePatch>(e);
+    if (!rp) return false;
+    rp->armedByDefault = m_previousArmed;
+    if (auto* store = engine.getRemoteControlStore()) {
+        store->setEngaged(rp->storeSlot, m_previousArmed);
+    }
+    return true;
+}
+
+nlohmann::json SetRemotePatchArmedCommand::toJson() const {
+    return {{"type", "SetRemotePatchArmed"}, {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex}, {"armed", m_armed}};
+}
+
+std::string SetRemotePatchArmedCommand::getDescription() const {
+    return m_armed ? "Arm remote patch" : "Disarm remote patch";
+}
+
+CommandPtr SetRemotePatchArmedCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetRemotePatchArmedCommand>(
+        j.value("trackIndex", 0), j.value("layerIndex", 0),
+        j.value("armed", false));
 }
 
 bool LogClipStateCommand::execute(Engine& engine) {
@@ -3337,6 +3579,84 @@ CommandPtr AssertClipFadeMultiplierCommand::fromJson(const nlohmann::json& j) {
     float tolerance = j.value("tolerance", 0.01f);
     return std::make_unique<AssertClipFadeMultiplierCommand>(trackIndex, clipIndex,
                                                               expected, tolerance);
+}
+
+// ============================================================================
+// AssertRemoteRenderOpacityCommand (ADR-0028 Phase 9)
+// ============================================================================
+
+bool AssertRemoteRenderOpacityCommand::execute(Engine& engine) {
+    auto* director = engine.getDirector();
+    if (!director) {
+        std::cerr << "[AssertRemoteRenderOpacity] FAIL: director unavailable\n";
+        return false;
+    }
+    auto* timeAuthority = director->getTimeAuthority();
+    if (!timeAuthority) {
+        std::cerr << "[AssertRemoteRenderOpacity] FAIL: no PlaybackTimeAuthority\n";
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    int slot = -1;
+    for (auto [e, rp] : registry.view<RemotePatch>().each()) {
+        if (rp.patchId == m_patchId) { slot = rp.storeSlot; break; }
+    }
+    if (slot < 0) {
+        std::cerr << "[AssertRemoteRenderOpacity] FAIL: no patch '"
+                  << m_patchId << "'\n";
+        return false;
+    }
+
+    // Diagnostic: log the raw store state so timing/wiring issues are visible.
+    if (auto* store = engine.getRemoteControlStore()) {
+        const auto s = store->sample(slot);
+        std::cout << "[AssertRemoteRenderOpacity] store slot=" << slot
+                  << " engaged=" << s.engaged
+                  << " presentMask=" << s.presentMask
+                  << " opacity=" << s.get(remote::RemoteParam::Opacity) << "\n";
+    }
+
+    bus::SceneSnapshot snap;
+    timeAuthority->buildSceneSnapshot(snap);
+    bus::RenderFrame rf;
+    timeAuthority->buildRenderFrame(rf, snap);
+
+    for (const auto& cl : rf.contentLayers) {
+        if (cl.remoteSlot != slot) continue;
+        const float got = cl.opacity;
+        if (std::fabs(got - m_expected) <= m_tolerance) {
+            std::cout << "[AssertRemoteRenderOpacity] OK: " << m_patchId
+                      << " opacity " << got << "\n";
+            return true;
+        }
+        std::cerr << "[AssertRemoteRenderOpacity] FAIL: " << m_patchId
+                  << " opacity " << got << " expected " << m_expected
+                  << " +/- " << m_tolerance << "\n";
+        return false;
+    }
+    std::cerr << "[AssertRemoteRenderOpacity] FAIL: no contentLayer for '"
+              << m_patchId << "'\n";
+    return false;
+}
+
+nlohmann::json AssertRemoteRenderOpacityCommand::toJson() const {
+    return {{"type", "AssertRemoteRenderOpacity"},
+            {"patchId", m_patchId},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance}};
+}
+
+std::string AssertRemoteRenderOpacityCommand::getDescription() const {
+    return "Assert remote render opacity for patch '" + m_patchId + "'";
+}
+
+CommandPtr AssertRemoteRenderOpacityCommand::fromJson(const nlohmann::json& j) {
+    std::string patchId   = j.value("patchId", std::string{});
+    float expected        = j.value("expected", 1.0f);
+    float tolerance       = j.value("tolerance", 0.01f);
+    return std::make_unique<AssertRemoteRenderOpacityCommand>(patchId, expected,
+                                                              tolerance);
 }
 
 // ============================================================================

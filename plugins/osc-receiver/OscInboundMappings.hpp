@@ -70,18 +70,6 @@ inline std::vector<InboundRoute> defaultRoutes() {
     routes.push_back({"/entity/stop",         "", {{"Pause", ""}, {"SeekToFrame", "{\"frame\":0}"}}});
     routes.push_back({"/entity/section/next", "", {{"SectionGo", ""}}});
     routes.push_back({"/entity/seek",         "", {{"SeekToFrame", "{\"frame\":$arg0i}"}}});
-    routes.push_back({"/entity/muncher/up",   "", {{"SetInputChannel", "{\"channel\":\"muncher.input.x\",\"value\":0}"},
-                                                    {"SetInputChannel", "{\"channel\":\"muncher.input.y\",\"value\":-1}"}}});
-    routes.push_back({"/entity/muncher/down", "", {{"SetInputChannel", "{\"channel\":\"muncher.input.x\",\"value\":0}"},
-                                                    {"SetInputChannel", "{\"channel\":\"muncher.input.y\",\"value\":1}"}}});
-    routes.push_back({"/entity/muncher/left", "", {{"SetInputChannel", "{\"channel\":\"muncher.input.x\",\"value\":-1}"},
-                                                    {"SetInputChannel", "{\"channel\":\"muncher.input.y\",\"value\":0}"}}});
-    routes.push_back({"/entity/muncher/right","", {{"SetInputChannel", "{\"channel\":\"muncher.input.x\",\"value\":1}"},
-                                                    {"SetInputChannel", "{\"channel\":\"muncher.input.y\",\"value\":0}"}}});
-    routes.push_back({"/entity/muncher/stop", "", {{"SetInputChannel", "{\"channel\":\"muncher.input.x\",\"value\":0}"},
-                                                    {"SetInputChannel", "{\"channel\":\"muncher.input.y\",\"value\":0}"}}});
-    routes.push_back({"/entity/muncher/input/x","",{{"SetInputChannel","{\"channel\":\"muncher.input.x\",\"value\":$arg0f}"}}});
-    routes.push_back({"/entity/muncher/input/y","",{{"SetInputChannel","{\"channel\":\"muncher.input.y\",\"value\":$arg0f}"}}});
     routes.push_back({"/entity/cue/{number}/go","number",{{"FireCue","{\"number\":$capturef}"}}});
     return routes;
 }
@@ -233,6 +221,99 @@ inline bool matchPattern(std::string_view pattern, std::string_view address,
     capture = address.substr(prefix.size(),
                               address.size() - prefix.size() - suffix.size());
     return !capture.empty();
+}
+
+// ---------------------------------------------------------------------------
+// /entity/layer/{id}/{param} built-in namespace (ADR-0028)
+
+enum class LayerParamKind {
+    Opacity, PosX, PosY, ScaleX, ScaleY, Rotation, Remote, Text
+};
+
+struct LayerAddress {
+    std::string    id;
+    LayerParamKind kind;
+    const char*    paramString;  // the IPluginContext::setRemoteParam key
+};
+
+inline bool isValidLayerIdChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// Returns true if the address belongs to the /entity/layer/ namespace,
+// regardless of whether the id or param are valid. Used in dispatch() so
+// that malformed layer addresses are dropped with a rate-limited log rather
+// than falling through to the mapping-table walk.
+inline bool isLayerNamespace(std::string_view address) {
+    constexpr std::string_view kPrefix = "/entity/layer/";
+    return address.size() > kPrefix.size() &&
+           address.compare(0, kPrefix.size(), kPrefix) == 0;
+}
+
+inline std::optional<LayerAddress>
+parseLayerAddress(std::string_view address) {
+    constexpr std::string_view kPrefix = "/entity/layer/";
+    if (address.size() <= kPrefix.size() ||
+        address.compare(0, kPrefix.size(), kPrefix) != 0) {
+        return std::nullopt;
+    }
+    std::string_view rest = address.substr(kPrefix.size());
+    const auto slash = rest.find('/');
+    if (slash == std::string_view::npos || slash == 0) return std::nullopt;
+    std::string_view id = rest.substr(0, slash);
+    std::string_view param = rest.substr(slash + 1);
+    for (char c : id) if (!isValidLayerIdChar(c)) return std::nullopt;
+
+    struct Entry { std::string_view path; LayerParamKind kind; const char* key; };
+    static constexpr Entry kParams[] = {
+        {"opacity",  LayerParamKind::Opacity,  "opacity"},
+        {"pos/x",    LayerParamKind::PosX,     "pos/x"},
+        {"pos/y",    LayerParamKind::PosY,     "pos/y"},
+        {"scale/x",  LayerParamKind::ScaleX,   "scale/x"},
+        {"scale/y",  LayerParamKind::ScaleY,   "scale/y"},
+        {"rotation", LayerParamKind::Rotation, "rotation"},
+        {"remote",   LayerParamKind::Remote,   "remote"},
+        {"text",     LayerParamKind::Text,     "text"},
+    };
+    for (const auto& e : kParams) {
+        if (param == e.path) {
+            return LayerAddress{std::string(id), e.kind, e.key};
+        }
+    }
+    return std::nullopt;
+}
+
+// First 's'-typed OSC argument, or nullopt. Iterates all typeTag chars
+// after the comma, advancing the arg cursor by wire size (4 bytes for
+// i/f/r, 8 for h/d/t) until the first 's' tag is reached; then reads the
+// 4-byte-padded null-terminated string payload and returns it.
+inline std::optional<std::string>
+firstStringArg(std::string_view typeTag,
+               const std::uint8_t* argsBegin,
+               const std::uint8_t* argsEnd) {
+    if (typeTag.size() < 2 || typeTag[0] != ',') return std::nullopt;
+    const std::uint8_t* cursor = argsBegin;
+    for (std::size_t i = 1; i < typeTag.size(); ++i) {
+        const char tag = typeTag[i];
+        const auto avail = static_cast<std::size_t>(argsEnd - cursor);
+        if (tag == 's') {
+            // Padded null-terminated string
+            const std::uint8_t* p = cursor;
+            while (p < argsEnd && *p != 0) ++p;
+            if (p >= argsEnd) return std::nullopt;
+            std::string result(reinterpret_cast<const char*>(cursor),
+                               static_cast<std::size_t>(p - cursor));
+            return result;
+        } else if ((tag == 'i' || tag == 'f' || tag == 'r') && avail >= 4) {
+            cursor += 4;
+        } else if ((tag == 'h' || tag == 'd' || tag == 't') && avail >= 8) {
+            cursor += 8;
+        } else {
+            // Unknown or insufficient data — stop scanning
+            break;
+        }
+    }
+    return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------

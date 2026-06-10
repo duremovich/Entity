@@ -1,6 +1,8 @@
 #include "entity/director/PlaybackTimeAuthority.hpp"
 
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/RemotePatch.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/components/ContentRouting.hpp"
@@ -458,7 +460,8 @@ void evaluateBakedTransform(const std::vector<bus::BakedTrack>& tracks,
                             float baseOpacity,
                             FrameNumber localFrame,
                             std::array<float, 16>& outMatrix,
-                            float& outOpacity) {
+                            float& outOpacity,
+                            const remote::RemoteControlStore::Sample* remoteSample = nullptr) {
     glm::vec3 position(basePos[0], basePos[1], basePos[2]);
     glm::vec3 rotation(baseRot[0], baseRot[1], baseRot[2]);
     glm::vec3 scale(baseScale[0], baseScale[1], baseScale[2]);
@@ -479,6 +482,20 @@ void evaluateBakedTransform(const std::vector<bus::BakedTrack>& tracks,
         }
     }
 
+    // ADR-0028: engaged remote values beat keyframes per axis. Applied AFTER
+    // the track loop so remote always wins. Show thread only — indexed atomic
+    // loads via Sample*, no locks, no registry.
+    if (remoteSample && remoteSample->engaged) {
+        using RP = remote::RemoteParam;
+        if (remoteSample->has(RP::Opacity))
+            opacity = std::clamp(remoteSample->get(RP::Opacity), 0.0f, 1.0f);
+        if (remoteSample->has(RP::PosX))    { position.x = remoteSample->get(RP::PosX);    transformDirty = true; }
+        if (remoteSample->has(RP::PosY))    { position.y = remoteSample->get(RP::PosY);    transformDirty = true; }
+        if (remoteSample->has(RP::ScaleX))  { scale.x    = remoteSample->get(RP::ScaleX);  transformDirty = true; }
+        if (remoteSample->has(RP::ScaleY))  { scale.y    = remoteSample->get(RP::ScaleY);  transformDirty = true; }
+        if (remoteSample->has(RP::Rotation)){ rotation.z = remoteSample->get(RP::Rotation); transformDirty = true; }
+    }
+
     if (transformDirty) {
         // Mirrors Transform::updateMatrix: Translation * Rot(Z*Y*X) * Scale.
         glm::mat4 m(1.0f);
@@ -492,13 +509,23 @@ void evaluateBakedTransform(const std::vector<bus::BakedTrack>& tracks,
     outOpacity = opacity;
 }
 
-// Apply animation tracks from the clip catalog to the render state. Touches
-// only the snapshot inputs + output ClipRenderState — no registry reads.
-// Called from the show thread.
+// Apply animation tracks (and optional remote overlay) from the clip catalog
+// to the render state. No registry reads — safe on the show thread.
 void applyBakedAnimation(const bus::ClipCatalogEntry& ce,
                          FrameNumber currentFrame,
+                         const remote::RemoteControlStore* store,
                          bus::ClipRenderState& out) {
-    if (ce.tracks.empty()) return;  // static clip: catalog matrix/opacity are authoritative
+    // Sample the remote store once (indexed atomic loads, no locks).
+    remote::RemoteControlStore::Sample remoteSample;
+    const remote::RemoteControlStore::Sample* remotePtr = nullptr;
+    if (store && ce.remoteSlot >= 0) {
+        remoteSample = store->sample(ce.remoteSlot);
+        if (remoteSample.engaged && remoteSample.presentMask != 0)
+            remotePtr = &remoteSample;
+    }
+
+    // Static clip with no remote override: catalog values are authoritative.
+    if (ce.tracks.empty() && !remotePtr) return;
 
     // localFrame mirrors AnimationSystem::update: clip-local frame, clamped
     // to non-negative. If the clip isn't active at currentFrame we still
@@ -507,7 +534,8 @@ void applyBakedAnimation(const bus::ClipCatalogEntry& ce,
         (currentFrame >= ce.startFrame) ? (currentFrame - ce.startFrame) : FrameNumber{0};
 
     evaluateBakedTransform(ce.tracks, ce.position, ce.rotation, ce.scale,
-                           ce.opacity, localFrame, out.transformMatrix, out.opacity);
+                           ce.opacity, localFrame,
+                           out.transformMatrix, out.opacity, remotePtr);
 }
 
 } // namespace
@@ -1098,6 +1126,11 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         // the show side then uses the static ce.transformMatrix / ce.opacity.
         bakeTracks(m_registry.try_get<AnimatedProperties>(entity), ce.tracks);
 
+        // ADR-0028: bake the RemoteControlStore slot so the show thread can
+        // sample it with indexed atomic loads (no registry access show-side).
+        if (const auto* rp = m_registry.try_get<RemotePatch>(entity))
+            ce.remoteSlot = rp->storeSlot;
+
         ce.targetScreen = resolveTargetScreen(m_registry, entity, clip.targetScreen);
         bakeRoutes(m_registry, entity, ce.routes, ce.mode);
 
@@ -1206,6 +1239,10 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         // AnimatedProperties → BakedTrack snapshot for stall-safe show-thread
         // re-evaluation (NEW-07). Empty for generative layers without keyframes.
         bakeTracks(m_registry.try_get<AnimatedProperties>(entity), snap.tracks);
+
+        // ADR-0028: bake the RemoteControlStore slot for show-side overlay.
+        if (const auto* rp = m_registry.try_get<RemotePatch>(entity))
+            snap.remoteSlot = rp->storeSlot;
 
         // Carry the slot the show thread previously allocated for this
         // layer (R2D ack wrote it on the editor thread). -1 if not yet
@@ -1490,10 +1527,10 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.targetScreen = ce.targetScreen;
         c.sectionFadeMultiplier = computeSectionFadeMultiplier(clip);
 
-        // NEW-07: re-evaluate animation tracks at the show thread's current
-        // frame so opacity / transform stay alive while the editor stalls.
-        // No-op (early return) for clips without baked tracks.
-        applyBakedAnimation(ce, currentFrame, c);
+        // NEW-07 + ADR-0028: re-evaluate animation tracks at the show thread's
+        // current frame; apply engaged remote overlay on top. No-op for static
+        // clips with no remote engagement.
+        applyBakedAnimation(ce, currentFrame, m_remoteStore, c);
 
         out.activeClips.push_back(std::move(c));
     }
@@ -1673,6 +1710,8 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder                = ac.zOrder;
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Video;
         c.sourceSlot            = ac.slot;
+        // Carry remoteSlot for diagnostics / future per-entry overlay.
+        if (ce) c.remoteSlot   = ce->remoteSlot;
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
         // for Video-source layers (per-entity cached on the show side).
         if (const auto* le = findLayerEffects(ac.entity)) {
@@ -1692,18 +1731,26 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         fillRoutes(c, gl.routes, gl.mode, gl.targetScreen);
         c.transformMatrix       = gl.transformMatrix;
         c.opacity               = gl.opacity;
-        // NEW-07: re-evaluate baked animation on the show thread so a
-        // generative layer's transform / opacity keep animating during editor
-        // stalls. No-op when tracks is empty (static gl.transformMatrix /
-        // gl.opacity stay authoritative).
-        if (!gl.tracks.empty()) {
-            const FrameNumber localFrame =
-                (currentFrame >= gl.startFrame)
-                    ? (currentFrame - gl.startFrame)
-                    : FrameNumber{0};
-            evaluateBakedTransform(gl.tracks, gl.position, gl.rotation, gl.scale,
-                                   gl.opacity, localFrame,
-                                   c.transformMatrix, c.opacity);
+        // NEW-07 + ADR-0028: re-evaluate baked animation and apply remote
+        // overlay. Always runs when either tracks or an engaged remote is
+        // present; no-op for a fully static, unpatched generative layer.
+        {
+            remote::RemoteControlStore::Sample remoteSample;
+            const remote::RemoteControlStore::Sample* remotePtr = nullptr;
+            if (m_remoteStore && gl.remoteSlot >= 0) {
+                remoteSample = m_remoteStore->sample(gl.remoteSlot);
+                if (remoteSample.engaged && remoteSample.presentMask != 0)
+                    remotePtr = &remoteSample;
+            }
+            if (!gl.tracks.empty() || remotePtr) {
+                const FrameNumber localFrame =
+                    (currentFrame >= gl.startFrame)
+                        ? (currentFrame - gl.startFrame)
+                        : FrameNumber{0};
+                evaluateBakedTransform(gl.tracks, gl.position, gl.rotation, gl.scale,
+                                       gl.opacity, localFrame,
+                                       c.transformMatrix, c.opacity, remotePtr);
+            }
         }
         // Bake section fade for generative layers — same envelope clips get,
         // via the layer-agnostic overload. Without this Text / Muncher layers
@@ -1715,6 +1762,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder                = gl.zOrder;
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Compose;
         c.sourceSlot            = gl.renderTargetSlot;
+        c.remoteSlot            = gl.remoteSlot;
         // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
         if (const auto* le = findLayerEffects(gl.entity)) {
             c.effects          = le->effects;

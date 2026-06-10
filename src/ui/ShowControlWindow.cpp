@@ -4,6 +4,9 @@
 #include "entity/core/Engine.hpp"
 #include "entity/dmx/DmxMapping.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/components/RemotePatch.hpp"
+#include "entity/components/Layer.hpp"
+#include "entity/timeline/Timeline.hpp"
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -674,6 +677,36 @@ void ShowControlWindow::render() {
                 "plugin on the next incoming packet. Empty table = baked defaults.");
             ImGui::Separator();
             renderOscInboundTab(*pm, oscInboundState());
+
+            // Patched Layers — live listing of all RemotePatch entities
+            // so the operator can see which addresses are active without
+            // opening each layer's PropertyWindow. Read-only; patch/unpatch
+            // is done via the context menu or PropertyWindow (ADR-0028).
+            ImGui::Spacing();
+            if (ImGui::CollapsingHeader("Patched Layers")) {
+                auto* timeline = m_engine ? m_engine->getTimeline() : nullptr;
+                if (timeline) {
+                    auto& registry = timeline->getRegistry();
+                    auto view = registry.view<RemotePatch, Layer>();
+                    bool any = false;
+                    for (auto [entity, rp, lay] : view.each()) {
+                        any = true;
+                        char addrBuf[128];
+                        std::snprintf(addrBuf, sizeof(addrBuf),
+                            "/entity/layer/%s/...", rp.patchId.c_str());
+                        // Layer name + address side by side.
+                        ImGui::BulletText("%s  ->  %s",
+                            lay.name.empty() ? "(unnamed)" : lay.name.c_str(),
+                            addrBuf);
+                    }
+                    if (!any) {
+                        ImGui::TextDisabled("No layers patched.");
+                    }
+                } else {
+                    ImGui::TextDisabled("No project loaded.");
+                }
+            }
+
             ImGui::EndTabItem();
         }
 

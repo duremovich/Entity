@@ -1,0 +1,33 @@
+{
+    "version": 1,
+    "description": "RemotePatch round-trip (load half, ADR-0028 phase 6). Loads test_output/remote_patch_persistence/test.entity saved by remote_patch_persistence_save.json and verifies both patches survived the reload. RenameRemotePatch succeeds only when a RemotePatch component exists on the target layer (and the slot was rebound at load), so the two renames are positive existence assertions: if either patch failed to persist or rebind, the rename fails and the script exits nonzero.",
+    "commands": [
+        {
+            "type": "LoadProject",
+            "filepath": "test_output/remote_patch_persistence/test.entity"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.5
+        },
+        {
+            "type": "RenameRemotePatch",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "newId": "text1b"
+        },
+        {
+            "type": "RenameRemotePatch",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "newId": "muncher1b"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

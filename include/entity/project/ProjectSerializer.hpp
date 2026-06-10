@@ -154,7 +154,12 @@ public:
     // v26: Signal Output Layer persistence (ADR-0027). New "signal" kind
     //      carries mode/transport/valueSource/address/args/mapping.
     //      Pre-v26 files load with no signal layers (break-tolerant).
-    static constexpr int PROJECT_VERSION = 26;
+    // v27: RemotePatch per-layer persistence (ADR-0028). Optional
+    //      "remotePatch" object on clip and generative layer entries
+    //      carries {id, armed}. storeSlot is runtime-only and rebound
+    //      by Engine::bindRemotePatchesAfterLoad(). Pre-v27 files load
+    //      with no patches (missing key = unpatched).
+    static constexpr int PROJECT_VERSION = 27;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

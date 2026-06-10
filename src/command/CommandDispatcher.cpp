@@ -185,6 +185,12 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Property commands (for debugging and scripting)
     registerFactory("SetClipBlendMode", SetClipBlendModeCommand::fromJson);
     registerFactory("SetClipOpacity", SetClipOpacityCommand::fromJson);
+
+    // Remote-control patching commands (ADR-0028)
+    registerFactory("PatchLayerRemote",    PatchLayerRemoteCommand::fromJson);
+    registerFactory("UnpatchLayerRemote",  UnpatchLayerRemoteCommand::fromJson);
+    registerFactory("RenameRemotePatch",   RenameRemotePatchCommand::fromJson);
+    registerFactory("SetRemotePatchArmed", SetRemotePatchArmedCommand::fromJson);
     registerFactory("LogClipState", LogClipStateCommand::fromJson);
     registerFactory("SetClipRotation", SetClipRotationCommand::fromJson);
     registerFactory("SetClipPlaybackMode", SetClipPlaybackModeCommand::fromJson);
@@ -207,6 +213,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
     registerFactory("AssertClipMediaFrame", AssertClipMediaFrameCommand::fromJson);
     registerFactory("AssertClipFadeMultiplier", AssertClipFadeMultiplierCommand::fromJson);
+    registerFactory("AssertRemoteRenderOpacity", AssertRemoteRenderOpacityCommand::fromJson);
 
     // Cue tag commands (Phase A — numbered timeline markers)
     registerFactory("FireCue", FireCueCommand::fromJson);

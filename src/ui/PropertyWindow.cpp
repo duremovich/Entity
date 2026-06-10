@@ -23,6 +23,8 @@
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
+#include "entity/components/RemotePatch.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
 #include "entity/render/TextRasterizer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Effect.hpp"
@@ -228,6 +230,12 @@ void PropertyWindow::render() {
     // discover the "Add Effect" affordance even when the chain is empty.
     if (ImGui::CollapsingHeader("Effects", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderEffectsSection(selectedClip);
+    }
+
+    // Remote Control section (ADR-0028). Shows Patch / ID / Armed /
+    // live Engaged toggle + value readout for any content layer.
+    if (ImGui::CollapsingHeader("Remote Control")) {
+        renderRemoteControlSection(selectedClip);
     }
 
     // Pop the clip-specific ID
@@ -3018,6 +3026,11 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         }
     }
 
+    // Remote Control section (ADR-0028).
+    if (ImGui::CollapsingHeader("Remote Control")) {
+        renderRemoteControlSection(entity);
+    }
+
     if (ImGui::CollapsingHeader("Timing")) {
         ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
         ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
@@ -3253,6 +3266,92 @@ void PropertyWindow::renderAudioSection(entt::entity clipEntity) {
         cmd->setPreviousSolo(src->solo);
         src->solo = solo;
         m_dispatcher->enqueue(std::move(cmd));
+    }
+}
+
+// ============================================================================
+// Remote Control section (ADR-0028)
+// ============================================================================
+
+void PropertyWindow::renderRemoteControlSection(entt::entity layerEntity) {
+    if (!m_timeline || layerEntity == entt::null) return;
+    auto& registry = m_timeline->getRegistry();
+    if (!registry.valid(layerEntity)) return;
+
+    auto* rp  = registry.try_get<RemotePatch>(layerEntity);
+    const auto idx = findClipIndices(m_timeline, layerEntity);
+
+    if (!rp) {
+        const bool canPatch = idx.has_value() && m_dispatcher;
+        if (ImGui::Button("Patch to Remote Control", ImVec2(-1, 0)) && canPatch) {
+            m_dispatcher->enqueue(std::make_unique<PatchLayerRemoteCommand>(
+                idx->first, idx->second));
+        }
+        return;
+    }
+
+    // Address preview
+    ImGui::Text("Address: /entity/layer/%s/...", rp->patchId.c_str());
+
+    // ID InputText — RenameRemotePatch fires on deactivate-after-edit.
+    char idBuf[64];
+    std::snprintf(idBuf, sizeof(idBuf), "%s", rp->patchId.c_str());
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##patch_id", idBuf, sizeof(idBuf));
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher && idx) {
+        std::string newId(idBuf);
+        if (newId != rp->patchId) {
+            m_dispatcher->enqueue(std::make_unique<RenameRemotePatchCommand>(
+                idx->first, idx->second, std::move(newId)));
+        }
+    }
+
+    // Armed-by-default (undoable config, persisted in project).
+    bool armed = rp->armedByDefault;
+    if (ImGui::Checkbox("Armed by default", &armed) && m_dispatcher && idx) {
+        m_dispatcher->enqueue(std::make_unique<SetRemotePatchArmedCommand>(
+            idx->first, idx->second, armed));
+    }
+
+    // Live plane: engage toggle writes the store directly — it is show-
+    // control signal, not a document edit. Not undoable, not persisted.
+    if (m_remoteStore && rp->storeSlot >= 0) {
+        bool engaged = m_remoteStore->engaged(rp->storeSlot);
+        if (ImGui::Checkbox("Remote engaged (live)", &engaged)) {
+            m_remoteStore->setEngaged(rp->storeSlot, engaged);
+        }
+
+        const auto s = m_remoteStore->sample(rp->storeSlot);
+        if (s.engaged) {
+            // Build a compact live-value readout. %.2f per present param;
+            // "-" when param has never been sent. ASCII-only (ImGui default font).
+            // Each value needs its own storage: the six fmtVal calls are
+            // unsequenced arguments to one snprintf, so a shared static
+            // buffer would make every %s point at the last value written.
+            auto fmtVal = [&](remote::RemoteParam p, char* out, std::size_t n) {
+                if (s.has(p)) std::snprintf(out, n, "%.2f", s.get(p));
+                else          std::snprintf(out, n, "-");
+            };
+            char op[16], px[16], py[16], sx[16], sy[16], rot[16];
+            fmtVal(remote::RemoteParam::Opacity,  op,  sizeof(op));
+            fmtVal(remote::RemoteParam::PosX,     px,  sizeof(px));
+            fmtVal(remote::RemoteParam::PosY,     py,  sizeof(py));
+            fmtVal(remote::RemoteParam::ScaleX,   sx,  sizeof(sx));
+            fmtVal(remote::RemoteParam::ScaleY,   sy,  sizeof(sy));
+            fmtVal(remote::RemoteParam::Rotation, rot, sizeof(rot));
+            char liveBuf[160];
+            std::snprintf(liveBuf, sizeof(liveBuf),
+                "live: op %s  x %s  y %s  sx %s  sy %s  rot %s",
+                op, px, py, sx, sy, rot);
+            ImGui::TextDisabled("%s", liveBuf);
+        }
+    } else if (rp->storeSlot < 0) {
+        ImGui::TextDisabled("(slot unbound -- reload project)");
+    }
+
+    if (ImGui::Button("Unpatch", ImVec2(-1, 0)) && m_dispatcher && idx) {
+        m_dispatcher->enqueue(std::make_unique<UnpatchLayerRemoteCommand>(
+            idx->first, idx->second));
     }
 }
 

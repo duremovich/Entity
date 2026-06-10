@@ -55,6 +55,7 @@ class SectionScheduler;
 class PlaybackPresenter;
 class SeekSyncController;
 namespace effects { class EffectKindRegistry; }
+namespace remote { class RemoteControlStore; }
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
                       // TranscodeManager, CommandDispatcher,
                       // AnimationSystem (subtasks 4 + 5).
@@ -168,6 +169,12 @@ public:
     }
     const effects::EffectKindRegistry* getEffectKindRegistry() const {
         return m_effectKindRegistry.get();
+    }
+
+    // Live remote-control value plane (ADR-0028). Written by plugin
+    // threads + editor UI; sampled lock-free by the show thread.
+    remote::RemoteControlStore* getRemoteControlStore() {
+        return m_remoteControlStore.get();
     }
 
     /**
@@ -753,6 +760,13 @@ public:
     void closeProject();
 
     /**
+     * Rebind RemotePatch components to RemoteControlStore slots after a
+     * project load (storeSlot is runtime-only and not persisted). Duplicate
+     * or invalid ids are auto-suffixed with a warning. Editor thread only.
+     */
+    void bindRemotePatchesAfterLoad();
+
+    /**
      * Save flow bound to Ctrl+S / "File > Save Project". Writes to the
      * current project path if one is set; otherwise prompts the user via
      * Save-As dialog.
@@ -950,6 +964,10 @@ private:
     // registerBuiltins is called once during initialize; user-effect
     // mutation (Phase 6) happens only on the editor thread.
     std::unique_ptr<effects::EffectKindRegistry> m_effectKindRegistry;
+
+    // Live remote-control value plane (ADR-0028). Written by plugin
+    // threads + editor UI; sampled lock-free by the show thread.
+    std::unique_ptr<remote::RemoteControlStore> m_remoteControlStore;
 
     // Raw shortcuts into m_rendererService. Set during initialize(); valid
     // for the rest of Engine's lifetime. Existing call sites use the member

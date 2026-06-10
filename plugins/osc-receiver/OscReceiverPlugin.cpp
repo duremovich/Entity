@@ -24,24 +24,23 @@
 //   /entity/cue/{number}/go       -> FireCue{number}
 //   /entity/seek <int frame>      -> SeekToFrame{frame}
 //
-//   /entity/muncher/up            -> SetInputChannel muncher.input.x = 0, .y = -1
-//   /entity/muncher/down          -> SetInputChannel muncher.input.x = 0, .y = +1
-//   /entity/muncher/left          -> SetInputChannel muncher.input.x = -1, .y = 0
-//   /entity/muncher/right         -> SetInputChannel muncher.input.x = +1, .y = 0
-//   /entity/muncher/stop          -> SetInputChannel both axes = 0
-//   /entity/muncher/input/x <f>   -> SetInputChannel muncher.input.x = value
-//   /entity/muncher/input/y <f>   -> SetInputChannel muncher.input.y = value
+// Built-in layer namespace (ADR-0028) — not in the mapping table; always active:
+//
+//   /entity/layer/{id}/opacity    f        0..1
+//   /entity/layer/{id}/pos/x      f        UV-space (ADR-0018)
+//   /entity/layer/{id}/pos/y      f
+//   /entity/layer/{id}/scale/x    f
+//   /entity/layer/{id}/scale/y    f
+//   /entity/layer/{id}/rotation   f        degrees
+//   /entity/layer/{id}/remote     i|f      nonzero = engage takeover
+//   /entity/layer/{id}/text       s        Text layers only
+//
+// {id} is the RemotePatch.patchId assigned when a layer is patched for
+// remote control. Unknown id or param: dropped with rate-limited log (1/sec).
 //
 // The number in `/entity/cue/{number}/go` is parsed as a double so
 // fractional cue numbers like 1.5 or 2.10 work. `/entity/seek` accepts any
 // numeric OSC argument type (i, h, f, d) and truncates to integer frame.
-//
-// The Muncher UDLR addresses take no arguments — fire on press; the player
-// keeps moving in that direction until another direction (or `/stop`) is
-// fired. Pattern matches a Bitfocus Companion button setup. The analog
-// `/entity/muncher/input/x` / `/y` variants accept any numeric OSC arg
-// (i/h/f/d) and clamp to [-1, 1] downstream — for TouchOSC faders, OSC-
-// over-Bluetooth controllers, audio-reactive senders, etc.
 //
 // OSC 1.0 parser is hand-rolled (no oscpack dependency). It handles
 // padded strings, the `,typetag` line, integer/float/double args, and
@@ -198,6 +197,42 @@ void dispatch(std::string_view address, std::string_view typeTag,
     auto* ctx = state().ctx;
     if (!ctx) return;
 
+    // Built-in layer namespace (ADR-0028) — takes precedence over the
+    // mapping table. Any address under /entity/layer/ is handled here;
+    // none fall through to the table regardless of id/param validity.
+    if (osc_inbound::isLayerNamespace(address)) {
+        bool ok = false;
+        if (auto la = osc_inbound::parseLayerAddress(address)) {
+            if (la->kind == osc_inbound::LayerParamKind::Text) {
+                auto sv = osc_inbound::firstStringArg(typeTag, argsBegin, argsEnd);
+                if (sv) ok = ctx->setRemoteParamString(la->id, la->paramString, *sv);
+            } else {
+                double dv = 0.0;
+                if (osc_inbound::firstNumericArgAsDouble(
+                        typeTag, argsBegin, argsEnd, dv)) {
+                    ok = ctx->setRemoteParam(la->id, la->paramString, dv);
+                }
+            }
+        }
+        // Parse failure (bad id / unknown param) or unknown patchId / missing
+        // arg: rate-limit to 1 log line per second so a misconfigured surface
+        // at high rate does not flood stderr.
+        if (!ok) {
+            static std::atomic<long long> lastLogSec{0};
+            const long long nowSec =
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+            long long prev = lastLogSec.load(std::memory_order_relaxed);
+            if (nowSec != prev &&
+                lastLogSec.compare_exchange_strong(prev, nowSec)) {
+                std::string m = "osc-receiver: layer message dropped: ";
+                m.append(address);
+                pluginLog(LogLevel::Warn, m);
+            }
+        }
+        return;  // layer namespace never falls through to the table
+    }
+
     auto& s = state();
     std::shared_lock<std::shared_mutex> lock(s.routeMutex);
 
@@ -228,7 +263,7 @@ void dispatch(std::string_view address, std::string_view typeTag,
         return;
     }
 
-    std::string m = "ignored OSC address: ";
+    std::string m = "[osc-receiver] unmatched address: ";
     m.append(address);
     pluginLog(LogLevel::Debug, m);
 }

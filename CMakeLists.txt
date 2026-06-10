@@ -244,6 +244,10 @@ target_sources(EntityMediaCore
         # Input
         src/input/InputBus.cpp
 
+        # Remote-control live value plane (ADR-0028). Any-thread writes,
+        # lock-free show-thread reads via indexed atomic slot table.
+        src/remote/RemoteControlStore.cpp
+
         # DMX outbound bridge (function-pointer hook into the dmx-artnet
         # plugin; ADR-0023). Always linked; the plugin wires the hook
         # at register time. setChannel is a silent no-op when unwired.

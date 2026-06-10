@@ -6,6 +6,7 @@
 namespace entity {
 
 class IRenderer;
+namespace remote { class RemoteControlStore; }
 
 // TextSystem — editor-thread only (ADR-0014).
 //
@@ -23,6 +24,13 @@ public:
 
     void setRenderer(IRenderer* renderer) { m_renderer = renderer; }
 
+    // ADR-0028: engaged remote text arrives via this store. Bound once at
+    // Engine init; nullptr = no remote text (pre-project or store absent).
+    // Editor thread only (consumeText holds textMutex; ADR-0014 compliant).
+    void setRemoteControlStore(remote::RemoteControlStore* store) {
+        m_remoteStore = store;
+    }
+
     void initialize(entt::registry& registry) override;
     void update(entt::registry& registry, float deltaTime) override;
     void shutdown(entt::registry& registry) override;
@@ -31,7 +39,8 @@ public:
 private:
     void onTextLayerDestroyed(entt::registry& registry, entt::entity entity);
 
-    IRenderer* m_renderer{nullptr};
+    IRenderer*                       m_renderer{nullptr};
+    remote::RemoteControlStore*      m_remoteStore{nullptr};
     // TextRasterizer owns DWrite/D2D/WIC COM factories; heap-allocated so
     // TextSystem header doesn't pull Windows headers into Engine.hpp.
     struct Impl;

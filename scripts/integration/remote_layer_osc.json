@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "ADR-0028 loopback: patch muncher layer, drive opacity via /entity/layer/, assert evaluated render opacity. Driven by remote_layer_osc_test.py which sends UDP during the WaitSeconds windows.",
+    "commands": [
+        {"type": "AddScreen", "name": "RemoteScreen", "width": 256, "height": 256},
+        {"type": "CreateMuncherLayer", "trackIndex": 0, "startFrame": 0, "duration": 10000},
+        {"type": "PatchLayerRemote", "trackIndex": 0, "layerIndex": 0, "patchId": "muncher1"},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 3.0},
+        {"type": "AssertRemoteRenderOpacity", "patchId": "muncher1", "expected": 1.0, "tolerance": 0.01},
+        {"type": "WaitSeconds", "count": 3.0},
+        {"type": "AssertRemoteRenderOpacity", "patchId": "muncher1", "expected": 0.25, "tolerance": 0.01},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

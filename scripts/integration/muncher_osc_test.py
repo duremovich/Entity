@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-End-to-end OSC integration test for the Muncher generative layer.
+Generative-layer smoke test for the Muncher layer.
 
-Launches the headless editor with `muncher_osc_wait.json` and, while it
-is alive and playing, sends `/entity/muncher/right` followed by
-`/entity/muncher/down` to the editor's OSC receiver. Verifies:
+Launches the headless editor with `muncher_osc_wait.json` and verifies that
+the Muncher layer is created and that two compose-target screenshots land on
+disk (before / after the wait window).
 
- 1. The OSC plugin dispatches `SetInputChannel` commands for the
-    Muncher input axes.
- 2. Two compose-target screenshots land on disk (before / after the
-    OSC traffic). A visual eyeball confirms the player + pellet trail
-    move in response to the OSC input.
+Note: the global /entity/muncher/* OSC input routes were removed in Phase 4
+of ADR-0028 (all muncher input control now goes through the per-layer remote
+namespace /entity/layer/{id}/... after patching). Muncher input control via
+OSC will be revisited when the generative layer system is reworked. The
+per-layer remote control path is exercised by remote_layer_osc_test.py.
 
 Usage:
     python scripts/integration/muncher_osc_test.py
@@ -20,53 +20,14 @@ Returns nonzero on any unmet assertion.
 
 from __future__ import annotations
 
-import os
-import socket
-import struct
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 REPO_ROOT     = Path(__file__).resolve().parents[2]
 EDITOR_EXE    = REPO_ROOT / "build" / "bin" / "Release" / "EntityMediaEditor.exe"
 SCRIPT_PATH   = REPO_ROOT / "scripts" / "integration" / "muncher_osc_wait.json"
 DEBUG_DIR     = REPO_ROOT / "debug"
-OSC_HOST      = "127.0.0.1"
-OSC_PORT      = 53000
-
-
-def osc_pad4(b: bytes) -> bytes:
-    """Pad with NULs to the next 4-byte boundary, including a trailing NUL."""
-    b = b + b"\x00"
-    while len(b) % 4 != 0:
-        b += b"\x00"
-    return b
-
-
-def osc_msg(address: str, *args) -> bytes:
-    """Build a tiny OSC 1.0 message. Supports float and int args."""
-    out = osc_pad4(address.encode("ascii"))
-    type_tag = b","
-    arg_blob = b""
-    for a in args:
-        if isinstance(a, float):
-            type_tag += b"f"
-            arg_blob += struct.pack(">f", a)
-        elif isinstance(a, int):
-            type_tag += b"i"
-            arg_blob += struct.pack(">i", a)
-        else:
-            raise TypeError(f"unsupported OSC arg type: {type(a)}")
-    out += osc_pad4(type_tag)
-    out += arg_blob
-    return out
-
-
-def send(sock, address: str, *args) -> None:
-    pkt = osc_msg(address, *args)
-    sock.sendto(pkt, (OSC_HOST, OSC_PORT))
-    print(f"  [osc-send] {address} {args}")
 
 
 def main() -> int:
@@ -89,26 +50,6 @@ def main() -> int:
         text=True,
         bufsize=1,
     )
-
-    # Wait for OSC listener to come up. We can't easily detect "ready"
-    # from stdout in real time without a reader thread; the editor binds
-    # the UDP socket within ~1s of launch, so sleep a hair longer than
-    # the first WaitSeconds in muncher_osc_wait.json (1.5s).
-    time.sleep(2.0)
-
-    print("Sending OSC traffic...")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # Player heads right for ~1.2s.
-        send(sock, "/entity/muncher/right")
-        time.sleep(1.2)
-        # Then down for ~1.2s.
-        send(sock, "/entity/muncher/down")
-        time.sleep(1.2)
-        # Stop so the player parks for the final screenshot.
-        send(sock, "/entity/muncher/stop")
-    finally:
-        sock.close()
 
     print("Waiting for editor exit...")
     try:
@@ -135,12 +76,6 @@ def main() -> int:
         else:
             print(f"  ok: {label}")
 
-    must_contain(out, "[SetInputChannel] muncher.input.x = 1",
-                 "OSC /entity/muncher/right -&gt; SetInputChannel x=1")
-    must_contain(out, "[SetInputChannel] muncher.input.y = 1",
-                 "OSC /entity/muncher/down -&gt; SetInputChannel y=1")
-    must_contain(out, "[SetInputChannel] muncher.input.y = 0",
-                 "OSC /entity/muncher/stop -&gt; SetInputChannel y=0")
     must_contain(out, "[Engine] Created Muncher generative layer",
                  "Muncher layer creation")
 

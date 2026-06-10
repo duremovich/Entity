@@ -588,6 +588,79 @@ private:
     std::optional<float> m_previousOpacity;
 };
 
+// --- Remote-control patching (ADR-0028) ---
+
+class PatchLayerRemoteCommand : public UndoableCommand {
+public:
+    PatchLayerRemoteCommand(int trackIndex, int layerIndex,
+                            std::string explicitId = {})
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex),
+          m_explicitId(std::move(explicitId)) {}
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "PatchLayerRemote"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    int m_trackIndex;
+    int m_layerIndex;
+    std::string m_explicitId;     // empty -> auto id
+    std::string m_assignedId;     // captured at execute for undo/redo
+};
+
+class UnpatchLayerRemoteCommand : public UndoableCommand {
+public:
+    UnpatchLayerRemoteCommand(int trackIndex, int layerIndex)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex) {}
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "UnpatchLayerRemote"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    int m_trackIndex;
+    int m_layerIndex;
+    std::string m_previousId;
+    bool m_previousArmed{false};
+};
+
+class RenameRemotePatchCommand : public UndoableCommand {
+public:
+    RenameRemotePatchCommand(int trackIndex, int layerIndex, std::string newId)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex),
+          m_newId(std::move(newId)) {}
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RenameRemotePatch"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    int m_trackIndex;
+    int m_layerIndex;
+    std::string m_newId;
+    std::string m_previousId;
+};
+
+class SetRemotePatchArmedCommand : public UndoableCommand {
+public:
+    SetRemotePatchArmedCommand(int trackIndex, int layerIndex, bool armed)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex), m_armed(armed) {}
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetRemotePatchArmed"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    int m_trackIndex;
+    int m_layerIndex;
+    bool m_armed;
+    bool m_previousArmed{false};
+};
+
 class LogClipStateCommand : public Command {
 public:
     // Log all clips state
@@ -1681,6 +1754,33 @@ private:
     int   m_clipIndex;
     float m_expected;
     float m_tolerance;
+};
+
+/**
+ * Assert that the RemoteControlStore overlay produces the expected opacity for
+ * a patched layer by calling PlaybackTimeAuthority::buildRenderFrame on the
+ * editor thread (same code path the show thread runs). Non-undoable.
+ *
+ * JSON: {"type":"AssertRemoteRenderOpacity","patchId":"muncher1","expected":1.0,"tolerance":0.01}
+ */
+class AssertRemoteRenderOpacityCommand : public Command {
+public:
+    AssertRemoteRenderOpacityCommand(std::string patchId, float expected,
+                                     float tolerance = 0.01f)
+        : m_patchId(std::move(patchId))
+        , m_expected(expected)
+        , m_tolerance(tolerance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertRemoteRenderOpacity"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_patchId;
+    float       m_expected;
+    float       m_tolerance;
 };
 
 // ============================================================================

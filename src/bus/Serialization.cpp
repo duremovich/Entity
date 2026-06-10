@@ -455,6 +455,7 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     auto tracksArr = ojson::array();
     for (const auto& t : g.tracks) tracksArr.push_back(encode(t));
     j["tracks"]            = std::move(tracksArr);
+    j["remoteSlot"]        = g.remoteSlot;
     return j;
 }
 
@@ -543,6 +544,7 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     if (j.contains("tracks")) {
         for (const auto& t : j.at("tracks")) g.tracks.push_back(decodeBakedTrack(t));
     }
+    g.remoteSlot = j.value("remoteSlot", std::int32_t{-1});
     return g;
 }
 
@@ -582,6 +584,7 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["effectChainSlotA"]      = c.effectChainSlotA;
     j["effectChainSlotB"]      = c.effectChainSlotB;
     j["postEffectsSlot"]       = c.postEffectsSlot;
+    j["remoteSlot"]            = c.remoteSlot;
     return j;
 }
 
@@ -638,6 +641,7 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     c.effectChainSlotA      = j.value("effectChainSlotA",      std::int32_t{-1});
     c.effectChainSlotB      = j.value("effectChainSlotB",      std::int32_t{-1});
     c.postEffectsSlot       = j.value("postEffectsSlot",       std::int32_t{-1});
+    c.remoteSlot            = j.value("remoteSlot",            std::int32_t{-1});
     return c;
 }
 
@@ -870,6 +874,7 @@ ojson encode(const ClipCatalogEntry& e) {
     auto tracks = ojson::array();
     for (const auto& t : e.tracks) tracks.push_back(encode(t));
     j["tracks"] = std::move(tracks);
+    j["remoteSlot"] = e.remoteSlot;
     return j;
 }
 
@@ -950,6 +955,7 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     if (j.contains("tracks")) {
         for (const auto& t : j.at("tracks")) e.tracks.push_back(decodeBakedTrack(t));
     }
+    e.remoteSlot = j.value("remoteSlot", std::int32_t{-1});
     return e;
 }
 

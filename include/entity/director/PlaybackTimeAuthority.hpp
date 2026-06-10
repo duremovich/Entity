@@ -18,6 +18,8 @@ class Timeline;
 class ProjectManager;
 struct Clip;
 
+namespace remote { class RemoteControlStore; }
+
 // One per-tick active-clip tuple. Subset of the RenderFrame bus message
 // that subtask 8 turns into the wire format -- transform / opacity /
 // blendMode / targetScreen are added there. For now this is a plain
@@ -64,6 +66,13 @@ public:
     // registerBuiltins.
     void setEffectKindRegistry(const effects::EffectKindRegistry* r) {
         m_effectKindRegistry = r;
+    }
+
+    // ADR-0028: live remote-control store. The show thread reads it lock-free
+    // (indexed atomic loads); the editor wires this once at startup and after
+    // project load. nullptr = no store (remote overlay disabled).
+    void setRemoteControlStore(const remote::RemoteControlStore* store) {
+        m_remoteStore = store;
     }
 
     // Phase B wires the audio device's rate source in here. nullptr =>
@@ -183,7 +192,8 @@ private:
     entt::registry& m_registry;
     Timeline*       m_timeline{nullptr};
     ProjectManager* m_projectManager{nullptr};
-    const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
+    const effects::EffectKindRegistry*    m_effectKindRegistry{nullptr};
+    const remote::RemoteControlStore*     m_remoteStore{nullptr};
 
     SystemRateSource           m_systemRate;
     RateSource*                m_audioRate{nullptr};

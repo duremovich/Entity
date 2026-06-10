@@ -7,6 +7,9 @@
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
+#include "entity/components/RemotePatch.hpp"
+#include "entity/remote/RemotePatchUtil.hpp"
 #include "entity/renderer/Renderer.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/director/SectionScheduler.hpp"
@@ -263,6 +266,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_timeAuthority     = m_director->getTimeAuthority();
     m_sectionScheduler  = m_director->getSectionScheduler();
 
+    // Live remote-control value plane (ADR-0028). Any-thread writes via
+    // plugin-api seam; show-thread reads are indexed atomics, no locks.
+    m_remoteControlStore = std::make_unique<remote::RemoteControlStore>();
+
     // Per-layer effects registry (issue #54). Built once at startup with
     // the engine-shipped effect catalog; pointers propagated to both the
     // editor-side bake (PlaybackTimeAuthority) and the show-side renderer
@@ -271,6 +278,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_effectKindRegistry->registerBuiltins();
     if (m_timeAuthority) {
         m_timeAuthority->setEffectKindRegistry(m_effectKindRegistry.get());
+        m_timeAuthority->setRemoteControlStore(m_remoteControlStore.get());
+    }
+    if (m_textSystem) {
+        m_textSystem->setRemoteControlStore(m_remoteControlStore.get());
     }
     if (m_animationSystem) {
         m_animationSystem->setEffectKindRegistry(m_effectKindRegistry.get());
@@ -620,6 +631,9 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         propertyWindow->setEngine(this);
         if (m_effectKindRegistry) {
             propertyWindow->setEffectKindRegistry(m_effectKindRegistry.get());
+        }
+        if (m_remoteControlStore) {
+            propertyWindow->setRemoteControlStore(m_remoteControlStore.get());
         }
         m_windowManager->registerWindow(std::move(propertyWindow));
     }
@@ -4307,6 +4321,11 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     bool ok = m_projectManager->load(filepath);
     if (!ok) return false;
 
+    // ADR-0028: rebind RemotePatch components to RemoteControlStore slots.
+    // storeSlot is runtime-only and not persisted; the serializer leaves it
+    // at -1 on load. This call resets the store and allocates fresh slots.
+    bindRemotePatchesAfterLoad();
+
     CrashLogger::setProjectPath(m_projectManager->projectPath());
 
     // Phase 6 (issue #54): scan the project's effects/ directory for
@@ -4587,6 +4606,12 @@ void Engine::closeProject() {
         m_timeline->clear();
     }
 
+    // 3b. Reset the remote-control store (ADR-0028). All slot allocations
+    //     and live values belong to the closed project's RemotePatch set.
+    if (m_remoteControlStore) {
+        m_remoteControlStore->reset();
+    }
+
     // 4. Destroy the project-scoped entity types ProjectSerializer::load
     //    would otherwise wipe on its way to loading new state.
     {
@@ -4631,6 +4656,37 @@ void Engine::closeProject() {
     showLauncher();
 
     std::cout << "[Engine] Project closed; launcher re-shown." << std::endl;
+}
+
+void Engine::bindRemotePatchesAfterLoad() {
+    if (!m_remoteControlStore) return;
+    m_remoteControlStore->reset();
+    for (auto [e, rp] : m_registry.view<RemotePatch>().each()) {
+        if (!remote::isValidPatchId(rp.patchId)) {
+            std::cerr << "[RemotePatch] invalid id '" << rp.patchId
+                      << "' on load - unpatching layer\n";
+            rp.storeSlot = -1;
+            continue;
+        }
+        int slot = m_remoteControlStore->allocateSlot(rp.patchId);
+        if (slot < 0) {
+            // Duplicate id (hand-edited file) or table full: auto-suffix.
+            for (int n = 2; n < 100 && slot < 0; ++n) {
+                std::string alt = rp.patchId + "_" + std::to_string(n);
+                slot = m_remoteControlStore->allocateSlot(alt);
+                if (slot >= 0) {
+                    std::cerr << "[RemotePatch] duplicate id '" << rp.patchId
+                              << "' - renamed to '" << alt << "'\n";
+                    rp.patchId = alt;
+                }
+            }
+        }
+        rp.storeSlot = slot;
+        rp.lastTextGen = 0;
+        if (slot >= 0 && rp.armedByDefault) {
+            m_remoteControlStore->setEngaged(slot, true);
+        }
+    }
 }
 
 void Engine::drainContentScannerDeltas() {

@@ -188,6 +188,25 @@ public:
     // because their vtables stop at getTransportSnapshot().
     virtual std::size_t drainSignalEmits(SignalEmitPod* out,
                                          std::size_t    max) noexcept = 0;
+
+    // ---- Remote-control live plane (ADR-0028) ----
+    // Write a live remote-control value for a patched layer. Thread-safe;
+    // callable from any plugin thread. Returns false if patchId is
+    // unknown (not patched / renamed) or param is unrecognized.
+    // param strings: "opacity", "pos/x", "pos/y", "scale/x", "scale/y",
+    // "rotation", "remote" (nonzero value = engage takeover).
+    //
+    // ABI: PLUGIN_API_VERSION 2. Bottom-of-vtable append.
+    virtual bool setRemoteParam(std::string_view patchId,
+                                std::string_view param,
+                                double value) noexcept = 0;
+
+    // String variant ("text" param for text layers).
+    //
+    // ABI: PLUGIN_API_VERSION 2. Bottom-of-vtable append.
+    virtual bool setRemoteParamString(std::string_view patchId,
+                                      std::string_view param,
+                                      std::string_view value) noexcept = 0;
 };
 
 } // namespace entity::plugin

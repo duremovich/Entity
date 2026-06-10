@@ -4,6 +4,7 @@
 #include "entity/core/EnginePluginContext.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/plugin/Plugin.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -217,6 +218,34 @@ EnginePluginContext::getTransportSnapshot() const noexcept {
     }
 
     return snap;
+}
+
+bool EnginePluginContext::setRemoteParam(std::string_view patchId,
+                                         std::string_view param,
+                                         double value) noexcept {
+    if (!m_engine) return false;
+    auto* store = m_engine->getRemoteControlStore();
+    if (!store) return false;
+    using entity::remote::RemoteParam;
+    const float f = static_cast<float>(value);
+    if (param == "opacity")  return store->setParamById(patchId, RemoteParam::Opacity,  f);
+    if (param == "pos/x")    return store->setParamById(patchId, RemoteParam::PosX,     f);
+    if (param == "pos/y")    return store->setParamById(patchId, RemoteParam::PosY,     f);
+    if (param == "scale/x")  return store->setParamById(patchId, RemoteParam::ScaleX,   f);
+    if (param == "scale/y")  return store->setParamById(patchId, RemoteParam::ScaleY,   f);
+    if (param == "rotation") return store->setParamById(patchId, RemoteParam::Rotation, f);
+    if (param == "remote")   return store->setEngagedById(patchId, value != 0.0);
+    return false;
+}
+
+bool EnginePluginContext::setRemoteParamString(std::string_view patchId,
+                                               std::string_view param,
+                                               std::string_view value) noexcept {
+    if (!m_engine) return false;
+    auto* store = m_engine->getRemoteControlStore();
+    if (!store) return false;
+    if (param == "text") return store->setTextById(patchId, value);
+    return false;
 }
 
 } // namespace entity::core

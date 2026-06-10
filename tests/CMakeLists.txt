@@ -59,6 +59,8 @@ add_executable(EntityMediaTests
     unit/SignalOutputSystemTest.cpp
     unit/SignalCommandsTest.cpp
     unit/SignalPersistenceTest.cpp
+    unit/RemoteControlStoreTest.cpp
+    unit/RemotePatchUtilTest.cpp
     test_Decoder.cpp
 )
 
@@ -277,6 +279,16 @@ set_tests_properties(integration_cues_persistence_save PROPERTIES
     FIXTURES_SETUP cues_persistence_data)
 set_tests_properties(integration_cues_persistence_load PROPERTIES
     FIXTURES_REQUIRED cues_persistence_data)
+
+# RemotePatch persistence round-trip (ADR-0028 phase 6, schema v27).
+# Load half asserts survival via RenameRemotePatch (succeeds only when
+# the patch component exists and its store slot was rebound).
+entity_add_integration_test(remote_patch_persistence_save remote_patch_persistence_save.json)
+entity_add_integration_test(remote_patch_persistence_load remote_patch_persistence_load.json)
+set_tests_properties(integration_remote_patch_persistence_save PROPERTIES
+    FIXTURES_SETUP remote_patch_persistence_data)
+set_tests_properties(integration_remote_patch_persistence_load PROPERTIES
+    FIXTURES_REQUIRED remote_patch_persistence_data)
 
 # Stage 3c: show-thread-keeps-advancing while editor is stalled.
 # No pixel-hash comparison so no ENTITY_FORCE_WARP needed.
@@ -531,3 +543,25 @@ set_tests_properties(integration_seek_sync_frame_zero PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# ADR-0028 loopback OSC remote-layer test: patches a Muncher layer, drives
+# opacity via UDP while the editor runs headless, and asserts the
+# RemoteControlStore overlay applies the correct opacity at two points
+# (disengaged: stored-not-applied, engaged: stored value applied on engage).
+# Driven by a Python script that sends UDP OSC packets during the WaitSeconds
+# windows in the JSON fixture. ENTITY_FORCE_WARP=1 so the D3D12 device is
+# available (WARP software rasterizer) in CI without a GPU.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(
+        NAME integration_remote_layer_osc
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/scripts/integration/remote_layer_osc_test.py
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+    set_tests_properties(integration_remote_layer_osc PROPERTIES
+        LABELS "integration"
+        TIMEOUT 60
+        ENVIRONMENT "ENTITY_FORCE_WARP=1"
+    )
+endif()

@@ -5,6 +5,8 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/components/RemotePatch.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
 
 #include <iostream>
 
@@ -43,6 +45,21 @@ void TextSystem::update(entt::registry& registry, float /*deltaTime*/) {
     ZoneScopedN("TextSystem");
 
     if (!m_renderer || !m_impl) return;
+
+    // ADR-0028: pull engaged remote text into TextLayerState before the dirty
+    // scan so remote-driven updates flow through the normal rasterize path.
+    // Editor-thread only (consumeText holds textMutex; ADR-0014 compliant).
+    if (m_remoteStore) {
+        auto remoteView = registry.view<GenerativeLayer, TextLayerState, RemotePatch>();
+        for (auto [entity, gen, state, rp] : remoteView.each()) {
+            if (rp.storeSlot < 0) continue;
+            if (!m_remoteStore->engaged(rp.storeSlot)) continue;
+            if (auto txt = m_remoteStore->consumeText(rp.storeSlot, rp.lastTextGen)) {
+                state.text  = *txt;
+                state.dirty = true;
+            }
+        }
+    }
 
     auto view = registry.view<Layer, GenerativeLayer, TextLayerState>();
 

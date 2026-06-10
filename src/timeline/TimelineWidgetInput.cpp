@@ -17,6 +17,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/RemotePatch.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/ContentRouting.hpp"
 #include "entity/components/ContentRoutingAsset.hpp"
@@ -1712,6 +1713,33 @@ void TimelineWidget::handleContextMenus() {
                     }
                 }
                 ImGui::EndMenu();
+            }
+
+            ImGui::Separator();
+
+            // Remote Control patch/unpatch — content layers only (not OA,
+            // not Signal). These are document edits, so they need hasIdx.
+            {
+                const bool canPatch = hasIdx &&
+                    registry.all_of<Layer>(m_rightClickedClip) &&
+                    !registry.all_of<ObjectAnimationLayer>(m_rightClickedClip) &&
+                    !registry.all_of<SignalLayer>(m_rightClickedClip);
+                const bool isPatched = registry.all_of<RemotePatch>(m_rightClickedClip);
+                if (ImGui::MenuItem(isPatched ? "Unpatch Remote Control"
+                                              : "Patch to Remote Control",
+                                    nullptr, false, canPatch)) {
+                    if (m_commandDispatcher && idx) {
+                        if (isPatched) {
+                            m_commandDispatcher->enqueue(
+                                std::make_unique<UnpatchLayerRemoteCommand>(
+                                    idx->first, idx->second));
+                        } else {
+                            m_commandDispatcher->enqueue(
+                                std::make_unique<PatchLayerRemoteCommand>(
+                                    idx->first, idx->second));
+                        }
+                    }
+                }
             }
 
             ImGui::Separator();

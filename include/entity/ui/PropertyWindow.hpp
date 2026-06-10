@@ -16,6 +16,7 @@ class Timeline;
 class CommandDispatcher;
 class Engine;
 namespace effects { class EffectKindRegistry; struct ParamSchema; }
+namespace remote { class RemoteControlStore; }
 
 /**
  * PropertyWindow - Displays and edits properties of the selected clip.
@@ -41,6 +42,12 @@ public:
     // to a read-only listing of effects already on the clip.
     void setEffectKindRegistry(const effects::EffectKindRegistry* reg) {
         m_effectKindRegistry = reg;
+    }
+
+    // Optional — when set, the "Remote Control" section shows live
+    // engaged state + current values from the store (ADR-0028).
+    void setRemoteControlStore(remote::RemoteControlStore* store) {
+        m_remoteStore = store;
     }
 
     // Optional — when set, the clip Media combo lists the project's
@@ -151,6 +158,14 @@ private:
     void renderAudioSection(entt::entity clipEntity);
 
     /**
+     * Render the "Remote Control" section for any content layer (clip or
+     * generative). Shows Patch/Unpatch button, ID InputText -> RenameRemotePatch
+     * on deactivate-after-edit, Armed checkbox, live Engaged toggle + value
+     * readout (ADR-0028).
+     */
+    void renderRemoteControlSection(entt::entity layerEntity);
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control
@@ -244,6 +259,7 @@ private:
     CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
     const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};  // Non-owning, optional
     Engine* m_engine{nullptr};  // Non-owning, optional (for Media combo media-library access)
+    remote::RemoteControlStore* m_remoteStore{nullptr};  // Non-owning, optional (ADR-0028)
 
     // Per-entity UI state (prevents static variable leak between clips)
     std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip

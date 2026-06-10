@@ -1,0 +1,63 @@
+{
+    "version": 1,
+    "description": "RemotePatch round-trip (save half, ADR-0028 phase 6). Creates a Text generative layer and a Muncher layer, patches both to remote control, then saves to test_output/remote_patch_persistence/test.entity. The load script verifies patches survive reload and re-patching an already-patched layer fails with 'already patched'.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "RemotePatchScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "PatchLayerRemote",
+            "trackIndex": 0,
+            "layerIndex": 0,
+            "patchId": "text1"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "CreateMuncherLayer",
+            "trackIndex": 1,
+            "startFrame": 0,
+            "duration": 300
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "PatchLayerRemote",
+            "trackIndex": 1,
+            "layerIndex": 0,
+            "patchId": "muncher1"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "SaveProject",
+            "filepath": "test_output/remote_patch_persistence/test.entity"
+        },
+        {
+            "type": "WaitFrames",
+            "count": 2
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

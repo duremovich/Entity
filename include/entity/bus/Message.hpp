@@ -343,6 +343,11 @@ struct GenerativeLayerSnapshot {
     // animation. The show thread re-evaluates these per render frame at the
     // current Timeline frame so animation survives editor stalls (NEW-07).
     std::vector<BakedTrack> tracks;
+
+    // ADR-0028: RemoteControlStore slot for this layer (-1 = not patched).
+    // Baked from RemotePatch::storeSlot on the editor thread; consumed
+    // lock-free by the show thread (indexed atomic loads only).
+    std::int32_t remoteSlot{-1};
 };
 
 // One animated parameter track baked for show-thread re-evaluation. Mirror
@@ -470,6 +475,12 @@ struct ContentLayerSnapshot {
     // hasn't produced output this frame yet (RT allocation pending).
     // Always indexes into the Compose descriptor pool when set.
     std::int32_t  postEffectsSlot{-1};
+
+    // ADR-0028: RemoteControlStore slot carried from the source snapshot
+    // (-1 = not patched). Not consumed directly by the compositor (the
+    // overlay runs before this entry is built); retained for diagnostics
+    // and future per-entry overlay extensions.
+    std::int32_t  remoteSlot{-1};
 };
 
 // Director → Renderer per-tick state snapshot. Becomes the only data path
@@ -607,6 +618,10 @@ struct ClipCatalogEntry {
 
     // AnimatedProperties snapshot. Empty for clips without animation.
     std::vector<BakedTrack> tracks;
+
+    // ADR-0028: RemoteControlStore slot (-1 = not patched). Baked from
+    // RemotePatch::storeSlot editor-side; consumed lock-free show-side.
+    std::int32_t remoteSlot{-1};
 };
 
 // One-frame snapshot of an ObjectAnimationLayer. Baked by the editor thread in

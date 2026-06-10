@@ -51,6 +51,14 @@ public:
     std::size_t drainSignalEmits(entity::plugin::SignalEmitPod* out,
                                   std::size_t max) noexcept override;
 
+    // IPluginContext v2: remote-control live plane (ADR-0028).
+    bool setRemoteParam(std::string_view patchId,
+                        std::string_view param,
+                        double value) noexcept override;
+    bool setRemoteParamString(std::string_view patchId,
+                              std::string_view param,
+                              std::string_view value) noexcept override;
+
     // Called by the show thread (SignalOutputSystem, Phase 5/6) or by test
     // script commands (Phase 2 verification) to enqueue a signal for plugin
     // consumption. Thread-safe.
