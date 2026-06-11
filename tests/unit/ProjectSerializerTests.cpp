@@ -14,11 +14,15 @@
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ContentRouting.hpp"
+#include "entity/components/ContentRoutingAsset.hpp"
+#include "entity/components/ContentRoutingAssetOps.hpp"
+#include "entity/components/ContentRoutingRef.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
 #include "entity/components/EffectParam.hpp"
 #include "entity/components/EffectParameters.hpp"
+#include "entity/components/GenerativeLayer.hpp"
 #include "entity/effects/EffectKind.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
@@ -1609,6 +1613,176 @@ TEST(ProjectSerializer, ContentRoutingTiledRoundTrip) {
         EXPECT_TRUE(clip.targetScreen == entt::null);
     }
     EXPECT_EQ(tiledClipCount, 1) << "Expected one Tiled-routed clip after reload";
+}
+
+// Routing persistence regression (Phase 2): a clip pointed at a Screen's
+// *pristine* auto-direct ContentRoutingAsset must survive save → load. The
+// save side intentionally skips pristine auto-direct assets (they're
+// regenerated), and RoutingLibrarySystem only recreates them on the next
+// editor tick — which runs AFTER the per-clip contentRoutingAssetName lookup
+// during load. Before the fix the lookup failed and the ref reverted to
+// entt::null ("Default / All Visible"). The load path now recreates pristine
+// auto-direct assets before binding refs.
+TEST(ProjectSerializer, ContentRoutingRefPristineAutoDirectRoundTrip) {
+    TempFile tf("content_routing_ref_pristine_autodirect");
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity screenEnt = registry.create();
+        auto& screen = registry.emplace<entity::Screen>(screenEnt);
+        screen.name   = "Screen A";
+        screen.width  = 1920;
+        screen.height = 1080;
+
+        // Pristine auto-direct asset for the Screen (Direct, single target ==
+        // the Screen, identity uvRect, name == Screen name). This is exactly
+        // what the save side omits and the load side must regenerate.
+        entt::entity assetEnt = entity::routing::ensureAutoDirectAsset(registry, screenEnt);
+        ASSERT_TRUE(assetEnt != entt::null);
+
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        entt::entity clipEnt = registry.create();
+        auto& clip = registry.emplace<entity::Clip>(clipEnt);
+        clip.filepath  = "content/routed.mov";
+        clip.mediaType = entity::MediaType::VideoProRes4444;
+        clip.startFrame = 0;
+        clip.duration   = 60;
+        clip.framerate  = 30.0;
+
+        auto& lay = registry.emplace<entity::Layer>(clipEnt);
+        lay.kind       = entity::Layer::Kind::Clip;
+        lay.startFrame = 0;
+        lay.duration   = 60;
+
+        // Operator flow: pick "Screen A" in the routing picker — binds the
+        // clip's ContentRoutingRef at the Screen's auto-direct asset.
+        entity::routing::setLayerTargetScreen(registry, clipEnt, screenEnt);
+        const auto* refBefore = registry.try_get<entity::ContentRoutingRef>(clipEnt);
+        ASSERT_NE(refBefore, nullptr);
+        ASSERT_EQ(refBefore->asset, assetEnt);
+
+        track->layers.push_back(clipEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load into a FRESH registry ---
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    entt::entity loadedScreen = entt::null;
+    for (auto [e, s] : registry.view<entity::Screen>().each()) {
+        if (s.name == "Screen A") { loadedScreen = e; break; }
+    }
+    ASSERT_TRUE(loadedScreen != entt::null);
+
+    int routedClipCount = 0;
+    for (auto [e, clip] : registry.view<entity::Clip>().each()) {
+        if (clip.filepath != "content/routed.mov") continue;
+        ++routedClipCount;
+
+        const auto* ref = registry.try_get<entity::ContentRoutingRef>(e);
+        ASSERT_NE(ref, nullptr) << "clip lost its ContentRoutingRef on reload";
+        // The bug: ref->asset == entt::null after reload (reverted to "All Visible").
+        EXPECT_TRUE(ref->asset != entt::null)
+            << "pristine auto-direct routing reverted to Default (All Visible)";
+
+        const auto* asset = entity::routing::tryGetAsset(registry, e);
+        ASSERT_NE(asset, nullptr) << "ref points at a missing/destroyed asset";
+        EXPECT_EQ(asset->kind, entity::RouteMode::Direct);
+        ASSERT_EQ(asset->targets.size(), 1u);
+        EXPECT_EQ(asset->targets[0].screen, loadedScreen)
+            << "resolved asset does not route to Screen A";
+    }
+    EXPECT_EQ(routedClipCount, 1) << "Expected exactly one routed clip";
+}
+
+// Same regression for a generative (text) layer — its load-time ref binding
+// is a separate code block (genLayer branch) and regressed independently.
+TEST(ProjectSerializer, ContentRoutingRefPristineAutoDirectGenerativeRoundTrip) {
+    TempFile tf("content_routing_ref_pristine_autodirect_generative");
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        entt::entity screenEnt = registry.create();
+        auto& screen = registry.emplace<entity::Screen>(screenEnt);
+        screen.name   = "Screen G";
+        screen.width  = 1920;
+        screen.height = 1080;
+
+        entt::entity assetEnt = entity::routing::ensureAutoDirectAsset(registry, screenEnt);
+        ASSERT_TRUE(assetEnt != entt::null);
+
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        // Minimal generative layer: GenerativeLayer + Layer is enough for the
+        // serializer's genLayer branch to fire.
+        entt::entity genEnt = registry.create();
+        auto& gen = registry.emplace<entity::GenerativeLayer>(genEnt);
+        gen.targetScreen = screenEnt;
+        gen.renderWidth  = 1920;
+        gen.renderHeight = 1080;
+
+        auto& lay = registry.emplace<entity::Layer>(genEnt);
+        lay.kind       = entity::Layer::Kind::Generative;
+        lay.name       = "Text Layer";
+        lay.startFrame = 0;
+        lay.duration   = 60;
+
+        entity::routing::setLayerTargetScreen(registry, genEnt, screenEnt);
+        const auto* refBefore = registry.try_get<entity::ContentRoutingRef>(genEnt);
+        ASSERT_NE(refBefore, nullptr);
+        ASSERT_EQ(refBefore->asset, assetEnt);
+
+        track->layers.push_back(genEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load into a FRESH registry ---
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    entt::entity loadedScreen = entt::null;
+    for (auto [e, s] : registry.view<entity::Screen>().each()) {
+        if (s.name == "Screen G") { loadedScreen = e; break; }
+    }
+    ASSERT_TRUE(loadedScreen != entt::null);
+
+    int routedGenCount = 0;
+    for (auto [e, gen] : registry.view<entity::GenerativeLayer>().each()) {
+        ++routedGenCount;
+
+        const auto* ref = registry.try_get<entity::ContentRoutingRef>(e);
+        ASSERT_NE(ref, nullptr) << "generative layer lost its ContentRoutingRef on reload";
+        EXPECT_TRUE(ref->asset != entt::null)
+            << "pristine auto-direct routing on generative layer reverted to Default";
+
+        const auto* asset = entity::routing::tryGetAsset(registry, e);
+        ASSERT_NE(asset, nullptr) << "ref points at a missing/destroyed asset";
+        EXPECT_EQ(asset->kind, entity::RouteMode::Direct);
+        ASSERT_EQ(asset->targets.size(), 1u);
+        EXPECT_EQ(asset->targets[0].screen, loadedScreen)
+            << "resolved asset does not route to Screen G";
+    }
+    EXPECT_EQ(routedGenCount, 1) << "Expected exactly one generative layer";
 }
 
 // --- v24 — frame-native section breaks + cue tags ------------------------

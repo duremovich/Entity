@@ -1461,6 +1461,22 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     }
                 }
             }
+
+            // Recreate pristine auto-direct assets the save side skipped.
+            // serializeContentRoutingAssets() omits an auto-direct asset that
+            // is still pristine (Direct, single target == its bound Screen,
+            // identity uvRect, name == lastSyncedScreenName) because it's
+            // regenerated from the Screen set. Normally RoutingLibrarySystem
+            // recreates them on the next editor tick — but that runs AFTER the
+            // per-clip / per-layer contentRoutingAssetName lookups below, so a
+            // ref pointing at a pristine asset would fail to resolve and fall
+            // back to entt::null ("Default / All Visible"). ensureAutoDirectAsset
+            // is idempotent: it no-ops for any Screen whose (possibly
+            // customized) auto-direct asset already came back from the library
+            // block above (findAutoDirectAsset matches on autoBoundScreen).
+            for (auto [screenEntity, screen] : registry.view<Screen>().each()) {
+                routing::ensureAutoDirectAsset(registry, screenEntity);
+            }
         }
 
         // Load Props (v13+). Same name-preservation strategy as Screens —
@@ -1848,7 +1864,14 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 }
                             }
 
-                            // ContentRoutingRef (v20+)
+                            // ContentRoutingRef (v20+). Same fall-through as the
+                            // clip path: a named lookup that fails (e.g. a
+                            // pristine auto-direct asset whose name diverged from
+                            // its Screen) must not silently leave the layer
+                            // unrouted — bind it to the target Screen's
+                            // auto-direct asset so the operator's pick survives
+                            // reload instead of reverting to "All Visible".
+                            bool routingRefBound = false;
                             if (entryJson.contains("contentRoutingAssetName")) {
                                 const std::string assetName =
                                     entryJson.value("contentRoutingAssetName", "");
@@ -1856,10 +1879,15 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                     for (auto [ae, a] : registry.view<ContentRoutingAsset>().each()) {
                                         if (a.name == assetName) {
                                             registry.emplace<ContentRoutingRef>(layerEntity).asset = ae;
+                                            routingRefBound = true;
                                             break;
                                         }
                                     }
                                 }
+                            }
+                            if (!routingRefBound && gen.targetScreen != entt::null) {
+                                routing::setLayerTargetScreen(registry, layerEntity,
+                                                              gen.targetScreen);
                             }
 
                             registry.emplace<Transform>(layerEntity);
@@ -2100,6 +2128,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                         // files migrate from the inline `cr` populated
                         // above. The library was loaded earlier in this
                         // function so name lookups resolve now.
+                        bool routingRefBound = false;
                         if (clipJson.contains("contentRoutingAssetName")) {
                             const std::string assetName = clipJson.value(
                                 "contentRoutingAssetName", std::string{});
@@ -2108,20 +2137,29 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                  registry.view<ContentRoutingAsset>().each()) {
                                 if (a.name == assetName) { foundAsset = ae; break; }
                             }
-                            auto& ref = registry.emplace<ContentRoutingRef>(clipEntity);
-                            ref.asset = foundAsset;
-                        } else if (cr.mode == RouteMode::Direct &&
-                                    cr.targets.size() == 1 &&
-                                    cr.targets[0].screen != entt::null) {
-                            routing::setLayerTargetScreen(registry, clipEntity,
-                                                            cr.targets[0].screen);
-                        } else if (!cr.targets.empty()) {
-                            std::vector<RouteTarget> copy = cr.targets;
-                            routing::setLayerCustomRouting(registry, clipEntity,
-                                                            cr.mode, std::move(copy));
-                        } else {
-                            auto& ref = registry.emplace<ContentRoutingRef>(clipEntity);
-                            ref.asset = entt::null;
+                            if (foundAsset != entt::null) {
+                                auto& ref = registry.emplace<ContentRoutingRef>(clipEntity);
+                                ref.asset = foundAsset;
+                                routingRefBound = true;
+                            }
+                            // else: asset genuinely missing (renamed Screen,
+                            // hand-edited file) — fall through to the inline
+                            // contentRouting migration below.
+                        }
+                        if (!routingRefBound) {
+                            if (cr.mode == RouteMode::Direct &&
+                                cr.targets.size() == 1 &&
+                                cr.targets[0].screen != entt::null) {
+                                routing::setLayerTargetScreen(registry, clipEntity,
+                                                                cr.targets[0].screen);
+                            } else if (!cr.targets.empty()) {
+                                std::vector<RouteTarget> copy = cr.targets;
+                                routing::setLayerCustomRouting(registry, clipEntity,
+                                                                cr.mode, std::move(copy));
+                            } else {
+                                auto& ref = registry.emplace<ContentRoutingRef>(clipEntity);
+                                ref.asset = entt::null;
+                            }
                         }
 
                         // Load totalMediaFrames and duration
