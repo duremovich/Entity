@@ -1222,6 +1222,23 @@ void Engine::run() {
         // Editor-side simulation work: timeline, section scheduler, decode.
         update();
 
+        // Drain R2D replies BEFORE baking the snapshot. Slot-provisioning
+        // replies (ResourcesProvisioned / ScreenRenderTargetAllocated /
+        // Generative / EffectChain) are answered on the show thread one or
+        // more frames after the editor publishes the request, then land in
+        // the R2D queue. buildSceneSnapshot's active-set + clip-catalog skip
+        // any VideoTexture whose slot is still UINT32_MAX (isAllocated() ==
+        // false), so a freshly-placed clip stays out of the rendered
+        // snapshot — and therefore off its routed screen — until the slot
+        // is written back. Draining here (instead of only after render())
+        // writes the reply into the registry before the snapshot reads it,
+        // cutting a full editor tick off the "placed clip doesn't show up
+        // until I press Play / nudge the playhead" latency for a clip
+        // dropped onto a parked playhead. The drain is idempotent and is
+        // still called again after render() below for same-frame capture
+        // replies; calling it twice is safe (see the note there).
+        drainRendererToDirector();
+
         // Editor-half of scene snapshot: snapshot Screen/Surface/Projector/
         // Output registry views and publish latest-wins on D2R.
         if (m_transport && m_timeAuthority) {
@@ -1234,7 +1251,13 @@ void Engine::run() {
         // Editor-side render: back buffer, ImGui, editor swap chain.
         render();
 
-        // Drain R2D replies from the show thread (CaptureCompleted, etc).
+        // Second R2D drain (the first runs before buildSceneSnapshot above
+        // to surface slot-provisioning replies a tick earlier). This one
+        // picks up same-frame replies produced by the show frame that the
+        // snapshot we just published kicked off — most importantly
+        // CaptureCompleted, which the scriptReadyToFinish gate below waits
+        // on. drainRendererToDirector() is idempotent, so the double call
+        // is safe.
         drainRendererToDirector();
 
         if (m_commandDispatcher && m_commandDispatcher->scriptReadyToFinish()) {

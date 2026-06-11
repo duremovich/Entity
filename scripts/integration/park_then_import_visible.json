@@ -1,0 +1,18 @@
+{
+    "version": 1,
+    "description": "Regression guard (parked-clip visibility). A clip dropped onto a timeline while the playhead is already PARKED (paused, never played) inside the clip's range must become visible on its routed screen WITHOUT pressing Play or nudging the playhead. The headless-assertable visibility chain is: (1) the clip's GPU video-texture slot is allocated, and (2) the decode worker is bootstrapped/steered to the parked-frame-mapped source frame so that exact frame lands in FrameCache -- both while the transport stays Stopped. This parks at timeline frame 90, imports a 30fps video at position 0 (spans frame 90 -> source frame 90), routes it to a dedicated screen, waits a SHORT wall-clock window without playing, and asserts both halves. The bound (0.3s) proves the clip resolves promptly while parked; Phase A measured the chain landing within ~0.05s post-fix. NOTE: the drainRendererToDirector-before-buildSceneSnapshot reorder this guards saves one editor tick of provisioning latency, which is only wall-clock-visible at vsync in the real GUI (~16ms), so this headless test is a bounded-latency CONTRACT guard, not a fail-before test -- it pins the 'visible while parked, no Play/seek' behavior so a future regression that re-introduces a Play/seek dependency (e.g. gating decode bootstrap on playState, or excluding parked clips from provisioning) is caught. Uses WaitSeconds (wall-clock) per the headless-fps caveat.",
+    "commands": [
+        {"type": "AddScreen", "name": "ParkVisibleScreen", "width": 256, "height": 256},
+        {"type": "SeekToFrame", "frame": 90},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "ImportVideo", "filepath": "test_media/Basic loop.mov", "trackIndex": 0, "position": 0},
+        {"type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "ParkVisibleScreen"},
+        {"type": "AssertPlaybackState", "state": "Stopped"},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AssertPlaybackState", "state": "Stopped"},
+        {"type": "AssertPlayheadAtFrame", "frame": 90, "tolerance": 1},
+        {"type": "AssertVideoTextureSlotsAllocated", "count": 1},
+        {"type": "AssertFrameCached", "trackIndex": 0, "clipIndex": 0, "sourceFrame": 90},
+        {"type": "Exit"}
+    ]
+}

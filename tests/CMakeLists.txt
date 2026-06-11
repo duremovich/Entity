@@ -161,6 +161,13 @@ entity_add_integration_test(hap_hdr_smoke        hap_hdr_smoke.json)
 entity_add_integration_test(aces_smoke           aces_smoke.json)
 entity_add_integration_test(cache_hit_after_seek cache_hit_after_seek.json)
 entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
+# Parked-clip visibility: a clip dropped onto a PARKED (paused, never
+# played) playhead inside its range must resolve its GPU slot + decode the
+# parked source frame into FrameCache without a Play or seek. Guards the
+# drainRendererToDirector-before-buildSceneSnapshot provisioning-latency
+# fix and the broader "visible while parked, no Play/seek dependency"
+# contract.
+entity_add_integration_test(park_then_import_visible park_then_import_visible.json)
 # Phase D entry, subtask 8 -- per-tick Director->Renderer bus loop end-to-end.
 entity_add_integration_test(director_renderer_smoke director_renderer_smoke.json)
 
