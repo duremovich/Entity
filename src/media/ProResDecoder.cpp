@@ -1,5 +1,7 @@
 #include "entity/media/ProResDecoder.hpp"
+#include "entity/media/AlphaPremultiply.hpp"
 #include "entity/core/Settings.hpp"
+#include "entity/profile/Tracy.hpp"
 #include <iostream>
 #include <cstring>
 
@@ -460,45 +462,69 @@ Result ProResDecoder::convertToRGBA(AVFrame* srcFrame, DecodedFrame& outFrame) {
         ? static_cast<int>(pitch)
         : static_cast<int>(m_width * 4);
 
-    // Setup output buffer for swscale
-    uint8_t* outData[1] = {outFrame.mutableData()};
-    int outLinesize[1] = {dstRowPitch};
-
-    // Perform color space conversion
-    int height = sws_scale(
-        m_swsContext,
-        srcFrame->data, srcFrame->linesize,
-        0, static_cast<int>(m_height),
-        outData, outLinesize
-    );
-
-    if (height <= 0) {
-        std::cerr << "ProResDecoder: sws_scale failed" << std::endl;
-        return Result::DecoderError;
-    }
-
-    // Premultiply alpha if present.
-    // Branchless + fast div255: (c*a + 128 + ((c*a + 128) >> 8)) >> 8 approximates (c*a)/255
-    // with round-to-nearest. Exact for a==255 (identity). Enables auto-vectorization (AVX2) —
-    // the previous if (a<255) branch blocked SIMD and the integer divide was expensive.
-    // At 4K × 3 streams, this loop runs ~24M pixels/frame — vectorization is critical.
-    //
-    // Row-stride-aware: upload-heap buffers have 256-byte-aligned RowPitch (padding
-    // after each row). Use dstRowPitch to step between rows; within a row each
-    // pixel is still 4 contiguous bytes so the inner loop is tight-packed.
+    // The decode output buffer (outFrame.mutableData()) is, in production, a
+    // persistently-mapped D3D12 UPLOAD-heap pointer — WRITE_COMBINE memory.
+    // CPU reads from WC are ~100x slower than cached RAM, so the destination is
+    // strictly write-only here. The alpha premultiply pass below would have to
+    // read every pixel back; to avoid that, alpha content scales into a cached
+    // scratch buffer first, then a fused pass reads scratch and write-only
+    // streams the premultiplied result into the destination.
     if (m_hasAlpha) {
-        uint8_t* base = outFrame.mutableData();
-        // dstRowPitch is already set above (aligned for UploadHeap, tight-packed otherwise).
-        const uint32_t rowStride = static_cast<uint32_t>(dstRowPitch);
-        for (uint32_t row = 0; row < m_height; ++row) {
-            uint8_t* rgba = base + static_cast<size_t>(row) * rowStride;
-            for (uint32_t col = 0; col < m_width; ++col) {
-                const size_t off = static_cast<size_t>(col) * 4;
-                const uint32_t a = rgba[off + 3];
-                uint32_t t0 = rgba[off + 0] * a + 128; rgba[off + 0] = static_cast<uint8_t>((t0 + (t0 >> 8)) >> 8);
-                uint32_t t1 = rgba[off + 1] * a + 128; rgba[off + 1] = static_cast<uint8_t>((t1 + (t1 >> 8)) >> 8);
-                uint32_t t2 = rgba[off + 2] * a + 128; rgba[off + 2] = static_cast<uint8_t>((t2 + (t2 >> 8)) >> 8);
-            }
+        // Lazily allocate / resize the cached scratch (normal RAM). Reused
+        // across frames — sized to the destination row pitch so the fused pass
+        // is a straight row-by-row walk with matching strides.
+        const size_t scratchSize =
+            static_cast<size_t>(dstRowPitch) * m_height;
+        if (m_alphaScratch.size() < scratchSize) {
+            m_alphaScratch.resize(scratchSize);
+        }
+
+        uint8_t* scratchData[1] = {m_alphaScratch.data()};
+        int scratchLinesize[1] = {dstRowPitch};
+
+        int height = 0;
+        {
+            ZoneScopedN("SwsScale");
+            height = sws_scale(
+                m_swsContext,
+                srcFrame->data, srcFrame->linesize,
+                0, static_cast<int>(m_height),
+                scratchData, scratchLinesize
+            );
+        }
+        if (height <= 0) {
+            std::cerr << "ProResDecoder: sws_scale failed" << std::endl;
+            return Result::DecoderError;
+        }
+
+        // Fused premultiply + copy: read from cached scratch, write-only into
+        // the (possibly WRITE_COMBINE) destination. Same pitch on both sides.
+        {
+            ZoneScopedN("Premultiply");
+            media::premultiplyRgbaRows(
+                m_alphaScratch.data(), static_cast<size_t>(dstRowPitch),
+                outFrame.mutableData(), static_cast<size_t>(dstRowPitch),
+                m_width, m_height);
+        }
+    } else {
+        // Non-alpha: sws_scale writes RGBA8 straight into the destination.
+        // This is already write-only into the (possibly WC) buffer — fine.
+        uint8_t* outData[1] = {outFrame.mutableData()};
+        int outLinesize[1] = {dstRowPitch};
+
+        int height = 0;
+        {
+            ZoneScopedN("SwsScale");
+            height = sws_scale(
+                m_swsContext,
+                srcFrame->data, srcFrame->linesize,
+                0, static_cast<int>(m_height),
+                outData, outLinesize
+            );
+        }
+        if (height <= 0) {
+            std::cerr << "ProResDecoder: sws_scale failed" << std::endl;
+            return Result::DecoderError;
         }
     }
 

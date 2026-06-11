@@ -2,6 +2,9 @@
 
 #include "entity/media/Decoder.hpp"
 
+#include <cstdint>
+#include <vector>
+
 // Forward declarations for FFmpeg types
 struct AVFormatContext;
 struct AVCodecContext;
@@ -136,6 +139,16 @@ private:
     // recover the true position from the first decoded frame's PTS before
     // catching up to the requested frame.
     bool m_resyncPending{false};
+
+    // Alpha-only CPU-cached scratch buffer. For ProRes 4444 with alpha,
+    // sws_scale writes RGBA8 here (normal cached RAM) instead of straight into
+    // the output buffer; convertToRGBA then does a fused premultiply pass that
+    // READS from this scratch (fast) and write-only-streams into the output.
+    // The output buffer is a WRITE_COMBINE upload-heap pointer in production —
+    // reading it back per-pixel (the old in-place loop) was ~100x slower.
+    // Allocated lazily only for alpha content, sized rowPitch*height, reused
+    // across frames (no per-frame allocation). Unused for non-alpha paths.
+    std::vector<uint8_t> m_alphaScratch;
 };
 
 } // namespace entity

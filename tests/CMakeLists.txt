@@ -65,6 +65,7 @@ add_executable(EntityMediaTests
     unit/RemotePatchUtilTest.cpp
     unit/SetLayerCommandTests.cpp
     unit/RenameTrackCommandTests.cpp
+    unit/AlphaPremultiplyTests.cpp
     test_Decoder.cpp
 )
 
