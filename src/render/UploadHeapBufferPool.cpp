@@ -1,10 +1,17 @@
 #include "entity/render/UploadHeapBufferPool.hpp"
 #include "entity/profile/Tracy.hpp"
 
+#include <atomic>
 #include <cassert>
+#include <cstdio>
 #include <iostream>
 
 namespace entity {
+
+// Monotonic id for DRED resource naming. Pooled buffers outlive the call that
+// allocated them, so a unique-ish id lets a page-fault allocation node name the
+// guilty buffer + its size class.
+static std::atomic<uint32_t> g_uploadPoolBufId{0};
 
 // ---------------------------------------------------------------------------
 // UploadHeapBuffer destructor
@@ -281,6 +288,13 @@ std::unique_ptr<UploadHeapBuffer> UploadHeapBufferPool::allocateFresh(size_t byt
                      " for " << bytes << " bytes, HRESULT 0x"
                   << std::hex << hr << std::dec << "\n";
         return nullptr;
+    }
+
+    {
+        const uint32_t id = g_uploadPoolBufId.fetch_add(1, std::memory_order_relaxed);
+        wchar_t name[48];
+        swprintf_s(name, L"UploadPoolBuf%u_%zuB", id, bytes);
+        buf->resource->SetName(name);
     }
 
     // Persistent map. readRange = {0,0} tells the runtime we won't read from

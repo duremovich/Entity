@@ -51,12 +51,24 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
     }
 
     // DRED — must be called before D3D12CreateDevice; settings are global.
-    // Gated on _DEBUG: forcing DRED on in release builds causes AV crashes on
-    // WARP adapters during compose-target staging-buffer readback (ctest
-    // regression confirmed 2026-05-09: 6 tests fail with 0xC0000005 under
-    // ENTITY_FORCE_WARP=1 when DRED is forced on in release).
+    // _DEBUG builds: on whenever the debug layer is on (unchanged behavior).
+    // Release builds: opt-in via ENTITY_FORCE_DRED=1 for device-removed
+    // forensics on real hardware (~2-5% GPU overhead while enabled).
+    // KNOWN-BAD COMBO: DRED + WARP in release AVs during compose-target
+    // staging readback (ctest regression confirmed 2026-05-09: 6 tests fail
+    // with 0xC0000005 under ENTITY_FORCE_WARP=1). Never set ENTITY_FORCE_DRED
+    // for WARP/ctest runs; the warning below makes the misuse loud.
+    const bool usingWarp = (forceWarp && forceWarp[0] != '0' && forceWarp[0] != '\0');
 #if defined(_DEBUG)
-    if (enableDebugLayer) {
+    const bool wantDred = enableDebugLayer;
+#else
+    const char* forceDredEnv = std::getenv("ENTITY_FORCE_DRED");
+    const bool wantDred = (forceDredEnv && forceDredEnv[0] == '1');
+#endif
+    if (wantDred && usingWarp) {
+        std::cerr << "[D3D12Device] ENTITY_FORCE_DRED ignored under WARP "
+                     "(known AV combo, see comment)" << std::endl;
+    } else if (wantDred) {
         ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
             dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
@@ -67,7 +79,6 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
             std::cerr << "[D3D12Device] DRED enablement failed — breadcrumbs unavailable" << std::endl;
         }
     }
-#endif
 
     HRESULT hr = D3D12CreateDevice(
         adapter.Get(),              // null = default adapter; non-null = WARP
@@ -114,6 +125,7 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
         m_device.Reset();
         return Result::Failure;
     }
+    m_commandQueue->SetName(L"DirectQueue");
     std::cout << "Command queue created" << std::endl;
 
     // Dedicated COPY queue (Phase C.11). Async texture uploads run here so
@@ -130,6 +142,7 @@ Result D3D12Device::initialize(bool enableDebugLayer) {
         m_device.Reset();
         return Result::Failure;
     }
+    m_copyQueue->SetName(L"CopyQueue");
     std::cout << "Copy command queue created" << std::endl;
 
     return Result::Success;

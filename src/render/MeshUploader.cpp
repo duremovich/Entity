@@ -20,6 +20,7 @@
  */
 
 #include "entity/render/MeshUploader.hpp"
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 
@@ -106,6 +107,18 @@ uint32_t MeshUploader::uploadMesh(ID3D12GraphicsCommandList* cmdList,
         std::lock_guard<std::mutex> lk(m_slotMutex);
         actuallyFreeSlot(slotIdx);
         return INVALID_SLOT;
+    }
+
+    {
+        wchar_t name[32];
+        swprintf_s(name, L"MeshVtxSlot%u", slotIdx);
+        s.vertexBuffer->SetName(name);
+        swprintf_s(name, L"MeshIdxSlot%u", slotIdx);
+        s.indexBuffer->SetName(name);
+        swprintf_s(name, L"MeshVtxUpload%u", slotIdx);
+        s.vertexUpload->SetName(name);
+        swprintf_s(name, L"MeshIdxUpload%u", slotIdx);
+        s.indexUpload->SetName(name);
     }
 
     // Copy vertex data into upload buffer

@@ -21,6 +21,7 @@
  */
 
 #include "entity/render/TextureUploader.hpp"
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 
@@ -202,6 +203,11 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
                   << slotIndex << ", HRESULT 0x" << std::hex << hr << std::dec << std::endl;
         return false;
     }
+    {
+        wchar_t name[32];
+        swprintf_s(name, L"VideoTexSlot%u", slotIndex);
+        slot.texture->SetName(name);
+    }
 
     // Create per-slot UPLOAD-heap staging buffer sized for the texture footprint.
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
@@ -232,6 +238,11 @@ bool TextureUploader::ensureTexture(Slot& slot, uint32_t slotIndex,
                   << slotIndex << ", HRESULT 0x" << std::hex << hr << std::dec << std::endl;
         slot.texture.Reset();
         return false;
+    }
+    {
+        wchar_t name[32];
+        swprintf_s(name, L"VideoTexUpload%u", slotIndex);
+        slot.uploadBuffer->SetName(name);
     }
 
     // Write the SRV descriptor at the heap index owned by DescriptorHeapLayout

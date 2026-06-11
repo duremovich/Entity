@@ -20,6 +20,7 @@
 #include <GLFW/glfw3native.h>
 
 #include <d3dcompiler.h>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -777,6 +778,102 @@ void D3D12Renderer::clear(float r, float g, float b, float a) {
     tl_activeCmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 }
 
+// D3D12_AUTO_BREADCRUMB_OP -> name. Mapping verified against MS Learn; index
+// is the enum value. Out-of-range ops print their raw integer (see caller).
+static const char* dredOpName(D3D12_AUTO_BREADCRUMB_OP op) {
+    static const char* const NAMES[] = {
+        "SETMARKER", "BEGINEVENT", "ENDEVENT", "DRAWINSTANCED",
+        "DRAWINDEXEDINSTANCED", "EXECUTEINDIRECT", "DISPATCH",
+        "COPYBUFFERREGION", "COPYTEXTUREREGION", "COPYRESOURCE", "COPYTILES",
+        "RESOLVESUBRESOURCE", "CLEARRENDERTARGETVIEW",
+        "CLEARUNORDEREDACCESSVIEW", "CLEARDEPTHSTENCILVIEW", "RESOURCEBARRIER",
+        "EXECUTEBUNDLE", "PRESENT", "RESOLVEQUERYDATA", "BEGINSUBMISSION",
+        "ENDSUBMISSION", "DECODEFRAME", "PROCESSFRAMES", "ATOMICCOPYBUFFERUINT",
+        "ATOMICCOPYBUFFERUINT64", "RESOLVESUBRESOURCEREGION",
+        "WRITEBUFFERIMMEDIATE", "DECODEFRAME1", "SETPROTECTEDRESOURCESESSION",
+        "DECODEFRAME2", "PROCESSFRAMES1",
+        "BUILDRAYTRACINGACCELERATIONSTRUCTURE",
+        "EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO",
+        "COPYRAYTRACINGACCELERATIONSTRUCTURE", "DISPATCHRAYS",
+        "INITIALIZEMETACOMMAND", "EXECUTEMETACOMMAND", "ESTIMATEMOTION",
+        "RESOLVEMOTIONVECTORHEAP", "SETPIPELINESTATE1",
+        "INITIALIZEEXTENSIONCOMMAND", "EXECUTEEXTENSIONCOMMAND", "DISPATCHMESH",
+        "ENCODEFRAME", "RESOLVEENCODEROUTPUTMETADATA", "BARRIER",
+        "BEGIN_COMMAND_LIST", "DISPATCHGRAPH", "SETPROGRAM", "PROCESSFRAMES2",
+    };
+    const UINT idx = static_cast<UINT>(op);
+    return (idx < (sizeof(NAMES) / sizeof(NAMES[0]))) ? NAMES[idx] : nullptr;
+}
+
+// D3D12_DRED_ALLOCATION_TYPE -> name for the values we expect on a page fault.
+// Anything not tabled prints its raw integer (see caller). RESOURCE (19) is the
+// one we most expect to overlap a PageFaultVA.
+static const char* dredAllocTypeName(D3D12_DRED_ALLOCATION_TYPE type) {
+    switch (type) {
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_QUEUE:   return "COMMAND_QUEUE";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR: return "COMMAND_ALLOCATOR";
+        case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE:  return "PIPELINE_STATE";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_LIST:    return "COMMAND_LIST";
+        case D3D12_DRED_ALLOCATION_TYPE_FENCE:           return "FENCE";
+        case D3D12_DRED_ALLOCATION_TYPE_DESCRIPTOR_HEAP: return "DESCRIPTOR_HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_HEAP:            return "HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_QUERY_HEAP:      return "QUERY_HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_SIGNATURE: return "COMMAND_SIGNATURE";
+        case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_LIBRARY: return "PIPELINE_LIBRARY";
+        case D3D12_DRED_ALLOCATION_TYPE_VIDEO_DECODER:   return "VIDEO_DECODER";
+        case D3D12_DRED_ALLOCATION_TYPE_VIDEO_PROCESSOR: return "VIDEO_PROCESSOR";
+        case D3D12_DRED_ALLOCATION_TYPE_RESOURCE:        return "RESOURCE";
+        case D3D12_DRED_ALLOCATION_TYPE_PASS:            return "PASS";
+        case D3D12_DRED_ALLOCATION_TYPE_CRYPTOSESSION:   return "CRYPTOSESSION";
+        case D3D12_DRED_ALLOCATION_TYPE_CRYPTOSESSIONPOLICY: return "CRYPTOSESSIONPOLICY";
+        case D3D12_DRED_ALLOCATION_TYPE_PROTECTEDRESOURCESESSION: return "PROTECTEDRESOURCESESSION";
+        case D3D12_DRED_ALLOCATION_TYPE_VIDEO_DECODER_HEAP: return "VIDEO_DECODER_HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_POOL:    return "COMMAND_POOL";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_RECORDER: return "COMMAND_RECORDER";
+        case D3D12_DRED_ALLOCATION_TYPE_STATE_OBJECT:    return "STATE_OBJECT";
+        case D3D12_DRED_ALLOCATION_TYPE_METACOMMAND:     return "METACOMMAND";
+        case D3D12_DRED_ALLOCATION_TYPE_SCHEDULINGGROUP: return "SCHEDULINGGROUP";
+        case D3D12_DRED_ALLOCATION_TYPE_VIDEO_MOTION_ESTIMATOR: return "VIDEO_MOTION_ESTIMATOR";
+        case D3D12_DRED_ALLOCATION_TYPE_VIDEO_MOTION_VECTOR_HEAP: return "VIDEO_MOTION_VECTOR_HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_VIDEO_EXTENSION_COMMAND: return "VIDEO_EXTENSION_COMMAND";
+        default: return nullptr;
+    }
+}
+
+// Append a DRED_ALLOCATION_NODE1 linked list (existing or recently-freed) to
+// the blob. Caps node count so the blob stays bounded. tag is "Existing" /
+// "RecentFreed".
+static void appendDredAllocationNodes(std::ostringstream& oss, const char* tag,
+                                      const D3D12_DRED_ALLOCATION_NODE1* node) {
+    constexpr int MAX_ALLOC_NODES = 16;
+    int count = 0;
+    while (node && count < MAX_ALLOC_NODES) {
+        oss << tag << "=";
+        if (node->ObjectNameA) {
+            oss << node->ObjectNameA;
+        } else if (node->ObjectNameW) {
+            char nameBuf[256] = {};
+            WideCharToMultiByte(CP_UTF8, 0, node->ObjectNameW, -1,
+                                nameBuf, sizeof(nameBuf), nullptr, nullptr);
+            oss << nameBuf;
+        } else {
+            oss << "<unnamed>";
+        }
+        oss << " type=";
+        if (const char* tn = dredAllocTypeName(node->AllocationType)) {
+            oss << tn;
+        } else {
+            oss << static_cast<int>(node->AllocationType);
+        }
+        oss << "\n";
+        node = node->pNext;
+        ++count;
+    }
+    if (node) {
+        oss << tag << "=... (truncated at " << MAX_ALLOC_NODES << " nodes)\n";
+    }
+}
+
 // Format DRED auto-breadcrumb nodes into a human-readable string.
 // Uses std::string (heap intact at this call site — show thread controlled exit).
 static std::string formatDredBreadcrumbs(ID3D12Device* device) {
@@ -810,10 +907,42 @@ static std::string formatDredBreadcrumbs(ID3D12Device* device) {
 
         if (node->pCommandQueueDebugNameA) {
             oss << " Queue=" << node->pCommandQueueDebugNameA;
+        } else if (node->pCommandQueueDebugNameW) {
+            char nameBuf[256] = {};
+            WideCharToMultiByte(CP_UTF8, 0, node->pCommandQueueDebugNameW, -1,
+                                nameBuf, sizeof(nameBuf), nullptr, nullptr);
+            oss << " Queue=" << nameBuf;
         }
 
         UINT lastOp = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
         oss << " LastOp=" << lastOp << "/" << node->BreadcrumbCount;
+
+        // If the list didn't finish (lastOp < total), decode a window of ops
+        // around the last confirmed op so we can see what was executing when
+        // the GPU hung. lastOp is the COUNT of completed ops; the history index
+        // of the last confirmed op is (lastOp - 1) % 65536 (ring wraps past
+        // 65536 ops — modulo is free, so apply it unconditionally).
+        if (node->pCommandHistory && node->pLastBreadcrumbValue &&
+            lastOp < node->BreadcrumbCount && node->BreadcrumbCount > 0) {
+            const UINT lastConfirmed = (lastOp == 0) ? 0u : ((lastOp - 1u) % 65536u);
+            const UINT begin = (lastConfirmed > 3u) ? (lastConfirmed - 3u) : 0u;
+            const UINT end = ((lastConfirmed + 3u) < (node->BreadcrumbCount - 1u))
+                                 ? (lastConfirmed + 3u)
+                                 : (node->BreadcrumbCount - 1u);
+            oss << "\n  ops:";
+            for (UINT i = begin; i <= end; ++i) {
+                const D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[i];
+                oss << " op[" << i << "]=";
+                if (const char* opName = dredOpName(op)) {
+                    oss << opName;
+                } else {
+                    oss << static_cast<UINT>(op);
+                }
+                if (lastOp > 0 && i == lastConfirmed) {
+                    oss << "<--last confirmed";
+                }
+            }
+        }
 
         // Breadcrumb contexts (UTF-16 strings — convert to UTF-8).
         for (UINT ci = 0; ci < node->BreadcrumbContextsCount; ++ci) {
@@ -829,9 +958,19 @@ static std::string formatDredBreadcrumbs(ID3D12Device* device) {
         node = node->pNext;
     }
 
-    // Page-fault virtual address.
+    // Page-fault virtual address + the allocations that owned (or recently
+    // owned) it. RecentFreed overlap with no Existing node = use-after-free;
+    // both lists empty with VA != 0 = never-valid address (bad offset math).
     if (pageFault.PageFaultVA != 0) {
         oss << "PageFaultVA=0x" << std::hex << pageFault.PageFaultVA << std::dec << "\n";
+        appendDredAllocationNodes(oss, "Existing",
+                                  pageFault.pHeadExistingAllocationNode);
+        appendDredAllocationNodes(oss, "RecentFreed",
+                                  pageFault.pHeadRecentFreedAllocationNode);
+        if (!pageFault.pHeadExistingAllocationNode &&
+            !pageFault.pHeadRecentFreedAllocationNode) {
+            oss << "(no allocation nodes — VA was never valid; suspect bad offset math)\n";
+        }
     }
 
     return oss.str();
@@ -969,6 +1108,11 @@ Result D3D12Renderer::createRenderTargetViews() {
             std::cerr << "Failed to get swap chain buffer " << i << "!" << std::endl;
             return Result::Failure;
         }
+        {
+            wchar_t name[32];
+            swprintf_s(name, L"SwapChainBuf%u", i);
+            m_renderTargets[i]->SetName(name);
+        }
 
         m_gpu->device()->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
         rtvHandle.ptr += m_rtvDescriptorSize;
@@ -1015,6 +1159,7 @@ Result D3D12Renderer::createCommandList() {
         std::cerr << "Failed to create editor command list!" << std::endl;
         return Result::Failure;
     }
+    m_editorCmdList->SetName(L"EditorCmdList");
     m_editorCmdList->Close();
 
     hr = m_gpu->device()->CreateCommandList(
@@ -1028,6 +1173,7 @@ Result D3D12Renderer::createCommandList() {
         std::cerr << "Failed to create show command list!" << std::endl;
         return Result::Failure;
     }
+    m_showCmdList->SetName(L"ShowCmdList");
     m_showCmdList->Close();
 
     std::cout << "Command lists created (editor + show)" << std::endl;
@@ -1061,6 +1207,7 @@ Result D3D12Renderer::createCopyCommandList() {
         std::cerr << "Failed to create copy command list!" << std::endl;
         return Result::Failure;
     }
+    m_copyCommandList->SetName(L"ShowCopyCmdList");
     m_copyCommandList->Close();  // Lists start in recording state; close so beginShowFrame's Reset works.
 
     // Editor-thread copy allocators + list for uploadMeshImmediate (separate
@@ -1086,6 +1233,7 @@ Result D3D12Renderer::createCopyCommandList() {
         std::cerr << "Failed to create editor copy command list!" << std::endl;
         return Result::Failure;
     }
+    m_editorCopyCommandList->SetName(L"EditorCopyCmdList");
     m_editorCopyCommandList->Close();
 
     std::cout << "Copy command lists created" << std::endl;
@@ -1486,6 +1634,7 @@ Result D3D12Renderer::createVertexBuffer() {
         std::cerr << "Failed to create vertex buffer!" << std::endl;
         return Result::Failure;
     }
+    m_vertexBuffer->SetName(L"QuadVertexBuffer");
 
     // Copy vertex data to buffer
     void* vertexDataPtr;
@@ -1537,6 +1686,7 @@ Result D3D12Renderer::createConstantBuffer() {
         std::cerr << "Failed to create constant buffer!" << std::endl;
         return Result::Failure;
     }
+    m_constantBuffer->SetName(L"LegacyConstantBuffer");
 
     // Map constant buffer (keep it mapped for updates)
     // NOTE: This mapped buffer is currently UNUSED - drawColoredQuad uses root constants instead.
@@ -1862,6 +2012,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
             std::cerr << "Failed to create video texture resource!" << std::endl;
             return nullptr;
         }
+        m_videoTexture->SetName(L"LegacyVideoTex");
 
         // Create upload buffer
         UINT64 uploadBufferSize = 0;
@@ -1894,6 +2045,7 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
             m_videoTexture.Reset();
             return nullptr;
         }
+        m_videoUploadBuffer->SetName(L"LegacyVideoUpload");
 
         // Create SRV for the texture (at descriptor index 1, after ImGui font)
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -2798,6 +2950,7 @@ Result D3D12Renderer::createMappingSurfaceVertexBuffer() {
         std::cerr << "Failed to create mapping surface vertex buffer!" << std::endl;
         return Result::Failure;
     }
+    m_mappingSurfaceVertexBuffer->SetName(L"MappingSurfaceVtxBuffer");
 
     // Copy vertex data to buffer
     void* vertexDataPtr;
@@ -2855,6 +3008,7 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
         std::cerr << "Failed to create mapping surface constant ring!" << std::endl;
         return Result::Failure;
     }
+    m_mappingSurfaceConstantRing->SetName(L"MappingSurfaceCBRing");
 
     D3D12_RANGE readRange = { 0, 0 };
     void* mapped = nullptr;
@@ -2976,6 +3130,7 @@ Result D3D12Renderer::createEffectConstantBufferRing() {
         std::cerr << "Failed to create effect cbuffer ring!" << std::endl;
         return Result::Failure;
     }
+    m_effectCbufferRing->SetName(L"EffectCBRing");
 
     D3D12_RANGE readRange = { 0, 0 };
     void* mapped = nullptr;
@@ -3361,6 +3516,11 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
             m_composeTargets.pop_back();
             return UINT32_MAX;
         }
+        {
+            wchar_t name[40];
+            swprintf_s(name, L"ComposeTarget%u_sub%u", slot, sub);
+            target.resources[sub]->SetName(name);
+        }
 
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = target.rtvHeaps[sub]->GetCPUDescriptorHandleForHeapStart();
         m_gpu->device()->CreateRenderTargetView(target.resources[sub].Get(), &rtvDesc, rtvHandle);
@@ -3469,6 +3629,11 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
             std::cerr << "[D3D12] resizeComposeTarget: CreateCommittedResource failed "
                       << "sub=" << sub << " hr=0x" << std::hex << hr << std::dec << std::endl;
             return false;
+        }
+        {
+            wchar_t name[40];
+            swprintf_s(name, L"ComposeTarget%u_sub%u", slot, sub);
+            target.resources[sub]->SetName(name);
         }
 
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
@@ -3707,6 +3872,11 @@ uint32_t D3D12Renderer::createOutputWindow(const char* title,
             glfwDestroyWindow(win);
             return UINT32_MAX;
         }
+        {
+            wchar_t name[40];
+            swprintf_s(name, L"OutputSwapChainBuf%u", i);
+            slot.renderTargets[i]->SetName(name);
+        }
         m_gpu->device()->CreateRenderTargetView(slot.renderTargets[i].Get(), nullptr, h);
         h.ptr += m_rtvDescriptorSize;
     }
@@ -3789,6 +3959,11 @@ void D3D12Renderer::resizeOutputWindow(uint32_t outputSlot,
         if (FAILED(ow.swapChain->GetBuffer(i, IID_PPV_ARGS(&ow.renderTargets[i])))) {
             std::cerr << "[OutputWindow] GetBuffer after resize failed" << std::endl;
             return;
+        }
+        {
+            wchar_t name[48];
+            swprintf_s(name, L"OutputSwapChainBuf%u_slot%u", i, outputSlot);
+            ow.renderTargets[i]->SetName(name);
         }
         m_gpu->device()->CreateRenderTargetView(ow.renderTargets[i].Get(), nullptr, h);
         h.ptr += m_rtvDescriptorSize;
@@ -4411,6 +4586,11 @@ bool D3D12Renderer::ensureSnapshotResource(ComposeTarget& target) {
                   << std::hex << hr << std::dec << std::endl;
         return false;
     }
+    {
+        wchar_t name[40];
+        swprintf_s(name, L"ComposeSnapshot_srv%u", target.snapshotSrvSlot);
+        target.snapshotResource->SetName(name);
+    }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format                        = snapshotDesc.Format;
@@ -4568,6 +4748,7 @@ bool D3D12Renderer::ensureCaptureResource(uint32_t width, uint32_t height) {
                   << std::hex << hr << std::dec << std::endl;
         return false;
     }
+    m_captureResource->SetName(L"CaptureResource");
 
     D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
     rtvDesc.Format        = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -5449,6 +5630,11 @@ bool D3D12Renderer::createStageRenderTarget(uint32_t width, uint32_t height) {
                           << std::hex << hr << std::dec << "\n";
                 return false;
             }
+            {
+                wchar_t name[32];
+                swprintf_s(name, L"StageColor%u", i);
+                m_stageTarget.color[i]->SetName(name);
+            }
 
             // RTV
             D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = m_stageTarget.rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -5501,6 +5687,11 @@ bool D3D12Renderer::createStageRenderTarget(uint32_t width, uint32_t height) {
                           << std::hex << hr << std::dec << "\n";
                 return false;
             }
+            {
+                wchar_t name[32];
+                swprintf_s(name, L"StageDepth%u", i);
+                m_stageTarget.depth[i]->SetName(name);
+            }
 
             // DSV
             D3D12_CPU_DESCRIPTOR_HANDLE dsvCpu = m_stageTarget.dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -5536,6 +5727,11 @@ bool D3D12Renderer::createStageRenderTarget(uint32_t width, uint32_t height) {
                 std::cerr << "[Stage3D] Failed to create FrameCB[" << i << "] HRESULT 0x"
                           << std::hex << hr << std::dec << "\n";
                 return false;
+            }
+            {
+                wchar_t name[32];
+                swprintf_s(name, L"StageFrameCB%u", i);
+                m_stageTarget.frameCB[i]->SetName(name);
             }
             D3D12_RANGE readRange{0, 0};
             m_stageTarget.frameCB[i]->Map(0, &readRange, &m_stageTarget.frameCBMapped[i]);
@@ -5612,6 +5808,11 @@ bool D3D12Renderer::createStageRenderTargetStraight(uint32_t width, uint32_t hei
             std::cerr << "[Stage3D-Straight] Failed to create color[" << i << "] HRESULT 0x"
                       << std::hex << hr << std::dec << "\n";
             return false;
+        }
+        {
+            wchar_t name[40];
+            swprintf_s(name, L"StageStraightColor%u", i);
+            m_stageTargetStraight.color[i]->SetName(name);
         }
 
         // RTV
