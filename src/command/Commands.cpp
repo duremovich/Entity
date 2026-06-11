@@ -37,6 +37,7 @@
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/RemotePatch.hpp"
 #include "entity/components/AudioSource.hpp"
+#include "entity/components/TrackUiState.hpp"
 #include "entity/remote/RemoteControlStore.hpp"
 #include "entity/remote/RemotePatchUtil.hpp"
 #include "entity/audio/AudioEngine.hpp"
@@ -56,6 +57,9 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+
+// Placement read/write helpers promoted for unit-test access (no Engine dep).
+#include "entity/command/LayerPlacementOps.hpp"
 
 namespace entity {
 
@@ -553,6 +557,141 @@ CommandPtr DeleteClipCommand::fromJson(const nlohmann::json& j) {
         return std::make_unique<DeleteClipCommand>(j["entityId"].get<uint32_t>());
     }
     return std::make_unique<DeleteClipCommand>();
+}
+
+namespace {
+// Resolve a (trackIndex, layerIndex) pair to its entity, or entt::null if out
+// of range. Mirrors SelectClipCommand's resolution.
+entt::entity resolveTrackClip(Timeline& timeline, int trackIndex, int layerIndex) {
+    const auto& tracks = timeline.getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return entt::null;
+    auto& reg = timeline.getRegistry();
+    const auto* track = reg.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+    if (layerIndex < 0 || layerIndex >= static_cast<int>(track->layers.size())) return entt::null;
+    return track->layers[layerIndex];
+}
+
+// Reverse: the (trackIndex, layerIndex) of an entity, or {-1,-1} if not on any
+// track.
+std::pair<int, int> findTrackClip(Timeline& timeline, entt::entity e) {
+    const auto& tracks = timeline.getTracks();
+    auto& reg = timeline.getRegistry();
+    for (int t = 0; t < static_cast<int>(tracks.size()); ++t) {
+        const auto* track = reg.try_get<TimelineTrack>(tracks[t]);
+        if (!track) continue;
+        for (int l = 0; l < static_cast<int>(track->layers.size()); ++l) {
+            if (track->layers[l] == e) return {t, l};
+        }
+    }
+    return {-1, -1};
+}
+}  // namespace
+
+bool DeleteClipsCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+
+    // Resolve targets to entities. With explicit (track,layer) pairs, resolve
+    // each; otherwise pull the live multi-selection and RECORD its (track,layer)
+    // pairs into m_targets so toJson + redo are deterministic.
+    std::vector<entt::entity> targets;
+    if (!m_targets.empty()) {
+        for (const auto& tc : m_targets) {
+            entt::entity e = resolveTrackClip(*timeline, tc.first, tc.second);
+            if (e != entt::null) targets.push_back(e);
+        }
+    } else {
+        targets = timeline->getSelectedClips();
+        m_targets.clear();
+        for (entt::entity e : targets) {
+            auto tc = findTrackClip(*timeline, e);
+            if (tc.first >= 0) m_targets.push_back(tc);
+        }
+    }
+    if (targets.empty()) {
+        std::cerr << "[DeleteClips] No clips selected" << std::endl;
+        return false;
+    }
+
+    // Snapshot every target BEFORE destroying anything (deleting one shifts
+    // track->layers, but snapshots capture by value so order doesn't matter).
+    // A clip that can't be snapshotted (Signal — no DeletedLayerKind entry) is
+    // skipped with a log; the rest still delete.
+    m_snapshots.clear();
+    std::vector<entt::entity> toDelete;
+    for (entt::entity e : targets) {
+        auto snap = timeline->snapshotClipForDelete(e);
+        if (!snap.valid()) {
+            std::cerr << "[DeleteClips] Skipping entity=" << static_cast<uint32_t>(e)
+                      << " — not snapshottable (unsupported layer kind, e.g. Signal)"
+                      << std::endl;
+            continue;
+        }
+        m_snapshots.push_back(std::move(snap));
+        toDelete.push_back(e);
+    }
+    if (toDelete.empty()) {
+        std::cerr << "[DeleteClips] No deletable clips among the selection" << std::endl;
+        return false;
+    }
+
+    for (entt::entity e : toDelete) {
+        timeline->deleteClip(e);
+    }
+    timeline->setSelectedClip(entt::null);
+
+    m_captured = true;
+    return true;
+}
+
+bool DeleteClipsCommand::undo(Engine& engine) {
+    if (!m_captured) {
+        std::cerr << "[DeleteClips] undo called before successful execute" << std::endl;
+        return false;
+    }
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+
+    // Restore all snapshots as one logical step. Restored entities get fresh
+    // ids but land back in their original tracks in start-frame order, so the
+    // recorded (track,layer) targets stay valid for a subsequent redo.
+    for (const auto& snap : m_snapshots) {
+        timeline->restoreDeletedClip(snap);
+    }
+    return true;
+}
+
+bool DeleteClipsCommand::redo(Engine& engine) {
+    // Re-run against the recorded (track,layer) targets (stable across the
+    // undo's restore). Same re-capture approach as DeleteClipCommand::redo.
+    m_captured = false;
+    return execute(engine);
+}
+
+nlohmann::json DeleteClipsCommand::toJson() const {
+    nlohmann::json pairs = nlohmann::json::array();
+    for (const auto& tc : m_targets) {
+        pairs.push_back({{"track", tc.first}, {"layer", tc.second}});
+    }
+    return {{"type", "DeleteClips"}, {"clips", pairs}};
+}
+
+std::string DeleteClipsCommand::getDescription() const {
+    const size_t n = m_targets.empty() ? m_snapshots.size() : m_targets.size();
+    return "Delete " + std::to_string(n) + " clips";
+}
+
+CommandPtr DeleteClipsCommand::fromJson(const nlohmann::json& j) {
+    std::vector<DeleteClipsCommand::TrackClip> targets;
+    if (j.contains("clips") && j["clips"].is_array()) {
+        for (const auto& c : j["clips"]) {
+            const int t = c.value("track", -1);
+            const int l = c.value("layer", -1);
+            if (t >= 0 && l >= 0) targets.emplace_back(t, l);
+        }
+    }
+    return std::make_unique<DeleteClipsCommand>(std::move(targets));
 }
 
 // ============================================================================
@@ -1193,6 +1332,63 @@ CommandPtr SetRemotePatchArmedCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetRemotePatchArmedCommand>(
         j.value("trackIndex", 0), j.value("layerIndex", 0),
         j.value("armed", false));
+}
+
+// ============================================================================
+// RenameTrackCommand
+// ============================================================================
+
+bool RenameTrackCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "RenameTrack: invalid track index " << m_trackIndex << "\n";
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    entt::entity trackEntity = tracks[static_cast<std::size_t>(m_trackIndex)];
+    auto* uiState = registry.try_get<TrackUiState>(trackEntity);
+    m_previousName = uiState ? uiState->name : std::string{};
+    if (!uiState) {
+        registry.emplace<TrackUiState>(trackEntity, TrackUiState{m_newName, false});
+    } else {
+        uiState->name = m_newName;
+    }
+    std::cout << "[RenameTrack] track " << m_trackIndex
+              << " '" << m_previousName << "' -> '" << m_newName << "'\n";
+    return true;
+}
+
+bool RenameTrackCommand::undo(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || m_trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& registry = engine.getRegistry();
+    entt::entity trackEntity = tracks[static_cast<std::size_t>(m_trackIndex)];
+    auto* uiState = registry.try_get<TrackUiState>(trackEntity);
+    if (!uiState) {
+        registry.emplace<TrackUiState>(trackEntity, TrackUiState{m_previousName, false});
+    } else {
+        uiState->name = m_previousName;
+    }
+    return true;
+}
+
+nlohmann::json RenameTrackCommand::toJson() const {
+    return {{"type", "RenameTrack"}, {"trackIndex", m_trackIndex},
+            {"newName", m_newName}};
+}
+
+std::string RenameTrackCommand::getDescription() const {
+    return "Rename track " + std::to_string(m_trackIndex + 1) +
+           " to '" + m_newName + "'";
+}
+
+CommandPtr RenameTrackCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<RenameTrackCommand>(
+        j.value("trackIndex", 0), j.value("newName", std::string{}));
 }
 
 bool LogClipStateCommand::execute(Engine& engine) {
@@ -2949,6 +3145,127 @@ CommandPtr SetClipDurationCommand::fromJson(const nlohmann::json& j) {
     int clipIndex = j.value("clipIndex", 0);
     FrameNumber duration = j.value("duration", static_cast<FrameNumber>(0));
     return std::make_unique<SetClipDurationCommand>(trackIndex, clipIndex, duration);
+}
+
+// ============================================================================
+// SetLayerStartFrameCommand / SetLayerDurationCommand
+// ============================================================================
+
+namespace {
+
+// Look up a layer entity by (trackIndex, layerIndex). Returns entt::null and
+// logs an error on any invalid index. Works for all entity kinds on a track —
+// Clip-backed and Layer-only alike. Stays file-local: requires Engine.
+entt::entity lookupLayerByTrack(Engine& engine, int trackIndex, int layerIndex, const char* who) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[" << who << "] No timeline" << std::endl;
+        return entt::null;
+    }
+    const auto& tracks = timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) {
+        std::cerr << "[" << who << "] Invalid track index " << trackIndex << std::endl;
+        return entt::null;
+    }
+    auto& registry = engine.getRegistry();
+    const auto* track = registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track || layerIndex < 0 || layerIndex >= static_cast<int>(track->layers.size())) {
+        std::cerr << "[" << who << "] Invalid layer index " << layerIndex << std::endl;
+        return entt::null;
+    }
+    return track->layers[layerIndex];
+}
+
+} // anonymous namespace
+
+bool SetLayerStartFrameCommand::execute(Engine& engine) {
+    entt::entity e = lookupLayerByTrack(engine, m_trackIndex, m_layerIndex, "SetLayerStartFrame");
+    if (e == entt::null) return false;
+    if (m_startFrame < 0) {
+        std::cerr << "[SetLayerStartFrame] start must be >= 0: " << m_startFrame << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    if (!m_previousStartFrame.has_value()) {
+        m_previousStartFrame = command::readLayerStartFrame(registry, e);
+    }
+    if (!command::writeLayerStartFrame(registry, e, m_startFrame)) return false;
+    std::cout << "[SetLayerStartFrame] Track " << m_trackIndex
+              << ", Layer " << m_layerIndex
+              << " -> " << m_startFrame << std::endl;
+    return true;
+}
+
+bool SetLayerStartFrameCommand::undo(Engine& engine) {
+    if (!m_previousStartFrame.has_value()) return false;
+    entt::entity e = lookupLayerByTrack(engine, m_trackIndex, m_layerIndex, "SetLayerStartFrame");
+    if (e == entt::null) return false;
+    return command::writeLayerStartFrame(engine.getRegistry(), e, *m_previousStartFrame);
+}
+
+nlohmann::json SetLayerStartFrameCommand::toJson() const {
+    return {{"type",       "SetLayerStartFrame"},
+            {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex},
+            {"startFrame", m_startFrame}};
+}
+
+std::string SetLayerStartFrameCommand::getDescription() const {
+    return "Set startFrame -> " + std::to_string(m_startFrame) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", layer " + std::to_string(m_layerIndex);
+}
+
+CommandPtr SetLayerStartFrameCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex  = j.value("trackIndex", 0);
+    int layerIndex  = j.value("layerIndex", 0);
+    FrameNumber sf  = j.value("startFrame", static_cast<FrameNumber>(0));
+    return std::make_unique<SetLayerStartFrameCommand>(trackIndex, layerIndex, sf);
+}
+
+bool SetLayerDurationCommand::execute(Engine& engine) {
+    entt::entity e = lookupLayerByTrack(engine, m_trackIndex, m_layerIndex, "SetLayerDuration");
+    if (e == entt::null) return false;
+    if (m_duration < 1) {
+        std::cerr << "[SetLayerDuration] Duration must be >= 1: " << m_duration << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+    if (!m_previousDuration.has_value()) {
+        m_previousDuration = command::readLayerDuration(registry, e);
+    }
+    if (!command::writeLayerDuration(registry, e, m_duration)) return false;
+    std::cout << "[SetLayerDuration] Track " << m_trackIndex
+              << ", Layer " << m_layerIndex
+              << " -> " << m_duration << " frames" << std::endl;
+    return true;
+}
+
+bool SetLayerDurationCommand::undo(Engine& engine) {
+    if (!m_previousDuration.has_value()) return false;
+    entt::entity e = lookupLayerByTrack(engine, m_trackIndex, m_layerIndex, "SetLayerDuration");
+    if (e == entt::null) return false;
+    return command::writeLayerDuration(engine.getRegistry(), e, *m_previousDuration);
+}
+
+nlohmann::json SetLayerDurationCommand::toJson() const {
+    return {{"type",       "SetLayerDuration"},
+            {"trackIndex", m_trackIndex},
+            {"layerIndex", m_layerIndex},
+            {"duration",   m_duration}};
+}
+
+std::string SetLayerDurationCommand::getDescription() const {
+    return "Set duration -> " + std::to_string(m_duration) +
+           " on track " + std::to_string(m_trackIndex) +
+           ", layer " + std::to_string(m_layerIndex);
+}
+
+CommandPtr SetLayerDurationCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex   = j.value("trackIndex", 0);
+    int layerIndex   = j.value("layerIndex", 0);
+    FrameNumber dur  = j.value("duration", static_cast<FrameNumber>(1));
+    return std::make_unique<SetLayerDurationCommand>(trackIndex, layerIndex, dur);
 }
 
 // ============================================================================
@@ -4801,21 +5118,63 @@ entt::entity resolveClipForClipboard(Engine& engine, const std::optional<uint32_
 
 }  // namespace
 
+namespace {
+// Build a clipboard group from a set of source entities. Snapshots each
+// copyable entity, skips un-copyable kinds (OA / Signal) with a log, and sets
+// relativeStartOffset on every entry relative to the group's minimum start so
+// paste preserves the relative layout. Returns an empty vector if nothing was
+// copyable.
+std::vector<ClipClipboardSnapshot>
+buildClipboardGroup(Engine& engine, const std::vector<entt::entity>& sources) {
+    std::vector<ClipClipboardSnapshot> group;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return group;
+
+    FrameNumber minStart = std::numeric_limits<FrameNumber>::max();
+    for (entt::entity e : sources) {
+        auto snap = engine.snapshotClipForClipboard(e);
+        if (!snap.valid) {
+            std::cerr << "[CopyClip] Skipping entity=" << static_cast<uint32_t>(e)
+                      << " - not copyable (Signal / not on a track)" << std::endl;
+            continue;
+        }
+        minStart = std::min(minStart, snap.base.startFrame);
+        group.push_back(std::move(snap));
+    }
+    if (group.empty()) return group;
+    for (auto& snap : group) {
+        snap.relativeStartOffset = snap.base.startFrame - minStart;
+    }
+    return group;
+}
+}  // namespace
+
 bool CopyClipCommand::execute(Engine& engine) {
-    entt::entity target = resolveClipForClipboard(engine, m_entityId);
-    if (target == entt::null) {
-        std::cerr << "[CopyClip] No clip to copy" << std::endl;
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+
+    // Group copy when the multi-selection has >1 AND no explicit single
+    // entity was requested; otherwise the single-clip path.
+    std::vector<entt::entity> sources;
+    if (!m_entityId.has_value() && timeline->getSelectedClips().size() > 1) {
+        sources = timeline->getSelectedClips();
+    } else {
+        entt::entity target = resolveClipForClipboard(engine, m_entityId);
+        if (target == entt::null) {
+            std::cerr << "[CopyClip] No clip to copy" << std::endl;
+            return false;
+        }
+        sources.push_back(target);
+    }
+
+    auto group = buildClipboardGroup(engine, sources);
+    if (group.empty()) {
+        std::cerr << "[CopyClip] Nothing copyable in the selection" << std::endl;
         return false;
     }
-    auto snap = engine.snapshotClipForClipboard(target);
-    if (!snap.valid) {
-        std::cerr << "[CopyClip] Failed to snapshot clip entity="
-                  << static_cast<uint32_t>(target) << std::endl;
-        return false;
-    }
-    engine.setClipClipboard(std::move(snap));
-    std::cout << "[CopyClip] Clipboard updated from entity="
-              << static_cast<uint32_t>(target) << std::endl;
+    const size_t n = group.size();
+    engine.setClipClipboard(std::move(group));
+    std::cout << "[CopyClip] Clipboard updated with " << n << " clip(s)" << std::endl;
     return true;
 }
 
@@ -4877,23 +5236,29 @@ CommandPtr CutClipCommand::fromJson(const nlohmann::json& j) {
 }
 
 bool PasteClipCommand::execute(Engine& engine) {
-    const auto& clip = engine.clipClipboard();
-    if (!clip.has_value() || !clip->valid) {
+    const auto& group = engine.clipClipboard();
+    if (group.empty()) {
         std::cerr << "[PasteClip] Clipboard empty" << std::endl;
         return false;
     }
     auto* timeline = engine.getTimeline();
     if (!timeline) return false;
     auto& reg = engine.getRegistry();
+    const int trackCount = static_cast<int>(timeline->getTracks().size());
 
-    // Resolve destination track. Explicit constructor argument wins
-    // (right-click menu path); otherwise fall back to:
-    //   1) Currently-selected clip's track
-    //   2) Clipboard's source track
-    //   3) Track 0 (final fallback so paste never silently fails)
-    int trackIdx = -1;
+    // Resolve the anchor frame. Explicit wins (right-click menu), else playhead.
+    const FrameNumber anchorFrame = m_targetFrame.has_value()
+        ? *m_targetFrame
+        : timeline->getCurrentFrame();
+
+    // Resolve a base destination track for the FIRST entry. Explicit
+    // constructor argument wins; otherwise fall back to the selected clip's
+    // track, then the group's first source track, then track 0. Each entry's
+    // own track is then computed relative to the group's first source track so
+    // a multi-track group keeps its relative track spread.
+    int baseTrackIdx = -1;
     if (m_targetTrack.has_value()) {
-        trackIdx = *m_targetTrack;
+        baseTrackIdx = *m_targetTrack;
     } else {
         entt::entity sel = timeline->getSelectedClip();
         if (sel != entt::null && reg.valid(sel)) {
@@ -4901,29 +5266,52 @@ bool PasteClipCommand::execute(Engine& engine) {
             if (selTrack != entt::null) {
                 const auto& tracks = timeline->getTracks();
                 for (size_t i = 0; i < tracks.size(); ++i) {
-                    if (tracks[i] == selTrack) { trackIdx = static_cast<int>(i); break; }
+                    if (tracks[i] == selTrack) { baseTrackIdx = static_cast<int>(i); break; }
                 }
             }
         }
-        if (trackIdx < 0) trackIdx = clip->sourceTrackIndex;
+        if (baseTrackIdx < 0) baseTrackIdx = group.front().sourceTrackIndex;
+    }
+    if (baseTrackIdx < 0) baseTrackIdx = 0;
+
+    // The group's first source track is the reference for per-entry track
+    // offsets (preserves a multi-track group's vertical spread on paste).
+    const int refSourceTrack = group.front().sourceTrackIndex;
+
+    m_createdEntities.clear();
+    entt::entity lastCreated = entt::null;
+    for (const auto& snap : group) {
+        const FrameNumber dstFrame = anchorFrame + snap.relativeStartOffset;
+        int dstTrack = baseTrackIdx;
+        if (refSourceTrack >= 0 && snap.sourceTrackIndex >= 0) {
+            dstTrack = baseTrackIdx + (snap.sourceTrackIndex - refSourceTrack);
+        }
+        // Clamp to the track range so an out-of-range offset doesn't drop the
+        // entry (materialize also clamps, but clamp here for the log clarity).
+        if (dstTrack < 0) dstTrack = 0;
+        if (dstTrack >= trackCount) dstTrack = trackCount - 1;
+
+        entt::entity created = engine.materializeClipFromSnapshot(snap, dstFrame, dstTrack);
+        if (created == entt::null) {
+            std::cerr << "[PasteClip] Skipped one entry (materialize failed) at frame="
+                      << dstFrame << " track=" << dstTrack << std::endl;
+            continue;
+        }
+        m_createdEntities.push_back(created);
+        lastCreated = created;
     }
 
-    // Resolve target frame. Explicit wins (right-click menu),
-    // else playhead.
-    const FrameNumber targetFrame = m_targetFrame.has_value()
-        ? *m_targetFrame
-        : timeline->getCurrentFrame();
-
-    entt::entity created = engine.materializeClipFromSnapshot(*clip, targetFrame, trackIdx);
-    if (created == entt::null) {
-        std::cerr << "[PasteClip] Materialize failed" << std::endl;
+    if (m_createdEntities.empty()) {
+        std::cerr << "[PasteClip] Nothing pasted (all entries failed)" << std::endl;
         return false;
     }
-    timeline->setSelectedClip(created);
-    m_createdEntity = created;
+
+    // Select the whole pasted group; primary = last created.
+    timeline->setSelection(m_createdEntities);
+    (void)lastCreated;
     m_executed = true;
-    std::cout << "[PasteClip] entity=" << static_cast<uint32_t>(created)
-              << " at frame=" << targetFrame << " track=" << trackIdx << std::endl;
+    std::cout << "[PasteClip] pasted " << m_createdEntities.size()
+              << " clip(s) at anchor frame=" << anchorFrame << std::endl;
     return true;
 }
 
@@ -4944,15 +5332,18 @@ CommandPtr PasteClipCommand::fromJson(const nlohmann::json& j) {
 }
 
 bool PasteClipCommand::undo(Engine& engine) {
-    if (!m_executed || m_createdEntity == entt::null) return false;
+    if (!m_executed || m_createdEntities.empty()) return false;
     auto* timeline = engine.getTimeline();
     if (!timeline) return false;
-    if (engine.getRegistry().valid(m_createdEntity)) {
-        timeline->deleteClip(m_createdEntity);
-        timeline->setSelectedClip(entt::null);
+    // Remove every pasted entity as one step.
+    for (entt::entity e : m_createdEntities) {
+        if (engine.getRegistry().valid(e)) {
+            timeline->deleteClip(e);
+        }
     }
+    timeline->setSelectedClip(entt::null);
     m_executed = false;
-    m_createdEntity = entt::null;
+    m_createdEntities.clear();
     return true;
 }
 

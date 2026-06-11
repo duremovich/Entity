@@ -15,6 +15,8 @@
 #include <entt/entt.hpp>
 #include <array>
 #include <vector>
+#include <algorithm>
+#include <utility>
 #include <string>
 #include <functional>
 #include <optional>
@@ -131,6 +133,16 @@ public:
     // Track management
     entt::entity createTrack(const std::string& name);
     void deleteTrack(entt::entity track);
+
+    /**
+     * Insert a new empty track at the given position, shifting all tracks at
+     * and after that index down by one. `index` is clamped to [0, trackCount].
+     * Calls reindexTracks() so Layer::trackIndex and MediaLayer::zOrder are
+     * consistent with the new order.
+     * @return The new track entity.
+     */
+    entt::entity insertTrackAt(size_t index);
+
     const std::vector<entt::entity>& getTracks() const { return m_tracks; }
     size_t getTrackCount() const { return m_tracks.size(); }
 
@@ -275,6 +287,16 @@ public:
      */
     bool moveClipToTrack(entt::entity clipEntity, int newTrackIndex);
 
+    // Section break marker (full definition; the Section-break API block
+    // below uses it). Defined here so RippleDeleteResult can hold sections
+    // by value. Single point on the timeline; the owning m_sections vector is
+    // kept sorted ascending by breakFrame.
+    struct Section {
+        FrameNumber breakFrame{0};      // Single point on the timeline (integer timeline frame)
+        uint32_t    color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
+        double      fadeSeconds{0.0};   // auto-fade envelope duration, in seconds
+    };
+
     // ============================================================================
     // Ripple time edits (Phase C #4) — undoable via the captured records below.
     // Helpers operate directly on the registry so they can be unit-tested
@@ -282,40 +304,89 @@ public:
     // own the captured-state vectors for undo.
     // ============================================================================
 
+    // Placement-bearing entity whose start frame moved. Used by both ripple
+    // ops; archetype-generic (Clip / OA / Generative / Text / Signal — all
+    // carry either a Clip or a Layer that the placement helpers read/write).
     struct ClipShiftRecord {
         entt::entity entity{entt::null};
         FrameNumber oldStartFrame{0};
     };
-    struct ClipSplitRecord {
-        entt::entity originalEntity{entt::null};
+    // An entity whose duration changed (insert lengthen, delete head/tail
+    // trim, delete-spanning shorten). For tail-trim of a Clip layer the
+    // media in-point also slips — oldMediaStartFrame captures it (sentinel
+    // -1 = "this record didn't touch mediaStartFrame", e.g. a Layer-only
+    // entity or a non-tail case).
+    struct ClipResizeRecord {
+        entt::entity entity{entt::null};
+        FrameNumber oldStartFrame{0};
         FrameNumber oldDuration{0};
-        bool hadAnimProps{false};
-        AnimatedProperties oldAnimProps{};
-        entt::entity newRightEntity{entt::null};
+        FrameNumber oldMediaStartFrame{-1};
     };
+    // Whole-component snapshot of an entity's keyframe tracks taken before a
+    // ripple mutated them (insert keyframe-shift, delete keyframe-window
+    // removal). hadAnimProps=false means the entity had no AnimatedProperties
+    // before the op, so undo removes the component entirely.
+    struct AnimPropsRecord {
+        entt::entity       entity{entt::null};
+        bool               hadAnimProps{false};
+        AnimatedProperties oldAnimProps{};
+    };
+    // A cue whose frame moved. Keyed by the cue's stable `number` (the
+    // owning vector is sorted by number, not frame, so shifting frames never
+    // reorders it).
+    struct CueShiftRecord {
+        double      number{0.0};
+        FrameNumber oldFrame{0};
+    };
+    // A section break whose breakFrame moved.
+    struct SectionShiftRecord {
+        FrameNumber oldBreakFrame{0};
+        FrameNumber newBreakFrame{0};
+    };
+
     struct RippleInsertResult {
         bool success{false};
-        std::vector<ClipShiftRecord> shifted;
-        std::vector<ClipSplitRecord> splits;
+        std::vector<ClipShiftRecord>   shifted;   // start >= insertFrame, shifted +D
+        std::vector<ClipResizeRecord>  lengthened;// spanning clips, duration += D
+        std::vector<AnimPropsRecord>   keyframes; // keyframe shift on spanning clips
+        std::vector<CueShiftRecord>    cues;      // cues at/after insertFrame, +D
+        std::vector<SectionShiftRecord> sections; // sections at/after insertFrame, +D
     };
     struct RippleDeleteResult {
         bool success{false};
-        std::vector<ClipShiftRecord> shifted;
+        std::vector<ClipShiftRecord>   shifted;   // entirely after range, shifted -removeDur
+        std::vector<ClipResizeRecord>  resized;   // head/tail straddle + spanning shorten
+        std::vector<AnimPropsRecord>   keyframes; // keyframe-window removal on spanning clips
+        std::vector<DeletedClipSnapshot> deleted; // fully-inside entities, snapshot-deleted
+        std::vector<CueShiftRecord>    cuesShifted;  // cues after range, -removeDur
+        std::vector<CueTag>            cuesDeleted;  // cues inside range, removed
+        std::vector<SectionShiftRecord> sectionsShifted; // sections after range, -removeDur
+        std::vector<Section>           sectionsDeleted; // sections inside range, removed
     };
 
     /**
-     * Insert `durationFrames` of empty time at `insertFrame`. Splits any clip
-     * that spans `insertFrame` and shifts every clip starting at or after
-     * `insertFrame` by `+durationFrames`. Capture the returned record to undo.
+     * Insert `durationFrames` of empty time at `insertFrame`. Spanning
+     * clips (start < insertFrame < end) are LENGTHENED (duration += D) and
+     * their keyframes at clip-relative frame >= (insertFrame - start) shift
+     * +D; every entity starting at or after `insertFrame` shifts +D, across
+     * all layer kinds. Cues and section breaks at/after `insertFrame` shift
+     * +D too. Capture the returned record to undo.
      */
     RippleInsertResult rippleInsertTime(FrameNumber insertFrame, FrameNumber durationFrames);
     void undoRippleInsertTime(RippleInsertResult& record);
 
     /**
-     * Delete the time span `[rangeStart, rangeEnd)` from every track. v1
-     * limitation: refuses if any clip overlaps the range — caller must split
-     * or move overlapping clips first. Clips entirely after the range shift
-     * left by `(rangeEnd - rangeStart)`. Capture the returned record to undo.
+     * Delete the time span `[rangeStart, rangeEnd)` from every track, across
+     * all layer kinds. Per entity: fully inside → snapshot-deleted; straddles
+     * the range start → tail trimmed off; straddles the range end → head
+     * trimmed and (for Clip layers) media in-point slipped so surviving
+     * timeline positions show identical content; spans the whole range →
+     * shortened with the deleted clip-relative keyframe window removed and
+     * later keyframes pulled earlier; entirely after → shifted left by
+     * `(rangeEnd - rangeStart)`. Cues / sections inside the range are deleted,
+     * those after shift left. Pre-flight aborts (returns success=false, no
+     * mutation) if any fully-contained entity can't be snapshotted (Signal).
+     * Capture the returned record to undo.
      */
     RippleDeleteResult rippleDeleteTime(FrameNumber rangeStart, FrameNumber rangeEnd);
     void undoRippleDeleteTime(RippleDeleteResult& record);
@@ -331,12 +402,9 @@ public:
     // (or to the end of the timeline after the last break). The vector is kept
     // sorted ascending by `breakFrame`. `fadeSeconds` is serialized now;
     // Phase D activates it as the auto-fade envelope around boundary clips.
+    // (struct Section is defined above, before the ripple-result structs that
+    // hold it by value.)
     // ============================================================================
-    struct Section {
-        FrameNumber breakFrame{0};      // Single point on the timeline (integer timeline frame)
-        uint32_t    color{0xFF6090C8};  // ImU32 (ABGR), default cool blue
-        double      fadeSeconds{0.0};   // auto-fade envelope duration, in seconds
-    };
 
     const std::vector<Section>& getSections() const { return m_sections; }
 
@@ -433,10 +501,19 @@ public:
     /** Drop every cue. Used by Timeline::clear() and the project loader. */
     void clearCueTags() { m_cueTags.clear(); }
 
-    // Selection management
+    // Selection management.
+    //
+    // Two-tier clip selection (Phase 12): m_selectedClip is the PRIMARY (last-
+    // clicked) clip — PropertyWindow and every existing single-select consumer
+    // read it unchanged. m_selectedClips is the full ordered, deduped multi-
+    // selection set; m_selectedClip is always its primary member (or null when
+    // the set is empty). setSelectedClip(e) resets the set to {e}, so callers
+    // that don't care about multi-select behave exactly as before.
     void setSelectedClip(entt::entity clip) {
         m_selectedClip = clip;
+        m_selectedClips.clear();
         if (clip != entt::null) {
+            m_selectedClips.push_back(clip);
             m_selectedCueNumber.reset();
             m_selectedSectionBreakFrame.reset();
             // Clip selection doesn't fight with prop selection in the same way
@@ -447,6 +524,60 @@ public:
         }
     }
     entt::entity getSelectedClip() const { return m_selectedClip; }
+
+    // ---- Multi-select (Phase 12) -------------------------------------------
+    // The full selection set, in click order (deduped). Primary is the last
+    // element conceptually, but is tracked explicitly via m_selectedClip.
+    const std::vector<entt::entity>& getSelectedClips() const { return m_selectedClips; }
+
+    bool isSelected(entt::entity clip) const {
+        return std::find(m_selectedClips.begin(), m_selectedClips.end(), clip)
+               != m_selectedClips.end();
+    }
+
+    // Toggle a clip in/out of the set (ctrl-click). Adding makes it primary;
+    // removing the primary repoints the primary at the new last member (or
+    // null when the set empties).
+    void toggleSelected(entt::entity clip) {
+        if (clip == entt::null) return;
+        auto it = std::find(m_selectedClips.begin(), m_selectedClips.end(), clip);
+        if (it != m_selectedClips.end()) {
+            m_selectedClips.erase(it);
+            m_selectedClip = m_selectedClips.empty() ? entt::null
+                                                     : m_selectedClips.back();
+        } else {
+            m_selectedClips.push_back(clip);
+            m_selectedClip = clip;  // newly toggled-on becomes primary
+            m_selectedCueNumber.reset();
+            m_selectedSectionBreakFrame.reset();
+        }
+    }
+
+    // Replace the whole set (rubber band / programmatic). Primary becomes the
+    // last entry; an empty list clears the clip selection. Deduped in order.
+    void setSelection(const std::vector<entt::entity>& clips) {
+        m_selectedClips.clear();
+        for (entt::entity e : clips) {
+            if (e != entt::null && !isSelected(e)) m_selectedClips.push_back(e);
+        }
+        m_selectedClip = m_selectedClips.empty() ? entt::null : m_selectedClips.back();
+        if (!m_selectedClips.empty()) {
+            m_selectedCueNumber.reset();
+            m_selectedSectionBreakFrame.reset();
+        }
+    }
+
+    // Make `clip` the primary without disturbing set membership (plain click on
+    // an already-selected clip — keeps the group for a potential group drag).
+    void setPrimaryClip(entt::entity clip) {
+        if (clip != entt::null && isSelected(clip)) m_selectedClip = clip;
+    }
+
+    // (trackIndex, layerIndex) of a clip, or {-1,-1} if not on any track.
+    // Used by command call sites that address clips by stable indices rather
+    // than runtime entity ids (e.g. capturing DeleteClipsCommand targets at
+    // enqueue time). Defined in Timeline.cpp (needs TimelineTrack).
+    std::pair<int, int> clipIndices(entt::entity clip) const;
 
     void setSelectedScreen(entt::entity screen) {
         m_selectedScreen = screen;
@@ -502,6 +633,7 @@ public:
     // Clear all selection (deselect clip, screen, projector, cue, section break)
     void clearSelection() {
         m_selectedClip = entt::null;
+        m_selectedClips.clear();
         m_selectedScreen = entt::null;
         m_selectedProjector = entt::null;
         m_selectedProp = entt::null;
@@ -520,6 +652,13 @@ public:
     bool isTrackExpanded(entt::entity track) const {
         return m_expandedTracks.count(static_cast<uint32_t>(track)) > 0;
     }
+
+    // Global "hide shy tracks" toggle (Phase 9). Editor view-state only —
+    // never read by compositing. When true, tracks whose TrackUiState::shy is
+    // set are skipped in the timeline's row layout (renderers + hit-tests).
+    // Persisted at project["timeline"]["hideShyTracks"].
+    bool getHideShyTracks() const { return m_hideShyTracks; }
+    void setHideShyTracks(bool hide) { m_hideShyTracks = hide; }
     void setClipExpanded(entt::entity clip, bool expanded) {
         if (expanded) {
             m_expandedClips.insert(static_cast<uint32_t>(clip));
@@ -570,8 +709,11 @@ private:
     // Numbered cue markers, sorted ascending by `number`. Persisted at v9.
     std::vector<CueTag> m_cueTags;
 
-    // Selection state
+    // Selection state. m_selectedClip is the PRIMARY clip (single-select API,
+    // unchanged consumers); m_selectedClips is the full ordered multi-select
+    // set (Phase 12), always containing the primary when non-empty.
     entt::entity m_selectedClip{entt::null};
+    std::vector<entt::entity> m_selectedClips;
     entt::entity m_selectedScreen{entt::null};
     entt::entity m_selectedProjector{entt::null};
     entt::entity m_selectedProp{entt::null};
@@ -583,12 +725,22 @@ private:
     std::unordered_set<uint32_t> m_expandedTracks;
     std::unordered_set<uint32_t> m_expandedClips;
 
+    // Global "hide shy tracks" view-state toggle (Phase 9). Editor-only.
+    bool m_hideShyTracks{false};
+
     // Set by SectionScheduler when the playhead has just been parked at a
     // break this tick. Atomic so UI/keyboard threads can read coherently.
     std::atomic<bool> m_atSectionBreak{false};
 
     // Callback for clip creation
     ClipCreatedCallback m_clipCreatedCallback;
+
+    /**
+     * Re-derive TimelineTrack::trackIndex, Layer::trackIndex, and
+     * MediaLayer::zOrder for every track in m_tracks order. Called after
+     * any insertion or deletion that changes track positions.
+     */
+    void reindexTracks();
 };
 
 // ============================================================================

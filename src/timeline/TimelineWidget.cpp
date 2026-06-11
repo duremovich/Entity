@@ -17,6 +17,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/TrackUiState.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/command/CommandDispatcher.hpp"
@@ -120,33 +121,24 @@ void TimelineWidget::render() {
     // Calculate timeline dimensions. Tick spacing is fixed at TICK_PX; zoom
     // changes the time each tick represents, so content width grows/shrinks
     // with zoom (and horizontal scroll is used to pan within long timelines).
-    int trackCount = static_cast<int>(m_timeline->getTrackCount());
     float durationSeconds = m_timeline->getDuration() / 1000000.0f;
     m_lastVisibleWidth = contentRegion.x - TRACK_HEADER_WIDTH - 4.0f;
     applyZoomIndex();
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
 
-    // Calculate total tracks content height (accounting for expanded tracks/clips)
-    float tracksContentHeight = 0.0f;
-    const auto& tracks = m_timeline->getTracks();
-    auto& registry = m_timeline->getRegistry();
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        uint32_t trackId = static_cast<uint32_t>(tracks[i]);
-        bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
-        tracksContentHeight += TRACK_HEIGHT + TRACK_PADDING;
+    // Build the per-frame track-row layout cache (Phase 9). This is the single
+    // source of truth for which tracks are visible (shy tracks skipped when the
+    // global hide toggle is on) and their cumulative Y / height. Every renderer
+    // and hit-test below iterates it.
+    buildTrackRows();
 
-        // Expanded track adds room for the playhead layer's property panel.
-        // Row count varies by archetype: 6 for Clip-backed, 9 for OA layers.
-        // When no layer overlaps the playhead on this track, no extra height.
-        if (trackExpanded) {
-            entt::entity atPlayhead = findClipAtPlayhead(tracks[i]);
-            if (atPlayhead != entt::null) {
-                tracksContentHeight +=
-                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
-            }
-        }
+    // Total tracks content height = the visible rows' heights + padding. Derives
+    // from the same cache so the InvisibleButton extent matches exactly what's
+    // drawn (and shrinks when shy tracks are hidden).
+    float tracksContentHeight = 0.0f;
+    for (const auto& row : m_trackRows) {
+        tracksContentHeight += row.height + TRACK_PADDING;
     }
-    (void)registry;
 
     // Compute cue-lane height *before* allocating the ruler child so the
     // band can be reserved above the time ruler. Lane sits between any
@@ -168,9 +160,90 @@ void TimelineWidget::render() {
     float tracksWindowHeight = availableHeight - topBandHeight;
     float timelineContentWidth = m_lastVisibleWidth;
 
+    // The InvisibleButton content extent inside both the tracks child and the
+    // header inner child. Both children MUST declare the same vertical content
+    // extent so their ScrollMax clamps match — otherwise a SetScrollY on the
+    // slave near the bottom is clamped to a different ceiling than the master
+    // and the two panels stay permanently offset (research finding #4).
+    const float tracksContentExtentY = tracksContentHeight + 100.0f;
+
+    // === SCROLL-SYNC OWNERSHIP (Phase 3 rework) ===
+    // The tracks child owns its scroll natively: it carries the real scrollbar,
+    // takes the mouse wheel, and we do NOT force-set its scroll every frame.
+    // The ruler (X) and the header panel (Y) are SLAVES — their scroll is
+    // SetScroll'd to the tracks child's CURRENT-frame value.
+    //
+    // Two ImGui facts drive the submission order (verified against vendored
+    // imgui 1.89.7):
+    //   1. SetScrollY writes window->ScrollTarget, consumed at the START of
+    //      that window's Begin() and then cleared. So a slave's SetScroll must
+    //      be issued BEFORE that slave's BeginChild() to take effect the same
+    //      frame.
+    //   2. GetScrollX/Y reads window->Scroll, which only reflects an applied
+    //      target after the window's Begin() has run.
+    // Therefore the master (TimelineTracks) is submitted FIRST so we can read
+    // its committed scroll, then the slaves are submitted with that same-frame
+    // value set pre-Begin. Children are positioned explicitly via SetCursorPos
+    // (instead of cursor-flow + SameLine) so the submission reorder doesn't
+    // disturb the on-screen layout.
+    const ImVec2 layoutOrigin = ImGui::GetCursorPos();
+    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
+    const float rightColumnX = layoutOrigin.x + TRACK_HEADER_WIDTH + 2.0f;
+    const float bottomRowY = layoutOrigin.y + topBandHeight + spacingY;
+
+    // --- MASTER: scrollable tracks (right side, bottom row) ---
+    // Submitted first each frame so its committed scroll can be read and fed to
+    // the slaves the SAME frame. Owns its scroll natively (HorizontalScrollbar,
+    // wheel) — no per-frame SetScrollX/Y force-set; programmatic moves go
+    // through the pending-flag path below.
+    ImGui::SetCursorPos(ImVec2(rightColumnX, bottomRowY));
+    // Programmatic scroll moves only (ensurePlayheadVisible / zoom re-anchor /
+    // wheel-over-header) push the target through SetNextWindowScroll, applied
+    // at this child's Begin THIS frame (research finding #1). -1 leaves an axis
+    // untouched so a pure-X move doesn't reset Y and vice versa. The pending
+    // flags also suppress the same-frame read-back below so the just-applied
+    // target isn't stomped.
+    if (m_pendingScrollX || m_pendingScrollY) {
+        ImGui::SetNextWindowScroll(ImVec2(m_pendingScrollX ? m_syncScrollX : -1.0f,
+                                          m_pendingScrollY ? m_syncScrollY : -1.0f));
+    }
+    ImGui::BeginChild("TimelineTracks", ImVec2(timelineContentWidth, tracksWindowHeight), false,
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoNav);
+
+    // Save tracks position for playhead rendering
+    m_tracksScreenPos = ImGui::GetCursorScreenPos();
+
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    ImGui::InvisibleButton("##tracksArea", ImVec2(timelineWidth, tracksContentExtentY));
+    ImGui::SetCursorPos(ImVec2(0, 0));
+
+    renderTracks();
+
+    // Read the tracks child's committed scroll SAME-frame, BEFORE the slaves
+    // are submitted and before hit-test code (handleTracksInteraction) runs.
+    // m_syncScrollX/Y are the canonical last-known scroll the input code reads
+    // (TimelineWidgetInput.cpp ~1204, ~1458). On a frame where we issued a
+    // programmatic SetScroll above, GetScroll still returns the pre-target
+    // value, so keep our target for that one frame (matches the documented
+    // SetScroll-vs-GetScroll lag).
+    if (!m_pendingScrollX) {
+        m_syncScrollX = ImGui::GetScrollX();
+    }
+    if (!m_pendingScrollY) {
+        m_syncScrollY = ImGui::GetScrollY();
+    }
+    m_pendingScrollX = false;
+    m_pendingScrollY = false;
+    m_tracksHeight = tracksContentHeight;
+
+    handleTracksInteraction();
+
+    ImGui::EndChild();
+
     // === TOP ROW: Header corner + Ruler ===
     // Header corner (empty space above track headers, aligned with ruler).
     // Spans the cue-lane band too so vertical alignment stays consistent.
+    ImGui::SetCursorPos(layoutOrigin);
     ImGui::BeginChild("HeaderCorner", ImVec2(TRACK_HEADER_WIDTH, topBandHeight), false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImDrawList* cornerDrawList = ImGui::GetWindowDrawList();
@@ -178,25 +251,47 @@ void TimelineWidget::render() {
     ImVec2 cornerMax(cornerMin.x + TRACK_HEADER_WIDTH, cornerMin.y + topBandHeight);
     cornerDrawList->AddRectFilled(cornerMin, cornerMax, IM_COL32(35, 35, 40, 255));
     cornerDrawList->AddText(ImVec2(cornerMin.x + 8, cornerMin.y + 8), IM_COL32(150, 150, 150, 255), "Tracks");
+
+    // Global "hide shy tracks" toggle. Right-aligned in the corner band so it
+    // doesn't collide with the "Tracks" label. ASCII-only label (the editor's
+    // default font has no glyph for an eye icon). Direct view-state write — not
+    // undoable (twirldown precedent). When ON, shy tracks drop out of the row
+    // cache on the next buildTrackRows().
+    {
+        const bool hideShy = m_timeline->getHideShyTracks();
+        const char* shyLabel = hideShy ? "Shy*" : "Shy";
+        const ImVec2 sz = ImGui::CalcTextSize(shyLabel);
+        const float btnW = sz.x + 10.0f;
+        ImGui::SetCursorScreenPos(ImVec2(cornerMax.x - btnW - 6.0f, cornerMin.y + 5.0f));
+        if (ImGui::SmallButton(shyLabel)) {
+            m_timeline->setHideShyTracks(!hideShy);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(hideShy ? "Showing all tracks. Click to hide shy tracks."
+                                      : "Click to hide tracks flagged shy.");
+        }
+    }
     ImGui::EndChild();
 
-    ImGui::SameLine(0, 2.0f);
-
-    // === STICKY RULER (Fixed at top, right side) ===
+    // === STICKY RULER (Fixed at top, right side) — SLAVE (X) ===
     // NoNav: arrow keys are owned by Engine::handleKey(). NoScrollWithMouse so
-    // the wheel scrolls the tracks child (below), not the ruler independently.
-    // NoScrollbar hides the user-facing scrollbar widget — internal SetScrollX
-    // below still mirrors from the tracks child via m_syncScrollX. Without
+    // the wheel scrolls the tracks child, not the ruler independently.
+    // NoScrollbar hides the user-facing scrollbar widget — the SetScrollX below
+    // mirrors the tracks child's committed scroll (same-frame). Without
     // NoScrollbar, dragging the ruler's scrollbar desyncs from the tracks
     // scroll and the playhead renders as a diagonal line (top end uses ruler
     // scroll, bottom end uses tracks scroll).
     //
+    // SetScrollX MUST precede this BeginChild (research finding #1) — calling it
+    // after Begin lags the ruler one frame behind the tracks.
+    //
     // Child height = cue lane band (top) + time ruler (bottom). The cue
     // lane is drawn by renderCueLane() before the ruler so triangle pointers
     // can drop down into the ruler band underneath.
+    ImGui::SetCursorPos(ImVec2(rightColumnX, layoutOrigin.y));
+    ImGui::SetNextWindowScroll(ImVec2(m_syncScrollX, -1.0f));  // -1 = leave Y untouched
     ImGui::BeginChild("TimelineRuler", ImVec2(timelineContentWidth, topBandHeight), false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
-    ImGui::SetScrollX(m_syncScrollX);
 
     ImVec2 childOrigin = ImGui::GetCursorScreenPos();
 
@@ -219,56 +314,58 @@ void TimelineWidget::render() {
 
     ImGui::EndChild();
 
-    // === BOTTOM ROW: Track headers + Tracks content ===
-    // Track header panel (left side, syncs vertical scroll only)
+    // === BOTTOM ROW (left): Track headers — SLAVE (Y) ===
+    // Track header panel (left side, syncs vertical scroll only).
+    ImGui::SetCursorPos(ImVec2(layoutOrigin.x, bottomRowY));
     ImGui::BeginChild("TrackHeaders", ImVec2(TRACK_HEADER_WIDTH, tracksWindowHeight), false,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav);
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
+    // Capture the header panel's true screen rect so the wheel-over-header
+    // forward (below) hit-tests against screen space directly, independent of
+    // any outer-window scroll.
+    const ImVec2 headerScreenMin = ImGui::GetWindowPos();
 
-    // Create inner scrollable region for header content
-    ImGui::BeginChild("TrackHeadersInner", ImVec2(TRACK_HEADER_WIDTH - 2, tracksContentHeight + 100), false,
+    // Inner scrollable region for header content. SetNextWindowScroll(Y) MUST
+    // precede this BeginChild so the header is locked to the tracks child's
+    // CURRENT-frame scroll, not last frame's (research finding #1 — that lag
+    // was the header/lanes ghosting). The inner child's content extent matches
+    // the tracks child's (tracksContentExtentY) so their ScrollMax clamps agree
+    // (research finding #4).
+    ImGui::SetNextWindowScroll(ImVec2(-1.0f, m_syncScrollY));  // -1 = leave X untouched
+    ImGui::BeginChild("TrackHeadersInner", ImVec2(TRACK_HEADER_WIDTH - 2, tracksContentExtentY), false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
 
-    // Apply synced vertical scroll
-    ImGui::SetScrollY(m_syncScrollY);
-
-    renderTrackHeaderPanel(tracksContentHeight, m_syncScrollY);
+    renderTrackHeaderPanel(tracksContentHeight);
 
     ImGui::EndChild();
     ImGui::EndChild();
 
-    ImGui::SameLine(0, 2.0f);
+    // Restore the layout cursor to just below the bottom row so the Separator +
+    // playback controls flow naturally after the explicitly-positioned children.
+    ImGui::SetCursorPos(ImVec2(layoutOrigin.x, bottomRowY + tracksWindowHeight + spacingY));
 
-    // === SCROLLABLE TRACKS (right side — horizontal + vertical scroll) ===
-    ImGui::BeginChild("TimelineTracks", ImVec2(timelineContentWidth, tracksWindowHeight), false,
-                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoNav);
-
-    ImGui::SetScrollX(m_syncScrollX);
-    ImGui::SetScrollY(m_syncScrollY);
-
-    // Save tracks position for playhead rendering
-    m_tracksScreenPos = ImGui::GetCursorScreenPos();
-
-    ImGui::SetCursorPos(ImVec2(0, 0));
-    ImGui::InvisibleButton("##tracksArea", ImVec2(timelineWidth, tracksContentHeight + 100));
-    ImGui::SetCursorPos(ImVec2(0, 0));
-
-    renderTracks();
-    handleTracksInteraction();
-
-    // Save scroll position for next frame. Skip X read-back for one frame after
-    // ensurePlayheadVisible() moved m_syncScrollX programmatically — SetScrollX
-    // sets a target that isn't reflected in GetScrollX until the NEXT Begin(),
-    // so reading it now returns the pre-target value and stomps our move
-    // (produces a 2-frame ping-pong).
-    if (!m_pendingScrollX) {
-        m_syncScrollX = ImGui::GetScrollX();
+    // Forward a mouse wheel that landed over the header panel (which has
+    // NoScrollWithMouse) into a pending Y move on the tracks child. Without
+    // this the wheel is dead while the cursor is over the headers.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseWheel != 0.0f) {
+            const ImVec2 m = io.MousePos;
+            const bool overHeaders =
+                m.x >= headerScreenMin.x && m.x < headerScreenMin.x + TRACK_HEADER_WIDTH &&
+                m.y >= headerScreenMin.y && m.y < headerScreenMin.y + tracksWindowHeight;
+            if (overHeaders) {
+                // Match ImGui's wheel step (5 lines × font line height) and
+                // clamp to the tracks child's scroll range.
+                const float step = io.MouseWheel * ImGui::GetTextLineHeightWithSpacing() * 5.0f;
+                const float maxScrollY = std::max(0.0f, tracksContentExtentY - tracksWindowHeight);
+                const float target = std::clamp(m_syncScrollY - step, 0.0f, maxScrollY);
+                if (target != m_syncScrollY) {
+                    m_syncScrollY = target;
+                    m_pendingScrollY = true;
+                }
+            }
+        }
     }
-    m_pendingScrollX = false;
-    m_syncScrollY = ImGui::GetScrollY();
-    m_tracksHeight = tracksContentHeight;
-
-
-    ImGui::EndChild();
 
     // Render playhead (spans across both ruler and tracks)
     renderPlayhead();
@@ -681,6 +778,63 @@ bool TimelineWidget::wouldOverlapAnyClip(int trackIndex, Timecode startTime,
     return false;
 }
 
+bool TimelineWidget::wouldOverlapAnyClipExcluding(
+        int trackIndex, Timecode startTime, Timecode durationTime,
+        const std::vector<entt::entity>& exclude) const {
+    if (!m_timeline || trackIndex < 0 || durationTime <= 0) return false;
+    auto& registry = m_timeline->getRegistry();
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex >= static_cast<int>(tracks.size())) return false;
+    const auto* track = registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return false;
+    const double fps = m_timeline->getFrameRate();
+    if (fps <= 0.0) return false;
+
+    const Timecode endTime = startTime + durationTime;
+    auto isExcluded = [&](entt::entity e) {
+        return std::find(exclude.begin(), exclude.end(), e) != exclude.end();
+    };
+    auto readPl = [&](entt::entity e) -> std::tuple<FrameNumber, FrameNumber, bool> {
+        if (const auto* clip = registry.try_get<Clip>(e)) {
+            return {clip->startFrame, clip->duration, true};
+        }
+        if (const auto* lay = registry.try_get<Layer>(e);
+            lay && (registry.all_of<ObjectAnimationLayer>(e) ||
+                    registry.all_of<GenerativeLayer>(e)       ||
+                    registry.all_of<SignalLayer>(e))) {
+            return {lay->startFrame, lay->duration, true};
+        }
+        return {0, 0, false};
+    };
+
+    for (entt::entity other : track->layers) {
+        if (isExcluded(other)) continue;
+        auto [oStart, oDur, valid] = readPl(other);
+        if (!valid) continue;
+        const float oStartSec = oStart / static_cast<float>(fps);
+        const float oDurSec   = oDur   / static_cast<float>(fps);
+        const Timecode oStartT = static_cast<Timecode>(oStartSec * 1000000.0f);
+        const Timecode oEndT   = static_cast<Timecode>((oStartSec + oDurSec) * 1000000.0f);
+        if (startTime < oEndT && endTime > oStartT) return true;
+    }
+    return false;
+}
+
+int TimelineWidget::findTrackIndexForClip(entt::entity clip) const {
+    if (!m_timeline) return -1;
+    auto& registry = m_timeline->getRegistry();
+    const auto& tracks = m_timeline->getTracks();
+    for (int i = 0; i < static_cast<int>(tracks.size()); ++i) {
+        const auto* track = registry.try_get<TimelineTrack>(tracks[i]);
+        if (!track) continue;
+        if (std::find(track->layers.begin(), track->layers.end(), clip)
+            != track->layers.end()) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 Timecode TimelineWidget::snapDropPosition(Timecode rawTime, int trackIndex) const {
     (void)trackIndex;  // reserved for a future track-local snap variant
     if (!m_timeline) return rawTime;
@@ -782,33 +936,71 @@ void TimelineWidget::computeCueLaneLayout(std::vector<CueLaneSlot>& outSlots, in
     outRowsUsed = (maxRowAssigned >= 0) ? (maxRowAssigned + 1) : 0;
 }
 
+void TimelineWidget::buildTrackRows() {
+    m_trackRows.clear();
+    if (!m_timeline) return;
+
+    auto& registry = m_timeline->getRegistry();
+    const auto& tracks = m_timeline->getTracks();
+    const bool hideShy = m_timeline->getHideShyTracks();
+
+    float cumulativeY = 0.0f;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const entt::entity trackEntity = tracks[i];
+
+        // Shy skip: this is the ONE place visibility is decided. A shy track
+        // with the global hide on is omitted entirely — it contributes no row
+        // and no Y, so it vanishes from header panel, lanes, and every
+        // hit-test. modelIndex still tracks the real Timeline index for
+        // commands.
+        if (hideShy) {
+            const auto* ui = registry.try_get<TrackUiState>(trackEntity);
+            if (ui && ui->shy) continue;
+        }
+
+        TrackRow row;
+        row.track      = trackEntity;
+        row.modelIndex = static_cast<int>(i);
+        row.y          = cumulativeY;
+        row.expanded   = m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
+                         m_timeline->isTrackExpanded(trackEntity);
+
+        float trackHeight = TRACK_HEIGHT;
+        if (row.expanded) {
+            entt::entity atPlayhead = findClipAtPlayhead(trackEntity);
+            if (atPlayhead != entt::null) {
+                row.clipAtPlayhead  = atPlayhead;
+                row.propPanelHeight = expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
+                trackHeight += row.propPanelHeight;
+            }
+        }
+        row.height = trackHeight;
+        m_trackRows.push_back(row);
+
+        cumulativeY += trackHeight + TRACK_PADDING;
+    }
+}
+
+const TimelineWidget::TrackRow* TimelineWidget::rowForModelIndex(int modelIndex) const {
+    for (const auto& row : m_trackRows) {
+        if (row.modelIndex == modelIndex) return &row;
+    }
+    return nullptr;
+}
+
 int TimelineWidget::findTrackAtY(float mouseY, float windowY) const {
     if (!m_timeline) return -1;
 
-    // Cumulative-Y walk: an expanded track is taller than TRACK_HEIGHT by its
-    // property panel, so a flat grid mislocates every track below an expanded
-    // one. A track "hit" is the clip-body band only — the property panel below
-    // a clip is not a valid clip-drop zone.
-    const auto& tracks = m_timeline->getTracks();
-    float cumulativeY = 0.0f;
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        const float trackY = windowY + cumulativeY;
+    // A track "hit" is the clip-body band only (TRACK_HEIGHT) — the expanded
+    // property panel below a clip is not a valid clip-drop zone. Iterates the
+    // per-frame row cache so hidden (shy) tracks are skipped and expanded
+    // tracks above shift everything below by the cached row height. Returns
+    // the model index (commands address tracks by it).
+    for (const auto& row : m_trackRows) {
+        const float trackY = windowY + row.y;
         if (mouseY >= trackY && mouseY <= trackY + TRACK_HEIGHT) {
-            return static_cast<int>(i);
+            return row.modelIndex;
         }
-
-        float propPanelHeight = 0.0f;
-        const uint32_t trackId = static_cast<uint32_t>(tracks[i]);
-        const bool expanded = m_expandedTracks.count(trackId) > 0 ||
-                              m_timeline->isTrackExpanded(tracks[i]);
-        if (expanded) {
-            entt::entity atPlayhead = findClipAtPlayhead(tracks[i]);
-            if (atPlayhead != entt::null) {
-                propPanelHeight =
-                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
-            }
-        }
-        cumulativeY += TRACK_HEIGHT + propPanelHeight + TRACK_PADDING;
     }
     return -1;
 }

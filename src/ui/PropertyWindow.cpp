@@ -205,20 +205,55 @@ void PropertyWindow::render() {
         renderLayerSection();
     }
 
+    // Content Routing section — own header so it aligns with the canonical
+    // section order across all content-layer kinds. The picker call handles
+    // the combo, optimistic ContentRoutingRef write, kind badge, and
+    // Edit... link; the post-change block dispatches SetClipTargetScreenCommand
+    // for the legacy alias (undo/scripts, L1 only per ADR-0022).
+    if (ImGui::CollapsingHeader("Content Routing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto* clipRW = registry.try_get<Clip>(selectedClip);
+        if (clipRW) {
+            entt::entity prevLegacyScreen = clipRW->targetScreen;
+            std::string prevName = "All Screens";
+            if (prevLegacyScreen != entt::null) {
+                if (auto* prev = registry.try_get<Screen>(prevLegacyScreen))
+                    prevName = prev->name;
+            }
+            if (renderContentRoutingPicker(selectedClip, "contentRouting")) {
+                const auto* newRef = registry.try_get<ContentRoutingRef>(selectedClip);
+                const entt::entity newAsset = newRef ? newRef->asset : entt::null;
+                const auto* newAssetData = (newAsset != entt::null)
+                    ? registry.try_get<ContentRoutingAsset>(newAsset) : nullptr;
+                entt::entity legacyScreen = entt::null;
+                if (newAssetData &&
+                    newAssetData->kind == RouteMode::Direct &&
+                    newAssetData->targets.size() == 1) {
+                    legacyScreen = newAssetData->targets.front().screen;
+                }
+                std::string newScreenName = "All Screens";
+                if (legacyScreen != entt::null) {
+                    if (auto* s = registry.try_get<Screen>(legacyScreen))
+                        newScreenName = s->name;
+                }
+                clipRW->targetScreen = legacyScreen;
+                std::cout << "[PropertyWindow] Content routing -> '"
+                          << newScreenName << "'" << std::endl;
+                if (m_dispatcher && newAssetData &&
+                    newAssetData->kind == RouteMode::Direct) {
+                    if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                        auto cmd = std::make_unique<SetClipTargetScreenCommand>(
+                            idx->first, idx->second, newScreenName);
+                        cmd->setPreviousScreenName(prevName);
+                        m_dispatcher->enqueue(std::move(cmd));
+                    }
+                }
+            }
+        }
+    }
+
     // Playback section
     if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderPlaybackSection();
-    }
-
-    // Audio section — only shown for clips that carry audio
-    {
-        auto& reg = m_timeline->getRegistry();
-        const auto* src = reg.try_get<AudioSource>(selectedClip);
-        if (src && src->hasAudioStream) {
-            if (ImGui::CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
-                renderAudioSection(selectedClip);
-            }
-        }
     }
 
     // Clip Info section
@@ -230,6 +265,19 @@ void PropertyWindow::render() {
     // discover the "Add Effect" affordance even when the chain is empty.
     if (ImGui::CollapsingHeader("Effects", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderEffectsSection(selectedClip);
+    }
+
+    // Audio section — only shown for clips that carry audio. Sits after
+    // Effects so the canonical order matches: kind-specific -> Effects ->
+    // Audio -> Remote Control.
+    {
+        auto& reg = m_timeline->getRegistry();
+        const auto* src = reg.try_get<AudioSource>(selectedClip);
+        if (src && src->hasAudioStream) {
+            if (ImGui::CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
+                renderAudioSection(selectedClip);
+            }
+        }
     }
 
     // Remote Control section (ADR-0028). Shows Patch / ID / Armed /
@@ -483,6 +531,106 @@ void PropertyWindow::renderLayerSection() {
     }
 }
 
+bool PropertyWindow::renderContentRoutingPicker(entt::entity entity, const char* idSuffix) {
+    // Content Routing — Plane A library binding (ADR-0022). Replaces the
+    // legacy "Target Screen" dropdown. The dropdown surfaces every
+    // ContentRoutingAsset in the library, with the leading "Default (All
+    // visible)" sentinel for layers that should render to every screen.
+    // Auto-direct assets list first (one per Screen, alphabetical by
+    // Screen name), then user-created routings (alphabetical by name).
+    auto& registry = m_timeline->getRegistry();
+
+    ImGui::Spacing();
+    ImGui::Text("Content Routing");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Select a routing from the Content Routing library.\n"
+                          "Default routes the clip to all visible screens.\n"
+                          "Each Screen auto-generates a Direct routing; create\n"
+                          "Tiled / Feed Map routings in the Content Routing window.");
+    }
+
+    // Build (entity, displayName) pairs. Auto-direct first, then user.
+    struct AssetPick { entt::entity asset; std::string display; };
+    std::vector<AssetPick> picks;
+    picks.push_back({entt::null, "Default (All visible)"});
+
+    std::vector<AssetPick> autoDirect;
+    std::vector<AssetPick> userCreated;
+    for (auto [aEntity, asset] : registry.view<ContentRoutingAsset>().each()) {
+        AssetPick p{aEntity, asset.name};
+        if (asset.autoBoundScreen != entt::null) autoDirect.push_back(std::move(p));
+        else userCreated.push_back(std::move(p));
+    }
+    auto byName = [](const AssetPick& a, const AssetPick& b) { return a.display < b.display; };
+    std::sort(autoDirect.begin(), autoDirect.end(), byName);
+    std::sort(userCreated.begin(), userCreated.end(), byName);
+    picks.insert(picks.end(), autoDirect.begin(), autoDirect.end());
+    picks.insert(picks.end(), userCreated.begin(), userCreated.end());
+
+    std::vector<const char*> pickNameCstrs;
+    pickNameCstrs.reserve(picks.size());
+    for (const auto& p : picks) pickNameCstrs.push_back(p.display.c_str());
+
+    const auto* currentRef = registry.try_get<ContentRoutingRef>(entity);
+    const entt::entity currentAsset = currentRef ? currentRef->asset : entt::null;
+
+    int currentIdx = 0;
+    for (size_t i = 0; i < picks.size(); ++i) {
+        if (picks[i].asset == currentAsset) {
+            currentIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    // Combo ID is "##" + idSuffix to avoid widget-ID collision between
+    // the clip call site ("contentRouting") and the generative call site
+    // ("gencontentrouting").
+    std::string comboId = std::string("##") + idSuffix;
+    ImGui::SetNextItemWidth(-1);
+    bool changed = ImGui::Combo(comboId.c_str(), &currentIdx,
+                                pickNameCstrs.data(),
+                                static_cast<int>(pickNameCstrs.size()));
+    if (changed) {
+        const entt::entity newAsset = picks[currentIdx].asset;
+        // Optimistic ref write so the next snapshot bake sees coherent state
+        // before the dispatcher drains (clip call site enqueues the legacy
+        // command after this returns).
+        auto& ref = registry.get_or_emplace<ContentRoutingRef>(entity);
+        ref.asset = newAsset;
+    }
+
+    // Kind badge + edit link.
+    {
+        const auto* asset = routing::tryGetAsset(registry, entity);
+        const char* kindLabel = "Default (All)";
+        ImVec4 kindColor{0.7f, 0.7f, 0.7f, 1.0f};
+        if (asset) {
+            switch (asset->kind) {
+                case RouteMode::Direct:
+                    kindLabel = "Direct";
+                    kindColor = ImVec4(0.6f, 0.85f, 0.6f, 1.0f);
+                    break;
+                case RouteMode::Tiled:
+                    kindLabel = "Tiled";
+                    kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+                    break;
+                case RouteMode::FeedMap:
+                    kindLabel = "Feed Map";
+                    kindColor = ImVec4(0.6f, 0.7f, 1.0f, 1.0f);
+                    break;
+            }
+        }
+        ImGui::TextColored(kindColor, "%s", kindLabel);
+        ImGui::SameLine();
+        std::string editBtnId = std::string("Edit...##") + idSuffix;
+        if (ImGui::SmallButton(editBtnId.c_str())) {
+            ImGui::SetWindowFocus("Content Routing");
+        }
+    }
+
+    return changed;
+}
+
 void PropertyWindow::renderPlaybackSection() {
     entt::entity selectedClip = m_timeline->getSelectedClip();
     if (selectedClip == entt::null) return;
@@ -627,141 +775,6 @@ void PropertyWindow::renderPlaybackSection() {
         }
     }
 
-    // Content Routing — Plane A library binding (ADR-0022). Replaces the
-    // legacy "Target Screen" dropdown. The dropdown surfaces every
-    // ContentRoutingAsset in the library, with the leading "Default (All
-    // visible)" sentinel for layers that should render to every screen.
-    // Auto-direct assets list first (one per Screen, alphabetical by
-    // Screen name), then user-created routings (alphabetical by name).
-    ImGui::Spacing();
-    ImGui::Text("Content Routing");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Select a routing from the Content Routing library.\n"
-                          "Default routes the clip to all visible screens.\n"
-                          "Each Screen auto-generates a Direct routing; create\n"
-                          "Tiled / Feed Map routings in the Content Routing window.");
-    }
-
-    // Build (entity, displayName) pairs. Auto-direct first, then user.
-    struct AssetPick { entt::entity asset; std::string display; };
-    std::vector<AssetPick> picks;
-    picks.push_back({entt::null, "Default (All visible)"});
-
-    std::vector<AssetPick> autoDirect;
-    std::vector<AssetPick> userCreated;
-    for (auto [aEntity, asset] : registry.view<ContentRoutingAsset>().each()) {
-        AssetPick p{aEntity, asset.name};
-        if (asset.autoBoundScreen != entt::null) autoDirect.push_back(std::move(p));
-        else userCreated.push_back(std::move(p));
-    }
-    auto byName = [](const AssetPick& a, const AssetPick& b) { return a.display < b.display; };
-    std::sort(autoDirect.begin(), autoDirect.end(), byName);
-    std::sort(userCreated.begin(), userCreated.end(), byName);
-    picks.insert(picks.end(), autoDirect.begin(), autoDirect.end());
-    picks.insert(picks.end(), userCreated.begin(), userCreated.end());
-
-    std::vector<const char*> pickNameCstrs;
-    pickNameCstrs.reserve(picks.size());
-    for (const auto& p : picks) pickNameCstrs.push_back(p.display.c_str());
-
-    const auto* currentRef = registry.try_get<ContentRoutingRef>(selectedClip);
-    const entt::entity currentAsset = currentRef ? currentRef->asset : entt::null;
-
-    int currentIdx = 0;
-    for (size_t i = 0; i < picks.size(); ++i) {
-        if (picks[i].asset == currentAsset) {
-            currentIdx = static_cast<int>(i);
-            break;
-        }
-    }
-
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("##contentRouting", &currentIdx,
-                      pickNameCstrs.data(),
-                      static_cast<int>(pickNameCstrs.size()))) {
-        const entt::entity newAsset = picks[currentIdx].asset;
-        const auto* newAssetData = (newAsset != entt::null)
-            ? registry.try_get<ContentRoutingAsset>(newAsset) : nullptr;
-
-        // Resolve a single-screen target for the legacy alias the
-        // SetClipTargetScreenCommand still operates on. Auto-direct
-        // asset → its bound Screen. User-created Direct asset with one
-        // target → that target's Screen. Anything else (Tiled, FeedMap,
-        // empty targets) → "All Screens" (null).
-        entt::entity legacyScreen = entt::null;
-        if (newAssetData) {
-            if (newAssetData->kind == RouteMode::Direct &&
-                newAssetData->targets.size() == 1) {
-                legacyScreen = newAssetData->targets.front().screen;
-            }
-        }
-
-        std::string prevName = "All Screens";
-        if (clip->targetScreen != entt::null) {
-            if (auto* prev = registry.try_get<Screen>(clip->targetScreen)) {
-                prevName = prev->name;
-            }
-        }
-        std::string newScreenName = "All Screens";
-        if (legacyScreen != entt::null) {
-            if (auto* s = registry.try_get<Screen>(legacyScreen)) {
-                newScreenName = s->name;
-            }
-        }
-
-        // Optimistic write so the next snapshot bake sees a coherent state
-        // before the dispatcher drains. The command re-applies both ref
-        // and legacy alias when it executes.
-        clip->targetScreen = legacyScreen;
-        auto& ref = registry.get_or_emplace<ContentRoutingRef>(selectedClip);
-        ref.asset = newAsset;
-
-        std::cout << "[PropertyWindow] Content routing -> '"
-                  << picks[currentIdx].display << "'" << std::endl;
-
-        // For L1 we ship via the existing SetClipTargetScreenCommand so
-        // scripts and undo continue working. Non-direct asset picks (Tiled
-        // / FeedMap) currently degrade to "All Screens" on the alias but
-        // the optimistic ref write above keeps the active rendering
-        // correct. L2 lifts this to a dedicated SetContentRoutingRefCommand.
-        if (m_dispatcher && newAssetData &&
-            newAssetData->kind == RouteMode::Direct) {
-            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
-                auto cmd = std::make_unique<SetClipTargetScreenCommand>(idx->first, idx->second, newScreenName);
-                cmd->setPreviousScreenName(prevName);
-                m_dispatcher->enqueue(std::move(cmd));
-            }
-        }
-    }
-
-    // Kind badge + edit link.
-    {
-        const auto* asset = routing::tryGetAsset(registry, selectedClip);
-        const char* kindLabel = "Default (All)";
-        ImVec4 kindColor{0.7f, 0.7f, 0.7f, 1.0f};
-        if (asset) {
-            switch (asset->kind) {
-                case RouteMode::Direct:
-                    kindLabel = "Direct";
-                    kindColor = ImVec4(0.6f, 0.85f, 0.6f, 1.0f);
-                    break;
-                case RouteMode::Tiled:
-                    kindLabel = "Tiled";
-                    kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
-                    break;
-                case RouteMode::FeedMap:
-                    kindLabel = "Feed Map";
-                    kindColor = ImVec4(0.6f, 0.7f, 1.0f, 1.0f);
-                    break;
-            }
-        }
-        ImGui::TextColored(kindColor, "%s", kindLabel);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Edit...##contentRouting")) {
-            ImGui::SetWindowFocus("Content Routing");
-        }
-    }
-
     // Show source vs timeline duration info
     ImGui::Spacing();
     ImGui::Text("Source Frames: %d", clip->totalMediaFrames);
@@ -882,13 +895,30 @@ void PropertyWindow::renderClipInfo() {
         }
     }
 
-    // Duration — clip's timeline footprint in timeline frames. Read-only
-    // here; edited via right-edge trim drag on the timeline.
-    ImGui::Text("Duration: %d frames", static_cast<int>(clip->duration));
+    // Duration — clip's timeline footprint in timeline frames. Editable here
+    // and via right-edge trim drag on the timeline.
+    int duration = static_cast<int>(clip->duration);
+    bool durationChanged = entity::ui::DragInt("Duration", &duration, 1.0f, 1,
+                                               std::numeric_limits<int>::max(),
+                                               "%d frames", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemActivated()) {
+        m_preEditDuration = clip->duration;
+    }
+    if (durationChanged) {
+        clip->duration = static_cast<FrameNumber>(duration);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+        if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+            auto cmd = std::make_unique<SetClipDurationCommand>(
+                idx->first, idx->second, clip->duration);
+            cmd->setPreviousDuration(m_preEditDuration);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+    }
 
-    // Calculate duration in seconds
+    // Duration in seconds (informational).
     float durationSec = static_cast<float>(clip->duration) / static_cast<float>(clip->framerate);
-    ImGui::Text("Duration: %.2f seconds", durationSec);
+    ImGui::Text("(%.2f seconds)", durationSec);
 
     ImGui::Separator();
 
@@ -1865,6 +1895,34 @@ void PropertyWindow::renderScreenProperties() {
         }
     }
 
+    // Transform — moved before Type/Geometry so the stage-object trio
+    // (Screen, Prop, Projector) all share Identity -> Transform -> kind-specific.
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Position");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::DragFloat3("##pos", screen->position.data(), 0.1f);
+
+        ImGui::Text("Rotation");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::DragFloat3("##rot", screen->rotation.data(), 1.0f, -180.0f, 180.0f);
+
+        ImGui::Text("Size (m)");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::DragFloat3("##size", screen->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
+
+        if (ImGui::Button("Reset Transform")) {
+            screen->position = {0.0f, 0.0f, 0.0f};
+            screen->rotation = {0.0f, 0.0f, 0.0f};
+            // Size reset honors the current model — resetting a screen with a
+            // 3D mesh to {4, 2.25, 0} would flatten the mesh's Z to zero.
+            const Model* resetModel = nullptr;
+            if (screen->modelEntity != entt::null && registry.valid(screen->modelEntity)) {
+                resetModel = registry.try_get<Model>(screen->modelEntity);
+            }
+            applyModelToScreen(*screen, screen->modelEntity, resetModel);
+        }
+    }
+
     // Type
     if (ImGui::CollapsingHeader("Type", ImGuiTreeNodeFlags_DefaultOpen)) {
         int typeInt = static_cast<int>(screen->type);
@@ -1953,33 +2011,6 @@ void PropertyWindow::renderScreenProperties() {
         if (ImGui::Button("1080x1920")) { screen->width = 1080; screen->height = 1920; }
     }
 
-    // Transform
-    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("Position");
-        ImGui::SetNextItemWidth(-1);
-        entity::ui::DragFloat3("##pos", screen->position.data(), 0.1f);
-
-        ImGui::Text("Rotation");
-        ImGui::SetNextItemWidth(-1);
-        entity::ui::DragFloat3("##rot", screen->rotation.data(), 1.0f, -180.0f, 180.0f);
-
-        ImGui::Text("Size (m)");
-        ImGui::SetNextItemWidth(-1);
-        entity::ui::DragFloat3("##size", screen->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
-
-        if (ImGui::Button("Reset Transform")) {
-            screen->position = {0.0f, 0.0f, 0.0f};
-            screen->rotation = {0.0f, 0.0f, 0.0f};
-            // Size reset honors the current model — resetting a screen with a
-            // 3D mesh to {4, 2.25, 0} would flatten the mesh's Z to zero.
-            const Model* resetModel = nullptr;
-            if (screen->modelEntity != entt::null && registry.valid(screen->modelEntity)) {
-                resetModel = registry.try_get<Model>(screen->modelEntity);
-            }
-            applyModelToScreen(*screen, screen->modelEntity, resetModel);
-        }
-    }
-
     // Display
     if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Visible", &screen->visible);
@@ -2020,6 +2051,28 @@ void PropertyWindow::renderPropProperties() {
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) {
             prop->name = nameBuf;
+        }
+    }
+
+    // Transform — moved before Geometry so Prop matches the
+    // Identity -> Transform -> kind-specific -> Display order.
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Position");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::DragFloat3("##prop_pos", prop->position.data(), 0.1f);
+
+        ImGui::Text("Rotation");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::DragFloat3("##prop_rot", prop->rotation.data(), 1.0f, -180.0f, 180.0f);
+
+        ImGui::Text("Size (m)");
+        ImGui::SetNextItemWidth(-1);
+        entity::ui::DragFloat3("##prop_size", prop->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
+
+        if (ImGui::Button("Reset Transform")) {
+            prop->position = {0.0f, 0.0f, 0.0f};
+            prop->rotation = {0.0f, 0.0f, 0.0f};
+            prop->size = {1.0f, 1.0f, 1.0f};
         }
     }
 
@@ -2066,26 +2119,6 @@ void PropertyWindow::renderPropProperties() {
                 }
                 ImGui::EndDragDropTarget();
             }
-        }
-    }
-
-    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("Position");
-        ImGui::SetNextItemWidth(-1);
-        entity::ui::DragFloat3("##prop_pos", prop->position.data(), 0.1f);
-
-        ImGui::Text("Rotation");
-        ImGui::SetNextItemWidth(-1);
-        entity::ui::DragFloat3("##prop_rot", prop->rotation.data(), 1.0f, -180.0f, 180.0f);
-
-        ImGui::Text("Size (m)");
-        ImGui::SetNextItemWidth(-1);
-        entity::ui::DragFloat3("##prop_size", prop->size.data(), 0.01f, 0.0f, 1000.0f, "%.2f m");
-
-        if (ImGui::Button("Reset Transform")) {
-            prop->position = {0.0f, 0.0f, 0.0f};
-            prop->rotation = {0.0f, 0.0f, 0.0f};
-            prop->size = {1.0f, 1.0f, 1.0f};
         }
     }
 
@@ -2490,7 +2523,67 @@ void PropertyWindow::renderOALayerProperties(entt::entity entity) {
         }
     }
 
-    // Target picker — Screen + Prop entities
+    // Timing — start frame and duration editable via DragInt with the
+    // canonical IsItemActivated -> live write -> IsItemDeactivatedAfterEdit
+    // -> enqueue pattern (same as Clip In Point editor).
+    if (ImGui::CollapsingHeader("Timing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int oaStart = static_cast<int>(lay->startFrame);
+        bool oaStartChanged = entity::ui::DragInt("Start Frame##oaTiming", &oaStart, 1.0f, 0,
+                                                  std::numeric_limits<int>::max(),
+                                                  "%d", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated()) {
+            m_preEditLayerStartFrame = lay->startFrame;
+        }
+        if (oaStartChanged) {
+            lay->startFrame = static_cast<FrameNumber>(oaStart);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, entity)) {
+                auto cmd = std::make_unique<SetLayerStartFrameCommand>(
+                    idx->first, idx->second, lay->startFrame);
+                cmd->setPreviousStartFrame(m_preEditLayerStartFrame);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
+
+        int oaDur = static_cast<int>(lay->duration);
+        bool oaDurChanged = entity::ui::DragInt("Duration##oaTiming", &oaDur, 1.0f, 1,
+                                                std::numeric_limits<int>::max(),
+                                                "%d frames", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated()) {
+            m_preEditLayerDuration = lay->duration;
+        }
+        if (oaDurChanged) {
+            lay->duration = static_cast<FrameNumber>(oaDur);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, entity)) {
+                auto cmd = std::make_unique<SetLayerDurationCommand>(
+                    idx->first, idx->second, lay->duration);
+                cmd->setPreviousDuration(m_preEditLayerDuration);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
+
+        const char* kEndBehaviorLabels[] = {"Hold last value", "Reset to base"};
+        int ebIdx = static_cast<int>(oal->endBehavior);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("End behavior", &ebIdx, kEndBehaviorLabels, 2)) {
+            oal->endBehavior =
+                static_cast<ObjectAnimationLayer::EndBehavior>(ebIdx);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Hold: target stays at last evaluated values after the\n"
+                "layer ends (recommended).\n\n"
+                "Reset: target snaps back to its Stage-configured base\n"
+                "the frame the layer ends.");
+        }
+    }
+
+    // Target picker — Screen + Prop entities. Sits after Timing so the
+    // canonical section order (Identity -> Timing -> kind-specific) is
+    // respected across all content-producing layer kinds.
     if (ImGui::CollapsingHeader("Target", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextDisabled("Screen or Prop to animate:");
 
@@ -2531,28 +2624,6 @@ void PropertyWindow::renderOALayerProperties(entt::entity entity) {
         if (oal->target == entt::null) {
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
                                "No target — animation has no effect until a target is chosen.");
-        }
-    }
-
-    // Timing info (read-only — driven by Layer::startFrame/duration) plus
-    // the ADR-0020 End behavior toggle.
-    if (ImGui::CollapsingHeader("Timing", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
-        ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
-
-        const char* kEndBehaviorLabels[] = {"Hold last value", "Reset to base"};
-        int ebIdx = static_cast<int>(oal->endBehavior);
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("End behavior", &ebIdx, kEndBehaviorLabels, 2)) {
-            oal->endBehavior =
-                static_cast<ObjectAnimationLayer::EndBehavior>(ebIdx);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip(
-                "Hold: target stays at last evaluated values after the\n"
-                "layer ends (recommended).\n\n"
-                "Reset: target snaps back to its Stage-configured base\n"
-                "the frame the layer ends.");
         }
     }
 
@@ -2623,6 +2694,46 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         float col[4] = {lay->color[0], lay->color[1], lay->color[2], lay->color[3]};
         if (ImGui::ColorEdit4("Color", col, ImGuiColorEditFlags_NoAlpha)) {
             lay->color = {col[0], col[1], col[2], col[3]};
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Timing")) {
+        int genStart = static_cast<int>(lay->startFrame);
+        bool genStartChanged = entity::ui::DragInt("Start Frame##genTiming", &genStart, 1.0f, 0,
+                                                   std::numeric_limits<int>::max(),
+                                                   "%d", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated()) {
+            m_preEditLayerStartFrame = lay->startFrame;
+        }
+        if (genStartChanged) {
+            lay->startFrame = static_cast<FrameNumber>(genStart);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, entity)) {
+                auto cmd = std::make_unique<SetLayerStartFrameCommand>(
+                    idx->first, idx->second, lay->startFrame);
+                cmd->setPreviousStartFrame(m_preEditLayerStartFrame);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
+
+        int genDur = static_cast<int>(lay->duration);
+        bool genDurChanged = entity::ui::DragInt("Duration##genTiming", &genDur, 1.0f, 1,
+                                                 std::numeric_limits<int>::max(),
+                                                 "%d frames", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated()) {
+            m_preEditLayerDuration = lay->duration;
+        }
+        if (genDurChanged) {
+            lay->duration = static_cast<FrameNumber>(genDur);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, entity)) {
+                auto cmd = std::make_unique<SetLayerDurationCommand>(
+                    idx->first, idx->second, lay->duration);
+                cmd->setPreviousDuration(m_preEditLayerDuration);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
         }
     }
 
@@ -2741,92 +2852,31 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     }
 
     if (ImGui::CollapsingHeader("Content Routing", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextDisabled("Library routing for the generated output:");
-
-        // Mirrors the clip path: pick from the ContentRoutingAsset library
-        // (ADR-0022). Auto-direct assets list first by Screen name, then
-        // user-created routings.
-        struct AssetPick { entt::entity asset; std::string display; };
-        std::vector<AssetPick> picks;
-        picks.push_back({entt::null, "Default (All visible)"});
-
-        std::vector<AssetPick> autoDirect, userCreated;
-        for (auto [aEntity, asset] : registry.view<ContentRoutingAsset>().each()) {
-            AssetPick p{aEntity, asset.name};
-            if (asset.autoBoundScreen != entt::null) autoDirect.push_back(std::move(p));
-            else userCreated.push_back(std::move(p));
-        }
-        auto byName = [](const AssetPick& a, const AssetPick& b) { return a.display < b.display; };
-        std::sort(autoDirect.begin(), autoDirect.end(), byName);
-        std::sort(userCreated.begin(), userCreated.end(), byName);
-        picks.insert(picks.end(), autoDirect.begin(), autoDirect.end());
-        picks.insert(picks.end(), userCreated.begin(), userCreated.end());
-
-        std::vector<const char*> pickNameCstrs;
-        pickNameCstrs.reserve(picks.size());
-        for (const auto& p : picks) pickNameCstrs.push_back(p.display.c_str());
-
-        const auto* currentRef = registry.try_get<ContentRoutingRef>(entity);
-        const entt::entity currentAsset = currentRef ? currentRef->asset : entt::null;
-
-        int currentIdx = 0;
-        for (size_t i = 0; i < picks.size(); ++i) {
-            if (picks[i].asset == currentAsset) { currentIdx = static_cast<int>(i); break; }
-        }
-
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##gencontentrouting", &currentIdx,
-                          pickNameCstrs.data(),
-                          static_cast<int>(pickNameCstrs.size()))) {
-            const entt::entity newAsset = picks[currentIdx].asset;
+        // Shared picker (ADR-0022). renderContentRoutingPicker handles the
+        // combo, ContentRoutingRef write, kind badge, and Edit link.
+        // Generative side additionally keeps gen->targetScreen in sync with
+        // the selected asset's single-screen target (legacy alias).
+        if (renderContentRoutingPicker(entity, "gencontentrouting")) {
+            const auto* newRef = registry.try_get<ContentRoutingRef>(entity);
+            const entt::entity newAsset = newRef ? newRef->asset : entt::null;
             const auto* newAssetData = (newAsset != entt::null)
                 ? registry.try_get<ContentRoutingAsset>(newAsset) : nullptr;
 
-            // Resolve a single-screen target for the legacy alias.
             entt::entity legacyScreen = entt::null;
             if (newAssetData &&
                 newAssetData->kind == RouteMode::Direct &&
                 newAssetData->targets.size() == 1) {
                 legacyScreen = newAssetData->targets.front().screen;
             }
-
             gen->targetScreen = legacyScreen;
-            auto& ref = registry.get_or_emplace<ContentRoutingRef>(entity);
-            ref.asset = newAsset;
         }
 
         if (gen->targetScreen == entt::null) {
             const auto* asset = routing::tryGetAsset(registry, entity);
             if (!asset) {
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
-                                   "No target — generated output has no destination.");
+                                   "No target -- generated output has no destination.");
             }
-        }
-
-        // Kind badge + edit link.
-        const auto* asset = routing::tryGetAsset(registry, entity);
-        const char* kindLabel = "Default (All)";
-        ImVec4 kindColor{0.7f, 0.7f, 0.7f, 1.0f};
-        if (asset) {
-            switch (asset->kind) {
-                case RouteMode::Direct:
-                    kindLabel = "Direct";
-                    kindColor = ImVec4(0.6f, 0.85f, 0.6f, 1.0f);
-                    break;
-                case RouteMode::Tiled:
-                    kindLabel = "Tiled";
-                    kindColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
-                    break;
-                case RouteMode::FeedMap:
-                    kindLabel = "Feed Map";
-                    kindColor = ImVec4(0.6f, 0.7f, 1.0f, 1.0f);
-                    break;
-            }
-        }
-        ImGui::TextColored(kindColor, "%s", kindLabel);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Edit...##gencontentrouting")) {
-            ImGui::SetWindowFocus("Content Routing");
         }
     }
 
@@ -3031,11 +3081,6 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
         renderRemoteControlSection(entity);
     }
 
-    if (ImGui::CollapsingHeader("Timing")) {
-        ImGui::Text("Start frame: %d", static_cast<int>(lay->startFrame));
-        ImGui::Text("Duration: %d frames", static_cast<int>(lay->duration));
-    }
-
     ImGui::PopID();
 }
 
@@ -3067,6 +3112,47 @@ void PropertyWindow::renderSignalLayerProperties(entt::entity entity) {
         float col[4] = {lay->color[0], lay->color[1], lay->color[2], lay->color[3]};
         if (ImGui::ColorEdit4("Color", col, ImGuiColorEditFlags_NoAlpha))
             lay->color = {col[0], col[1], col[2], col[3]};
+    }
+
+    // -- Timing ----------------------------------------------------------------
+    if (ImGui::CollapsingHeader("Timing")) {
+        int sigStart = static_cast<int>(lay->startFrame);
+        bool sigStartChanged = entity::ui::DragInt("Start Frame##sigTiming", &sigStart, 1.0f, 0,
+                                                   std::numeric_limits<int>::max(),
+                                                   "%d", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated()) {
+            m_preEditLayerStartFrame = lay->startFrame;
+        }
+        if (sigStartChanged) {
+            lay->startFrame = static_cast<FrameNumber>(sigStart);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, entity)) {
+                auto cmd = std::make_unique<SetLayerStartFrameCommand>(
+                    idx->first, idx->second, lay->startFrame);
+                cmd->setPreviousStartFrame(m_preEditLayerStartFrame);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
+
+        int sigDur = static_cast<int>(lay->duration);
+        bool sigDurChanged = entity::ui::DragInt("Duration##sigTiming", &sigDur, 1.0f, 1,
+                                                 std::numeric_limits<int>::max(),
+                                                 "%d frames", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated()) {
+            m_preEditLayerDuration = lay->duration;
+        }
+        if (sigDurChanged) {
+            lay->duration = static_cast<FrameNumber>(sigDur);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, entity)) {
+                auto cmd = std::make_unique<SetLayerDurationCommand>(
+                    idx->first, idx->second, lay->duration);
+                cmd->setPreviousDuration(m_preEditLayerDuration);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+        }
     }
 
     // -- Signal parameters -------------------------------------------------

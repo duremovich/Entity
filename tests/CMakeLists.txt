@@ -6,7 +6,9 @@ add_executable(EntityMediaTests
     unit/FrameCacheTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
+    unit/TrackInsertTests.cpp
     unit/DeleteClipUndoTests.cpp
+    unit/DeleteClipsCommandTests.cpp
     unit/ObjectAnimationLayerTests.cpp
     unit/CueTagTests.cpp
     unit/SectionBreakTests.cpp
@@ -61,6 +63,8 @@ add_executable(EntityMediaTests
     unit/SignalPersistenceTest.cpp
     unit/RemoteControlStoreTest.cpp
     unit/RemotePatchUtilTest.cpp
+    unit/SetLayerCommandTests.cpp
+    unit/RenameTrackCommandTests.cpp
     test_Decoder.cpp
 )
 

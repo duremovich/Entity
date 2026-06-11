@@ -278,6 +278,19 @@ private:
                              entt::entity excludeEntity) const;
 
     /**
+     * Phase 13 group-drag variant: like wouldOverlapAnyClip but excludes a SET
+     * of entities (the whole moving group) instead of one, so a group member
+     * is only tested against NON-selected clips on its track. Returns true if
+     * any non-excluded clip overlaps the window.
+     */
+    bool wouldOverlapAnyClipExcluding(int trackIndex, Timecode startTime,
+                                      Timecode durationTime,
+                                      const std::vector<entt::entity>& exclude) const;
+
+    /** Model track index containing `clip`, or -1 if not on any track. */
+    int findTrackIndexForClip(entt::entity clip) const;
+
+    /**
      * Snap a raw drop time to the same candidate set the cue drag uses
      * (playhead, grid, cues, sections) at SNAP_THRESHOLD_PIXELS tolerance.
      * Drops use the same snap pipeline as cues — clip-edge snap is
@@ -290,15 +303,19 @@ private:
     /**
      * Render the track header panel (left side with hierarchy).
      * This panel shows tracks with twirl-downs for clips and properties.
+     * Scroll is handled by the slaved TrackHeadersInner child (Phase 3), so
+     * this function does not take a scroll argument — it draws at the inner
+     * child's already-scrolled cursor origin.
      * @param panelHeight Height of the panel
-     * @param verticalScroll Current vertical scroll position to sync
      */
-    void renderTrackHeaderPanel(float panelHeight, float verticalScroll);
+    void renderTrackHeaderPanel(float panelHeight);
 
     /**
      * Render a single track row in the header panel.
      * @param trackEntity The track entity
-     * @param trackIndex Track index
+     * @param trackIndex MODEL index (TrackRow::modelIndex), not visual row
+     *        position — the "Track N" auto-name and command addressing both
+     *        key off it. See TrackRow's comment.
      * @param rowY Y position for this row
      * @return Height consumed by this track (including expanded clips)
      */
@@ -332,6 +349,16 @@ private:
      * @return Track index or -1 if not over a track
      */
     int findTrackAtY(float mouseY, float windowY) const;
+
+    /**
+     * Resolve a finished rubber-band drag (Phase 12) into a selection. Builds
+     * the box from the scroll-stable anchor (m_boxAnchorFrame / ContentY) to
+     * the current mouse, then selects every layer whose frame range AND track
+     * row both intersect the box. m_boxAnchorCtrl=true unions with the existing
+     * selection; otherwise it replaces. windowPos is the tracks child's scrolled
+     * cursor origin (m_tracksScreenPos), same as the other hit-tests.
+     */
+    void commitBoxSelection(ImVec2 mousePos, ImVec2 windowPos);
 
     /**
      * A keyframe identified by its owning layer entity, animated property,
@@ -418,6 +445,12 @@ private:
     void renderSectionBreakModal();
 
     /**
+     * Render the "Insert/Delete Time Here..." modal. Reads m_rippleTimeModal*
+     * state and enqueues RippleInsertTimeCommand / RippleDeleteTimeCommand on OK.
+     */
+    void renderRippleTimeModal();
+
+    /**
      * Get the selected clip entity.
      */
     entt::entity getSelectedClip() const { return m_selectedClip; }
@@ -432,11 +465,16 @@ private:
     float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks
     float m_lastVisibleWidth{0.0f};    // Horizontal viewport width captured each render(),
                                        // used by ensurePlayheadVisible() to follow the playhead.
-    bool m_pendingScrollX{false};      // True for one render() after ensurePlayheadVisible()
-                                       // moved m_syncScrollX programmatically — suppresses the
-                                       // read-back at the bottom of render() that would otherwise
-                                       // stomp the target (ImGui's SetScrollX sets a target that
-                                       // doesn't reach GetScrollX until the NEXT Begin()).
+    bool m_pendingScrollX{false};      // True for one render() after a programmatic horizontal
+                                       // move (ensurePlayheadVisible / zoom re-anchor) wrote
+                                       // m_syncScrollX. Routes the move through the tracks child's
+                                       // SetNextWindowScroll (pre-Begin) and suppresses the
+                                       // same-frame read-back so the just-applied target isn't
+                                       // stomped by the pre-target GetScrollX.
+    bool m_pendingScrollY{false};      // Symmetric to m_pendingScrollX for programmatic vertical
+                                       // moves — currently set by the wheel-over-header forward
+                                       // in render(). Same SetNextWindowScroll + read-back-suppress
+                                       // path on the Y axis.
 
     // Recompute m_pixelsPerSecond from m_zoomIndex + Timeline frame rate.
     // Called at the top of render() so a frame-rate change picks up immediately.
@@ -446,6 +484,48 @@ private:
     ImVec2 m_rulerScreenPos{0, 0};
     ImVec2 m_tracksScreenPos{0, 0};
     float m_tracksHeight{0.0f};
+
+    // ------------------------------------------------------------------------
+    // Per-frame track-row layout cache (Phase 9 foundation).
+    //
+    // Every renderer and hit-test that walks tracks used to recompute the same
+    // cumulative-Y layout inline (5+ copies). They now iterate m_trackRows,
+    // rebuilt once at the top of render() by buildTrackRows(). This is the one
+    // place that decides which tracks are VISIBLE: when the global "hide shy"
+    // toggle is on, shy tracks (TrackUiState::shy) are omitted from the cache,
+    // so they vanish from both the header panel and the lanes — and every
+    // hit-test — without any per-consumer shy logic. Commands still address
+    // tracks by `modelIndex` (the index into Timeline::getTracks()), which the
+    // row carries; only presentation skips rows.
+    // ------------------------------------------------------------------------
+    struct TrackRow {
+        entt::entity track{entt::null};
+        int          modelIndex{0};        // index into Timeline::getTracks() — the MODEL
+                                           // position, NOT the visual row position. Because
+                                           // shy tracks are skipped, visual row N and model
+                                           // index N can differ. Commands address tracks by
+                                           // modelIndex, and the "Track N" auto-name is
+                                           // derived from it (model position, per Phase 8) so
+                                           // a track's default name doesn't shift when a shy
+                                           // track above it is hidden.
+        float        y{0.0f};              // content-space Y offset (top of the base row,
+                                           // before adding a child's windowPos.y)
+        float        height{0.0f};         // full row height incl. expanded property panel
+                                           // (does NOT include the trailing TRACK_PADDING)
+        bool         expanded{false};
+        entt::entity clipAtPlayhead{entt::null};  // entt::null when no clip overlaps the playhead
+        float        propPanelHeight{0.0f};       // 0 when not expanded / no overlapping clip
+    };
+    std::vector<TrackRow> m_trackRows;
+
+    // Rebuild m_trackRows from the current track list, expansion state, and the
+    // global hide-shy toggle. Called once at the top of render().
+    void buildTrackRows();
+
+    // Convenience: the row for a given model index, or nullptr if that track is
+    // currently hidden (shy + global hide on) / out of range. Hit-tests that
+    // need a specific track by model index use this.
+    const TrackRow* rowForModelIndex(int modelIndex) const;
 
     // Layout constants
     static constexpr float RULER_HEIGHT = 30.0f;
@@ -461,6 +541,35 @@ private:
     int m_selectedClipTrackIndex{-1};
     Timecode m_clipDragStartTime{0};
     float m_dragOffsetX{0.0f};
+
+    // Multi-select (Phase 12). Pending-collapse: a plain (non-ctrl) click on a
+    // clip that is ALREADY in the multi-selection keeps the whole set (so a
+    // group drag can start) but, if the gesture turns out to be a click rather
+    // than a drag, collapses the selection to just that clip on mouse-up.
+    // m_pendingCollapseClip holds the clip to collapse to; entt::null = no
+    // pending collapse.
+    entt::entity m_pendingCollapseClip{entt::null};
+
+    // Group drag (Phase 13, HORIZONTAL ONLY). When a drag starts with the
+    // multi-selection > 1, every member moves rigidly by the grabbed clip's
+    // delta. Vertical / cross-track is disabled for group drags (v1 scope cut),
+    // and snap applies only to the grabbed clip (others stay rigid). Original
+    // starts are captured at drag-start so the per-frame live-write is always
+    // origin + delta (not incremental), and so a collision on release can
+    // revert the whole group exactly.
+    bool m_isGroupDragging{false};
+    FrameNumber m_groupGrabbedOriginalStart{0};
+    std::vector<std::pair<entt::entity, FrameNumber>> m_groupDragOriginalStarts;
+
+    // Rubber-band box selection. Anchored in SCROLL-STABLE timeline space: the
+    // X anchor is a frame, the Y anchor is the content-space pixel offset (row
+    // y), so the box stays put under the content if the view scrolls mid-drag.
+    bool        m_isBoxSelecting{false};
+    bool        m_boxSelectArmed{false};   // mouse-down on empty lane; upgrades to
+                                           // m_isBoxSelecting once drag crosses threshold
+    FrameNumber m_boxAnchorFrame{0};
+    float       m_boxAnchorContentY{0.0f};
+    bool        m_boxAnchorCtrl{false};    // ctrl held at anchor -> union on release
 
     // Trimming state
     bool m_isTrimmingClip{false};
@@ -554,10 +663,19 @@ private:
     enum class CueModalMode { None, Add, Edit };
     CueModalMode m_cueModalMode{CueModalMode::None};
     bool   m_cueModalOpenRequested{false};
+    bool   m_cueModalAlsoAddSection{false};  // true when opened via "Add Section + Cue Here..."
     double m_cueModalOldNumber{0.0};
     double m_cueModalNumber{1.0};
     FrameNumber m_cueModalFrame{0};
     char   m_cueModalLabelBuf[256]{0};
+
+    // Pending modal state for "Insert Time Here..." / "Delete Time Here..."
+    // launched from TrackContextMenu or RulerContextMenu (no active range).
+    enum class RippleTimeModalMode { None, Insert, Delete };
+    RippleTimeModalMode m_rippleTimeModalMode{RippleTimeModalMode::None};
+    bool        m_rippleTimeModalOpenRequested{false};
+    FrameNumber m_rippleTimeModalFrame{0};     // anchor frame (right-click position)
+    FrameNumber m_rippleTimeModalDuration{1};  // duration for Insert; delete end = frame + duration
 
     // Time captured when the user opens the right-click ruler menu (used
     // as the timestamp for "Add Cue Here..." when no cue/section/range
@@ -612,7 +730,53 @@ private:
     // IsItemActivated so undo restores the value before the drag started,
     // not the penultimate-frame value (which drifts during live preview).
     float m_preEditMasterGain{1.0f};
-    char         m_changeMediaFilterBuf[256]{0};
+    char  m_changeMediaFilterBuf[256]{0};
+
+    // Pre-edit capture for twirldown property-panel DragFloat widgets
+    // (renderClipPropertyPanel). One slot — only one DragFloat can be
+    // active at a time. Keyed by entity + row identity so the wrong
+    // slot isn't consumed if the panel scrolls between Activated and
+    // DeactivatedAfterEdit.
+    struct TwirldownPreEdit {
+        entt::entity entity{entt::null};
+        // For Transform rows: AnimatableProperty (cast to int for storage).
+        // For EffectParam rows: paramHash. Together with entity they
+        // uniquely identify which row owns this capture.
+        int          propKey{0};      // AnimatableProperty (Transform) or paramHash (Effect)
+        bool         isEffect{false};
+
+        // Pre-drag scalar value — restored by undo when wasKeyframed=false.
+        float        scalarValue{0.0f};
+
+        // Keyframe state captured on IsItemActivated.
+        bool                  wasKeyframed{false};
+        FrameNumber           keyframeFrame{0};
+        std::optional<float>  keyframeValue;  // nullopt = no kf existed at frame
+    };
+    TwirldownPreEdit m_twirldownPreEdit;
+
+    // Inline track-rename state. -1 = no rename in progress.
+    // m_renamingTrackIndex is set on double-click of the name region or
+    // "Rename Track..." from the context menu. The InputText overlay is
+    // drawn in renderTrackHeaderRow; Enter/deactivate commits via
+    // RenameTrackCommand; Esc cancels (clears to -1 without command).
+    //
+    // Focus protocol (mirrors MathInput.cpp justEntered/wasActive shape):
+    //   m_renameFocusPending — set true on entry; renderTrackHeaderRow
+    //     calls SetKeyboardFocusHere() before the InputText and clears
+    //     it on the SAME frame, then skips the commit check that frame
+    //     so the never-yet-active state doesn't trigger an instant commit.
+    //   m_renameWasActive — tracks whether IsItemActive() was ever true
+    //     for this InputText session; focus-loss commit only fires after
+    //     the widget was at least once active.
+    //   m_renameTrackCount — track count captured on entry; if it changes
+    //     while a rename is open the rename is silently cancelled (stale
+    //     positional index guard).
+    int    m_renamingTrackIndex{-1};
+    char   m_renameTrackBuf[256]{0};
+    bool   m_renameFocusPending{false};
+    bool   m_renameWasActive{false};
+    size_t m_renameTrackCount{0};
 
     // Callbacks
     MediaDropCallback m_mediaDropCallback;

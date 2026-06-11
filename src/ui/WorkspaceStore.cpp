@@ -114,6 +114,13 @@ std::vector<Workspace> loadAll(const std::filesystem::path& path) {
                     if (hw.is_string()) w.hiddenWindows.push_back(hw.get<std::string>());
                 }
             }
+            // Phase 11 — per-node active tabs. Missing on pre-Phase-11
+            // workspaces (focus pass no-ops, the ini selection stands).
+            if (wj.contains("focusedTabs") && wj["focusedTabs"].is_array()) {
+                for (const auto& ft : wj["focusedTabs"]) {
+                    if (ft.is_string()) w.focusedTabs.push_back(ft.get<std::string>());
+                }
+            }
             result.push_back(std::move(w));
         }
     }
@@ -157,6 +164,7 @@ bool saveAll(const std::vector<Workspace>& workspaces,
         wj["layoutLocked"]  = w.layoutLocked;
         wj["builtIn"]       = w.builtIn;
         wj["hiddenWindows"] = w.hiddenWindows;
+        wj["focusedTabs"]   = w.focusedTabs;  // Phase 11 — per-node active tabs
         j["workspaces"].push_back(std::move(wj));
     }
 

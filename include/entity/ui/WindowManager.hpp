@@ -249,6 +249,44 @@ public:
     // -----------------------------------------------------------------
     void loadWorkspaces();
     void activateWorkspace(const std::string& name);
+
+    // -----------------------------------------------------------------
+    // Deferred ImGui ini application (Phase 11). Applying
+    // LoadIniSettingsFromMemory mid-frame rebuilds the dock tree from
+    // scratch and throws away any SelectedTabId written that half-frame
+    // (imgui 1.89.7 docking — the first correct frame is N+2, and a window
+    // already submitted this frame keeps a stale dock-node pointer). So all
+    // ini application is funneled through here and applied ONLY at a frame
+    // boundary: requestIniApply() stashes the blob; Engine calls
+    // flushPendingIniApply() immediately before ImGui::NewFrame().
+    //
+    // focusedTabs restores per-node active tabs after the apply. SetWindowFocus
+    // is the reliable override (it writes the tab bar's SelectedTabId AND makes
+    // the window the NavWindow, so DockNodeUpdateTabBar's focus-follows write
+    // agrees instead of stomping) — but it is a no-op until the window has
+    // Begin()'d once post-apply, so the focus pass runs one frame later.
+    // Order matters: background/deepest windows first, the globally-focused
+    // window last.
+    void requestIniApply(std::string imguiIni,
+                         std::vector<std::string> hiddenWindows,
+                         bool layoutLocked,
+                         std::vector<std::string> focusedTabs);
+
+    // Apply a pending ini blob (if any) at a safe frame boundary. MUST be
+    // called by Engine right before ImGui::NewFrame(). Returns true if a blob
+    // was applied this call. No-op (returns false) when nothing is pending.
+    bool flushPendingIniApply();
+
+    // Walk the live dock tree and record each leaf node's active-tab window
+    // name, ordered background-to-foreground (the globally-focused window
+    // last). Used at save time to capture focusedTabs for the workspace /
+    // showfile embed. Safe to call only inside a frame scope.
+    std::vector<std::string> captureFocusedTabs() const;
+
+    // Accessors so Engine can build / read the editorLayout embed blob.
+    std::string currentImGuiIni() const;        // SaveIniSettingsToMemory snapshot
+    std::vector<std::string> hiddenWindowNames() const;
+    void setHiddenWindowsAndLock(const std::vector<std::string>& hidden, bool locked);
     std::vector<std::string> listWorkspaceNames() const;
     const std::string& activeWorkspaceName() const { return m_activeWorkspaceName; }
     bool isBuiltInWorkspace(const std::string& name) const;
@@ -389,6 +427,24 @@ private:
     const Workspace* findWorkspace(const std::string& name) const;
     void             captureCurrentStateInto(const std::string& name);
     void             applyWorkspaceState(const Workspace& w);
+
+    // ----- Deferred ini apply + focused-tab restore (Phase 11) -------
+    // Pending ini blob requested via requestIniApply(), applied at the next
+    // flushPendingIniApply() call (Engine drives it pre-NewFrame).
+    bool                     m_pendingIniApply{false};
+    std::string              m_pendingIniBlob;       // empty -> request procedural default
+    std::vector<std::string> m_pendingHiddenWindows;
+    bool                     m_pendingLayoutLocked{false};
+    std::vector<std::string> m_pendingFocusedTabs;
+
+    // One-shot: after an ini apply, the focus pass runs on the FOLLOWING
+    // render() (windows must Begin() once before SetWindowFocus takes effect).
+    bool                     m_focusRestorePending{false};
+    std::vector<std::string> m_focusRestoreList;     // background-to-foreground
+
+    // Apply the queued focus list (called at the top of render(), before the
+    // window submission loop, so the windows from last frame already exist).
+    void restorePendingFocus();
 };
 
 } // namespace entity

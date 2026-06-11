@@ -57,6 +57,12 @@ struct ClipClipboardSnapshot {
     // selected at paste time. -1 if not resolved.
     int                           sourceTrackIndex{-1};
 
+    // Group paste (Phase 13): this entry's start frame relative to the
+    // group's minimum start. For a single-clip copy this is 0. Paste places
+    // the entry at (anchorFrame + relativeStartOffset) so a multi-clip paste
+    // preserves the relative layout the clips had when copied.
+    FrameNumber                   relativeStartOffset{0};
+
     // True when this snapshot was populated by snapshotClipForClipboard.
     bool                          valid{false};
 };

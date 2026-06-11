@@ -286,7 +286,9 @@ public:
 private:
     std::optional<FrameNumber> m_targetFrame;
     std::optional<int>         m_targetTrack;
-    entt::entity m_createdEntity{entt::null};
+    // Phase 13: a paste of a multi-clip clipboard creates N entities; undo
+    // removes them all as one step.
+    std::vector<entt::entity> m_createdEntities;
     bool         m_executed{false};
 };
 
@@ -361,6 +363,42 @@ private:
     // re-execute deletes the right clip.
     bool                        m_captured{false};
     Timeline::DeletedClipSnapshot m_snapshot;
+};
+
+// Group delete (Phase 12). Deletes N clips as a SINGLE undoable step,
+// snapshotting each before destruction and restoring them all on undo. Targets
+// are addressed by (trackIndex, layerIndex) pairs — stable across save/load,
+// unlike runtime entity ids — so a serialized/replayed command resolves
+// deterministically (same addressing as SelectClipCommand). An empty target
+// list means "use the timeline's current multi-selection at execute time".
+// Layer kinds with no DeletedLayerKind entry (Signal) can't be snapshotted and
+// are skipped with a log — the rest still delete.
+class DeleteClipsCommand : public UndoableCommand {
+public:
+    using TrackClip = std::pair<int, int>;  // (trackIndex, layerIndex)
+
+    DeleteClipsCommand() = default;
+    explicit DeleteClipsCommand(std::vector<TrackClip> targets)
+        : m_targets(std::move(targets)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    bool redo(Engine& engine) override;
+    const char* getTypeName() const override { return "DeleteClips"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    // (track, layer) targets; empty means "use the current multi-selection at
+    // execute time" (which execute() resolves + records here so toJson/redo
+    // stay deterministic).
+    std::vector<TrackClip> m_targets;
+    // One snapshot per successfully-deleted clip, in delete order. undo()
+    // restores them; redo() re-runs execute() against the recorded m_targets.
+    bool m_captured{false};
+    std::vector<Timeline::DeletedClipSnapshot> m_snapshots;
 };
 
 // ============================================================================
@@ -659,6 +697,22 @@ private:
     int m_layerIndex;
     bool m_armed;
     bool m_previousArmed{false};
+};
+
+class RenameTrackCommand : public UndoableCommand {
+public:
+    RenameTrackCommand(int trackIndex, std::string newName)
+        : m_trackIndex(trackIndex), m_newName(std::move(newName)) {}
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RenameTrack"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    int         m_trackIndex;
+    std::string m_newName;
+    std::string m_previousName;
 };
 
 class LogClipStateCommand : public Command {
@@ -2064,6 +2118,75 @@ public:
 private:
     int m_trackIndex;
     int m_clipIndex;
+    FrameNumber m_duration;
+    std::optional<FrameNumber> m_previousDuration;
+};
+
+/**
+ * Set a layer's startFrame for any timeline-resident entity (Clip-backed or
+ * Layer-only). Writes through the appropriate path: Clip + syncLayerFromClip
+ * for Clip-backed entities; Layer::startFrame directly for Layer-only kinds
+ * (OA / Generative / Signal). Clamps: start >= 0, duration stays unchanged
+ * (neighbor collision is the caller's responsibility).
+ *
+ * JSON shape:
+ *   { "type": "SetLayerStartFrame",
+ *     "trackIndex": 0,
+ *     "layerIndex": 0,
+ *     "startFrame": 30 }
+ */
+class SetLayerStartFrameCommand : public UndoableCommand {
+public:
+    SetLayerStartFrameCommand(int trackIndex, int layerIndex, FrameNumber startFrame)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex), m_startFrame(startFrame) {}
+
+    void setPreviousStartFrame(FrameNumber prev) { m_previousStartFrame = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetLayerStartFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_layerIndex;
+    FrameNumber m_startFrame;
+    std::optional<FrameNumber> m_previousStartFrame;
+};
+
+/**
+ * Set a layer's duration for any timeline-resident entity (Clip-backed or
+ * Layer-only). Writes through the appropriate path: Clip + syncLayerFromClip
+ * for Clip-backed entities; Layer::duration directly for Layer-only kinds
+ * (OA / Generative / Signal). Clamps: duration >= 1.
+ *
+ * JSON shape:
+ *   { "type": "SetLayerDuration",
+ *     "trackIndex": 0,
+ *     "layerIndex": 0,
+ *     "duration": 60 }
+ */
+class SetLayerDurationCommand : public UndoableCommand {
+public:
+    SetLayerDurationCommand(int trackIndex, int layerIndex, FrameNumber duration)
+        : m_trackIndex(trackIndex), m_layerIndex(layerIndex), m_duration(duration) {}
+
+    void setPreviousDuration(FrameNumber prev) { m_previousDuration = prev; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetLayerDuration"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_layerIndex;
     FrameNumber m_duration;
     std::optional<FrameNumber> m_previousDuration;
 };

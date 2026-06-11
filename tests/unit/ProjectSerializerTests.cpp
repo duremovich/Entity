@@ -27,10 +27,12 @@
 #include "entity/components/Prop.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/TimelineTrack.hpp"
+#include "entity/components/TrackUiState.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
 
+#include <nlohmann/json.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -1697,4 +1699,163 @@ TEST(ProjectSerializer, PreV24SectionsAndCuesMigrateMicrosecondsToFrames) {
     ASSERT_EQ(cues.size(), 2u);
     EXPECT_EQ(cues[0].frame, 30)  << "1000000us @ 30fps must migrate to frame 30";
     EXPECT_EQ(cues[1].frame, 250) << "8333333us @ 30fps must migrate to frame 250";
+}
+
+// Phase 9: per-track shy flag (TrackUiState::shy) + the global hideShyTracks
+// view-state both round-trip through save/load.
+TEST(ProjectSerializer, ShyTrackAndGlobalHideRoundTrip) {
+    TempFile tf("shy_track_roundtrip");
+
+    // --- Save: three tracks, middle one shy; global hide ON. ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+
+        timeline.createTrack("Track 0");
+        entt::entity t1 = timeline.createTrack("Track 1");
+        timeline.createTrack("Track 2");
+
+        // Flag the middle track shy.
+        auto& ui = registry.get_or_emplace<entity::TrackUiState>(t1);
+        ui.name = "Hidden";
+        ui.shy  = true;
+
+        timeline.setHideShyTracks(true);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load: shy flag on the middle track + global toggle survive. ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        EXPECT_TRUE(timeline.getHideShyTracks());
+
+        const auto& tracks = timeline.getTracks();
+        ASSERT_EQ(tracks.size(), 3u);
+
+        // Track 0 and Track 2 are not shy; Track 1 is.
+        const auto* ui0 = registry.try_get<entity::TrackUiState>(tracks[0]);
+        const auto* ui1 = registry.try_get<entity::TrackUiState>(tracks[1]);
+        const auto* ui2 = registry.try_get<entity::TrackUiState>(tracks[2]);
+
+        EXPECT_FALSE(ui0 && ui0->shy);
+        ASSERT_NE(ui1, nullptr) << "shy track must have a restored TrackUiState";
+        EXPECT_TRUE(ui1->shy);
+        EXPECT_EQ(ui1->name, "Hidden");
+        EXPECT_FALSE(ui2 && ui2->shy);
+    }
+}
+
+// Legacy tolerance: a project saved without the hideShyTracks key loads with
+// the global toggle defaulting to false.
+TEST(ProjectSerializer, MissingHideShyTracksDefaultsFalse) {
+    TempFile tf("shy_legacy_default");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        timeline.createTrack("Track 0");
+        timeline.setHideShyTracks(false);
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // Strip the hideShyTracks key to simulate a pre-Phase-9 file.
+    {
+        std::ifstream in(tf.path);
+        nlohmann::json j;
+        in >> j;
+        in.close();
+        if (j.contains("timeline")) j["timeline"].erase("hideShyTracks");
+        std::ofstream out(tf.path);
+        out << j.dump(2);
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+        EXPECT_FALSE(timeline.getHideShyTracks());
+    }
+}
+
+// Phase 11: editor layout embed (v28 additive) — the opaque editorLayout blob
+// on ProjectManager round-trips through save/load as a structured sub-object.
+TEST(ProjectSerializer, EditorLayoutRoundTrip) {
+    TempFile tf("editor_layout_roundtrip");
+
+    const std::string kLayout =
+        R"({"imguiIni":"[Window][Stage]\nPos=0,0\n",)"
+        R"("hiddenWindows":["Cues","Outputs"],)"
+        R"("layoutLocked":true,)"
+        R"("focusedTabs":["Properties","Stage"]})";
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        pm.setEditorLayoutJson(kLayout);
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+            << entity::ProjectSerializer::getLastError();
+
+        // The blob comes back as canonical JSON — compare parsed, not string.
+        const std::string out = pm.getEditorLayoutJson();
+        ASSERT_FALSE(out.empty());
+        const nlohmann::json got = nlohmann::json::parse(out);
+        EXPECT_EQ(got.value("imguiIni", std::string{}), "[Window][Stage]\nPos=0,0\n");
+        EXPECT_EQ(got.value("layoutLocked", false), true);
+        ASSERT_TRUE(got.contains("hiddenWindows"));
+        EXPECT_EQ(got["hiddenWindows"].size(), 2u);
+        EXPECT_EQ(got["hiddenWindows"][0], "Cues");
+        ASSERT_TRUE(got.contains("focusedTabs"));
+        EXPECT_EQ(got["focusedTabs"].back(), "Stage");
+    }
+}
+
+// Legacy tolerance: a project with no editorLayout key loads with an empty
+// blob (editor keeps its current workspace layout). Also verifies the save
+// side omits the key when the blob is empty.
+TEST(ProjectSerializer, MissingEditorLayoutLoadsEmpty) {
+    TempFile tf("editor_layout_legacy");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;  // editorLayout blob left empty
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // The saved file must NOT contain an editorLayout key.
+    {
+        std::ifstream in(tf.path);
+        nlohmann::json j;
+        in >> j;
+        EXPECT_FALSE(j.contains("editorLayout"));
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entity::ProjectManager pm;
+        // Pre-seed a stale blob to prove load clears it when the key is absent.
+        pm.setEditorLayoutJson(R"({"imguiIni":"stale"})");
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+            << entity::ProjectSerializer::getLastError();
+        EXPECT_TRUE(pm.getEditorLayoutJson().empty());
+    }
 }

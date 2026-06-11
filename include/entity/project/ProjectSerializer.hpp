@@ -159,7 +159,20 @@ public:
     //      carries {id, armed}. storeSlot is runtime-only and rebound
     //      by Engine::bindRemotePatchesAfterLoad(). Pre-v27 files load
     //      with no patches (missing key = unpatched).
-    static constexpr int PROJECT_VERSION = 27;
+    // v28: TrackUiState persistence — per-track "name" and "shy" fields
+    //      written next to "index" in the tracks[] array (pre-v28 files load
+    //      with empty name -> "Track N" fallback, shy=false). The same
+    //      uncommitted v28 bump also carries, additively:
+    //        - global "hideShyTracks" toggle under "timeline" (Phase 9), and
+    //        - the editor layout embed (item 3): optional "editorLayout"
+    //          object { imguiIni, hiddenWindows, layoutLocked, focusedTabs },
+    //          stored as an opaque JSON blob on ProjectManager (same boundary
+    //          idiom as dmxMappingsJson) so the serializer stays ImGui-free.
+    //          Engine populates it from WindowManager before save and feeds it
+    //          back into WindowManager::requestIniApply on load. Files without
+    //          the key (older projects, headless saves) keep the current
+    //          workspace layout, exactly as before.
+    static constexpr int PROJECT_VERSION = 28;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

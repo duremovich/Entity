@@ -767,6 +767,19 @@ public:
     void bindRemotePatchesAfterLoad();
 
     /**
+     * Phase 11 — editor layout embed (item 3). captureEditorLayoutForSave()
+     * snapshots WindowManager's ImGui ini + hidden-window set + lock state +
+     * focused tabs into ProjectManager's editorLayout blob right before a
+     * save; applyEditorLayoutAfterLoad() reads that blob back after a load and
+     * hands it to WindowManager::requestIniApply (deferred to a frame
+     * boundary) plus visibility/lock. Both are no-ops when WindowManager is
+     * absent (pure headless) or the blob is empty (legacy files). Editor
+     * thread only.
+     */
+    void captureEditorLayoutForSave();
+    void applyEditorLayoutAfterLoad();
+
+    /**
      * Save flow bound to Ctrl+S / "File > Save Project". Writes to the
      * current project path if one is set; otherwise prompts the user via
      * Save-As dialog.
@@ -1081,7 +1094,7 @@ private:
     // ClipClipboard.hpp for the snapshot shape. Cleared on closeProject
     // and loadProject because routing-asset entity refs only survive
     // within one project session.
-    std::optional<ClipClipboardSnapshot> m_clipClipboard;
+    std::vector<ClipClipboardSnapshot> m_clipClipboard;
 
     // TODO: implement when class is ready
     // std::unique_ptr<Transport> m_transport;
@@ -1299,13 +1312,22 @@ public:
      * routing-asset entity reference only survives within one project
      * session.
      */
-    const std::optional<ClipClipboardSnapshot>& clipClipboard() const {
+    // Phase 13: the clipboard is a group (vector) of snapshots so a
+    // multi-selection copy/paste round-trips. A single-clip copy is a
+    // one-element vector. Empty vector == empty clipboard.
+    const std::vector<ClipClipboardSnapshot>& clipClipboard() const {
         return m_clipClipboard;
     }
-    void setClipClipboard(ClipClipboardSnapshot snap) {
-        m_clipClipboard = std::move(snap);
+    bool hasClipClipboard() const { return !m_clipClipboard.empty(); }
+    void setClipClipboard(std::vector<ClipClipboardSnapshot> snaps) {
+        m_clipClipboard = std::move(snaps);
     }
-    void clearClipClipboard() { m_clipClipboard.reset(); }
+    // Convenience for the single-clip copy/cut path.
+    void setClipClipboard(ClipClipboardSnapshot snap) {
+        m_clipClipboard.clear();
+        m_clipClipboard.push_back(std::move(snap));
+    }
+    void clearClipClipboard() { m_clipClipboard.clear(); }
 
     /**
      * Tear down the decode worker for a clip. Forwards to

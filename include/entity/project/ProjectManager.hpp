@@ -592,6 +592,18 @@ public:
     void  setAudioMasterMute(bool mute);
     bool  getAudioMasterMute() const;
 
+    // --- Editor layout embed (per-project, schema v28 additive) -------------
+    //
+    // Opaque JSON blob holding the editor's ImGui dock layout + window
+    // visibility + focused tabs, so a showfile can restore the exact editor
+    // arrangement it was saved with. Same boundary idiom as dmxMappingsJson:
+    // ProjectManager stores the raw string, ProjectSerializer round-trips it
+    // as project["editorLayout"], and Engine does the structured <-> blob
+    // conversion (it owns WindowManager + the ImGui calls). Empty -> the
+    // serializer omits the key; editor-thread-only, so no lock needed.
+    void        setEditorLayoutJson(std::string json) { m_editorLayoutJson = std::move(json); }
+    std::string getEditorLayoutJson() const { return m_editorLayoutJson; }
+
 private:
     // Non-owning dependencies (Engine owns and outlives this)
     Timeline*        m_timeline{nullptr};
@@ -627,6 +639,11 @@ private:
     // save; applied by Engine after load. Defaults match AudioEngine defaults.
     float m_audioMasterGain{1.0f};
     bool  m_audioMasterMute{false};
+
+    // Editor layout embed (schema v28 additive). Opaque JSON blob — see the
+    // accessor comment above. Empty by default; populated by Engine before save and on
+    // load. Cleared to "" on a project with no editorLayout key (legacy).
+    std::string m_editorLayoutJson;
 };
 
 } // namespace entity

@@ -112,6 +112,12 @@ void WindowManager::render() {
 
     ImGui::End();
 
+    // Phase 11: restore per-node active tabs queued by a prior ini apply. Runs
+    // here — after the dockspace window, before the editor windows Begin() this
+    // frame — because the windows submitted on the apply frame now exist, so
+    // SetWindowFocus resolves and pins each dock node's selected tab.
+    restorePendingFocus();
+
     // Render all registered windows
     for (auto& window : m_windows) {
         if (window->isVisible()) {
@@ -164,7 +170,8 @@ void WindowManager::render() {
                 flags |= ImGuiWindowFlags_NoMove;
             }
 
-            if (ImGui::Begin(windowName, nullptr, flags)) {
+            bool open = true;
+            if (ImGui::Begin(windowName, &open, flags)) {
                 // Right-click context menu for undock/dock
                 // Use internal API to detect right-click on title bar or tab
                 ImGuiWindow* imguiWin = ImGui::GetCurrentWindow();
@@ -239,6 +246,15 @@ void WindowManager::render() {
                 window->render();
             }
             ImGui::End();
+            if (!open) {
+                window->setVisible(false);
+                // Closing a tab via its X changes the hidden-window set, which
+                // the workspace autosave/shutdown capture must persist. ImGui
+                // doesn't necessarily mark the ini dirty for a visibility-only
+                // change, so flag it explicitly — otherwise a close between
+                // autosaves can be lost on a clean shutdown.
+                ImGui::GetIO().WantSaveIniSettings = true;
+            }
 
             // Pop pre-begin styles
             window->popPreBeginStyles();
@@ -524,8 +540,37 @@ void WindowManager::loadWorkspaces() {
 }
 
 void WindowManager::applyWorkspaceState(const Workspace& w) {
-    if (!w.imguiIni.empty()) {
-        ImGui::LoadIniSettingsFromMemory(w.imguiIni.c_str(), w.imguiIni.size());
+    // Route through the deferred-apply queue so the ini is applied at a frame
+    // boundary (flushPendingIniApply, pre-NewFrame) rather than mid-frame.
+    // The mid-frame LoadIniSettingsFromMemory that used to live here was the
+    // root cause of the Workspace-menu focus loss (dock tree rebuilt under
+    // already-submitted windows; SelectedTabId thrown away). The workspace's
+    // saved focusedTabs drive the SetWindowFocus restore so a switch lands on
+    // the same active tabs it was saved with (the ini's SelectedTabId alone
+    // can be stomped by the NavWindow-follows write — see requestIniApply).
+    requestIniApply(w.imguiIni, w.hiddenWindows, w.layoutLocked, w.focusedTabs);
+}
+
+void WindowManager::requestIniApply(std::string imguiIni,
+                                    std::vector<std::string> hiddenWindows,
+                                    bool layoutLocked,
+                                    std::vector<std::string> focusedTabs) {
+    m_pendingIniApply      = true;
+    m_pendingIniBlob       = std::move(imguiIni);
+    m_pendingHiddenWindows = std::move(hiddenWindows);
+    m_pendingLayoutLocked  = layoutLocked;
+    m_pendingFocusedTabs   = std::move(focusedTabs);
+}
+
+bool WindowManager::flushPendingIniApply() {
+    if (!m_pendingIniApply) return false;
+    m_pendingIniApply = false;
+
+    if (!m_pendingIniBlob.empty()) {
+        // Safe here: this runs before ImGui::NewFrame() (Engine guarantees the
+        // call site), so the dock tree rebuild happens outside any frame scope
+        // and no windows hold stale dock-node pointers.
+        ImGui::LoadIniSettingsFromMemory(m_pendingIniBlob.c_str(), m_pendingIniBlob.size());
     } else {
         // Empty ini — request the procedural default layout on the next
         // render() (gate is m_layoutResetRequested in the dockspace setup).
@@ -534,14 +579,104 @@ void WindowManager::applyWorkspaceState(const Workspace& w) {
         m_pendingUndock.clear();
         m_pendingDock.clear();
     }
-    m_layoutLocked = w.layoutLocked;
+
+    m_layoutLocked = m_pendingLayoutLocked;
 
     for (auto& window : m_windows) {
         const std::string n = window->getName();
-        const bool hidden = std::find(w.hiddenWindows.begin(),
-                                       w.hiddenWindows.end(), n)
-                             != w.hiddenWindows.end();
+        const bool hidden = std::find(m_pendingHiddenWindows.begin(),
+                                      m_pendingHiddenWindows.end(), n)
+                            != m_pendingHiddenWindows.end();
         window->setVisible(!hidden);
+    }
+
+    // Queue the focus restore for the NEXT render(): the windows need to
+    // Begin() once after this apply before SetWindowFocus(name) resolves.
+    if (!m_pendingFocusedTabs.empty()) {
+        m_focusRestoreList    = std::move(m_pendingFocusedTabs);
+        m_focusRestorePending = true;
+    }
+    m_pendingFocusedTabs.clear();
+    return true;
+}
+
+void WindowManager::restorePendingFocus() {
+    if (!m_focusRestorePending) return;
+    m_focusRestorePending = false;
+    // Background-to-foreground: each SetWindowFocus pins its dock node's active
+    // tab; issuing them in order leaves the last name globally focused. No-op
+    // for any window that doesn't exist / isn't docked, which is fine.
+    for (const auto& name : m_focusRestoreList) {
+        ImGui::SetWindowFocus(name.c_str());
+    }
+    m_focusRestoreList.clear();
+}
+
+std::vector<std::string> WindowManager::captureFocusedTabs() const {
+    // Walk the live dock tree: for each leaf node with a tab bar, record the
+    // window name whose tab is currently selected. Ordered so the globally
+    // focused window (g.NavWindow's root) ends up last — restorePendingFocus
+    // issues SetWindowFocus in this order so the final call wins global focus.
+    std::vector<std::string> result;
+    ImGuiContext* ctx = ImGui::GetCurrentContext();
+    if (!ctx) return result;
+
+    // Resolve the name of the window currently holding nav focus (if docked),
+    // so we can push it to the end.
+    std::string focusedName;
+    if (ctx->NavWindow && ctx->NavWindow->DockNode) {
+        // RootWindow's name carries the dock tab identity.
+        if (ImGuiWindow* rw = ctx->NavWindow->RootWindow) {
+            focusedName = rw->Name ? rw->Name : "";
+        }
+    }
+
+    for (int i = 0; i < ctx->DockContext.Nodes.Data.Size; ++i) {
+        ImGuiDockNode* node = static_cast<ImGuiDockNode*>(ctx->DockContext.Nodes.Data[i].val_p);
+        if (!node) continue;
+        if (!node->IsLeafNode()) continue;
+        if (node->SelectedTabId == 0) continue;
+        // Resolve the selected tab's window name via its tab bar.
+        if (!node->TabBar) continue;
+        const char* selName = nullptr;
+        for (int t = 0; t < node->TabBar->Tabs.Size; ++t) {
+            ImGuiTabItem& tab = node->TabBar->Tabs[t];
+            if (tab.ID == node->SelectedTabId && tab.Window) {
+                selName = tab.Window->Name;
+                break;
+            }
+        }
+        if (!selName) continue;
+        const std::string nameStr(selName);
+        if (nameStr == focusedName) continue;  // appended last below
+        result.push_back(nameStr);
+    }
+    if (!focusedName.empty()) result.push_back(focusedName);
+    return result;
+}
+
+std::string WindowManager::currentImGuiIni() const {
+    size_t iniSize = 0;
+    const char* ini = ImGui::SaveIniSettingsToMemory(&iniSize);
+    if (ini && iniSize > 0) return std::string(ini, iniSize);
+    return {};
+}
+
+std::vector<std::string> WindowManager::hiddenWindowNames() const {
+    std::vector<std::string> hidden;
+    for (const auto& window : m_windows) {
+        if (!window->isVisible()) hidden.push_back(window->getName());
+    }
+    return hidden;
+}
+
+void WindowManager::setHiddenWindowsAndLock(const std::vector<std::string>& hidden,
+                                            bool locked) {
+    m_layoutLocked = locked;
+    for (auto& window : m_windows) {
+        const std::string n = window->getName();
+        const bool isHidden = std::find(hidden.begin(), hidden.end(), n) != hidden.end();
+        window->setVisible(!isHidden);
     }
 }
 
@@ -603,6 +738,13 @@ void WindowManager::captureCurrentStateInto(const std::string& name) {
             w->hiddenWindows.push_back(window->getName());
         }
     }
+
+    // Capture the active tab per dock node so a later switch can re-pin them
+    // past the NavWindow stomp (symmetric with the showfile embed). The ini
+    // above already encodes SelectedTabId, but the restore needs the explicit
+    // SetWindowFocus list. Safe here — captureCurrentStateInto is always
+    // called inside a frame scope (autosave / switch / shutdown render path).
+    w->focusedTabs = captureFocusedTabs();
 }
 
 void WindowManager::saveActiveWorkspace() {
@@ -630,6 +772,7 @@ bool WindowManager::saveAsNewWorkspace(const std::string& name) {
         const char* ini = ImGui::SaveIniSettingsToMemory(&iniSize);
         if (ini && iniSize > 0) src.imguiIni.assign(ini, iniSize);
         src.layoutLocked = m_layoutLocked;
+        src.focusedTabs  = captureFocusedTabs();
     }
 
     Workspace fresh;
@@ -637,6 +780,7 @@ bool WindowManager::saveAsNewWorkspace(const std::string& name) {
     fresh.imguiIni       = src.imguiIni;
     fresh.layoutLocked   = src.layoutLocked;
     fresh.hiddenWindows  = src.hiddenWindows;
+    fresh.focusedTabs    = src.focusedTabs;
     fresh.builtIn        = false;
     m_workspaces.push_back(std::move(fresh));
     m_activeWorkspaceName = name;

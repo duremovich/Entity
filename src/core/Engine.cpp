@@ -89,6 +89,7 @@
 #include <cstdio>
 #include <thread>
 #include <unordered_map>
+#include <nlohmann/json.hpp>
 
 namespace entity {
 
@@ -2289,6 +2290,14 @@ void Engine::render() {
         // Clear back buffer to the editor background color.
         m_renderer->clear(0.0f, 0.5f, 0.6f, 1.0f);
 
+        // Phase 11: apply any pending ImGui ini blob (workspace switch /
+        // showfile layout) at this frame boundary — BEFORE beginImGuiFrame()'s
+        // ImGui::NewFrame(). Applying mid-frame rebuilds the dock tree under
+        // already-submitted windows and loses the restored tab selection.
+        if (m_windowManager) {
+            m_windowManager->flushPendingIniApply();
+        }
+
         // Begin ImGui frame for UI rendering
         m_renderer->beginImGuiFrame();
 
@@ -2506,12 +2515,19 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 break;
 
             case GLFW_KEY_C:
-                // Ctrl+C = Copy selected clip to in-process clipboard.
-                if (ctrlPressed && !shiftPressed) {
-                    entt::entity selectedClip = m_timeline->getSelectedClip();
-                    if (selectedClip != entt::null && m_commandDispatcher) {
-                        m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
-                            static_cast<uint32_t>(selectedClip)));
+                // Ctrl+C = Copy the selection to the in-process clipboard.
+                // Phase 13: a multi-selection (>1) copies as a group — use the
+                // default ctor so CopyClipCommand reads getSelectedClips();
+                // a single clip keeps the explicit-entity path.
+                if (ctrlPressed && !shiftPressed && m_commandDispatcher) {
+                    if (m_timeline->getSelectedClips().size() > 1) {
+                        m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>());
+                    } else {
+                        entt::entity selectedClip = m_timeline->getSelectedClip();
+                        if (selectedClip != entt::null) {
+                            m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
+                                static_cast<uint32_t>(selectedClip)));
+                        }
                     }
                 }
                 break;
@@ -2535,13 +2551,32 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 break;
 
             case GLFW_KEY_DELETE:
-                // Delete = Delete selected clip. Routed through the command
+                // Delete = delete the selection. Routed through the command
                 // dispatcher so it lands on the undo stack (Ctrl+Z restores).
+                // Phase 12: a multi-selection (>1) goes through the group
+                // DeleteClipsCommand (single undo step); a single clip keeps
+                // the original DeleteClipCommand path.
                 {
-                    entt::entity selectedClip = m_timeline->getSelectedClip();
-                    if (selectedClip != entt::null && m_commandDispatcher) {
-                        m_commandDispatcher->enqueue(std::make_unique<DeleteClipCommand>(
-                            static_cast<uint32_t>(selectedClip)));
+                    const auto& sel = m_timeline->getSelectedClips();
+                    if (m_commandDispatcher && sel.size() > 1) {
+                        // Fix A: capture the (track,layer) targets NOW, at
+                        // enqueue, instead of letting the command read the live
+                        // selection at execute time. A SelectClip queued ahead
+                        // of an empty-target DeleteClips would otherwise delete
+                        // the post-select set (script-interleaving data loss).
+                        std::vector<DeleteClipsCommand::TrackClip> targets;
+                        for (entt::entity e : sel) {
+                            auto tc = m_timeline->clipIndices(e);
+                            if (tc.first >= 0) targets.emplace_back(tc.first, tc.second);
+                        }
+                        m_commandDispatcher->enqueue(
+                            std::make_unique<DeleteClipsCommand>(std::move(targets)));
+                    } else {
+                        entt::entity selectedClip = m_timeline->getSelectedClip();
+                        if (selectedClip != entt::null && m_commandDispatcher) {
+                            m_commandDispatcher->enqueue(std::make_unique<DeleteClipCommand>(
+                                static_cast<uint32_t>(selectedClip)));
+                        }
                     }
                 }
                 break;
@@ -4290,6 +4325,13 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
         m_projectManager->setAudioMasterGain(m_audioEngine->masterGain());
         m_projectManager->setAudioMasterMute(m_audioEngine->masterMute());
     }
+
+    // Phase 11: capture the editor layout (ImGui dock ini + visibility + lock +
+    // focused tabs) into ProjectManager as an opaque JSON blob so the showfile
+    // restores the exact arrangement on reopen. WindowManager is absent in pure
+    // headless (no editor windows) — skip so headless saves omit the key.
+    captureEditorLayoutForSave();
+
     bool ok = m_projectManager->save(filepath);
     if (ok) updateTranscodeCacheDir();
     return ok;
@@ -4355,7 +4397,7 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     }
 
     // Drop the clip clipboard — same reasoning as undo history.
-    m_clipClipboard.reset();
+    m_clipClipboard.clear();
 
     // Point the transcode cache at <projectDir>/.cache/hap so subsequent
     // enqueue() writes land next to the project, not in %TEMP%.
@@ -4557,6 +4599,12 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         m_audioEngine->setMasterMute(m_projectManager->getAudioMasterMute());
     }
 
+    // Phase 11: apply the showfile's embedded editor layout (v28 additive), if any.
+    // Queues an ini apply on WindowManager (deferred to the next frame
+    // boundary) + restores window visibility, lock, and focused tabs. No-op
+    // for legacy files (empty blob) so they keep the current workspace layout.
+    applyEditorLayoutAfterLoad();
+
     // #27 — kick off the content/ poller now that we know the project
     // root. Files that already exist in content/ but aren't in the
     // library (because the user copied them in via Explorer / sync
@@ -4637,7 +4685,7 @@ void Engine::closeProject() {
 
     // Drop the clip clipboard — the routing-asset entity ref it holds
     // belongs to the project we're about to leave.
-    m_clipClipboard.reset();
+    m_clipClipboard.clear();
 
     // 6. Stop the content scanner BEFORE clearing PM state — its worker
     //    thread reads m_contentDir which won't be valid post-close.
@@ -4687,6 +4735,54 @@ void Engine::bindRemotePatchesAfterLoad() {
             m_remoteControlStore->setEngaged(slot, true);
         }
     }
+}
+
+void Engine::captureEditorLayoutForSave() {
+    // No WindowManager => pure headless (no editor windows). Skip so the
+    // showfile omits the editorLayout key entirely.
+    if (!m_windowManager || !m_projectManager) {
+        if (m_projectManager) m_projectManager->setEditorLayoutJson("");
+        return;
+    }
+    nlohmann::json layout;
+    layout["imguiIni"]      = m_windowManager->currentImGuiIni();
+    layout["hiddenWindows"] = m_windowManager->hiddenWindowNames();
+    layout["layoutLocked"]  = m_windowManager->isLayoutLocked();
+    layout["focusedTabs"]   = m_windowManager->captureFocusedTabs();
+    m_projectManager->setEditorLayoutJson(layout.dump());
+}
+
+void Engine::applyEditorLayoutAfterLoad() {
+    if (!m_windowManager || !m_projectManager) return;
+    const std::string blob = m_projectManager->getEditorLayoutJson();
+    if (blob.empty()) return;  // legacy file / no embed — keep current layout
+
+    nlohmann::json layout;
+    try {
+        layout = nlohmann::json::parse(blob);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[Engine] editorLayout blob unparseable; ignoring: "
+                  << e.what() << std::endl;
+        return;
+    }
+
+    const std::string imguiIni = layout.value("imguiIni", std::string{});
+    const bool layoutLocked    = layout.value("layoutLocked", false);
+    std::vector<std::string> hiddenWindows;
+    std::vector<std::string> focusedTabs;
+    if (layout.contains("hiddenWindows") && layout["hiddenWindows"].is_array()) {
+        for (const auto& h : layout["hiddenWindows"]) {
+            if (h.is_string()) hiddenWindows.push_back(h.get<std::string>());
+        }
+    }
+    if (layout.contains("focusedTabs") && layout["focusedTabs"].is_array()) {
+        for (const auto& f : layout["focusedTabs"]) {
+            if (f.is_string()) focusedTabs.push_back(f.get<std::string>());
+        }
+    }
+
+    // Deferred apply — WindowManager flushes this pre-NewFrame next frame.
+    m_windowManager->requestIniApply(imguiIni, hiddenWindows, layoutLocked, focusedTabs);
 }
 
 void Engine::drainContentScannerDeltas() {
@@ -4875,14 +4971,15 @@ ClipClipboardSnapshot Engine::snapshotClipForClipboard(entt::entity src) const {
     // Reuse Timeline's delete-snapshot for the common archetype state.
     out.base = m_timeline->snapshotClipForDelete(src);
     if (!out.base.valid()) {
-        return out;  // not on a track — refuse to clipboard.
-    }
-    // Clip and Generative layers are copyable; OA layers are not (they
-    // target a specific Screen entity that may not exist on paste).
-    if (out.base.kind == Timeline::DeletedLayerKind::ObjectAnimation) {
-        out.base = {};  // invalidate
+        // Not on a track, or an un-snapshottable kind (Signal — no
+        // DeletedLayerKind entry). Refuse to clipboard.
         return out;
     }
+    // Phase 13: Clip / OA / Generative are all copyable (every kind
+    // snapshotClipForDelete supports). OA layers reuse their target Screen by
+    // reference on paste — see materializeClipFromSnapshot's OA branch. Signal
+    // layers have no DeletedLayerKind entry, so out.base.valid() above is
+    // already false for them and they're refused here.
 
     // Resolve source track index for paste-fallback "no selection" path.
     {
@@ -4938,10 +5035,6 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
         std::cerr << "[Engine] materializeClipFromSnapshot: invalid snapshot" << std::endl;
         return entt::null;
     }
-    if (snap.base.kind == Timeline::DeletedLayerKind::ObjectAnimation) {
-        std::cerr << "[Engine] materializeClipFromSnapshot: OA kind not copyable" << std::endl;
-        return entt::null;
-    }
 
     // Resolve destination track. Fall back to the snapshot's source
     // track if the requested index is out of range. Final fallback is
@@ -4971,6 +5064,39 @@ entt::entity Engine::materializeClipFromSnapshot(const ClipClipboardSnapshot& sn
     // as Timeline::duplicateClip / Timeline::restoreDeletedClip.
     entt::entity dst = m_registry.create();
     const auto& b = snap.base;
+
+    // --- OA layer paste (Phase 13) ---------------------------------------
+    // Mirrors restoreDeletedClip's OA branch. No Clip / Transform / MediaLayer
+    // / VideoTexture / FrameBuffer; placement comes from the snapshot. The OA
+    // target Screen entity is reused by reference (same in-process session
+    // contract as ContentRoutingRef's asset); a stale target degrades to "no
+    // visible target", matching OA delete-undo. No clip-created callback (no
+    // decoder / GPU slot). EffectChain/ContentRoutingRef tail does not apply to
+    // OA, so this branch returns directly.
+    if (b.kind == Timeline::DeletedLayerKind::ObjectAnimation) {
+        auto& lay = m_registry.emplace<Layer>(dst);
+        lay.kind       = Layer::Kind::ObjectAnimation;
+        lay.startFrame = dstStartFrame;
+        lay.duration   = b.duration;
+        lay.trackIndex = static_cast<std::uint32_t>(trackIdx);
+        lay.name       = b.layerName;
+        lay.color      = b.layerColor;
+
+        auto& oal = m_registry.emplace<ObjectAnimationLayer>(dst);
+        oal.target          = m_registry.valid(b.oaTarget) ? b.oaTarget : entt::null;
+        oal.sectionBehavior = b.oaSectionBehavior;
+        oal.endBehavior     = b.oaEndBehavior;
+
+        if (b.hadAnimatedProperties) {
+            m_registry.emplace<AnimatedProperties>(dst) = b.animatedProperties;
+        }
+
+        track->layers.push_back(dst);
+        track->sortLayers(m_registry);
+        std::cout << "[Engine] Pasted OA layer entity=" << static_cast<uint32_t>(dst)
+                  << " at frame=" << dstStartFrame << " track=" << trackIdx << std::endl;
+        return dst;
+    }
 
     // --- Generative layer paste ------------------------------------------
     if (b.kind == Timeline::DeletedLayerKind::Generative) {

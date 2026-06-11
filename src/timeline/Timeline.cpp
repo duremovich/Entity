@@ -155,16 +155,53 @@ void Timeline::deleteTrack(entt::entity track) {
             std::cout << "[Timeline] Deleted track entity=" << static_cast<uint32_t>(track) << std::endl;
         }
 
-        // Reindex remaining tracks
-        for (size_t i = 0; i < m_tracks.size(); ++i) {
-            if (m_registry.valid(m_tracks[i])) {
-                auto* trackComponent = m_registry.try_get<TimelineTrack>(m_tracks[i]);
-                if (trackComponent) {
-                    trackComponent->trackIndex = static_cast<uint32_t>(i);
-                }
+        // Reindex remaining tracks, updating Layer::trackIndex and
+        // MediaLayer::zOrder on every layer entity in each track.
+        reindexTracks();
+    }
+}
+
+void Timeline::reindexTracks() {
+    for (size_t i = 0; i < m_tracks.size(); ++i) {
+        entt::entity trackEnt = m_tracks[i];
+        if (!m_registry.valid(trackEnt)) continue;
+
+        auto* trackComp = m_registry.try_get<TimelineTrack>(trackEnt);
+        if (!trackComp) continue;
+
+        trackComp->trackIndex = static_cast<uint32_t>(i);
+
+        for (entt::entity layerEnt : trackComp->layers) {
+            if (!m_registry.valid(layerEnt)) continue;
+
+            if (auto* lay = m_registry.try_get<Layer>(layerEnt)) {
+                lay->trackIndex = static_cast<uint32_t>(i);
+            }
+            if (auto* ml = m_registry.try_get<MediaLayer>(layerEnt)) {
+                ml->zOrder = 1000u - static_cast<uint32_t>(i);
             }
         }
     }
+}
+
+entt::entity Timeline::insertTrackAt(size_t index) {
+    // Clamp to valid insertion range.
+    if (index > m_tracks.size()) {
+        index = m_tracks.size();
+    }
+
+    entt::entity trackEntity = m_registry.create();
+    auto& track = m_registry.emplace<TimelineTrack>(trackEntity);
+    track.trackIndex = static_cast<uint32_t>(index);  // will be corrected by reindexTracks()
+
+    m_tracks.insert(m_tracks.begin() + static_cast<std::ptrdiff_t>(index), trackEntity);
+
+    reindexTracks();
+
+    std::cout << "[Timeline] Inserted track at index " << index
+              << ", entity=" << static_cast<uint32_t>(trackEntity) << std::endl;
+
+    return trackEntity;
 }
 
 void Timeline::clear() {
@@ -198,8 +235,10 @@ void Timeline::clear() {
     // Cue tags belong to the project; drop them with the timeline.
     m_cueTags.clear();
 
-    // Reset selection
+    // Reset selection (Phase 12: drop the multi-select set too — its entity
+    // ids point at clips this clear() just destroyed).
     m_selectedClip = entt::null;
+    m_selectedClips.clear();
     m_selectedCueNumber.reset();
     m_selectedSectionBreakFrame.reset();
 
@@ -223,6 +262,23 @@ void Timeline::deleteClip(entt::entity clipEntity) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (track) {
             track->removeLayer(clipEntity);
+        }
+    }
+
+    // Drop the entity from the multi-select set + fix the primary so the
+    // selection invariant holds regardless of caller (Phase 12/13 fix B).
+    // Without this, an entt id recycled into a new clip could inherit a stale
+    // "selected" highlight. We do NOT clear m_selectedClip wholesale — other
+    // callers (e.g. group delete) manage the primary explicitly — but we must
+    // not leave a dangling id in the set or as the primary.
+    {
+        auto it = std::find(m_selectedClips.begin(), m_selectedClips.end(), clipEntity);
+        if (it != m_selectedClips.end()) {
+            m_selectedClips.erase(it);
+        }
+        if (m_selectedClip == clipEntity) {
+            m_selectedClip = m_selectedClips.empty() ? entt::null
+                                                     : m_selectedClips.back();
         }
     }
 
@@ -818,6 +874,17 @@ entt::entity Timeline::duplicateClip(entt::entity clipEntity) {
     return newClipEntity;
 }
 
+std::pair<int, int> Timeline::clipIndices(entt::entity clip) const {
+    for (int t = 0; t < static_cast<int>(m_tracks.size()); ++t) {
+        const auto* track = m_registry.try_get<TimelineTrack>(m_tracks[t]);
+        if (!track) continue;
+        for (int l = 0; l < static_cast<int>(track->layers.size()); ++l) {
+            if (track->layers[l] == clip) return {t, l};
+        }
+    }
+    return {-1, -1};
+}
+
 entt::entity Timeline::findTrackForClip(entt::entity clipEntity) const {
     for (entt::entity trackEntity : m_tracks) {
         const auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
@@ -885,7 +952,66 @@ bool Timeline::moveClipToTrack(entt::entity clipEntity, int newTrackIndex) {
 
 // ============================================================================
 // Ripple time edits
+//
+// Both ops are archetype-generic: they read/write placement through the two
+// file-local helpers below so Clip-backed and Layer-only (OA / Generative /
+// Text / Signal) entities all participate. Clip is the source of truth for
+// Clip-backed entities (the Layer mirror is re-synced via syncLayerFromClip);
+// Layer is the source of truth for Layer-only entities.
 // ============================================================================
+
+namespace {
+
+struct RipplePlacement {
+    FrameNumber startFrame{0};
+    FrameNumber duration{0};
+    bool        isClip{false};   // true → Clip is source of truth (media slip applies)
+    bool        valid{false};
+};
+
+RipplePlacement readRipplePlacement(entt::registry& reg, entt::entity e) {
+    if (const auto* clip = reg.try_get<Clip>(e)) {
+        return {clip->startFrame, clip->duration, true, true};
+    }
+    if (const auto* lay = reg.try_get<Layer>(e)) {
+        return {lay->startFrame, lay->duration, false, true};
+    }
+    return {};
+}
+
+// Write start frame + duration back to whichever component owns placement.
+// Clip-backed entities re-sync the Layer mirror.
+void writeRipplePlacement(entt::registry& reg, entt::entity e,
+                          FrameNumber startFrame, FrameNumber duration) {
+    if (auto* clip = reg.try_get<Clip>(e)) {
+        clip->startFrame = startFrame;
+        clip->duration   = duration;
+        Timeline::syncLayerFromClip(reg, e);
+        return;
+    }
+    if (auto* lay = reg.try_get<Layer>(e)) {
+        lay->startFrame = startFrame;
+        lay->duration   = duration;
+    }
+}
+
+// Shift every keyframe at clip-relative frame >= pivot by `delta` on every
+// track of the entity's AnimatedProperties. Returns false if the entity had
+// no AnimatedProperties (nothing to record/restore).
+bool shiftKeyframesFrom(AnimatedProperties& ap, FrameNumber pivot, FrameNumber delta) {
+    bool moved = false;
+    for (auto& track : ap.tracks) {
+        for (auto& kf : track.keyframes) {
+            if (kf.frame >= pivot) {
+                kf.frame += delta;
+                moved = true;
+            }
+        }
+    }
+    return moved;
+}
+
+} // namespace
 
 Timeline::RippleInsertResult Timeline::rippleInsertTime(FrameNumber insertFrame, FrameNumber durationFrames) {
     RippleInsertResult result{};
@@ -895,65 +1021,68 @@ Timeline::RippleInsertResult Timeline::rippleInsertTime(FrameNumber insertFrame,
         return result;
     }
 
-    // Phase 1: split clips that span insertFrame. Capture original duration
-    // and AnimatedProperties so undo can merge cleanly.
-    // Snapshot the entity list first because splitClip mutates track->layers.
-    std::vector<entt::entity> toSplit;
+    // Entities: lengthen spanning clips (and shift their later keyframes),
+    // shift everything at/after the insert point. All layer kinds.
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity layerEntity : track->layers) {
-            auto* clip = m_registry.try_get<Clip>(layerEntity);
-            if (!clip) continue;
-            FrameNumber endF = clip->startFrame + clip->duration;
-            if (clip->startFrame < insertFrame && endF > insertFrame) {
-                toSplit.push_back(layerEntity);
-            }
-        }
-    }
-    for (entt::entity e : toSplit) {
-        auto* clip = m_registry.try_get<Clip>(e);
-        if (!clip) continue;
-        ClipSplitRecord rec;
-        rec.originalEntity = e;
-        rec.oldDuration = clip->duration;
-        if (auto* ap = m_registry.try_get<AnimatedProperties>(e)) {
-            rec.hadAnimProps = true;
-            rec.oldAnimProps = *ap;
-        }
-        rec.newRightEntity = splitClip(e, insertFrame);
-        if (rec.newRightEntity == entt::null) {
-            std::cerr << "[Timeline] rippleInsertTime: splitClip failed mid-op; aborting." << std::endl;
-            // Roll back any splits we already did so we don't leave the timeline half-modified.
-            for (auto it = result.splits.rbegin(); it != result.splits.rend(); ++it) {
-                if (m_registry.valid(it->newRightEntity)) {
-                    deleteClip(it->newRightEntity);
-                }
-                if (auto* origClip = m_registry.try_get<Clip>(it->originalEntity)) {
-                    origClip->duration = it->oldDuration;
-                }
-                if (it->hadAnimProps) {
-                    if (auto* ap = m_registry.try_get<AnimatedProperties>(it->originalEntity)) {
-                        *ap = it->oldAnimProps;
+        for (entt::entity e : track->layers) {
+            RipplePlacement p = readRipplePlacement(m_registry, e);
+            if (!p.valid) continue;
+            const FrameNumber endF = p.startFrame + p.duration;
+
+            if (p.startFrame >= insertFrame) {
+                // Entirely at/after the insert point — shift right.
+                result.shifted.push_back({e, p.startFrame});
+                writeRipplePlacement(m_registry, e, p.startFrame + durationFrames, p.duration);
+            } else if (endF > insertFrame) {
+                // Spans the insert point — lengthen rather than split.
+                ClipResizeRecord rr;
+                rr.entity        = e;
+                rr.oldStartFrame = p.startFrame;
+                rr.oldDuration   = p.duration;
+                result.lengthened.push_back(rr);
+                writeRipplePlacement(m_registry, e, p.startFrame, p.duration + durationFrames);
+
+                // Shift keyframes at/after the (clip-relative) insert point so
+                // the animation tail stays glued to the content after it.
+                if (auto* ap = m_registry.try_get<AnimatedProperties>(e)) {
+                    AnimPropsRecord kr;
+                    kr.entity       = e;
+                    kr.hadAnimProps = true;
+                    kr.oldAnimProps = *ap;
+                    const FrameNumber pivot = insertFrame - p.startFrame;
+                    if (shiftKeyframesFrom(*ap, pivot, durationFrames)) {
+                        result.keyframes.push_back(std::move(kr));
                     }
                 }
             }
-            return result;
+            // else: entirely before insertFrame — untouched.
         }
-        result.splits.push_back(std::move(rec));
     }
 
-    // Phase 2: shift everything starting at or after insertFrame.
-    for (entt::entity trackEntity : m_tracks) {
-        auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
-        if (!track) continue;
-        for (entt::entity layerEntity : track->layers) {
-            auto* clip = m_registry.try_get<Clip>(layerEntity);
-            if (!clip) continue;
-            if (clip->startFrame >= insertFrame) {
-                result.shifted.push_back({layerEntity, clip->startFrame});
-                clip->startFrame += durationFrames;
-                syncLayerFromClip(m_registry, layerEntity);
+    // Cues at/after the insert point shift +D.
+    // THREADING: m_cueTags is mutated here WITHOUT a lock, unlike m_sections
+    // (m_sectionsMutex). Safe ONLY because every cue reader today is on the
+    // editor thread. If a show-thread cue reader is ever added (e.g. the
+    // show-control GO-direction work on the roadmap), m_cueTags needs a guard
+    // like m_sectionsMutex — racing this in-place edit is a crash-class bug.
+    for (auto& cue : m_cueTags) {
+        if (cue.frame >= insertFrame) {
+            result.cues.push_back({cue.number, cue.frame});
+            cue.frame += durationFrames;
+        }
+    }
+
+    // Section breaks at/after the insert point shift +D. m_sections is sorted
+    // ascending by breakFrame; a uniform +D on a contiguous tail preserves
+    // order, so an in-place edit is safe.
+    {
+        std::unique_lock lock(m_sectionsMutex);
+        for (auto& sec : m_sections) {
+            if (sec.breakFrame >= insertFrame) {
+                result.sections.push_back({sec.breakFrame, sec.breakFrame + durationFrames});
+                sec.breakFrame += durationFrames;
             }
         }
     }
@@ -961,41 +1090,65 @@ Timeline::RippleInsertResult Timeline::rippleInsertTime(FrameNumber insertFrame,
     result.success = true;
     std::cout << "[Timeline] rippleInsertTime: inserted " << durationFrames
               << " frames at " << insertFrame
-              << " (split " << result.splits.size()
-              << ", shifted " << result.shifted.size() << ")" << std::endl;
+              << " (lengthened " << result.lengthened.size()
+              << ", shifted " << result.shifted.size()
+              << ", cues " << result.cues.size()
+              << ", sections " << result.sections.size() << ")" << std::endl;
     return result;
 }
 
 void Timeline::undoRippleInsertTime(RippleInsertResult& record) {
     if (!record.success) return;
 
-    // Reverse Phase 2: restore shifted startFrames.
-    for (auto& s : record.shifted) {
-        if (auto* clip = m_registry.try_get<Clip>(s.entity)) {
-            clip->startFrame = s.oldStartFrame;
-            syncLayerFromClip(m_registry, s.entity);
-        }
-    }
-    record.shifted.clear();
-
-    // Reverse Phase 1: undo splits in reverse order. Delete the right halves
-    // and restore the left halves' duration + AnimatedProperties.
-    for (auto it = record.splits.rbegin(); it != record.splits.rend(); ++it) {
-        if (m_registry.valid(it->newRightEntity)) {
-            deleteClip(it->newRightEntity);
-        }
-        if (auto* clip = m_registry.try_get<Clip>(it->originalEntity)) {
-            clip->duration = it->oldDuration;
-        }
-        if (it->hadAnimProps) {
-            if (auto* ap = m_registry.try_get<AnimatedProperties>(it->originalEntity)) {
-                *ap = it->oldAnimProps;
-            } else {
-                m_registry.emplace<AnimatedProperties>(it->originalEntity, it->oldAnimProps);
+    // Restore section breaks (reverse the +D).
+    {
+        std::unique_lock lock(m_sectionsMutex);
+        for (auto& sr : record.sections) {
+            auto it = std::lower_bound(m_sections.begin(), m_sections.end(), sr.newBreakFrame,
+                [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
+            if (it != m_sections.end() && it->breakFrame == sr.newBreakFrame) {
+                it->breakFrame = sr.oldBreakFrame;
             }
         }
+        std::sort(m_sections.begin(), m_sections.end(),
+                  [](const Section& a, const Section& b) { return a.breakFrame < b.breakFrame; });
     }
-    record.splits.clear();
+    record.sections.clear();
+
+    // Restore cue frames. THREADING: lock-free m_cueTags mutation — see the
+    // note at the rippleInsertTime cue-shift site (editor-thread-only readers).
+    for (auto& cr : record.cues) {
+        for (auto& cue : m_cueTags) {
+            if (cue.number == cr.number) { cue.frame = cr.oldFrame; break; }
+        }
+    }
+    record.cues.clear();
+
+    // Restore keyframes (whole-component snapshots taken pre-mutation).
+    for (auto& kr : record.keyframes) {
+        if (!m_registry.valid(kr.entity)) continue;
+        if (auto* ap = m_registry.try_get<AnimatedProperties>(kr.entity)) {
+            *ap = kr.oldAnimProps;
+        } else {
+            m_registry.emplace<AnimatedProperties>(kr.entity, kr.oldAnimProps);
+        }
+    }
+    record.keyframes.clear();
+
+    // Restore lengthened (spanning) clips' duration.
+    for (auto& rr : record.lengthened) {
+        if (!m_registry.valid(rr.entity)) continue;
+        writeRipplePlacement(m_registry, rr.entity, rr.oldStartFrame, rr.oldDuration);
+    }
+    record.lengthened.clear();
+
+    // Restore shifted start frames.
+    for (auto& s : record.shifted) {
+        if (!m_registry.valid(s.entity)) continue;
+        RipplePlacement p = readRipplePlacement(m_registry, s.entity);
+        writeRipplePlacement(m_registry, s.entity, s.oldStartFrame, p.duration);
+    }
+    record.shifted.clear();
     record.success = false;
 }
 
@@ -1007,58 +1160,239 @@ Timeline::RippleDeleteResult Timeline::rippleDeleteTime(FrameNumber rangeStart, 
     }
     const FrameNumber removeDur = rangeEnd - rangeStart;
 
-    // Pre-flight: refuse if any clip overlaps the range. Splitting + recreating
-    // deleted clips needs a different undo path than a simple shift snapshot;
-    // saving that for v2.
+    // Pre-flight: any entity FULLY contained in the range will be
+    // snapshot-deleted. If one can't be snapshotted (Signal layers have no
+    // DeletedLayerKind entry → snapshotClipForDelete returns invalid), abort
+    // the whole op without mutating anything.
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity layerEntity : track->layers) {
-            auto* clip = m_registry.try_get<Clip>(layerEntity);
-            if (!clip) continue;
-            const FrameNumber endF = clip->startFrame + clip->duration;
-            const bool overlaps = (clip->startFrame < rangeEnd) && (endF > rangeStart);
-            if (overlaps) {
-                std::cerr << "[Timeline] rippleDeleteTime: aborted — clip entity="
-                          << static_cast<uint32_t>(layerEntity)
-                          << " (frames [" << clip->startFrame << ", " << endF << "))"
-                          << " overlaps [" << rangeStart << ", " << rangeEnd << "). "
-                          << "Split or move overlapping clips, then retry." << std::endl;
+        for (entt::entity e : track->layers) {
+            RipplePlacement p = readRipplePlacement(m_registry, e);
+            if (!p.valid) continue;
+            const FrameNumber endF = p.startFrame + p.duration;
+            const bool fullyInside = (p.startFrame >= rangeStart && endF <= rangeEnd);
+            if (fullyInside && !snapshotClipForDelete(e).valid()) {
+                std::cerr << "[Timeline] rippleDeleteTime: aborted — entity="
+                          << static_cast<uint32_t>(e)
+                          << " is fully inside [" << rangeStart << ", " << rangeEnd << ")"
+                          << " but can't be snapshotted (unsupported layer kind, e.g. Signal)."
+                          << " Move it out of the range, then retry." << std::endl;
                 return result;
             }
         }
     }
 
-    // Shift everything entirely after rangeEnd left by removeDur.
+    // Collect the entities to act on first, because snapshot-delete mutates
+    // track->layers underneath the iteration.
+    std::vector<entt::entity> entities;
     for (entt::entity trackEntity : m_tracks) {
         auto* track = m_registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
-        for (entt::entity layerEntity : track->layers) {
-            auto* clip = m_registry.try_get<Clip>(layerEntity);
-            if (!clip) continue;
-            if (clip->startFrame >= rangeEnd) {
-                result.shifted.push_back({layerEntity, clip->startFrame});
-                clip->startFrame -= removeDur;
-                syncLayerFromClip(m_registry, layerEntity);
+        for (entt::entity e : track->layers) {
+            if (readRipplePlacement(m_registry, e).valid) entities.push_back(e);
+        }
+    }
+
+    for (entt::entity e : entities) {
+        RipplePlacement p = readRipplePlacement(m_registry, e);
+        if (!p.valid) continue;
+        const FrameNumber startF = p.startFrame;
+        const FrameNumber endF   = startF + p.duration;
+
+        const bool fullyInside    = (startF >= rangeStart && endF <= rangeEnd);
+        const bool straddlesStart = (startF < rangeStart && endF > rangeStart && endF <= rangeEnd);
+        const bool straddlesEnd   = (startF >= rangeStart && startF < rangeEnd && endF > rangeEnd);
+        const bool spansRange     = (startF < rangeStart && endF > rangeEnd);
+        const bool entirelyAfter  = (startF >= rangeEnd);
+
+        if (fullyInside) {
+            // Snapshot-delete the whole entity (pre-flight guaranteed snapshot ok).
+            DeletedClipSnapshot snap = snapshotClipForDelete(e);
+            if (snap.valid()) {
+                result.deleted.push_back(std::move(snap));
+                deleteClip(e);
+            }
+        } else if (straddlesStart) {
+            // Range cuts off this entity's tail — keep only the head up to
+            // rangeStart.
+            result.resized.push_back({e, startF, p.duration, -1});
+            writeRipplePlacement(m_registry, e, startF, rangeStart - startF);
+        } else if (straddlesEnd) {
+            // Range cuts off this entity's head — survivor starts at rangeStart
+            // (post-shift) and keeps the [rangeEnd, endF) tail. For Clip layers
+            // the media in-point slips so the same content shows.
+            FrameNumber oldMediaStart = -1;
+            if (p.isClip) {
+                if (auto* clip = m_registry.try_get<Clip>(e)) {
+                    oldMediaStart = clip->mediaStartFrame;
+                    clip->mediaStartFrame += (rangeEnd - startF);
+                }
+            }
+            result.resized.push_back({e, startF, p.duration, oldMediaStart});
+            writeRipplePlacement(m_registry, e, rangeStart, endF - rangeEnd);
+        } else if (spansRange) {
+            // Range carved out of the middle — shorten by removeDur, and on the
+            // keyframe track drop the deleted clip-relative window and pull the
+            // tail keyframes back.
+            if (auto* ap = m_registry.try_get<AnimatedProperties>(e)) {
+                AnimPropsRecord kr;
+                kr.entity = e; kr.hadAnimProps = true; kr.oldAnimProps = *ap;
+                const FrameNumber relStart = rangeStart - startF;
+                const FrameNumber relEnd   = rangeEnd   - startF;
+                bool touched = false;
+                for (auto& track : ap->tracks) {
+                    auto& kfs = track.keyframes;
+                    const std::size_t before = kfs.size();
+                    kfs.erase(std::remove_if(kfs.begin(), kfs.end(),
+                        [&](const Keyframe& k){ return k.frame >= relStart && k.frame < relEnd; }),
+                        kfs.end());
+                    if (kfs.size() != before) touched = true;
+                    for (auto& k : kfs) {
+                        if (k.frame >= relEnd) { k.frame -= removeDur; touched = true; }
+                    }
+                }
+                if (touched) result.keyframes.push_back(std::move(kr));
+            }
+            result.resized.push_back({e, startF, p.duration, -1});
+            writeRipplePlacement(m_registry, e, startF, p.duration - removeDur);
+        } else if (entirelyAfter) {
+            result.shifted.push_back({e, startF});
+            writeRipplePlacement(m_registry, e, startF - removeDur, p.duration);
+        }
+        // else: entirely before rangeStart — untouched.
+    }
+
+    // Cues: inside the range → deleted; after → shift left.
+    // THREADING: lock-free m_cueTags rebuild — see the note at the
+    // rippleInsertTime cue-shift site (editor-thread-only readers; a future
+    // show-thread cue reader must add a guard like m_sectionsMutex).
+    {
+        std::vector<CueTag> survivors;
+        survivors.reserve(m_cueTags.size());
+        for (auto& cue : m_cueTags) {
+            if (cue.frame >= rangeStart && cue.frame < rangeEnd) {
+                result.cuesDeleted.push_back(cue);
+            } else if (cue.frame >= rangeEnd) {
+                result.cuesShifted.push_back({cue.number, cue.frame});
+                cue.frame -= removeDur;
+                survivors.push_back(cue);
+            } else {
+                survivors.push_back(cue);
             }
         }
+        m_cueTags = std::move(survivors);
+    }
+
+    // Sections: inside the range → deleted; after → shift left.
+    {
+        std::unique_lock lock(m_sectionsMutex);
+        std::vector<Section> survivors;
+        survivors.reserve(m_sections.size());
+        for (auto& sec : m_sections) {
+            if (sec.breakFrame >= rangeStart && sec.breakFrame < rangeEnd) {
+                result.sectionsDeleted.push_back(sec);
+            } else if (sec.breakFrame >= rangeEnd) {
+                result.sectionsShifted.push_back({sec.breakFrame, sec.breakFrame - removeDur});
+                sec.breakFrame -= removeDur;
+                survivors.push_back(sec);
+            } else {
+                survivors.push_back(sec);
+            }
+        }
+        m_sections = std::move(survivors);
+        std::sort(m_sections.begin(), m_sections.end(),
+                  [](const Section& a, const Section& b) { return a.breakFrame < b.breakFrame; });
     }
 
     result.success = true;
     std::cout << "[Timeline] rippleDeleteTime: removed [" << rangeStart << ", " << rangeEnd
-              << ") (shifted " << result.shifted.size() << " clips)" << std::endl;
+              << ") (deleted " << result.deleted.size()
+              << ", resized " << result.resized.size()
+              << ", shifted " << result.shifted.size()
+              << ", cues -" << result.cuesDeleted.size()
+              << ", sections -" << result.sectionsDeleted.size() << ")" << std::endl;
     return result;
 }
 
 void Timeline::undoRippleDeleteTime(RippleDeleteResult& record) {
     if (!record.success) return;
-    for (auto& s : record.shifted) {
-        if (auto* clip = m_registry.try_get<Clip>(s.entity)) {
-            clip->startFrame = s.oldStartFrame;
-            syncLayerFromClip(m_registry, s.entity);
+
+    // Restore sections: un-shift survivors, re-insert deleted.
+    {
+        std::unique_lock lock(m_sectionsMutex);
+        for (auto& sr : record.sectionsShifted) {
+            auto it = std::lower_bound(m_sections.begin(), m_sections.end(), sr.newBreakFrame,
+                [](const Section& s, FrameNumber v) { return s.breakFrame < v; });
+            if (it != m_sections.end() && it->breakFrame == sr.newBreakFrame) {
+                it->breakFrame = sr.oldBreakFrame;
+            }
+        }
+        for (auto& sec : record.sectionsDeleted) {
+            m_sections.push_back(sec);
+        }
+        std::sort(m_sections.begin(), m_sections.end(),
+                  [](const Section& a, const Section& b) { return a.breakFrame < b.breakFrame; });
+    }
+    record.sectionsShifted.clear();
+    record.sectionsDeleted.clear();
+
+    // Restore cues: un-shift survivors, re-insert deleted. m_cueTags is sorted
+    // by number; re-sort after re-inserting. THREADING: lock-free m_cueTags
+    // mutation — see the note at the rippleInsertTime cue-shift site
+    // (editor-thread-only readers; add a guard like m_sectionsMutex if a
+    // show-thread cue reader is ever introduced).
+    for (auto& cr : record.cuesShifted) {
+        for (auto& cue : m_cueTags) {
+            if (cue.number == cr.number) { cue.frame = cr.oldFrame; break; }
         }
     }
+    for (auto& cue : record.cuesDeleted) {
+        m_cueTags.push_back(cue);
+    }
+    std::sort(m_cueTags.begin(), m_cueTags.end(),
+              [](const CueTag& a, const CueTag& b) { return a.number < b.number; });
+    record.cuesShifted.clear();
+    record.cuesDeleted.clear();
+
+    // Restore shifted start frames.
+    for (auto& s : record.shifted) {
+        if (!m_registry.valid(s.entity)) continue;
+        RipplePlacement p = readRipplePlacement(m_registry, s.entity);
+        writeRipplePlacement(m_registry, s.entity, s.oldStartFrame, p.duration);
+    }
     record.shifted.clear();
+
+    // Restore resized (head/tail trim, spanning shorten) placements + media slip.
+    for (auto& rr : record.resized) {
+        if (!m_registry.valid(rr.entity)) continue;
+        writeRipplePlacement(m_registry, rr.entity, rr.oldStartFrame, rr.oldDuration);
+        if (rr.oldMediaStartFrame >= 0) {
+            if (auto* clip = m_registry.try_get<Clip>(rr.entity)) {
+                clip->mediaStartFrame = rr.oldMediaStartFrame;
+            }
+        }
+    }
+    record.resized.clear();
+
+    // Restore keyframes (whole-component snapshots).
+    for (auto& kr : record.keyframes) {
+        if (!m_registry.valid(kr.entity)) continue;
+        if (auto* ap = m_registry.try_get<AnimatedProperties>(kr.entity)) {
+            *ap = kr.oldAnimProps;
+        } else {
+            m_registry.emplace<AnimatedProperties>(kr.entity, kr.oldAnimProps);
+        }
+    }
+    record.keyframes.clear();
+
+    // Re-create fully-deleted entities last (fresh entity IDs; undo stack is
+    // cleared on project load so the stale IDs in other records don't matter
+    // — those records were already applied above).
+    for (auto& snap : record.deleted) {
+        restoreDeletedClip(snap);
+    }
+    record.deleted.clear();
     record.success = false;
 }
 

@@ -166,6 +166,20 @@ private:
     void renderRemoteControlSection(entt::entity layerEntity);
 
     /**
+     * Render the Content Routing picker (dropdown + kind badge + Edit... link).
+     * Shared between clip and generative layer property panels. Clip presentation
+     * wins: Text("Content Routing") + tooltip. The idSuffix differentiates the
+     * ImGui widget IDs between the two call sites (e.g. "contentRouting" vs
+     * "gencontentrouting"). Clip-side also emits SetClipTargetScreenCommand for
+     * the legacy alias; generative side does only the optimistic ref write.
+     * @param entity    The layer entity whose ContentRoutingRef to read/write.
+     * @param idSuffix  Appended to "##" for the Combo and SmallButton IDs.
+     * @return true if the user changed the selection (ContentRoutingRef already
+     *         written); caller handles any kind-specific post-change work.
+     */
+    bool renderContentRoutingPicker(entt::entity entity, const char* idSuffix);
+
+    /**
      * Render keyframe controls for a property.
      * Shows stopwatch, prev/add/next keyframe buttons.
      * @param property The animatable property to control
@@ -302,6 +316,11 @@ private:
     FrameNumber m_preEditMediaStartFrame{0};
     FrameNumber m_preEditMediaOutFrame{0};
     FrameNumber m_preEditDuration{0};
+
+    // Pre-edit captures for Layer-only Timing DragInts (OA / Generative /
+    // Signal). Used by SetLayerStartFrameCommand / SetLayerDurationCommand.
+    FrameNumber m_preEditLayerStartFrame{0};
+    FrameNumber m_preEditLayerDuration{0};
 
     // Pre-edit capture for the active Effect-parameter slider. Mirrors
     // PreEditState above — if the param is keyframed at drag-start, the

@@ -18,6 +18,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/RemotePatch.hpp"
+#include "entity/components/TrackUiState.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/ContentRouting.hpp"
 #include "entity/components/ContentRoutingAsset.hpp"
@@ -209,33 +210,16 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
     if (!m_timeline) return entt::null;
 
     auto& registry = m_timeline->getRegistry();
-    const auto& tracks = m_timeline->getTracks();
 
-    // Calculate cumulative Y position to account for expanded clips
-    float cumulativeY = 0.0f;
-
-    // Check each track
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        entt::entity trackEntity = tracks[i];
+    // Iterate the per-frame row cache (Phase 9): hidden (shy) tracks are
+    // skipped and each row's cached Y/height already accounts for expansion.
+    for (const auto& row : m_trackRows) {
+        entt::entity trackEntity = row.track;
         const auto* track = registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
 
-        // Calculate track Y position including offset from previous expanded tracks
-        float trackY = windowPos.y + cumulativeY;
-
-        // Calculate this track's height. Track expansion now adds the
-        // property panel under the track (driven by the playhead clip), not
-        // a per-clip panel — see findClipAtPlayhead().
-        float trackHeight = TRACK_HEIGHT;
-        bool trackExpanded = m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
-                             m_timeline->isTrackExpanded(trackEntity);
-        if (trackExpanded) {
-            entt::entity atPlayhead = findClipAtPlayhead(trackEntity);
-            if (atPlayhead != entt::null) {
-                trackHeight = TRACK_HEIGHT +
-                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
-            }
-        }
+        const float trackY = windowPos.y + row.y;
+        const float trackHeight = row.height;
 
         // Check if mouse Y is within this track (including expanded area)
         if (mousePos.y >= trackY && mousePos.y <= trackY + trackHeight) {
@@ -278,13 +262,11 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
                 // Check if mouse is within clip bounds (including expanded area)
                 if (mousePos.x >= clipX && mousePos.x <= clipX + clipWidth &&
                     mousePos.y >= trackY && mousePos.y <= trackY + clipHeight) {
-                    outTrackIndex = static_cast<int>(i);
+                    outTrackIndex = row.modelIndex;
                     return clipEntity;
                 }
             }
         }
-
-        cumulativeY += trackHeight + TRACK_PADDING;
     }
 
     outTrackIndex = -1;
@@ -297,7 +279,6 @@ TimelineWidget::findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const 
     if (!m_timeline) return hit;
 
     auto& registry = m_timeline->getRegistry();
-    const auto& tracks = m_timeline->getTracks();
     const double fps = m_timeline->getFrameRate();
     if (fps <= 0.0) return hit;
 
@@ -306,24 +287,11 @@ TimelineWidget::findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const 
     constexpr float kKfSize = 5.0f;
     constexpr float kHitPad = 3.0f;
 
-    // Walk tracks with the same cumulative-Y layout as findClipAtPosition.
-    float cumulativeY = 0.0f;
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        const entt::entity trackEntity = tracks[i];
-        const float trackY = windowPos.y + cumulativeY;
-
-        float trackHeight = TRACK_HEIGHT;
-        const bool expanded =
-            m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
-            m_timeline->isTrackExpanded(trackEntity);
-        entt::entity clipAtPlayhead = entt::null;
-        if (expanded) {
-            clipAtPlayhead = findClipAtPlayhead(trackEntity);
-            if (clipAtPlayhead != entt::null) {
-                trackHeight = TRACK_HEIGHT +
-                    expandedPropertyRowCount(clipAtPlayhead) * PROPERTY_ROW_HEIGHT;
-            }
-        }
+    // Iterate the per-frame row cache (same layout the renderer + other
+    // hit-tests use); hidden tracks are skipped.
+    for (const auto& row : m_trackRows) {
+        const float trackY = windowPos.y + row.y;
+        const entt::entity clipAtPlayhead = row.clipAtPlayhead;
 
         if (clipAtPlayhead != entt::null) {
             const TimelinePlacement place = readPlacement(registry, clipAtPlayhead);
@@ -371,43 +339,22 @@ TimelineWidget::findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const 
                 }
             }
         }
-
-        cumulativeY += trackHeight + TRACK_PADDING;
     }
     return hit;
 }
 
 bool TimelineWidget::isInPropertyRowBand(ImVec2 mousePos, ImVec2 windowPos) const {
     if (!m_timeline) return false;
-    const auto& tracks = m_timeline->getTracks();
 
-    float cumulativeY = 0.0f;
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        const entt::entity trackEntity = tracks[i];
-        const float trackY = windowPos.y + cumulativeY;
-
-        float trackHeight = TRACK_HEIGHT;
-        float propPanelH = 0.0f;
-        const bool expanded =
-            m_expandedTracks.count(static_cast<uint32_t>(trackEntity)) > 0 ||
-            m_timeline->isTrackExpanded(trackEntity);
-        if (expanded) {
-            entt::entity atPlayhead = findClipAtPlayhead(trackEntity);
-            if (atPlayhead != entt::null) {
-                propPanelH =
-                    expandedPropertyRowCount(atPlayhead) * PROPERTY_ROW_HEIGHT;
-                trackHeight += propPanelH;
-            }
-        }
-
-        if (propPanelH > 0.0f) {
-            const float propY0 = trackY + TRACK_HEIGHT;
-            if (mousePos.y >= propY0 && mousePos.y <= propY0 + propPanelH) {
+    // Iterate the per-frame row cache; the property-panel band is the cached
+    // propPanelHeight directly below the base track row.
+    for (const auto& row : m_trackRows) {
+        if (row.propPanelHeight > 0.0f) {
+            const float propY0 = windowPos.y + row.y + TRACK_HEIGHT;
+            if (mousePos.y >= propY0 && mousePos.y <= propY0 + row.propPanelHeight) {
                 return true;
             }
         }
-
-        cumulativeY += trackHeight + TRACK_PADDING;
     }
     return false;
 }
@@ -420,31 +367,34 @@ ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPo
     }
 
     auto& registry = m_timeline->getRegistry();
-    const auto& tracks = m_timeline->getTracks();
 
-    // Check each track
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        entt::entity trackEntity = tracks[i];
+    // Iterate the per-frame row cache (same layout as findClipAtPosition) so
+    // trim handles land on the clip body even when tracks above are expanded
+    // and hidden (shy) tracks are skipped.
+    for (const auto& row : m_trackRows) {
+        entt::entity trackEntity = row.track;
         const auto* track = registry.try_get<TimelineTrack>(trackEntity);
         if (!track) continue;
 
-        // Calculate track Y bounds
-        float trackY = windowPos.y + i * (TRACK_HEIGHT + TRACK_PADDING);
+        const float trackY = windowPos.y + row.y;
 
-        // Check if mouse Y is within this track
+        // Only test the base track row for trim handles (not the expanded
+        // property rows below it — those are keyframe editors, not clip edges).
         if (mousePos.y < trackY || mousePos.y > trackY + TRACK_HEIGHT) {
             continue;
         }
 
-        // Check each clip in this track
+        // Check each entity in this track using the placement helper so both
+        // Clip-backed and Layer-only kinds (OA / Generative / Signal) produce
+        // trim edges.
         for (entt::entity clipEntity : track->layers) {
-            const auto* clip = registry.try_get<Clip>(clipEntity);
-            if (!clip) continue;
+            auto place = readPlacement(registry, clipEntity);
+            if (!place.valid) continue;
 
             // Calculate clip bounds (use timeline frame rate, not clip source rate)
             double timelineFrameRate = m_timeline->getFrameRate();
-            float startSeconds = clip->startFrame / static_cast<float>(timelineFrameRate);
-            float durationSeconds = clip->duration / static_cast<float>(timelineFrameRate);
+            float startSeconds = place.startFrame / static_cast<float>(timelineFrameRate);
+            float durationSeconds = place.duration / static_cast<float>(timelineFrameRate);
             Timecode startTime = static_cast<Timecode>(startSeconds * 1000000.0f);
             Timecode endTime = static_cast<Timecode>((startSeconds + durationSeconds) * 1000000.0f);
 
@@ -478,14 +428,14 @@ ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPo
             // Check if mouse is near the left edge
             if (mousePos.x >= clipX - halfHit && mousePos.x <= clipX + halfHit) {
                 outClip = clipEntity;
-                outTrackIndex = static_cast<int>(i);
+                outTrackIndex = row.modelIndex;
                 return ClipEdge::Left;
             }
 
             // Check if mouse is near the right edge
             if (mousePos.x >= clipEndX - halfHit && mousePos.x <= clipEndX + halfHit) {
                 outClip = clipEntity;
-                outTrackIndex = static_cast<int>(i);
+                outTrackIndex = row.modelIndex;
                 return ClipEdge::Right;
             }
         }
@@ -494,6 +444,59 @@ ClipEdge TimelineWidget::findClipEdgeAtPosition(ImVec2 mousePos, ImVec2 windowPo
     outClip = entt::null;
     outTrackIndex = -1;
     return ClipEdge::None;
+}
+
+void TimelineWidget::commitBoxSelection(ImVec2 mousePos, ImVec2 windowPos) {
+    if (!m_timeline) return;
+    auto& registry = m_timeline->getRegistry();
+    const double fps = m_timeline->getFrameRate();
+    if (fps <= 0.0) return;
+
+    // Box in content space. X as frames (scroll-stable), Y as content-space
+    // pixels relative to the tracks origin. The anchor was stored at mouse-down;
+    // the moving corner is the current mouse, converted back to content space.
+    const float relX = mousePos.x - windowPos.x;
+    Timecode curTime = pixelToTime(relX);
+    if (curTime < 0) curTime = 0;
+    const FrameNumber curFrame   = m_timeline->timeToFrame(curTime);
+    const float       curContentY = mousePos.y - windowPos.y;
+
+    const FrameNumber fLo = std::min(m_boxAnchorFrame, curFrame);
+    const FrameNumber fHi = std::max(m_boxAnchorFrame, curFrame);
+    const float       yLo = std::min(m_boxAnchorContentY, curContentY);
+    const float       yHi = std::max(m_boxAnchorContentY, curContentY);
+
+    // Walk the visible rows (Phase 9 cache): a row is hit if its [y, y+height)
+    // band overlaps [yLo, yHi]; within a hit row, a layer is hit if its frame
+    // range overlaps [fLo, fHi].
+    std::vector<entt::entity> hits;
+    for (const auto& row : m_trackRows) {
+        const float rowTop = row.y;
+        const float rowBot = row.y + row.height;
+        const bool rowOverlaps = (rowTop <= yHi) && (rowBot >= yLo);
+        if (!rowOverlaps) continue;
+
+        const auto* track = registry.try_get<TimelineTrack>(row.track);
+        if (!track) continue;
+        for (entt::entity e : track->layers) {
+            const TimelinePlacement p = readPlacement(registry, e);
+            if (!p.valid) continue;
+            const FrameNumber start = p.startFrame;
+            const FrameNumber end   = p.startFrame + p.duration;  // exclusive
+            const bool frameOverlaps = (start <= fHi) && (end >= fLo);
+            if (frameOverlaps) hits.push_back(e);
+        }
+    }
+
+    if (m_boxAnchorCtrl) {
+        // Union with the existing selection (dedup handled by setSelection).
+        std::vector<entt::entity> merged = m_timeline->getSelectedClips();
+        for (entt::entity e : hits) merged.push_back(e);
+        m_timeline->setSelection(merged);
+    } else {
+        m_timeline->setSelection(hits);
+    }
+    m_selectedClip = m_timeline->getSelectedClip();
 }
 
 void TimelineWidget::handleRulerInteraction() {
@@ -610,6 +613,7 @@ void TimelineWidget::handleRulerInteraction() {
             m_cueModalFrame     = cueFrame;
             std::snprintf(m_cueModalLabelBuf, sizeof(m_cueModalLabelBuf),
                           "%s", cueLabel.c_str());
+            m_cueModalAlsoAddSection = false;
             m_cueModalOpenRequested = true;
             m_cueClickCandidate.reset();
             return;
@@ -853,19 +857,49 @@ void TimelineWidget::handleRulerInteraction() {
     // Selection" under the break-point model.
     if (ImGui::BeginPopup("RangeContextMenu")) {
         if (m_range.active && m_range.end > m_range.start) {
-            if (ImGui::MenuItem("Create Section Breaks at Range Endpoints") && m_commandDispatcher) {
-                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_timeline->timeToFrame(m_range.start), 0xFF6090C8u, 0.0));
-                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
-                    m_timeline->timeToFrame(m_range.end), 0xFF6090C8u, 0.0));
-            }
-            ImGui::Separator();
             FrameNumber inF = m_timeline->timeToFrame(m_range.start);
             FrameNumber outF = m_timeline->timeToFrame(m_range.end);
+            FrameNumber dur = outF - inF;
+
+            // Ripple insert: lengthen spanning clips and shift everything after.
+            {
+                char insertLabel[64];
+                std::snprintf(insertLabel, sizeof(insertLabel),
+                              "Insert Time (%lldf) at Range",
+                              static_cast<long long>(dur));
+                if (ImGui::MenuItem(insertLabel) && m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(
+                        std::make_unique<RippleInsertTimeCommand>(inF, dur));
+                    clearRangeSelection();
+                }
+            }
+
+            // Ripple delete: remove the selected time span.
+            {
+                char deleteLabel[64];
+                std::snprintf(deleteLabel, sizeof(deleteLabel),
+                              "Delete Time (%lldf)",
+                              static_cast<long long>(dur));
+                if (ImGui::MenuItem(deleteLabel) && m_commandDispatcher) {
+                    m_commandDispatcher->enqueue(
+                        std::make_unique<RippleDeleteTimeCommand>(inF, outF));
+                    clearRangeSelection();
+                }
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("Create Section Breaks at Range Endpoints") && m_commandDispatcher) {
+                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
+                    inF, 0xFF6090C8u, 0.0));
+                m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
+                    outF, 0xFF6090C8u, 0.0));
+            }
+            ImGui::Separator();
             ImGui::TextDisabled("Range: F%lld - F%lld (%lldf)",
                 static_cast<long long>(inF),
                 static_cast<long long>(outF),
-                static_cast<long long>(outF - inF));
+                static_cast<long long>(dur));
         }
         ImGui::EndPopup();
     }
@@ -928,6 +962,7 @@ void TimelineWidget::handleRulerInteraction() {
                 std::strncpy(m_cueModalLabelBuf, cue.label.c_str(),
                              sizeof(m_cueModalLabelBuf) - 1);
                 m_cueModalLabelBuf[sizeof(m_cueModalLabelBuf) - 1] = '\0';
+                m_cueModalAlsoAddSection = false;
                 m_cueModalOpenRequested = true;
             }
             ImGui::Separator();
@@ -970,6 +1005,20 @@ void TimelineWidget::handleRulerInteraction() {
             m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
             m_cueModalFrame = m_timeline->timeToFrame(snapTimeToTickGrid(m_rulerRightClickTime));
             m_cueModalLabelBuf[0] = '\0';
+            m_cueModalAlsoAddSection = false;
+            m_cueModalOpenRequested = true;
+        }
+        if (ImGui::MenuItem("Add Section + Cue Here...")) {
+            // Opens the cue modal; on OK also enqueues an AddSectionBreakCommand
+            // at the same frame (two undo steps — same precedent as
+            // "Create Section Breaks at Range Endpoints").
+            m_cueModalMode = CueModalMode::Add;
+            const auto& cues = m_timeline->getCueTags();
+            m_cueModalOldNumber = 0.0;
+            m_cueModalNumber = cues.empty() ? 1.0 : (cues.back().number + 1.0);
+            m_cueModalFrame = m_timeline->timeToFrame(snapTimeToTickGrid(m_rulerRightClickTime));
+            m_cueModalLabelBuf[0] = '\0';
+            m_cueModalAlsoAddSection = true;
             m_cueModalOpenRequested = true;
         }
         ImGui::EndPopup();
@@ -987,14 +1036,24 @@ void TimelineWidget::handleRulerInteraction() {
             // cue, producing a near-duplicate.
             m_cueModalFrame = m_timeline->timeToFrame(snapTimeToTickGrid(m_rulerRightClickTime));
             m_cueModalLabelBuf[0] = '\0';
+            m_cueModalAlsoAddSection = false;
             m_cueModalOpenRequested = true;
         }
         ImGui::EndPopup();
     }
 
-    // Render the cue + section-break modals (no-op when not open).
+    // Deferred open for the ripple-time modal (same pattern as section-break
+    // and cue modals — set flag in context-menu scope, open here in the
+    // parent-window scope so popup ID matches BeginPopupModal below).
+    if (m_rippleTimeModalOpenRequested) {
+        ImGui::OpenPopup("RippleTimeModal");
+        m_rippleTimeModalOpenRequested = false;
+    }
+
+    // Render the cue + section-break + ripple-time modals (no-op when not open).
     renderCueModal();
     renderSectionBreakModal();
+    renderRippleTimeModal();
 }
 
 void TimelineWidget::handleTracksInteraction() {
@@ -1022,14 +1081,15 @@ void TimelineWidget::handleTracksInteraction() {
                 mouseTime = snapTimeToBest(mouseTime);
             }
 
-            // Get the clip being trimmed
+            // Get the entity being trimmed — works for both Clip-backed and
+            // Layer-only entities (OA / Generative / Signal).
             if (registry.valid(m_trimClip)) {
-                auto* clip = registry.try_get<Clip>(m_trimClip);
-                if (clip) {
+                auto place = readPlacement(registry, m_trimClip);
+                if (place.valid) {
                     // Round the microsecond mouse position to the nearest frame.
                     FrameNumber mouseFrame = m_timeline->timeToFrame(mouseTime);
 
-                    // Find the track this clip is on for collision detection
+                    // Find the track this entity is on for collision detection
                     int trimTrackIndex = -1;
                     const auto& tracks = m_timeline->getTracks();
                     for (size_t i = 0; i < tracks.size(); ++i) {
@@ -1046,80 +1106,81 @@ void TimelineWidget::handleTracksInteraction() {
                     }
 
                     if (m_trimEdge == ClipEdge::Left) {
-                        // Trim left edge - adjust start and duration
-                        // Don't allow trimming past original end
+                        // Trim left edge — adjust start and duration.
+                        // Don't allow trimming past original end.
                         FrameNumber originalEnd = m_trimOriginalStart + m_trimOriginalDuration;
                         if (mouseFrame < originalEnd - 1) {  // Keep at least 1 frame
-                            // Don't allow trimming before 0
                             if (mouseFrame < 0) mouseFrame = 0;
 
-                            // Check for collision with previous clip
+                            // Check for collision with previous neighbor using
+                            // the placement helper — works for any entity kind.
                             FrameNumber minStartFrame = 0;
                             if (trimTrackIndex >= 0 && trimTrackIndex < static_cast<int>(tracks.size())) {
                                 const auto* track = registry.try_get<TimelineTrack>(tracks[trimTrackIndex]);
                                 if (track) {
-                                    for (entt::entity otherClip : track->layers) {
-                                        if (otherClip == m_trimClip) continue;
-                                        const auto* other = registry.try_get<Clip>(otherClip);
-                                        if (other) {
-                                            FrameNumber otherEnd = other->startFrame + other->duration;
-                                            // If other clip ends before our original start, it could limit us
-                                            if (otherEnd <= m_trimOriginalStart && otherEnd > minStartFrame) {
-                                                minStartFrame = otherEnd;
-                                            }
+                                    for (entt::entity other : track->layers) {
+                                        if (other == m_trimClip) continue;
+                                        auto otherPlace = readPlacement(registry, other);
+                                        if (!otherPlace.valid) continue;
+                                        FrameNumber otherEnd = otherPlace.startFrame + otherPlace.duration;
+                                        if (otherEnd <= m_trimOriginalStart && otherEnd > minStartFrame) {
+                                            minStartFrame = otherEnd;
                                         }
                                     }
                                 }
                             }
 
-                            // Clamp to minimum (collision boundary)
                             if (mouseFrame < minStartFrame) {
                                 mouseFrame = minStartFrame;
                             }
 
                             FrameNumber framesDelta = mouseFrame - m_trimOriginalStart;
-                            clip->startFrame = mouseFrame;
-                            clip->duration = m_trimOriginalDuration - framesDelta;
-                            Timeline::syncLayerFromClip(registry, m_trimClip);
-
-                            // Pure timeline resize: do NOT slip mediaStartFrame.
-                            // Source in/out is the PropertyWindow's domain (slip edits
-                            // route through SetClipMediaStartFrameCommand). Timeline-edge
-                            // drag only changes the clip's timeline footprint
-                            // (startFrame + duration) — the clip's source-window
-                            // anchor (mediaStartFrame) is left intact so the same
-                            // source frame still plays at frame 0 of the clip.
+                            // Write via the appropriate path.
+                            if (auto* clip = registry.try_get<Clip>(m_trimClip)) {
+                                clip->startFrame = mouseFrame;
+                                clip->duration   = m_trimOriginalDuration - framesDelta;
+                                Timeline::syncLayerFromClip(registry, m_trimClip);
+                                // Pure timeline resize: do NOT slip mediaStartFrame.
+                                // Source in/out is the PropertyWindow's domain (slip
+                                // edits route through SetClipMediaStartFrameCommand).
+                            } else if (auto* lay = registry.try_get<Layer>(m_trimClip)) {
+                                lay->startFrame = mouseFrame;
+                                lay->duration   = m_trimOriginalDuration - framesDelta;
+                            }
                         }
                     } else if (m_trimEdge == ClipEdge::Right) {
-                        // Trim right edge - adjust duration only
-                        FrameNumber newDuration = mouseFrame - clip->startFrame;
-                        if (newDuration >= 1) {  // Keep at least 1 frame
-                            // Check for collision with next clip
+                        // Trim right edge — adjust duration only.
+                        FrameNumber currentStart = place.startFrame;
+                        FrameNumber newDuration  = mouseFrame - currentStart;
+                        if (newDuration >= 1) {
+                            // Check for collision with next neighbor.
                             FrameNumber maxEndFrame = std::numeric_limits<FrameNumber>::max();
                             if (trimTrackIndex >= 0 && trimTrackIndex < static_cast<int>(tracks.size())) {
                                 const auto* track = registry.try_get<TimelineTrack>(tracks[trimTrackIndex]);
                                 if (track) {
-                                    for (entt::entity otherClip : track->layers) {
-                                        if (otherClip == m_trimClip) continue;
-                                        const auto* other = registry.try_get<Clip>(otherClip);
-                                        if (other) {
-                                            // If other clip starts after our start, it could limit us
-                                            if (other->startFrame > clip->startFrame && other->startFrame < maxEndFrame) {
-                                                maxEndFrame = other->startFrame;
-                                            }
+                                    for (entt::entity other : track->layers) {
+                                        if (other == m_trimClip) continue;
+                                        auto otherPlace = readPlacement(registry, other);
+                                        if (!otherPlace.valid) continue;
+                                        if (otherPlace.startFrame > currentStart &&
+                                            otherPlace.startFrame < maxEndFrame) {
+                                            maxEndFrame = otherPlace.startFrame;
                                         }
                                     }
                                 }
                             }
 
-                            // Clamp duration to not exceed collision boundary
-                            FrameNumber maxDuration = maxEndFrame - clip->startFrame;
+                            FrameNumber maxDuration = maxEndFrame - currentStart;
                             if (newDuration > maxDuration) {
                                 newDuration = maxDuration;
                             }
 
-                            clip->duration = newDuration;
-                            Timeline::syncLayerFromClip(registry, m_trimClip);
+                            if (auto* clip = registry.try_get<Clip>(m_trimClip)) {
+                                clip->duration = newDuration;
+                                Timeline::syncLayerFromClip(registry, m_trimClip);
+                            } else if (auto* lay = registry.try_get<Layer>(m_trimClip)) {
+                                lay->duration = newDuration;
+                            }
                         }
                     }
                 }
@@ -1193,6 +1254,124 @@ void TimelineWidget::handleTracksInteraction() {
             }
             m_isDraggingKeyframe = false;
             m_dragKeyframeClip   = entt::null;
+        }
+        return;
+    }
+
+    // Rubber-band box selection (Phase 12). Armed on a plain/ctrl mouse-down
+    // over empty lane area; upgrades to active once the drag crosses the
+    // threshold (so a plain empty click stays a deselect, not a 0-size box).
+    // Exclusive with clip drag/trim — those branches return before this.
+    if (m_boxSelectArmed || m_isBoxSelecting) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (!m_isBoxSelecting &&
+                ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                m_isBoxSelecting = true;
+            }
+            if (m_isBoxSelecting) {
+                // Draw the translucent selection rect. Anchor is in content
+                // space (frame + content-Y); convert to current screen coords
+                // so it tracks the content if the view scrolled mid-drag.
+                const float anchorScreenX =
+                    windowPos.x + frameToPixel(m_boxAnchorFrame);
+                const float anchorScreenY = windowPos.y + m_boxAnchorContentY;
+                const ImVec2 a(anchorScreenX, anchorScreenY);
+                const ImVec2 b = mousePos;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 rmin(std::min(a.x, b.x), std::min(a.y, b.y));
+                const ImVec2 rmax(std::max(a.x, b.x), std::max(a.y, b.y));
+                dl->AddRectFilled(rmin, rmax, IM_COL32(80, 160, 255, 40));
+                dl->AddRect(rmin, rmax, IM_COL32(120, 200, 255, 200));
+            }
+        } else {
+            // Release. If we actually box-selected, commit; otherwise it was a
+            // plain empty click (deselect already happened on mouse-down).
+            if (m_isBoxSelecting) {
+                commitBoxSelection(mousePos, windowPos);
+            }
+            m_boxSelectArmed = false;
+            m_isBoxSelecting = false;
+        }
+        return;
+    }
+
+    // Group drag (Phase 13) — HORIZONTAL ONLY. Every selected member moves
+    // rigidly by the grabbed clip's delta. Snap applies to the grabbed clip
+    // only; the others stay rigid. No vertical / cross-track component (v1
+    // scope cut) and no ghost preview. Handled before the single-clip path and
+    // returns, so the intricate single-clip snap/cross-track code is untouched.
+    if (m_isDraggingClip && m_isGroupDragging) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // Desired grabbed-clip start from the mouse (same math as single).
+            float relativeX = mousePos.x - windowPos.x + m_syncScrollX - m_dragOffsetX;
+            Timecode desiredStartTime = pixelToTime(relativeX);
+            if (desiredStartTime < 0) desiredStartTime = 0;
+            FrameNumber grabbedDesired = m_timeline->timeToFrame(desiredStartTime);
+
+            // Snap the grabbed clip only (grid + cue + section), shift bypasses.
+            m_isSnapping = false;
+            if (m_snappingEnabled && !ImGui::GetIO().KeyShift) {
+                Timecode snapped = snapTimeToBest(
+                    m_timeline->frameToTime(grabbedDesired));
+                grabbedDesired = m_timeline->timeToFrame(snapped);
+            }
+
+            // Delta from the grabbed clip's original start.
+            FrameNumber delta = grabbedDesired - m_groupGrabbedOriginalStart;
+
+            // Clamp so the earliest member stays >= 0: delta >= -min(origStart).
+            FrameNumber minOrig = std::numeric_limits<FrameNumber>::max();
+            for (const auto& [e, orig] : m_groupDragOriginalStarts) {
+                (void)e;
+                minOrig = std::min(minOrig, orig);
+            }
+            if (minOrig != std::numeric_limits<FrameNumber>::max() && minOrig + delta < 0) {
+                delta = -minOrig;
+            }
+
+            // Live-write origin + delta for every member (rigid).
+            for (const auto& [e, orig] : m_groupDragOriginalStarts) {
+                if (registry.valid(e)) {
+                    writeStartFrame(registry, e, orig + delta);
+                }
+            }
+            m_ghost.active = false;  // suppressed for group drags
+        } else {
+            // Release: validate each member against NON-selected clips on its
+            // own track; any collision reverts the WHOLE group to its captured
+            // originals (rigid all-or-nothing). Vertical/cross-track is disabled
+            // so each member stays on its original track.
+            bool collision = false;
+            const double fps = m_timeline->getFrameRate();
+            for (const auto& [e, orig] : m_groupDragOriginalStarts) {
+                (void)orig;
+                if (!registry.valid(e)) continue;
+                TimelinePlacement p = readPlacement(registry, e);
+                int trackIdx = findTrackIndexForClip(e);
+                if (!p.valid || trackIdx < 0) continue;
+                const Timecode startT = m_timeline->frameToTime(p.startFrame);
+                const float durSec = p.duration / static_cast<float>(fps);
+                const Timecode durT = static_cast<Timecode>(durSec * 1000000.0f);
+                if (wouldOverlapAnyClipExcluding(trackIdx, startT, durT,
+                                                 m_timeline->getSelectedClips())) {
+                    collision = true;
+                    break;
+                }
+            }
+            if (collision) {
+                for (const auto& [e, orig] : m_groupDragOriginalStarts) {
+                    if (registry.valid(e)) writeStartFrame(registry, e, orig);
+                }
+                std::printf("[GroupDrag] Reverted - a member would overlap a "
+                            "non-selected clip on its track.\n");
+            }
+            m_pendingCollapseClip = entt::null;  // a real drag occurred; no collapse
+            m_isDraggingClip   = false;
+            m_isGroupDragging  = false;
+            m_groupDragOriginalStarts.clear();
+            m_isSnapping = false;
+            m_ghost.active = false;
+            m_timeline->setScrubbing(false);
         }
         return;
     }
@@ -1359,7 +1538,22 @@ void TimelineWidget::handleTracksInteraction() {
                 m_ghost.active = false;
             }
         } else {
-            // Mouse released - stop dragging
+            // Mouse released - stop dragging.
+            // Phase 12: a plain click on an already-selected clip kept the whole
+            // set so a group drag could begin. If the gesture never crossed the
+            // drag threshold (it was a click, not a drag), collapse the
+            // selection to just that clip now. GetMouseDragDelta stays valid
+            // through release; compare its magnitude to the drag threshold.
+            const ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+            const float dragThresh = ImGui::GetIO().MouseDragThreshold;
+            const bool draggedPastThreshold =
+                (dd.x * dd.x + dd.y * dd.y) >= (dragThresh * dragThresh);
+            if (m_pendingCollapseClip != entt::null && !draggedPastThreshold) {
+                m_timeline->setSelectedClip(m_pendingCollapseClip);
+                m_selectedClip = m_pendingCollapseClip;
+            }
+            m_pendingCollapseClip = entt::null;
+
             // Check if we need to move the clip to a different track
             int finalTrackIndex = findTrackAtY(mousePos.y, windowPos.y);
             if (finalTrackIndex >= 0 && finalTrackIndex != m_selectedClipTrackIndex) {
@@ -1432,42 +1626,97 @@ void TimelineWidget::handleTracksInteraction() {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             int trackIndex = -1;
             entt::entity clipUnderMouse = findClipAtPosition(mousePos, windowPos, trackIndex);
+            const bool ctrl = ImGui::GetIO().KeyCtrl;
 
             if (clipUnderMouse != entt::null) {
-                // Start dragging this clip
-                m_selectedClip = clipUnderMouse;
-                m_isDraggingClip = true;
-                m_selectedClipTrackIndex = trackIndex;
                 m_selectedKeyframeClip = entt::null;  // selecting a clip clears keyframe selection
-                m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
 
-                // Sync selection to Timeline for PropertyWindow
-                m_timeline->setSelectedClip(clipUnderMouse);
-                m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
+                if (ctrl) {
+                    // Ctrl-click toggles set membership. No drag, no scrub — a
+                    // ctrl-click is a pure selection edit.
+                    m_timeline->toggleSelected(clipUnderMouse);
+                    m_timeline->setSelectedScreen(entt::null);
+                    m_selectedClip = m_timeline->getSelectedClip();
+                    m_pendingCollapseClip = entt::null;
+                } else {
+                    // Plain click.
+                    const bool alreadySelected = m_timeline->isSelected(clipUnderMouse);
+                    if (alreadySelected) {
+                        // Keep the whole set (so a group drag can begin) but
+                        // make this the primary. If the gesture turns out to be
+                        // a click (no drag), collapse to {clip} on mouse-up.
+                        m_timeline->setPrimaryClip(clipUnderMouse);
+                        m_pendingCollapseClip = clipUnderMouse;
+                    } else {
+                        // Fresh selection — reset the set to just this clip.
+                        m_timeline->setSelectedClip(clipUnderMouse);
+                        m_pendingCollapseClip = entt::null;
+                    }
+                    m_selectedClip = clipUnderMouse;
+                    m_timeline->setSelectedScreen(entt::null);  // Deselect screen when selecting clip
 
-                // Calculate drag offset (where in the clip the user clicked).
-                // Reads placement uniformly so OA/Generative Layer-only
-                // entities pick up a correct offset (without this, the offset
-                // stays at its previous value and the layer doesn't track).
-                if (registry.valid(clipUnderMouse)) {
-                    TimelinePlacement place = readPlacement(registry, clipUnderMouse);
-                    if (place.valid) {
-                        double timelineFrameRate = m_timeline->getFrameRate();
-                        float startSeconds = place.startFrame / static_cast<float>(timelineFrameRate);
-                        Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
-                        float clipX = windowPos.x + timeToPixel(clipStartTime) - m_syncScrollX;
-                        m_dragOffsetX = mousePos.x - clipX;
-                        m_clipDragStartTime = clipStartTime;
+                    // Start dragging this clip.
+                    m_isDraggingClip = true;
+                    m_selectedClipTrackIndex = trackIndex;
+                    m_timeline->setScrubbing(true);  // Enter scrubbing mode - prevents decoder seeks
+
+                    // Phase 13: if the multi-selection has >1 member, this is a
+                    // GROUP drag (horizontal only). Capture every member's
+                    // original start so the per-frame move is origin+delta and a
+                    // collision on release can revert exactly. The grabbed clip's
+                    // own original start is the delta reference.
+                    m_isGroupDragging = false;
+                    m_groupDragOriginalStarts.clear();
+                    if (m_timeline->getSelectedClips().size() > 1 &&
+                        m_timeline->isSelected(clipUnderMouse)) {
+                        m_isGroupDragging = true;
+                        for (entt::entity e : m_timeline->getSelectedClips()) {
+                            TimelinePlacement p = readPlacement(registry, e);
+                            if (p.valid) {
+                                m_groupDragOriginalStarts.emplace_back(e, p.startFrame);
+                                if (e == clipUnderMouse) m_groupGrabbedOriginalStart = p.startFrame;
+                            }
+                        }
+                    }
+
+                    // Calculate drag offset (where in the clip the user clicked).
+                    // Reads placement uniformly so OA/Generative Layer-only
+                    // entities pick up a correct offset (without this, the offset
+                    // stays at its previous value and the layer doesn't track).
+                    if (registry.valid(clipUnderMouse)) {
+                        TimelinePlacement place = readPlacement(registry, clipUnderMouse);
+                        if (place.valid) {
+                            double timelineFrameRate = m_timeline->getFrameRate();
+                            float startSeconds = place.startFrame / static_cast<float>(timelineFrameRate);
+                            Timecode clipStartTime = static_cast<Timecode>(startSeconds * 1000000.0f);
+                            float clipX = windowPos.x + timeToPixel(clipStartTime) - m_syncScrollX;
+                            m_dragOffsetX = mousePos.x - clipX;
+                            m_clipDragStartTime = clipStartTime;
+                        }
                     }
                 }
             } else {
-                // Clicked on empty space within timeline - deselect
-                m_selectedClip = entt::null;
-                m_selectedClipTrackIndex = -1;
-                m_selectedKeyframeClip = entt::null;
+                // Clicked on empty space within timeline. Plain click clears the
+                // selection; ctrl-click preserves the set (the user is building
+                // a selection and missed). Either way, arm a rubber band so a
+                // drag from empty space box-selects.
+                if (!ctrl) {
+                    m_selectedClip = entt::null;
+                    m_selectedClipTrackIndex = -1;
+                    m_selectedKeyframeClip = entt::null;
+                    m_timeline->setSelectedClip(entt::null);
+                }
+                m_pendingCollapseClip = entt::null;
 
-                // Sync deselection to Timeline
-                m_timeline->setSelectedClip(entt::null);
+                // Arm the rubber band. Anchor in scroll-stable timeline space.
+                const float relativeX = mousePos.x - windowPos.x;
+                Timecode anchorTime = pixelToTime(relativeX);
+                if (anchorTime < 0) anchorTime = 0;
+                m_boxAnchorFrame    = m_timeline->timeToFrame(anchorTime);
+                m_boxAnchorContentY = mousePos.y - windowPos.y;  // content-space (windowPos already -scroll)
+                m_boxAnchorCtrl     = ctrl;
+                m_boxSelectArmed    = true;
+                m_isBoxSelecting    = false;
             }
         }
 
@@ -1498,6 +1747,14 @@ void TimelineWidget::handleTracksInteraction() {
                 m_rightClickedTrackIndex = trackIndex;
                 m_showClipContextMenu = true;
                 m_showTrackContextMenu = false;
+                // Right-click on a clip that's part of the multi-selection keeps
+                // the whole set (so "Delete N Clips" acts on the group). A
+                // right-click on an UNselected clip selects just it first, like
+                // a plain click, so the menu targets what the user pointed at.
+                if (!m_timeline->isSelected(clipUnderMouse)) {
+                    m_timeline->setSelectedClip(clipUnderMouse);
+                    m_selectedClip = clipUnderMouse;
+                }
             } else {
                 int trackAtY = findTrackAtY(mousePos.y, windowPos.y);
                 if (trackAtY >= 0) {
@@ -1549,15 +1806,15 @@ void TimelineWidget::handleContextMenus() {
             const auto idx = findClipIndices(m_timeline, m_rightClickedClip);
             const bool hasIdx = idx.has_value();
             const bool isClipKind = (clip != nullptr);
-            // Any layer with a Layer component (Clip or Generative) is copyable.
-            // OA layers are excluded: their targetScreen ref isn't meaningful
-            // on paste to an unrelated session state.
+            // Phase 13: any layer with a Layer component is copyable except
+            // Signal (no DeletedLayerKind entry -> can't snapshot). OA is now
+            // copyable: its target Screen is reused by reference on paste
+            // within the same session (materializeClipFromSnapshot OA branch).
             const bool isCopyable = hasIdx &&
                 registry.all_of<Layer>(m_rightClickedClip) &&
-                !registry.all_of<ObjectAnimationLayer>(m_rightClickedClip);
+                !registry.all_of<SignalLayer>(m_rightClickedClip);
             const bool clipboardFull =
-                m_engine && m_engine->clipClipboard().has_value() &&
-                m_engine->clipClipboard()->valid;
+                m_engine && m_engine->hasClipClipboard();
 
             if (ImGui::MenuItem("Cut", "Ctrl+X", false, isCopyable)) {
                 if (m_commandDispatcher) {
@@ -1565,10 +1822,25 @@ void TimelineWidget::handleContextMenus() {
                         static_cast<uint32_t>(m_rightClickedClip)));
                 }
             }
-            if (ImGui::MenuItem("Copy", "Ctrl+C", false, isCopyable)) {
-                if (m_commandDispatcher) {
-                    m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
-                        static_cast<uint32_t>(m_rightClickedClip)));
+            // Phase 13: group copy when the right-clicked clip is part of a
+            // multi-selection (>1). The default-ctor CopyClipCommand reads the
+            // live multi-selection; a single clip uses the explicit-entity form.
+            {
+                const auto& selClips = m_timeline->getSelectedClips();
+                const bool groupCopy =
+                    selClips.size() > 1 && m_timeline->isSelected(m_rightClickedClip);
+                const std::string copyLabel = groupCopy
+                    ? ("Copy " + std::to_string(selClips.size()) + " Clips")
+                    : std::string("Copy");
+                if (ImGui::MenuItem(copyLabel.c_str(), "Ctrl+C", false, isCopyable)) {
+                    if (m_commandDispatcher) {
+                        if (groupCopy) {
+                            m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>());
+                        } else {
+                            m_commandDispatcher->enqueue(std::make_unique<CopyClipCommand>(
+                                static_cast<uint32_t>(m_rightClickedClip)));
+                        }
+                    }
                 }
             }
             if (ImGui::MenuItem("Paste", "Ctrl+V", false, clipboardFull)) {
@@ -1582,7 +1854,33 @@ void TimelineWidget::handleContextMenus() {
                         static_cast<uint32_t>(m_rightClickedClip)));
                 }
             }
-            if (ImGui::MenuItem("Delete", "Del", false, hasIdx)) {
+            // Phase 12: when the right-clicked clip is part of a multi-selection
+            // (>1), offer "Delete N Clips" (group, single undo). Otherwise the
+            // plain single "Delete".
+            const auto& selClips = m_timeline->getSelectedClips();
+            const bool groupDelete =
+                selClips.size() > 1 && m_timeline->isSelected(m_rightClickedClip);
+            if (groupDelete) {
+                std::string label = "Delete " + std::to_string(selClips.size()) + " Clips";
+                if (ImGui::MenuItem(label.c_str(), "Del", false, hasIdx)) {
+                    if (m_commandDispatcher) {
+                        // Fix A: capture the (track,layer) targets at enqueue so
+                        // the command is deterministic-by-construction (no
+                        // execute-time re-read race).
+                        std::vector<DeleteClipsCommand::TrackClip> targets;
+                        for (entt::entity e : selClips) {
+                            auto tc = m_timeline->clipIndices(e);
+                            if (tc.first >= 0) targets.emplace_back(tc.first, tc.second);
+                        }
+                        m_commandDispatcher->enqueue(
+                            std::make_unique<DeleteClipsCommand>(std::move(targets)));
+                    } else {
+                        for (entt::entity e : selClips) m_timeline->deleteClip(e);
+                    }
+                    m_selectedClip = entt::null;
+                    m_selectedClipTrackIndex = -1;
+                }
+            } else if (ImGui::MenuItem("Delete", "Del", false, hasIdx)) {
                 if (m_selectedClip == m_rightClickedClip) {
                     m_selectedClip = entt::null;
                     m_selectedClipTrackIndex = -1;
@@ -1761,9 +2059,30 @@ void TimelineWidget::handleContextMenus() {
     // Track context menu
     if (ImGui::BeginPopup("TrackContextMenu")) {
         if (m_rightClickedTrackIndex >= 0) {
+            // Rename Track — seeds the inline rename state in renderTrackHeaderRow.
+            // m_renameFocusPending=true so the render-side overlay calls
+            // SetKeyboardFocusHere() on its first frame (first-frame focus
+            // protocol — mirrors MathInput.cpp's justEntered shape).
+            if (ImGui::MenuItem("Rename Track...")) {
+                const auto& tracks = m_timeline->getTracks();
+                if (m_rightClickedTrackIndex < static_cast<int>(tracks.size())) {
+                    entt::entity te = tracks[static_cast<std::size_t>(m_rightClickedTrackIndex)];
+                    auto* ui = m_timeline->getRegistry().try_get<TrackUiState>(te);
+                    m_renamingTrackIndex = m_rightClickedTrackIndex;
+                    m_renameFocusPending = true;
+                    m_renameWasActive    = false;
+                    m_renameTrackCount   = m_timeline->getTrackCount();
+                    std::strncpy(m_renameTrackBuf,
+                                 (ui ? ui->name.c_str() : ""),
+                                 sizeof(m_renameTrackBuf) - 1);
+                    m_renameTrackBuf[sizeof(m_renameTrackBuf) - 1] = '\0';
+                }
+            }
+
+            ImGui::Separator();
+
             const bool clipboardFull =
-                m_engine && m_engine->clipClipboard().has_value() &&
-                m_engine->clipClipboard()->valid;
+                m_engine && m_engine->hasClipClipboard();
 
             // Paste here — uses the click-frame captured during right-
             // click (floor-snapped to tick grid).
@@ -1791,12 +2110,30 @@ void TimelineWidget::handleContextMenus() {
                 m_rightClickedTrackIndex = -1;
             }
 
-            // Option to add a new track
             if (ImGui::MenuItem("Add Track Above")) {
-                // For now, just add at the end (track ordering would need more work)
-                std::ostringstream trackName;
-                trackName << "Video Track " << (m_timeline->getTrackCount() + 1);
-                m_timeline->createTrack(trackName.str());
+                m_timeline->insertTrackAt(static_cast<size_t>(m_rightClickedTrackIndex));
+            }
+
+            if (ImGui::MenuItem("Add Track Below")) {
+                m_timeline->insertTrackAt(static_cast<size_t>(m_rightClickedTrackIndex) + 1);
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("Insert Time Here...")) {
+                m_rippleTimeModalMode = RippleTimeModalMode::Insert;
+                m_rippleTimeModalFrame = m_rightClickedTrackFrame;
+                m_rippleTimeModalDuration = static_cast<FrameNumber>(framesPerTick());
+                if (m_rippleTimeModalDuration < 1) m_rippleTimeModalDuration = 1;
+                m_rippleTimeModalOpenRequested = true;
+            }
+
+            if (ImGui::MenuItem("Delete Time Here...")) {
+                m_rippleTimeModalMode = RippleTimeModalMode::Delete;
+                m_rippleTimeModalFrame = m_rightClickedTrackFrame;
+                m_rippleTimeModalDuration = static_cast<FrameNumber>(framesPerTick());
+                if (m_rippleTimeModalDuration < 1) m_rippleTimeModalDuration = 1;
+                m_rippleTimeModalOpenRequested = true;
             }
 
             ImGui::Separator();

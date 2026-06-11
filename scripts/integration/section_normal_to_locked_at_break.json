@@ -12,15 +12,15 @@
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},
-        {"type": "WaitFrames", "count": 200},
+        {"type": "WaitSeconds", "count": 1.0},
         {"type": "AssertPlaybackState", "state": "Paused"},
         {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
 
-        {"type": "WaitFrames", "count": 30},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "mode": "notEqual", "tolerance": 1},
 
         {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Locked"},
-        {"type": "WaitFrames", "count": 120},
+        {"type": "WaitSeconds", "count": 1.0},
         {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 1},
         {"type": "Exit"}
     ]

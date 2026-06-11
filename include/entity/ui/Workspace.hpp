@@ -36,6 +36,15 @@ struct Workspace {
     // WindowManager calls setWindowVisible(name, false) for each.
     std::vector<std::string> hiddenWindows;
 
+    // Per-dock-node active tab window names, captured background-to-foreground
+    // (globally-focused window last). Restored via SetWindowFocus after the
+    // ini is applied: the ini already encodes SelectedTabId, but the
+    // NavWindow-follows write in DockNodeUpdateTabBar can stomp it on the
+    // rebuild frame, so this explicit focus pass is what makes a workspace
+    // switch land on the same tabs it was saved with. Empty for pre-Phase-11
+    // workspaces (the focus pass no-ops, the ini's selection stands).
+    std::vector<std::string> focusedTabs;
+
     // True for the shipped "Default" entry. Built-in workspaces can be
     // saved-into and reset, but not deleted.
     bool builtIn = false;

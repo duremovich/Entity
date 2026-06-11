@@ -161,6 +161,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SplitClip", SplitClipCommand::fromJson);
     registerFactory("DuplicateClip", DuplicateClipCommand::fromJson);
     registerFactory("DeleteClip", DeleteClipCommand::fromJson);
+    registerFactory("DeleteClips", DeleteClipsCommand::fromJson);
     registerFactory("CopyClip", CopyClipCommand::fromJson);
     registerFactory("CutClip", CutClipCommand::fromJson);
     registerFactory("PasteClip", PasteClipCommand::fromJson);
@@ -191,11 +192,14 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("UnpatchLayerRemote",  UnpatchLayerRemoteCommand::fromJson);
     registerFactory("RenameRemotePatch",   RenameRemotePatchCommand::fromJson);
     registerFactory("SetRemotePatchArmed", SetRemotePatchArmedCommand::fromJson);
+    registerFactory("RenameTrack",         RenameTrackCommand::fromJson);
     registerFactory("LogClipState", LogClipStateCommand::fromJson);
     registerFactory("SetClipRotation", SetClipRotationCommand::fromJson);
     registerFactory("SetClipPlaybackMode", SetClipPlaybackModeCommand::fromJson);
     registerFactory("SetClipFramerate", SetClipFramerateCommand::fromJson);
     registerFactory("SetClipDuration", SetClipDurationCommand::fromJson);
+    registerFactory("SetLayerStartFrame", SetLayerStartFrameCommand::fromJson);
+    registerFactory("SetLayerDuration", SetLayerDurationCommand::fromJson);
     registerFactory("SetClipMediaStartFrame", SetClipMediaStartFrameCommand::fromJson);
     registerFactory("SetClipMediaOutFrame", SetClipMediaOutFrameCommand::fromJson);
     registerFactory("RippleInsertTime", RippleInsertTimeCommand::fromJson);

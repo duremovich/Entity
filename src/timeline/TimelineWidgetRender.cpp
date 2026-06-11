@@ -22,6 +22,11 @@
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
 #include "entity/components/LayerTrackUiState.hpp"
+#include "entity/components/TrackUiState.hpp"
+#include "entity/components/Transform.hpp"
+#include "entity/components/MediaLayer.hpp"
+#include "entity/components/EffectParameters.hpp"
+#include "entity/timeline/Timeline.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/effects/EffectKind.hpp"
 #include <sstream>
@@ -35,6 +40,33 @@
 #include <algorithm>
 
 namespace entity {
+
+namespace {
+
+// File-local mirror of the same helper in TimelineWidgetInput.cpp.
+// Keep in sync with TimelineWidgetInput findClipIndices — same iteration
+// order and same registry access pattern.
+// Locate (trackIndex, layerIndex) for an entity in a track's layers vector.
+// Returns nullopt when not found. Used by renderClipPropertyPanel for command
+// dispatch; kept local because consolidation is a separate cleanup.
+std::optional<std::pair<int,int>>
+renderFindClipIndices(Timeline* timeline, entt::entity entity) {
+    if (!timeline || entity == entt::null) return std::nullopt;
+    auto& registry = timeline->getRegistry();
+    const auto& tracks = timeline->getTracks();
+    for (size_t ti = 0; ti < tracks.size(); ++ti) {
+        auto* track = registry.try_get<TimelineTrack>(tracks[ti]);
+        if (!track) continue;
+        for (size_t ci = 0; ci < track->layers.size(); ++ci) {
+            if (track->layers[ci] == entity) {
+                return std::make_pair(static_cast<int>(ti), static_cast<int>(ci));
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
 
 void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
                                        const Keyframe& kf,
@@ -510,40 +542,24 @@ void TimelineWidget::renderTracks() {
         }
     }
 
-    // Calculate cumulative Y offset for tracks (incl. expanded property panels)
+    // Iterate the per-frame row cache (Phase 9). Hidden (shy) tracks are
+    // already excluded; each row carries its content-space Y and full height.
+    // cumulativeY for the grid below is the bottom of the last row.
     float cumulativeY = 0.0f;
-    const auto& tracks = m_timeline->getTracks();
-
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        // Calculate track Y position including offset from previous expanded tracks
-        float trackY = baseWindowPos.y + cumulativeY;
+    for (const auto& row : m_trackRows) {
+        const float trackY = baseWindowPos.y + row.y;
         ImVec2 trackBasePos(baseWindowPos.x, trackY);
 
-        // Calculate track height (including expanded clips from header hierarchy)
-        float trackHeight = TRACK_HEIGHT;
-        uint32_t trackId = static_cast<uint32_t>(tracks[i]);
-        bool trackExpanded = m_expandedTracks.count(trackId) > 0 || m_timeline->isTrackExpanded(tracks[i]);
+        // renderTrack draws only the base TRACK_HEIGHT band; the expanded
+        // property panel (keyframe diamonds) is drawn separately below it.
+        renderTrack(row.track, row.modelIndex, trackBasePos, TRACK_HEIGHT);
 
-        renderTrack(tracks[i], static_cast<int>(i), trackBasePos, trackHeight);
-
-        // Track expansion: render the property panel (keyframe diamonds in
-        // the body; the header panel side renders property names + nav arrows)
-        // for the clip currently at the playhead on this track. If no clip
-        // overlaps the playhead, the expanded area is empty.
-        if (trackExpanded) {
-            entt::entity clipAtPlayhead = findClipAtPlayhead(tracks[i]);
-            if (clipAtPlayhead != entt::null) {
-                float propY = baseWindowPos.y + cumulativeY + trackHeight;
-                renderPropertyTracks(clipAtPlayhead, static_cast<int>(i), baseWindowPos, propY);
-                cumulativeY += trackHeight +
-                    expandedPropertyRowCount(clipAtPlayhead) * PROPERTY_ROW_HEIGHT +
-                    TRACK_PADDING;
-            } else {
-                cumulativeY += trackHeight + TRACK_PADDING;
-            }
-        } else {
-            cumulativeY += trackHeight + TRACK_PADDING;
+        if (row.clipAtPlayhead != entt::null) {
+            const float propY = baseWindowPos.y + row.y + TRACK_HEIGHT;
+            renderPropertyTracks(row.clipAtPlayhead, row.modelIndex, baseWindowPos, propY);
         }
+
+        cumulativeY = row.y + row.height + TRACK_PADDING;
     }
 
     // Tick gridlines + range endpoint accents — drawn AFTER the track loop
@@ -566,8 +582,12 @@ void TimelineWidget::renderTracks() {
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const float visibleW = ImGui::GetWindowWidth();
         const float visibleH = ImGui::GetWindowHeight();
+        // Both axes read the tracks child's live committed scroll. Post-Phase-3
+        // m_syncScrollX equals GetScrollX() this frame (it's written right after
+        // the tracks Begin), so the two were equivalent — using GetScroll*() for
+        // both keeps the source consistent and free of that write-order coupling.
         const float scrollY = ImGui::GetScrollY();
-        const float scrollX = m_syncScrollX;
+        const float scrollX = ImGui::GetScrollX();
         const double frameRate = m_timeline->getFrameRate();
         const FrameNumber tickEvery = static_cast<FrameNumber>(framesPerTick());
         const float pxPerFrame = m_pixelsPerSecond / static_cast<float>(frameRate);
@@ -837,8 +857,7 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
             + static_cast<float>(layer->startFrame) / static_cast<float>(fps)
             * m_pixelsPerSecond;
         const bool isMomentary = (sigLay->mode == SignalLayer::Mode::Momentary);
-        const bool isSelected = (clipEntity == m_selectedClip)
-                             || (clipEntity == m_timeline->getSelectedClip());
+        const bool isSelected = m_timeline->isSelected(clipEntity);  // Phase 12: set membership
 
         const auto& c = layer->color;
         const ImU32 fillCol = isSelected
@@ -939,7 +958,7 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
         ImVec2 clipMin = ImVec2(clipX, trackY + CLIP_PADDING);
         ImVec2 clipMax = ImVec2(clipX + clipWidth, trackY + TRACK_HEIGHT - CLIP_PADDING);
 
-        bool isSelected = (clipEntity == m_selectedClip) || (clipEntity == m_timeline->getSelectedClip());
+        bool isSelected = m_timeline->isSelected(clipEntity);  // Phase 12: set membership
 
         // Color swatch from Layer::color; brighten on selection. Border tints
         // from the same color (lightened) so OA / Generative / future kinds
@@ -1015,15 +1034,22 @@ float TimelineWidget::renderClip(entt::entity clipEntity, int trackIndex, ImVec2
     ImVec2 clipMin = ImVec2(clipX, trackY + CLIP_PADDING);
     ImVec2 clipMax = ImVec2(clipX + clipWidth, trackY + TRACK_HEIGHT - CLIP_PADDING);
 
-    // Choose clip color based on selection (check both local and Timeline state)
-    bool isSelected = (clipEntity == m_selectedClip) || (clipEntity == m_timeline->getSelectedClip());
-    ImU32 clipColor = isSelected
-        ? IM_COL32(100, 150, 255, 255)
-        : IM_COL32(80, 120, 180, 255);
+    // Choose clip color based on selection. Phase 12: membership comes from
+    // the Timeline multi-select set; the PRIMARY (last-clicked) clip gets a
+    // brighter fill + accent border so the group's anchor is glanceable.
+    const bool isSelected = m_timeline->isSelected(clipEntity);
+    const bool isPrimary  = (clipEntity == m_timeline->getSelectedClip());
+    ImU32 clipColor = isPrimary
+        ? IM_COL32(130, 175, 255, 255)
+        : (isSelected ? IM_COL32(100, 150, 255, 255)
+                      : IM_COL32(80, 120, 180, 255));
 
     // Draw clip rectangle
     drawList->AddRectFilled(clipMin, clipMax, clipColor, 3.0f);
-    drawList->AddRect(clipMin, clipMax, IM_COL32(120, 160, 220, 255), 3.0f, 0, 2.0f);
+    const ImU32 borderCol = isPrimary  ? IM_COL32(210, 230, 255, 255)
+                          : isSelected ? IM_COL32(150, 190, 245, 255)
+                                       : IM_COL32(120, 160, 220, 255);
+    drawList->AddRect(clipMin, clipMax, borderCol, 3.0f, 0, 2.0f);
 
     // Phase C — Locked clips get a muted-red outline so the section-behavior
     // policy is glanceable on the timeline. Drawn over the default border so
@@ -1343,7 +1369,7 @@ void TimelineWidget::renderPlayhead() {
     }
 }
 
-void TimelineWidget::renderTrackHeaderPanel(float panelHeight, float verticalScroll) {
+void TimelineWidget::renderTrackHeaderPanel(float panelHeight) {
     if (!m_timeline) return;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -1354,13 +1380,12 @@ void TimelineWidget::renderTrackHeaderPanel(float panelHeight, float verticalScr
     ImVec2 panelMax(windowPos.x + TRACK_HEADER_WIDTH - 4, windowPos.y + panelHeight + 100);
     drawList->AddRectFilled(panelMin, panelMax, IM_COL32(40, 42, 48, 255));
 
-    const auto& tracks = m_timeline->getTracks();
-
-    float currentY = windowPos.y;
-
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        float trackHeight = renderTrackHeaderRow(tracks[i], static_cast<int>(i), currentY);
-        currentY += trackHeight;
+    // Iterate the per-frame row cache so the header panel stays pixel-locked to
+    // the lanes (same visible set, same heights) and shy tracks are skipped.
+    // Each header row is positioned at the row's content-space Y relative to
+    // the header inner child's origin (windowPos).
+    for (const auto& row : m_trackRows) {
+        renderTrackHeaderRow(row.track, row.modelIndex, windowPos.y + row.y);
     }
 }
 
@@ -1412,18 +1437,156 @@ float TimelineWidget::renderTrackHeaderRow(entt::entity trackEntity, int trackIn
         drawList->AddTriangleFilled(triPoints[0], triPoints[1], triPoints[2], IM_COL32(180, 180, 180, 255));
     }
 
-    // Track name
-    std::ostringstream trackName;
-    trackName << "Track " << (trackIndex + 1);
-    drawList->AddText(ImVec2(headerX + 26, rowY + TRACK_HEIGHT / 2 - 7),
-                      IM_COL32(220, 220, 220, 255), trackName.str().c_str());
+    // Track name — use TrackUiState.name when set, fall back to "Track N".
+    const auto* trackUiState = registry.try_get<TrackUiState>(trackEntity);
+    std::string displayName;
+    if (trackUiState && !trackUiState->name.empty()) {
+        displayName = trackUiState->name;
+    } else {
+        displayName = "Track " + std::to_string(trackIndex + 1);
+    }
 
-    // Clip count badge
+    // Name hit rect (used for double-click detection and InputText overlay).
+    // Right side of the header row is laid out as three non-overlapping cells
+    // (Phase 9): name rect | clip-count badge | shy glyph. The name rect ends
+    // before the badge; the badge sits left of the glyph; the glyph owns the
+    // far-right ~20px. Keep these three bounds in sync if you move any of them.
+    constexpr float kShyGlyphCellW = 22.0f;  // far-right cell for the shy "S" glyph
+    constexpr float kBadgeCellW    = 34.0f;  // clip-count badge cell, left of the glyph
+    float nameX = headerX + 26;
+    float nameY = rowY + TRACK_HEIGHT / 2.0f - 7.0f;
+    ImVec2 nameMin(nameX, rowY + 2);
+    ImVec2 nameMax(headerX + TRACK_HEADER_WIDTH - kShyGlyphCellW - kBadgeCellW,
+                   rowY + TRACK_HEIGHT - 2);
+
+    if (m_renamingTrackIndex == trackIndex) {
+        // Stale-index guard: if the track count changed since the rename opened
+        // (insert/delete while overlay is up), cancel silently — the positional
+        // index no longer maps to the intended track.
+        if (m_timeline->getTrackCount() != m_renameTrackCount) {
+            m_renamingTrackIndex = -1;
+            m_renameFocusPending = false;
+            m_renameWasActive    = false;
+        }
+    }
+
+    if (m_renamingTrackIndex == trackIndex) {
+        // Inline rename overlay. Focus/commit protocol mirrors MathInput.cpp's
+        // justEntered/wasActive shape to avoid the first-frame false-commit:
+        //
+        //   Frame 0 (entry): m_renameFocusPending==true
+        //     → call SetKeyboardFocusHere() before InputText (queues focus)
+        //     → clear m_renameFocusPending; set m_renameWasActive=false
+        //     → SKIP commit/cancel check — the widget hasn't been active yet
+        //       so IsItemActive()==false would fire an instant spurious commit
+        //
+        //   Frame 1+: m_renameFocusPending==false, widget has been activated
+        //     → track m_renameWasActive via IsItemActive()
+        //     → commit on EnterReturnsTrue or IsItemDeactivatedAfterEdit()
+        //       (IsItemDeactivatedAfterEdit requires prior activation, so it
+        //       won't fire on a widget that was never focused)
+        //     → Esc cancels without enqueueing a command
+        ImGui::SetCursorScreenPos(nameMin);
+        ImGui::SetNextItemWidth(nameMax.x - nameMin.x);
+        char inputId[32];
+        std::snprintf(inputId, sizeof(inputId), "##trackRename%d", trackIndex);
+
+        const bool focusPendingThisFrame = m_renameFocusPending;
+        if (focusPendingThisFrame) {
+            ImGui::SetKeyboardFocusHere();
+            m_renameFocusPending = false;
+            m_renameWasActive    = false;
+        }
+
+        bool enterPressed = ImGui::InputText(inputId, m_renameTrackBuf,
+                                             sizeof(m_renameTrackBuf),
+                                             ImGuiInputTextFlags_EnterReturnsTrue |
+                                             ImGuiInputTextFlags_AutoSelectAll);
+        const bool isActive         = ImGui::IsItemActive();
+        const bool deactAfterEdit   = ImGui::IsItemDeactivatedAfterEdit();
+
+        if (!focusPendingThisFrame) {
+            // Update wasActive state so focus-loss detection is reliable.
+            if (isActive) m_renameWasActive = true;
+
+            // Esc cancels — check before commit so they don't both fire.
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                m_renamingTrackIndex = -1;
+                m_renameWasActive    = false;
+            } else if (enterPressed || (m_renameWasActive && deactAfterEdit)) {
+                // Enter pressed, or focus lost after the widget was active.
+                if (m_commandDispatcher) {
+                    std::string newName(m_renameTrackBuf);
+                    m_commandDispatcher->enqueue(
+                        std::make_unique<RenameTrackCommand>(trackIndex,
+                                                            std::move(newName)));
+                }
+                m_renamingTrackIndex = -1;
+                m_renameWasActive    = false;
+            }
+        }
+    } else {
+        // Normal display: draw name text, handle double-click to enter rename.
+        drawList->AddText(ImVec2(nameX, nameY),
+                          IM_COL32(220, 220, 220, 255), displayName.c_str());
+
+        // Invisible button over the name rect to catch double-click.
+        ImGui::SetCursorScreenPos(nameMin);
+        std::string btnId = "##trackNameBtn" + std::to_string(trackIndex);
+        ImGui::InvisibleButton(btnId.c_str(),
+                               ImVec2(nameMax.x - nameMin.x, nameMax.y - nameMin.y));
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+            m_renamingTrackIndex = trackIndex;
+            m_renameFocusPending = true;
+            m_renameWasActive    = false;
+            m_renameTrackCount   = m_timeline->getTrackCount();
+            std::strncpy(m_renameTrackBuf,
+                         (trackUiState ? trackUiState->name.c_str() : ""),
+                         sizeof(m_renameTrackBuf) - 1);
+            m_renameTrackBuf[sizeof(m_renameTrackBuf) - 1] = '\0';
+        }
+    }
+
+    // Clip count badge — in its own cell, left of the shy-glyph cell.
     if (hasClips) {
         std::ostringstream clipCount;
         clipCount << "(" << track->layers.size() << ")";
-        drawList->AddText(ImVec2(headerX + TRACK_HEADER_WIDTH - 50, rowY + TRACK_HEIGHT / 2 - 7),
+        const float badgeX = headerX + TRACK_HEADER_WIDTH - kShyGlyphCellW - kBadgeCellW + 2.0f;
+        drawList->AddText(ImVec2(badgeX, rowY + TRACK_HEIGHT / 2 - 7),
                           IM_COL32(120, 120, 120, 255), clipCount.str().c_str());
+    }
+
+    // Per-track shy toggle glyph (Phase 9). Small "S" badge at the far right of
+    // the header row: dim outline when not shy, filled accent when shy. Click
+    // toggles TrackUiState::shy (direct view-state write, not undoable). When
+    // the global hide toggle is on, flagging a track shy drops it from the row
+    // cache next frame; with global hide off, the badge just marks intent.
+    {
+        const auto* uiShy = registry.try_get<TrackUiState>(trackEntity);
+        const bool isShy = uiShy && uiShy->shy;
+        // Centered in the dedicated far-right glyph cell (no overlap with the
+        // clip-count badge or the name/rename rect, all of which end before it).
+        const float glyphCx = headerX + TRACK_HEADER_WIDTH - kShyGlyphCellW * 0.5f;
+        const float glyphCy = rowY + TRACK_HEIGHT / 2.0f;
+        const float glyphR  = 7.0f;
+        const ImU32 shyCol = isShy ? IM_COL32(230, 180, 90, 255)   // amber when shy
+                                   : IM_COL32(110, 110, 120, 255); // dim when not
+        drawList->AddCircle(ImVec2(glyphCx, glyphCy), glyphR, shyCol, 0, 1.5f);
+        if (isShy) {
+            drawList->AddCircleFilled(ImVec2(glyphCx, glyphCy), glyphR - 2.5f, shyCol);
+        }
+        const ImVec2 sSize = ImGui::CalcTextSize("S");
+        drawList->AddText(ImVec2(glyphCx - sSize.x * 0.5f, glyphCy - sSize.y * 0.5f),
+                          isShy ? IM_COL32(40, 40, 45, 255) : shyCol, "S");
+
+        if (ImGui::IsMouseClicked(0)) {
+            const ImVec2 mp = ImGui::GetMousePos();
+            const float dx = mp.x - glyphCx, dy = mp.y - glyphCy;
+            if (dx * dx + dy * dy <= (glyphR + 2.0f) * (glyphR + 2.0f)) {
+                auto& uiState = registry.get_or_emplace<TrackUiState>(trackEntity);
+                uiState.shy = !uiState.shy;
+            }
+        }
     }
 
     // Handle click on twirl-down triangle
@@ -1488,6 +1651,7 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
         constexpr float kDepthIndent = 12.0f;  // px per depth level
 
         auto* animProps = registry.try_get<AnimatedProperties>(clipEntity);
+        const bool isOA = registry.all_of<ObjectAnimationLayer>(clipEntity);
         const FrameNumber currentFrame = m_timeline->getCurrentFrame();
         const FrameNumber localFrame = currentFrame - layerStart;
 
@@ -1561,9 +1725,46 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                     hasKeyframes = true;
                     atKeyframe = track->getKeyframeAt(localFrame) != nullptr;
                     kfSnapshot = track->keyframes;
-                }
-                if (animProps) {
+                    // Keyframed: evaluated value is the interpolated result.
                     currentValue = animProps->evaluate(row.prop, localFrame);
+                } else if (isOA) {
+                    // OA with no keyframes yet: default (0 for pos/rot, 1 for
+                    // scale) mirrors renderOAValueRow:1450-1455.
+                    const bool isScale = (row.prop == AnimatableProperty::ScaleX ||
+                                          row.prop == AnimatableProperty::ScaleY ||
+                                          row.prop == AnimatableProperty::ScaleZ);
+                    currentValue = isScale ? 1.0f : 0.0f;
+                } else {
+                    // Non-OA, non-keyframed: read the live component so the
+                    // DragFloat shows and scrubs the actual current value.
+                    // Mirrors PropertyWindow.cpp:310-312 / 330-334 / 395-396 / 457.
+                    const auto* transform = registry.try_get<Transform>(clipEntity);
+                    const auto* ml        = registry.try_get<MediaLayer>(clipEntity);
+                    switch (row.prop) {
+                        case AnimatableProperty::PositionX:
+                            if (transform) currentValue = transform->position.x; break;
+                        case AnimatableProperty::PositionY:
+                            if (transform) currentValue = transform->position.y; break;
+                        case AnimatableProperty::PositionZ:
+                            if (transform) currentValue = transform->position.z; break;
+                        case AnimatableProperty::Rotation:
+                            if (transform) currentValue = transform->rotation.z; break;
+                        case AnimatableProperty::RotationX:
+                            if (transform) currentValue = transform->rotation.x; break;
+                        case AnimatableProperty::RotationY:
+                            if (transform) currentValue = transform->rotation.y; break;
+                        case AnimatableProperty::RotationZ:
+                            if (transform) currentValue = transform->rotation.z; break;
+                        case AnimatableProperty::ScaleX:
+                            if (transform) currentValue = transform->scale.x; break;
+                        case AnimatableProperty::ScaleY:
+                            if (transform) currentValue = transform->scale.y; break;
+                        case AnimatableProperty::ScaleZ:
+                            if (transform) currentValue = transform->scale.z; break;
+                        case AnimatableProperty::Opacity:
+                            if (ml) currentValue = ml->opacity; break;
+                        default: break;
+                    }
                 }
             } else { // EffectParam
                 if (registry.valid(row.effectEntity)) {
@@ -1671,19 +1872,321 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             };
             drawList->AddTriangleFilled(rightArrow[0], rightArrow[1], rightArrow[2], arrowColor);
 
-            // === CURRENT VALUE ===
-            char valueStr[32];
-            if (row.source == TimelinePropertyDef::Source::Transform &&
-                row.prop == AnimatableProperty::Opacity) {
-                snprintf(valueStr, sizeof(valueStr), "%.0f%%", currentValue * 100.0f);
-            } else if (row.source == TimelinePropertyDef::Source::Transform &&
-                       row.prop == AnimatableProperty::Rotation) {
-                snprintf(valueStr, sizeof(valueStr), "%.1f", currentValue);
-            } else {
-                snprintf(valueStr, sizeof(valueStr), "%.2f", currentValue);
+            // === CURRENT VALUE (editable DragFloat) ===
+            // Placed at the right of the keyframe controls (arrows+diamond
+            // end at controlsX+35; value rect starts at controlsX+38).
+            // Unique ImGui ID: PushID(entity uint32)+row index so rows on
+            // different entities don't share widget state.
+            //
+            // Commit semantics mirror PropertyWindow.cpp ~404-450:
+            //   IsItemActivated -> capture pre-drag scalar + keyframe state
+            //   drag changes   -> live component write + keyframe upsert when animated
+            //   IsItemDeactivatedAfterEdit -> enqueue undoable command
+            //
+            // Opacity: displayed as 0-100 (stored 0-1); DragFloat works on a
+            // local scaled copy and rescales on write.
+            // Position / Scale: live-write-only (no scalar command — matches
+            // PropertyWindow's current shape for those two channels).
+            // Rotation: emits SetClipRotationCommand when unKeyframed,
+            //   UpsertKeyframeCommand when keyframed.
+
+            const float valX    = controlsX + 38.0f;
+            const float valW    = (propX + propWidth) - valX;
+
+            // Build per-row value in display space (opacity 0-100, others raw).
+            const bool isOpacity = (row.source == TimelinePropertyDef::Source::Transform &&
+                                    row.prop == AnimatableProperty::Opacity);
+            float dragVal = isOpacity ? currentValue * 100.0f : currentValue;
+
+            // DragFloat drag params per property.
+            float dragSpeed  = 0.5f;
+            float dragMin    = 0.0f;
+            float dragMax    = 0.0f;  // 0,0 = unclamped
+            const char* fmt  = "%.2f";
+            if (isOpacity) {
+                dragSpeed = 0.5f; dragMin = 0.0f; dragMax = 100.0f; fmt = "%.0f%%";
+            } else if (row.source == TimelinePropertyDef::Source::Transform) {
+                switch (row.prop) {
+                    case AnimatableProperty::Rotation:
+                    case AnimatableProperty::RotationX:
+                    case AnimatableProperty::RotationY:
+                    case AnimatableProperty::RotationZ:
+                        dragSpeed = 0.5f; fmt = "%.1f"; break;
+                    case AnimatableProperty::ScaleX:
+                    case AnimatableProperty::ScaleY:
+                    case AnimatableProperty::ScaleZ:
+                        dragSpeed = 0.01f; dragMin = 0.01f; fmt = "%.3f"; break;
+                    default:  // PositionX/Y/Z
+                        dragSpeed = 1.0f; fmt = "%.1f"; break;
+                }
+            } else {  // EffectParam
+                dragSpeed = 0.01f; fmt = "%.3f";
             }
-            drawList->AddText(ImVec2(controlsX + 38, propY + 2),
-                              IM_COL32(200, 200, 200, 255), valueStr);
+
+            ImGui::PushID(static_cast<int>(static_cast<uint32_t>(clipEntity)));
+            ImGui::PushID(static_cast<int>(&row - rows.data()));
+            ImGui::SetCursorScreenPos(ImVec2(valX, propY + 1));
+            ImGui::SetNextItemWidth(valW);
+            const bool dragChanged = ImGui::DragFloat("##propVal", &dragVal,
+                                                      dragSpeed, dragMin, dragMax, fmt);
+
+            // --- IsItemActivated: capture pre-drag state ---
+            if (ImGui::IsItemActivated()) {
+                m_twirldownPreEdit.entity       = clipEntity;
+                m_twirldownPreEdit.isEffect     = (row.source == TimelinePropertyDef::Source::EffectParam);
+                m_twirldownPreEdit.propKey      = m_twirldownPreEdit.isEffect
+                    ? static_cast<int>(row.paramHash)
+                    : static_cast<int>(row.prop);
+                m_twirldownPreEdit.scalarValue  = currentValue;
+                m_twirldownPreEdit.wasKeyframed = false;
+                m_twirldownPreEdit.keyframeValue.reset();
+                if (isOA && row.source == TimelinePropertyDef::Source::Transform) {
+                    // OA: every edit is a keyframe upsert regardless of whether
+                    // a keyframe already exists at this frame. Capture the frame
+                    // and the existing kf value (nullopt when none), so undo can
+                    // remove a freshly-created keyframe. Mirrors renderOAValueRow
+                    // (PropertyWindow.cpp:1469-1478).
+                    m_twirldownPreEdit.wasKeyframed  = true;
+                    m_twirldownPreEdit.keyframeFrame = localFrame;
+                    if (animProps) {
+                        const KeyframeTrack* kfTrack = animProps->getTrack(row.prop);
+                        if (kfTrack) {
+                            const Keyframe* existing = kfTrack->getKeyframeAt(localFrame);
+                            m_twirldownPreEdit.keyframeValue =
+                                existing ? std::optional<float>(existing->value) : std::nullopt;
+                        }
+                        // else: nullopt already set — no kf existed, undo removes it
+                    }
+                } else if (hasKeyframes && localFrame >= 0) {
+                    m_twirldownPreEdit.wasKeyframed    = true;
+                    m_twirldownPreEdit.keyframeFrame   = localFrame;
+                    if (row.source == TimelinePropertyDef::Source::Transform && animProps) {
+                        const KeyframeTrack* kfTrack = animProps->getTrack(row.prop);
+                        if (kfTrack) {
+                            const Keyframe* existing = kfTrack->getKeyframeAt(localFrame);
+                            m_twirldownPreEdit.keyframeValue =
+                                existing ? std::optional<float>(existing->value) : std::nullopt;
+                        }
+                    } else if (row.source == TimelinePropertyDef::Source::EffectParam &&
+                               registry.valid(row.effectEntity)) {
+                        if (const auto* eap =
+                                registry.try_get<EffectAnimatedParameters>(row.effectEntity))
+                        {
+                            for (const auto& nt : eap->tracks) {
+                                if (nt.paramKeyHash == row.paramHash) {
+                                    const Keyframe* existing = nullptr;
+                                    for (const auto& kf : nt.keyframes)
+                                        if (kf.frame == localFrame) { existing = &kf; break; }
+                                    m_twirldownPreEdit.keyframeValue =
+                                        existing ? std::optional<float>(existing->value)
+                                                 : std::nullopt;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Live change: write component + upsert keyframe when animated ---
+            if (dragChanged) {
+                const float writtenVal = isOpacity ? dragVal / 100.0f : dragVal;
+                if (row.source == TimelinePropertyDef::Source::Transform) {
+                    if (isOA) {
+                        // OA layers drive a target via keyframes only (ADR-0020);
+                        // they have no own Transform to write. Always upsert a
+                        // keyframe at the current layer-local frame, mirroring
+                        // renderOAValueRow (PropertyWindow.cpp:1481-1487).
+                        auto& animPropsMut =
+                            registry.get_or_emplace<AnimatedProperties>(clipEntity);
+                        KeyframeTrack& mutableTrack =
+                            animPropsMut.getOrCreateTrack(row.prop);
+                        mutableTrack.addKeyframe(localFrame, writtenVal);
+                    } else {
+                        auto* transform = registry.try_get<Transform>(clipEntity);
+                        auto* ml        = registry.try_get<MediaLayer>(clipEntity);
+                        switch (row.prop) {
+                            case AnimatableProperty::PositionX:
+                                if (transform) transform->setPosition(
+                                    glm::vec3(writtenVal, transform->position.y, transform->position.z));
+                                break;
+                            case AnimatableProperty::PositionY:
+                                if (transform) transform->setPosition(
+                                    glm::vec3(transform->position.x, writtenVal, transform->position.z));
+                                break;
+                            case AnimatableProperty::PositionZ:
+                                if (transform) transform->setPosition(
+                                    glm::vec3(transform->position.x, transform->position.y, writtenVal));
+                                break;
+                            case AnimatableProperty::Rotation:
+                                if (transform) transform->setRotation(
+                                    glm::vec3(transform->rotation.x, transform->rotation.y, writtenVal));
+                                break;
+                            case AnimatableProperty::RotationX:
+                                if (transform) transform->setRotation(
+                                    glm::vec3(writtenVal, transform->rotation.y, transform->rotation.z));
+                                break;
+                            case AnimatableProperty::RotationY:
+                                if (transform) transform->setRotation(
+                                    glm::vec3(transform->rotation.x, writtenVal, transform->rotation.z));
+                                break;
+                            case AnimatableProperty::RotationZ:
+                                if (transform) transform->setRotation(
+                                    glm::vec3(transform->rotation.x, transform->rotation.y, writtenVal));
+                                break;
+                            case AnimatableProperty::ScaleX:
+                                if (transform) transform->setScale(
+                                    glm::vec3(writtenVal, transform->scale.y, transform->scale.z));
+                                break;
+                            case AnimatableProperty::ScaleY:
+                                if (transform) transform->setScale(
+                                    glm::vec3(transform->scale.x, writtenVal, transform->scale.z));
+                                break;
+                            case AnimatableProperty::ScaleZ:
+                                if (transform) transform->setScale(
+                                    glm::vec3(transform->scale.x, transform->scale.y, writtenVal));
+                                break;
+                            case AnimatableProperty::Opacity:
+                                if (ml) ml->opacity = writtenVal;
+                                break;
+                            default: break;
+                        }
+                        // Keyframe upsert during drag (animated non-OA channels).
+                        if (hasKeyframes && localFrame >= 0 && animProps) {
+                            animProps->addKeyframe(row.prop, localFrame, writtenVal,
+                                                   InterpolationType::Linear);
+                        }
+                    }
+                } else { // EffectParam
+                    // Live-write the static slot while dragging.
+                    if (registry.valid(row.effectEntity) && m_effectKindRegistry) {
+                        auto* fx = registry.try_get<Effect>(row.effectEntity);
+                        auto* ep = registry.try_get<EffectParameters>(row.effectEntity);
+                        if (fx && ep) {
+                            const effects::EffectKind* kind =
+                                m_effectKindRegistry->find(fx->kindId);
+                            if (kind) {
+                                for (std::size_t pi = 0; pi < kind->params.size(); ++pi) {
+                                    if (effects::fnv1a32(kind->params[pi].name) == row.paramHash
+                                        && pi < ep->values.size()
+                                        && ep->values[pi].type == ParamValue::Type::Float)
+                                    {
+                                        ep->values[pi].f4[0] = writtenVal;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Keyframe upsert during drag (animated effect params).
+                    if (hasKeyframes && localFrame >= 0 &&
+                        registry.valid(row.effectEntity))
+                    {
+                        if (auto* eap =
+                                registry.try_get<EffectAnimatedParameters>(row.effectEntity))
+                        {
+                            for (auto& nt : eap->tracks) {
+                                if (nt.paramKeyHash == row.paramHash) {
+                                    bool found = false;
+                                    for (auto& kf : nt.keyframes) {
+                                        if (kf.frame == localFrame) {
+                                            kf.value = writtenVal; found = true; break;
+                                        }
+                                    }
+                                    if (!found) {
+                                        Keyframe kf;
+                                        kf.frame = localFrame;
+                                        kf.value = writtenVal;
+                                        kf.interpolation = InterpolationType::Linear;
+                                        nt.keyframes.push_back(kf);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- IsItemDeactivatedAfterEdit: enqueue undoable command ---
+            if (ImGui::IsItemDeactivatedAfterEdit() && m_commandDispatcher &&
+                m_twirldownPreEdit.entity == clipEntity)
+            {
+                const float committedVal = isOpacity ? dragVal / 100.0f : dragVal;
+                auto idx = renderFindClipIndices(m_timeline, clipEntity);
+
+                if (row.source == TimelinePropertyDef::Source::Transform) {
+                    if (isOA) {
+                        // OA: always commit as UpsertKeyframeCommand — there is no
+                        // static value, every edit is a keyframe write. Mirrors
+                        // renderOAValueRow (PropertyWindow.cpp:1493-1500). The
+                        // nullopt keyframeValue signals undo to remove the kf that
+                        // the drag created (rather than restoring a bogus prior value).
+                        if (idx) {
+                            auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                                idx->first, idx->second, row.prop,
+                                m_twirldownPreEdit.keyframeFrame, committedVal);
+                            cmd->setPreviousValue(m_twirldownPreEdit.keyframeValue);
+                            m_commandDispatcher->enqueue(std::move(cmd));
+                        }
+                    } else if (m_twirldownPreEdit.wasKeyframed && idx) {
+                        auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                            idx->first, idx->second, row.prop,
+                            m_twirldownPreEdit.keyframeFrame, committedVal);
+                        cmd->setPreviousValue(m_twirldownPreEdit.keyframeValue);
+                        m_commandDispatcher->enqueue(std::move(cmd));
+                    } else if (idx) {
+                        // Scalar commands only exist for Opacity and Rotation.
+                        // Position/Scale use live-write-only (matches PropertyWindow).
+                        switch (row.prop) {
+                            case AnimatableProperty::Opacity: {
+                                auto cmd = std::make_unique<SetClipOpacityCommand>(
+                                    idx->first, idx->second, committedVal);
+                                cmd->setPreviousOpacity(m_twirldownPreEdit.scalarValue);
+                                m_commandDispatcher->enqueue(std::move(cmd));
+                                break;
+                            }
+                            case AnimatableProperty::Rotation: {
+                                auto* transform = registry.try_get<Transform>(clipEntity);
+                                if (transform) {
+                                    auto cmd = std::make_unique<SetClipRotationCommand>(
+                                        idx->first, idx->second,
+                                        transform->rotation.x,
+                                        transform->rotation.y,
+                                        transform->rotation.z);
+                                    cmd->setPreviousRotation(
+                                        transform->rotation.x,
+                                        transform->rotation.y,
+                                        m_twirldownPreEdit.scalarValue);
+                                    m_commandDispatcher->enqueue(std::move(cmd));
+                                }
+                                break;
+                            }
+                            default:
+                                // PositionX/Y/Z, ScaleX/Y/Z:
+                                // live-write-only (no scalar command exists, matches PropertyWindow).
+                                break;
+                        }
+                    }
+                } else { // EffectParam
+                    if (m_twirldownPreEdit.wasKeyframed && registry.valid(row.effectEntity)) {
+                        auto cmd = std::make_unique<UpsertEffectKeyframeCommand>(
+                            row.effectEntity, row.paramName,
+                            m_twirldownPreEdit.keyframeFrame, committedVal);
+                        cmd->setPreviousValue(m_twirldownPreEdit.keyframeValue);
+                        m_commandDispatcher->enqueue(std::move(cmd));
+                    } else if (registry.valid(row.effectEntity)) {
+                        auto cmd = std::make_unique<SetEffectFloatParamCommand>(
+                            row.effectEntity, row.paramName, committedVal);
+                        cmd->setPreviousValue(m_twirldownPreEdit.scalarValue);
+                        m_commandDispatcher->enqueue(std::move(cmd));
+                    }
+                }
+                m_twirldownPreEdit.entity = entt::null;
+            }
+
+            ImGui::PopID();
+            ImGui::PopID();
 
             // === HANDLE CLICKS ===
             if (ImGui::IsMouseClicked(0)) {
@@ -1883,15 +2386,26 @@ void TimelineWidget::renderCueModal() {
                 }
                 m_commandDispatcher->enqueue(std::move(cmd));
             } else {
+                // "Add Section + Cue": emit section break first so undo pops
+                // cue first then section (most intuitive order).
+                if (m_cueModalAlsoAddSection) {
+                    const std::size_t sectionCount =
+                        m_timeline ? m_timeline->getSections().size() : 0;
+                    const uint32_t color = sectionPalette::pickColor(sectionCount + 1);
+                    m_commandDispatcher->enqueue(std::make_unique<AddSectionBreakCommand>(
+                        m_cueModalFrame, color, 0.0));
+                }
                 m_commandDispatcher->enqueue(std::make_unique<AddCueAtCommand>(
                     m_cueModalNumber, m_cueModalFrame, std::string(m_cueModalLabelBuf)));
             }
         }
+        m_cueModalAlsoAddSection = false;
         m_cueModalMode = CueModalMode::None;
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        m_cueModalAlsoAddSection = false;
         m_cueModalMode = CueModalMode::None;
         ImGui::CloseCurrentPopup();
     }
@@ -1973,6 +2487,65 @@ void TimelineWidget::renderSectionBreakModal() {
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0))) {
         m_sectionBreakModalMode = SectionBreakModalMode::None;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ============================================================================
+// Ripple time modal — "Insert Time Here..." / "Delete Time Here..."
+// ============================================================================
+
+void TimelineWidget::renderRippleTimeModal() {
+    if (!m_timeline) return;
+    if (!ImGui::BeginPopupModal("RippleTimeModal", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    const bool isInsert = (m_rippleTimeModalMode == RippleTimeModalMode::Insert);
+    ImGui::Text(isInsert ? "Insert Time Here" : "Delete Time Here");
+    ImGui::Separator();
+
+    // Anchor frame — where the operation begins.
+    long long frameLL = static_cast<long long>(m_rippleTimeModalFrame);
+    if (entity::ui::InputScalar("Frame", ImGuiDataType_S64, &frameLL)) {
+        if (frameLL < 0) frameLL = 0;
+        m_rippleTimeModalFrame = static_cast<FrameNumber>(frameLL);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(isInsert
+            ? "Timeline frame at which time is inserted."
+            : "First frame of the time span to delete.");
+    }
+
+    // Duration field.
+    long long durLL = static_cast<long long>(m_rippleTimeModalDuration);
+    if (entity::ui::InputScalar("Duration (frames)", ImGuiDataType_S64, &durLL)) {
+        if (durLL < 1) durLL = 1;
+        m_rippleTimeModalDuration = static_cast<FrameNumber>(durLL);
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::Button("OK", ImVec2(120, 0))) {
+        if (m_commandDispatcher && m_rippleTimeModalDuration > 0) {
+            if (isInsert) {
+                m_commandDispatcher->enqueue(std::make_unique<RippleInsertTimeCommand>(
+                    m_rippleTimeModalFrame, m_rippleTimeModalDuration));
+            } else {
+                const FrameNumber rangeEnd =
+                    m_rippleTimeModalFrame + m_rippleTimeModalDuration;
+                m_commandDispatcher->enqueue(std::make_unique<RippleDeleteTimeCommand>(
+                    m_rippleTimeModalFrame, rangeEnd));
+            }
+        }
+        m_rippleTimeModalMode = RippleTimeModalMode::None;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        m_rippleTimeModalMode = RippleTimeModalMode::None;
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

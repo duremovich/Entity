@@ -26,6 +26,7 @@
 #include "entity/components/RemotePatch.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/LayerTrackUiState.hpp"
+#include "entity/components/TrackUiState.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/MediaLayer.hpp"
@@ -374,6 +375,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         project["timeline"]["duration"] = timeline.getDuration();
         project["timeline"]["framerate"] = timeline.getFrameRate();
         project["timeline"]["currentTime"] = timeline.getCurrentTime();
+        // v28: global "hide shy tracks" editor view-state (Phase 9). Additive —
+        // legacy files lack the key and load as false.
+        project["timeline"]["hideShyTracks"] = timeline.getHideShyTracks();
 
         // Tracks
         json tracksJson = json::array();
@@ -385,6 +389,13 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
 
             json trackJson;
             trackJson["index"] = track->trackIndex;
+
+            // v28: per-track name and shy fields (TrackUiState).
+            // Missing on load = empty name ("Track N" fallback) + shy=false.
+            if (const auto* ui = registry.try_get<TrackUiState>(trackEntity)) {
+                trackJson["name"] = ui->name;
+                trackJson["shy"]  = ui->shy;
+            }
 
             // Layers in this track (v15: unified "layers[]" replacing "clips[]").
             // Each entry has a "kind" discriminator: "clip" or "object_animation".
@@ -786,6 +797,24 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             // v23 — project-level audio master state.
             project["audioMasterGain"] = projectMgr->getAudioMasterGain();
             project["audioMasterMute"] = projectMgr->getAudioMasterMute();
+
+            // v28 (additive) — editor layout embed (item 3). Opaque JSON blob
+            // built by Engine from WindowManager (imguiIni + hiddenWindows +
+            // layoutLocked + focusedTabs). Parse + embed as a structured
+            // sub-object so the file is human-inspectable; omit the key
+            // entirely when empty (headless saves / no layout captured) so
+            // legacy readers and headless round-trips are unaffected.
+            {
+                const std::string layoutBlob = projectMgr->getEditorLayoutJson();
+                if (!layoutBlob.empty()) {
+                    try {
+                        project["editorLayout"] = json::parse(layoutBlob);
+                    } catch (const json::parse_error& e) {
+                        std::cerr << "[ProjectSerializer] editorLayout blob is not "
+                                     "valid JSON; skipping embed: " << e.what() << std::endl;
+                    }
+                }
+            }
 
             // v18 — object library (parallel of mediaLibrary for 3D models).
             // Same pathKind + size-validity convention; no transcode /
@@ -1554,6 +1583,8 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             if (timelineJson.contains("currentTime")) {
                 timeline.seek(timelineJson["currentTime"].get<Timecode>());
             }
+            // v28: global hide-shy toggle (Phase 9). Missing = false (legacy).
+            timeline.setHideShyTracks(timelineJson.value("hideShyTracks", false));
         }
 
         // Media library (v4+). Populated before clips so the per-clip
@@ -1666,6 +1697,16 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
             if (project.contains("audioMasterMute") && project["audioMasterMute"].is_boolean()) {
                 projectMgr->setAudioMasterMute(project["audioMasterMute"].get<bool>());
             }
+
+            // v28 (additive) — editor layout embed. Store the sub-object back
+            // as an opaque blob string for Engine to apply to WindowManager. Missing
+            // on legacy files -> clear so a stale layout from a previously
+            // loaded project doesn't bleed into this one.
+            if (project.contains("editorLayout") && project["editorLayout"].is_object()) {
+                projectMgr->setEditorLayoutJson(project["editorLayout"].dump());
+            } else {
+                projectMgr->setEditorLayoutJson("");
+            }
         }
 
         // Load tracks
@@ -1676,6 +1717,16 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                 entt::entity trackEntity = timeline.createTrack(trackName);
                 auto* track = registry.try_get<TimelineTrack>(trackEntity);
                 if (!track) continue;
+
+                // v28: restore TrackUiState (name + shy). Legacy files won't
+                // have these keys — absence means name="" (falls back to
+                // "Track N" in the renderer) and shy=false.
+                if (trackJson.contains("name") || trackJson.contains("shy")) {
+                    TrackUiState uiState;
+                    uiState.name = trackJson.value("name", std::string{});
+                    uiState.shy  = trackJson.value("shy", false);
+                    registry.emplace_or_replace<TrackUiState>(trackEntity, std::move(uiState));
+                }
 
                 // Accept "layers" (v15) or "clips" (legacy v14). When reading
                 // legacy "clips", every entry is treated as kind="clip".
