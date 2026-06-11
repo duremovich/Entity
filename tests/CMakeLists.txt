@@ -549,6 +549,21 @@ set_tests_properties(integration_seek_sync_frame_zero PROPERTIES
     TIMEOUT 30
 )
 
+# Paused-seek audio preroll: seeking while paused must steer/preroll the audio
+# worker at the parked frame (decoupled from transport state), so a later Play
+# does not stall on a cold audio seek + preroll under the seek-sync gate.
+# Requires tests/fixtures/audio/tone_1khz.mov.
+add_test(
+    NAME integration_audio_paused_seek_preroll
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/audio_paused_seek_preroll.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_audio_paused_seek_preroll PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # ADR-0028 loopback OSC remote-layer test: patches a Muncher layer, drives
 # opacity via UDP while the editor runs headless, and asserts the
 # RemoteControlStore overlay applies the correct opacity at two points

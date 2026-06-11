@@ -142,11 +142,16 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         worker->playbackMode = clip.playbackMode;
 
         // Determine whether this clip should be steering its worker.
-        // A clip steers (seeks/prerolls) whenever the transport is Playing and
-        // the playhead is inside the clip window, OR while the clip is in
-        // section-break continuation. This is independent of the seek-sync gate
-        // so the worker seeks and prerolls its ring even while the gate holds
-        // the timeline still.
+        // A clip steers (seeks/prerolls) whenever the playhead is inside the
+        // clip window — playing OR paused — OR while the clip is in
+        // section-break continuation. Steering is decoupled from transport
+        // state so the worker repositions and prerolls its ring at the parked
+        // playhead while paused, exactly as the video DecodeSystem does. That
+        // way a seek-then-Play does not stall on a cold audio seek + preroll
+        // under the seek-sync gate (the user-visible "several-second pause").
+        // Audible *output* stays gated on `playing` below (mixSource.active).
+        // This is independent of the seek-sync gate so the worker seeks and
+        // prerolls its ring even while the gate holds the timeline still.
         const bool playing =
             (m_timeline->getPlaybackState() == PlaybackState::Playing);
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
@@ -187,15 +192,20 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
             if (phase && phase->inContinuation)
                 inContinuation = true;
         }
-        const bool shouldSteer = (inWindow && playing) || inContinuation;
+        // Steering: position/preroll the worker whenever the playhead is in
+        // the clip window (playing OR paused) or in continuation.
+        const bool shouldSteer = inWindow || inContinuation;
 
-        // mixSource.active gates the mixer: the clip is audible only when it
-        // should be steering AND the seek-sync gate is not holding the timeline.
-        // When the gate is set (Phase 4 path), the worker still seeks/prerolls
-        // but the mixer outputs silence until SeekSyncController releases.
-        // Gate is always false in this phase, so behaviour is unchanged.
+        // mixSource.active gates the mixer: the clip is *audible* only when it
+        // would be playing audio (in-window AND transport Playing, or in
+        // continuation) AND the seek-sync gate is not holding the timeline.
+        // This stays gated on transport state exactly as before — steering
+        // above is now decoupled, but audible output is not: no sound while
+        // paused. When the gate is set, the worker still seeks/prerolls but
+        // the mixer outputs silence until SeekSyncController releases.
+        const bool shouldOutput = (inWindow && playing) || inContinuation;
         worker->mixSource.active.store(
-            shouldSteer && !m_timeline->isSeekSyncGated());
+            shouldOutput && !m_timeline->isSeekSyncGated());
 
         if (!shouldSteer) continue;
 

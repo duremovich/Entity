@@ -1,0 +1,66 @@
+{
+    "version": 1,
+    "description": "Paused-seek audio preroll (seek-then-Play stall fix): seek the playhead well inside an audio clip WITHOUT pressing Play, wait for the audio worker to steer/preroll at the parked frame, then assert the worker's seek target reached the parked frame. On current HEAD the audio worker only steers while Playing, so it never repositions while paused and this assert FAILS. With the fix (steering decoupled from transport state, audible output still gated on Playing) it PASSES. Then Play and confirm the seek-sync gate does not hold ~3 s: playback is Playing and the playhead has advanced past the parked frame within ~0.5 s. Requires tests/fixtures/audio/tone_1khz.mov (scripts/perf/setup-audio-fixtures.ps1). Uses WaitSeconds not WaitFrames (headless runs at thousands of fps; wall-clock-anchored state needs WaitSeconds).",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "PausedSeekScreen",
+            "width": 320,
+            "height": 240
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "tests/fixtures/audio/tone_1khz.mov",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitFrames",
+            "count": 10
+        },
+        {
+            "type": "SetClipDuration",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "duration": 300
+        },
+        {
+            "type": "SeekToFrame",
+            "frame": 120
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 1.0
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Stopped"
+        },
+        {
+            "type": "AssertAudioWorkerSeekFrame",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "expected": 120,
+            "tolerance": 5
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.5
+        },
+        {
+            "type": "AssertPlaybackState",
+            "state": "Playing"
+        },
+        {
+            "type": "AssertPlayheadAtFrame",
+            "frame": 130,
+            "tolerance": 40
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}
