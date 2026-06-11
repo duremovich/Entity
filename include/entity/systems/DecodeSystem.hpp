@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <memory>
 #include <limits>
+#include <vector>
+#include <utility>
 
 namespace entity {
 
@@ -40,6 +42,11 @@ struct DecodeWorker {
 
     // Thread control
     std::atomic<bool>        running{false};
+    // Set as the decode thread's very last act (after all cleanup, every
+    // exit path). reapRetiredWorkers() waits on this before join() so a
+    // retired worker is reaped without blocking the editor tick on an
+    // in-flight decode. See retireWorker / reapRetiredWorkers.
+    std::atomic<bool>        finished{false};
     std::atomic<bool>        paused{false};
     std::atomic<bool>        seekPending{false};
     std::atomic<FrameNumber> seekTarget{0};
@@ -157,6 +164,17 @@ public:
 private:
     void createWorker(entt::entity entity, entt::registry& registry, FrameNumber initialFrame = 0);
     void destroyWorker(entt::entity entity);
+
+    // Retire-and-reap teardown (delete-freeze fix). retireWorker signals the
+    // worker to stop and moves it to m_retiredWorkers WITHOUT joining, so the
+    // editor tick never blocks on an in-flight decode (joining live cost 50+ ms
+    // per 4K ProRes clip — N serial joins on a group delete froze the UI).
+    // reapRetiredWorkers joins+erases each retired worker only once its thread
+    // has set `finished`, so each join returns immediately. Editor-thread only;
+    // no lock needed (m_workers / m_retiredWorkers are editor-thread-owned).
+    void retireWorker(entt::entity entity);
+    void reapRetiredWorkers();
+
     static void decodeThreadFunc(std::shared_ptr<DecodeWorker> worker);
 
     Timeline*                m_timeline{nullptr};
@@ -164,6 +182,11 @@ private:
     IDecodeBufferAllocator*  m_bufferAllocator{nullptr}; // non-owning
 
     std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> m_workers;
+
+    // Workers signaled to stop but not yet joined (retire-and-reap teardown).
+    // Drained by reapRetiredWorkers() once each thread has set `finished`, and
+    // unconditionally in shutdown(). Editor-thread only.
+    std::vector<std::pair<entt::entity, std::shared_ptr<DecodeWorker>>> m_retiredWorkers;
 
     // Captured in initialize() (called from editor thread on engine startup).
     // Used in update() to gate worker create/destroy: only the editor thread

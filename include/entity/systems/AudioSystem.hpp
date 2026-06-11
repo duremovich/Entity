@@ -5,6 +5,8 @@
 #include <memory>
 #include <thread>
 #include <unordered_map>
+#include <vector>
+#include <utility>
 
 namespace entity {
 
@@ -71,6 +73,14 @@ private:
     void createWorker(entt::entity e, entt::registry& registry);
     void destroyWorker(entt::entity e);
 
+    // Retire-and-reap teardown (delete-freeze fix, mirrors DecodeSystem).
+    // retireWorker unregisters the mix source and signals the thread to stop
+    // WITHOUT joining, so a group delete doesn't serialize N thread-joins on
+    // the editor tick. reapRetiredWorkers joins+erases once the thread has
+    // set `finished`. Editor-thread only.
+    void retireWorker(entt::entity e);
+    void reapRetiredWorkers();
+
     Timeline*              m_timeline{nullptr};
     AudioEngine*           m_audioEngine{nullptr};
     PlaybackTimeAuthority* m_timeAuthority{nullptr};
@@ -80,6 +90,11 @@ private:
     // Per-entity last expected sample used by discontinuity-based seek detection.
     // Keyed same as m_workers; erased in destroyWorker.
     std::unordered_map<entt::entity, int64_t> m_lastExpectedSample;
+
+    // Workers signaled to stop + unregistered from the mixer but not yet
+    // joined (retire-and-reap teardown). Drained by reapRetiredWorkers() once
+    // each thread sets `finished`, and unconditionally in shutdown/dtor.
+    std::vector<std::pair<entt::entity, std::shared_ptr<AudioDecodeWorker>>> m_retiredWorkers;
 };
 
 } // namespace entity

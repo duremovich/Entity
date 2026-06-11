@@ -57,6 +57,16 @@ DecodeSystem::~DecodeSystem() {
         }
     }
     m_workers.clear();
+
+    // Drain retired-but-unreaped workers — their stop signal was already sent
+    // at retire time. A joinable std::thread left in the vector would call
+    // std::terminate on destruction, so join each unconditionally here.
+    for (auto& [entity, worker] : m_retiredWorkers) {
+        if (worker && worker->thread.joinable()) {
+            worker->thread.join();
+        }
+    }
+    m_retiredWorkers.clear();
 }
 
 void DecodeSystem::initialize(entt::registry& registry) {
@@ -85,6 +95,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // when the second join finds the OS handle already released.
     const bool isEditorTick =
         (std::this_thread::get_id() == m_editorThreadId);
+
+    // Reap workers retired on a prior editor tick whose threads have now
+    // exited (join returns immediately). Editor-only — m_retiredWorkers is
+    // editor-thread-owned, same as m_workers.
+    if (isEditorTick) reapRetiredWorkers();
 
     // Detect scrubbing end - when scrubbing stops, force seeks for all active clips
     bool currentlyScrubbing = m_timeline->isScrubbing();
@@ -506,10 +521,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     TracyPlot("Cache-miss recoveries / tick", cacheMissRecoveryCount);
 
     // Tear down workers for entities that were destroyed. Editor-only:
-    // destroyWorker calls thread.join() which blocks for the duration of
-    // any in-flight decode (4K ProRes can take 50+ ms — long enough for
-    // the show-thread fallback to fire and re-enter). Two threads joining
-    // the same std::thread races on the OS handle and throws no_such_process.
+    // joining a worker on the editor tick blocks for the duration of any
+    // in-flight decode (4K ProRes can take 50+ ms; a group delete of N
+    // clips = N serial joins → visible UI freeze). retireWorker signals
+    // stop and defers the join to reapRetiredWorkers() (called at the top
+    // of the editor-tick path) once the thread has actually exited, so the
+    // editor tick never blocks. This also sidesteps the show-thread
+    // fallback re-entering and racing the same std::thread handle.
     if (isEditorTick) {
         std::vector<entt::entity> toRemove;
         for (auto& [entity, worker] : m_workers) {
@@ -518,9 +536,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             }
         }
         for (entt::entity entity : toRemove) {
-            // Drop this clip's frames from the cache so they don't squat budget
+            // Drop this clip's frames from the cache so they don't squat budget.
+            // reapRetiredWorkers does a second evict once the thread exits, to
+            // catch frames an in-flight decode lands after this point.
             if (m_frameCache) m_frameCache->evictClip(entity);
-            destroyWorker(entity);
+            retireWorker(entity);
         }
     }
 }
@@ -541,6 +561,18 @@ void DecodeSystem::shutdown(entt::registry& registry) {
         }
     }
     m_workers.clear();
+
+    // Drain any retired-but-unreaped workers unconditionally. Their stop
+    // signal was already sent at retire time; join regardless of `finished`
+    // (shutdown blocking is fine — the UI is going away) and evict.
+    for (auto& [entity, worker] : m_retiredWorkers) {
+        if (worker && worker->thread.joinable()) {
+            worker->thread.join();
+        }
+        if (m_frameCache) m_frameCache->evictClip(entity);
+    }
+    m_retiredWorkers.clear();
+
     std::cout << "DecodeSystem shutdown complete" << std::endl;
 }
 
@@ -673,6 +705,45 @@ void DecodeSystem::destroyWorker(entt::entity entity) {
     std::cout << "Destroyed decode worker for entity" << std::endl;
 }
 
+void DecodeSystem::retireWorker(entt::entity entity) {
+    auto it = m_workers.find(entity);
+    if (it == m_workers.end()) return;
+
+    auto& worker = it->second;
+    if (worker) {
+        // Signal stop but DO NOT join here — the thread may be mid-decode
+        // (50+ ms on 4K ProRes). reapRetiredWorkers() joins on a later tick
+        // once `finished` is set, so the join returns immediately.
+        worker->running.store(false);
+        worker->cv.notify_all();
+    }
+    m_retiredWorkers.emplace_back(entity, std::move(worker));
+    m_workers.erase(it);
+}
+
+void DecodeSystem::reapRetiredWorkers() {
+    for (auto it = m_retiredWorkers.begin(); it != m_retiredWorkers.end();) {
+        auto& worker = it->second;
+        if (worker && worker->finished.load(std::memory_order_acquire)) {
+            if (worker->thread.joinable()) {
+                worker->thread.join();  // thread already exited; immediate
+            }
+            // Second evict: an in-flight decode may have landed frames in the
+            // cache AFTER the evict that ran at retire time. Safe to fire after
+            // the entity is destroyed — FrameCache keys by the full entt::entity
+            // handle (index + version), so a recycled clip can't be evicted by
+            // a stale handle (see FrameCache::Key).
+            if (m_frameCache) m_frameCache->evictClip(it->first);
+            it = m_retiredWorkers.erase(it);
+        } else if (!worker) {
+            // Defensive: a null slot (shouldn't happen) — drop it.
+            it = m_retiredWorkers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void DecodeSystem::destroyClipWorker(entt::entity entity) {
     // Evict cached frames keyed by this entity FIRST — otherwise a media
     // swap (SetClipMediaCommand) would serve stale frames from the old
@@ -689,6 +760,16 @@ void DecodeSystem::decodeThreadFunc(std::shared_ptr<DecodeWorker> worker) {
         std::cerr << "Decode thread started with invalid worker state" << std::endl;
         return;
     }
+
+    // Mark `finished` as the thread's very last act on EVERY exit path
+    // (early-return decoder-open failures, normal loop exit, and the
+    // try/catch below). reapRetiredWorkers() gates join() on this flag so
+    // the editor tick never blocks on an in-flight decode. The guard sits
+    // after the worker null-check above so it can safely touch worker->.
+    struct FinishedGuard {
+        DecodeWorker* w;
+        ~FinishedGuard() { w->finished.store(true, std::memory_order_release); }
+    } finishedGuard{worker.get()};
 
     tracy::SetThreadName(("Decode #" + std::to_string(
         static_cast<uint32_t>(worker->entity))).c_str());

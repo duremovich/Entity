@@ -18,6 +18,16 @@ void reverseStereo(std::vector<float>& buf) {
 
 void audioDecodeThreadFunc(std::shared_ptr<AudioDecodeWorker> w) {
     tracy::SetThreadName("AudioDecode");
+
+    // Mark `finished` as the thread's very last act on EVERY exit path
+    // (open-failure early return, normal loop exit, exception). AudioSystem's
+    // reap step gates join() on this so the editor tick never blocks on an
+    // in-flight decode. Mirrors DecodeSystem::decodeThreadFunc's guard.
+    struct FinishedGuard {
+        AudioDecodeWorker* w;
+        ~FinishedGuard() { w->finished.store(true, std::memory_order_release); }
+    } finishedGuard{w.get()};
+
     try {
         if (!w->decoder.open(w->filepath, w->targetSampleRate)) {
             w->initFailed.store(true);

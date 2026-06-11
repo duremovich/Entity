@@ -27,6 +27,11 @@ struct AudioDecodeWorker {
 
     // Cross-thread control.
     std::atomic<bool>    running{false};
+    // Set as the decode thread's very last act (every exit path). AudioSystem's
+    // reap step waits on this before join() so a retired worker is reaped
+    // without blocking the editor tick on an in-flight decode. Mirrors
+    // DecodeWorker::finished.
+    std::atomic<bool>    finished{false};
     std::atomic<bool>    seekPending{false};
     std::atomic<int64_t> seekTarget{0};   // clip-local output-rate sample
     std::atomic<bool>    initialized{false};

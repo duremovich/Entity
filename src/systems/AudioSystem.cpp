@@ -26,6 +26,15 @@ AudioSystem::~AudioSystem() {
         }
     }
     m_workers.clear();
+
+    // Drain retired-but-unreaped workers — a joinable std::thread left in the
+    // vector would call std::terminate on destruction. Stop already signaled
+    // at retire time; join unconditionally.
+    for (auto& [entity, worker] : m_retiredWorkers) {
+        if (worker && worker->thread.joinable())
+            worker->thread.join();
+    }
+    m_retiredWorkers.clear();
 }
 
 void AudioSystem::initialize(entt::registry& registry) {
@@ -96,11 +105,51 @@ void AudioSystem::destroyWorker(entt::entity e) {
     m_lastExpectedSample.erase(e);
 }
 
+void AudioSystem::retireWorker(entt::entity e) {
+    auto it = m_workers.find(e);
+    if (it == m_workers.end()) return;
+    auto& worker = it->second;
+    if (worker) {
+        // Unregister the mix source NOW so the audio callback stops pulling
+        // from this worker's ring immediately (the decode thread may still be
+        // writing the ring until it observes running=false, but nothing reads
+        // it once unregistered). Then signal stop and defer the join to
+        // reapRetiredWorkers() — joining live here could block the editor tick
+        // on an in-flight decode.
+        if (m_audioEngine)
+            m_audioEngine->mixer().unregisterSource(&worker->mixSource);
+        worker->running.store(false);
+    }
+    m_retiredWorkers.emplace_back(e, std::move(worker));
+    m_workers.erase(it);
+    m_lastExpectedSample.erase(e);
+}
+
+void AudioSystem::reapRetiredWorkers() {
+    for (auto it = m_retiredWorkers.begin(); it != m_retiredWorkers.end();) {
+        auto& worker = it->second;
+        if (!worker) {
+            it = m_retiredWorkers.erase(it);
+        } else if (worker->finished.load(std::memory_order_acquire)) {
+            if (worker->thread.joinable())
+                worker->thread.join();  // thread already exited; immediate
+            it = m_retiredWorkers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     ZoneScopedN("AudioSystem");
     if (!m_timeline || !m_audioEngine) return;
 
     const bool isEditorTick = (std::this_thread::get_id() == m_editorThreadId);
+
+    // Reap audio workers retired on a prior editor tick whose threads have
+    // now exited (join returns immediately). Editor-only.
+    if (isEditorTick) reapRetiredWorkers();
+
     const FrameNumber currentTLFrame = m_timeline->getCurrentFrame();
     const double tlFPS = m_timeline->getFrameRate() > 0.0
         ? m_timeline->getFrameRate() : 30.0;
@@ -331,7 +380,11 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         }
     }
 
-    // Destroy workers for entities that are gone (editor-thread only).
+    // Tear down workers for entities that are gone (editor-thread only).
+    // retireWorker signals stop + unregisters the mixer source but defers the
+    // thread join to reapRetiredWorkers() (called at the top of the editor
+    // tick), so a group delete of N audio-bearing clips doesn't serialize N
+    // blocking joins on one editor tick — the delete-freeze fix.
     if (isEditorTick) {
         std::vector<entt::entity> toRemove;
         for (auto& [ent, w] : m_workers) {
@@ -340,7 +393,7 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
             }
         }
         for (entt::entity ent : toRemove) {
-            destroyWorker(ent);
+            retireWorker(ent);
         }
     }
 }
@@ -388,6 +441,15 @@ void AudioSystem::shutdown(entt::registry& registry) {
     }
     m_workers.clear();
     m_lastExpectedSample.clear();
+
+    // Drain retired-but-unreaped workers. Their mix source was already
+    // unregistered + stop signaled at retire time; just join (unconditionally,
+    // shutdown blocking is fine) and clear.
+    for (auto& [entity, worker] : m_retiredWorkers) {
+        if (worker && worker->thread.joinable())
+            worker->thread.join();
+    }
+    m_retiredWorkers.clear();
 }
 
 } // namespace entity
