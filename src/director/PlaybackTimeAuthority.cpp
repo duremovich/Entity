@@ -1724,6 +1724,20 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         out.contentLayers.push_back(c);
     }
 
+    // Live re-filter, mirroring the isClipActiveAtFrame re-check on the clip
+    // path above. Membership baked in buildSceneSnapshot is stale by the
+    // editor's bake lag; a break-aligned generative/text layer whose fade-out
+    // has completed must leave the draw list on the SAME live frame the fade
+    // window closes — past the window computeSectionFadeMultiplier returns
+    // 1.0, so a lingering member draws at full opacity (the "pop"). The
+    // lower/upper bounds match the editor bake at buildSceneSnapshot exactly:
+    // [startFrame, layerEnd + sectionFadeTailFrames(layerEnd)).
+    std::erase_if(out.generativeLayers, [&](const bus::GenerativeLayerSnapshot& gl) {
+        const FrameNumber layerEnd = gl.startFrame + gl.duration;
+        return currentFrame < gl.startFrame ||
+               currentFrame >= layerEnd + sectionFadeTailFrames(layerEnd);
+    });
+
     for (const auto& gl : out.generativeLayers) {
         bus::ContentLayerSnapshot c;
         c.entity                = gl.entity;

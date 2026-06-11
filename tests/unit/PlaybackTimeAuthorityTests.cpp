@@ -470,6 +470,62 @@ TEST_F(PlaybackTimeAuthorityTest,
     EXPECT_FALSE(auth.isClipActiveAtFrame(c, 100));
 }
 
+// --- Crossfade pop: live generative-layer membership re-filter -----------
+//
+// buildRenderFrame (show thread) re-filters generative/text layers against
+// the LIVE timeline frame, mirroring the isClipActiveAtFrame re-check on the
+// clip path. Membership baked editor-side in buildSceneSnapshot is stale by
+// the editor's bake lag, so a break-aligned generative layer whose fade-out
+// has completed must drop on the SAME live frame the fade window closes.
+// Past that window computeSectionFadeMultiplier returns 1.0 — a lingering
+// stale member would draw at full opacity (the "pop").
+TEST_F(PlaybackTimeAuthorityTest,
+       BuildRenderFrame_GenerativeLayer_DropsWhenLiveFramePassesFadeWindow) {
+    timeline.setFrameRate(60.0);
+    // Section break at frame 100 with fadeSeconds=0.30 → fadeFrames =
+    // ceil(0.30 * 60) = 18, so the fade-out window is [100, 118).
+    timeline.addSectionBreak(/*breakFrame*/100, /*color*/0u, /*fadeSeconds*/0.30);
+
+    // Editor-baked snapshot containing a text/generative layer ending at
+    // frame 100 (startFrame=40, duration=60 → layerEnd=100). The bake happens
+    // at frame 110 (inside the fade window), so the layer IS a member.
+    bus::SceneSnapshot scene;
+    bus::GenerativeLayerSnapshot gl;
+    gl.entity     = 1234;
+    gl.startFrame = 40;
+    gl.duration   = 60;  // layerEnd = 100, aligned with the break
+    scene.generativeLayers.push_back(gl);
+
+    // Advance the LIVE frame to 118 (= layerEnd + tail) without re-baking,
+    // build the render frame. The layer must be ABSENT — before the fix it
+    // lingers at sectionFadeMultiplier 1.0 (the pop).
+    timeline.seekToFrame(118);
+    {
+        bus::RenderFrame frame;
+        auth.buildRenderFrame(frame, scene);
+        for (const auto& gen : frame.generativeLayers) {
+            EXPECT_NE(gen.entity, 1234u)
+                << "stale generative layer still present at fade-window close";
+        }
+    }
+
+    // One frame earlier (117) the layer is still inside the fade window: it
+    // must be PRESENT and its section-fade multiplier near zero (~1/18).
+    timeline.seekToFrame(117);
+    {
+        bus::RenderFrame frame;
+        auth.buildRenderFrame(frame, scene);
+        bool found = false;
+        for (const auto& gen : frame.generativeLayers) {
+            if (gen.entity == 1234u) found = true;
+        }
+        EXPECT_TRUE(found)
+            << "generative layer dropped one frame too early (inside fade)";
+        EXPECT_NEAR(auth.computeSectionFadeMultiplier(/*start*/40, /*end*/100),
+                    1.0f / 18.0f, 0.05f);
+    }
+}
+
 TEST_F(PlaybackTimeAuthorityTest,
        NormalExtension_FadeTailAttachesAtExtendedEndIfBreakAligned) {
     // Two breaks: one at clipEnd (drives the extension), one at
