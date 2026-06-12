@@ -372,3 +372,43 @@ buffers and read `RecentFreed=`) and fix it directly (re-key the editor fence
 ring to a monotonic counter, or raise `NumFramesInFlight` and fence on a counter
 that matches ImGui's), then mop up the two related defects (crash-logger
 double-entry, shutdown `waitForGpu` hang).
+
+## Fix implementation status (2026-06-11, evening — `entity-fix-device-hung-imgui-frame-ring`)
+
+**Fix shipped (uncommitted, pending operator validation).** The editor fence
+ring and command-allocator ring are re-keyed on a monotonic frame counter
+(`m_editorFrameCounter % FRAME_COUNT` — the same arithmetic ImGui's
+`FrameRenderBuffers` ring uses), with `GetCurrentBackBufferIndex()` retained
+only for RTV selection. `moveToNextFrame` signals for the just-recorded slot
+and waits on `(counter+1) % FRAME_COUNT`'s previous submission. One correction
+to the fix plan's verbatim code was required: the high-water write must target
+`m_editorFenceValues[nextSlot]` (the plan text wrote the just-rendered slot,
+which deadlocks once the CPU runs two frames ahead — caught on the WARP smoke,
+verified against baseline). `scheduleMeshSlotFree` was re-keyed to the same
+ring slot (consumer audit — the old back-buffer key would have desynced the
+deferred mesh free the same way).
+
+**Falsification test 1 status: armed but UNRESOLVED.** The ImGui VB/IB buffers
+are now named (`ImGuiVtx` / `ImGuiIdx`) via a repo-local vcpkg overlay port
+(`ports/imgui/`, fail-loud guard against silent patch drop). However, the fault
+did not reproduce in 11 pre-fix attempts the same evening (8 × DRED, 3 × no
+DRED, same `delete_during_play_long` script that faulted 3× that afternoon) —
+the repro window is timing/state sensitive and was closed. No `RecentFreed=`
+name was ever read, so the desync inference remains unproven (and unfalsified).
+**Decision: the buffer names stay in** — any future fault self-identifies its
+freed resource class in the DRED breadcrumbs.
+
+**Post-fix matrix: 9/9 clean** (`delete_during_play_long` / `delete_paused` /
+`just_load` × 3, DRED + 8000 ms watchdog, physical console). Evidential weight
+is limited by the pre-fix runs also being clean that evening; the meaningful
+validation is the operator scenario (open IIWY, play, delete during playback)
+and fault-free time in service.
+
+**New latent defect found during review (pre-existing, same class):**
+`scheduleMeshSlotFree` captures its deferred-free fence target as
+`EFV[slot] + 1` at record time; after a mid-session `waitForGpu()` drain
+(which advances the fence past the deliberately-stale `EFV[]`), that target
+can already be ≤ `GetCompletedValue()` while the referencing frame is still in
+flight, so the next `onFrameBegin` reap can free a GPU-live mesh buffer.
+Fix folded into the companion-fix phase (lift the floor:
+`max(EFV[slot], GetCompletedValue()) + 1`).

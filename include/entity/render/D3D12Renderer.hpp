@@ -475,6 +475,21 @@ private:
     // ExecuteCommandLists/Signal per D3D12 spec).
     ComPtr<ID3D12Fence> m_editorFence;
     uint64_t            m_editorFenceValues[FRAME_COUNT];
+    // Monotonic editor frame counter. The editor command-allocator ring AND the
+    // editor fence ring are keyed on (m_editorFrameCounter % FRAME_COUNT), the
+    // SAME key ImGui's backend uses for its per-frame VB/IB ring. Keying on
+    // GetCurrentBackBufferIndex() instead (the prior code) desynced from ImGui's
+    // ring under no-flip presents and freed a live ImGui buffer. See
+    // docs/perf/device-hung-2026-06/diagnosis.md.
+    //
+    // Slot continuity across the uint64 wrap relies on FRAME_COUNT being a
+    // power of two (2^64 is divisible by it, so (counter % FRAME_COUNT) is
+    // gap-free as counter rolls UINT64_MAX -> 0). FRAME_COUNT == 2 today; a
+    // non-power-of-two FRAME_COUNT would skip slots at the wrap boundary. If
+    // FRAME_COUNT ever becomes e.g. 3, key the slot off a separately-wrapped
+    // counter (e.g. m_slot = (m_slot + 1) % FRAME_COUNT) instead.
+    uint64_t m_editorFrameCounter = UINT64_MAX;  // ++ before first use -> 0
+    uint32_t m_editorRingSlot = 0;               // m_editorFrameCounter % FRAME_COUNT
     ComPtr<ID3D12Fence> m_showFence;
     uint64_t            m_showFenceValues[FRAME_COUNT];
     void* m_fenceEvent;      // editor thread only (beginEditorFrame / waitForGpu)

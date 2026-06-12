@@ -681,8 +681,17 @@ void D3D12Renderer::beginEditorFrame() {
     ZoneScopedN("beginEditorFrame");
     if (m_deviceLost) return;
 
-    // Editor thread tracks its own buffer index independently of the show thread.
+    // m_currentBackBufferIndex selects which RTV/back-buffer to draw into
+    // (used by clear() and endEditorFrame()'s present-state barrier) — keep it.
     m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+    // Ring slot drives allocator + fence reuse. Monotonic key matches ImGui's
+    // FrameRenderBuffers ring (FrameIndex % numFramesInFlight) so the slot we
+    // fence below in moveToNextFrame is exactly the slot ImGui reuses. Keying
+    // on the back-buffer index instead desynced from ImGui under no-flip
+    // presents and freed a live ImGui buffer (docs/perf/device-hung-2026-06).
+    ++m_editorFrameCounter;
+    m_editorRingSlot = static_cast<uint32_t>(m_editorFrameCounter % FRAME_COUNT);
 
     // Reap deferred mesh slot frees whose fence value the GPU has passed.
     if (m_meshUploader) {
@@ -690,8 +699,8 @@ void D3D12Renderer::beginEditorFrame() {
     }
 
     // Reset editor-side allocator + command list
-    m_editorAllocators[m_currentBackBufferIndex]->Reset();
-    m_editorCmdList->Reset(m_editorAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    m_editorAllocators[m_editorRingSlot]->Reset();
+    m_editorCmdList->Reset(m_editorAllocators[m_editorRingSlot].Get(), nullptr);
 
     // Reset descriptor heap cache for editor recording
     tl_currentDescriptorHeap = nullptr;
@@ -1377,51 +1386,57 @@ void D3D12Renderer::waitForGpu() {
 
 void D3D12Renderer::moveToNextFrame() {
     ZoneScopedN("moveToNextFrame");
-    // Standard D3D12-sample frame-pacing pattern: m_editorFenceValues[i] is
-    // "the fence value the GPU will reach when slot i's frame is done". We:
-    //   1. Signal currentFenceValue (the value for the slot we just rendered),
-    //   2. Read the new back-buffer index from the swap chain,
-    //   3. Wait until the GPU has reached the new slot's recorded fence value,
-    //   4. Then advance the new slot's recorded value for next time.
+    // Frame-pacing keyed on the MONOTONIC ring slot (m_editorRingSlot), not the
+    // swap-chain back-buffer index. m_editorFenceValues[slot] is the high-water
+    // "next value to signal" for that slot. We:
+    //   1. Signal currentFenceValue for the slot we just recorded,
+    //   2. Wait until the GPU has finished the slot the NEXT frame will reuse,
+    //   3. Then record nextSlot's high-water value (currentFenceValue + 1) for
+    //      that next frame's wait gate.
     //
-    // Robust to GetCurrentBackBufferIndex() returning the SAME slot after
-    // Present (DXGI_STATUS_OCCLUDED during resize, etc.): the wait target is
-    // the value we *just signaled*, which the GPU will reach normally. The
-    // prior pattern bumped editorValues[old slot] before the flip and then
-    // waited on editorValues[new slot]; when new == old that target became
-    // currentFenceValue+1, which the GPU never reached → deadlock.
+    // The wait target is computed from the counter ((counter+1) % FRAME_COUNT),
+    // not from GetCurrentBackBufferIndex(). That is the whole point of the fix:
+    // ImGui's backend reuses (and grows-and-frees) FrameRenderBuffers keyed on
+    // its own monotonic counter, so the slot we must fence before returning is
+    // the counter-derived slot, regardless of what the swap chain reports under
+    // a no-flip present. See docs/perf/device-hung-2026-06/diagnosis.md.
     //
-    // The std::max keeps signalValue strictly greater than the fence's
-    // current completed value: waitForGpu() can drain editorFence beyond
+    // The std::max keeps signalValue strictly greater than the fence's current
+    // completed value: waitForGpu() can drain editorFence beyond
     // editorValues[slot] mid-session, and Signal must be monotonic.
-    const uint64_t currentFenceValue = std::max(m_editorFenceValues[m_currentBackBufferIndex],
+    const uint64_t currentFenceValue = std::max(m_editorFenceValues[m_editorRingSlot],
                                                 m_editorFence->GetCompletedValue() + 1);
     m_gpu->commandQueue()->Signal(m_editorFence.Get(), currentFenceValue);
 
-    // Move to next frame
-    m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
-
-    // Wait if next frame is not ready yet. Use a 2-second timeout instead of
-    // INFINITE so a GPU hang (MED-13) surfaces as device-lost rather than a
-    // silent process freeze. On timeout, query GetDeviceRemovedReason() which
-    // will return a meaningful HRESULT if the driver crashed (TDR, etc.).
-    if (m_editorFence->GetCompletedValue() < m_editorFenceValues[m_currentBackBufferIndex]) {
+    // The next frame will use slot ((counter+1) % FRAME_COUNT). Wait until the
+    // GPU has finished that slot's PREVIOUS submission before we return, so
+    // beginEditorFrame's allocator reset AND ImGui's grow-and-free of that same
+    // slot are both safe. This is the slot-reuse fence the ImGui backend relies
+    // on the caller to provide.
+    //
+    // Use a finite timeout (MED-13) so a GPU hang surfaces as device-lost
+    // rather than a silent process freeze. On timeout, GetDeviceRemovedReason()
+    // returns a meaningful HRESULT if the driver crashed (TDR, etc.).
+    const uint32_t nextSlot =
+        static_cast<uint32_t>((m_editorFrameCounter + 1) % FRAME_COUNT);
+    if (m_editorFence->GetCompletedValue() < m_editorFenceValues[nextSlot]) {
         ZoneScopedNC("GPU fence wait", 0xCC4444);
-        m_editorFence->SetEventOnCompletion(m_editorFenceValues[m_currentBackBufferIndex], m_fenceEvent);
+        m_editorFence->SetEventOnCompletion(m_editorFenceValues[nextSlot], m_fenceEvent);
         DWORD result = WaitForSingleObject(m_fenceEvent, fenceWaitTimeoutMs());
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-            HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
-                ? m_gpu->device()->GetDeviceRemovedReason()
-                : DXGI_ERROR_DEVICE_HUNG;
+            HRESULT removedReason = removedReasonAfterTimeout();
             handleDeviceLost(removedReason, "moveToNextFrame fence wait timeout");
             return;
         }
     }
 
-    // Record the next fence value for the slot we just flipped to. On the
-    // next pass through this slot we'll signal currentFenceValue+1 (or
-    // higher, via the std::max).
-    m_editorFenceValues[m_currentBackBufferIndex] = currentFenceValue + 1;
+    // Record the high-water fence value for nextSlot (the slot the next frame
+    // will reuse). currentFenceValue + 1 is deliberately one beyond what was
+    // ever signaled, so next frame's wait blocks only if the GPU is genuinely
+    // behind. Mirrors the original swap-chain-keyed pacing exactly — the only
+    // change is the key (monotonic counter, not back-buffer index), so the
+    // fenced slot now always equals ImGui's reuse slot.
+    m_editorFenceValues[nextSlot] = currentFenceValue + 1;
 }
 
 // ============================================================================
@@ -6413,9 +6428,27 @@ uint64_t D3D12Renderer::getMeshUploadCount() const {
 void D3D12Renderer::scheduleMeshSlotFree(uint32_t slot) {
     if (!m_meshUploader || slot == MeshUploader::INVALID_SLOT) return;
     // Key on the editor fence value that will be signaled at the next
-    // endEditorFrame. The current frame's index tells us which entry in
-    // m_editorFenceValues is the one being built now.
-    const uint64_t fenceValue = m_editorFenceValues[m_currentBackBufferIndex] + 1;
+    // endEditorFrame. m_editorRingSlot (the monotonic ring slot, NOT the
+    // swap-chain back-buffer index) is the entry in m_editorFenceValues being
+    // built this frame — moveToNextFrame signals and advances that same slot,
+    // so the deferred free must read the same key or it can free a GPU-live
+    // mesh buffer (the use-after-free class this investigation fixed).
+    //
+    // Lift the floor to GetCompletedValue() before +1. A waitForGpu() drain
+    // mid-session Signals the editor fence to (completed + 1) but deliberately
+    // does NOT update m_editorFenceValues[] (those stay owned by
+    // moveToNextFrame). So after a drain, m_editorFenceValues[slot] can lag far
+    // below the fence's completed value — and m_editorFenceValues[slot] + 1
+    // would then be <= GetCompletedValue(), so MeshUploader::onFrameBegin
+    // (reaps when fenceValue <= completed) frees the slot on the very next
+    // frame while the frame that references this mesh is still in flight: a
+    // GPU-live free (page-fault / DEVICE_HUNG class). std::max with the
+    // completed value pins the target to the value the current frame will
+    // actually signal via moveToNextFrame's own std::max, so the reap can only
+    // fire after that signal lands.
+    const uint64_t fenceValue =
+        std::max(m_editorFenceValues[m_editorRingSlot],
+                 m_editorFence->GetCompletedValue()) + 1;
     m_meshUploader->scheduleSlotFree(slot, fenceValue);
 }
 
