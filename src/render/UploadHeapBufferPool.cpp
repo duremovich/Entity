@@ -138,10 +138,15 @@ std::shared_ptr<UploadHeapBuffer> UploadHeapBufferPool::acquire(size_t bytes) {
             const uint64_t completed = fence->GetCompletedValue();
 
             if (completed == UINT64_MAX) {
-                // Device removed — destroy without recycling.
+                // Device removed — the GPU may still reference this buffer and
+                // will never signal the fence. Leak rather than free
+                // GPU-referenced memory (same defect class as the recycle
+                // worker's device-removed branch); process teardown follows a
+                // device-loss shortly.
                 std::cerr << "[UploadHeapBufferPool] Pool deleter: device removed "
-                             "(UINT64_MAX sentinel); destroying buffer instead of recycling.\n";
-                delete p;
+                             "(UINT64_MAX sentinel); leaking buffer instead of "
+                             "recycling (GPU may still reference it).\n";
+                (void)p;   // deliberately not deleted
                 return;
             }
 
@@ -152,8 +157,14 @@ std::shared_ptr<UploadHeapBuffer> UploadHeapBufferPool::acquire(size_t bytes) {
                 if (pool) {
                     pool->deferRelease(p);
                 } else {
-                    // Pool gone; destroy immediately — no one to recycle into.
-                    delete p;
+                    // Pool gone AND the GPU has not finished with this buffer.
+                    // There is no worker to defer to and freeing now would be a
+                    // GPU-referenced free — leak instead (bounded; only happens
+                    // if the pool is torn down with a copy still in flight).
+                    std::cerr << "[UploadHeapBufferPool] Pool deleter: pool gone "
+                                 "with GPU copy still in flight; leaking buffer "
+                                 "(GPU may still reference it).\n";
+                    (void)p;   // deliberately not deleted
                 }
                 return;
             }
@@ -419,10 +430,16 @@ void UploadHeapBufferPool::recycleWorkerFunc() {
             const uint64_t completed = m_fence->GetCompletedValue();
 
             if (completed == UINT64_MAX) {
-                // Device removed — destroy without recycling.
+                // Device removed — the GPU may still reference this buffer and
+                // will never signal the fence. Deleting it now would be a
+                // use-after-free of GPU-referenced memory (the same defect
+                // class this investigation fixed elsewhere). Intentionally
+                // leak: process teardown follows a device-loss shortly, and a
+                // bounded leak beats a UAF.
                 std::cerr << "[UploadHeapBufferPool] Recycle worker: device removed "
-                             "(UINT64_MAX); destroying deferred buffer.\n";
-                delete p;
+                             "(UINT64_MAX); leaking deferred buffer (GPU may still "
+                             "reference it).\n";
+                (void)p;   // deliberately not deleted — see comment above
                 continue;
             }
 
@@ -446,22 +463,29 @@ void UploadHeapBufferPool::recycleWorkerFunc() {
                     ResetEvent(p->fenceEvent);
 
                     if (waitResult != WAIT_OBJECT_0) {
-                        // WAIT_TIMEOUT or WAIT_FAILED: the GPU has demonstrably
-                        // not finished with this buffer. Destroy rather than
-                        // recycle — treat as TDR-adjacent and don't risk a race.
+                        // WAIT_TIMEOUT/WAIT_FAILED: the GPU has demonstrably NOT
+                        // finished with this buffer (TDR-adjacent). Deleting it
+                        // would free GPU-referenced memory. Leak instead — see
+                        // the device-removed branch above.
                         std::cerr << "[UploadHeapBufferPool] Recycle worker: "
                                      "fence wait timeout/failure (result=0x"
                                   << std::hex << waitResult << std::dec
-                                  << ") for buffer; destroying instead of recycling.\n";
-                        delete p;
+                                  << "); leaking buffer instead of freeing "
+                                     "(GPU may still reference it).\n";
+                        (void)p;   // deliberately not deleted
                         continue;
                     }
                 } else {
+                    // Couldn't even register the completion wait, so we cannot
+                    // establish the GPU is done with this buffer. Same defect
+                    // class as the branches above — leak rather than risk a
+                    // GPU-referenced free.
                     std::cerr << "[UploadHeapBufferPool] Recycle worker: "
                                  "SetEventOnCompletion HRESULT 0x"
                               << std::hex << hr << std::dec
-                              << " — destroying buffer (fence wait skipped)\n";
-                    delete p;
+                              << " — leaking buffer (fence wait skipped; GPU may "
+                                 "still reference it)\n";
+                    (void)p;   // deliberately not deleted
                     continue;
                 }
             }
