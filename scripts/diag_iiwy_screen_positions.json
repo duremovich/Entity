@@ -1,0 +1,23 @@
+{
+    "version": 1,
+    "description": "Diagnostic: load IIWY and assert every screen's world position matches the values stored in IIWY.entity (read-only, no save).",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY.entity"},
+        {"type": "WaitSeconds", "count": 2.0},
+        {"type": "AssertScreenCount", "count": 6},
+        {"type": "AssertScreenSnapshot", "screenName": "CH01-SCRIM", "field": "positionX", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH01-SCRIM", "field": "positionY", "expected": 3.38, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH01-SCRIM", "field": "positionZ", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH02-RP", "field": "positionX", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH02-RP", "field": "positionY", "expected": 3.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH02-RP", "field": "positionZ", "expected": -9.1, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH03-CITYSCAPE", "field": "positionX", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH03-CITYSCAPE", "field": "positionY", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH03-CITYSCAPE", "field": "positionZ", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH04-TREE", "field": "positionY", "expected": 0.0, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH05-SHADOWDROPS", "field": "positionY", "expected": 3.7756104, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH05-SHADOWDROPS", "field": "positionZ", "expected": -0.3, "tolerance": 0.001},
+        {"type": "AssertScreenSnapshot", "screenName": "CH07-AUTOSHOP", "field": "positionY", "expected": 0.0, "tolerance": 0.001},
+        {"type": "Exit"}
+    ]
+}

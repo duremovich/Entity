@@ -412,3 +412,52 @@ can already be ≤ `GetCompletedValue()` while the referencing frame is still in
 flight, so the next `onFrameBegin` reap can free a GPU-live mesh buffer.
 Fix folded into the companion-fix phase (lift the floor:
 `max(EFV[slot], GetCompletedValue()) + 1`).
+
+---
+
+## Post-reboot resolution (2026-06-11 evening, after rig reboot)
+
+The IIWY incident ("screens all moved" + crash storm) resolved as a
+**degraded-driver artifact, not data loss**. Sequence and evidence:
+
+- **Driver healthy post-reboot.** Boot 20:28:29; no `nvlddmkm` / TDR (4101)
+  events after boot. The day's ~31 TDRs had degraded the driver; every failure
+  after 20:08 (user crash storm, instant crash, my headless diag deaths) was
+  the sick driver.
+- **No screens moved on disk.** `scripts/diag_iiwy_screen_positions.json`
+  (read-only, asserts all 6 screens vs file) **died mid-load exit 1 pre-reboot,
+  passes 17/17 clean post-reboot** — proving the headless deaths were the sick
+  driver. All 6 screens match the authored layout exactly (CH01-SCRIM y=3.38,
+  CH02-RP y=3.0 z=−9.1, CH05-SHADOWDROPS y=3.776 z=−0.3, CH03/04/07 y=0).
+  `IIWY.entity` untouched since the 1:10:57 PM manual save.
+- **Fix re-validated on the healthy driver.** `delete_during_play_long` ×4
+  (3× no-DRED + 1× DRED-forced) all exit normally, zero device-lost, zero
+  breadcrumb dumps, zero crash dirs.
+- **Fix committed** (5 commits, HEAD c0f1828): overlay port / EditorFrameRing
+  test / re-key / device-lost robustness companions / upload-pool leak.
+  Falsification stays **armed-unresolved** — fault never reproduced on the
+  healthy driver either, so `RecentFreed=ImGuiVtx` was never observed. Names
+  stay in.
+
+### Dump triage (WinDbg/cdb installed on rig, MS public symbols)
+
+The two 62 MB dumps are **two distinct crash classes**, not two device-losts:
+
+- `2026-06-12T00-08-37Z` (20:08): **SEH `c0000005`, NULL-pointer read**
+  (`mov rax,[r14]`, `r14=0`) at `EntityMediaEditor+0xc9bbb` on a **worker
+  thread** (9 frames of our code under `BaseThreadInitThunk`), ~6s into IIWY
+  load. A real CPU bug, **separate from the GPU device-hung.** Release ships no
+  PDB so the function is unresolved. → filed **#73** (NULL-deref + enable
+  Release PDBs).
+- `2026-06-12T00-15-59Z` (20:15): `kind=device-lost`
+  ("waitForGpu show-fence drain timeout"), no CPU exception — the GPU path the
+  re-key fix targets. (The CAS latch correctly did not dedup the two dirs:
+  different crash classes.)
+
+### Defects filed
+- **#71** — crash logger wedges process unkillable on fast crash (0-byte single
+  entry): flush+close context.json before MiniDumpWriteDump + dump watchdog.
+- **#72** — stale `buildCommit` (`__DATE__` stamp, not git): cost triage time
+  here (the "May 23" red herring was an unrecompiled `CrashLogger.cpp` TU).
+- **#73** — worker-thread NULL-deref during project load + Release-ships-no-PDB
+  blocker.
