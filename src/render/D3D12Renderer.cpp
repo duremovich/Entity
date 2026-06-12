@@ -37,6 +37,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -45,12 +47,19 @@
 namespace entity {
 
 // 2026-05-23 — fence-wait timeout configurable via env var
-// `ENTITY_FENCE_TIMEOUT_MS`. Default 2000 (the MED-13 / Phase A2 fix value,
-// which guards against true device-lost). Profiler attachment (Tracy) and
-// heavy first-frame work on multi-output 4K H.264 projects can blow past
-// 2s once, false-positive as device-lost. Bump to 8000+ when running
-// under Tracy or against a heavyweight project; leave at default in
+// `ENTITY_FENCE_TIMEOUT_MS`. Default 5000. Profiler attachment (Tracy) and
+// heavy first-frame work on multi-output 4K H.264 projects can blow past a
+// smaller budget once, false-positive as device-lost. Bump to 8000+ when
+// running under Tracy or against a heavyweight project; leave at default in
 // production. One-time env read; zero hot-path overhead.
+//
+// 2026-06-11 — raised the default 2000 -> 5000. The old 2000 ms sat inside
+// the ~2 s driver TDR window: a genuine GPU hang would trip our fence
+// timeout *before* the driver declared removal, so GetDeviceRemovedReason()
+// still returned S_OK (0x0) and the device-lost report carried a misleading
+// reason. 5000 ms lets the driver declare removal first; the wait sites pair
+// this with a re-query-after-grace (see the WAIT_TIMEOUT handlers) so a real
+// TDR is captured with its actual reason. See docs/perf/device-hung-2026-06.
 namespace {
 DWORD fenceWaitTimeoutMs() {
     static const DWORD ms = []() -> DWORD {
@@ -60,7 +69,7 @@ DWORD fenceWaitTimeoutMs() {
             long parsed = std::strtol(v, &end, 10);
             if (end != v && parsed > 0) return static_cast<DWORD>(parsed);
         }
-        return 2000;
+        return 5000;
     }();
     return ms;
 }
@@ -312,7 +321,27 @@ void D3D12Renderer::shutdown() {
     // shutdownImGui(), which releases ImGui's D3D12 descriptors — releasing
     // them with frames still in flight intermittently hung the shutdown
     // fence wait on WARP.
-    waitForGpu();
+    //
+    // Skip the drain only on a CONFIRMED device removal (reason != S_OK): the
+    // fences never signal, so waitForGpu() would burn a full
+    // fenceWaitTimeoutMs() per drain (and, before the drains were bounded, hung
+    // forever — observed: killed after 30 min); the GPU is gone, nothing to
+    // wait for, and releasing resources without draining is safe.
+    //
+    // Gate on the reason, NOT the bare m_deviceLost flag. m_deviceLost can latch
+    // spuriously (heavy stall trips a fence timeout while GetDeviceRemovedReason
+    // still returns S_OK even after the grace re-query — see fenceWaitTimeoutMs).
+    // On a spurious latch the device is LIVE and may still be executing the last
+    // show frame, so we MUST still drain — skipping would release GPU-referenced
+    // resources (shutdownImGui, CB unmaps, uploader teardown) out from under the
+    // GPU (teardown UAF). The drains are bounded, so a genuinely-hung-but-S_OK
+    // case still can't hang shutdown.
+    const bool confirmedRemoval =
+        m_deviceLost.load(std::memory_order_acquire) &&
+        m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
+    if (!confirmedRemoval) {
+        waitForGpu();
+    }
 
     shutdownImGui();
 
@@ -531,9 +560,7 @@ void D3D12Renderer::beginShowFrame() {
             m_showFence->SetEventOnCompletion(lastSignaled, m_showFenceEvent);
             DWORD result = WaitForSingleObject(m_showFenceEvent, fenceWaitTimeoutMs());
             if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-                HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
-                    ? m_gpu->device()->GetDeviceRemovedReason()
-                    : DXGI_ERROR_DEVICE_HUNG;
+                HRESULT removedReason = removedReasonAfterTimeout();
                 handleDeviceLost(removedReason, "beginShowFrame show fence wait timeout");
                 return;
             }
@@ -985,14 +1012,50 @@ static std::string formatDredBreadcrumbs(ID3D12Device* device) {
     return oss.str();
 }
 
-void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
-    if (m_deviceLost.load(std::memory_order_relaxed)) return;  // Already reported.
+HRESULT D3D12Renderer::removedReasonAfterTimeout() {
+    if (!m_gpu || !m_gpu->isInitialized()) {
+        return DXGI_ERROR_DEVICE_HUNG;
+    }
+    HRESULT reason = m_gpu->device()->GetDeviceRemovedReason();
+    if (reason == S_OK) {
+        // The fence timed out before the driver declared removal. Give the
+        // driver a short grace period to finish raising the TDR, then re-query
+        // once — otherwise a genuine hang is reported as a misleading 0x0.
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        reason = m_gpu->device()->GetDeviceRemovedReason();
+    }
+    return reason;
+}
 
+void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
         ? m_gpu->device()->GetDeviceRemovedReason()
         : hr;
-    m_deviceLostReason = removedReason;  // store before latching; release below makes this visible to acquire readers
-    m_deviceLost.store(true, std::memory_order_release);
+    // Publish the reason (release) BEFORE latching m_deviceLost below, so a
+    // third-thread reader that observes the latch true (acquire) can never see
+    // a stale S_OK reason — closing the window that would make the shutdown
+    // gate and the device-lost report misread a confirmed removal as spurious.
+    // Multi-writer note: when several threads hit device-lost concurrently they
+    // all store here before the CAS; the writes can interleave, but every value
+    // is a genuine GetDeviceRemovedReason() observation (last-writer-wins), and
+    // every consumer fails safe on S_OK (the shutdown gate still drains, the
+    // report shows 0x0-spurious). Do NOT "simplify" this to a single store
+    // after the CAS — that reopens the latch-true-but-reason-S_OK race.
+    m_deviceLostReason.store(removedReason, std::memory_order_release);
+
+    // Single-CAS gate on the dbghelp crash path. Two threads can hit
+    // device-lost concurrently (e.g. the editor Present site and a show-thread
+    // fence timeout); dbghelp's MiniDumpWriteDump (reached via
+    // CrashLogger::captureNonFatal below) is process-global and NOT
+    // thread-safe, so a relaxed load-then-store latch let both threads enter
+    // and deadlock inside dbghelp (the paired 0-byte-then-complete crash dirs).
+    // compare_exchange_strong ensures exactly one thread owns the crash path.
+    bool expected = false;
+    if (!m_deviceLost.compare_exchange_strong(expected, true,
+            std::memory_order_acq_rel)) {
+        return;  // another thread already owns the crash path
+    }
+
     std::cerr << "=======================================================" << std::endl;
     std::cerr << "[D3D12] GPU DEVICE LOST at " << site << std::endl;
     std::cerr << "        HRESULT:         0x" << std::hex << hr << std::dec << std::endl;
@@ -1330,9 +1393,7 @@ void D3D12Renderer::waitForGpu() {
             m_uploadFence->SetEventOnCompletion(copyTarget, localEvent);
             DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
             if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-                HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
-                    ? m_gpu->device()->GetDeviceRemovedReason()
-                    : DXGI_ERROR_DEVICE_HUNG;
+                HRESULT removedReason = removedReasonAfterTimeout();
                 handleDeviceLost(removedReason, "waitForGpu copy-queue drain timeout");
                 CloseHandle(localEvent);
                 return;
@@ -1356,9 +1417,7 @@ void D3D12Renderer::waitForGpu() {
         m_showFence->SetEventOnCompletion(drainValue, localEvent);
         DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-            HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
-                ? m_gpu->device()->GetDeviceRemovedReason()
-                : DXGI_ERROR_DEVICE_HUNG;
+            HRESULT removedReason = removedReasonAfterTimeout();
             handleDeviceLost(removedReason, "waitForGpu show-fence drain timeout");
             CloseHandle(localEvent);
             return;
@@ -1372,9 +1431,7 @@ void D3D12Renderer::waitForGpu() {
         m_editorFence->SetEventOnCompletion(drainValue, localEvent);
         DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-            HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
-                ? m_gpu->device()->GetDeviceRemovedReason()
-                : DXGI_ERROR_DEVICE_HUNG;
+            HRESULT removedReason = removedReasonAfterTimeout();
             handleDeviceLost(removedReason, "waitForGpu editor-fence drain timeout");
             CloseHandle(localEvent);
             return;

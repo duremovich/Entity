@@ -57,12 +57,15 @@ public:
     Result resize(uint32_t width, uint32_t height) override;
     bool    isInitialized() const override        { return m_initialized; }
     bool    isDeviceLost() const override         { return m_deviceLost.load(std::memory_order_acquire); }
-    int32_t getDeviceLostReason() const override  { return static_cast<int32_t>(m_deviceLostReason); }
+    int32_t getDeviceLostReason() const override  { return static_cast<int32_t>(m_deviceLostReason.load(std::memory_order_acquire)); }
 
     // Test seams: set m_deviceLost and exercise waitForGpu() without a real device.
     // Used by WaitForGpuEarlyOutTests to verify waitForGpu() exits immediately.
+    // Store the reason (release) before latching m_deviceLost so the shutdown
+    // gate and getDeviceLostReason() see a CONFIRMED removal — the default
+    // DXGI_ERROR_DEVICE_HUNG (!= S_OK) makes the shutdown gate skip the drain.
     void setDeviceLostForTesting(HRESULT reason = DXGI_ERROR_DEVICE_HUNG) {
-        m_deviceLostReason = reason;
+        m_deviceLostReason.store(reason, std::memory_order_release);
         m_deviceLost.store(true, std::memory_order_release);
     }
     void waitForGpuForTesting()     { waitForGpu(); }
@@ -421,6 +424,13 @@ private:
     // Device-removed handling: logs the GPU removal reason and latches m_deviceLost.
     // Safe to call from any D3D12 call that returns DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG.
     void handleDeviceLost(HRESULT hr, const char* site);
+
+    // Resolve the device-removed reason after a fence-wait timeout. If the
+    // device reports S_OK (the fence timed out before the driver declared a
+    // TDR — see the fenceWaitTimeoutMs note), sleep a short grace period and
+    // re-query once so a genuine hang is captured with its real reason rather
+    // than a misleading 0x0. Returns DXGI_ERROR_DEVICE_HUNG if no device.
+    HRESULT removedReasonAfterTimeout();
 
     // Resolve an abstract TextureRef into a D3D12 SRV descriptor handle.
     // Returns a zero-ptr handle if the reference is invalid or the resource
@@ -919,7 +929,10 @@ private:
     uint32_t m_height;
     bool m_initialized;
     std::atomic<bool> m_deviceLost{false}; // Latched on first device-removed detection. Written from show or editor thread; read from both.
-    HRESULT m_deviceLostReason{S_OK};    // GetDeviceRemovedReason() result; available via getDeviceLostReason().
+    // GetDeviceRemovedReason() result; available via getDeviceLostReason() and
+    // read (acquire) by the shutdown drain gate. Atomic because multiple
+    // threads can hit device-lost concurrently and a third thread reads it.
+    std::atomic<HRESULT> m_deviceLostReason{S_OK};
 
     // Descriptor heap caching — thread_local, lives in D3D12Renderer.cpp.
     // Each thread tracks its own last-bound heap to avoid redundant calls.
