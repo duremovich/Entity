@@ -59,6 +59,17 @@ TEST(OscMappingTable, DefaultRoutesContainsCueCaptureRoute) {
     EXPECT_TRUE(found);
 }
 
+TEST(OscMappingTable, DefaultRoutesContainsCueArmRoute) {
+    auto routes = defaultRoutes();
+    bool found = std::any_of(routes.begin(), routes.end(), [](const InboundRoute& r) {
+        return r.addressPattern == "/entity/cue/{number}/arm" &&
+               r.captureKey == "number" &&
+               !r.commands.empty() &&
+               r.commands[0].commandType == "ArmCue";
+    });
+    EXPECT_TRUE(found);
+}
+
 TEST(OscMappingTable, DefaultRoutesStopIsMultiCommand) {
     auto routes = defaultRoutes();
     auto it = std::find_if(routes.begin(), routes.end(), [](const InboundRoute& r) {

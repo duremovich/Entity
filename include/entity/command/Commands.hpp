@@ -1863,6 +1863,28 @@ private:
     double m_number;
 };
 
+/**
+ * Arm a cue: select it so DecodeSystem/AudioSystem prewarm its clips
+ * (warm-set armed window) without seeking or changing transport state.
+ * Pair with FireCue for instant distant jumps. Logs a warning and fails
+ * when no cue with the given number exists. Not undoable.
+ *
+ * JSON: {"type":"ArmCue","number":1.5}
+ */
+class ArmCueCommand : public Command {
+public:
+    explicit ArmCueCommand(double cueNumber) : m_number(cueNumber) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "ArmCue"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    double m_number;
+};
+
 // ============================================================================
 // DMX commands (#13 — Phase D: DMX/Art-Net plugin)
 // ============================================================================

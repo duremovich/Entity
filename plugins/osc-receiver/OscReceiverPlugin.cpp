@@ -22,6 +22,7 @@
 //   /entity/stop                  -> Pause + SeekToFrame{frame:0}
 //   /entity/section/next          -> SectionGo
 //   /entity/cue/{number}/go       -> FireCue{number}
+//   /entity/cue/{number}/arm      -> ArmCue{number}  (prewarm, no transport change)
 //   /entity/seek <int frame>      -> SeekToFrame{frame}
 //
 // Built-in layer namespace (ADR-0028) — not in the mapping table; always active:

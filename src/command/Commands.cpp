@@ -4008,6 +4008,35 @@ CommandPtr FireCueCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<FireCueCommand>(number);
 }
 
+bool ArmCueCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return false;
+    const CueTag* cue = timeline->findCueTag(m_number);
+    if (!cue) {
+        std::cerr << "[ArmCue] WARN: no cue with number " << m_number << std::endl;
+        return false;
+    }
+    // Arming = selecting: DecodeSystem/AudioSystem prewarm the selected
+    // cue's clips (warm-set armed window). No seek, no transport change.
+    timeline->setSelectedCueNumber(m_number);
+    std::cout << "[ArmCue] OK number=" << m_number
+              << " frame=" << cue->frame << std::endl;
+    return true;
+}
+
+nlohmann::json ArmCueCommand::toJson() const {
+    return {{"type", "ArmCue"}, {"number", m_number}};
+}
+
+std::string ArmCueCommand::getDescription() const {
+    return "Arm cue " + std::to_string(m_number);
+}
+
+CommandPtr ArmCueCommand::fromJson(const nlohmann::json& j) {
+    double number = j.value("number", 0.0);
+    return std::make_unique<ArmCueCommand>(number);
+}
+
 // ============================================================================
 // DMX commands (#13 — Phase D: DMX/Art-Net plugin)
 // ============================================================================

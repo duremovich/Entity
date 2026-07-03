@@ -71,6 +71,7 @@ inline std::vector<InboundRoute> defaultRoutes() {
     routes.push_back({"/entity/section/next", "", {{"SectionGo", ""}}});
     routes.push_back({"/entity/seek",         "", {{"SeekToFrame", "{\"frame\":$arg0i}"}}});
     routes.push_back({"/entity/cue/{number}/go","number",{{"FireCue","{\"number\":$capturef}"}}});
+    routes.push_back({"/entity/cue/{number}/arm","number",{{"ArmCue","{\"number\":$capturef}"}}});
     return routes;
 }
 
