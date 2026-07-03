@@ -96,6 +96,36 @@ jobs:
           "FFMPEG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+      # Pinned DXC. apps/CMakeLists.txt's find_program otherwise globs the
+      # runner image's Windows SDK dxc.exe, which silently changed in the
+      # June 2026 image update to a version without -HV 2021 support and
+      # broke every shader compile (the June 11+ red builds). A pinned
+      # release keeps the shader toolchain deterministic; local dev still
+      # uses the SDK via find_program.
+      - name: Cache DXC
+        id: cache-dxc
+        uses: actions/cache@v4
+        with:
+          path: dxc
+          key: dxc-v1.9.2602.24
+
+      - name: Download DXC
+        if: steps.cache-dxc.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602.24/dxc_2026_05_27.zip"
+          Invoke-WebRequest -Uri $url -OutFile dxc.zip -UseBasicParsing
+          Expand-Archive dxc.zip -DestinationPath dxc
+          Remove-Item dxc.zip
+
+      - name: Export DXC_EXECUTABLE
+        shell: pwsh
+        run: |
+          $dxc = Join-Path $env:GITHUB_WORKSPACE "dxc/bin/x64/dxc.exe"
+          if (-not (Test-Path $dxc)) { throw "dxc.exe not found at $dxc" }
+          & $dxc --version
+          "DXC_EXECUTABLE=$dxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # =====================================================================
       # Caching strategy (two layers):
       #
@@ -171,7 +201,8 @@ jobs:
                 -A x64 \
                 -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
                 -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON \
-                -DENTITY_ENABLE_TRACY=${{ matrix.tracy }}; then
+                -DENTITY_ENABLE_TRACY=${{ matrix.tracy }} \
+                -DDXC_EXECUTABLE="$DXC_EXECUTABLE"; then
               echo "=== cmake configure succeeded on attempt $attempt ==="
               exit 0
             fi
