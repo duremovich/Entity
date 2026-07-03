@@ -23,6 +23,27 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
+# Release builds ship debug info (separate .pdb, exe unchanged) so crash
+# minidumps are stack-walkable (#73 blocker). No runtime cost.
+if(MSVC)
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG>")
+endif()
+
+# Configure-time git stamp for CrashLogger (#72 — __DATE__ lied when the TU
+# wasn't recompiled). Stale-by-one-configure is acceptable and self-labels.
+execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE ENTITY_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT ENTITY_GIT_COMMIT)
+    set(ENTITY_GIT_COMMIT "unknown")
+endif()
+configure_file(cmake/BuildInfo.hpp.in
+               ${CMAKE_BINARY_DIR}/generated/entity/BuildInfo.hpp @ONLY)
+
 # Options
 option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_D3D12_DEBUG "Enable D3D12 debug layer" ON)
@@ -306,6 +327,7 @@ target_include_directories(EntityMediaCore
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+        ${CMAKE_BINARY_DIR}/generated
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )

@@ -14,6 +14,7 @@
 
 #include "entity/core/CrashLogger.hpp"
 #include "entity/core/Settings.hpp"
+#include <entity/BuildInfo.hpp>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -166,7 +167,7 @@ static int buildJsonPayload(const char* kind,
     p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"exceptionCode\": "); p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, exceptionCode ? excCodeHex : nullptr); p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
     p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"hresult\": ");   p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, hresult ? hrHex : nullptr);               p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
     p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"osVersion\": "); p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, osVer);            p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
-    p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"buildCommit\": "); p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, __DATE__ " " __TIME__); p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
+    p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"buildCommit\": "); p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, ENTITY_BUILD_COMMIT); p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
     p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"projectPath\": "); p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, s_projectPathUtf8); p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
     p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"adapterDescription\": "); p = jsonEscape(s_jsonBuf, kMaxJsonBuf, p, s_adapterDescUtf8); p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
     p = appendStr(s_jsonBuf, kMaxJsonBuf, p, "  \"vendorId\": ");  p = appendStr(s_jsonBuf, kMaxJsonBuf, p, vendorHex);         p = appendStr(s_jsonBuf, kMaxJsonBuf, p, ",\n");
