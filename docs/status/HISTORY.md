@@ -6,6 +6,37 @@ Detailed completion notes for Entity Media Server phases.
 
 ## Phase D: Feature work (in progress)
 
+### Decode warm-set worker budget — IIWY 149-clip OOM fix (2026-07-03)
+
+Loading the converted IIWY_fromQlab show (149 clips, 97× 4095×1920
+ProRes 4444) spawned one always-warm decode worker per clip: ~4,850
+threads and 108 GB private bytes against a 115 GB commit limit, ending
+in FFmpeg `get_buffer()` failure → worker-thread AV 0xC0000005 (#73).
+Fix: workers now scale with a playhead-proximity warm window instead of
+total clip count. A pure, unit-tested `warmset::compute()` decides which
+clips hold live decode/audio workers — playhead window (2 s back,
+`decodeLookaheadSeconds` ahead, default 20 s) ∪ armed-cue window ∪ 5 s
+grace, capped at `decodeWorkerCap` (default 32, nearest-to-playhead
+wins, playhead-window clips outrank armed-only at ties). Cold clips
+distance-retire through the existing retire/reap path and keep their
+FrameCache entries for instant re-entry; clips steered through fade
+tails / Fix-8 extensions / continuation are never cold-retired. ProRes
+decoders switched from frame+slice threading (per-decoder memory
+multiplier) to slice-only with a capped thread count — scoped to
+`AV_CODEC_ID_PRORES`; H.264/MJPEG through the generic path keep
+frame+slice auto. New `ArmCue` command (OSC
+`/entity/cue/{n}/arm`) prewarm-selects a distant cue so an Arm→Fire
+pair jumps instantly; bootstrap anchors decode at the cue's mapped
+media frame. Also shipped: Release PDBs + configure-time git-hash
+`buildCommit` in crash contexts (#72) so future dumps are walkable, and
+`PlaybackPresenter::getCurrentVideoFrame` returns a `FrameLease`
+(documented dangling-pointer race removed). Measured on
+IIWY_fromQlab: play script exits 0 (was 0xC0000005), peak private
+16.6 GB (was 108), ~493 threads (was ~4,850). Converted full-show
+projects are now a supported scale target. Commits
+`2a8d600`..`2245d26`; acceptance scripts
+`scripts/diag_iiwy_fromqlab_{load,play,arm_cue}.json`.
+
 ### Section-Break Behavior — Three Fixes (2026-05-23)
 
 Three issues observed during real cueing once the section-break
