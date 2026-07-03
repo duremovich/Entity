@@ -837,6 +837,7 @@ ojson encode(const ClipCatalogEntry& e) {
     j["duration"]             = e.duration;
     j["mediaStartFrame"]      = e.mediaStartFrame;
     j["mediaOutFrame"]        = e.mediaOutFrame;
+    j["totalMediaFrames"]     = e.totalMediaFrames;
     j["framerate"]            = e.framerate;
     j["playbackMode"]         = e.playbackMode;
     j["sectionBehavior"]      = e.sectionBehavior;
@@ -885,6 +886,10 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     e.duration        = j.at("duration").get<FrameNumber>();
     e.mediaStartFrame = j.at("mediaStartFrame").get<FrameNumber>();
     e.mediaOutFrame   = j.at("mediaOutFrame").get<FrameNumber>();
+    // Optional for backward compat with pre-#74 payloads — default 0
+    // ("unknown") matches the struct default; effectivePlaybackLength then
+    // falls back to its pre-#74 behavior for such payloads.
+    e.totalMediaFrames = j.value("totalMediaFrames", FrameNumber{0});
     e.framerate       = j.at("framerate").get<double>();
     e.playbackMode    = j.at("playbackMode").get<int>();
     e.sectionBehavior = j.at("sectionBehavior").get<int>();

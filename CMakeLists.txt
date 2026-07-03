@@ -299,6 +299,7 @@ target_sources(EntityMediaCore
         # allows (subtasks 7-11 untangle the cycle through
         # EntityMediaCore).
         src/director/Director.cpp
+        src/director/CatalogClipMath.cpp
         src/director/PlaybackTimeAuthority.cpp
         src/director/SectionScheduler.cpp
         src/director/CaptureBroker.cpp

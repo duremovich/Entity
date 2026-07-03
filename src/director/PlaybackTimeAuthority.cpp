@@ -28,6 +28,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
+#include "entity/director/CatalogClipMath.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -121,185 +122,17 @@ inline void bakeRoutes(const entt::registry& reg,
     }
 }
 
-// Reconstruct a Clip value from a ClipCatalogEntry for use with the pure
-// mapToMediaFrame(const Clip&, FrameNumber) overload and computeSectionFadeMultiplier.
-// FFmpeg pointer fields stay null — only the scheduling/math fields matter here.
-Clip clipFromCatalog(const bus::ClipCatalogEntry& e) {
-    Clip c;
-    c.startFrame      = e.startFrame;
-    c.duration        = e.duration;
-    c.mediaStartFrame = e.mediaStartFrame;
-    c.mediaOutFrame   = e.mediaOutFrame;
-    c.framerate       = e.framerate;
-    c.playbackMode    = static_cast<PlaybackMode>(e.playbackMode);
-    c.sectionBehavior = static_cast<SectionBehavior>(e.sectionBehavior);
-    // targetScreen: convert from uint64 back to entt::entity
-    c.targetScreen = (e.targetScreen == UINT64_MAX)
-        ? entt::null
-        : static_cast<entt::entity>(static_cast<std::uint32_t>(e.targetScreen));
-    return c;
-}
-
+// clipFromCatalog + mapToMediaFrameFromCatalog were hoisted to
+// entity/director/CatalogClipMath.{hpp,cpp} (issue #74) so the
+// DecodeSystem/AudioSystem stall-fallback ticks can share them.
+// buildRenderFrame below still calls them unqualified — same namespace.
+//
 // The Normal-mode break-aligned extension math lives in Clip.hpp as
 // the free function `entity::computeExtendedDuration(clip, fps,
 // endAlignsWithBreak, endingBreakFadeSeconds)`. DecodeSystem and
 // AudioSystem call the same helper so their inTail-versus-extension
 // decisions stay in lockstep with PTA. See ADR-0012 amendment
 // 2026-05-23 + the 2026-05-23 follow-up.
-
-// Show-side mapToMediaFrame: mirrors the entity-aware 3-arg overload but reads
-// phase data from the ClipCatalogEntry instead of the registry.
-// nowNs is the active rate source's current time in nanoseconds
-// (caller passes rateNow()*1e9 so the continuation anchor and the show-thread
-// re-derivation share the same clock domain as the editor-side seed).
-FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
-                                       FrameNumber timelineFrame,
-                                       double timelineFrameRate,
-                                       std::int64_t nowNs) {
-    const Clip clip = clipFromCatalog(e);
-    const FrameNumber clipEnd = clip.startFrame + clip.duration;
-    const FrameNumber sourceLength = effectivePlaybackLength(clip);
-    // 2026-05-23 — Normal-mode break-aligned extension. For Normal clips
-    // ending exactly at a break with source content past that point,
-    // realEnd extends past clipEnd up to the source-out-equivalent timeline
-    // frame. For Locked / non-break-aligned clips, realEnd == clipEnd
-    // (unchanged behavior). All "is this clip past its play window?"
-    // checks below use realEnd so natural playback continues through the
-    // extension window before tail-hold semantics kick in.
-    const FrameNumber realEnd = clip.startFrame +
-        entity::computeExtendedDuration(clip, timelineFrameRate,
-                                        e.endAlignsWithSectionBreak,
-                                        e.endingBreakFadeSeconds);
-
-    // tail short-circuit (same as entity-aware overload) — applies past
-    // the clip's real end, which is extendedEnd for Normal-extended clips.
-    if (timelineFrame >= realEnd && e.hasPhase && e.phase_tailHoldMediaFrame >= 0) {
-        return e.phase_tailHoldMediaFrame;
-    }
-
-    const bool inContinuation = e.hasPhase && e.phase_inContinuation
-        && clip.sectionBehavior == SectionBehavior::Normal;
-
-    if (!inContinuation) {
-        // post-break anchor path — covers the post-GO span, including the
-        // extension window for Normal-extended clips.
-        //
-        // Defensive guard (2026-05-23) — only apply the anchor when the
-        // playhead is at or past the anchor's reference timeline frame.
-        // `resetAnchorsAcrossScrub` is supposed to clear stale anchors on
-        // scrub-back-past-break and on Stop, but its delta-based
-        // discontinuity detection can miss slow drags or clip-move
-        // workflows where the playhead ends up before the anchor without
-        // a single big jump. With a stale anchor the math's `max(...,0)`
-        // clamp pins mediaFrame at the held value for every tick where
-        // currentTimelineFrame < anchorTimelineFrame, which presents as
-        // a video freeze. The natural sourceLocalFrame branch below
-        // produces the correct mapping for the clip's current position.
-        if (e.hasPhase && e.phase_postBreakMediaAnchor >= 0 &&
-            timelineFrame >= e.phase_anchorTimelineFrame &&
-            timelineFrame < realEnd) {
-            const double frameRateRatio = (timelineFrameRate > 0.0)
-                ? clip.framerate / timelineFrameRate : 1.0;
-            if (sourceLength <= 0) return clip.mediaStartFrame;
-
-            const double timelineDelta =
-                static_cast<double>(timelineFrame - e.phase_anchorTimelineFrame);
-            const double localFloat =
-                static_cast<double>(e.phase_postBreakMediaAnchor - clip.mediaStartFrame)
-                + timelineDelta * frameRateRatio;
-            const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
-                std::floor(std::max(localFloat, 0.0)));
-
-            if (sourceLocalFrame < sourceLength) {
-                return clip.mediaStartFrame + sourceLocalFrame;
-            }
-            switch (clip.playbackMode) {
-                case PlaybackMode::Freeze:
-                    return clip.mediaStartFrame + sourceLength - 1;
-                case PlaybackMode::Loop:
-                    return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
-                case PlaybackMode::PingPong: {
-                    const FrameNumber cycle = sourceLocalFrame / sourceLength;
-                    const FrameNumber pos   = sourceLocalFrame % sourceLength;
-                    return (cycle % 2 == 0)
-                        ? clip.mediaStartFrame + pos
-                        : clip.mediaStartFrame + (sourceLength - 1 - pos);
-                }
-            }
-            return clip.mediaStartFrame + sourceLength - 1;
-        }
-
-        // natural timeline-derived path (2-arg equivalent, inlined)
-        const double frameRateRatio = (timelineFrameRate > 0.0)
-            ? clip.framerate / timelineFrameRate : 1.0;
-        // Fix 5 (2026-05-23) — held last decoded frame is the media frame
-        // the clip displayed at its last authored timeline frame
-        // (realEnd - 1), wrapped per playbackMode — NOT the trimmed
-        // source-range end. A clip whose authored duration is shorter
-        // than its trimmed source range never decoded mediaStartFrame +
-        // sourceLength - 1, so asking the cache for that frame is a
-        // guaranteed stall until SeekSyncController times out. For
-        // Normal-extended clips realEnd > clipEnd so the natural-wrap
-        // math walks through the extension window before clamping — the
-        // PlaybackMode (Freeze/Loop/PingPong) wrap at sourceLocalFrame
-        // >= sourceLength kicks in naturally at the source out point.
-        if (timelineFrame >= realEnd) timelineFrame = realEnd - 1;
-        const FrameNumber localFrame = timelineFrame - clip.startFrame;
-        const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
-            std::floor(localFrame * frameRateRatio));
-        if (sourceLocalFrame < sourceLength) {
-            return clip.mediaStartFrame + sourceLocalFrame;
-        }
-        switch (clip.playbackMode) {
-            case PlaybackMode::Freeze:
-                return clip.mediaStartFrame + sourceLength - 1;
-            case PlaybackMode::Loop:
-                return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
-            case PlaybackMode::PingPong: {
-                const FrameNumber cycle = sourceLocalFrame / sourceLength;
-                const FrameNumber pos   = sourceLocalFrame % sourceLength;
-                return (cycle % 2 == 0)
-                    ? clip.mediaStartFrame + pos
-                    : clip.mediaStartFrame + (sourceLength - 1 - pos);
-            }
-        }
-        return clip.mediaStartFrame + sourceLength - 1;
-    }
-
-    // continuation path: derive from accumulated source phase.
-    if (sourceLength <= 0) return clip.mediaStartFrame;
-    // NEW-08: when a wall-clock anchor is present, re-derive the live phase
-    // from it instead of the snapshot-frozen phase_sourcePhaseFrames. During
-    // an editor stall no new SceneSnapshot is published, so the baked
-    // phase_sourcePhaseFrames goes stale — but the anchor (set once at the
-    // at-break park, never mutated during continuation) plus the caller-
-    // supplied nowNs (from the active RateSource) keeps Loop/PingPong clips
-    // cycling on the projector on the same clock domain as the seed.
-    // Mirrors SectionScheduler::advanceContinuation's wall-clock path;
-    // the dt-accumulator fallback (anchor == 0) reads the baked value.
-    double effectivePhase = e.phase_sourcePhaseFrames;
-    if (e.phase_continuationStartTimeNs > 0) {
-        const double elapsedSec =
-            static_cast<double>(nowNs - e.phase_continuationStartTimeNs) * 1e-9;
-        effectivePhase = e.phase_continuationSeedFrames + elapsedSec * clip.framerate;
-    }
-    const double phaseClamped = std::max(effectivePhase, 0.0);
-    const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
-    switch (clip.playbackMode) {
-        case PlaybackMode::Freeze:
-            return clip.mediaStartFrame + std::min(phaseFrame, sourceLength - 1);
-        case PlaybackMode::Loop:
-            return clip.mediaStartFrame + (phaseFrame % sourceLength);
-        case PlaybackMode::PingPong: {
-            const FrameNumber cycle = phaseFrame / sourceLength;
-            const FrameNumber pos   = phaseFrame % sourceLength;
-            return (cycle % 2 == 0)
-                ? clip.mediaStartFrame + pos
-                : clip.mediaStartFrame + (sourceLength - 1 - pos);
-        }
-    }
-    return clip.mediaStartFrame + sourceLength - 1;
-}
 
 // -- Show-thread animation evaluator (NEW-07) ------------------------------
 //
@@ -1077,6 +910,9 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         ce.duration        = clip.duration;
         ce.mediaStartFrame = clip.mediaStartFrame;
         ce.mediaOutFrame   = clip.mediaOutFrame;
+        // #74 — carried for effectivePlaybackLength's fallback when
+        // mediaOutFrame is the unresolved -1 sentinel (missing media).
+        ce.totalMediaFrames = clip.totalMediaFrames;
         ce.framerate       = clip.framerate;
         ce.playbackMode    = static_cast<int>(clip.playbackMode);
         ce.sectionBehavior = static_cast<int>(clip.sectionBehavior);

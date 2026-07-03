@@ -535,6 +535,13 @@ struct ClipCatalogEntry {
     FrameNumber   duration{0};
     FrameNumber   mediaStartFrame{0};
     FrameNumber   mediaOutFrame{0};
+    // Total frames in the source media (Clip::totalMediaFrames). Needed by
+    // effectivePlaybackLength's fallback when mediaOutFrame is still the
+    // unresolved -1 sentinel (media missing / decoder not yet opened) —
+    // without it the catalog reconstruction clamps such clips to a
+    // 1-frame playback window (issue #74). 0 = unknown, matching the
+    // component default.
+    FrameNumber   totalMediaFrames{0};
     double        framerate{30.0};
     int           playbackMode{0};  // PlaybackMode enum as int
     int           sectionBehavior{0}; // SectionBehavior enum as int
