@@ -8,10 +8,14 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
+#include "entity/systems/WarmSet.hpp"
+#include "entity/core/Settings.hpp"
 #include "entity/profile/Tracy.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <unordered_set>
 
 namespace entity {
 
@@ -156,12 +160,41 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     const int rate = m_audioEngine->sampleRate();
 
     auto view = registry.view<Clip, AudioSource>();
+
+    // Warm-set budget (spec: entity-decode-worker-budget). Same gate as
+    // DecodeSystem but over audio-bearing clips only — audio workers get
+    // their own decodeWorkerCap budget, separate from video.
+    std::unordered_set<entt::entity> warm;
+    if (isEditorTick) {
+        const Settings settings = activeSettings();
+        warmset::Params wp;
+        wp.playheadFrame    = currentTLFrame;
+        wp.timelineFps      = tlFPS;
+        wp.lookaheadSeconds = settings.decodeLookaheadSeconds;
+        wp.cap              = settings.decodeWorkerCap;
+        wp.nowNs            = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (auto sel = m_timeline->getSelectedCueNumber()) {
+            if (const CueTag* cue = m_timeline->findCueTag(*sel)) {
+                wp.armedCueFrame = cue->frame;
+            }
+        }
+        std::vector<warmset::ClipSpan> spans;
+        for (auto [entity, clip, as] : view.each()) {
+            (void)as;
+            if (clip.loaded) spans.push_back({entity, clip.startFrame, clip.duration});
+        }
+        warm = warmset::compute(spans, wp, m_lastWarmNs);
+        TracyPlot("Warm audio workers", static_cast<int64_t>(warm.size()));
+    }
+
     for (auto [entity, clip, as] : view.each()) {
         if (!clip.loaded) continue;
 
         auto workerIt = m_workers.find(entity);
         if (workerIt == m_workers.end()) {
             if (!isEditorTick) continue;
+            if (!warm.contains(entity)) continue;   // budget: no worker for cold clips
             createWorker(entity, registry);
             workerIt = m_workers.find(entity);
             if (workerIt == m_workers.end()) continue;
@@ -358,27 +391,9 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         m_lastExpectedSample[entity] = expectedSample;
     }
 
-    // Sliding-window prefetch — mirrors DecodeSystem::prefetchUpcoming so
-    // audio workers warm in step with video. Without this, an MP4 clip
-    // queued at a section break holds the SeekSyncController gate for the
-    // full preroll-timeout (3 s) because its audio worker doesn't exist
-    // until the playhead enters the clip window. Editor-thread only
-    // (writes m_workers); skipped when Stopped.
-    if (isEditorTick &&
-        m_timeline->getPlaybackState() != PlaybackState::Stopped) {
-        ZoneScopedN("AudioSystem::prefetchUpcoming");
-        const FrameNumber prefetchAhead = static_cast<FrameNumber>(
-            std::ceil(kPrefetchAheadSeconds * tlFPS));
-        const FrameNumber windowEnd = currentTLFrame + prefetchAhead;
-
-        for (auto [entity, clip, as] : view.each()) {
-            if (!clip.loaded) continue;
-            if (clip.startFrame <= currentTLFrame) continue;
-            if (clip.startFrame >  windowEnd)      continue;
-            if (m_workers.contains(entity))        continue;
-            createWorker(entity, registry);
-        }
-    }
+    // (The old kPrefetchAheadSeconds sliding-window prefetch loop lived here.
+    // The warm-set window above subsumes it: bigger lookahead, transport-
+    // independent, and cap-aware.)
 
     // Tear down workers for entities that are gone (editor-thread only).
     // retireWorker signals stop + unregisters the mixer source but defers the
@@ -386,13 +401,21 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     // tick), so a group delete of N audio-bearing clips doesn't serialize N
     // blocking joins on one editor tick — the delete-freeze fix.
     if (isEditorTick) {
-        std::vector<entt::entity> toRemove;
+        std::vector<entt::entity> toRemove;      // deleted entities
+        std::vector<entt::entity> toCool;        // live but cold clips (warm-set budget)
         for (auto& [ent, w] : m_workers) {
             if (!registry.valid(ent) || !registry.all_of<Clip, AudioSource>(ent)) {
                 toRemove.push_back(ent);
+            } else if (!warm.contains(ent)) {
+                toCool.push_back(ent);
             }
         }
         for (entt::entity ent : toRemove) {
+            retireWorker(ent);
+        }
+        for (entt::entity ent : toCool) {
+            // Distance-retire: frees the decoder + ring; no cache-eviction
+            // concern (audio rings die with the worker).
             retireWorker(ent);
         }
     }

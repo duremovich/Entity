@@ -198,17 +198,11 @@ private:
     std::atomic<bool> m_globalPaused{false};
     bool              m_wasScrubbing{false};
 
+    // warmset::compute grace bookkeeping (editor-thread only, like m_workers).
+    std::unordered_map<entt::entity, int64_t> m_lastWarmNs;
+
     // Decode-ahead configuration
     static constexpr uint32_t DECODE_AHEAD_FRAMES = 8; // ~270ms @30fps headroom
-
-    // Sliding-window prefetch lookahead. Each editor tick (when not Stopped)
-    // any not-yet-started clip whose startFrame is within this many seconds
-    // of the playhead gets a worker bootstrapped — so the FFmpeg open + seek
-    // + first-frame decode runs in the background, and when the playhead
-    // (or a cue-jump) reaches the clip its frames are already in the cache.
-    // 5 s is comfortably bigger than worst-case cold-open (~200–300 ms on
-    // 4K ProRes) plus seek + first-decode, with headroom for slow disks.
-    static constexpr double kPrefetchAheadSeconds = 5.0;
 };
 
 } // namespace entity

@@ -17,11 +17,14 @@
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodeBufferPool.hpp"
 #include "entity/media/FrameCache.hpp"
+#include "entity/systems/WarmSet.hpp"
+#include "entity/core/Settings.hpp"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace entity {
 
@@ -116,6 +119,33 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     FrameNumber currentTimelineFrame = m_timeline->getCurrentFrame();
 
     auto view = registry.view<Clip, FrameBuffer>();
+
+    // Warm-set budget (spec: entity-decode-worker-budget). Editor tick only —
+    // lifecycle (create/retire) is editor-owned; the show-thread fallback
+    // steers existing workers and never consults the warm set.
+    std::unordered_set<entt::entity> warm;
+    if (isEditorTick) {
+        const Settings settings = activeSettings();
+        warmset::Params wp;
+        wp.playheadFrame    = currentTimelineFrame;
+        wp.timelineFps      = m_timeline->getFrameRate();
+        wp.lookaheadSeconds = settings.decodeLookaheadSeconds;
+        wp.cap              = settings.decodeWorkerCap;
+        wp.nowNs            = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (auto sel = m_timeline->getSelectedCueNumber()) {
+            if (const CueTag* cue = m_timeline->findCueTag(*sel)) {
+                wp.armedCueFrame = cue->frame;
+            }
+        }
+        std::vector<warmset::ClipSpan> spans;
+        for (auto [entity, clip] : view.each()) {
+            if (clip.loaded) spans.push_back({entity, clip.startFrame, clip.duration});
+        }
+        warm = warmset::compute(spans, wp, m_lastWarmNs);
+        TracyPlot("Warm decode workers", static_cast<int64_t>(warm.size()));
+    }
+
     // FrameBuffer is an empty marker type; entt elides empty components from
     // view::each's tuple, so the binding here is (entity, clip) only.
     for (auto [entity, clip] : view.each()) {
@@ -129,6 +159,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // pre-existing worker — skip and let the next editor tick
             // bootstrap if needed.
             if (!isEditorTick) continue;
+            if (!warm.contains(entity)) continue;   // budget: no worker for cold clips
 
             // Bootstrap a worker at the current playhead-mapped media frame.
             FrameNumber initialMediaFrame = clip.mediaStartFrame;
@@ -467,37 +498,9 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         }
     }
 
-    // Sliding-window prefetch — warm decoders for clips that will start
-    // within kPrefetchAheadSeconds of the current playhead so a GO,
-    // continuous play-through, or cue-jump lands on a hot worker instead
-    // of paying the cold FFmpeg-open + seek + first-frame cost inside the
-    // seek-sync gate (ADR-0026). Editor-thread only because it writes
-    // m_workers (same constraint as the bootstrap path above). Skipped
-    // when Stopped (project teardown / pre-load); runs in Paused so an
-    // operator who pauses, scrubs, then plays still benefits.
-    if (isEditorTick &&
-        m_timeline->getPlaybackState() != PlaybackState::Stopped) {
-        ZoneScopedN("DecodeSystem::prefetchUpcoming");
-        const double fps = std::max(1.0, m_timeline->getFrameRate());
-        const FrameNumber prefetchAhead = static_cast<FrameNumber>(
-            std::ceil(kPrefetchAheadSeconds * fps));
-        const FrameNumber windowEnd = currentTimelineFrame + prefetchAhead;
-
-        for (auto [entity, clip] : view.each()) {
-            if (!clip.loaded) continue;
-            // Strict > so already-started or active clips fall through to
-            // the bootstrap / steer path above; only warm not-yet-started
-            // clips inside the lookahead window. In practice the bootstrap
-            // path (line ~82) already creates workers for every loaded
-            // Clip+FrameBuffer entity regardless of activity, so this loop
-            // is usually a no-op — kept as a safety net for late-loaded
-            // clips (async MediaProbe completion mid-play, etc.).
-            if (clip.startFrame <= currentTimelineFrame) continue;
-            if (clip.startFrame >  windowEnd)             continue;
-            if (m_workers.contains(entity))               continue;
-            createWorker(entity, registry, clip.mediaStartFrame);
-        }
-    }
+    // (The old kPrefetchAheadSeconds sliding-window prefetch loop lived here.
+    // The warm-set window above subsumes it: bigger lookahead, transport-
+    // independent, and cap-aware.)
 
     // Emit decode backlog plot: total frames-behind across all active workers.
     // Measures how many frames each worker still needs to decode to reach
@@ -529,10 +532,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // editor tick never blocks. This also sidesteps the show-thread
     // fallback re-entering and racing the same std::thread handle.
     if (isEditorTick) {
-        std::vector<entt::entity> toRemove;
+        std::vector<entt::entity> toRemove;      // deleted entities: retire + evict cache
+        std::vector<entt::entity> toCool;        // live but cold clips: retire, KEEP cache
         for (auto& [entity, worker] : m_workers) {
             if (!registry.valid(entity) || !registry.all_of<Clip, FrameBuffer>(entity)) {
                 toRemove.push_back(entity);
+            } else if (!warm.contains(entity)) {
+                toCool.push_back(entity);
             }
         }
         for (entt::entity entity : toRemove) {
@@ -540,6 +546,12 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // reapRetiredWorkers does a second evict once the thread exits, to
             // catch frames an in-flight decode lands after this point.
             if (m_frameCache) m_frameCache->evictClip(entity);
+            retireWorker(entity);
+        }
+        for (entt::entity entity : toCool) {
+            // Distance-retire: close the decoder (frees FFmpeg buffers) but
+            // leave decoded frames in the LRU so re-entry hits the seek
+            // fast-path (cache->has) instead of a cold first-decode.
             retireWorker(entity);
         }
     }
