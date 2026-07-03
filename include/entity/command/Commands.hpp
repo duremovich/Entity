@@ -280,7 +280,6 @@ public:
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "PasteClip"; }
     nlohmann::json toJson() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -316,7 +315,6 @@ public:
     const char* getTypeName() const override { return "SetClipMedia"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -1945,7 +1943,6 @@ public:
     const char* getTypeName() const override { return "SetDmxMappingsJson"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override { return "Edit DMX mappings"; }
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2650,7 +2647,6 @@ public:
     const char* getTypeName() const override { return "AddEffect"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2680,7 +2676,6 @@ public:
     const char* getTypeName() const override { return "RemoveEffect"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2727,7 +2722,6 @@ public:
     const char* getTypeName() const override { return "SetGenerativeRenderSize"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2762,7 +2756,6 @@ public:
     const char* getTypeName() const override { return "SetTextContent"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2789,7 +2782,6 @@ public:
     const char* getTypeName() const override { return "SetTextFont"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2816,7 +2808,6 @@ public:
     const char* getTypeName() const override { return "SetTextFontSize"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2846,7 +2837,6 @@ public:
     const char* getTypeName() const override { return "SetTextColor"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2874,7 +2864,6 @@ public:
     const char* getTypeName() const override { return "SetTextAlignment"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2901,7 +2890,6 @@ public:
     const char* getTypeName() const override { return "SetTextBold"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2928,7 +2916,6 @@ public:
     const char* getTypeName() const override { return "SetTextItalic"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2955,7 +2942,6 @@ public:
     const char* getTypeName() const override { return "SetEffectEnabled"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -2992,7 +2978,6 @@ public:
     const char* getTypeName() const override { return "SetEffectFloatParam"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3165,7 +3150,6 @@ public:
     const char* getTypeName() const override { return "AssignScreenToDisplay"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3203,7 +3187,6 @@ public:
     const char* getTypeName() const override { return "SetOutputEnabled"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3288,7 +3271,6 @@ public:
     const char* getTypeName() const override { return "SetAudioSourceGain"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3315,7 +3297,6 @@ public:
     const char* getTypeName() const override { return "SetAudioSourceMute"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3342,7 +3323,6 @@ public:
     const char* getTypeName() const override { return "SetAudioSourceSolo"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3368,9 +3348,6 @@ public:
     const char* getTypeName() const override { return "SetMasterGain"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    // Editor, not Either: UndoableCommands push onto the dispatcher's
-    // unguarded undo/redo deques, which only the editor thread may touch.
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3395,9 +3372,6 @@ public:
     const char* getTypeName() const override { return "SetMasterMute"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    // Editor, not Either: UndoableCommands push onto the dispatcher's
-    // unguarded undo/redo deques, which only the editor thread may touch.
-    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:

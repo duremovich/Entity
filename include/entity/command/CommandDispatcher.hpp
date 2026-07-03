@@ -27,10 +27,18 @@ namespace entity {
  * Thread Safety (post-ADR-0014):
  * - enqueue() is thread-safe (can be called from any thread)
  * - processQueue() runs on the editor thread (Affinity::Editor) AND the
- *   show thread (Affinity::Show). Only the queue itself is locked; the
- *   undo/redo stacks, recording buffer, and script-results members are
- *   editor-thread-only. Therefore every UndoableCommand MUST declare
- *   Affinity::Editor, and undo()/redo()/clearHistory() are editor-only.
+ *   show thread (Affinity::Show). Only the queue itself is locked.
+ * - The undo/redo stacks are editor-thread-only. Enforced structurally:
+ *   UndoableCommand::getAffinity() is final Affinity::Editor, so the show
+ *   thread can never drain a command that reaches the undo-stack push.
+ *   undo()/redo()/clearHistory() are editor-only.
+ * - The recording buffer and script-results members are mutated by
+ *   processQueue on whichever thread drains a command, UNLOCKED. Safe
+ *   today only by accident of inventory: the sole non-Editor command
+ *   (SetDmxOut, Either) cannot fail, and setRecording() has no callers.
+ *   Before adding a failable Show/Either command or wiring up recording,
+ *   give m_recordedCommands / m_scriptResults their own mutex (do NOT
+ *   reuse m_queueMutex — finishScript() would hold it across file I/O).
  */
 class CommandDispatcher {
 public:

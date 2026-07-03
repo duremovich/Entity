@@ -19,6 +19,13 @@ public:
     // Default redo just re-runs execute(). Override if execute() captures
     // state that must be preserved on subsequent runs (most commands don't).
     virtual bool redo(Engine& engine) { return execute(engine); }
+
+    // final: undoable commands MUST run on the editor thread. On success,
+    // CommandDispatcher::processQueue pushes them onto the undo/redo deques,
+    // which are unguarded and editor-thread-only (see CommandDispatcher.hpp
+    // thread-safety notes). A Show/Either undoable would mutate those deques
+    // from the show thread — the race this override makes unrepresentable.
+    Affinity getAffinity() const final { return Affinity::Editor; }
 };
 
 } // namespace entity
