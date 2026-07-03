@@ -2,6 +2,7 @@
 #include "entity/media/AlphaPremultiply.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/profile/Tracy.hpp"
+#include <algorithm>
 #include <iostream>
 #include <cstring>
 
@@ -108,9 +109,14 @@ Result ProResDecoder::open(const std::string& filepath) {
         return Result::DecoderError;
     }
 
-    // Enable multi-threaded decoding for better performance
-    m_codecContext->thread_count = 0; // Auto-detect thread count
-    m_codecContext->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    // Slice threading only. FF_THREAD_FRAME keeps ~thread_count full-res
+    // frames in flight PER DECODER (63 MB each at 4095x1920 ProRes 4444 —
+    // the 2026-07 IIWY OOM multiplier) and adds thread_count frames of
+    // seek-to-first-frame latency. Slice threading parallelizes within a
+    // frame: ~1 frame resident, no added latency. ProRes carries many
+    // slices per frame, so it scales well.
+    m_codecContext->thread_count = std::clamp(activeSettings().decoderThreadCount, 1, 16);
+    m_codecContext->thread_type  = FF_THREAD_SLICE;
 
     // 6. Open codec
     ret = avcodec_open2(m_codecContext, codec, nullptr);
