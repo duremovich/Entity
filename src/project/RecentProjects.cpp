@@ -3,6 +3,7 @@
  */
 
 #include "entity/project/RecentProjects.hpp"
+#include "entity/core/AtomicFile.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -123,31 +124,11 @@ bool RecentProjects::saveTo(const fs::path& file) const {
         });
     }
 
-    // Write-temp-then-rename, same as ProjectSerializer::save — never
-    // truncate the previous good file before the new content is durable.
-    fs::path tmp = file;
-    tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) {
-            std::cerr << "[RecentProjects] Failed to open " << tmp.string() << " for write" << std::endl;
-            return false;
-        }
-        out << doc.dump(2);
-        out.flush();
-        if (!out.good()) {
-            std::error_code ec;
-            out.close();
-            fs::remove(tmp, ec);
-            return false;
-        }
-    }
-    std::error_code ec;
-    fs::rename(tmp, file, ec);
-    if (ec) {
-        std::cerr << "[RecentProjects] Failed to move " << tmp.string()
-                  << " into place: " << ec.message() << std::endl;
-        fs::remove(tmp, ec);
+    // Write-temp-then-rename so a crash mid-save can never destroy the
+    // previous good file. See entity/core/AtomicFile.hpp.
+    std::string err;
+    if (!writeFileAtomic(file, doc.dump(2), &err)) {
+        std::cerr << "[RecentProjects] " << err << std::endl;
         return false;
     }
     return true;

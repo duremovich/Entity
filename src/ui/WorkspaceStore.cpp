@@ -1,4 +1,5 @@
 #include "entity/ui/WorkspaceStore.hpp"
+#include "entity/core/AtomicFile.hpp"
 
 #include <nlohmann/json.hpp>
 #include <cstdlib>
@@ -168,26 +169,11 @@ bool saveAll(const std::vector<Workspace>& workspaces,
         j["workspaces"].push_back(std::move(wj));
     }
 
-    // Atomic-ish write: tmp file + rename. Same pattern as Settings.cpp.
-    const auto tmpPath = path.string() + ".tmp";
-    {
-        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) {
-            std::cerr << "[Workspaces] Could not write " << tmpPath << std::endl;
-            return false;
-        }
-        out << j.dump(2);
-        if (!out.good()) {
-            std::cerr << "[Workspaces] Stream error writing " << tmpPath << std::endl;
-            return false;
-        }
-    }
-
-    std::filesystem::rename(tmpPath, path, ec);
-    if (ec) {
-        std::cerr << "[Workspaces] Rename " << tmpPath << " -> " << path
-                  << " failed (" << ec.message() << ")" << std::endl;
-        std::filesystem::remove(tmpPath);
+    // Write-temp-then-rename so a crash mid-write can never corrupt the
+    // prior workspaces file. See entity/core/AtomicFile.hpp.
+    std::string err;
+    if (!writeFileAtomic(path, j.dump(2), &err)) {
+        std::cerr << "[Workspaces] " << err << std::endl;
         return false;
     }
     return true;

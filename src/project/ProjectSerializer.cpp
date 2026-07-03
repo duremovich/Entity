@@ -5,6 +5,7 @@
  */
 
 #include "entity/project/ProjectSerializer.hpp"
+#include "entity/core/AtomicFile.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Clip.hpp"
@@ -1145,34 +1146,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["cues"] = cuesJson;
 
-        // Write-temp-then-rename: opening savePath directly would truncate
-        // the previous good file before the new content is durable, so a
-        // crash mid-save destroys the project. The rename swap is atomic
-        // on NTFS, so savePath always holds either the old or the new file.
-        std::filesystem::path tmpPath = savePath;
-        tmpPath += ".tmp";
-        {
-            std::ofstream file(tmpPath, std::ios::binary | std::ios::trunc);
-            if (!file.is_open()) {
-                s_lastError = "Failed to open file for writing: " + tmpPath.string();
-                return false;
-            }
-            file << project.dump(2);  // 2-space indentation
-            file.flush();
-            if (!file.good()) {
-                s_lastError = "Write failed (disk full?): " + tmpPath.string();
-                file.close();
-                std::error_code removeEc;
-                std::filesystem::remove(tmpPath, removeEc);
-                return false;
-            }
-        }
-        std::error_code renameEc;
-        std::filesystem::rename(tmpPath, savePath, renameEc);
-        if (renameEc) {
-            s_lastError = "Failed to move temp save into place: " + renameEc.message();
-            std::error_code removeEc;
-            std::filesystem::remove(tmpPath, removeEc);
+        // Write-temp-then-rename so a crash mid-save can never destroy the
+        // previous good project file. See entity/core/AtomicFile.hpp.
+        if (!writeFileAtomic(savePath, project.dump(2), &s_lastError)) {
             return false;
         }
 
