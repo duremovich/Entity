@@ -22,9 +22,14 @@ jobs:
         run: |
           set -uo pipefail
           includes=$(grep -rEn '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]' plugin-api/ || true)
-          violations=$(echo "$includes" | grep -E 'entt/|d3d12\.h|dxgi|entity/(core|render|timeline|director|renderer)/' || true)
+          # Deny list mirrors plugin-api/CLAUDE.md rules 1-3 plus the Tracy
+          # wrapper (entity/profile/ must never leak into the Apache layer).
+          # Note: rule 2 permits entity/render/IRenderer.hpp (TextureRef) for
+          # hot-path interfaces; nothing uses it yet, so the guard stays
+          # strict until something does — carve out the exception then.
+          violations=$(echo "$includes" | grep -E 'entt/|d3d12\.h|dxgi|entity/(core|render|timeline|director|renderer|project|ui|systems|profile)/' || true)
           if [ -n "$violations" ]; then
-            echo "ERROR: plugin-api/ must not include EnTT, D3D12/DXGI, or core engine headers:"
+            echo "ERROR: plugin-api/ must not include EnTT, D3D12/DXGI, core engine, or profiling headers:"
             echo "$violations"
             exit 1
           fi
@@ -39,6 +44,14 @@ jobs:
     # work item; pinning here matches the local dev environment.
     runs-on: windows-2022
     timeout-minutes: 90
+
+    # CLAUDE.md mandate: Tracy ON and OFF builds must both compile and pass
+    # all ctests. OFF is where rot hides — TracyPlot/TracyLockable/
+    # [[maybe_unused]] guards expand to nothing and break silently.
+    strategy:
+      fail-fast: false
+      matrix:
+        tracy: [ON, OFF]
 
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
@@ -157,7 +170,8 @@ jobs:
                 -G "Visual Studio 17 2022" \
                 -A x64 \
                 -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-                -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON; then
+                -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON \
+                -DENTITY_ENABLE_TRACY=${{ matrix.tracy }}; then
               echo "=== cmake configure succeeded on attempt $attempt ==="
               exit 0
             fi
@@ -189,7 +203,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-output
+          name: test-output-tracy-${{ matrix.tracy }}
           path: |
             test_output/
             build/Testing/
