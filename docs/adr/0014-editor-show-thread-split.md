@@ -20,6 +20,12 @@
 - **Amends:** ADR-0003 (Director/Renderer split). ADR-0003 describes the
   logical service split; this ADR records how the two services run on
   separate threads within a single process.
+- **Amended:** 2026-07-03, issue #74 — the "Show-Thread Fallback Pattern"
+  section was rewritten. The original fallback re-entered
+  `DecodeSystem::update`/`AudioSystem::update` with the live registry on
+  the show thread, relying on the false claim that the editor isn't
+  writing during a stall (project load is a stall *and* a bulk registry
+  mutation). The fallback is now registry-free (`tickFromSnapshot`).
 
 ## Context
 
@@ -166,7 +172,8 @@ serialization are present.
 ### Show-Thread Fallback Pattern for Editor Stalls
 
 *Added after Stage 5: commits `ee99a99` (Timeline) and `a9bcd8b`
-(DecodeSystem).*
+(DecodeSystem). Rewritten 2026-07-03 by issue #74, which made the
+fallback registry-free.*
 
 The split as described above prevents UI modality from stalling the show
 thread's `Present`. But it doesn't, by itself, prevent UI modality from
@@ -183,56 +190,130 @@ frame for the duration of the stall.
 **Heartbeat + show-thread fallback.** The editor thread stamps
 `Engine::m_lastEditorTickNs` (atomic) at the top of each `Engine::run`
 loop iteration. The show thread checks staleness once per show tick
-before it builds its RenderFrame:
+(after its D2R snapshot drain, after the launcher-idle early-out):
 
 ```cpp
-const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
-const int64_t nowNs = /* QPC ns */;
-constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
-if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
-    m_timeline->update(m_timeAuthority->getDeltaTime());
-    if (m_decodeSystem) {
-        m_decodeSystem->update(m_registry,
-            static_cast<float>(m_timeAuthority->getDeltaTime()));
+if (m_timeAuthority &&
+    m_bulkRegistryMutation.load(std::memory_order_acquire) == 0) {
+    const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
+    const int64_t nowNs = /* QPC ns */;
+    constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
+    if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
+        const std::int64_t rateNowNs =
+            static_cast<std::int64_t>(m_timeAuthority->rateNow() * 1e9);
+        if (m_decodeSystem) m_decodeSystem->tickFromSnapshot(m_cachedSceneSnapshot, rateNowNs);
+        if (m_audioSystem)  m_audioSystem->tickFromSnapshot(m_cachedSceneSnapshot, rateNowNs);
     }
 }
 ```
 
-The 50 ms threshold is intentionally > one normal editor frame (16 ms)
-so the editor and show threads never both run a system in the same wall
-second during steady-state playback. When the editor wakes back up, its
-heartbeat refreshes and the show-thread fallback skips on the next
+(`Timeline::update` no longer needs the gate at all — it runs
+unconditionally on the show thread and only writes atomics.)
+
+**The invariant (issue #74): the show thread never calls
+`update(registry)`. A stall fallback must consume `SceneSnapshot` and
+per-worker atomics only.** The original design let the show thread
+re-enter `DecodeSystem::update`/`AudioSystem::update` with the live
+registry, justified by the claim "during a stall the editor isn't
+writing." That claim was false: a synchronous `ProjectManager::load` on
+the editor thread freezes the heartbeat for seconds while actively
+destroying/clearing/emplacing registry state — heartbeat staleness is
+evidence the editor is *busy*, not that the registry is *quiescent*.
+Concurrent EnTT view iteration + structural mutation is UB (the
+critical race of issue #74). The fix is structural, not a lock: the
+fallback ticks (`tickFromSnapshot` on both systems) read only the
+show-local `m_cachedSceneSnapshot` clip catalog (via
+`entity/director/CatalogClipMath`, the same math `buildRenderFrame`
+uses) and steer only *existing* workers' atomics — `targetFrame`,
+`seekTarget`/`seekPending`, `pingPongReverse`, `mixSource.active`,
+`lastExpectedSample`. Worker lifecycle (create/retire/reap) stays
+editor-only, asserted at the top of both `update()`s.
+
+**Supporting mechanics (issue #74):**
+- **Worker-map mutex.** `DecodeSystem::m_workers` /
+  `AudioSystem::m_workers` are guarded by a `TracyLockable` mutex — the
+  show thread (tickFromSnapshot, and `PlaybackPresenter`'s per-frame
+  `getWorker`, previously an unguarded race) copies the `shared_ptr`
+  out under a brief lock. Leaf-lock rules (documented next to the
+  mutexes): never held across `thread::join` / worker cv / FrameCache /
+  AudioMixer / decoder calls; readers never keep a raw worker pointer
+  past the lock scope; map mutation stays editor-thread-only.
+- **Wake-overlap safety.** The heartbeat is stamped at the *top* of the
+  editor iteration, so on stall-exit the editor's `update()` and the
+  show thread's `tickFromSnapshot` can overlap. This is safe by
+  construction: all shared mutable state is worker atomics + the
+  mutex-guarded maps; both threads compute steering inputs from the
+  same Timeline atomics and (catalog-mirrored) clip values, so
+  concurrent steers differ by at most one tick — last-writer-wins on
+  value stores, and duplicate seeks are idempotent (`seekPending`
+  gates pile-up). The audio discontinuity threshold scales with the
+  measured gap since the last steering tick
+  (`AudioDecodeWorker::lastExpectedSampleNs`), so a steering-authority
+  handoff never mis-reads normal playback advance as a scrub (the old
+  fixed 3-tick threshold equalled the 50 ms stall threshold at 60 fps
+  timelines — a guaranteed audible ring-clear on every stall entry).
+- **Bulk-mutation gate.** `Engine::RegistryMutationScope` (RAII) marks
+  `loadProject`/`closeProject`; the fallback stands down while it is
+  set. Not required for memory safety — the fallback is registry-free —
+  but the cached catalog still describes the *old* project during a
+  load, so steering would burn decode I/O against the load, and (after
+  4096 destroys of one entity index) a recycled EnTT id could alias
+  onto the new project's workers. New bulk-mutation sites must take the
+  scope.
+- **Known coverage gap (accepted).** The catalog is baked from
+  `view<Clip, VideoTexture>` with an allocated slot, so an
+  audio-bearing clip whose slot isn't provisioned yet (~one frame after
+  placement) is invisible to the audio fallback for that window. Slot
+  provisioning completes within a frame; the editor path covers it
+  outside stalls.
+
+The 50 ms threshold is intentionally > one normal editor frame (16 ms).
+A false-positive fire is harmless post-#74 (snapshot + atomics only,
+idempotent), but the gate avoids double-steering and worker-map lock
+traffic at 60 Hz during healthy operation. When the editor wakes back
+up, its heartbeat refreshes and the fallback skips on the next
 iteration.
 
 **Currently covered systems:**
-- `Timeline::update` — `ee99a99`. Safe because `m_currentTime` is
-  atomic; advancing it from either thread is well-defined.
-- `DecodeSystem::update` — `a9bcd8b`. Safe because the only state
-  it mutates per call is `worker->targetFrame.store(...)` (atomic).
-  The `view<Clip, FrameBuffer>` iteration is read-only on the registry,
-  and during a stall the editor isn't writing.
+- `Timeline::update` — runs unconditionally on the show thread;
+  `m_currentTime` is atomic.
+- `DecodeSystem::tickFromSnapshot` — issue #74. Registry-free steering
+  of existing decode workers from the clip catalog. (Video workers
+  don't self-advance — they decode to `targetFrame` and park — so
+  without this the display freezes ~270 ms into any stall.)
+- `AudioSystem::tickFromSnapshot` — issue #74. Drives
+  `mixSource.active` (a Loop clip ending mid-stall must go silent) and
+  discontinuity re-seeks. Audio workers otherwise self-advance via the
+  ring + device callback. Gain/mute/solo mirroring and the
+  `hasAudioStream` registry write stay editor-only.
+- `AnimationSystem` — baked into the snapshot, re-evaluated show-side
+  per render frame (NEW-07).
+- `SectionScheduler` — detection show-side, registry-mutating apply
+  editor-side via R2D reply (NEW-08).
 
-**Constraint for future fallback systems.** Per the "sole writer" rule
-above, a system can only be called from the show thread during the
-fallback window if it does **not** write registry components. Atomic
-or thread-local state is fine; `registry.get<T>(e).field = ...` is not.
+**Constraint for future fallback systems.** Per the invariant above:
+a stall fallback must be a dedicated snapshot-consuming entry point
+(`tickFromSnapshot`-style), never a re-entry of the registry-taking
+`update()`. Atomic or show-thread-local state is fine;
+`registry.get<T>(e).field = ...` — or even a registry *view iteration*
+— is not.
 
 **Known gaps** (tracked in `docs/reference/CODE_ISSUES.md`):
-- **NEW-07** AnimationSystem freezes during editor stalls. It writes
-  `Transform` and `MediaLayer` components, so a naive show-thread
-  fallback violates the constraint.
-- **NEW-08** SectionScheduler freezes the same way. It mutates
-  `Timeline` section state and `ClipPlaybackPhase` components.
-- **NEW-09** No regression test for the fallback. `ee99a99` and
-  `a9bcd8b` could silently break in a future refactor.
+- ~~**NEW-07** AnimationSystem~~ — closed 2026-05-11 (snapshot bake).
+- ~~**NEW-08** SectionScheduler~~ — closed (show-side detection +
+  wall-clock continuation anchor).
+- ~~**NEW-09** No regression test for the fallback~~ — closed by issue
+  #74: `integration_decode_stall_fallback` (stall mid-playback; decode
+  must advance through it, audio must not seek-storm) and
+  `integration_load_during_playback` (the crash-class repro).
 
 **Future Systems rule.** Any new editor-tick system that drives output
 must, at design time, choose one of:
 
-1. **Avoid registry writes** in `update` and add a show-thread fallback
-   call next to the existing Timeline / DecodeSystem block. Cleanest
-   if the system's per-tick work is fundamentally about advancing
-   internal state.
+1. **Add a registry-free `tickFromSnapshot`** next to the existing
+   DecodeSystem/AudioSystem calls, consuming `SceneSnapshot` + atomics
+   only. Right when the per-tick work is fundamentally about advancing
+   internal state (decode targets, seek positions).
 2. **Bake results into `SceneSnapshot`** so the show thread reads
    pre-evaluated values from the snapshot instead of re-running
    evaluation. Right answer for systems that map registry data to

@@ -145,9 +145,13 @@ framerate (typically vsync on the primary output, 60 Hz).
           no registry writes. The editor applies the crossing via
           SectionScheduler::handleBreakAt (editor step 10).
 
-1.2 if (editor heartbeat > 50ms stale):
-       └─ DecodeSystem::update()          ← show-thread fallback (a9bcd8b)
-       └─ AudioSystem::update()           ← show-thread fallback (Phase D audio)
+1.2 (after the D2R drain) if editor heartbeat > 50ms stale
+    and no bulk registry mutation in progress:
+       └─ DecodeSystem::tickFromSnapshot()  ← registry-free fallback (#74)
+       └─ AudioSystem::tickFromSnapshot()   ← registry-free fallback (#74)
+       Steers existing workers' atomics from m_cachedSceneSnapshot's
+       clip catalog (same CatalogClipMath as buildRenderFrame). Never
+       touches the registry; worker lifecycle stays editor-only.
 
 2.  CommandDispatcher::processQueue(Show affinity)
        └─ Drains Play / Pause / Seek / SectionGo. Writes atomic
@@ -211,8 +215,9 @@ framerate (typically vsync on the primary output, 60 Hz).
   textures the presenter just uploaded.
 - **CompositorSystem before OutputManager**: outputs read screen compose
   targets that the compositor just drew into.
-- **Show-thread fallback (1) before everything else**: catches up stalled
-  editor state so compositor reads aren't using a frozen snapshot.
+- **Stall fallback after the D2R drain**: tickFromSnapshot reads
+  m_cachedSceneSnapshot, so it runs after the drain that refreshes it
+  (and after the launcher-idle early-out — no content to steer there).
 
 ---
 
@@ -239,8 +244,12 @@ tick system stops with it. The show thread polls `m_lastEditorTickNs`
 and, when stale, takes over critical time-driven systems so the
 projector output stays alive.
 
-Constraint per ADR-0014: **systems called from the show thread must not
-write the registry.** That's why only some systems have fallbacks.
+Constraint per ADR-0014 (amended by issue #74): **the show thread never
+calls `update(registry)` — a stall fallback is a dedicated registry-free
+entry point consuming `SceneSnapshot` + worker atomics only.** Even
+"read-only" view iteration is out: heartbeat staleness doesn't mean the
+registry is quiescent (a synchronous project load is a stall AND a bulk
+mutation — the pre-#74 crash class).
 
 | System | Editor-tick site | Show-thread fallback? | Notes |
 |---|---|---|---|
@@ -249,8 +258,8 @@ write the registry.** That's why only some systems have fallbacks.
 | `AnimationSystem::update` | step 3 | yes via snapshot-bake (2026-05-11) | Editor still writes `Transform` + `MediaLayer` (Clip branch) and `ObjectAnimationOutput` (OA branch) for UI surfaces. Clip tracks are baked into `ClipCatalogEntry`; OA tracks into `ObjectAnimationLayerSnapshot`. Show thread re-evaluates both per render frame in `buildRenderFrame`. Animation stays alive during editor stalls. NEW-07 closed. OA freeze for Locked layers at section breaks handled via `ObjectAnimationLayer::frozen` (ADR-0016). End-of-layer behavior follows `ObjectAnimationLayer::endBehavior` (ADR-0020): `Hold` keeps the last evaluated values applied past the layer's active window (default); `Reset` clears the override. After-end-Hold layers ride the snapshot to keep the show thread in sync during stalls; after-end-Reset layers are filtered out editor-side. |
 | `TextSystem::update` | step 3.5 | no -- not needed | Rasterizes dirty Text layers to video-pool textures. Static-per-frame: text content only changes on explicit authoring commands, never on playback. The last-baked texture remains valid during editor stalls so output stays correct. Writes `TextLayerState::textureSlot`/`bakedWidth`/`bakedHeight`; clears `dirty`. |
 | `drainContentScannerDeltas` | step 4 | no -- not needed | Filesystem-watcher updates can wait until stall ends. |
-| `DecodeSystem::update` | step 5 | yes since `a9bcd8b` | Writes only atomic `worker->targetFrame` — show-safe. |
-| `AudioSystem::update` | step 5.5 | yes (Phase D audio) | Writes only atomic worker fields (`seekTarget`, `active`) and `MixSource` mixer-slot fields — no registry writes. Show-thread fallback fires on the same 50ms heartbeat stale gate as DecodeSystem so audio keeps advancing during editor stalls. |
+| `DecodeSystem::update` | step 5 | yes via `tickFromSnapshot` (#74, replaced `a9bcd8b`'s update() re-entry) | update() is editor-only (asserted). The fallback steers existing workers' atomics (`targetFrame`, seek, `pingPongReverse`) from the clip catalog — zero registry access. Worker map guarded by a mutex (also covers PlaybackPresenter's per-frame `getWorker`). |
+| `AudioSystem::update` | step 5.5 | yes via `tickFromSnapshot` (#74) | update() is editor-only (asserted). The fallback drives `mixSource.active` + discontinuity re-seeks from the catalog; discontinuity threshold scales with the measured steering-tick gap so fallback handoffs never seek-storm (audible ring-clears). Gain/mute/solo mirroring + the `hasAudioStream` registry write stay editor-only. |
 | `SeekSyncController::tick` | step 5.6 | no — not needed | Polls readiness predicates and releases `Timeline::m_seekSyncGate` when all active decoders reach the parked frame. The gate itself is an `std::atomic<bool>` read by both the show-thread and editor-thread `Timeline::update`; both respect the hold without SeekSyncController needing a show-thread presence. During an editor stall the gate stays held (no tick = no release), which is correct — audio and video decode workers keep running independently, so by the time the editor resumes the predicates may already be satisfied and the gate releases on the first tick. Timeout failsafe (3000 ms) guards against indefinite holds (ADR-0026). |
 
 Every editor-tick system that drives the projector output now has a
