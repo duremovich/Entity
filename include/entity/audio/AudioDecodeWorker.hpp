@@ -5,6 +5,7 @@
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -23,7 +24,27 @@ struct AudioDecodeWorker {
     int          targetSampleRate{48000};
     int64_t      inPointSample{0};        // clip in-point, output-rate samples
     int64_t      outPointSample{0};       // clip out-point (exclusive)
-    PlaybackMode playbackMode{PlaybackMode::Freeze};
+
+    // Written every steering tick (editor update() / show-thread stall
+    // fallback), read by the decode thread's wrap logic — atomic since
+    // issue #74 (was a plain field racing the decode thread).
+    std::atomic<PlaybackMode> playbackMode{PlaybackMode::Freeze};
+
+    // Discontinuity-seek state, moved here from AudioSystem's per-entity map
+    // (issue #74) so the editor tick and the show-thread stall fallback share
+    // it race-free. lastExpectedSample is the clip-local output-rate sample
+    // the steering path computed on its previous tick; the sentinel means
+    // "no tick has steered this worker yet" (fresh worker → initial seek).
+    // lastExpectedSampleNs timestamps that computation so the discontinuity
+    // threshold can scale with the actual gap between steering ticks instead
+    // of assuming back-to-back ticks (a >50 ms editor stall is exactly such
+    // a gap). seekCount counts real issued seeks — test observability
+    // (AssertAudioWorkerSeekCountAtMost).
+    static constexpr int64_t kNoExpectedSample =
+        std::numeric_limits<int64_t>::min();
+    std::atomic<int64_t>  lastExpectedSample{kNoExpectedSample};
+    std::atomic<int64_t>  lastExpectedSampleNs{0};
+    std::atomic<uint32_t> seekCount{0};
 
     // Cross-thread control.
     std::atomic<bool>    running{false};

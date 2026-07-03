@@ -6,6 +6,7 @@
 #include "entity/media/IDecodeBufferAllocator.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"
+#include "entity/profile/Tracy.hpp"
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -17,6 +18,8 @@
 #include <utility>
 
 namespace entity {
+
+namespace bus { struct SceneSnapshot; }
 
 // Forward declarations
 class Timeline;
@@ -63,9 +66,11 @@ struct DecodeWorker {
     std::string              filepath;
     MediaType                mediaType{MediaType::Unknown};
 
-    // Playback mode for loop/ping-pong support
-    PlaybackMode             playbackMode{PlaybackMode::Freeze};
-    FrameNumber              totalMediaFrames{0};
+    // Ping-pong odd-cycle flag: update()/tickFromSnapshot write, decode
+    // thread reads (reverse pacing). The old plain playbackMode /
+    // totalMediaFrames mirror fields were write-only and were removed in
+    // issue #74 — wrap behavior is driven entirely by the steered
+    // targetFrame/seekTarget, not by the worker knowing the mode.
     std::atomic<bool>        pingPongReverse{false};
 
     // Synchronization for pause/resume
@@ -85,9 +90,13 @@ struct DecodeWorker {
  * setFrameCache); all readers (PlaybackPresenter, etc.) pull from there.
  *
  * Threading:
- *   - Main thread: update() per frame; manages worker lifecycle + seek requests.
+ *   - Editor thread: update() per frame; manages worker lifecycle + seek
+ *     requests. Editor-only (asserted) since issue #74.
+ *   - Show thread: tickFromSnapshot during editor stalls (registry-free
+ *     steering of existing workers), plus getWorker via PlaybackPresenter.
  *   - Decode threads: one per clip; decode → FrameCache::put.
- *   - Communication via atomics + condition variables.
+ *   - Communication via atomics + condition variables; the m_workers map
+ *     itself is guarded by m_workersMutex (see leaf-lock rules below).
  */
 class DecodeSystem : public System {
 public:
@@ -131,12 +140,32 @@ public:
     void shutdown(entt::registry& registry) override;
     const char* getName() const override { return "DecodeSystem"; }
 
+    /**
+     * Show-thread editor-stall fallback (issue #74, ADR-0014 amendment).
+     * Steers existing workers' targetFrame/seek atomics from the published
+     * SceneSnapshot clip catalog — zero registry access, no worker
+     * lifecycle. The frame math is the same catalog math buildRenderFrame
+     * consumes (CatalogClipMath), so the decoder targets exactly what the
+     * presenter will request during the stall. rateNowNs is the active rate
+     * source's now in ns (PlaybackTimeAuthority::rateNow() * 1e9) — clock
+     * domain for the NEW-08 continuation anchor.
+     */
+    void tickFromSnapshot(const bus::SceneSnapshot& scene,
+                          std::int64_t rateNowNs);
+
     void seekClip(entt::entity clipEntity, FrameNumber frame);
     void pauseAll();
     void resumeAll();
 
-    /** Read-only worker handle for status inspection (UI overlay etc). */
-    const DecodeWorker* getWorker(entt::entity clipEntity) const;
+    /**
+     * Read-only worker handle for status inspection (UI overlay,
+     * PlaybackPresenter's seek-freshness check, SeekSyncController gate).
+     * Returns a shared_ptr copied under m_workersMutex so the handle stays
+     * valid even if the editor retires/reaps the worker while the caller
+     * (possibly the show thread) still holds it. Never cache the result
+     * across frames — re-fetch per use.
+     */
+    std::shared_ptr<const DecodeWorker> getWorker(entt::entity clipEntity) const;
 
     /**
      * Returns true when the given clip has a decoded frame ready at
@@ -183,15 +212,53 @@ private:
 
     static void decodeThreadFunc(std::shared_ptr<DecodeWorker> worker);
 
+    // Atomic-store + cv-notify half of seekClip, operating on a worker the
+    // caller already holds. Callable from any thread; never touches
+    // m_workers.
+    static void requestSeek(DecodeWorker& worker, FrameNumber frame);
+
+    // shared_ptr copy of the worker for `entity` under m_workersMutex
+    // (nullptr if absent). The mutable overload backs update()/seekClip;
+    // getWorker() wraps it in a const pointee for external readers.
+    std::shared_ptr<DecodeWorker> findWorker(entt::entity entity) const;
+
+    // Shared per-worker steering core: pingPongReverse/targetFrame stores +
+    // seek-on-discontinuity + cache-miss recovery. Called by the editor
+    // update() (registry-derived inputs) and tickFromSnapshot (catalog-
+    // derived inputs). Touches only worker atomics + FrameCache — safe from
+    // either thread, including wake overlap. Returns true when cache-miss
+    // recovery fired (Tracy plot bookkeeping).
+    bool steerWorker(entt::entity entity, DecodeWorker& worker,
+                     FrameNumber mediaFrame, bool pingPongReverse,
+                     bool inTailHold, FrameNumber sourceLength,
+                     FrameNumber mediaStartFrame, PlaybackMode mode,
+                     bool forceSeek);
+
     Timeline*                m_timeline{nullptr};
     FrameCache*              m_frameCache{nullptr};
     IDecodeBufferAllocator*  m_bufferAllocator{nullptr}; // non-owning
 
+    // Guards the m_workers map object (find / emplace / erase / iterate).
+    // Shared between the editor thread (lifecycle) and the show thread
+    // (getWorker via PlaybackPresenter, tickFromSnapshot lookups). Issue #74.
+    //
+    // LEAF-LOCK RULES:
+    //  1. Never hold m_workersMutex across thread::join, worker->mutex,
+    //     FrameCache, Timeline, or decoder calls.
+    //  2. Readers copy the shared_ptr out under a brief lock; all atomic
+    //     stores / cv notifies / requestSeek happen after unlock. Never
+    //     hand out a raw DecodeWorker* that outlives the lock scope.
+    //  3. Map mutation (create/retire/destroy/reap/shutdown) stays
+    //     editor-thread-only — the mutex protects readers, it does not
+    //     license show-thread lifecycle ops.
+    mutable TracyLockable(std::mutex, m_workersMutex);
     std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> m_workers;
 
     // Workers signaled to stop but not yet joined (retire-and-reap teardown).
     // Drained by reapRetiredWorkers() once each thread has set `finished`, and
-    // unconditionally in shutdown(). Editor-thread only.
+    // unconditionally in shutdown(). Editor-thread only — NOT covered by
+    // m_workersMutex (a retired worker can still be referenced by a show-side
+    // shared_ptr copy; the shared_ptr keeps it alive across the reap).
     struct RetiredWorker {
         entt::entity                  entity{entt::null};
         std::shared_ptr<DecodeWorker> worker;
@@ -200,10 +267,9 @@ private:
     std::vector<RetiredWorker> m_retiredWorkers;
 
     // Captured in initialize() (called from editor thread on engine startup).
-    // Used in update() to gate worker create/destroy: only the editor thread
-    // mutates m_workers. The show-thread fallback (Engine.cpp:982) still
-    // ticks targetFrame on existing workers, but skips lifecycle ops to
-    // avoid two threads concurrently joining the same decode std::thread.
+    // Backs the update() editor-only assert (#74): only the editor thread
+    // mutates m_workers / runs lifecycle; the show thread's stall path is
+    // tickFromSnapshot.
     std::thread::id   m_editorThreadId;
 
     std::atomic<bool> m_globalPaused{false};

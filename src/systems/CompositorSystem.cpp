@@ -593,59 +593,8 @@ std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapsh
     return slot;
 }
 
-void CompositorSystem::renderOutputSurfaces(entt::registry& registry, TextureRef texture) {
-    if (!m_renderer || !m_renderer->isInitialized() || !texture.valid()) {
-        return;
-    }
-
-    // Query all mapping surfaces
-    auto view = registry.view<OutputSurface>();
-
-    // Collect visible surfaces sorted by index
-    std::vector<std::pair<entt::entity, uint32_t>> sortedSurfaces;
-
-    for (auto [entity, surface] : view.each()) {
-        if (surface.visible) {
-            sortedSurfaces.push_back({entity, surface.surfaceIndex});
-        }
-    }
-
-    // Sort by surface index (lower indices render first)
-    std::sort(sortedSurfaces.begin(), sortedSurfaces.end(),
-        [](const auto& a, const auto& b) {
-            return a.second < b.second;
-        });
-
-    if (m_debugLogging && !sortedSurfaces.empty()) {
-        static int frameCount = 0;
-        if (frameCount++ % 60 == 0) {
-            std::cout << "[CompositorSystem] Rendering through " << sortedSurfaces.size()
-                      << " mapping surfaces" << std::endl;
-        }
-    }
-
-    // Render texture through each visible mapping surface (glm types all the way)
-    for (const auto& [entity, index] : sortedSurfaces) {
-        auto& surface = registry.get<OutputSurface>(entity);
-
-        const glm::vec4 softEdges(
-            surface.softEdge.left,
-            surface.softEdge.right,
-            surface.softEdge.top,
-            surface.softEdge.bottom
-        );
-
-        m_renderer->drawOutputSurface(
-            texture,
-            surface.corners.data(),
-            surface.sourceUVs.data(),
-            softEdges,
-            surface.brightness,
-            surface.gamma,
-            1.0f
-        );
-    }
-}
+// renderOutputSurfaces was removed in issue #74: zero callers, and it read
+// OutputSurface registry views from show-side code (ADR-0014 violation).
 
 void CompositorSystem::drawTextLayer(const bus::GenerativeLayerSnapshot& gl,
                                      float drawOpacity) {

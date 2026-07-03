@@ -752,7 +752,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                     auto& last = lastLogNs[entity];
                     if (nowNs - last > 1'000'000'000LL) {
                         last = nowNs;
-                        const auto* w = decodeSystem->getWorker(entity);
+                        const auto w = decodeSystem->getWorker(entity);
                         std::cerr << "[Gate] videoReady=false entity="
                                   << static_cast<uint32_t>(entity)
                                   << " mediaFrame=" << mediaFrame
@@ -1472,39 +1472,6 @@ void Engine::showThreadMain() {
             signalPrevFrame = sigCur;
         }
 
-        // DecodeSystem still ticks on the editor thread (Engine::update).
-        // Show-thread fallback for full editor stalls: when the editor is
-        // pinned (>50ms heartbeat staleness — modal resize loops, hard
-        // ImGui block), tick DecodeSystem here too so workers' targetFrame
-        // keeps advancing. Without this the FrameRingBuffer stops filling
-        // and PlaybackPresenter re-uploads the same media frame.
-        if (m_decodeSystem && m_timeAuthority) {
-            const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
-            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-            constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
-            if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
-                m_decodeSystem->update(m_registry,
-                    static_cast<float>(m_timeAuthority->getDeltaTime()));
-            }
-        }
-
-        // AudioSystem show-thread fallback: mirrors the DecodeSystem pattern above.
-        // When the editor is stalled, AudioSystem::update keeps worker seekTargets
-        // advancing so audio stays in sync with the advancing Timeline.
-        // AudioSystem::update is show-safe — it only writes atomic worker fields,
-        // never the registry.
-        if (m_audioSystem && m_timeAuthority) {
-            const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
-            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-            constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
-            if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
-                m_audioSystem->update(m_registry,
-                    static_cast<float>(m_timeAuthority->getDeltaTime()));
-            }
-        }
-
         // Consume any SceneSnapshot published by the editor half. Other D2R
         // messages (SetOutputEnabled, ApplySettings, ProvisionClipResources, ...)
         // are deferred and re-published so the post-beginShowFrame drain picks
@@ -1542,6 +1509,52 @@ void Engine::showThreadMain() {
             std::this_thread::sleep_until(nextTick);
             nextTick += kShowPeriod;
             continue;
+        }
+
+        // ADR-0014 editor-stall fallback, registry-free since issue #74.
+        // When the editor heartbeat is stale (modal resize loops, hard ImGui
+        // block, synchronous project load), steer existing decode/audio
+        // workers' atomics from the cached SceneSnapshot so projector output
+        // keeps producing fresh frames — video workers don't self-advance
+        // (they decode to targetFrame and park), so without this the display
+        // freezes ~270 ms into any stall.
+        //
+        // Placement: after the D2R drain (reads this iteration's freshest
+        // snapshot) and after the launcher continue (launcher mode has no
+        // content to steer — and a launcher-driven load must not steer the
+        // pre-project snapshot at all).
+        //
+        // The 50 ms staleness gate stays even though a false-positive fire
+        // is now harmless (snapshot + worker atomics only, idempotent
+        // steers): it avoids double-steering and worker-map lock traffic at
+        // 60 Hz during healthy operation.
+        //
+        // m_bulkRegistryMutation suppresses the fallback during loadProject/
+        // closeProject. Not for safety — tickFromSnapshot never touches the
+        // registry — but the cached catalog still describes the OLD project
+        // during a load; steering soon-to-be-retired workers toward it just
+        // burns decode I/O against the load and (theoretically, after 4096
+        // destroys of one entity index) could alias a recycled entity id
+        // onto the new project's workers.
+        if (m_timeAuthority &&
+            m_bulkRegistryMutation.load(std::memory_order_acquire) == 0) {
+            const int64_t lastEditor = m_lastEditorTickNs.load(std::memory_order_relaxed);
+            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            constexpr int64_t kEditorStaleNs = 50'000'000; // 50 ms
+            if (lastEditor != 0 && (nowNs - lastEditor) > kEditorStaleNs) {
+                ZoneScopedN("StallFallback");
+                // Same clock-domain derivation as buildRenderFrame: one
+                // rate-source read shared across both systems' catalogs so
+                // continuation re-derivation matches what the presenter
+                // displays this frame.
+                const std::int64_t rateNowNs =
+                    static_cast<std::int64_t>(m_timeAuthority->rateNow() * 1e9);
+                if (m_decodeSystem)
+                    m_decodeSystem->tickFromSnapshot(m_cachedSceneSnapshot, rateNowNs);
+                if (m_audioSystem)
+                    m_audioSystem->tickFromSnapshot(m_cachedSceneSnapshot, rateNowNs);
+            }
         }
 
         // Drain Show-affinity commands (transport, playback control).
@@ -4350,6 +4363,13 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
 bool Engine::loadProject(const std::filesystem::path& filepath) {
     if (!m_projectManager) return false;
 
+    // Issue #74 — mark the whole load as a bulk registry mutation so the
+    // show thread's stall fallback stands down (the load stalls the
+    // heartbeat by construction; see the fallback comment in
+    // showThreadMain). Fresh steering resumes with the post-load snapshot
+    // published later this editor iteration.
+    RegistryMutationScope mutationScope(*this);
+
     // Reset signal arm/rate-limit state on load so cues don't mis-fire.
     requestSignalReset();
 
@@ -4629,6 +4649,9 @@ void Engine::closeProject() {
     // Idempotent: each step below tolerates an already-clear state, so
     // calling closeProject() with nothing open just lands the user in
     // the launcher.
+
+    // Issue #74 — bulk registry mutation; see loadProject.
+    RegistryMutationScope mutationScope(*this);
 
     // Reset signal arm/rate-limit state on close.
     requestSignalReset();

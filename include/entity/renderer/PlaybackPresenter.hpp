@@ -63,12 +63,6 @@ public:
     // unit tests can populate the cache without a live renderer backend.
     void refreshFadeMultiplierCache(const bus::RenderFrame& rf);
 
-    // Leases the freshest cached frame for the active clip — preview path
-    // (StageWindow 2D view etc.). The returned FrameLease pins the frame's
-    // bytes against LRU eviction for as long as the caller holds it; an
-    // empty lease means cache miss (caller keeps its last frame).
-    FrameLease getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const;
-
     // Phase D — section fade envelope lookup. The bus payload carries
     // sectionFadeMultiplier per active clip; PlaybackPresenter caches
     // it Renderer-locally each tick so CompositorSystem can multiply

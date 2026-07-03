@@ -6,6 +6,8 @@
  */
 
 #include "entity/systems/DecodeSystem.hpp"
+#include "entity/bus/Message.hpp"
+#include "entity/director/CatalogClipMath.hpp"
 #include "entity/profile/Tracy.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -19,6 +21,7 @@
 #include "entity/media/FrameCache.hpp"
 #include "entity/systems/WarmSet.hpp"
 #include "entity/core/Settings.hpp"
+#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -90,19 +93,16 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // clip; ≥1/tick under multi-clip cache pressure (crossfade with 4K H.264).
     [[maybe_unused]] int64_t cacheMissRecoveryCount = 0;
 
-    // Gate worker lifecycle (create/destroy) to the editor thread. The
-    // show-thread fallback (Engine.cpp:982) re-enters this function during
-    // editor stalls so existing workers keep targeting fresh frames, but
-    // it must NOT mutate m_workers — concurrent join() on the same decode
-    // std::thread from both threads throws std::system_error(no_such_process)
-    // when the second join finds the OS handle already released.
-    const bool isEditorTick =
-        (std::this_thread::get_id() == m_editorThreadId);
+    // update() is editor-only since issue #74 — the show thread's stall
+    // path is tickFromSnapshot (registry-free). The old design re-entered
+    // this function from the show thread, which raced project load's
+    // registry mutation (EnTT view iteration during clear/destroy = UB).
+    assert(std::this_thread::get_id() == m_editorThreadId &&
+           "DecodeSystem::update is editor-only (#74); show thread uses tickFromSnapshot");
 
     // Reap workers retired on a prior editor tick whose threads have now
-    // exited (join returns immediately). Editor-only — m_retiredWorkers is
-    // editor-thread-owned, same as m_workers.
-    if (isEditorTick) reapRetiredWorkers();
+    // exited (join returns immediately).
+    reapRetiredWorkers();
 
     // Detect scrubbing end - when scrubbing stops, force seeks for all active clips
     bool currentlyScrubbing = m_timeline->isScrubbing();
@@ -120,15 +120,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
 
     auto view = registry.view<Clip, FrameBuffer>();
 
-    // Warm-set budget (spec: entity-decode-worker-budget). Editor tick only —
-    // lifecycle (create/retire) is editor-owned; the show-thread fallback
-    // steers existing workers and never consults the warm set.
+    // Warm-set budget (spec: entity-decode-worker-budget).
     // NOTE: this block must stay in sync with AudioSystem::update's copy —
     // the two systems' Params must agree or SeekSyncController can see a
     // video-warm/audio-cold clip and hold the gate.
     std::unordered_set<entt::entity> warm;
     FrameNumber armedCueFrame = -1;
-    if (isEditorTick) {
+    {
         const Settings settings = activeSettings();
         warmset::Params wp;
         wp.playheadFrame    = currentTimelineFrame;
@@ -165,14 +163,8 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     for (auto [entity, clip] : view.each()) {
         if (!clip.loaded) continue;
 
-        auto workerIt = m_workers.find(entity);
-        if (workerIt == m_workers.end()) {
-            // Bootstrap is editor-only (writes m_workers). New clips can't
-            // appear during an editor stall (registry is frozen), so the
-            // show-thread fallback never has a legitimate clip without a
-            // pre-existing worker — skip and let the next editor tick
-            // bootstrap if needed.
-            if (!isEditorTick) continue;
+        std::shared_ptr<DecodeWorker> workerPtr = findWorker(entity);
+        if (!workerPtr) {
             if (!warm.contains(entity)) continue;   // budget: no worker for cold clips
 
             // Bootstrap a worker at the current playhead-mapped media frame.
@@ -198,21 +190,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 initialMediaFrame = clip.mediaStartFrame + sourceLocalFrame;
             }
             createWorker(entity, registry, initialMediaFrame);
-            workerIt = m_workers.find(entity);
-            if (workerIt == m_workers.end()) continue;
+            workerPtr = findWorker(entity);
+            if (!workerPtr) continue;
         }
 
-        DecodeWorker* worker = workerIt->second.get();
-        if (!worker) continue;
-
-        // Keep worker's playback-mode + duration views in sync with the clip
-        worker->playbackMode = clip.playbackMode;
-        if (clip.totalMediaFrames > 0) {
-            worker->totalMediaFrames = clip.totalMediaFrames;
-        } else {
-            double frameRateRatio = clip.framerate / m_timeline->getFrameRate();
-            worker->totalMediaFrames = static_cast<FrameNumber>(clip.duration * frameRateRatio);
-        }
+        DecodeWorker* worker = workerPtr.get();
 
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
         // Fix 5 (2026-05-23 follow-up) — extend the "active for steering"
@@ -378,140 +360,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
                 FrameNumber cycle = sourceLocalFrame / sourceLength;
                 isReverse = (cycle % 2 == 1);
             }
-            worker->pingPongReverse.store(isReverse);
 
-            // Decode-ahead target: in ping-pong reverse, target the current
-            // mediaFrame (we need frames at and below this one); otherwise
-            // run ahead by DECODE_AHEAD_FRAMES.
-            //
-            // Fix 6 (2026-05-23 follow-up to Fix 5) — held tail clips target
-            // exactly mediaFrame, no decode-ahead. Past clipEnd there is no
-            // "ahead" to decode; eight extra frames per seek would just
-            // pressure the global FrameCache LRU and evict other active
-            // clips' working sets — which is what caused the visible chug
-            // through the fade after Fix 5 closed the freeze (~50 force-
-            // seeks per 5s tail, decoder thrashing).
-            //
-            // 2026-05-23 follow-up — `inTailHeld` instead of `inTail` so the
-            // Normal-mode extension window (inExtension covers it) keeps
-            // decode-ahead engaged for natural realtime playback through
-            // the fade. Only the pure-held-tail case (Locked clips, or
-            // Normal clips with no extension) gets the no-decode-ahead
-            // clamp.
-            if ((clip.playbackMode == PlaybackMode::PingPong && isReverse) || inTailHeld) {
-                worker->targetFrame.store(mediaFrame);
-            } else {
-                worker->targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
-            }
-
-            // Seek-on-discontinuity. Same thresholds during scrubbing as
-            // outside it — seekPending already prevents piling up seeks, so
-            // running this path during a drag doesn't thrash. The previous
-            // "skip seeks while scrubbing" rule produced multi-second display
-            // freezes when scrubbing across big gaps because the worker had
-            // to packet-skip every frame in between (ProRes ~10ms each →
-            // scrub from 0 to 1000 = ~10 s of frozen display). Small forward
-            // jumps still hit the packet-skip path below the threshold.
-            FrameNumber lastRequested = worker->lastRequestedFrame.load();
-            bool needsSeek = false;
-
-            // Cache-miss recovery. The worker can be ahead of mediaFrame
-            // (worker->currentFrame >= mediaFrame) but the global FrameCache
-            // no longer has it — LRU evicted the worker's previously-decoded
-            // frames while another clip was playing. The worker won't re-
-            // decode on its own because nextFrame > targetFrame from its
-            // perspective; it just idles. Force a seek so it re-decodes.
-            // The decode-thread fast path (line ~555) skips the actual seek
-            // when cache.has(seekTarget) is true, so this is cheap when the
-            // cache happens to be hot.
-            //
-            // Guard on worker->currentFrame >= mediaFrame to avoid spurious
-            // seeks during normal play, when the worker is decoding TOWARD
-            // mediaFrame and the cache transiently misses because the decode
-            // hasn't landed yet. In that case currentFrame < mediaFrame and
-            // we let the worker work.
-            //
-            // Fix 6 (2026-05-23) — skip cache-miss recovery for held tail
-            // clips (inTailHeld). The held frame was uploaded to the GPU
-            // texture during normal play; TextureUploader keeps the
-            // texture resource resident across cache misses (only
-            // freeSlot() releases it), and CompositorSystem samples the
-            // existing SRV unconditionally — so the projector keeps
-            // drawing the held frame even if FrameCache evicts the
-            // entry. Force-seeking to repopulate the cache buys nothing
-            // visually and creates a thrash loop with another active
-            // clip's working set under cache pressure.
-            //
-            // 2026-05-23 follow-up — gate on `inTailHeld` (= inTail &&
-            // !inExtension) so the Fix 8 extension window keeps normal
-            // cache-miss recovery. In the extension the clip is
-            // naturally advancing source frames; if the cache evicts
-            // one we DO want to force-seek and re-decode (same as
-            // inAuthored). Only the post-extension pure-held-tail
-            // (Locked clips or non-extended Normal clips) skips
-            // recovery.
-            if (!inTailHeld && !worker->seekPending.load() && m_frameCache &&
-                    !m_frameCache->has(entity, mediaFrame) &&
-                    worker->currentFrame.load() >= mediaFrame) {
-                needsSeek = true;
+            if (steerWorker(entity, *worker, mediaFrame, isReverse, inTailHeld,
+                            sourceLength, clip.mediaStartFrame,
+                            clip.playbackMode, scrubbingJustEnded)) {
                 ++cacheMissRecoveryCount;
-            }
-
-            if (!worker->seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
-                int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
-
-                if (clip.playbackMode == PlaybackMode::PingPong) {
-                    // Ping-pong: only seek on huge jumps (the cache holds the
-                    // working set; small back-and-forth motion is hits, not
-                    // seeks). The "jump > full source length" heuristic
-                    // catches user-initiated mid-cycle scrubs.
-                    if (std::abs(frameDelta) > static_cast<int64_t>(sourceLength)) {
-                        needsSeek = true;
-                    }
-                } else if (clip.playbackMode == PlaybackMode::Loop &&
-                           sourceLength > 0 &&
-                           frameDelta == -static_cast<int64_t>(sourceLength - 1)) {
-                    // Phase 1 fix — Loop continuation wrap. The phase-driven
-                    // mediaFrame just stepped from (end - 1) back to
-                    // mediaStartFrame; that's not a scrub, it's a planned
-                    // wrap. Issue a single one-shot seek to the start so the
-                    // decoder is positioned for the next cycle's keyframe-1
-                    // (~10 ms for ProRes), instead of the backward-scrub
-                    // path that would clear/refill the buffer.
-                    seekClip(entity, clip.mediaStartFrame);
-                    worker->lastRequestedFrame.store(mediaFrame);
-                    continue;
-                } else {
-                    constexpr int SEEK_HYSTERESIS = 8;
-                    if (frameDelta < -SEEK_HYSTERESIS) {
-                        needsSeek = true;  // backward scrub
-                    } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
-                        needsSeek = true;  // user-driven big forward jump
-                    }
-                    // CPU-bound lag: NO force-seek. The worker self-paces by
-                    // jumping `nextFrame` to the current playhead each
-                    // iteration (see decodeThreadFunc); ProResDecoder's
-                    // decodeFrame uses cheap packet-skipping for those
-                    // small forward jumps. User preference: smooth realtime
-                    // > getting all source frames. Force-seek with
-                    // avcodec_flush_buffers produced 76 ms freezes every
-                    // ~300 ms; adaptive pacing produces a steady frame-drop
-                    // pattern instead.
-                }
-            }
-
-            worker->lastRequestedFrame.store(mediaFrame);
-
-            if (scrubbingJustEnded) {
-                needsSeek = true;
-            }
-
-            if (needsSeek) {
-                if (decodeLogsEnabled()) {
-                    std::cout << "Seek: jump from " << lastRequested
-                              << " to " << mediaFrame << std::endl;
-                }
-                seekClip(entity, mediaFrame);
             }
         } else if (currentTimelineFrame < clip.startFrame) {
             // Timeline before clip start - prep for re-entry to avoid stale-frame flash
@@ -531,6 +384,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // means decoder is falling behind realtime; steady at 0 means caught up.
     {
         int64_t totalPending = 0;
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
         for (auto& [ent, w] : m_workers) {
             if (!w || !w->initialized.load(std::memory_order_relaxed)) continue;
             const FrameNumber target  = w->targetFrame.load(std::memory_order_relaxed);
@@ -546,22 +400,23 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // active-clip working set imbalance.
     TracyPlot("Cache-miss recoveries / tick", cacheMissRecoveryCount);
 
-    // Tear down workers for entities that were destroyed. Editor-only:
-    // joining a worker on the editor tick blocks for the duration of any
-    // in-flight decode (4K ProRes can take 50+ ms; a group delete of N
-    // clips = N serial joins → visible UI freeze). retireWorker signals
-    // stop and defers the join to reapRetiredWorkers() (called at the top
-    // of the editor-tick path) once the thread has actually exited, so the
-    // editor tick never blocks. This also sidesteps the show-thread
-    // fallback re-entering and racing the same std::thread handle.
-    if (isEditorTick) {
+    // Tear down workers for entities that were destroyed. Joining a worker
+    // on the editor tick blocks for the duration of any in-flight decode
+    // (4K ProRes can take 50+ ms; a group delete of N clips = N serial
+    // joins → visible UI freeze). retireWorker signals stop and defers the
+    // join to reapRetiredWorkers() (called at the top of update()) once the
+    // thread has actually exited, so the editor tick never blocks.
+    {
         std::vector<entt::entity> toRemove;      // deleted entities: retire + evict cache
         std::vector<entt::entity> toCool;        // live but cold clips: retire, KEEP cache
-        for (auto& [entity, worker] : m_workers) {
-            if (!registry.valid(entity) || !registry.all_of<Clip, FrameBuffer>(entity)) {
-                toRemove.push_back(entity);
-            } else if (!warm.contains(entity) && !steered.contains(entity)) {
-                toCool.push_back(entity);
+        {
+            std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+            for (auto& [entity, worker] : m_workers) {
+                if (!registry.valid(entity) || !registry.all_of<Clip, FrameBuffer>(entity)) {
+                    toRemove.push_back(entity);
+                } else if (!warm.contains(entity) && !steered.contains(entity)) {
+                    toCool.push_back(entity);
+                }
             }
         }
         for (entt::entity entity : toRemove) {
@@ -580,22 +435,246 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     }
 }
 
+bool DecodeSystem::steerWorker(entt::entity entity, DecodeWorker& worker,
+                               FrameNumber mediaFrame, bool pingPongReverse,
+                               bool inTailHold, FrameNumber sourceLength,
+                               FrameNumber mediaStartFrame, PlaybackMode mode,
+                               bool forceSeek) {
+    // Shared steering core (issue #74): everything here touches only the
+    // worker's atomics and the (internally locked) FrameCache — safe from
+    // both the editor tick and the show-thread stall fallback, including
+    // the wake-overlap window where both run concurrently. Both callers
+    // compute mediaFrame from the same timeline-frame atomic and clip
+    // values, so concurrent steers differ by at most one tick — last-writer-
+    // wins on the target atomics, and a duplicate requestSeek is idempotent
+    // (seekPending gates pile-up; the decode thread's cache fast-path makes
+    // a redundant seek nearly free).
+    worker.pingPongReverse.store(pingPongReverse);
+
+    // Decode-ahead target: in ping-pong reverse, target the current
+    // mediaFrame (we need frames at and below this one); otherwise
+    // run ahead by DECODE_AHEAD_FRAMES.
+    //
+    // Fix 6 (2026-05-23 follow-up to Fix 5) — held tail clips target
+    // exactly mediaFrame, no decode-ahead. Past clipEnd there is no
+    // "ahead" to decode; eight extra frames per seek would just
+    // pressure the global FrameCache LRU and evict other active
+    // clips' working sets — which is what caused the visible chug
+    // through the fade after Fix 5 closed the freeze (~50 force-
+    // seeks per 5s tail, decoder thrashing).
+    //
+    // 2026-05-23 follow-up — `inTailHold` instead of `inTail` so the
+    // Normal-mode extension window keeps decode-ahead engaged for natural
+    // realtime playback through the fade. Only the pure-held-tail case
+    // (Locked clips, or Normal clips with no extension) gets the
+    // no-decode-ahead clamp.
+    if ((mode == PlaybackMode::PingPong && pingPongReverse) || inTailHold) {
+        worker.targetFrame.store(mediaFrame);
+    } else {
+        worker.targetFrame.store(mediaFrame + DECODE_AHEAD_FRAMES);
+    }
+
+    // Seek-on-discontinuity. Same thresholds during scrubbing as
+    // outside it — seekPending already prevents piling up seeks, so
+    // running this path during a drag doesn't thrash. The previous
+    // "skip seeks while scrubbing" rule produced multi-second display
+    // freezes when scrubbing across big gaps because the worker had
+    // to packet-skip every frame in between (ProRes ~10ms each →
+    // scrub from 0 to 1000 = ~10 s of frozen display). Small forward
+    // jumps still hit the packet-skip path below the threshold.
+    const FrameNumber lastRequested = worker.lastRequestedFrame.load();
+    bool needsSeek = false;
+    bool cacheMissRecovery = false;
+
+    // Cache-miss recovery. The worker can be ahead of mediaFrame
+    // (worker.currentFrame >= mediaFrame) but the global FrameCache
+    // no longer has it — LRU evicted the worker's previously-decoded
+    // frames while another clip was playing. The worker won't re-
+    // decode on its own because nextFrame > targetFrame from its
+    // perspective; it just idles. Force a seek so it re-decodes.
+    // The decode-thread fast path skips the actual seek when
+    // cache.has(seekTarget) is true, so this is cheap when the
+    // cache happens to be hot.
+    //
+    // Guard on worker.currentFrame >= mediaFrame to avoid spurious
+    // seeks during normal play, when the worker is decoding TOWARD
+    // mediaFrame and the cache transiently misses because the decode
+    // hasn't landed yet. In that case currentFrame < mediaFrame and
+    // we let the worker work.
+    //
+    // Fix 6 (2026-05-23) — skip cache-miss recovery for held tail
+    // clips (inTailHold): the held frame's GPU texture stays resident
+    // across cache misses, so re-decoding buys nothing visually and
+    // creates a thrash loop under cache pressure. The extension window
+    // (not held) keeps normal recovery.
+    if (!inTailHold && !worker.seekPending.load() && m_frameCache &&
+            !m_frameCache->has(entity, mediaFrame) &&
+            worker.currentFrame.load() >= mediaFrame) {
+        needsSeek = true;
+        cacheMissRecovery = true;
+    }
+
+    if (!worker.seekPending.load() && lastRequested != DecodeWorker::INVALID_FRAME) {
+        int64_t frameDelta = static_cast<int64_t>(mediaFrame) - static_cast<int64_t>(lastRequested);
+
+        if (mode == PlaybackMode::PingPong) {
+            // Ping-pong: only seek on huge jumps (the cache holds the
+            // working set; small back-and-forth motion is hits, not
+            // seeks). The "jump > full source length" heuristic
+            // catches user-initiated mid-cycle scrubs.
+            if (std::abs(frameDelta) > static_cast<int64_t>(sourceLength)) {
+                needsSeek = true;
+            }
+        } else if (mode == PlaybackMode::Loop &&
+                   sourceLength > 0 &&
+                   frameDelta == -static_cast<int64_t>(sourceLength - 1)) {
+            // Phase 1 fix — Loop continuation wrap. The phase-driven
+            // mediaFrame just stepped from (end - 1) back to
+            // mediaStartFrame; that's not a scrub, it's a planned
+            // wrap. Issue a single one-shot seek to the start so the
+            // decoder is positioned for the next cycle's keyframe-1
+            // (~10 ms for ProRes), instead of the backward-scrub
+            // path that would clear/refill the buffer.
+            requestSeek(worker, mediaStartFrame);
+            worker.lastRequestedFrame.store(mediaFrame);
+            return cacheMissRecovery;
+        } else {
+            constexpr int SEEK_HYSTERESIS = 8;
+            if (frameDelta < -SEEK_HYSTERESIS) {
+                needsSeek = true;  // backward scrub
+            } else if (frameDelta > DECODE_AHEAD_FRAMES + SEEK_HYSTERESIS) {
+                needsSeek = true;  // user-driven big forward jump
+            }
+            // CPU-bound lag: NO force-seek. The worker self-paces by
+            // jumping `nextFrame` to the current playhead each
+            // iteration (see decodeThreadFunc); ProResDecoder's
+            // decodeFrame uses cheap packet-skipping for those
+            // small forward jumps. User preference: smooth realtime
+            // > getting all source frames. Force-seek with
+            // avcodec_flush_buffers produced 76 ms freezes every
+            // ~300 ms; adaptive pacing produces a steady frame-drop
+            // pattern instead.
+        }
+    }
+
+    worker.lastRequestedFrame.store(mediaFrame);
+
+    if (forceSeek) {
+        needsSeek = true;
+    }
+
+    if (needsSeek) {
+        if (decodeLogsEnabled()) {
+            std::cout << "Seek: jump from " << lastRequested
+                      << " to " << mediaFrame << std::endl;
+        }
+        requestSeek(worker, mediaFrame);
+    }
+    return cacheMissRecovery;
+}
+
+void DecodeSystem::tickFromSnapshot(const bus::SceneSnapshot& scene,
+                                    std::int64_t rateNowNs) {
+    ZoneScopedN("DecodeSystem::tickFromSnapshot");
+    if (!m_timeline) return;
+
+    const FrameNumber currentTimelineFrame = m_timeline->getCurrentFrame();
+    const double timelineFps = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+
+    for (const bus::ClipCatalogEntry& ce : scene.clipCatalog) {
+        const entt::entity entity = static_cast<entt::entity>(
+            static_cast<std::uint32_t>(ce.entity));
+
+        // Steer only pre-existing workers; lifecycle stays editor-only.
+        // A worker absent from the map (not yet bootstrapped, or already
+        // retired) is simply skipped — the editor catches up on its next
+        // tick. `running == false` means retire was signaled between the
+        // map lookup and here; skipping avoids pointless steers on a
+        // winding-down decoder (a stale steer would be harmless anyway —
+        // the decode loop exits on !running regardless of seekPending).
+        const std::shared_ptr<DecodeWorker> worker = findWorker(entity);
+        if (!worker) continue;
+        if (!worker->running.load(std::memory_order_relaxed)) continue;
+
+        const Clip clip = clipFromCatalog(ce);
+
+        // Active-window gate — same predicates as update()'s registry path.
+        // sectionFadeTailFrames / sectionFadeSecondsAtBreak are documented
+        // any-thread-safe reads of Timeline section state, and that state is
+        // frozen while the editor is stalled.
+        const FrameNumber clipEnd = clip.startFrame + clip.duration;
+        const FrameNumber tailFrames =
+            timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
+        const double endingBreakFadeSeconds = (tailFrames > 0)
+            ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEnd)
+            : 0.0;
+        const FrameNumber extendedDuration = entity::computeExtendedDuration(
+            clip, timelineFps, /*endAlignsWithBreak*/ tailFrames > 0,
+            endingBreakFadeSeconds);
+        const FrameNumber extendedEnd = clip.startFrame + extendedDuration;
+        const bool inAuthored =
+            (currentTimelineFrame >= clip.startFrame &&
+             currentTimelineFrame < clipEnd);
+        const bool inExtension =
+            (extendedDuration > clip.duration &&
+             currentTimelineFrame >= clipEnd &&
+             currentTimelineFrame < extendedEnd);
+        const bool inTail =
+            (tailFrames > 0 &&
+             currentTimelineFrame >= clipEnd &&
+             currentTimelineFrame < clipEnd + tailFrames);
+        // Continuation steering is included explicitly (a parked-at-break
+        // Loop/PingPong clip must keep cycling through the stall, NEW-08);
+        // mapToMediaFrameFromCatalogEx re-derives the live phase from the
+        // baked wall-clock anchor + rateNowNs.
+        const bool inContinuation = ce.hasPhase && ce.phase_inContinuation
+            && clip.sectionBehavior == SectionBehavior::Normal;
+
+        if (inAuthored || inExtension || inTail || inContinuation) {
+            const CatalogMediaFrameResult m = mapToMediaFrameFromCatalogEx(
+                ce, currentTimelineFrame, timelineFps, rateNowNs);
+            const FrameNumber sourceLength = effectivePlaybackLength(clip);
+            steerWorker(entity, *worker, m.mediaFrame, m.pingPongReverse,
+                        m.inTailHold, sourceLength, clip.mediaStartFrame,
+                        clip.playbackMode, /*forceSeek*/ false);
+        } else if (currentTimelineFrame < clip.startFrame) {
+            // Timeline before clip start — prep for re-entry to avoid a
+            // stale-frame flash (mirror of update()'s pre-start re-arm;
+            // atomics only).
+            const FrameNumber lastRequested = worker->lastRequestedFrame.load();
+            if (lastRequested != DecodeWorker::INVALID_FRAME &&
+                lastRequested != clip.mediaStartFrame &&
+                !worker->seekPending.load()) {
+                requestSeek(*worker, clip.mediaStartFrame);
+                worker->lastRequestedFrame.store(DecodeWorker::INVALID_FRAME);
+            }
+        }
+    }
+}
+
 void DecodeSystem::shutdown(entt::registry& registry) {
     (void)registry;
     std::cout << "DecodeSystem shutting down..." << std::endl;
 
-    for (auto& [entity, worker] : m_workers) {
+    // Swap the map into a local under the lock, then signal + join outside
+    // it (leaf-lock rule: never hold m_workersMutex across join).
+    std::unordered_map<entt::entity, std::shared_ptr<DecodeWorker>> workers;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        workers.swap(m_workers);
+    }
+    for (auto& [entity, worker] : workers) {
         if (worker && worker->running.load()) {
             worker->running.store(false);
             worker->cv.notify_all();
         }
     }
-    for (auto& [entity, worker] : m_workers) {
+    for (auto& [entity, worker] : workers) {
         if (worker && worker->thread.joinable()) {
             worker->thread.join();
         }
     }
-    m_workers.clear();
 
     // Drain any retired-but-unreaped workers unconditionally. Their stop
     // signal was already sent at retire time; join regardless of `finished`
@@ -612,48 +691,65 @@ void DecodeSystem::shutdown(entt::registry& registry) {
     std::cout << "DecodeSystem shutdown complete" << std::endl;
 }
 
-void DecodeSystem::seekClip(entt::entity clipEntity, FrameNumber frame) {
-    auto workerIt = m_workers.find(clipEntity);
-    if (workerIt == m_workers.end()) return;
-
-    DecodeWorker* worker = workerIt->second.get();
-    if (!worker) return;
-
-    if (worker->initFailed.load()) return;
+void DecodeSystem::requestSeek(DecodeWorker& worker, FrameNumber frame) {
+    if (worker.initFailed.load()) return;
 
     // Update target BEFORE signaling seek so the decode thread sees a valid
     // target the moment it processes the seek (no stall on stale target).
-    worker->targetFrame.store(frame + DECODE_AHEAD_FRAMES);
+    worker.targetFrame.store(frame + DECODE_AHEAD_FRAMES);
 
-    worker->seekTarget.store(frame);
-    worker->seekPending.store(true);
-    worker->cv.notify_all();
+    worker.seekTarget.store(frame);
+    worker.seekPending.store(true);
+    worker.cv.notify_all();
+}
+
+void DecodeSystem::seekClip(entt::entity clipEntity, FrameNumber frame) {
+    std::shared_ptr<DecodeWorker> worker = findWorker(clipEntity);
+    if (!worker) return;
+    requestSeek(*worker, frame);
 }
 
 void DecodeSystem::pauseAll() {
     m_globalPaused.store(true);
-    for (auto& [entity, worker] : m_workers) {
-        if (worker) worker->paused.store(true);
+    std::vector<std::shared_ptr<DecodeWorker>> workers;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        workers.reserve(m_workers.size());
+        for (auto& [entity, worker] : m_workers) {
+            if (worker) workers.push_back(worker);
+        }
     }
+    for (auto& worker : workers) worker->paused.store(true);
 }
 
 void DecodeSystem::resumeAll() {
     m_globalPaused.store(false);
-    for (auto& [entity, worker] : m_workers) {
-        if (worker) {
-            worker->paused.store(false);
-            worker->cv.notify_all();
+    std::vector<std::shared_ptr<DecodeWorker>> workers;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        workers.reserve(m_workers.size());
+        for (auto& [entity, worker] : m_workers) {
+            if (worker) workers.push_back(worker);
         }
+    }
+    for (auto& worker : workers) {
+        worker->paused.store(false);
+        worker->cv.notify_all();
     }
 }
 
-const DecodeWorker* DecodeSystem::getWorker(entt::entity clipEntity) const {
-    auto it = m_workers.find(clipEntity);
-    return it != m_workers.end() ? it->second.get() : nullptr;
+std::shared_ptr<DecodeWorker> DecodeSystem::findWorker(entt::entity entity) const {
+    std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+    auto it = m_workers.find(entity);
+    return it != m_workers.end() ? it->second : nullptr;
+}
+
+std::shared_ptr<const DecodeWorker> DecodeSystem::getWorker(entt::entity clipEntity) const {
+    return findWorker(clipEntity);
 }
 
 bool DecodeSystem::isClipReadyAt(entt::entity clipEntity, FrameNumber mediaFrame) const {
-    const DecodeWorker* w = getWorker(clipEntity);
+    const std::shared_ptr<const DecodeWorker> w = getWorker(clipEntity);
     if (!w) return false;
     if (w->initFailed.load(std::memory_order_relaxed)) return true;
     return w->initialized.load(std::memory_order_acquire)
@@ -701,9 +797,6 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     worker->initialized.store(false);
     worker->initFailed.store(false);
 
-    worker->playbackMode = clip->playbackMode;
-    worker->totalMediaFrames = clip->totalMediaFrames > 0 ? clip->totalMediaFrames : clip->duration;
-
     worker->seekTarget.store(initialFrame);
     worker->seekPending.store(true);
     auto workerCreateElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -714,7 +807,10 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
     auto threadElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - threadStart).count();
 
-    m_workers[entity] = worker;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        m_workers[entity] = worker;
+    }
 
     auto totalElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - totalStart).count();
@@ -726,10 +822,17 @@ void DecodeSystem::createWorker(entt::entity entity, entt::registry& registry, F
 }
 
 void DecodeSystem::destroyWorker(entt::entity entity) {
-    auto it = m_workers.find(entity);
-    if (it == m_workers.end()) return;
-
-    DecodeWorker* worker = it->second.get();
+    // Extract under the lock; signal + join outside it (leaf-lock rule —
+    // the join can block 50+ ms on 4K ProRes and must not stall show-thread
+    // getWorker lookups).
+    std::shared_ptr<DecodeWorker> worker;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        auto it = m_workers.find(entity);
+        if (it == m_workers.end()) return;
+        worker = std::move(it->second);
+        m_workers.erase(it);
+    }
     if (worker) {
         worker->running.store(false);
         worker->cv.notify_all();
@@ -737,15 +840,18 @@ void DecodeSystem::destroyWorker(entt::entity entity) {
             worker->thread.join();
         }
     }
-    m_workers.erase(it);
     std::cout << "Destroyed decode worker for entity" << std::endl;
 }
 
 void DecodeSystem::retireWorker(entt::entity entity, bool evictCacheOnReap) {
-    auto it = m_workers.find(entity);
-    if (it == m_workers.end()) return;
-
-    auto& worker = it->second;
+    std::shared_ptr<DecodeWorker> worker;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        auto it = m_workers.find(entity);
+        if (it == m_workers.end()) return;
+        worker = std::move(it->second);
+        m_workers.erase(it);
+    }
     if (worker) {
         // Signal stop but DO NOT join here — the thread may be mid-decode
         // (50+ ms on 4K ProRes). reapRetiredWorkers() joins on a later tick
@@ -754,7 +860,6 @@ void DecodeSystem::retireWorker(entt::entity entity, bool evictCacheOnReap) {
         worker->cv.notify_all();
     }
     m_retiredWorkers.push_back({entity, std::move(worker), evictCacheOnReap});
-    m_workers.erase(it);
 }
 
 void DecodeSystem::reapRetiredWorkers() {

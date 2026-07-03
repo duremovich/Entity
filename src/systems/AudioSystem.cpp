@@ -1,6 +1,8 @@
 #include "entity/systems/AudioSystem.hpp"
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/audio/AudioMixer.hpp"
+#include "entity/bus/Message.hpp"
+#include "entity/director/CatalogClipMath.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
@@ -13,6 +15,7 @@
 #include "entity/profile/Tracy.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <unordered_set>
@@ -67,7 +70,7 @@ void AudioSystem::createWorker(entt::entity e, entt::registry& registry) {
         if (st->decoder && st->decoder->isOpen())
             worker->filepath = st->decoder->getFilePath();
     }
-    worker->playbackMode = clip->playbackMode;
+    worker->playbackMode.store(clip->playbackMode, std::memory_order_relaxed);
 
     // Convert Clip media frame in/out-points to output-rate samples.
     const double fps = clip->framerate > 0.0 ? clip->framerate : 30.0;
@@ -91,13 +94,24 @@ void AudioSystem::createWorker(entt::entity e, entt::registry& registry) {
 
     worker->running.store(true);
     worker->thread = std::thread(&audioDecodeThreadFunc, worker);
-    m_workers.emplace(e, std::move(worker));
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        m_workers.emplace(e, std::move(worker));
+    }
 }
 
 void AudioSystem::destroyWorker(entt::entity e) {
-    auto it = m_workers.find(e);
-    if (it == m_workers.end()) return;
-    auto& worker = it->second;
+    // Extract under the lock; join + unregister outside it (leaf-lock rule —
+    // the join can block on an in-flight decode and must not stall
+    // show-thread lookups).
+    std::shared_ptr<AudioDecodeWorker> worker;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        auto it = m_workers.find(e);
+        if (it == m_workers.end()) return;
+        worker = std::move(it->second);
+        m_workers.erase(it);
+    }
     if (worker) {
         worker->running.store(false);
         if (worker->thread.joinable())
@@ -105,14 +119,17 @@ void AudioSystem::destroyWorker(entt::entity e) {
         if (m_audioEngine)
             m_audioEngine->mixer().unregisterSource(&worker->mixSource);
     }
-    m_workers.erase(it);
-    m_lastExpectedSample.erase(e);
 }
 
 void AudioSystem::retireWorker(entt::entity e) {
-    auto it = m_workers.find(e);
-    if (it == m_workers.end()) return;
-    auto& worker = it->second;
+    std::shared_ptr<AudioDecodeWorker> worker;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        auto it = m_workers.find(e);
+        if (it == m_workers.end()) return;
+        worker = std::move(it->second);
+        m_workers.erase(it);
+    }
     if (worker) {
         // Unregister the mix source NOW so the audio callback stops pulling
         // from this worker's ring immediately (the decode thread may still be
@@ -125,8 +142,6 @@ void AudioSystem::retireWorker(entt::entity e) {
         worker->running.store(false);
     }
     m_retiredWorkers.emplace_back(e, std::move(worker));
-    m_workers.erase(it);
-    m_lastExpectedSample.erase(e);
 }
 
 void AudioSystem::reapRetiredWorkers() {
@@ -148,16 +163,24 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     ZoneScopedN("AudioSystem");
     if (!m_timeline || !m_audioEngine) return;
 
-    const bool isEditorTick = (std::this_thread::get_id() == m_editorThreadId);
+    // update() is editor-only since issue #74 — the show thread's stall
+    // path is tickFromSnapshot (registry-free).
+    assert(std::this_thread::get_id() == m_editorThreadId &&
+           "AudioSystem::update is editor-only (#74); show thread uses tickFromSnapshot");
 
     // Reap audio workers retired on a prior editor tick whose threads have
-    // now exited (join returns immediately). Editor-only.
-    if (isEditorTick) reapRetiredWorkers();
+    // now exited (join returns immediately).
+    reapRetiredWorkers();
 
     const FrameNumber currentTLFrame = m_timeline->getCurrentFrame();
     const double tlFPS = m_timeline->getFrameRate() > 0.0
         ? m_timeline->getFrameRate() : 30.0;
     const int rate = m_audioEngine->sampleRate();
+    // Stamped into each steered worker's lastExpectedSampleNs so the
+    // discontinuity threshold can scale with the real inter-tick gap.
+    const int64_t steeringNowNs =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
 
     auto view = registry.view<Clip, AudioSource>();
 
@@ -168,7 +191,7 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     // the two systems' Params must agree or SeekSyncController can see a
     // video-warm/audio-cold clip and hold the gate.
     std::unordered_set<entt::entity> warm;
-    if (isEditorTick) {
+    {
         const Settings settings = activeSettings();
         warmset::Params wp;
         wp.playheadFrame    = currentTLFrame;
@@ -201,17 +224,13 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     for (auto [entity, clip, as] : view.each()) {
         if (!clip.loaded) continue;
 
-        auto workerIt = m_workers.find(entity);
-        if (workerIt == m_workers.end()) {
-            if (!isEditorTick) continue;
+        std::shared_ptr<AudioDecodeWorker> worker = findWorker(entity);
+        if (!worker) {
             if (!warm.contains(entity)) continue;   // budget: no worker for cold clips
             createWorker(entity, registry);
-            workerIt = m_workers.find(entity);
-            if (workerIt == m_workers.end()) continue;
+            worker = findWorker(entity);
+            if (!worker) continue;
         }
-
-        auto& worker = workerIt->second;
-        if (!worker) continue;
 
         // Mirror gain/mute/solo each tick.
         worker->mixSource.gain.store(as.gain);
@@ -220,18 +239,18 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
 
         // Reflect the worker's decoder result back onto the component: the
         // AudioDecoder is the source of truth for whether the media really
-        // has an audio stream. Editor-thread only (this is a registry
-        // write — must not run on the show-thread fallback, ADR-0014).
-        // Keeps hasAudioStream correct regardless of how the clip was
-        // created, so the PropertyWindow audio panel appears and
-        // ProjectSerializer persists gain/mute/solo on the next save.
-        if (isEditorTick && !as.hasAudioStream
+        // has an audio stream. Registry write — fine here since update() is
+        // editor-only (#74). Keeps hasAudioStream correct regardless of how
+        // the clip was created, so the PropertyWindow audio panel appears
+        // and ProjectSerializer persists gain/mute/solo on the next save.
+        if (!as.hasAudioStream
                 && worker->initialized.load(std::memory_order_relaxed)) {
             as.hasAudioStream = true;
         }
 
-        // Keep playback mode in sync.
-        worker->playbackMode = clip.playbackMode;
+        // Keep playback mode in sync (atomic — the decode thread reads it
+        // for wrap decisions).
+        worker->playbackMode.store(clip.playbackMode, std::memory_order_relaxed);
 
         // Determine whether this clip should be steering its worker.
         // A clip steers (seeks/prerolls) whenever the playhead is inside the
@@ -370,56 +389,30 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         const int64_t expectedSample = static_cast<int64_t>(
             std::round(mediaLocalFrame / fps * rate));
 
-        // Seek detection: frame-over-frame discontinuity on the controller side.
-        // We compare expectedSample to m_lastExpectedSample[entity] (the value
-        // we computed last tick), not to the worker's decode cursor. During
-        // normal playback expectedSample advances by ~(rate/tlFPS) samples per
-        // tick — well under a 0.5s threshold. A genuine scrub/seek causes a
-        // jump >> one tick's worth → we fire seekPending. This approach is
-        // immune to the decode/playback ring-fill offset (the worker decodes
-        // ahead by up to ~1s, but that offset is stable across ticks and never
-        // shows up as a discontinuity on the controller side).
-        if (!worker->seekPending.load()) {
-            auto lastIt = m_lastExpectedSample.find(entity);
-            const bool firstActiveTick = (lastIt == m_lastExpectedSample.end());
-            bool seekNeeded = firstActiveTick;
-            if (!firstActiveTick) {
-                // One-tick advance in sample space: rate / tlFPS, with 3× slack
-                // for jitter/rounding (still far below any real scrub delta).
-                const int64_t oneTickSamples = static_cast<int64_t>(
-                    std::ceil(static_cast<double>(rate) / tlFPS * 3.0));
-                const int64_t delta = std::abs(expectedSample - lastIt->second);
-                seekNeeded = (delta > oneTickSamples);
-            }
-            if (seekNeeded) {
-                const int64_t clampedSample = std::clamp<int64_t>(
-                    expectedSample, 0,
-                    worker->outPointSample - worker->inPointSample - 1);
-                worker->seekTarget.store(clampedSample);
-                worker->seekPending.store(true);
-            }
-        }
-        m_lastExpectedSample[entity] = expectedSample;
+        steerAudioWorker(*worker, expectedSample, steeringNowNs, rate, tlFPS);
     }
 
 
-    // Tear down workers for entities that are gone (editor-thread only).
-    // retireWorker signals stop + unregisters the mixer source but defers the
-    // thread join to reapRetiredWorkers() (called at the top of the editor
-    // tick), so a group delete of N audio-bearing clips doesn't serialize N
-    // blocking joins on one editor tick — the delete-freeze fix.
-    if (isEditorTick) {
+    // Tear down workers for entities that are gone. retireWorker signals
+    // stop + unregisters the mixer source but defers the thread join to
+    // reapRetiredWorkers() (called at the top of update()), so a group
+    // delete of N audio-bearing clips doesn't serialize N blocking joins on
+    // one editor tick — the delete-freeze fix.
+    {
         // One retire path covers both deleted entities and live-but-cold
         // clips (warm-set distance-retires) — unlike DecodeSystem there is
         // no cache-eviction split; audio rings die with the worker either
         // way. Steered clips (fade tail / extension / continuation) are
         // never cold-retired even when outside the warm window.
         std::vector<entt::entity> toRetire;
-        for (auto& [ent, w] : m_workers) {
-            const bool deleted =
-                !registry.valid(ent) || !registry.all_of<Clip, AudioSource>(ent);
-            if (deleted || (!warm.contains(ent) && !steered.contains(ent))) {
-                toRetire.push_back(ent);
+        {
+            std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+            for (auto& [ent, w] : m_workers) {
+                const bool deleted =
+                    !registry.valid(ent) || !registry.all_of<Clip, AudioSource>(ent);
+                if (deleted || (!warm.contains(ent) && !steered.contains(ent))) {
+                    toRetire.push_back(ent);
+                }
             }
         }
         for (entt::entity ent : toRetire) {
@@ -428,11 +421,147 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     }
 }
 
+void AudioSystem::steerAudioWorker(AudioDecodeWorker& w, int64_t expectedSample,
+                                   int64_t nowNs, int rate, double tlFPS) {
+    // Seek detection: discontinuity on the controller side. We compare
+    // expectedSample to w.lastExpectedSample (the value the steering path
+    // computed on its previous tick), not to the decode cursor — immune to
+    // the decode/playback ring-fill offset. A genuine scrub/seek jumps by
+    // far more than playback advances between two steering ticks.
+    //
+    // Time-based slack (issue #74): pre-#74 the threshold was a fixed
+    // 3 editor ticks' worth of samples, which assumed steering ticks are
+    // back-to-back. The show-thread stall fallback only engages after the
+    // heartbeat is >50 ms stale — at a 60 fps timeline 3 ticks IS 50 ms, so
+    // the fallback's first tick always mis-read normal playback advance as
+    // a scrub and re-seeked (ring.clear() → audible dropout on every stall
+    // entry). Scaling the allowance with the real gap since the last
+    // steering tick keeps handoffs (editor→fallback and back) seamless
+    // while real scrubs — which jump by whole seconds — still trip it.
+    if (!w.seekPending.load()) {
+        const int64_t last = w.lastExpectedSample.load(std::memory_order_relaxed);
+        const bool firstActiveTick = (last == AudioDecodeWorker::kNoExpectedSample);
+        bool seekNeeded = firstActiveTick;
+        if (!firstActiveTick) {
+            const int64_t threeTicksSamples = static_cast<int64_t>(
+                std::ceil(static_cast<double>(rate) / tlFPS * 3.0));
+            const int64_t lastNs = w.lastExpectedSampleNs.load(std::memory_order_relaxed);
+            const int64_t elapsedSamples = (lastNs > 0 && nowNs > lastNs)
+                ? static_cast<int64_t>(std::ceil(
+                      static_cast<double>(nowNs - lastNs) * 1e-9 * rate))
+                : 0;
+            const int64_t allowed = threeTicksSamples + elapsedSamples;
+            const int64_t delta = std::abs(expectedSample - last);
+            seekNeeded = (delta > allowed);
+        }
+        if (seekNeeded) {
+            const int64_t clampedSample = std::clamp<int64_t>(
+                expectedSample, 0,
+                w.outPointSample - w.inPointSample - 1);
+            w.seekTarget.store(clampedSample);
+            w.seekPending.store(true);
+            w.seekCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    w.lastExpectedSample.store(expectedSample, std::memory_order_relaxed);
+    w.lastExpectedSampleNs.store(nowNs, std::memory_order_relaxed);
+}
+
+void AudioSystem::tickFromSnapshot(const bus::SceneSnapshot& scene,
+                                   std::int64_t rateNowNs) {
+    ZoneScopedN("AudioSystem::tickFromSnapshot");
+    if (!m_timeline || !m_audioEngine) return;
+
+    const FrameNumber currentTLFrame = m_timeline->getCurrentFrame();
+    const double tlFPS = m_timeline->getFrameRate() > 0.0
+        ? m_timeline->getFrameRate() : 30.0;
+    const int rate = m_audioEngine->sampleRate();
+    const int64_t nowNs =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool playing =
+        (m_timeline->getPlaybackState() == PlaybackState::Playing);
+    const bool seekSyncGated = m_timeline->isSeekSyncGated();
+
+    // Coverage note (issue #74): the catalog is baked from
+    // view<Clip, VideoTexture> with an allocated slot, so an audio-bearing
+    // clip whose slot isn't provisioned yet (~a frame after placement) is
+    // invisible here. Accepted — slot provisioning completes within a frame
+    // and the editor path covers it outside stalls. See ADR-0014.
+    for (const bus::ClipCatalogEntry& ce : scene.clipCatalog) {
+        const entt::entity entity = static_cast<entt::entity>(
+            static_cast<std::uint32_t>(ce.entity));
+
+        const std::shared_ptr<AudioDecodeWorker> worker = findWorker(entity);
+        if (!worker) continue;
+        if (!worker->running.load(std::memory_order_relaxed)) continue;
+
+        const Clip clip = clipFromCatalog(ce);
+
+        // Window/continuation gate — same shape as update()'s registry path
+        // (SectionFade free functions are documented any-thread-safe, and
+        // section state is frozen while the editor is stalled).
+        const FrameNumber clipEnd = clip.startFrame + clip.duration;
+        const FrameNumber tailFrames =
+            timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
+        const double endingBreakFadeSeconds = (tailFrames > 0)
+            ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEnd)
+            : 0.0;
+        const FrameNumber extendedDuration = entity::computeExtendedDuration(
+            clip, tlFPS, /*endAlignsWithBreak*/ tailFrames > 0,
+            endingBreakFadeSeconds);
+        const FrameNumber extendedEnd = clip.startFrame + extendedDuration;
+        const bool inAuthored = (currentTLFrame >= clip.startFrame &&
+                                 currentTLFrame < clipEnd);
+        const bool inExtension =
+            (extendedDuration > clip.duration &&
+             currentTLFrame >= clipEnd &&
+             currentTLFrame < extendedEnd);
+        const bool inTail = (tailFrames > 0 &&
+                             currentTLFrame >= clipEnd &&
+                             currentTLFrame < clipEnd + tailFrames);
+        const bool inWindow = inAuthored || inExtension || inTail;
+        const bool inContinuation = ce.hasPhase && ce.phase_inContinuation
+            && clip.sectionBehavior == SectionBehavior::Normal;
+
+        // Drive audibility through the stall — same formula as update().
+        // NOT optional: a Loop clip that ends mid-stall would otherwise keep
+        // filling its ring and stay audible for the whole stall; a clip that
+        // starts mid-stall would stay silent. Gain/mute/solo mirroring and
+        // the hasAudioStream registry write stay editor-only (the mixSource
+        // atomics hold their last-mirrored values through a stall).
+        const bool shouldOutput = (inWindow && playing) || inContinuation;
+        worker->mixSource.active.store(shouldOutput && !seekSyncGated);
+
+        if (!inWindow && !inContinuation) continue;
+
+        // Media-frame mapping via the shared catalog math (identical to what
+        // buildRenderFrame displays), then to a clip-local output-rate
+        // sample. Sample rate + in/out points live on the worker (set before
+        // its thread started) — the snapshot carries no audio fields and
+        // needs none.
+        const CatalogMediaFrameResult m = mapToMediaFrameFromCatalogEx(
+            ce, currentTLFrame, tlFPS, rateNowNs);
+        const FrameNumber mediaLocalFrame = m.mediaFrame - clip.mediaStartFrame;
+        const double fps = clip.framerate > 0.0 ? clip.framerate : 30.0;
+        const int64_t expectedSample = static_cast<int64_t>(
+            std::round(mediaLocalFrame / fps * rate));
+
+        steerAudioWorker(*worker, expectedSample, nowNs, rate, tlFPS);
+    }
+}
+
+std::shared_ptr<AudioDecodeWorker> AudioSystem::findWorker(entt::entity e) const {
+    std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+    auto it = m_workers.find(e);
+    return it != m_workers.end() ? it->second : nullptr;
+}
+
 int64_t AudioSystem::getWorkerSeekTargetFrame(entt::entity clipEntity,
                                                double clipFps) const {
-    auto it = m_workers.find(clipEntity);
-    if (it == m_workers.end() || !it->second) return -1;
-    const AudioDecodeWorker& w = *it->second;
+    const std::shared_ptr<AudioDecodeWorker> worker = findWorker(clipEntity);
+    if (!worker) return -1;
+    const AudioDecodeWorker& w = *worker;
     if (w.initFailed.load(std::memory_order_relaxed)) return 0;
     if (!w.initialized.load(std::memory_order_acquire)) return -1;
     const double fps = (clipFps > 0.0) ? clipFps : 30.0;
@@ -441,10 +570,17 @@ int64_t AudioSystem::getWorkerSeekTargetFrame(entt::entity clipEntity,
         std::round(static_cast<double>(sampleTarget) / w.targetSampleRate * fps));
 }
 
+int64_t AudioSystem::getWorkerSeekCount(entt::entity clipEntity) const {
+    const std::shared_ptr<AudioDecodeWorker> worker = findWorker(clipEntity);
+    if (!worker) return -1;
+    return static_cast<int64_t>(
+        worker->seekCount.load(std::memory_order_relaxed));
+}
+
 bool AudioSystem::isWorkerSeekReady(entt::entity clipEntity) const {
-    auto it = m_workers.find(clipEntity);
-    if (it == m_workers.end() || !it->second) return false;
-    const AudioDecodeWorker& w = *it->second;
+    const std::shared_ptr<AudioDecodeWorker> worker = findWorker(clipEntity);
+    if (!worker) return false;
+    const AudioDecodeWorker& w = *worker;
     if (w.initFailed.load(std::memory_order_relaxed)) return true;
     return w.initialized.load(std::memory_order_acquire)
         && !w.seekPending.load(std::memory_order_acquire)
@@ -453,24 +589,29 @@ bool AudioSystem::isWorkerSeekReady(entt::entity clipEntity) const {
 
 void AudioSystem::shutdown(entt::registry& registry) {
     (void)registry;
-    for (auto& [entity, worker] : m_workers) {
+    // Swap the map into a local under the lock; signal/join/unregister
+    // outside it (leaf-lock rule).
+    std::unordered_map<entt::entity, std::shared_ptr<AudioDecodeWorker>> workers;
+    {
+        std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
+        workers.swap(m_workers);
+    }
+    for (auto& [entity, worker] : workers) {
         if (worker) {
             worker->running.store(false);
         }
     }
-    for (auto& [entity, worker] : m_workers) {
+    for (auto& [entity, worker] : workers) {
         if (worker && worker->thread.joinable()) {
             worker->thread.join();
         }
     }
     if (m_audioEngine) {
-        for (auto& [entity, worker] : m_workers) {
+        for (auto& [entity, worker] : workers) {
             if (worker)
                 m_audioEngine->mixer().unregisterSource(&worker->mixSource);
         }
     }
-    m_workers.clear();
-    m_lastExpectedSample.clear();
     m_lastWarmNs.clear();
 
     // Drain retired-but-unreaped workers. Their mix source was already

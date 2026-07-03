@@ -1166,6 +1166,36 @@ private:
     // count() with std::atomic<int64_t> works on every platform we ship.
     std::atomic<int64_t> m_lastEditorTickNs{0};
 
+    // Issue #74 — nonzero while the editor thread is inside a bulk registry
+    // mutation (loadProject / closeProject), set via RegistryMutationScope.
+    // The show thread's stall fallback checks it alongside heartbeat
+    // staleness: a synchronous load IS a >50 ms stall, so staleness alone
+    // can't distinguish "editor pinned in a modal loop" from "editor
+    // actively rewriting the registry". The fallback is registry-free, so
+    // this is not a safety gate — it suppresses wasted steering of doomed
+    // workers (stale-catalog targets competing with load I/O) and closes
+    // the theoretical entity-id version-wrap alias between the old
+    // project's cached catalog and a new project's workers. Counter (not
+    // bool) so nested scopes compose.
+    std::atomic<int> m_bulkRegistryMutation{0};
+
+    // RAII marker for bulk registry mutation on the editor thread. Wrap any
+    // code path that destroys/clears/emplaces registry state en masse so
+    // new bulk-mutation sites can't forget the flag.
+    class RegistryMutationScope {
+    public:
+        explicit RegistryMutationScope(Engine& e) : m_engine(e) {
+            m_engine.m_bulkRegistryMutation.fetch_add(1, std::memory_order_release);
+        }
+        ~RegistryMutationScope() {
+            m_engine.m_bulkRegistryMutation.fetch_sub(1, std::memory_order_release);
+        }
+        RegistryMutationScope(const RegistryMutationScope&) = delete;
+        RegistryMutationScope& operator=(const RegistryMutationScope&) = delete;
+    private:
+        Engine& m_engine;
+    };
+
     // Stage 3: Show thread. Owns Director tick, RenderFrame production/
     // consumption, CompositorSystem, OutputManager, and projector Present.
     // Editor thread keeps GLFW + ImGui + editor swap chain. This split means

@@ -70,16 +70,20 @@ void audioDecodeThreadFunc(std::shared_ptr<AudioDecodeWorker> w) {
             chunk.clear();
             w->decoder.decodeChunk(chunk, kChunk);
 
-            // End-of-span handling per PlaybackMode.
+            // End-of-span handling per PlaybackMode. playbackMode is atomic
+            // (steering threads re-store it every tick); one relaxed load
+            // per wrap decision keeps both checks on the same value.
             if (chunk.empty() || cursor >= span) {
-                if (w->playbackMode == PlaybackMode::Loop) {
+                const PlaybackMode mode =
+                    w->playbackMode.load(std::memory_order_relaxed);
+                if (mode == PlaybackMode::Loop) {
                     if (chunk.empty())
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     cursor = 0;
                     w->decoder.seekToOutputSample(w->inPointSample);
                     continue;
                 }
-                if (w->playbackMode == PlaybackMode::PingPong) {
+                if (mode == PlaybackMode::PingPong) {
                     if (chunk.empty())
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     reverse = !reverse;

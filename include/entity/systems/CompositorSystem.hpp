@@ -51,8 +51,6 @@ public:
     void shutdown(entt::registry& registry) override;
     const char* getName() const override { return "CompositorSystem"; }
 
-    void renderOutputSurfaces(entt::registry& registry, TextureRef texture);
-
     // Allocate or resize a compose target for a screen. When a new slot is
     // allocated, posts a ScreenRenderTargetAllocated R2D reply so the editor
     // thread can write the slot back into the Screen component for the next

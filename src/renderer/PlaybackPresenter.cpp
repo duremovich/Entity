@@ -84,8 +84,11 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
         if (ac.mediaFrame == display.lastDecodedFrame) continue;
 
         // Decoder is mid-seek -- its in-flight frames are stale. Hold
-        // the current texture until the seek completes.
-        const DecodeWorker* worker = m_decodeSystem ? m_decodeSystem->getWorker(entity) : nullptr;
+        // the current texture until the seek completes. getWorker copies the
+        // shared_ptr under DecodeSystem's worker-map mutex (issue #74), so
+        // this show-thread read can't race an editor-thread retire/reap.
+        const std::shared_ptr<const DecodeWorker> worker =
+            m_decodeSystem ? m_decodeSystem->getWorker(entity) : nullptr;
         if (worker && worker->seekPending.load()) continue;
 
         // Exact cache hit -- the common path on steady-state playback
@@ -215,28 +218,7 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
     }
 }
 
-FrameLease PlaybackPresenter::getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const {
-    // Returns the freshest cached frame for the active clip -- used by
-    // the single-clip preview path (StageWindow's 2D view, etc.). Looks
-    // up the exact mapped frame; on a miss, returns an empty lease and
-    // lets the caller fall back to whatever it last had. No nearest-frame
-    // fallback here -- that belongs in the per-frame compositor path
-    // (`present()` above), not the preview accessor.
-    if (!m_frameCache) return {};
-    const Timeline* timeline = auth.timeline();
-    if (!timeline) return {};
-
-    FrameNumber currentFrame = timeline->getCurrentFrame();
-    auto view = m_registry.view<Clip, VideoTexture>();
-    for (auto [entity, clip, videoTex] : view.each()) {
-        if (!auth.isClipActiveAtFrame(clip, currentFrame)) continue;
-
-        FrameNumber mediaFrame = auth.mapToMediaFrame(clip, currentFrame);
-        if (auto lease = const_cast<FrameCache*>(m_frameCache)->get(entity, mediaFrame)) {
-            return lease;
-        }
-    }
-    return {};
-}
+// getCurrentVideoFrame was removed in issue #74: zero callers, and it was
+// one of the last registry-view reads reachable from show-side code.
 
 } // namespace entity
