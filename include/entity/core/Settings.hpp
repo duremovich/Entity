@@ -45,6 +45,20 @@ struct Settings {
     uint64_t frameCacheBytes{3072ull * 1024ull * 1024ull};
 
     // -----------------------------------------------------------------
+    // Decode worker warm-set budget (2026-07 — IIWY_fromQlab OOM fix).
+    // A clip gets a live decode/audio worker only when it overlaps
+    // [playhead - 2 s, playhead + decodeLookaheadSeconds], overlaps the
+    // armed cue's window, or left the warm set < 5 s ago (grace).
+    // decodeWorkerCap bounds video and audio worker counts separately
+    // (nearest-to-playhead wins). decoderThreadCount is the FFmpeg
+    // slice-threading thread_count per ProRes decoder — NOT frame
+    // threading, which multiplies per-decoder memory by thread count.
+    // -----------------------------------------------------------------
+    double decodeLookaheadSeconds{20.0};
+    int    decodeWorkerCap{32};
+    int    decoderThreadCount{4};
+
+    // -----------------------------------------------------------------
     // Phase C.12 #7 — OCIO color management.
     //
     // Empty `ocioConfigPath` = use the bundled ACES Studio Config 1.3 (OCIO

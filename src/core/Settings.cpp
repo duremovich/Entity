@@ -1,6 +1,7 @@
 #include "entity/core/Settings.hpp"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
@@ -89,6 +90,18 @@ Settings loadSettings(const std::filesystem::path& path) {
         settings.frameCacheBytes = j["frameCacheBytes"].get<uint64_t>();
     }
 
+    if (j.contains("decodeLookaheadSeconds") && j["decodeLookaheadSeconds"].is_number()) {
+        settings.decodeLookaheadSeconds =
+            std::max(1.0, j["decodeLookaheadSeconds"].get<double>());
+    }
+    if (j.contains("decodeWorkerCap") && j["decodeWorkerCap"].is_number_integer()) {
+        settings.decodeWorkerCap = std::max(2, j["decodeWorkerCap"].get<int>());
+    }
+    if (j.contains("decoderThreadCount") && j["decoderThreadCount"].is_number_integer()) {
+        settings.decoderThreadCount =
+            std::clamp(j["decoderThreadCount"].get<int>(), 1, 16);
+    }
+
     // Phase C.12 #7 — OCIO color management. Strings, all optional.
     auto readString = [&](const char* key, std::string& dst) {
         if (j.contains(key) && j[key].is_string()) {
@@ -171,6 +184,9 @@ bool saveSettings(const Settings& settings, const std::filesystem::path& path) {
     json j;
     j["version"] = kSettingsVersion;
     j["frameCacheBytes"]      = settings.frameCacheBytes;
+    j["decodeLookaheadSeconds"] = settings.decodeLookaheadSeconds;
+    j["decodeWorkerCap"]        = settings.decodeWorkerCap;
+    j["decoderThreadCount"]     = settings.decoderThreadCount;
     j["ocioConfigPath"]       = settings.ocioConfigPath;
     j["defaultVideoInputCs"]  = settings.defaultVideoInputCs;
     j["defaultPngInputCs"]    = settings.defaultPngInputCs;

@@ -531,6 +531,52 @@ void SettingsWindow::render() {
     // ----- Playback / Cache -------------------------------------------------
     if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
         renderFrameCacheRow(m_staged.frameCacheBytes);
+
+        int lookahead = static_cast<int>(m_staged.decodeLookaheadSeconds);
+        if (entity::ui::InputInt("Decode lookahead (s)##decodeLookahead", &lookahead, 1, 5,
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+            m_staged.decodeLookaheadSeconds = static_cast<double>(std::clamp(lookahead, 1, 300));
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(
+                "How far ahead of the playhead (and an armed cue) clips keep\n"
+                "live decode workers. Larger = smoother distant jumps, more RAM.");
+            ImGui::EndTooltip();
+        }
+
+        int cap = m_staged.decodeWorkerCap;
+        if (entity::ui::InputInt("Max warm decode workers##decodeCap", &cap, 1, 4,
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+            m_staged.decodeWorkerCap = std::clamp(cap, 2, 256);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(
+                "Upper bound on simultaneously-live decode workers (video and\n"
+                "audio counted separately). Nearest-to-playhead clips win.");
+            ImGui::EndTooltip();
+        }
+
+        int threads = m_staged.decoderThreadCount;
+        if (entity::ui::InputInt("Decoder threads##decoderThreads", &threads, 1, 1,
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+            m_staged.decoderThreadCount = std::clamp(threads, 1, 16);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(
+                "FFmpeg slice-threading thread count per decoder.\n"
+                "Applies to decoders opened after the change.");
+            ImGui::EndTooltip();
+        }
+        ImGui::TextDisabled("Decoder threads take effect after restart.");
     }
 
     // ----- Color (Phase C.12 #7) -------------------------------------------
