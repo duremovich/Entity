@@ -215,16 +215,16 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
     }
 }
 
-const DecodedFrame* PlaybackPresenter::getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const {
+FrameLease PlaybackPresenter::getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const {
     // Returns the freshest cached frame for the active clip -- used by
     // the single-clip preview path (StageWindow's 2D view, etc.). Looks
-    // up the exact mapped frame; on a miss, returns null and lets the
-    // caller fall back to whatever it last had. No nearest-frame
+    // up the exact mapped frame; on a miss, returns an empty lease and
+    // lets the caller fall back to whatever it last had. No nearest-frame
     // fallback here -- that belongs in the per-frame compositor path
     // (`present()` above), not the preview accessor.
-    if (!m_frameCache) return nullptr;
+    if (!m_frameCache) return {};
     const Timeline* timeline = auth.timeline();
-    if (!timeline) return nullptr;
+    if (!timeline) return {};
 
     FrameNumber currentFrame = timeline->getCurrentFrame();
     auto view = m_registry.view<Clip, VideoTexture>();
@@ -232,16 +232,11 @@ const DecodedFrame* PlaybackPresenter::getCurrentVideoFrame(const PlaybackTimeAu
         if (!auth.isClipActiveAtFrame(clip, currentFrame)) continue;
 
         FrameNumber mediaFrame = auth.mapToMediaFrame(clip, currentFrame);
-        // NB: leases hold a strong shared_ptr to the frame's bytes, but
-        // we return a raw pointer here. Caller must use the frame
-        // synchronously within this tick -- a caller stashing the
-        // pointer for later is racy (cache eviction would dangle it).
-        // All current callers do use it synchronously.
         if (auto lease = const_cast<FrameCache*>(m_frameCache)->get(entity, mediaFrame)) {
-            return lease.get();
+            return lease;
         }
     }
-    return nullptr;
+    return {};
 }
 
 } // namespace entity

@@ -2,6 +2,7 @@
 
 #include "entity/bus/Message.hpp"
 #include "entity/core/Types.hpp"
+#include "entity/media/FrameCache.hpp"   // FrameLease (returned by value)
 #include <entt/entt.hpp>
 #include <unordered_map>
 
@@ -62,14 +63,11 @@ public:
     // unit tests can populate the cache without a live renderer backend.
     void refreshFadeMultiplierCache(const bus::RenderFrame& rf);
 
-    // Single-clip preview accessor (StageWindow's 2D view, etc.). Walks
-    // `view<Clip, VideoTexture>`, asks the time authority which clip is
-    // active at the current timeline frame and what mediaFrame to look
-    // up, returns a raw DecodedFrame* into the cache. Caller must use
-    // the pointer synchronously within this tick -- the FrameLease that
-    // backs it is released on return, so a stashed pointer is racy
-    // against eviction.
-    const DecodedFrame* getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const;
+    // Leases the freshest cached frame for the active clip — preview path
+    // (StageWindow 2D view etc.). The returned FrameLease pins the frame's
+    // bytes against LRU eviction for as long as the caller holds it; an
+    // empty lease means cache miss (caller keeps its last frame).
+    FrameLease getCurrentVideoFrame(const PlaybackTimeAuthority& auth) const;
 
     // Phase D — section fade envelope lookup. The bus payload carries
     // sectionFadeMultiplier per active clip; PlaybackPresenter caches

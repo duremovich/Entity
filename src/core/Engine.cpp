@@ -2187,19 +2187,6 @@ uint64_t Engine::getMeshUploadCount() const {
     return 0;
 }
 
-const DecodedFrame* Engine::getCurrentVideoFrame() const {
-    if (m_playbackPresenter && m_timeAuthority) {
-        if (const DecodedFrame* frame = m_playbackPresenter->getCurrentVideoFrame(*m_timeAuthority)) {
-            return frame;
-        }
-    }
-    // Fall back to legacy single frame (pre-multi-clip path)
-    if (m_currentFrame && m_currentFrame->valid) {
-        return m_currentFrame.get();
-    }
-    return nullptr;
-}
-
 void Engine::render() {
     ZoneScopedN("Engine::render");
     // Handle pending resize before starting a new frame

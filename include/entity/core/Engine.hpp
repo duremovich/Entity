@@ -478,13 +478,6 @@ public:
     uint64_t getFrameCount() const;
 
     /**
-     * Get the current decoded video frame for display.
-     * Returns nullptr if no frame is available. Forwards to PlaybackPresenter
-     * (Renderer side) which queries the authority for clip-frame math.
-     */
-    const DecodedFrame* getCurrentVideoFrame() const;
-
-    /**
      * Get list of loaded media files.
      */
     const std::vector<ProjectManager::MediaLibraryEntry>& getLoadedMediaFiles() const;  // forwards to ProjectManager
