@@ -439,7 +439,7 @@ size_t CommandDispatcher::getPendingCount() const {
 
 void CommandDispatcher::finishScript() {
     m_scriptRunning = false;
-    m_scriptResults["commandsExecuted"] = m_scriptCommandsExecuted;
+    m_scriptResults["commandsExecuted"] = m_scriptCommandsExecuted.load();
 
     // Check if there were any errors
     if (!m_scriptResults["errors"].empty()) {

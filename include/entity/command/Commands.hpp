@@ -3368,7 +3368,9 @@ public:
     const char* getTypeName() const override { return "SetMasterGain"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Either; }
+    // Editor, not Either: UndoableCommands push onto the dispatcher's
+    // unguarded undo/redo deques, which only the editor thread may touch.
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:
@@ -3393,7 +3395,9 @@ public:
     const char* getTypeName() const override { return "SetMasterMute"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
-    Affinity getAffinity() const override { return Affinity::Either; }
+    // Editor, not Either: UndoableCommands push onto the dispatcher's
+    // unguarded undo/redo deques, which only the editor thread may touch.
+    Affinity getAffinity() const override { return Affinity::Editor; }
     static CommandPtr fromJson(const nlohmann::json& j);
 
 private:

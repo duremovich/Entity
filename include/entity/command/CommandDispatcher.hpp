@@ -2,6 +2,7 @@
 
 #include "Command.hpp"
 #include "UndoableCommand.hpp"
+#include <atomic>
 #include <queue>
 #include <deque>
 #include <mutex>
@@ -23,9 +24,13 @@ namespace entity {
  * - Handle WaitFrames by pausing command processing
  * - Optional: Record executed commands for macro export
  *
- * Thread Safety:
+ * Thread Safety (post-ADR-0014):
  * - enqueue() is thread-safe (can be called from any thread)
- * - processQueue() must be called from main thread only
+ * - processQueue() runs on the editor thread (Affinity::Editor) AND the
+ *   show thread (Affinity::Show). Only the queue itself is locked; the
+ *   undo/redo stacks, recording buffer, and script-results members are
+ *   editor-thread-only. Therefore every UndoableCommand MUST declare
+ *   Affinity::Editor, and undo()/redo()/clearHistory() are editor-only.
  */
 class CommandDispatcher {
 public:
@@ -216,10 +221,11 @@ private:
     bool m_recording{false};
     std::vector<nlohmann::json> m_recordedCommands;
 
-    // Script execution tracking
+    // Script execution tracking. m_scriptCommandsExecuted is atomic because
+    // both processQueue() callers (editor + show thread) increment it.
     bool m_scriptRunning{false};
     size_t m_scriptCommandsTotal{0};
-    size_t m_scriptCommandsExecuted{0};
+    std::atomic<size_t> m_scriptCommandsExecuted{0};
     nlohmann::json m_scriptResults;
 
     // Undo / redo stacks. Bounded to MAX_UNDO_DEPTH; overflow drops the
