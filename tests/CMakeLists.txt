@@ -141,6 +141,15 @@ function(entity_add_integration_test name script)
     # match across machines (hardware GPUs produce different bit patterns for
     # the same draw calls). Goldens under tests/goldens/ are recorded against
     # WARP — running these tests on a hardware adapter will mismatch.
+    #
+    # RESOURCE_LOCK "d3d12_warp" serializes all integration tests against
+    # each other even under `ctest -jN`: each spawns a full EntityMediaEditor
+    # sharing one WARP device, the FrameCache budget, and CMAKE_SOURCE_DIR as
+    # working directory (autosave/test_output artifacts). Without it,
+    # parallel runs fail non-deterministically on timing-sensitive checks.
+    # The lock is applied by the blanket foreach at the bottom of this file
+    # (which also covers integration tests registered via raw add_test()).
+    # Unit tests are unaffected and still parallelize.
     set_tests_properties(integration_${name} PROPERTIES
         LABELS "integration"
         TIMEOUT 60
@@ -594,3 +603,20 @@ if(Python3_FOUND)
         ENVIRONMENT "ENTITY_FORCE_WARP=1"
     )
 endif()
+
+# ============================================================================
+# Blanket RESOURCE_LOCK for every integration test.
+#
+# Some integration tests are registered via raw add_test() rather than
+# entity_add_integration_test(), so apply the lock by name here, after all
+# registrations. See the comment in entity_add_integration_test() for why:
+# each test spawns a full EntityMediaEditor sharing one WARP device and
+# CMAKE_SOURCE_DIR as working directory, and parallel runs fail
+# non-deterministically without serialization.
+# ============================================================================
+get_directory_property(_entity_all_tests TESTS)
+foreach(_entity_test IN LISTS _entity_all_tests)
+    if(_entity_test MATCHES "^integration_")
+        set_tests_properties(${_entity_test} PROPERTIES RESOURCE_LOCK "d3d12_warp")
+    endif()
+endforeach()
