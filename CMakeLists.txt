@@ -237,6 +237,7 @@ target_sources(EntityMediaCore
         src/systems/CameraControlSystem.cpp
         src/systems/AudioSystem.cpp
         src/systems/SignalOutputSystem.cpp
+        src/systems/WarmSet.cpp
 
         # Effects (issue #54)
         src/effects/EffectKindRegistry.cpp
