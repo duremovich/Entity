@@ -572,11 +572,12 @@ void SettingsWindow::render() {
         if (ImGui::IsItemHovered()) {
             ImGui::BeginTooltip();
             ImGui::TextUnformatted(
-                "FFmpeg slice-threading thread count per decoder.\n"
-                "Applies to decoders opened after the change.");
+                "FFmpeg slice-threading thread count per ProRes decoder.\n"
+                "Applies to decoders opened after the change — the warm-set\n"
+                "budget reopens decoders continuously, so this goes live\n"
+                "within seconds of OK. Other codecs auto-detect.");
             ImGui::EndTooltip();
         }
-        ImGui::TextDisabled("Decoder threads take effect after restart.");
     }
 
     // ----- Color (Phase C.12 #7) -------------------------------------------

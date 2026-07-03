@@ -164,6 +164,9 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     // Warm-set budget (spec: entity-decode-worker-budget). Same gate as
     // DecodeSystem but over audio-bearing clips only — audio workers get
     // their own decodeWorkerCap budget, separate from video.
+    // NOTE: this block must stay in sync with DecodeSystem::update's copy —
+    // the two systems' Params must agree or SeekSyncController can see a
+    // video-warm/audio-cold clip and hold the gate.
     std::unordered_set<entt::entity> warm;
     if (isEditorTick) {
         const Settings settings = activeSettings();
@@ -180,6 +183,7 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
             }
         }
         std::vector<warmset::ClipSpan> spans;
+        spans.reserve(view.size_hint());
         for (auto [entity, clip, as] : view.each()) {
             (void)as;
             if (clip.loaded) spans.push_back({entity, clip.startFrame, clip.duration});
@@ -187,6 +191,12 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         warm = warmset::compute(spans, wp, m_lastWarmNs);
         TracyPlot("Warm audio workers", static_cast<int64_t>(warm.size()));
     }
+
+    // Clips whose workers are steered this tick (authored window, fade tail,
+    // extension, or section-break continuation). The warm window only knows
+    // authored spans; retiring a steered audio worker unregisters its mixer
+    // source — an audible hard cut mid-fade. The cold-retire sweep skips them.
+    std::unordered_set<entt::entity> steered;
 
     for (auto [entity, clip, as] : view.each()) {
         if (!clip.loaded) continue;
@@ -277,6 +287,7 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         // Steering: position/preroll the worker whenever the playhead is in
         // the clip window (playing OR paused) or in continuation.
         const bool shouldSteer = inWindow || inContinuation;
+        if (shouldSteer) steered.insert(entity);
 
         // mixSource.active gates the mixer: the clip is *audible* only when it
         // would be playing audio (in-window AND transport Playing, or in
@@ -391,9 +402,6 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         m_lastExpectedSample[entity] = expectedSample;
     }
 
-    // (The old kPrefetchAheadSeconds sliding-window prefetch loop lived here.
-    // The warm-set window above subsumes it: bigger lookahead, transport-
-    // independent, and cap-aware.)
 
     // Tear down workers for entities that are gone (editor-thread only).
     // retireWorker signals stop + unregisters the mixer source but defers the
@@ -401,21 +409,20 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     // tick), so a group delete of N audio-bearing clips doesn't serialize N
     // blocking joins on one editor tick — the delete-freeze fix.
     if (isEditorTick) {
-        std::vector<entt::entity> toRemove;      // deleted entities
-        std::vector<entt::entity> toCool;        // live but cold clips (warm-set budget)
+        // One retire path covers both deleted entities and live-but-cold
+        // clips (warm-set distance-retires) — unlike DecodeSystem there is
+        // no cache-eviction split; audio rings die with the worker either
+        // way. Steered clips (fade tail / extension / continuation) are
+        // never cold-retired even when outside the warm window.
+        std::vector<entt::entity> toRetire;
         for (auto& [ent, w] : m_workers) {
-            if (!registry.valid(ent) || !registry.all_of<Clip, AudioSource>(ent)) {
-                toRemove.push_back(ent);
-            } else if (!warm.contains(ent)) {
-                toCool.push_back(ent);
+            const bool deleted =
+                !registry.valid(ent) || !registry.all_of<Clip, AudioSource>(ent);
+            if (deleted || (!warm.contains(ent) && !steered.contains(ent))) {
+                toRetire.push_back(ent);
             }
         }
-        for (entt::entity ent : toRemove) {
-            retireWorker(ent);
-        }
-        for (entt::entity ent : toCool) {
-            // Distance-retire: frees the decoder + ring; no cache-eviction
-            // concern (audio rings die with the worker).
+        for (entt::entity ent : toRetire) {
             retireWorker(ent);
         }
     }
@@ -464,6 +471,7 @@ void AudioSystem::shutdown(entt::registry& registry) {
     }
     m_workers.clear();
     m_lastExpectedSample.clear();
+    m_lastWarmNs.clear();
 
     // Drain retired-but-unreaped workers. Their mix source was already
     // unregistered + stop signaled at retire time; just join (unconditionally,

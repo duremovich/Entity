@@ -327,7 +327,7 @@ target_include_directories(EntityMediaCore
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
-        ${CMAKE_BINARY_DIR}/generated
+        $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )

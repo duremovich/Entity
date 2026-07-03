@@ -172,7 +172,13 @@ private:
     // reapRetiredWorkers joins+erases each retired worker only once its thread
     // has set `finished`, so each join returns immediately. Editor-thread only;
     // no lock needed (m_workers / m_retiredWorkers are editor-thread-owned).
-    void retireWorker(entt::entity entity);
+    //
+    // evictCacheOnReap distinguishes delete-retires (true: the entity is gone,
+    // drop its frames) from warm-set distance-retires (false: the clip is
+    // alive and its cached frames must survive for the re-entry fast-path —
+    // and a re-warmed clip may already have a NEW worker filling the cache
+    // that a blanket reap-evict would wrongly clobber).
+    void retireWorker(entt::entity entity, bool evictCacheOnReap);
     void reapRetiredWorkers();
 
     static void decodeThreadFunc(std::shared_ptr<DecodeWorker> worker);
@@ -186,7 +192,12 @@ private:
     // Workers signaled to stop but not yet joined (retire-and-reap teardown).
     // Drained by reapRetiredWorkers() once each thread has set `finished`, and
     // unconditionally in shutdown(). Editor-thread only.
-    std::vector<std::pair<entt::entity, std::shared_ptr<DecodeWorker>>> m_retiredWorkers;
+    struct RetiredWorker {
+        entt::entity                  entity{entt::null};
+        std::shared_ptr<DecodeWorker> worker;
+        bool                          evictOnReap{true};
+    };
+    std::vector<RetiredWorker> m_retiredWorkers;
 
     // Captured in initialize() (called from editor thread on engine startup).
     // Used in update() to gate worker create/destroy: only the editor thread

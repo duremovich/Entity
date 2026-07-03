@@ -109,14 +109,25 @@ Result ProResDecoder::open(const std::string& filepath) {
         return Result::DecoderError;
     }
 
-    // Slice threading only. FF_THREAD_FRAME keeps ~thread_count full-res
-    // frames in flight PER DECODER (63 MB each at 4095x1920 ProRes 4444 —
-    // the 2026-07 IIWY OOM multiplier) and adds thread_count frames of
-    // seek-to-first-frame latency. Slice threading parallelizes within a
-    // frame: ~1 frame resident, no added latency. ProRes carries many
-    // slices per frame, so it scales well.
-    m_codecContext->thread_count = std::clamp(activeSettings().decoderThreadCount, 1, 16);
-    m_codecContext->thread_type  = FF_THREAD_SLICE;
+    // ProRes: slice threading only. FF_THREAD_FRAME keeps ~thread_count
+    // full-res frames in flight PER DECODER (63 MB each at 4095x1920
+    // ProRes 4444 — the 2026-07 IIWY OOM multiplier) and adds thread_count
+    // frames of seek-to-first-frame latency. Slice threading parallelizes
+    // within a frame: ~1 frame resident, no added latency, and ProRes
+    // carries many slices per frame so it scales well.
+    //
+    // Everything else keeps frame+slice auto: this class is the generic
+    // FFmpeg decoder (H.264, MJPEG, ... route here via the probe fallback),
+    // and typical single-slice H.264 would decode single-threaded under
+    // slice-only. Their per-frame footprint is far smaller than 4444 4K,
+    // and the warm-set worker cap now bounds decoder count anyway.
+    if (m_codecContext->codec_id == AV_CODEC_ID_PRORES) {
+        m_codecContext->thread_count = std::clamp(activeSettings().decoderThreadCount, 1, 16);
+        m_codecContext->thread_type  = FF_THREAD_SLICE;
+    } else {
+        m_codecContext->thread_count = 0; // auto
+        m_codecContext->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    }
 
     // 6. Open codec
     ret = avcodec_open2(m_codecContext, codec, nullptr);

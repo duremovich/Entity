@@ -64,9 +64,9 @@ DecodeSystem::~DecodeSystem() {
     // Drain retired-but-unreaped workers — their stop signal was already sent
     // at retire time. A joinable std::thread left in the vector would call
     // std::terminate on destruction, so join each unconditionally here.
-    for (auto& [entity, worker] : m_retiredWorkers) {
-        if (worker && worker->thread.joinable()) {
-            worker->thread.join();
+    for (auto& r : m_retiredWorkers) {
+        if (r.worker && r.worker->thread.joinable()) {
+            r.worker->thread.join();
         }
     }
     m_retiredWorkers.clear();
@@ -123,7 +123,11 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // Warm-set budget (spec: entity-decode-worker-budget). Editor tick only —
     // lifecycle (create/retire) is editor-owned; the show-thread fallback
     // steers existing workers and never consults the warm set.
+    // NOTE: this block must stay in sync with AudioSystem::update's copy —
+    // the two systems' Params must agree or SeekSyncController can see a
+    // video-warm/audio-cold clip and hold the gate.
     std::unordered_set<entt::entity> warm;
+    FrameNumber armedCueFrame = -1;
     if (isEditorTick) {
         const Settings settings = activeSettings();
         warmset::Params wp;
@@ -136,15 +140,25 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         if (auto sel = m_timeline->getSelectedCueNumber()) {
             if (const CueTag* cue = m_timeline->findCueTag(*sel)) {
                 wp.armedCueFrame = cue->frame;
+                armedCueFrame    = cue->frame;
             }
         }
         std::vector<warmset::ClipSpan> spans;
+        spans.reserve(view.size_hint());
         for (auto [entity, clip] : view.each()) {
             if (clip.loaded) spans.push_back({entity, clip.startFrame, clip.duration});
         }
         warm = warmset::compute(spans, wp, m_lastWarmNs);
         TracyPlot("Warm decode workers", static_cast<int64_t>(warm.size()));
     }
+
+    // Clips whose workers are actively steered this tick (authored window,
+    // section-fade tail, or Fix-8 extension). The warm window only knows
+    // authored spans, so a clip in a long tail/extension can fall out of
+    // warm+grace while still producing output — the cold-retire sweep must
+    // never take a steered worker (audio would hard-cut and video freeze
+    // mid-fade).
+    std::unordered_set<entt::entity> steered;
 
     // FrameBuffer is an empty marker type; entt elides empty components from
     // view::each's tuple, so the binding here is (entity, clip) only.
@@ -162,12 +176,24 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             if (!warm.contains(entity)) continue;   // budget: no worker for cold clips
 
             // Bootstrap a worker at the current playhead-mapped media frame.
+            // A clip warmed by the armed-cue window (playhead elsewhere)
+            // bootstraps at the CUE's mapped frame instead — prewarming a
+            // mid-clip cue at the clip's first frame would open the decoder
+            // but cache the wrong frames, so the fire still paid the full
+            // seek + first-decode under the gate.
             FrameNumber initialMediaFrame = clip.mediaStartFrame;
+            FrameNumber anchorFrame = -1;
             if (currentTimelineFrame >= clip.startFrame &&
                 currentTimelineFrame < clip.startFrame + clip.duration) {
+                anchorFrame = currentTimelineFrame;
+            } else if (armedCueFrame >= clip.startFrame &&
+                       armedCueFrame < clip.startFrame + clip.duration) {
+                anchorFrame = armedCueFrame;
+            }
+            if (anchorFrame >= 0) {
                 double timelineFrameRate = m_timeline->getFrameRate();
                 double frameRateRatio = clip.framerate / timelineFrameRate;
-                FrameNumber localFrame = currentTimelineFrame - clip.startFrame;
+                FrameNumber localFrame = anchorFrame - clip.startFrame;
                 FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
                 initialMediaFrame = clip.mediaStartFrame + sourceLocalFrame;
             }
@@ -234,6 +260,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
              currentTimelineFrame < clipEnd + tailFrames);
         const bool inTailHeld = inTail && !inExtension;
         if (inAuthored || inExtension || inTail) {
+            steered.insert(entity);
             // 2026-05-23 diagnostic — rate-limited (1 line/sec/entity)
             // per-clip state dump when the clip is active. Pairs with
             // PlaybackPresenter's [PRESENT EMPTY] log: if the
@@ -498,10 +525,6 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         }
     }
 
-    // (The old kPrefetchAheadSeconds sliding-window prefetch loop lived here.
-    // The warm-set window above subsumes it: bigger lookahead, transport-
-    // independent, and cap-aware.)
-
     // Emit decode backlog plot: total frames-behind across all active workers.
     // Measures how many frames each worker still needs to decode to reach
     // its target (targetFrame - currentFrame, clamped to 0). Rising steadily
@@ -537,7 +560,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         for (auto& [entity, worker] : m_workers) {
             if (!registry.valid(entity) || !registry.all_of<Clip, FrameBuffer>(entity)) {
                 toRemove.push_back(entity);
-            } else if (!warm.contains(entity)) {
+            } else if (!warm.contains(entity) && !steered.contains(entity)) {
                 toCool.push_back(entity);
             }
         }
@@ -546,13 +569,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             // reapRetiredWorkers does a second evict once the thread exits, to
             // catch frames an in-flight decode lands after this point.
             if (m_frameCache) m_frameCache->evictClip(entity);
-            retireWorker(entity);
+            retireWorker(entity, /*evictCacheOnReap=*/true);
         }
         for (entt::entity entity : toCool) {
             // Distance-retire: close the decoder (frees FFmpeg buffers) but
             // leave decoded frames in the LRU so re-entry hits the seek
             // fast-path (cache->has) instead of a cold first-decode.
-            retireWorker(entity);
+            retireWorker(entity, /*evictCacheOnReap=*/false);
         }
     }
 }
@@ -577,13 +600,14 @@ void DecodeSystem::shutdown(entt::registry& registry) {
     // Drain any retired-but-unreaped workers unconditionally. Their stop
     // signal was already sent at retire time; join regardless of `finished`
     // (shutdown blocking is fine — the UI is going away) and evict.
-    for (auto& [entity, worker] : m_retiredWorkers) {
-        if (worker && worker->thread.joinable()) {
-            worker->thread.join();
+    for (auto& r : m_retiredWorkers) {
+        if (r.worker && r.worker->thread.joinable()) {
+            r.worker->thread.join();
         }
-        if (m_frameCache) m_frameCache->evictClip(entity);
+        if (m_frameCache && r.evictOnReap) m_frameCache->evictClip(r.entity);
     }
     m_retiredWorkers.clear();
+    m_lastWarmNs.clear();
 
     std::cout << "DecodeSystem shutdown complete" << std::endl;
 }
@@ -717,7 +741,7 @@ void DecodeSystem::destroyWorker(entt::entity entity) {
     std::cout << "Destroyed decode worker for entity" << std::endl;
 }
 
-void DecodeSystem::retireWorker(entt::entity entity) {
+void DecodeSystem::retireWorker(entt::entity entity, bool evictCacheOnReap) {
     auto it = m_workers.find(entity);
     if (it == m_workers.end()) return;
 
@@ -729,23 +753,27 @@ void DecodeSystem::retireWorker(entt::entity entity) {
         worker->running.store(false);
         worker->cv.notify_all();
     }
-    m_retiredWorkers.emplace_back(entity, std::move(worker));
+    m_retiredWorkers.push_back({entity, std::move(worker), evictCacheOnReap});
     m_workers.erase(it);
 }
 
 void DecodeSystem::reapRetiredWorkers() {
     for (auto it = m_retiredWorkers.begin(); it != m_retiredWorkers.end();) {
-        auto& worker = it->second;
+        auto& worker = it->worker;
         if (worker && worker->finished.load(std::memory_order_acquire)) {
             if (worker->thread.joinable()) {
                 worker->thread.join();  // thread already exited; immediate
             }
-            // Second evict: an in-flight decode may have landed frames in the
-            // cache AFTER the evict that ran at retire time. Safe to fire after
-            // the entity is destroyed — FrameCache keys by the full entt::entity
-            // handle (index + version), so a recycled clip can't be evicted by
-            // a stale handle (see FrameCache::Key).
-            if (m_frameCache) m_frameCache->evictClip(it->first);
+            // Second evict (delete-retires only): an in-flight decode may have
+            // landed frames in the cache AFTER the evict that ran at retire
+            // time. Safe to fire after the entity is destroyed — FrameCache
+            // keys by the full entt::entity handle (index + version), so a
+            // recycled clip can't be evicted by a stale handle (see
+            // FrameCache::Key). Distance-retires (evictOnReap=false) keep
+            // their frames: the clip is alive, re-entry rides the seek
+            // fast-path, and a re-warmed clip's NEW worker may already be
+            // refilling the cache this reap must not clobber.
+            if (m_frameCache && it->evictOnReap) m_frameCache->evictClip(it->entity);
             it = m_retiredWorkers.erase(it);
         } else if (!worker) {
             // Defensive: a null slot (shouldn't happen) — drop it.

@@ -38,22 +38,28 @@ std::unordered_set<entt::entity> compute(
     const FrameNumber armEnd   = armed ? p.armedCueFrame + ahead : 0;
 
     // Candidates = window ∪ armed window, keyed by best distance for cap sort.
-    struct Cand { entt::entity e; int64_t dist; };
+    struct Cand { entt::entity e; int64_t dist; bool inWin; };
     std::vector<Cand> cands;
     cands.reserve(clips.size());
     for (const ClipSpan& c : clips) {
         const bool inWin = overlaps(c, winStart, winEnd);
         const bool inArm = armed && overlaps(c, p.armedCueFrame, armEnd);
         if (!inWin && !inArm) continue;
-        int64_t d = inWin ? intervalDistance(c, p.playheadFrame)
-                          : std::numeric_limits<int64_t>::max();
+        int64_t d = std::numeric_limits<int64_t>::max();
+        if (inWin) d = std::min(d, intervalDistance(c, p.playheadFrame));
         if (inArm) d = std::min(d, intervalDistance(c, p.armedCueFrame));
-        cands.push_back({c.entity, d});
+        cands.push_back({c.entity, d, inWin});
     }
 
     if (static_cast<int>(cands.size()) > p.cap) {
+        // Equal distance: playhead-window clips (possibly on screen right
+        // now) outrank armed-only clips, so an armed cue can never starve
+        // an active clip of its worker at the cap boundary.
         std::nth_element(cands.begin(), cands.begin() + p.cap, cands.end(),
-                         [](const Cand& a, const Cand& b) { return a.dist < b.dist; });
+                         [](const Cand& a, const Cand& b) {
+                             if (a.dist != b.dist) return a.dist < b.dist;
+                             return a.inWin && !b.inWin;
+                         });
         cands.resize(static_cast<size_t>(p.cap));
     }
 
