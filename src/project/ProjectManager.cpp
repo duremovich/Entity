@@ -426,6 +426,18 @@ void ProjectManager::tickAutosave(double deltaTime) {
                               : m_projectPath;
     autosavePath += ".autosave";
 
+    // Keep one prior generation (.autosave.1): the serializer's atomic
+    // rename already protects against a crash mid-write, but if an autosave
+    // captures bad state, the previous good capture must still exist.
+    {
+        std::error_code ec;
+        if (std::filesystem::exists(autosavePath, ec)) {
+            std::filesystem::path prevGen = autosavePath;
+            prevGen += ".1";
+            std::filesystem::rename(autosavePath, prevGen, ec);  // replaces prevGen
+        }
+    }
+
     // Write directly via the serializer — autosave is a side channel, don't
     // touch m_projectPath. Operator still expects "Save" to write the real file.
     if (ProjectSerializer::save(*m_timeline, autosavePath, this)) {

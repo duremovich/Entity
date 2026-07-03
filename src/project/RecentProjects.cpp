@@ -123,13 +123,34 @@ bool RecentProjects::saveTo(const fs::path& file) const {
         });
     }
 
-    std::ofstream out(file);
-    if (!out.is_open()) {
-        std::cerr << "[RecentProjects] Failed to open " << file.string() << " for write" << std::endl;
+    // Write-temp-then-rename, same as ProjectSerializer::save — never
+    // truncate the previous good file before the new content is durable.
+    fs::path tmp = file;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            std::cerr << "[RecentProjects] Failed to open " << tmp.string() << " for write" << std::endl;
+            return false;
+        }
+        out << doc.dump(2);
+        out.flush();
+        if (!out.good()) {
+            std::error_code ec;
+            out.close();
+            fs::remove(tmp, ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, file, ec);
+    if (ec) {
+        std::cerr << "[RecentProjects] Failed to move " << tmp.string()
+                  << " into place: " << ec.message() << std::endl;
+        fs::remove(tmp, ec);
         return false;
     }
-    out << doc.dump(2);
-    return out.good();
+    return true;
 }
 
 void RecentProjects::touch(const std::string& path) {

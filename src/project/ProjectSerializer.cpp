@@ -1145,15 +1145,36 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
         project["cues"] = cuesJson;
 
-        // Write to file with pretty formatting
-        std::ofstream file(savePath);
-        if (!file.is_open()) {
-            s_lastError = "Failed to open file for writing: " + savePath.string();
+        // Write-temp-then-rename: opening savePath directly would truncate
+        // the previous good file before the new content is durable, so a
+        // crash mid-save destroys the project. The rename swap is atomic
+        // on NTFS, so savePath always holds either the old or the new file.
+        std::filesystem::path tmpPath = savePath;
+        tmpPath += ".tmp";
+        {
+            std::ofstream file(tmpPath, std::ios::binary | std::ios::trunc);
+            if (!file.is_open()) {
+                s_lastError = "Failed to open file for writing: " + tmpPath.string();
+                return false;
+            }
+            file << project.dump(2);  // 2-space indentation
+            file.flush();
+            if (!file.good()) {
+                s_lastError = "Write failed (disk full?): " + tmpPath.string();
+                file.close();
+                std::error_code removeEc;
+                std::filesystem::remove(tmpPath, removeEc);
+                return false;
+            }
+        }
+        std::error_code renameEc;
+        std::filesystem::rename(tmpPath, savePath, renameEc);
+        if (renameEc) {
+            s_lastError = "Failed to move temp save into place: " + renameEc.message();
+            std::error_code removeEc;
+            std::filesystem::remove(tmpPath, removeEc);
             return false;
         }
-
-        file << project.dump(2);  // 2-space indentation
-        file.close();
 
         std::cout << "[ProjectSerializer] Saved project to " << savePath.string() << std::endl;
         return true;
