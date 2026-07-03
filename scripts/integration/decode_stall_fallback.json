@@ -1,0 +1,52 @@
+{
+    "version": 1,
+    "description": "NEW-09 (issue #74): the registry-free show-thread stall fallback must keep decode targets AND audio steering advancing while the editor thread is stalled. Imports the 5s tone fixture (150 video frames @30fps + 1kHz audio), plays ~0.3s, then StallEditor 1500 blocks the editor thread (heartbeat goes >50ms stale, DecodeSystem/AudioSystem tickFromSnapshot engage). AssertFrameCached at source frame 40: the playhead reaches ~54 during the stall, so frame 40 is decoded ONLY if the fallback steered targetFrame through the stall — without it the worker parks at ~frame 17 (pre-stall playhead + DECODE_AHEAD) and the assert fails (verified: disabling the fallback fails this assert). AssertAudioWorkerSeekCountAtMost guards the stall-entry seek-storm fix: the fallback handoff must not re-seek the audio worker (each seek is an audible ring-clear); only the initial positioning seek is expected. The asserts drain in the same processQueue pass as StallEditor, before Engine::update re-steers, so they observe stall-era state.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "StallFallbackScreen",
+            "width": 64,
+            "height": 64
+        },
+        {
+            "type": "ImportVideo",
+            "filepath": "tests/fixtures/audio/tone_1khz.mov",
+            "trackIndex": 0,
+            "position": 0
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.5
+        },
+        {
+            "type": "Play"
+        },
+        {
+            "type": "WaitSeconds",
+            "count": 0.3
+        },
+        {
+            "type": "StallEditor",
+            "ms": 1500
+        },
+        {
+            "type": "AssertShowFrameCountAtLeast",
+            "minCount": 60
+        },
+        {
+            "type": "AssertFrameCached",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "sourceFrame": 40
+        },
+        {
+            "type": "AssertAudioWorkerSeekCountAtMost",
+            "trackIndex": 0,
+            "clipIndex": 0,
+            "maxCount": 3
+        },
+        {
+            "type": "Exit"
+        }
+    ]
+}

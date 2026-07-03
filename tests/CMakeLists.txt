@@ -327,6 +327,22 @@ set_tests_properties(integration_show_thread_advances PROPERTIES
     TIMEOUT 30
 )
 
+# NEW-09 (issue #74): decode + audio steering must keep advancing through an
+# editor stall via the registry-free tickFromSnapshot fallback, without an
+# audio seek storm at stall entry. Requires tests/fixtures/audio/tone_1khz.mov.
+entity_add_integration_test(decode_stall_fallback decode_stall_fallback.json)
+
+# NEW-09 (issue #74): LoadProject during active playback — the pre-#74
+# CRITICAL crash class (show-thread fallback iterating registry views while
+# load cleared/destroyed them). Save half builds the project fixture.
+# Requires tests/fixtures/audio/tone_1khz.mov.
+entity_add_integration_test(load_during_playback_save load_during_playback_save.json)
+entity_add_integration_test(load_during_playback load_during_playback.json)
+set_tests_properties(integration_load_during_playback_save PROPERTIES
+    FIXTURES_SETUP load_during_playback_data)
+set_tests_properties(integration_load_during_playback PROPERTIES
+    FIXTURES_REQUIRED load_during_playback_data)
+
 # Regression gate: AddScreen must not double-allocate compose targets.
 # If the bug recurs the GPU wedges, DeviceLost is posted, the show thread
 # stalls, and the frame-count assertion fires before Exit.

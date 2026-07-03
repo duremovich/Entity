@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "description": "NEW-09 (issue #74) fixture half: builds a multi-clip project and saves it so load_during_playback.json can LoadProject it mid-playback. Several clips (with decoder opens in the load callback) make the synchronous load long enough to trip the >50ms editor-stall threshold while the show thread is live.",
+    "commands": [
+        {"type": "AddScreen", "name": "LoadRaceScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 160},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 200},
+        {"type": "WaitFrames", "count": 4},
+        {"type": "SaveProject", "filepath": "test_output/load_during_playback/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}

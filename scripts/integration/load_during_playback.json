@@ -1,0 +1,18 @@
+{
+    "version": 1,
+    "description": "NEW-09 (issue #74): loading a project while playback is running must not race the show thread. Pre-#74 this was the CRITICAL crash class: ProjectManager::load's registry clear/destroy/emplace ran on the editor thread with the heartbeat frozen, and the show-thread fallback concurrently iterated registry views (EnTT structural-mutate + iterate = UB). Post-#74 the fallback is registry-free and stands down during bulk mutation (RegistryMutationScope). The race was probabilistic (no TSan on MSVC) — this is regression insurance for the structural fix, strengthened locally via ctest --repeat until-fail:N. Asserts: no crash through the load, load resets transport to Stopped, and playback works cleanly on the loaded project.",
+    "commands": [
+        {"type": "AddScreen", "name": "LoadRaceScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "LoadProject", "filepath": "test_output/load_during_playback/test.entity"},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AssertPlaybackState", "state": "Stopped"},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "AssertShowFrameCountAtLeast", "minCount": 60},
+        {"type": "Exit"}
+    ]
+}

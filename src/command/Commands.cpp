@@ -57,6 +57,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <thread>
 
 // Placement read/write helpers promoted for unit-test access (no Engine dep).
 #include "entity/command/LayerPlacementOps.hpp"
@@ -4387,6 +4388,27 @@ nlohmann::json SleepMsCommand::toJson() const {
     return {{"type", "SleepMs"}, {"ms", m_ms}};
 }
 
+bool StallEditorCommand::execute(Engine& engine) {
+    (void)engine;
+    std::cout << "[StallEditor] Blocking editor thread for " << m_ms
+              << " ms (heartbeat goes stale; show-thread stall fallback engages)"
+              << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(m_ms));
+    return true;
+}
+
+nlohmann::json StallEditorCommand::toJson() const {
+    return {{"type", "StallEditor"}, {"ms", m_ms}};
+}
+
+std::string StallEditorCommand::getDescription() const {
+    return "Stall editor thread " + std::to_string(m_ms) + " ms";
+}
+
+CommandPtr StallEditorCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<StallEditorCommand>(j.value("ms", 500u));
+}
+
 std::string SleepMsCommand::getDescription() const {
     return "Sleep editor " + std::to_string(m_ms) + " ms";
 }
@@ -6617,6 +6639,83 @@ CommandPtr AssertAudioWorkerSeekFrameCommand::fromJson(const nlohmann::json& j) 
         j.value("clipIndex",  0),
         j.value("expected",  int64_t{0}),
         j.value("tolerance", int64_t{5}));
+}
+
+bool AssertAudioWorkerSeekCountAtMostCommand::execute(Engine& engine) {
+    auto* timeline  = engine.getTimeline();
+    auto* director  = engine.getDirector();
+    if (!timeline || !director) {
+        std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: timeline/director unavailable"
+                  << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    if (!registry.try_get<AudioSource>(clipEntity)) {
+        std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: clip has no AudioSource "
+                     "(media has no audio stream)" << std::endl;
+        return false;
+    }
+
+    auto* audioSystem = director->getAudioSystem();
+    if (!audioSystem) {
+        std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: no AudioSystem" << std::endl;
+        return false;
+    }
+
+    const int64_t actual = audioSystem->getWorkerSeekCount(clipEntity);
+    if (actual < 0) {
+        std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: no audio worker"
+                  << std::endl;
+        return false;
+    }
+    if (actual <= m_maxCount) {
+        std::cout << "[AssertAudioWorkerSeekCountAtMost] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " seekCount=" << actual
+                  << " (<= " << m_maxCount << ")" << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertAudioWorkerSeekCountAtMost] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex
+              << " seekCount=" << actual
+              << " exceeds max " << m_maxCount
+              << " (seek storm — each seek is an audible ring-clear)" << std::endl;
+    return false;
+}
+
+nlohmann::json AssertAudioWorkerSeekCountAtMostCommand::toJson() const {
+    return {{"type", "AssertAudioWorkerSeekCountAtMost"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"maxCount", m_maxCount}};
+}
+
+std::string AssertAudioWorkerSeekCountAtMostCommand::getDescription() const {
+    return "Assert audio worker seek count <= " + std::to_string(m_maxCount) +
+           " for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertAudioWorkerSeekCountAtMostCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertAudioWorkerSeekCountAtMostCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex",  0),
+        j.value("maxCount",  int64_t{3}));
 }
 
 // ============================================================================

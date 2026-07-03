@@ -2280,9 +2280,10 @@ private:
 };
 
 /**
- * Sleep the calling (editor) thread for `ms` milliseconds using a wall-clock
- * sleep. Simulates an editor modal-loop stall so that integration tests can
- * verify the show thread keeps advancing independently (Stage 3c gate).
+ * Pause the editor-thread command drain for `ms` milliseconds (wall clock)
+ * WITHOUT blocking the editor thread — Engine::update keeps ticking. Same
+ * mechanism as WaitSeconds. Despite the name, this does NOT simulate a
+ * stall; use StallEditor for that.
  *
  * JSON: {"type":"SleepMs","ms":500}
  */
@@ -2292,6 +2293,31 @@ public:
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "SleepMs"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint32_t m_ms;
+};
+
+/**
+ * Block the editor thread for `ms` milliseconds with a real wall-clock
+ * sleep inside execute(). This IS an editor stall: Engine::update stops,
+ * the heartbeat goes stale, and the show thread's stall fallback engages
+ * (issue #74). The only script command that genuinely stalls the editor —
+ * SleepMs was demoted to a non-blocking drain pause when blocking the
+ * editor inside the drain broke script sequencing assumptions.
+ *
+ * JSON: {"type":"StallEditor","ms":1500}
+ */
+class StallEditorCommand : public Command {
+public:
+    explicit StallEditorCommand(uint32_t ms) : m_ms(ms) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "StallEditor"; }
     nlohmann::json toJson() const override;
     std::string getDescription() const override;
     Affinity getAffinity() const override { return Affinity::Editor; }
@@ -3500,6 +3526,41 @@ private:
     int     m_clipIndex;
     int64_t m_expected;
     int64_t m_tolerance;
+};
+
+/**
+ * AssertAudioWorkerSeekCountAtMostCommand -- assert the audio worker for a
+ * clip has issued at most `maxCount` real seeks since it was created
+ * (AudioDecodeWorker::seekCount). Fails when the count exceeds maxCount or
+ * no worker exists.
+ *
+ * Intended for the NEW-09 stall-fallback tests (issue #74): every seek
+ * clears the worker's ring (an audible dropout), so a stall entering/exiting
+ * the show-thread fallback must NOT add seeks beyond the initial positioning
+ * one — a seek storm here means the discontinuity threshold regressed.
+ *
+ * JSON: {"type":"AssertAudioWorkerSeekCountAtMost","trackIndex":0,
+ *        "clipIndex":0,"maxCount":3}
+ */
+class AssertAudioWorkerSeekCountAtMostCommand : public Command {
+public:
+    AssertAudioWorkerSeekCountAtMostCommand(int trackIndex, int clipIndex,
+                                            int64_t maxCount)
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_maxCount(maxCount) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertAudioWorkerSeekCountAtMost"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int     m_trackIndex;
+    int     m_clipIndex;
+    int64_t m_maxCount;
 };
 
 // ============================================================================

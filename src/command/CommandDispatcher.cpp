@@ -267,6 +267,7 @@ void CommandDispatcher::registerBuiltinFactories() {
 
     // Stage 3c: show-thread health gate
     registerFactory("SleepMs", SleepMsCommand::fromJson);
+    registerFactory("StallEditor", StallEditorCommand::fromJson);
     registerFactory("AssertShowFrameCountAtLeast", AssertShowFrameCountAtLeastCommand::fromJson);
 
     // Mesh upload pacing gate
@@ -312,6 +313,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertAudioCaptureRms",       AssertAudioCaptureRmsCommand::fromJson);
     registerFactory("AssertAudioCaptureGoertzel",  AssertAudioCaptureGoertzelCommand::fromJson);
     registerFactory("AssertAudioWorkerSeekFrame",  AssertAudioWorkerSeekFrameCommand::fromJson);
+    registerFactory("AssertAudioWorkerSeekCountAtMost", AssertAudioWorkerSeekCountAtMostCommand::fromJson);
 
     // Input bus commands
     registerFactory("SetInputChannel", SetInputChannelCommand::fromJson);
