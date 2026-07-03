@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "description": "Diagnostic: load the QLab-converted IIWY_fromQlab.entity (149 clips / 153 sections), hold 15s to let first-frame decode + texture allocation settle, exit. Read-only, no save. Repro for the 2026-06-25 beginShowFrame fence-timeout device-lost.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY_fromQlab.entity"},
+        {"type": "WaitSeconds", "count": 15.0},
+        {"type": "AssertScreenCount", "count": 6},
+        {"type": "Exit"}
+    ]
+}

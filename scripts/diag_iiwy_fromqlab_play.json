@@ -1,0 +1,16 @@
+{
+    "version": 1,
+    "description": "Diagnostic: load IIWY_fromQlab.entity, play from Top of Show across section breaks with GOs. Read-only, no save. Playback-phase companion to diag_iiwy_fromqlab_load.json.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY_fromQlab.entity"},
+        {"type": "WaitSeconds", "count": 10.0},
+        {"type": "SeekToFrame", "frame": 1500},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 10.0},
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds", "count": 10.0},
+        {"type": "SectionGo"},
+        {"type": "WaitSeconds", "count": 10.0},
+        {"type": "Exit"}
+    ]
+}

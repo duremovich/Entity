@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "Warm-set acceptance: arm a distant cue, fire it, playback must start promptly. Read-only.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "D:/EnityTests/IIWY/IIWY/IIWY_fromQlab.entity"},
+        {"type": "WaitSeconds", "count": 8.0},
+        {"type": "ArmCue", "number": 1.0},
+        {"type": "WaitSeconds", "count": 3.0},
+        {"type": "FireCue", "number": 1.0},
+        {"type": "WaitSeconds", "count": 4.0},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "AssertPlayheadAtFrame", "frame": 1560, "tolerance": 90},
+        {"type": "Exit"}
+    ]
+}
