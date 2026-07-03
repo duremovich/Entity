@@ -164,9 +164,11 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
     if (!m_timeline || !m_audioEngine) return;
 
     // update() is editor-only since issue #74 — the show thread's stall
-    // path is tickFromSnapshot (registry-free).
+    // path is tickFromSnapshot (registry-free). Assert for dev builds;
+    // early-return keeps the invariant enforced in Release (NDEBUG).
     assert(std::this_thread::get_id() == m_editorThreadId &&
            "AudioSystem::update is editor-only (#74); show thread uses tickFromSnapshot");
+    if (std::this_thread::get_id() != m_editorThreadId) return;
 
     // Reap audio workers retired on a prior editor tick whose threads have
     // now exited (join returns immediately).
@@ -429,15 +431,23 @@ void AudioSystem::steerAudioWorker(AudioDecodeWorker& w, int64_t expectedSample,
     // the decode/playback ring-fill offset. A genuine scrub/seek jumps by
     // far more than playback advances between two steering ticks.
     //
-    // Time-based slack (issue #74): pre-#74 the threshold was a fixed
-    // 3 editor ticks' worth of samples, which assumed steering ticks are
-    // back-to-back. The show-thread stall fallback only engages after the
-    // heartbeat is >50 ms stale — at a 60 fps timeline 3 ticks IS 50 ms, so
-    // the fallback's first tick always mis-read normal playback advance as
-    // a scrub and re-seeked (ring.clear() → audible dropout on every stall
-    // entry). Scaling the allowance with the real gap since the last
-    // steering tick keeps handoffs (editor→fallback and back) seamless
-    // while real scrubs — which jump by whole seconds — still trip it.
+    // Gap-aware discontinuity test (issue #74): pre-#74 the threshold was a
+    // fixed 3 editor ticks' worth of samples, which assumed steering ticks
+    // are back-to-back. The show-thread stall fallback only engages after
+    // the heartbeat is >50 ms stale — at a 60 fps timeline 3 ticks IS 50 ms,
+    // so the fallback's first tick always mis-read normal playback advance
+    // as a scrub and re-seeked (ring.clear() → audible dropout on every
+    // stall entry).
+    //
+    // The gap between two steering ticks admits exactly two legitimate
+    // histories: the playhead advanced through the clip the whole time
+    // (stall handoff — expected ≈ last + gap×rate) or it didn't advance at
+    // all (paused / just re-entered after idling — expected ≈ last). Accept
+    // the new position if EITHER hypothesis explains it within the 3-tick
+    // jitter slack; anything else is a genuine reposition and must seek.
+    // A naive `slack + elapsedSamples` allowance would also absorb real
+    // scrubs into a clip whose worker sat unsteered for the gap (warm but
+    // out-of-window), leaving audio at the old offset permanently.
     if (!w.seekPending.load()) {
         const int64_t last = w.lastExpectedSample.load(std::memory_order_relaxed);
         const bool firstActiveTick = (last == AudioDecodeWorker::kNoExpectedSample);
@@ -450,9 +460,11 @@ void AudioSystem::steerAudioWorker(AudioDecodeWorker& w, int64_t expectedSample,
                 ? static_cast<int64_t>(std::ceil(
                       static_cast<double>(nowNs - lastNs) * 1e-9 * rate))
                 : 0;
-            const int64_t allowed = threeTicksSamples + elapsedSamples;
-            const int64_t delta = std::abs(expectedSample - last);
-            seekNeeded = (delta > allowed);
+            const int64_t deltaStatic     = std::abs(expectedSample - last);
+            const int64_t deltaContinuous =
+                std::abs(expectedSample - (last + elapsedSamples));
+            seekNeeded =
+                (std::min(deltaStatic, deltaContinuous) > threeTicksSamples);
         }
         if (seekNeeded) {
             const int64_t clampedSample = std::clamp<int64_t>(
@@ -498,18 +510,17 @@ void AudioSystem::tickFromSnapshot(const bus::SceneSnapshot& scene,
 
         const Clip clip = clipFromCatalog(ce);
 
-        // Window/continuation gate — same shape as update()'s registry path
-        // (SectionFade free functions are documented any-thread-safe, and
-        // section state is frozen while the editor is stalled).
+        // Window/continuation gate — same shape as update()'s registry
+        // path, but driven entirely by the BAKED catalog fields (no
+        // Timeline section lock + vector copy per entry per tick, and
+        // guaranteed to agree with mapToMediaFrameFromCatalogEx's realEnd
+        // math, which uses the same baked inputs).
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
         const FrameNumber tailFrames =
-            timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
-        const double endingBreakFadeSeconds = (tailFrames > 0)
-            ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEnd)
-            : 0.0;
+            catalogSectionTailFrames(ce, tlFPS);
         const FrameNumber extendedDuration = entity::computeExtendedDuration(
-            clip, tlFPS, /*endAlignsWithBreak*/ tailFrames > 0,
-            endingBreakFadeSeconds);
+            clip, tlFPS, ce.endAlignsWithSectionBreak,
+            ce.endingBreakFadeSeconds);
         const FrameNumber extendedEnd = clip.startFrame + extendedDuration;
         const bool inAuthored = (currentTLFrame >= clip.startFrame &&
                                  currentTLFrame < clipEnd);

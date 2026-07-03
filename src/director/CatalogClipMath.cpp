@@ -199,4 +199,14 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
                                         nowNs).mediaFrame;
 }
 
+FrameNumber catalogSectionTailFrames(const bus::ClipCatalogEntry& e,
+                                     double timelineFrameRate) {
+    if (!e.endAlignsWithSectionBreak) return 0;
+    const FrameNumber ramp = e.endingBreakFadeSeconds > 0.0
+        ? static_cast<FrameNumber>(
+              std::ceil(e.endingBreakFadeSeconds * timelineFrameRate))
+        : 0;
+    return std::max<FrameNumber>(1, ramp);
+}
+
 } // namespace entity

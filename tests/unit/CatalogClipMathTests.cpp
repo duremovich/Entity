@@ -190,6 +190,21 @@ TEST(CatalogClipMath, WrapperMatchesExFrame) {
     }
 }
 
+TEST(CatalogClipMath, CatalogSectionTailFramesMirrorsTimelineFormula) {
+    auto e = makeEntry(PlaybackMode::Loop);
+    // No aligned break -> no tail.
+    EXPECT_EQ(catalogSectionTailFrames(e, 30.0), 0);
+    // Aligned break, zero fade -> 1 hold frame.
+    e.endAlignsWithSectionBreak = true;
+    e.endingBreakFadeSeconds    = 0.0;
+    EXPECT_EQ(catalogSectionTailFrames(e, 30.0), 1);
+    // Aligned break with fade -> ceil(fade * fps) ramp frames.
+    e.endingBreakFadeSeconds = 1.5;
+    EXPECT_EQ(catalogSectionTailFrames(e, 30.0), 45);
+    e.endingBreakFadeSeconds = 0.01;   // sub-frame fade still >= 1
+    EXPECT_EQ(catalogSectionTailFrames(e, 30.0), 1);
+}
+
 TEST(CatalogClipMath, ClipFromCatalogCopiesSchedulingFields) {
     auto e = makeEntry(PlaybackMode::PingPong, 10, 90, 5, 44);
     e.totalMediaFrames = 200;

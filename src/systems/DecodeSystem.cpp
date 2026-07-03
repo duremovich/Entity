@@ -97,8 +97,13 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // path is tickFromSnapshot (registry-free). The old design re-entered
     // this function from the show thread, which raced project load's
     // registry mutation (EnTT view iteration during clear/destroy = UB).
+    // The assert catches misuse in dev builds; the early-return keeps the
+    // invariant enforced in Release (NDEBUG) too, where a rogue off-thread
+    // caller would otherwise run the full lifecycle path and reintroduce
+    // the #74 crash class.
     assert(std::this_thread::get_id() == m_editorThreadId &&
            "DecodeSystem::update is editor-only (#74); show thread uses tickFromSnapshot");
+    if (std::this_thread::get_id() != m_editorThreadId) return;
 
     // Reap workers retired on a prior editor tick whose threads have now
     // exited (join returns immediately).
@@ -382,6 +387,10 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
     // Measures how many frames each worker still needs to decode to reach
     // its target (targetFrame - currentFrame, clamped to 0). Rising steadily
     // means decoder is falling behind realtime; steady at 0 means caught up.
+#ifdef TRACY_ENABLE
+    // Guarded: in OFF builds TracyPlot expands to nothing, and the value
+    // isn't worth a whole-map lock sweep (a contention window against the
+    // show thread's per-clip getWorker) to compute and discard.
     {
         int64_t totalPending = 0;
         std::lock_guard<LockableBase(std::mutex)> lock(m_workersMutex);
@@ -393,6 +402,7 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
         }
         TracyPlot("Decode queue depth", totalPending);
     }
+#endif
     // Steady non-zero values indicate LRU eviction is force-re-decoding
     // frames the worker just produced — the canonical multi-clip 4K H.264
     // thrash pattern. Goal under healthy load: <1/tick. Spike at section
@@ -599,19 +609,17 @@ void DecodeSystem::tickFromSnapshot(const bus::SceneSnapshot& scene,
 
         const Clip clip = clipFromCatalog(ce);
 
-        // Active-window gate — same predicates as update()'s registry path.
-        // sectionFadeTailFrames / sectionFadeSecondsAtBreak are documented
-        // any-thread-safe reads of Timeline section state, and that state is
-        // frozen while the editor is stalled.
+        // Active-window gate — same predicates as update()'s registry path,
+        // but driven entirely by the BAKED catalog fields (no Timeline
+        // section lock + vector copy per entry per tick, and guaranteed to
+        // agree with mapToMediaFrameFromCatalogEx's realEnd math, which
+        // uses the same baked inputs).
         const FrameNumber clipEnd = clip.startFrame + clip.duration;
         const FrameNumber tailFrames =
-            timeline::sectionFadeTailFrames(*m_timeline, clipEnd);
-        const double endingBreakFadeSeconds = (tailFrames > 0)
-            ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEnd)
-            : 0.0;
+            catalogSectionTailFrames(ce, timelineFps);
         const FrameNumber extendedDuration = entity::computeExtendedDuration(
-            clip, timelineFps, /*endAlignsWithBreak*/ tailFrames > 0,
-            endingBreakFadeSeconds);
+            clip, timelineFps, ce.endAlignsWithSectionBreak,
+            ce.endingBreakFadeSeconds);
         const FrameNumber extendedEnd = clip.startFrame + extendedDuration;
         const bool inAuthored =
             (currentTimelineFrame >= clip.startFrame &&

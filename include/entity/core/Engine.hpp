@@ -1181,20 +1181,35 @@ private:
 
     // RAII marker for bulk registry mutation on the editor thread. Wrap any
     // code path that destroys/clears/emplaces registry state en masse so
-    // new bulk-mutation sites can't forget the flag.
+    // new bulk-mutation sites can't forget the flag. acq_rel on the counter
+    // RMWs so the flag transition can't reorder against the mutation work
+    // on either side of the scope. The destructor also refreshes the
+    // heartbeat: the scope's whole reason to exist is a long editor
+    // operation, so on exit the heartbeat (stamped at iteration top,
+    // pre-mutation) is guaranteed stale — without the refresh the fallback
+    // would re-engage against the not-yet-republished (old-project)
+    // snapshot for the remainder of the editor iteration.
     class RegistryMutationScope {
     public:
         explicit RegistryMutationScope(Engine& e) : m_engine(e) {
-            m_engine.m_bulkRegistryMutation.fetch_add(1, std::memory_order_release);
+            m_engine.m_bulkRegistryMutation.fetch_add(1, std::memory_order_acq_rel);
         }
         ~RegistryMutationScope() {
-            m_engine.m_bulkRegistryMutation.fetch_sub(1, std::memory_order_release);
+            m_engine.stampEditorHeartbeat();
+            m_engine.m_bulkRegistryMutation.fetch_sub(1, std::memory_order_acq_rel);
         }
         RegistryMutationScope(const RegistryMutationScope&) = delete;
         RegistryMutationScope& operator=(const RegistryMutationScope&) = delete;
     private:
         Engine& m_engine;
     };
+
+    // Store steady_clock-now into m_lastEditorTickNs. Called at the top of
+    // each editor iteration, again just before Engine::update() (so the
+    // show thread doesn't treat a healthy-but-slow iteration's tail as a
+    // stall and steer workers concurrently with the editor's own
+    // DecodeSystem/AudioSystem tick), and by RegistryMutationScope on exit.
+    void stampEditorHeartbeat();
 
     // Stage 3: Show thread. Owns Director tick, RenderFrame production/
     // consumption, CompositorSystem, OutputManager, and projector Present.

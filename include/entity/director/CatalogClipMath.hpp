@@ -54,4 +54,15 @@ FrameNumber mapToMediaFrameFromCatalog(const bus::ClipCatalogEntry& e,
                                        double timelineFrameRate,
                                        std::int64_t nowNs);
 
+// Section-fade tail length at the clip's end, derived from the BAKED
+// catalog fields — the mirror of timeline::sectionFadeTailFrames' formula
+// evaluated at snapshot time (>=1 hold frame when the end aligns with a
+// break, plus ceil(fadeSeconds * fps) ramp frames). Lets the stall-fallback
+// window gates consume the snapshot only (no Timeline section lock + vector
+// copy per entry per tick) and guarantees the gate agrees with
+// mapToMediaFrameFromCatalogEx's realEnd math, which uses the same baked
+// fields. Keep in lockstep with timeline::sectionFadeTailFrames.
+FrameNumber catalogSectionTailFrames(const bus::ClipCatalogEntry& e,
+                                     double timelineFrameRate);
+
 } // namespace entity

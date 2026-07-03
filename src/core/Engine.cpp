@@ -1133,10 +1133,7 @@ void Engine::run() {
             const std::chrono::duration<double> delta = now - lastEditorTick;
             m_editorDeltaTime = std::min(delta.count(), 0.050);
             lastEditorTick = now;
-            m_lastEditorTickNs.store(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    now.time_since_epoch()).count(),
-                std::memory_order_relaxed);
+            stampEditorHeartbeat();
         }
 
         // FPS tracking (editor-side; measures editor frame rate).
@@ -1219,6 +1216,17 @@ void Engine::run() {
         if (m_commandDispatcher) {
             m_commandDispatcher->processQueue(*this, Affinity::Editor);
         }
+        // Re-stamp the heartbeat right before the editor's own system tick.
+        // The iteration-top stamp ages through processEvents + processQueue,
+        // so on a slow-but-healthy iteration (>50 ms of events/commands) the
+        // show thread would otherwise classify the tail as a stall and run
+        // tickFromSnapshot concurrently with the editor's DecodeSystem/
+        // AudioSystem steering. The overlap is benign by design (atomics
+        // only) but pointless — this keeps it confined to update() calls
+        // that themselves exceed 50 ms. Genuine stalls (modal loops in
+        // processEvents, long commands like LoadProject in processQueue)
+        // still trip the fallback via the aged iteration-top stamp.
+        stampEditorHeartbeat();
         // Editor-side simulation work: timeline, section scheduler, decode.
         update();
 
@@ -4358,6 +4366,13 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
     bool ok = m_projectManager->save(filepath);
     if (ok) updateTranscodeCacheDir();
     return ok;
+}
+
+void Engine::stampEditorHeartbeat() {
+    m_lastEditorTickNs.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(),
+        std::memory_order_relaxed);
 }
 
 bool Engine::loadProject(const std::filesystem::path& filepath) {
