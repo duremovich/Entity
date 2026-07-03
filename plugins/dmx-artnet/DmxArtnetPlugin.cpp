@@ -253,8 +253,6 @@ void artnetWorkerLoop() {
                                              parsed)) {
             continue;  // not ArtDmx -- ArtPoll / vendor opcodes / noise
         }
-        std::fprintf(stderr, "[dmx-artnet] artnet parsed u=%u ch=%u\n",
-                      unsigned(parsed.universe), unsigned(parsed.channelCount));
         s.table.apply(parsed.universe, parsed.channels, parsed.channelCount,
                        entity::dmx::SourceTag::Artnet, /*priority*/100,
                        std::chrono::steady_clock::now());

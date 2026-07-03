@@ -27,6 +27,20 @@ LGPL-2.1-or-later) all combine cleanly with GPLv3.
 | [Tracy](https://github.com/wolfpld/tracy) | BSD-3-Clause | Frame profiler (on-demand) |
 | [GoogleTest](https://github.com/google/googletest) | BSD-3-Clause | Unit test framework (test builds only) |
 | [FFmpeg](https://ffmpeg.org/) | LGPL-2.1-or-later | Media demuxing and decoding |
+| [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler) | LLVM Release License (NCSA) | Runtime HLSL compilation (`dxcompiler.dll`, redistributed) |
+
+Two entries are not plain vcpkg manifest dependencies:
+
+- **DirectX Shader Compiler** — linked via `dxcompiler.lib` and shipped as
+  `dxcompiler.dll` next to the editor binary for `RuntimeShaderCompiler`
+  (runtime per-layer effect compilation). It is not fetched by vcpkg; its
+  license (University of Illinois/NCSA, the LLVM Release License) requires
+  attribution when the DLL is redistributed — this table entry is that
+  attribution. License text: the `LICENSE.TXT` in the DirectXShaderCompiler
+  repository.
+- **Dear ImGui** is pinned to 1.89.7 via the overlay port in `ports/imgui/`
+  (same MIT license as the upstream row above; the overlay only pins the
+  version, it doesn't modify the library).
 
 ## FFmpeg
 

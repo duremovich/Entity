@@ -59,11 +59,19 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.c
 ```
 
 **Note**: The first configuration will take **10-30 minutes** as vcpkg downloads and compiles all dependencies:
-- FFmpeg (large, complex build)
+- FFmpeg (large, complex build — see below to skip it)
 - EnTT (header-only, fast)
 - GLFW3 (medium)
 - ImGui (fast)
 - GLM (header-only, fast)
+
+**Skipping the FFmpeg source build**: FFmpeg is a vcpkg manifest *feature*.
+If you have a prebuilt shared FFmpeg (e.g. the gyan.dev
+`ffmpeg-release-full-shared` archive that CI uses), set the `FFMPEG_ROOT`
+environment variable to its install tree and configure with
+`-DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON` — `cmake/FindFFMPEG.cmake` picks it
+up and the 10-30 minute vcpkg FFmpeg compile is skipped entirely. This is
+exactly what `.github/workflows/ci.yml` does.
 
 You'll see output like:
 ```
@@ -115,7 +123,20 @@ cmake -B build -S . -DBUILD_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=...
 
 # Disable D3D12 debug layer (for release builds)
 cmake -B build -S . -DENABLE_D3D12_DEBUG=OFF -DCMAKE_TOOLCHAIN_FILE=...
+
+# Disable Tracy profiler instrumentation (default ON). Convention: OFF
+# builds go in their own tree so the two configs don't fight over
+# artifacts — CI builds and tests both configs.
+cmake -B build-noprof -S . -DENTITY_ENABLE_TRACY=OFF -DCMAKE_TOOLCHAIN_FILE=...
+
+# Enable unit tests that need a real (or WARP) D3D12 device (default OFF).
+# Convention: separate tree, same reasoning.
+cmake -B build-d3d12tests -S . -DENTITY_HAVE_D3D12_TESTS=ON -DCMAKE_TOOLCHAIN_FILE=...
 ```
+
+The three build directories you may see in a working checkout: `build/`
+(default, Tracy ON), `build-noprof/` (Tracy OFF), `build-d3d12tests/`
+(device-dependent unit tests).
 
 ## Troubleshooting
 
@@ -284,6 +305,6 @@ Once the application builds and runs:
 2. ✅ No crash on startup
 3. ✅ Clean exit when window is closed
 
-You're ready to continue to Phase 2: Implementing the D3D12 renderer!
-
-See the [project board](https://github.com/users/duremovich/projects/2) for the development roadmap and current status.
+See the [project board](https://github.com/users/duremovich/projects/2) for
+the development roadmap and current status, and `docs/status/CURRENT.md` for
+the phase map.
