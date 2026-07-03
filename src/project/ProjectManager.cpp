@@ -424,11 +424,17 @@ void ProjectManager::tickAutosave(double deltaTime) {
     std::filesystem::path autosavePath =
         m_projectPath.empty() ? std::filesystem::path("autosave.entity")
                               : m_projectPath;
-    autosavePath += ".autosave";
+    // The suffix must end in ".entity": ProjectSerializer::save appends
+    // FILE_EXTENSION to any path whose extension differs, so a bare
+    // ".autosave" suffix would make the serializer write
+    // "<name>.autosave.entity" while we track (and rotate) "<name>.autosave"
+    // — a file that never exists.
+    autosavePath += ".autosave.entity";
 
-    // Keep one prior generation (.autosave.1): the serializer's atomic
-    // rename already protects against a crash mid-write, but if an autosave
-    // captures bad state, the previous good capture must still exist.
+    // Keep one prior generation (.autosave.entity.1): the serializer's
+    // atomic rename already protects against a crash mid-write, but if an
+    // autosave captures bad state, the previous good capture must still
+    // exist.
     {
         std::error_code ec;
         if (std::filesystem::exists(autosavePath, ec)) {
