@@ -449,6 +449,17 @@ private:
     // than a misleading 0x0. Returns DXGI_ERROR_DEVICE_HUNG if no device.
     HRESULT removedReasonAfterTimeout();
 
+    // Bounded fence wait for the frame-loop sites (beginShowFrame /
+    // moveToNextFrame). Retries a watchdog timeout while the device is
+    // healthy (RemovedReason S_OK — CPU starvation, not device loss) and
+    // latches device-lost only on a real removal reason, WAIT_FAILED, or
+    // retry exhaustion. Returns true when the fence reached `value`; false
+    // after handleDeviceLost has run. NOT for the shutdown drains in
+    // waitForGpu(), which must stay single-shot bounded (a shutdown path
+    // that re-waits on a wedged driver is the #69 teardown hang).
+    bool waitFenceOrDeviceLost(ID3D12Fence* fence, uint64_t value,
+                               HANDLE event, const char* site);
+
     // Resolve an abstract TextureRef into a D3D12 SRV descriptor handle.
     // Returns a zero-ptr handle if the reference is invalid or the resource
     // isn't ready; legacy draw methods treat that as a no-op.

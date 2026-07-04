@@ -565,11 +565,9 @@ void D3D12Renderer::beginShowFrame() {
         const uint64_t lastSignaled = m_showFenceValues[m_showBackBufferIndex] - 1;
         if (m_showFence->GetCompletedValue() < lastSignaled) {
             ZoneScopedNC("GPU fence wait", 0xCC4444);
-            m_showFence->SetEventOnCompletion(lastSignaled, m_showFenceEvent);
-            DWORD result = WaitForSingleObject(m_showFenceEvent, fenceWaitTimeoutMs());
-            if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-                HRESULT removedReason = removedReasonAfterTimeout();
-                handleDeviceLost(removedReason, "beginShowFrame show fence wait timeout");
+            if (!waitFenceOrDeviceLost(m_showFence.Get(), lastSignaled,
+                                       m_showFenceEvent,
+                                       "beginShowFrame show fence wait timeout")) {
                 return;
             }
         }
@@ -1060,6 +1058,48 @@ HRESULT D3D12Renderer::removedReasonAfterTimeout() {
     return reason;
 }
 
+bool D3D12Renderer::waitFenceOrDeviceLost(ID3D12Fence* fence, uint64_t value,
+                                          HANDLE event, const char* site) {
+    // A fence-wait timeout is only a *device-lost* when the driver says so. A
+    // healthy device can stall past the watchdog under CPU starvation (WARP
+    // sharing the box with a parallel unit-test load, a concurrent build, a
+    // Tracy attach) — the June watchdog-vs-TDR race, seen again 2026-07-04 on
+    // integration_blend: an 11s show-fence stall on a healthy 64x64 WARP
+    // frame reported as device-lost 0x0. So: on timeout, requery the removed
+    // reason (with the 250ms TDR grace); a real reason latches device-lost,
+    // S_OK logs and RE-WAITS. Every retry rechecks GetCompletedValue first,
+    // so a stale-set event or an already-signaled fence exits promptly. The
+    // attempt cap bounds the pathological GPU-hangs-without-TDR case; that
+    // report keeps RemovedReason 0x0, which handleDeviceLost prints as
+    // "(unknown reason)" — honest, since the driver never declared removal.
+    constexpr int kMaxWaitAttempts = 6;
+    for (int attempt = 0; attempt < kMaxWaitAttempts; ++attempt) {
+        if (fence->GetCompletedValue() >= value) {
+            return true;
+        }
+        fence->SetEventOnCompletion(value, event);
+        const DWORD result = WaitForSingleObject(event, fenceWaitTimeoutMs());
+        if (result == WAIT_OBJECT_0) {
+            continue; // loop re-checks the completed value
+        }
+        if (result == WAIT_FAILED) {
+            break; // broken event/wait — not retryable
+        }
+        // WAIT_TIMEOUT
+        const HRESULT reason = removedReasonAfterTimeout();
+        if (reason != S_OK) {
+            handleDeviceLost(reason, site);
+            return false;
+        }
+        std::cerr << "[D3D12] fence wait exceeded " << fenceWaitTimeoutMs()
+                  << "ms at " << site << " but device is healthy "
+                  << "(RemovedReason S_OK) — attempt " << (attempt + 1) << "/"
+                  << kMaxWaitAttempts << ", re-waiting" << std::endl;
+    }
+    handleDeviceLost(removedReasonAfterTimeout(), site);
+    return false;
+}
+
 void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
     HRESULT removedReason = (m_gpu && m_gpu->isInitialized())
         ? m_gpu->device()->GetDeviceRemovedReason()
@@ -1526,11 +1566,9 @@ void D3D12Renderer::moveToNextFrame() {
         static_cast<uint32_t>((m_editorFrameCounter + 1) % FRAME_COUNT);
     if (m_editorFence->GetCompletedValue() < m_editorFenceValues[nextSlot]) {
         ZoneScopedNC("GPU fence wait", 0xCC4444);
-        m_editorFence->SetEventOnCompletion(m_editorFenceValues[nextSlot], m_fenceEvent);
-        DWORD result = WaitForSingleObject(m_fenceEvent, fenceWaitTimeoutMs());
-        if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
-            HRESULT removedReason = removedReasonAfterTimeout();
-            handleDeviceLost(removedReason, "moveToNextFrame fence wait timeout");
+        if (!waitFenceOrDeviceLost(m_editorFence.Get(), m_editorFenceValues[nextSlot],
+                                   m_fenceEvent,
+                                   "moveToNextFrame fence wait timeout")) {
             return;
         }
     }
