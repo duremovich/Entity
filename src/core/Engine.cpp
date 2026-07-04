@@ -238,6 +238,17 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     std::cout << "  Renderer service initialized (D3D12 + OutputManager + "
                  "FrameCache + OcioManager + Compositor + Decode)" << std::endl;
 
+    // Headless runs (integration tests / CI) fast-exit the process the moment
+    // device-loss is detected, right after the crash record is written —
+    // shutting down against a removed device blocks in the driver, eats the
+    // ctest timeout, and cascades the wedge into the next test (issue #69).
+    // Interactive runs keep the normal path: autosave + recovery relaunch.
+    if (headless) {
+        if (auto* d3d12 = m_rendererService->getD3D12Renderer()) {
+            d3d12->setExitProcessOnDeviceLost(true);
+        }
+    }
+
     // GPU mesh lifecycle: deferred-free on model destruction.
     m_registry.on_destroy<Model>().connect<&Engine::onModelDestroyed>(this);
 

@@ -71,6 +71,22 @@ public:
     }
     void waitForGpuForTesting()     { waitForGpu(); }
 
+    // Headless/CI device-lost policy (issue #69). When enabled,
+    // handleDeviceLost() calls std::_Exit(kDeviceLostExitCode) right after the
+    // crash record is written, instead of returning into the normal shutdown
+    // path. On a removed/hung device that path blocks inside the driver's COM
+    // release, ctest SIGKILLs the process at its timeout, and the killed
+    // process (still holding the device + swapchain) cascades the wedge into
+    // the next test's startup. Never enabled in interactive mode — the GUI's
+    // device-lost flow (autosave + --device-lost-recovery relaunch in
+    // apps/editor/main.cpp) requires the normal shutdown to complete.
+    void setExitProcessOnDeviceLost(bool enable) {
+        m_exitProcessOnDeviceLost.store(enable, std::memory_order_relaxed);
+    }
+    // Distinct from EXIT_FAILURE(1) (script command failures) so a ctest log
+    // shows device-loss as its own failure class.
+    static constexpr int kDeviceLostExitCode = 4;
+
     void     clear(float r, float g, float b, float a) override;
     uint32_t getCurrentBackBufferIndex() const override { return m_currentBackBufferIndex; }
     void     beginImGuiFrame() override;
@@ -975,6 +991,9 @@ private:
     uint32_t m_height;
     bool m_initialized;
     std::atomic<bool> m_deviceLost{false}; // Latched on first device-removed detection. Written from show or editor thread; read from both.
+    // Set once during Engine::initialize (headless only), read from whichever
+    // thread wins the handleDeviceLost CAS. See setExitProcessOnDeviceLost().
+    std::atomic<bool> m_exitProcessOnDeviceLost{false};
     // GetDeviceRemovedReason() result; available via getDeviceLostReason() and
     // read (acquire) by the shutdown drain gate. Atomic because multiple
     // threads can hit device-lost concurrently and a third thread reads it.

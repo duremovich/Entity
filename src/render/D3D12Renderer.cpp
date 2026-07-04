@@ -1121,6 +1121,21 @@ void D3D12Renderer::handleDeviceLost(HRESULT hr, const char* site) {
                                   static_cast<long>(removedReason),
                                   dredBlob,
                                   site);
+
+    // Headless/CI: die NOW, cleanly and fast (issue #69). The crash record is
+    // on disk; anything after this point — engine shutdown, fence drains, COM
+    // release of a removed device — can block inside the driver until ctest
+    // SIGKILLs us, and a killed process still holding the device/swapchain is
+    // what cascades a driver TDR into the next test's startup hang.
+    // std::_Exit skips destructors by design; no state worth saving survives
+    // a lost device in a headless run.
+    if (m_exitProcessOnDeviceLost.load(std::memory_order_relaxed)) {
+        std::cerr << "[D3D12] Headless device-lost policy: fast process exit "
+                  << kDeviceLostExitCode << " (skipping GPU teardown)" << std::endl;
+        std::cerr.flush();
+        std::fflush(nullptr);
+        std::_Exit(kDeviceLostExitCode);
+    }
 }
 
 ID3D12Device* D3D12Renderer::getDevice() const {
