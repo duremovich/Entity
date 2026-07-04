@@ -282,22 +282,57 @@ static void terminateHandler() {
 }
 
 // ---------------------------------------------------------------------------
-// Rotation helper — keeps last kMaxDirs entries by mtime, deletes the rest
+// Rotation helper — two passes (issue #69 triage, 2026-07-04):
+//
+//  1. Delete "litter" dirs: every contained file 0-byte, and the dir old
+//     enough that no live process is still writing it. These are the
+//     install()-time pre-created session dirs of processes that died without
+//     teardown() — e.g. ctest SIGKILL after a device-lost teardown hang —
+//     not real crash records. The age guard protects a concurrent process's
+//     just-created capture dir; a live process's own session dir is
+//     additionally protected by its open handles (delete fails, skipped).
+//
+//  2. Cap the remaining dirs at kMaxDirs by mtime, oldest deleted first.
+//     kMaxDirs raised 10 → 30: an integration-suite run spawns ~700 editor
+//     processes (install() rotates in each), and a wedge window writes a
+//     dozen real crash dirs in minutes — cap 10 rotated away the storm's
+//     trigger records before anyone could read them.
 // ---------------------------------------------------------------------------
 
-static void rotateCrashLogs(const std::filesystem::path& root, int kMaxDirs = 10) {
-    if (!std::filesystem::exists(root)) return;
-    std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> dirs;
-    for (auto& e : std::filesystem::directory_iterator(root)) {
-        if (e.is_directory()) {
-            dirs.push_back({e.last_write_time(), e.path()});
+static void rotateCrashLogs(const std::filesystem::path& root, int kMaxDirs = 30) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(root, ec)) return;
+
+    constexpr auto kLitterMinAge = std::chrono::minutes(5);
+    const auto now = fs::file_time_type::clock::now();
+
+    std::vector<std::pair<fs::file_time_type, fs::path>> dirs;
+    for (auto& e : fs::directory_iterator(root, ec)) {
+        if (!e.is_directory(ec)) continue;
+
+        bool allEmpty = true;
+        for (auto& f : fs::directory_iterator(e.path(), ec)) {
+            if (!f.is_regular_file(ec) || f.file_size(ec) > 0) {
+                allEmpty = false;
+                break;
+            }
         }
+        const auto mtime = e.last_write_time(ec);
+        if (ec) continue;
+
+        if (allEmpty && (now - mtime) > kLitterMinAge) {
+            fs::remove_all(e.path(), ec); // open handles → fails, skipped
+            continue;
+        }
+        dirs.push_back({mtime, e.path()});
     }
+
     if (static_cast<int>(dirs.size()) <= kMaxDirs) return;
     std::sort(dirs.begin(), dirs.end()); // oldest first
     int toDelete = static_cast<int>(dirs.size()) - kMaxDirs;
     for (int i = 0; i < toDelete; ++i) {
-        std::filesystem::remove_all(dirs[i].second);
+        fs::remove_all(dirs[i].second, ec);
     }
 }
 
