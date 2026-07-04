@@ -623,18 +623,33 @@ if(Python3_FOUND)
 endif()
 
 # ============================================================================
-# Blanket RESOURCE_LOCK for every integration test.
+# Blanket RESOURCE_LOCK + ENTITY_FORCE_WARP for every integration test.
 #
 # Some integration tests are registered via raw add_test() rather than
-# entity_add_integration_test(), so apply the lock by name here, after all
-# registrations. See the comment in entity_add_integration_test() for why:
-# each test spawns a full EntityMediaEditor sharing one WARP device and
-# CMAKE_SOURCE_DIR as working directory, and parallel runs fail
+# entity_add_integration_test(), so apply both by name here, after all
+# registrations. See the comment in entity_add_integration_test() for why the
+# lock exists: each test spawns a full EntityMediaEditor sharing one WARP
+# device and CMAKE_SOURCE_DIR as working directory, and parallel runs fail
 # non-deterministically without serialization.
+#
+# ENTITY_FORCE_WARP is blanket (issue #69), not just for golden-hash tests:
+# tests left on the default adapter created ~hundreds of hardware
+# device+swapchain churn cycles per suite run on the real GPU. One driver TDR
+# under load (nvlddmkm event 153) leaves the driver degraded for minutes, and
+# every subsequent hardware-adapter test then hits DEVICE_HUNG at its first
+# Present, hangs its teardown, and gets SIGKILLed — the cross-process timeout
+# cascade. WARP is per-process software rasterization: it cannot TDR the
+# display driver, cannot wedge the desktop, and cannot leak a wedge into the
+# next test. Hardware-adapter behavior is covered by the interactive editor
+# and the perf scenarios (scripts/perf/), not by ctest.
+# APPEND keeps per-test ENVIRONMENT entries (the duplicate WARP=1 on
+# golden-hash tests is harmless).
 # ============================================================================
 get_directory_property(_entity_all_tests TESTS)
 foreach(_entity_test IN LISTS _entity_all_tests)
     if(_entity_test MATCHES "^integration_")
         set_tests_properties(${_entity_test} PROPERTIES RESOURCE_LOCK "d3d12_warp")
+        set_property(TEST ${_entity_test} APPEND PROPERTY
+                     ENVIRONMENT "ENTITY_FORCE_WARP=1")
     endif()
 endforeach()
