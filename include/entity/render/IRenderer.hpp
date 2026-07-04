@@ -189,8 +189,9 @@ public:
      * Resize an existing compose target in place. Frees the underlying GPU
      * texture at `slot` and creates a new one with the new dimensions,
      * reusing the same RTV + SRV descriptor heap entries so cached
-     * `TextureRef`s remain valid. Returns false if the slot is invalid
-     * or the new dimensions are zero.
+     * `TextureRef`s remain valid. Returns false if the slot is invalid,
+     * the new dimensions are zero, or the resize was deferred/failed (#75)
+     * — callers must retry every tick until it succeeds (show thread only).
      *
      * Use this instead of allocating a new slot when a screen's resolution
      * changes (#31). Allocating new slots on every resize leaks descriptor
@@ -203,6 +204,13 @@ public:
     virtual void       beginComposeTarget(uint32_t slot = 0) = 0;
     virtual void       endComposeTarget() = 0;
     virtual TextureRef getComposeTargetTexture(uint32_t slot = 0) const = 0;
+    // Editor-thread contract (#75): a compose target can be mid-resize on
+    // the show thread. isComposeTargetReady / getComposeTargetTextureID are
+    // gated — they return false / nullptr while a resize is pending — and a
+    // window must call one of them BEFORE reading width/height in the same
+    // frame (the width/height getters themselves are shared with show-side
+    // callers and are not gated). StageWindow / ProjectorCalibrationWindow
+    // are the reference callers.
     virtual void*      getComposeTargetTextureID(uint32_t slot = 0) const = 0;
     virtual uint32_t   getComposeTargetWidth(uint32_t slot = 0) const = 0;
     virtual uint32_t   getComposeTargetHeight(uint32_t slot = 0) const = 0;

@@ -38,6 +38,13 @@ namespace entity {
 // in the seq_cst total order, so its subsequent generation load must observe
 // the closed gate. Plain acquire/release gives no such cross-variable
 // guarantee. On x86 the cost is one locked RMW per editor frame — noise.
+//
+// Not to be confused with EditorFrameRing (EditorFrameRing.hpp): that is
+// single-threaded fence-ring bookkeeping for allocator/ImGui-buffer reuse.
+// This tracker counts the same begin/end events but exists for cross-thread
+// mutation gating and deliberately counts device-lost/failed frames too —
+// the two cannot be merged (see the m_editorFrameCounter comment in
+// D3D12Renderer.hpp).
 
 class EditorFrameTracker {
 public:
@@ -103,8 +110,14 @@ public:
     }
 
     // Reopen the gate: publish after a mutation, or cancel a pending close
-    // that turned out to be unnecessary.
-    void open() { m_generation.fetch_add(1, std::memory_order_seq_cst); }
+    // that turned out to be unnecessary. Idempotent — a no-op on an open
+    // gate (an unconditional increment would flip the gate closed and
+    // strand readers).
+    void open() {
+        if (isClosed()) {
+            m_generation.fetch_add(1, std::memory_order_seq_cst);
+        }
+    }
 
 private:
     std::atomic<std::uint32_t> m_generation{0}; // even = readable, odd = closed

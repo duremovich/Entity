@@ -412,28 +412,28 @@ std::uint32_t CompositorSystem::ensureGenerativeRenderTarget(
     // (renderWidth/renderHeight live on the editor-side component; not yet
     // mirrored on the snapshot since the playfield draw is fixed-grid).
 
-    // 1. Editor has acknowledged a slot — reuse, resize in place if dims drifted.
+    // 1. Editor has acknowledged a slot — reuse, resize in place if dims
+    //    drifted. Called unconditionally every tick (#75): the same-size
+    //    early-out is two compares, and the call is what cancels an
+    //    abandoned deferral gate and rebuilds a target whose previous
+    //    resize failed mid-swap. A false return means deferred/failed —
+    //    render at the old dims this tick and retry next tick.
     if (gl.renderTargetSlot >= 0) {
         m_pendingGenerativeAllocations.erase(entity);
         const std::uint32_t slot = static_cast<std::uint32_t>(gl.renderTargetSlot);
-        const uint32_t curW = m_renderer->getComposeTargetWidth(slot);
-        const uint32_t curH = m_renderer->getComposeTargetHeight(slot);
-        if (curW != width || curH != height) {
-            m_renderer->resizeComposeTarget(slot, width, height);
-        }
+        m_renderer->resizeComposeTarget(slot, width, height);
         return slot;
     }
 
     // 2. Pending allocation — reuse cached slot to avoid double-allocating.
+    //    Unconditional call for the same #75 reasons as path 1.
     if (auto it = m_pendingGenerativeAllocations.find(entity);
         it != m_pendingGenerativeAllocations.end())
     {
         auto& cached = it->second;
-        if (cached.width != width || cached.height != height) {
-            if (m_renderer->resizeComposeTarget(cached.slot, width, height)) {
-                cached.width  = width;
-                cached.height = height;
-            }
+        if (m_renderer->resizeComposeTarget(cached.slot, width, height)) {
+            cached.width  = width;
+            cached.height = height;
         }
         return cached.slot;
     }
@@ -475,20 +475,20 @@ bool CompositorSystem::ensureEffectPingPongTargets(std::uint64_t layerEntity,
     if (!m_renderer) return false;
     const auto ent = static_cast<entt::entity>(layerEntity);
 
-    // 1) Editor has both slots — reuse / resize in place.
+    // 1) Editor has both slots — reuse / resize in place. Unconditional
+    //    calls every tick (#75): the same-size early-out is cheap and the
+    //    call self-heals abandoned deferral gates / failed rebuilds. Unlike
+    //    the screen path, a deferred or failed resize here returns false —
+    //    the effect-pass UV/viewport math assumes the requested dims, so
+    //    running it against stale-size RTs would mis-scale live output.
+    //    The caller skips the effect chain for that tick and retries.
     if (snapshotSlotA >= 0 && snapshotSlotB >= 0) {
         m_pendingEffectAllocations.erase(ent);
         outSlotA = static_cast<std::uint32_t>(snapshotSlotA);
         outSlotB = static_cast<std::uint32_t>(snapshotSlotB);
-        if (m_renderer->getComposeTargetWidth(outSlotA) != width ||
-            m_renderer->getComposeTargetHeight(outSlotA) != height) {
-            m_renderer->resizeComposeTarget(outSlotA, width, height);
-        }
-        if (m_renderer->getComposeTargetWidth(outSlotB) != width ||
-            m_renderer->getComposeTargetHeight(outSlotB) != height) {
-            m_renderer->resizeComposeTarget(outSlotB, width, height);
-        }
-        return true;
+        const bool okA = m_renderer->resizeComposeTarget(outSlotA, width, height);
+        const bool okB = m_renderer->resizeComposeTarget(outSlotB, width, height);
+        return okA && okB;
     }
 
     auto& cached = m_pendingEffectAllocations[ent];
@@ -537,29 +537,27 @@ std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapsh
     const auto entity = static_cast<entt::entity>(screenSnap.entity);
 
     // 1. Snapshot has caught up — drop the pending-allocation cache entry and
-    //    use the confirmed slot. Check for dimension drift in place.
+    //    use the confirmed slot. resizeComposeTarget is called unconditionally
+    //    every tick (#75): the same-size early-out is two compares, and the
+    //    call is what cancels an abandoned deferral gate and rebuilds a
+    //    target whose previous resize failed mid-swap. On false (deferred or
+    //    failed) we render at the old dims this tick and retry next tick.
     if (screenSnap.renderTargetValid && screenSnap.renderTargetSlot != UINT32_MAX) {
         m_pendingAllocations.erase(entity);
         const std::uint32_t slot = screenSnap.renderTargetSlot;
-        const uint32_t currentWidth  = m_renderer->getComposeTargetWidth(slot);
-        const uint32_t currentHeight = m_renderer->getComposeTargetHeight(slot);
-        if (currentWidth != screenSnap.width || currentHeight != screenSnap.height) {
-            m_renderer->resizeComposeTarget(slot, screenSnap.width, screenSnap.height);
-            // If resize fails, render at old dims this tick. Editor retries on next snapshot.
-        }
+        m_renderer->resizeComposeTarget(slot, screenSnap.width, screenSnap.height);
         return slot;
     }
 
     // 2. Snapshot hasn't acknowledged our allocation yet — reuse the cached slot
-    //    so we don't double-allocate. Resize in place if dimensions drifted.
+    //    so we don't double-allocate. Unconditional call for the same #75
+    //    reasons as path 1; the cache updates only on success so a deferral
+    //    keeps being retried.
     if (auto it = m_pendingAllocations.find(entity); it != m_pendingAllocations.end()) {
         auto& cached = it->second;
-        if (cached.width != screenSnap.width || cached.height != screenSnap.height) {
-            if (m_renderer->resizeComposeTarget(cached.slot, screenSnap.width, screenSnap.height)) {
-                cached.width  = screenSnap.width;
-                cached.height = screenSnap.height;
-            }
-            // Resize failed: keep old slot at old dims until editor catches up.
+        if (m_renderer->resizeComposeTarget(cached.slot, screenSnap.width, screenSnap.height)) {
+            cached.width  = screenSnap.width;
+            cached.height = screenSnap.height;
         }
         return cached.slot;
     }

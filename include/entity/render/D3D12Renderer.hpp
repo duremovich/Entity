@@ -499,6 +499,13 @@ private:
     // non-power-of-two FRAME_COUNT would skip slots at the wrap boundary. If
     // FRAME_COUNT ever becomes e.g. 3, key the slot off a separately-wrapped
     // counter (e.g. m_slot = (m_slot + 1) % FRAME_COUNT) instead.
+    //
+    // NOT the same thing as m_editorFrameTracker (#75), which also counts
+    // editor frames: this counter increments AFTER the device-lost early
+    // return (it must stay in lockstep with ImGui's ring, which only
+    // advances on frames that render), while the tracker increments before
+    // it (its begin/end pairing must survive every early return). Merging
+    // them breaks one invariant or the other.
     uint64_t m_editorFrameCounter = UINT64_MAX;  // ++ before first use -> 0
     uint32_t m_editorRingSlot = 0;               // m_editorFrameCounter % FRAME_COUNT
     ComPtr<ID3D12Fence> m_showFence;
@@ -723,6 +730,14 @@ private:
         // paths never check it — the swap is synchronous on their thread.
         EditorReadGate editorGate;
 
+        // #75 liveness backstop bookkeeping (show thread only). Set by
+        // resizeComposeTarget whenever it reaches its gate logic; cleared by
+        // endShowFrame each tick. A gate left closed with no resize call
+        // re-asserting it that tick was abandoned (dims reverted mid-deferral,
+        // screen deleted, invalid snapshot dims) — endShowFrame reopens it so
+        // the editor preview can never be stranded blank.
+        bool resizeAttemptedThisTick{false};
+
         // std::atomic is not moveable, so provide an explicit move
         // constructor — std::vector requires MoveInsertable even though
         // m_composeTargets is reserve()d to MAX_COMPOSE_TARGETS at
@@ -736,6 +751,7 @@ private:
             , lastStableIndex(o.lastStableIndex.load(std::memory_order_relaxed))
             , writeIndex(o.writeIndex)
             , editorGate(std::move(o.editorGate))
+            , resizeAttemptedThisTick(o.resizeAttemptedThisTick)
             , snapshotResource(std::move(o.snapshotResource))
             , snapshotSrvHandle(o.snapshotSrvHandle)
             , snapshotSrvSlot(o.snapshotSrvSlot)

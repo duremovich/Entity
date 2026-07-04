@@ -99,6 +99,24 @@ TEST(EditorReadGate, MayMutateFalseWhileOpen) {
     EXPECT_FALSE(gate.mayMutate(tracker));  // never mutate through an open gate
 }
 
+TEST(EditorReadGate, OpenIsIdempotentOnOpenGate) {
+    EditorFrameTracker tracker;
+    EditorReadGate gate;
+
+    // The endShowFrame liveness backstop calls open() unconditionally each
+    // tick; on an already-open gate it must be a no-op, not a re-close.
+    gate.open();
+    EXPECT_TRUE(gate.isReadable());
+    gate.open();
+    EXPECT_TRUE(gate.isReadable());
+
+    // And a later close/open cycle still behaves.
+    gate.close(tracker);
+    EXPECT_FALSE(gate.isReadable());
+    gate.open();
+    EXPECT_TRUE(gate.isReadable());
+}
+
 TEST(EditorReadGate, CancelViaOpenRestoresReaders) {
     EditorFrameTracker tracker;
     EditorReadGate gate;

@@ -56,9 +56,14 @@
   compose SRV handle for up to a frame between record and
   ExecuteCommandLists, which `waitForGpu()` alone cannot see — then
   drains the GPU, swaps, and reopens. Deferral returns `false` to
-  CompositorSystem, which already retries every tick; output renders at
-  the old dimensions meanwhile, and an editor stall simply keeps the
-  resize deferred without blocking the show thread.
+  CompositorSystem, which calls `resizeComposeTarget` unconditionally
+  every tick (the same-size early-out is two compares and doubles as the
+  cancel path); output renders at the old dimensions meanwhile, and an
+  editor stall simply keeps the resize deferred without blocking the
+  show thread. Liveness backstop: a gate left closed with no resize call
+  re-asserting it that tick (dims reverted mid-deferral, screen deleted,
+  invalid snapshot dims) is reopened by `endShowFrame`, so a stranded
+  gate can never blank the editor preview permanently.
 
 ## Context
 

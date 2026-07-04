@@ -707,6 +707,17 @@ void D3D12Renderer::endShowFrame() {
             // Advance to next sub-resource for the next show tick.
             ++ct.writeIndex;
         }
+        // #75 liveness backstop: a closed gate must be re-asserted by a
+        // resizeComposeTarget call every tick, or it was abandoned — the
+        // requested dims reverted mid-deferral, the screen was deleted, or
+        // the snapshot carried invalid dims that short-circuit before the
+        // gate logic. Nothing else ever reopens a gate, so without this a
+        // stranded gate blanks the editor preview for the slot permanently.
+        // (open() is a no-op on an already-open gate.)
+        if (!ct.resizeAttemptedThisTick) {
+            ct.editorGate.open();
+        }
+        ct.resizeAttemptedThisTick = false;
     }
 
     tl_activeCmdList = nullptr;
@@ -763,12 +774,17 @@ void D3D12Renderer::beginEditorFrame() {
 
 void D3D12Renderer::endEditorFrame() {
     ZoneScopedN("endEditorFrame");
-    if (m_deviceLost) {
-        // #75: nothing was (or will be) submitted for this frame — mark it
-        // ended so EditorFrameTracker stays paired with beginEditorFrame.
-        m_editorFrameTracker.endFrame();
-        return;
-    }
+    // #75: pair beginEditorFrame's beginFrame() on EVERY exit path — a
+    // missed endFrame() permanently defers compose-target resizes. The only
+    // ordering requirement is "not before ExecuteCommandLists", and scope
+    // exit always satisfies it; on the early-return paths nothing was (or
+    // ever will be) submitted for this frame, so ending it is correct too.
+    struct FrameEndGuard {
+        EditorFrameTracker& tracker;
+        ~FrameEndGuard() { tracker.endFrame(); }
+    } frameEndGuard{m_editorFrameTracker};
+
+    if (m_deviceLost) return;
 
     // Transition back buffer to PRESENT state
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -784,18 +800,10 @@ void D3D12Renderer::endEditorFrame() {
     HRESULT hr = m_editorCmdList->Close();
     if (FAILED(hr)) {
         std::cerr << "Failed to close editor command list!" << std::endl;
-        // #75: this frame's command list will never execute — count it
-        // ended so pending compose-target resizes don't starve.
-        m_editorFrameTracker.endFrame();
         return;
     }
     ID3D12CommandList* editorLists[] = { m_editorCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, editorLists);
-
-    // #75: the frame's command list — and any compose-target SRV handles it
-    // recorded — is now on the queue, where waitForGpu() can drain it. This
-    // is what EditorReadGate::mayMutate waits for.
-    m_editorFrameTracker.endFrame();
 
     // Present editor swap chain
     hr = m_swapChain->Present(1, 0);
@@ -3672,9 +3680,7 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     // calls us redundantly. If a deferred resize was pending and the dims
     // drifted back to current, cancel it — reopen the gate untouched.
     if (target.ready && target.width == width && target.height == height) {
-        if (target.editorGate.isClosed()) {
-            target.editorGate.open();
-        }
+        target.editorGate.open();
         return true;
     }
 
@@ -3687,6 +3693,11 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     // submitted. CompositorSystem retries every tick on false, so a deferral
     // just renders at the old dims for a tick or two; the editor preview
     // skips the slot for the same window.
+    // Tell endShowFrame's liveness backstop this gate is actively driven
+    // this tick (covers the deferral below AND the mid-rebuild failure
+    // returns further down, both of which leave the gate closed on purpose).
+    target.resizeAttemptedThisTick = true;
+
     target.editorGate.close(m_editorFrameTracker);
     if (!target.editorGate.mayMutate(m_editorFrameTracker)) {
         return false;
