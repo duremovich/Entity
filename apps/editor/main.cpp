@@ -191,6 +191,20 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+#ifdef _WIN32
+    // Headless implies WARP unless the caller says otherwise (issue #69).
+    // Headless runs are tests/CI; on the default hardware adapter they churn
+    // real-driver device+swapchain cycles, and one TDR under load degrades
+    // the driver for every process on the box (the #69 wedge cascade). The
+    // ctest ENVIRONMENT property also sets this, but the invariant belongs
+    // here so a command line copied out of a ctest log reproduces on WARP
+    // instead of wedging the desktop. Set ENTITY_FORCE_WARP=0 explicitly to
+    // put a headless run on hardware.
+    if (headless && !std::getenv("ENTITY_FORCE_WARP")) {
+        _putenv_s("ENTITY_FORCE_WARP", "1");
+    }
+#endif
+
     // Create engine instance
     entity::Engine engine;
 

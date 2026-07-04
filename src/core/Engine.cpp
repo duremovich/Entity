@@ -934,24 +934,29 @@ void Engine::shutdown() {
     m_recentProjects.reset();
     m_showLauncher = false;
 
-    // Shut down the AudioSystem while the audio engine is still alive: its
-    // workers' MixSources are registered in the engine's mixer, and the
-    // unregister calls dereference AudioSystem's raw AudioEngine pointer.
-    // ~Director also calls shutdown() (idempotent second call, no-ops on the
-    // empty worker map), but by then m_audioEngine is destroyed — running the
-    // real teardown here and nulling the pointer keeps that late call off the
-    // freed mixer (crash-logs 2026-07-04T14-02-*: AV in unregisterSource at
-    // Engine::shutdown when audio workers were still live at exit).
+    // Audio teardown ordering (crash-logs 2026-07-04T14-02-*):
+    //  1. stop() the engine's device FIRST — the realtime mix callback reads
+    //     MixSource slots lock-free with no quiescence, so unregistering and
+    //     freeing workers while it runs would just trade the old freed-mixer
+    //     AV for a freed-ring AV. stop() tears down only the device/callback;
+    //     the engine object (and its mixer) stays alive.
+    //  2. Run the REAL AudioSystem teardown while that engine object is
+    //     alive. THIS ORDERING is the fix for the unregisterSource-on-freed-
+    //     mixer AV — Engine used to destroy the AudioEngine here and let
+    //     ~Director run AudioSystem::shutdown against the dangling pointer.
+    //     ~Director's second shutdown() call no-ops on the emptied worker
+    //     map; the pointer-nulling is only insurance against reordering.
+    //  3. Destroy the engine before the director tears down
+    //     PlaybackTimeAuthority (which holds the rate-source pointer).
+    if (m_audioEngine) {
+        m_audioEngine->stop();
+    }
     if (m_audioSystem) {
         m_audioSystem->shutdown(m_registry);
         m_audioSystem->setAudioEngine(nullptr);
         m_audioSystem = nullptr;
     }
-
-    // Stop the audio engine before the director tears down
-    // PlaybackTimeAuthority (which holds the rate-source pointer).
     if (m_audioEngine) {
-        m_audioEngine->stop();
         m_audioEngine.reset();
     }
 

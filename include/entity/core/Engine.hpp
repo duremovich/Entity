@@ -953,16 +953,21 @@ private:
     // shortcuts stay valid until shutdown explicitly nulls them.
     std::unique_ptr<Renderer> m_rendererService;
 
+    // Audio engine (Phase B): owns device + mixer + rate source. Stopped
+    // in shutdown() before director teardown. Declared *before* m_director
+    // so ~Engine destroys the Director first on any path that skips
+    // shutdown(): ~Director runs AudioSystem::shutdown, whose MixSource
+    // unregister dereferences the AudioSystem's raw AudioEngine pointer
+    // (crash-logs 2026-07-04T14-02-*; shutdown() handles the ordering
+    // explicitly, this declaration order covers everything else).
+    std::unique_ptr<AudioEngine> m_audioEngine;
+
     // Phase D entry: Director owns Timeline, ProjectManager,
     // TranscodeManager, CommandDispatcher, AnimationSystem,
     // PlaybackTimeAuthority. Declared *before* the raw-pointer shortcuts
     // so destructor order tears the subsystems down (m_director last)
     // only after the shortcuts are no longer used.
     std::unique_ptr<Director> m_director;
-
-    // Audio engine (Phase B): owns device + mixer + rate source. Stopped
-    // in shutdown() before director teardown.
-    std::unique_ptr<AudioEngine> m_audioEngine;
 
     // Effect kind registry (issue #54). Owned by Engine so both the editor-
     // side bake (PlaybackTimeAuthority) and the show-side renderer

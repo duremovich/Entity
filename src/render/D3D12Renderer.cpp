@@ -20,6 +20,7 @@
 #include <GLFW/glfw3native.h>
 
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -1070,17 +1071,25 @@ bool D3D12Renderer::waitFenceOrDeviceLost(ID3D12Fence* fence, uint64_t value,
     // frame reported as device-lost 0x0. So: on timeout, requery the removed
     // reason (with the 250ms TDR grace); a real reason latches device-lost,
     // S_OK logs and RE-WAITS. Every retry rechecks GetCompletedValue first,
-    // so a stale-set event or an already-signaled fence exits promptly. The
-    // attempt cap bounds the pathological GPU-hangs-without-TDR case; that
-    // report keeps RemovedReason 0x0, which handleDeviceLost prints as
-    // "(unknown reason)" — honest, since the driver never declared removal.
-    constexpr int kMaxWaitAttempts = 6;
-    for (int attempt = 0; attempt < kMaxWaitAttempts; ++attempt) {
+    // so a stale-set event or an already-signaled fence exits promptly.
+    //
+    // The retry budget is a TOTAL wall-clock bound (~20s), not a fixed
+    // attempt count: it must land under the 30s ctest TIMEOUT floor with room
+    // for the crash record + fast exit (a GPU-hangs-without-TDR wedge that
+    // out-waits ctest gets SIGKILLed with no record — the #69 failure mode),
+    // and it bounds how long a live show's output can freeze before
+    // device-lost recovery starts. With the 5000ms default that's 4 attempts;
+    // with the 10000ms test override, 2. Exhaustion reports the still-S_OK
+    // reason, which handleDeviceLost prints as "(unknown reason)" — honest,
+    // since the driver never declared removal.
+    const DWORD waitMs = fenceWaitTimeoutMs();
+    const int maxAttempts = std::clamp(20000 / static_cast<int>(waitMs), 1, 4);
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
         if (fence->GetCompletedValue() >= value) {
             return true;
         }
         fence->SetEventOnCompletion(value, event);
-        const DWORD result = WaitForSingleObject(event, fenceWaitTimeoutMs());
+        const DWORD result = WaitForSingleObject(event, waitMs);
         if (result == WAIT_OBJECT_0) {
             continue; // loop re-checks the completed value
         }
@@ -1093,12 +1102,18 @@ bool D3D12Renderer::waitFenceOrDeviceLost(ID3D12Fence* fence, uint64_t value,
             handleDeviceLost(reason, site);
             return false;
         }
-        std::cerr << "[D3D12] fence wait exceeded " << fenceWaitTimeoutMs()
-                  << "ms at " << site << " but device is healthy "
-                  << "(RemovedReason S_OK) — attempt " << (attempt + 1) << "/"
-                  << kMaxWaitAttempts << ", re-waiting" << std::endl;
+        std::cerr << "[D3D12] fence wait exceeded " << waitMs << "ms at "
+                  << site << " but device is healthy (RemovedReason S_OK) — "
+                  << "attempt " << (attempt + 1) << "/" << maxAttempts
+                  << (attempt + 1 < maxAttempts ? ", re-waiting"
+                                                : ", budget exhausted")
+                  << std::endl;
     }
-    handleDeviceLost(removedReasonAfterTimeout(), site);
+    // Exhausted (or WAIT_FAILED) with the device never declaring removal:
+    // report S_OK directly — the loop just queried it, no need for another
+    // grace-sleep requery. handleDeviceLost re-reads the live reason for its
+    // report anyway, so a TDR that lands this instant is still captured.
+    handleDeviceLost(S_OK, site);
     return false;
 }
 
@@ -1509,7 +1524,18 @@ void D3D12Renderer::waitForGpu() {
             DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
             if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
                 HRESULT removedReason = removedReasonAfterTimeout();
-                handleDeviceLost(removedReason, "waitForGpu copy-queue drain timeout");
+                if (removedReason == S_OK) {
+                    // Healthy device, starved past the watchdog (WARP under
+                    // ctest load, concurrent build). Not a device loss — give
+                    // up on the drain without latching; the caller proceeds
+                    // without the idle guarantee (worst case: a capture reads
+                    // a stale frame) instead of the process dying spuriously.
+                    std::cerr << "[D3D12] waitForGpu copy-queue drain timed out"
+                                 " but device is healthy (S_OK) — abandoning"
+                                 " drain" << std::endl;
+                } else {
+                    handleDeviceLost(removedReason, "waitForGpu copy-queue drain timeout");
+                }
                 CloseHandle(localEvent);
                 return;
             }
@@ -1533,7 +1559,12 @@ void D3D12Renderer::waitForGpu() {
         DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
             HRESULT removedReason = removedReasonAfterTimeout();
-            handleDeviceLost(removedReason, "waitForGpu show-fence drain timeout");
+            if (removedReason == S_OK) {
+                std::cerr << "[D3D12] waitForGpu show-fence drain timed out but"
+                             " device is healthy (S_OK) — abandoning drain" << std::endl;
+            } else {
+                handleDeviceLost(removedReason, "waitForGpu show-fence drain timeout");
+            }
             CloseHandle(localEvent);
             return;
         }
@@ -1547,7 +1578,12 @@ void D3D12Renderer::waitForGpu() {
         DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
         if (result == WAIT_TIMEOUT || result == WAIT_FAILED) {
             HRESULT removedReason = removedReasonAfterTimeout();
-            handleDeviceLost(removedReason, "waitForGpu editor-fence drain timeout");
+            if (removedReason == S_OK) {
+                std::cerr << "[D3D12] waitForGpu editor-fence drain timed out but"
+                             " device is healthy (S_OK) — abandoning drain" << std::endl;
+            } else {
+                handleDeviceLost(removedReason, "waitForGpu editor-fence drain timeout");
+            }
             CloseHandle(localEvent);
             return;
         }
@@ -4358,6 +4394,9 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
                                              D3D12_RESOURCE_STATES sourceState,
                                              uint32_t width, uint32_t height,
                                              std::vector<uint8_t>& outPixels) {
+    // Serialize the shared capture allocator/list (see header note).
+    std::lock_guard<std::mutex> captureLock(m_captureMutex);
+
     if (!sourceTexture) {
         std::cerr << "[Readback] Source texture is null!" << std::endl;
         return false;
@@ -5005,6 +5044,9 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
                                                     uint32_t& outWidth,
                                                     uint32_t& outHeight,
                                                     std::vector<uint8_t>& outPixels) {
+    // Serialize the shared capture allocator/list (see header note).
+    std::lock_guard<std::mutex> captureLock(m_captureMutex);
+
     if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
         std::cerr << "[Capture] compose target " << slot << " not ready" << std::endl;
         return false;

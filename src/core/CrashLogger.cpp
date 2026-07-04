@@ -311,21 +311,44 @@ static void rotateCrashLogs(const std::filesystem::path& root, int kMaxDirs = 30
     for (auto& e : fs::directory_iterator(root, ec)) {
         if (!e.is_directory(ec)) continue;
 
+        // A dir counts as litter ONLY when its contents were fully enumerated
+        // and every file is 0-byte. An enumeration failure (ACL, transient
+        // sharing error) must classify as NOT-litter — deleting a dir whose
+        // contents we couldn't inspect risks destroying a real crash record.
         bool allEmpty = true;
-        for (auto& f : fs::directory_iterator(e.path(), ec)) {
-            if (!f.is_regular_file(ec) || f.file_size(ec) > 0) {
+        {
+            std::error_code iterEc;
+            fs::directory_iterator it(e.path(), iterEc);
+            if (iterEc) {
                 allEmpty = false;
-                break;
+            } else {
+                for (; it != fs::directory_iterator(); it.increment(iterEc)) {
+                    if (iterEc) { allEmpty = false; break; }
+                    std::error_code fileEc;
+                    if (!it->is_regular_file(fileEc) || fileEc ||
+                        it->file_size(fileEc) > 0 || fileEc) {
+                        allEmpty = false;
+                        break;
+                    }
+                }
             }
         }
-        const auto mtime = e.last_write_time(ec);
-        if (ec) continue;
 
-        if (allEmpty && (now - mtime) > kLitterMinAge) {
-            fs::remove_all(e.path(), ec); // open handles → fails, skipped
+        std::error_code mtimeEc;
+        const auto dirMtime = e.last_write_time(mtimeEc);
+        if (mtimeEc) continue; // unknown age: neither delete nor count
+
+        if (allEmpty) {
+            // Litter never counts toward the cap (a young-litter flood during
+            // a crash storm must not evict real records below), and is only
+            // deleted once old enough that no live process can still be
+            // writing it (its owner's open handles also block the delete).
+            if ((now - dirMtime) > kLitterMinAge) {
+                fs::remove_all(e.path(), ec);
+            }
             continue;
         }
-        dirs.push_back({mtime, e.path()});
+        dirs.push_back({dirMtime, e.path()});
     }
 
     if (static_cast<int>(dirs.size()) <= kMaxDirs) return;
