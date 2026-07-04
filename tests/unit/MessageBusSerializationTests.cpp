@@ -211,6 +211,18 @@ TEST(MessageBusSerialization, SetOutputEnabledRoundTrip) {
     EXPECT_FALSE(outOff.enabled);
 }
 
+TEST(MessageBusSerialization, OutputWindowSlotUpdatedRoundTrip) {
+    OutputWindowSlotUpdated created{7ull, 2u};
+    auto outCreated = roundTripExpect(created);
+    EXPECT_EQ(outCreated.entity, 7ull);
+    EXPECT_EQ(outCreated.slot, 2u);
+    expectByteStable(created);
+
+    OutputWindowSlotUpdated destroyed{7ull, UINT32_MAX};
+    auto outDestroyed = roundTripExpect(destroyed);
+    EXPECT_EQ(outDestroyed.slot, UINT32_MAX);
+}
+
 TEST(MessageBusSerialization, ApplySettingsRoundTrip) {
     ApplySettings m{};
     m.frameCacheBytes = 512ull * 1024ull * 1024ull;
@@ -276,6 +288,7 @@ TEST(MessageBusSerialization, MessageTypeNameMatchesEnvelope) {
     EXPECT_EQ(messageTypeName(Message{ProvisionClipResources{}}), std::string("ProvisionClipResources"));
     EXPECT_EQ(messageTypeName(Message{ResourcesProvisioned{}}),   std::string("ResourcesProvisioned"));
     EXPECT_EQ(messageTypeName(Message{SetOutputEnabled{}}),       std::string("SetOutputEnabled"));
+    EXPECT_EQ(messageTypeName(Message{OutputWindowSlotUpdated{}}), std::string("OutputWindowSlotUpdated"));
     EXPECT_EQ(messageTypeName(Message{ApplySettings{}}),          std::string("ApplySettings"));
     EXPECT_EQ(messageTypeName(Message{DeviceLost{}}),             std::string("DeviceLost"));
     EXPECT_EQ(messageTypeName(Message{FrameDropped{}}),           std::string("FrameDropped"));

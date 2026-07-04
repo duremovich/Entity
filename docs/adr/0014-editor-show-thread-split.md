@@ -26,6 +26,19 @@
   the show thread, relying on the false claim that the editor isn't
   writing during a stall (project load is a stall *and* a bulk registry
   mutation). The fallback is now registry-free (`tickFromSnapshot`).
+- **Amended:** 2026-07-04, issue #76 — the last known show-thread registry
+  *write* removed: `OutputManager::ensureOutputWindow` used to write
+  `OutputDisplay::outputWindowSlot/width/height` from `renderOutputs`.
+  Output-window slots now live in a show-thread-owned map inside
+  OutputManager; window creation is driven by the baked `OutputSnapshot`
+  (geometry included — no `m_availableDisplays` cross-thread read), the
+  registry field is a display-only mirror updated via the R2D
+  `OutputWindowSlotUpdated` reply (same pattern as
+  `ScreenRenderTargetAllocated`), and teardown is reconciliation-based:
+  an entity vanishing from the frame's outputs (delete, project
+  load/close) destroys its window on the show thread. The sanctioned
+  show-side registry access list (MappingSurface reads +
+  same-tick VideoTexture colorSpace writes) is once again exhaustive.
 
 ## Context
 

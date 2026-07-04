@@ -759,6 +759,19 @@ struct ScreenRenderTargetAllocated {
     std::uint32_t height{0};
 };
 
+// Renderer → Director. The show thread created or destroyed an output
+// window for an OutputDisplay entity (OutputManager::renderOutputs lazy
+// creation / disable teardown / reconciliation). Director mirrors `slot`
+// into OutputDisplay::outputWindowSlot on the editor thread — display-only
+// state for the OutputsWindow UI; the authoritative slot map is
+// show-thread-owned inside OutputManager (issue #76 closed the last
+// show-thread registry write by moving it there). slot == UINT32_MAX means
+// the window was destroyed.
+struct OutputWindowSlotUpdated {
+    std::uint64_t entity{0};
+    std::uint32_t slot{UINT32_MAX};
+};
+
 // Renderer → Director. Mirror of ScreenRenderTargetAllocated for generative
 // layers — the show thread's PASS 1 procedural render allocates a compose
 // target per GenerativeLayer entity. Editor writes the slot back into
@@ -880,6 +893,7 @@ using Message = std::variant<
     GenerativeLayerRenderTargetAllocated,
     EffectChainRenderTargetAllocated,
     EffectCompileFailed,
+    OutputWindowSlotUpdated,
     SetOutputEnabled,
     ApplySettings,
     DeviceLost,

@@ -6,6 +6,7 @@
 #include "../components/OutputDisplay.hpp"
 #include "../render/IRenderer.hpp"
 #include <entt/entt.hpp>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <memory>
@@ -122,9 +123,23 @@ public:
     int32_t getRasterHeight() const { return m_rasterHeight; }
 
     /**
-     * Enable/disable an output.
+     * Destroy every output window (show thread only). Called from the show
+     * loop's launcher-idle branch: after closeProject the show thread never
+     * reaches renderOutputs, so its reconciliation sweep can't fire — this
+     * is the teardown path for "project closed, windows must come down".
+     * No-op when no windows exist.
      */
-    void setOutputEnabled(entt::entity outputEntity, bool enabled);
+    void destroyAllOutputWindowsOnShow();
+
+    /**
+     * Show-thread half of the SetOutputEnabled bus message (issue #76).
+     * disable → destroy the output window now (prompt teardown between
+     * frames, where no D3D12 work is in flight). enable → no-op: the next
+     * RenderFrame's OutputSnapshot carries enabled=true (the editor wrote
+     * the registry before publishing the message) and renderOutputs
+     * lazily creates the window from it. Never touches the registry.
+     */
+    void handleSetOutputEnabledOnShow(entt::entity outputEntity, bool enabled);
 
     /**
      * Set output to fullscreen mode on its assigned display.
@@ -168,11 +183,6 @@ private:
     void createOutputResources(entt::entity outputEntity);
 
     /**
-     * Release render resources for an output.
-     */
-    void releaseOutputResources(entt::entity outputEntity);
-
-    /**
      * Render to a single output from bus snapshots.
      */
     void renderToOutput(const bus::OutputSnapshot& output,
@@ -192,10 +202,23 @@ private:
 
     /**
      * Ensure a Physical output has an owned GLFW window + swap chain on the
-     * renderer. Returns the slot (existing or newly allocated), or UINT32_MAX
-     * on failure. Called lazily from renderOutputs() and from setOutputEnabled.
+     * renderer, driven entirely by the baked OutputSnapshot (registry-free
+     * — issue #76; ADR-0014 forbids show-thread registry access, and window
+     * geometry comes from the snapshot's windowX/Y/width/height, not the
+     * editor-mutated m_availableDisplays). Returns the slot (existing or
+     * newly allocated), or UINT32_MAX on failure. On creation, records the
+     * slot in m_windowSlots and posts an R2D OutputWindowSlotUpdated so the
+     * editor mirrors it into OutputDisplay for the UI. Show thread only.
      */
-    uint32_t ensureOutputWindow(entt::entity outputEntity);
+    uint32_t ensureOutputWindow(const bus::OutputSnapshot& snap);
+
+    /**
+     * Destroy the output window for an entity, if any: erase from
+     * m_windowSlots, destroy the renderer window, post the R2D
+     * slot-cleared mirror update. Show thread only (and shutdown, which
+     * runs after the show thread has joined).
+     */
+    void destroyOutputWindowFor(entt::entity outputEntity);
 
     IRenderer* m_renderer{nullptr};
     entt::registry& m_registry;
@@ -203,6 +226,15 @@ private:
 
     // Available physical displays from enumeration
     std::vector<DisplayInfo> m_availableDisplays;
+
+    // Authoritative output-window slot map (issue #76). SHOW-THREAD-OWNED:
+    // written by renderOutputs' lazy creation / reconciliation and the
+    // SetOutputEnabled disable handler; the only editor-side access is
+    // shutdown(), which runs after the show thread has joined. The registry
+    // field OutputDisplay::outputWindowSlot is a display-only mirror kept
+    // roughly current via R2D OutputWindowSlotUpdated replies — never read
+    // it to decide window lifecycle.
+    std::unordered_map<entt::entity, uint32_t> m_windowSlots;
 
     // Full raster (composition canvas) size
     int32_t m_rasterWidth{1920};

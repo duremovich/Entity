@@ -687,12 +687,15 @@ void OutputsWindow::renderOutputsPanel() {
             // Type display
             ImGui::Text("Type: %s", output->getTypeString());
 
-            // Enable toggle — routed through the Director->Renderer bus
-            // (subtask 7) so the physical output window's
-            // creation/destruction is owned Renderer-side, even when the
-            // toggle is driven from UI living next to Director state.
+            // Enable toggle. The registry write happens HERE on the editor
+            // thread (sole registry writer, issue #76 — the show-side
+            // message handler owns window lifecycle only and no longer
+            // writes `enabled` back). The bus message then tears the
+            // window down (disable) or lets the next RenderFrame's lazy
+            // creation bring it up (enable), Renderer-side.
             bool enabled = output->enabled;
             if (ImGui::Checkbox("Enabled", &enabled)) {
+                output->enabled = enabled;
                 m_engine->publishSetOutputEnabled(bus::SetOutputEnabled{
                     static_cast<std::uint64_t>(m_selectedOutput), enabled});
             }

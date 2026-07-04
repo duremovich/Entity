@@ -1512,6 +1512,11 @@ void Engine::showThreadMain() {
 
         // Launcher mode: show thread idles at 60 Hz with an empty RenderFrame.
         if (m_showLauncher) {
+            // Project closed → any output windows must come down. Normally
+            // renderOutputs' reconciliation sweep handles teardown, but the
+            // launcher branch never reaches it (issue #76). No-op when no
+            // windows exist.
+            if (m_outputManager) m_outputManager->destroyAllOutputWindowsOnShow();
             m_showFrameCount.fetch_add(1, std::memory_order_release);
             FrameMarkNamed("Show");
             std::this_thread::sleep_until(nextTick);
@@ -1604,7 +1609,10 @@ void Engine::showThreadMain() {
                             m_cachedSceneSnapshot = std::move(body);
                         } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
                             if (m_outputManager) {
-                                m_outputManager->setOutputEnabled(
+                                // Show-thread half: window lifecycle only —
+                                // registry `enabled` was already written by
+                                // the editor before publishing (issue #76).
+                                m_outputManager->handleSetOutputEnabledOnShow(
                                     static_cast<entt::entity>(body.entity), body.enabled);
                             }
                         } else if constexpr (std::is_same_v<T, bus::ApplySettings>) {
@@ -2414,7 +2422,18 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
         if (m_outputManager) {
             auto view = m_registry.view<OutputDisplay>();
             for (auto [entity, output] : view.each()) {
-                if (output.isPhysical() && output.enabled && output.outputWindowSlot != UINT32_MAX) {
+                // Disable every enabled physical output, window or not —
+                // don't gate on outputWindowSlot: it's a display mirror
+                // that lags the show thread's window map (issue #76), and
+                // a panic stop that skips a just-created window is worse
+                // than a redundant disable message (which is a no-op).
+                if (output.isPhysical() && output.enabled) {
+                    // Write enabled=false here (editor thread, sole
+                    // registry writer) — since #76 the show-side handler
+                    // only destroys the window; if the registry stayed
+                    // enabled, the next RenderFrame's lazy creation would
+                    // resurrect it mid-panic.
+                    output.enabled = false;
                     publishSetOutputEnabled(bus::SetOutputEnabled{
                         static_cast<std::uint64_t>(entity), false});
                     killedAny = true;
@@ -4388,22 +4407,11 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // Reset signal arm/rate-limit state on load so cues don't mis-fire.
     requestSignalReset();
 
-    // Pre-load: tear down any currently-active physical output windows. The
-    // load will clear the OutputDisplay entities that hold the slot IDs; if
-    // we don't release them first, those renderer slots leak for the rest
-    // of the session.
-    if (m_outputManager) {
-        auto view = m_registry.view<OutputDisplay>();
-        std::vector<entt::entity> toDisable;
-        for (auto [entity, out] : view.each()) {
-            if (out.outputWindowSlot != UINT32_MAX) {
-                toDisable.push_back(entity);
-            }
-        }
-        for (auto e : toDisable) {
-            m_outputManager->setOutputEnabled(e, false);
-        }
-    }
+    // Output windows: no pre-load teardown needed since issue #76 — window
+    // slots live in OutputManager's show-owned map (not the registry), so
+    // clearing OutputDisplay entities can't leak them. The old entities
+    // vanish from the post-load snapshot and renderOutputs' reconciliation
+    // sweep destroys their windows on the show thread a frame later.
 
     bool ok = m_projectManager->load(filepath);
     if (!ok) return false;
@@ -4477,23 +4485,13 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     }
 
     // Post-load: sync the output-index counter so new outputs the user
-    // creates don't collide with loaded indices; then bring up windows for
-    // any physical outputs that were saved as enabled.
-    //
-    // Routed through the D2R bus so the show thread creates the output
-    // window. Per ADR-0014 the show thread owns output windows, swap chains,
-    // and Present; calling setOutputEnabled() directly here would create the
-    // window on the editor thread and violate that contract.
+    // creates don't collide with loaded indices. Windows for outputs saved
+    // as enabled come up automatically: the first post-load snapshot
+    // carries them enabled, and renderOutputs' lazy creation brings the
+    // windows up on the show thread (issue #76 — no enable messages needed;
+    // the show thread owns all window lifecycle per ADR-0014).
     if (m_outputManager) {
         m_outputManager->syncCounterFromRegistry();
-
-        auto view = m_registry.view<OutputDisplay>();
-        for (auto [entity, out] : view.each()) {
-            if (out.enabled && out.isPhysical() && out.physicalDisplayIndex >= 0) {
-                publishSetOutputEnabled(bus::SetOutputEnabled{
-                    static_cast<std::uint64_t>(entity), true});
-            }
-        }
     }
 
     // ADR-0009 — bump Recent on every successful project load, not just
@@ -4671,22 +4669,11 @@ void Engine::closeProject() {
     // Reset signal arm/rate-limit state on close.
     requestSignalReset();
 
-    // 1. Disable physical output windows. Same prelude as loadProject —
-    //    OutputDisplay components hold renderer slot IDs; clearing the
-    //    components without first releasing the slots would leak them
-    //    for the rest of the session.
-    if (m_outputManager) {
-        auto view = m_registry.view<OutputDisplay>();
-        std::vector<entt::entity> toDisable;
-        for (auto [entity, out] : view.each()) {
-            if (out.outputWindowSlot != UINT32_MAX) {
-                toDisable.push_back(entity);
-            }
-        }
-        for (auto e : toDisable) {
-            m_outputManager->setOutputEnabled(e, false);
-        }
-    }
+    // 1. Output windows: no explicit teardown needed since issue #76 —
+    //    window slots live in OutputManager's show-owned map, so destroying
+    //    OutputDisplay entities can't leak them; renderOutputs' show-thread
+    //    reconciliation sweep destroys the windows once the entities vanish
+    //    from the snapshot.
 
     // 2. Join any in-flight transcode workers. requestCancel() + join
     //    via destructors. Partial outputs on disk are harmless — the
@@ -5582,6 +5569,18 @@ void Engine::drainRendererToDirector() {
                 if (auto* screen = m_registry.try_get<Screen>(entity)) {
                     screen->renderTargetSlot  = body.slot;
                     screen->renderTargetValid = (body.slot != UINT32_MAX);
+                }
+            } else if constexpr (std::is_same_v<T, bus::OutputWindowSlotUpdated>) {
+                // Show thread created/destroyed an output window (issue
+                // #76). Mirror the slot into OutputDisplay for the
+                // OutputsWindow UI — display-only; the authoritative map is
+                // show-thread-owned inside OutputManager. The entity may
+                // already be gone (removeOutput races the reply) — validate.
+                const auto entity = static_cast<entt::entity>(body.entity);
+                if (m_registry.valid(entity)) {
+                    if (auto* od = m_registry.try_get<OutputDisplay>(entity)) {
+                        od->outputWindowSlot = body.slot;
+                    }
                 }
             } else if constexpr (std::is_same_v<T, bus::GenerativeLayerRenderTargetAllocated>) {
                 // Mirror of ScreenRenderTargetAllocated for generative

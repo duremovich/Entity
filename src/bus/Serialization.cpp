@@ -1218,6 +1218,20 @@ ScreenRenderTargetAllocated decodeScreenRenderTargetAllocated(const json& j) {
     return m;
 }
 
+ojson encode(const OutputWindowSlotUpdated& m) {
+    ojson j = ojson::object();
+    j["entity"] = m.entity;
+    j["slot"]   = m.slot;
+    return j;
+}
+
+OutputWindowSlotUpdated decodeOutputWindowSlotUpdated(const json& j) {
+    OutputWindowSlotUpdated m;
+    m.entity = j.at("entity").get<std::uint64_t>();
+    m.slot   = j.at("slot").get<std::uint32_t>();
+    return m;
+}
+
 ojson encode(const GenerativeLayerRenderTargetAllocated& m) {
     ojson j = ojson::object();
     j["entity"] = m.entity;
@@ -1456,6 +1470,7 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, ProvisionClipResources>) return "ProvisionClipResources";
         else if constexpr (std::is_same_v<T, ResourcesProvisioned>)          return "ResourcesProvisioned";
         else if constexpr (std::is_same_v<T, ScreenRenderTargetAllocated>) return "ScreenRenderTargetAllocated";
+        else if constexpr (std::is_same_v<T, OutputWindowSlotUpdated>)     return "OutputWindowSlotUpdated";
         else if constexpr (std::is_same_v<T, GenerativeLayerRenderTargetAllocated>) return "GenerativeLayerRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, EffectChainRenderTargetAllocated>) return "EffectChainRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, EffectCompileFailed>)        return "EffectCompileFailed";
@@ -1503,6 +1518,7 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "DeviceLost")                    return Message{decodeDeviceLost(data)};
         if (type == "FrameDropped")                  return Message{decodeFrameDropped(data)};
         if (type == "ScreenRenderTargetAllocated")   return Message{decodeScreenRenderTargetAllocated(data)};
+        if (type == "OutputWindowSlotUpdated")       return Message{decodeOutputWindowSlotUpdated(data)};
         if (type == "GenerativeLayerRenderTargetAllocated") return Message{decodeGenerativeLayerRenderTargetAllocated(data)};
         if (type == "EffectChainRenderTargetAllocated") return Message{decodeEffectChainRenderTargetAllocated(data)};
         if (type == "EffectCompileFailed")            return Message{decodeEffectCompileFailed(data)};

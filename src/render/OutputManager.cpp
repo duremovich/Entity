@@ -69,12 +69,17 @@ void OutputManager::shutdown() {
 
     std::cout << "[OutputManager] Shutting down..." << std::endl;
 
-    // Release resources for all outputs. Must happen BEFORE the renderer
+    // Destroy any remaining output windows. Must happen BEFORE the renderer
     // itself shuts down (it owns the swap chains we reference by slot).
-    auto view = m_registry.view<OutputDisplay>();
-    for (auto entity : view) {
-        releaseOutputResources(entity);
+    // Driven by the show-owned slot map, not a registry scan — the registry
+    // may already be cleared at this point, and shutdown runs after the
+    // show thread has joined so touching m_windowSlots here is safe.
+    if (m_renderer) {
+        for (const auto& [entity, slot] : m_windowSlots) {
+            m_renderer->destroyOutputWindow(slot);
+        }
     }
+    m_windowSlots.clear();
 
     m_initialized = false;
 }
@@ -188,7 +193,10 @@ void OutputManager::removeOutput(entt::entity outputEntity) {
         m_previewOutput = entt::null;
     }
 
-    releaseOutputResources(outputEntity);
+    // Window teardown is NOT done here (editor thread): the entity vanishes
+    // from the next RenderFrame's outputs, and renderOutputs' reconciliation
+    // sweep destroys the orphaned window on the show thread a frame later
+    // (issue #76 — window lifecycle is show-thread-owned).
 
     if (m_registry.all_of<OutputDisplay>(outputEntity)) {
         auto& output = m_registry.get<OutputDisplay>(outputEntity);
@@ -229,60 +237,38 @@ void OutputManager::assignDisplay(entt::entity outputEntity, int32_t displayInde
 
     auto& output = m_registry.get<OutputDisplay>(outputEntity);
     const auto& display = m_availableDisplays[displayIndex];
-    const bool wasEnabled = output.enabled && output.isPhysical() &&
-                            output.outputWindowSlot != UINT32_MAX;
     const std::uint64_t entityId = static_cast<std::uint64_t>(outputEntity);
 
     std::cout << "[OutputManager] Assigned display '" << display.displayName
               << "' to output '" << output.name << "'" << std::endl;
 
+    // Update registry fields on the editor thread (sole registry writer).
+    // The next SceneSnapshot bakes them into the OutputSnapshot the show
+    // thread creates windows from.
+    output.physicalDisplayIndex = displayIndex;
+    output.deviceName  = display.deviceName;
+    output.displayName = display.displayName;
+    output.width       = display.width;
+    output.height      = display.height;
+    output.refreshRate = display.refreshRate;
+    output.windowX     = display.x;
+    output.windowY     = display.y;
+
     if (m_transport) {
-        // Route swap-chain lifecycle through the show thread so the teardown
-        // and rebuild both happen in the gap between beginShowFrame and
-        // renderOutputs, where no D3D12 work is in flight. Calling
-        // destroyOutputWindow / createOutputWindow directly from the editor
-        // thread while the show thread may be mid-frame causes TDR.
-        if (wasEnabled) {
-            bus::SetOutputEnabled disableMsg{entityId, false};
-            m_transport->send(bus::Direction::D2R,
-                              bus::serialize(bus::Message{disableMsg}));
-        }
-
-        // Update registry fields on the editor thread (sole registry writer).
-        output.physicalDisplayIndex = displayIndex;
-        output.deviceName  = display.deviceName;
-        output.displayName = display.displayName;
-        output.width       = display.width;
-        output.height      = display.height;
-        output.refreshRate = display.refreshRate;
-        output.windowX     = display.x;
-        output.windowY     = display.y;
-
-        if (output.enabled && output.isPhysical()) {
-            bus::SetOutputEnabled enableMsg{entityId, true};
-            m_transport->send(bus::Direction::D2R,
-                              bus::serialize(bus::Message{enableMsg}));
-        }
-    } else {
-        // Fallback: no transport yet (early init or shutdown path). Call
-        // directly — no show thread is running at this point.
-        if (output.outputWindowSlot != UINT32_MAX) {
-            releaseOutputResources(outputEntity);
-        }
-
-        output.physicalDisplayIndex = displayIndex;
-        output.deviceName  = display.deviceName;
-        output.displayName = display.displayName;
-        output.width       = display.width;
-        output.height      = display.height;
-        output.refreshRate = display.refreshRate;
-        output.windowX     = display.x;
-        output.windowY     = display.y;
-
-        if (output.enabled && output.isPhysical()) {
-            ensureOutputWindow(outputEntity);
-        }
+        // Window lifecycle is show-thread-owned (issue #76). A disable
+        // message tears down any existing window between show frames (no
+        // D3D12 work in flight — destroying from the editor thread while
+        // the show thread is mid-frame causes TDR); if the output is
+        // enabled, renderOutputs lazily recreates it from the next
+        // RenderFrame's snapshot, which carries the new display geometry.
+        // No explicit enable message needed.
+        bus::SetOutputEnabled disableMsg{entityId, false};
+        m_transport->send(bus::Direction::D2R,
+                          bus::serialize(bus::Message{disableMsg}));
     }
+    // No-transport case (early init): no show thread exists yet, so no
+    // window can exist either — the registry-field update above is all
+    // there is to do; lazy creation covers it once the show thread runs.
 }
 
 void OutputManager::setInputRegion(entt::entity outputEntity, float x, float y, float width, float height) {
@@ -317,25 +303,34 @@ void OutputManager::setRasterSize(int32_t width, int32_t height) {
     std::cout << "[OutputManager] Raster size set to " << width << "x" << height << std::endl;
 }
 
-void OutputManager::setOutputEnabled(entt::entity outputEntity, bool enabled) {
-    if (!m_registry.valid(outputEntity) || !m_registry.all_of<OutputDisplay>(outputEntity)) {
-        return;
+void OutputManager::destroyAllOutputWindowsOnShow() {
+    if (m_windowSlots.empty()) return;
+    std::vector<entt::entity> all;
+    all.reserve(m_windowSlots.size());
+    for (const auto& [entity, slot] : m_windowSlots) {
+        all.push_back(entity);
     }
-
-    auto& output = m_registry.get<OutputDisplay>(outputEntity);
-    output.enabled = enabled;
-
-    // Disabling a Physical output closes its window; enabling triggers lazy
-    // creation on the next renderOutputs() (or immediately if we have the
-    // display info).
-    if (!enabled && output.outputWindowSlot != UINT32_MAX) {
-        releaseOutputResources(outputEntity);
-    } else if (enabled && output.isPhysical()) {
-        ensureOutputWindow(outputEntity);
+    for (entt::entity entity : all) {
+        destroyOutputWindowFor(entity);
     }
+}
 
-    std::cout << "[OutputManager] Output '" << output.name << "' "
-              << (enabled ? "enabled" : "disabled") << std::endl;
+void OutputManager::handleSetOutputEnabledOnShow(entt::entity outputEntity,
+                                                 bool enabled) {
+    // Show-thread half of the SetOutputEnabled message (issue #76). The
+    // editor already wrote OutputDisplay::enabled into the registry before
+    // publishing (SetOutputEnabledCommand), so this handler owns window
+    // lifecycle only — zero registry access per ADR-0014.
+    if (!enabled) {
+        destroyOutputWindowFor(outputEntity);
+    }
+    // enable → no-op: the SceneSnapshot published in the same editor
+    // iteration carries enabled=true, and renderOutputs lazily creates the
+    // window from the next RenderFrame built on it (≤1 frame later).
+    std::cout << "[OutputManager] Output "
+              << static_cast<uint32_t>(outputEntity) << " "
+              << (enabled ? "enable (lazy window creation)" : "disabled")
+              << std::endl;
 }
 
 void OutputManager::setFullscreen(entt::entity outputEntity, bool fullscreen) {
@@ -418,6 +413,29 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
         }
     }
 
+    // Reconciliation sweep (issue #76): destroy windows whose entity no
+    // longer appears in this frame's outputs as an enabled Physical output
+    // — covers output deletion, project load/close (old entities vanish
+    // from the post-load snapshot), and disables whose bus message was
+    // superseded. This is what lets the editor thread never touch window
+    // lifecycle: disappearance from the snapshot IS the teardown signal.
+    if (!m_windowSlots.empty()) {
+        std::vector<entt::entity> stale;
+        for (const auto& [ent, slot] : m_windowSlots) {
+            bool live = false;
+            for (const auto& snap : rf.outputs) {
+                if (static_cast<entt::entity>(snap.entity) == ent) {
+                    live = snap.enabled && snap.isPhysical;
+                    break;
+                }
+            }
+            if (!live) stale.push_back(ent);
+        }
+        for (entt::entity ent : stale) {
+            destroyOutputWindowFor(ent);
+        }
+    }
+
     for (const auto& snap : rf.outputs) {
         if (!snap.enabled || !snap.isPhysical) {
             continue;
@@ -425,11 +443,18 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
 
         const entt::entity entity = static_cast<entt::entity>(snap.entity);
 
-        // Lazy window creation: if enabled + display assigned but no slot,
-        // try to bring it up now. Useful after deserializing a project.
-        uint32_t windowSlot = snap.outputWindowSlot;
-        if (windowSlot == UINT32_MAX) {
-            windowSlot = ensureOutputWindow(entity);
+        // Window lifecycle is keyed off the show-owned slot map, NOT
+        // snap.outputWindowSlot — the registry field is a display mirror
+        // that lags by the R2D reply latency, and trusting it here would
+        // double-create during that window (the original #76 failure).
+        // Lazy creation: enabled + physical but no window yet → bring it
+        // up now (covers enable messages, deserialized projects, and
+        // display reassignment recreates).
+        uint32_t windowSlot;
+        if (auto it = m_windowSlots.find(entity); it != m_windowSlots.end()) {
+            windowSlot = it->second;
+        } else {
+            windowSlot = ensureOutputWindow(snap);
             if (windowSlot == UINT32_MAX) continue;
         }
 
@@ -453,17 +478,26 @@ void OutputManager::createOutputResources(entt::entity outputEntity) {
     // preview, and NDI will own its own pipeline later.
 }
 
-void OutputManager::releaseOutputResources(entt::entity outputEntity) {
-    if (!m_renderer || !m_registry.valid(outputEntity) ||
-        !m_registry.all_of<OutputDisplay>(outputEntity)) {
-        return;
-    }
+void OutputManager::destroyOutputWindowFor(entt::entity outputEntity) {
+    auto it = m_windowSlots.find(outputEntity);
+    if (it == m_windowSlots.end()) return;
 
-    auto& output = m_registry.get<OutputDisplay>(outputEntity);
-    if (output.outputWindowSlot != UINT32_MAX) {
-        m_renderer->destroyOutputWindow(output.outputWindowSlot);
-        output.outputWindowSlot = UINT32_MAX;
+    const uint32_t slot = it->second;
+    m_windowSlots.erase(it);
+    if (m_renderer) {
+        m_renderer->destroyOutputWindow(slot);
     }
+    // Clear the editor-side registry mirror via R2D (the entity may already
+    // be destroyed — the editor drain validates before writing).
+    if (m_transport) {
+        bus::OutputWindowSlotUpdated reply{
+            static_cast<std::uint64_t>(outputEntity), UINT32_MAX};
+        m_transport->send(bus::Direction::R2D,
+                          bus::serialize(bus::Message{reply}));
+    }
+    std::cout << "[OutputManager] Destroyed output window slot " << slot
+              << " for entity " << static_cast<uint32_t>(outputEntity)
+              << std::endl;
 }
 
 void OutputManager::syncCounterFromRegistry() {
@@ -479,40 +513,48 @@ void OutputManager::syncCounterFromRegistry() {
               << " (from " << (any ? "registry state" : "empty registry") << ")" << std::endl;
 }
 
-uint32_t OutputManager::ensureOutputWindow(entt::entity outputEntity) {
-    if (!m_renderer || !m_registry.valid(outputEntity) ||
-        !m_registry.all_of<OutputDisplay>(outputEntity)) {
-        return UINT32_MAX;
-    }
+uint32_t OutputManager::ensureOutputWindow(const bus::OutputSnapshot& snap) {
+    if (!m_renderer) return UINT32_MAX;
 
-    auto& output = m_registry.get<OutputDisplay>(outputEntity);
-    if (output.outputWindowSlot != UINT32_MAX) return output.outputWindowSlot;
-    if (!output.isPhysical() || !output.enabled) return UINT32_MAX;
-    if (output.physicalDisplayIndex < 0 ||
-        output.physicalDisplayIndex >= static_cast<int32_t>(m_availableDisplays.size())) {
-        return UINT32_MAX;
+    const entt::entity entity = static_cast<entt::entity>(snap.entity);
+    if (auto it = m_windowSlots.find(entity); it != m_windowSlots.end()) {
+        return it->second;
     }
+    if (!snap.isPhysical || !snap.enabled) return UINT32_MAX;
+    if (snap.physicalDisplayIndex < 0) return UINT32_MAX;
+    if (snap.width <= 0 || snap.height <= 0) return UINT32_MAX;
 
-    const DisplayInfo& display = m_availableDisplays[output.physicalDisplayIndex];
-    std::string title = "Entity Output — " + output.name;
+    // Geometry comes from the baked snapshot (windowX/Y/width/height were
+    // written by assignDisplay on the editor thread), NOT from
+    // m_availableDisplays — the display list is editor-mutated
+    // (enumerateDisplays) and reading it here would be a cross-thread race.
+    std::string title = "Entity Output — " + snap.name;
     uint32_t slot = m_renderer->createOutputWindow(
         title.c_str(),
-        display.x, display.y,
-        static_cast<uint32_t>(display.width),
-        static_cast<uint32_t>(display.height));
+        snap.windowX, snap.windowY,
+        static_cast<uint32_t>(snap.width),
+        static_cast<uint32_t>(snap.height));
 
     if (slot == UINT32_MAX) {
         std::cerr << "[OutputManager] Failed to create output window for '"
-                  << output.name << "'" << std::endl;
+                  << snap.name << "'" << std::endl;
         return UINT32_MAX;
     }
 
-    output.outputWindowSlot = slot;
-    output.width = display.width;
-    output.height = display.height;
-    std::cout << "[OutputManager] Output '" << output.name
-              << "' driving display '" << display.displayName
-              << "' (slot " << slot << ")" << std::endl;
+    m_windowSlots[entity] = slot;
+
+    // Mirror the slot into the registry via R2D so the OutputsWindow UI and
+    // editor-side reads see it (display-only; this map stays authoritative).
+    if (m_transport) {
+        bus::OutputWindowSlotUpdated reply{snap.entity, slot};
+        m_transport->send(bus::Direction::R2D,
+                          bus::serialize(bus::Message{reply}));
+    }
+
+    std::cout << "[OutputManager] Output '" << snap.name
+              << "' window up at " << snap.windowX << "," << snap.windowY
+              << " " << snap.width << "x" << snap.height
+              << " (slot " << slot << ")" << std::endl;
     return slot;
 }
 
