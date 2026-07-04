@@ -923,6 +923,20 @@ void Engine::shutdown() {
     m_recentProjects.reset();
     m_showLauncher = false;
 
+    // Shut down the AudioSystem while the audio engine is still alive: its
+    // workers' MixSources are registered in the engine's mixer, and the
+    // unregister calls dereference AudioSystem's raw AudioEngine pointer.
+    // ~Director also calls shutdown() (idempotent second call, no-ops on the
+    // empty worker map), but by then m_audioEngine is destroyed — running the
+    // real teardown here and nulling the pointer keeps that late call off the
+    // freed mixer (crash-logs 2026-07-04T14-02-*: AV in unregisterSource at
+    // Engine::shutdown when audio workers were still live at exit).
+    if (m_audioSystem) {
+        m_audioSystem->shutdown(m_registry);
+        m_audioSystem->setAudioEngine(nullptr);
+        m_audioSystem = nullptr;
+    }
+
     // Stop the audio engine before the director tears down
     // PlaybackTimeAuthority (which holds the rate-source pointer).
     if (m_audioEngine) {
