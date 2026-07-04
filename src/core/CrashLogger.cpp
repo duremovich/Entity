@@ -439,7 +439,19 @@ void CrashLogger::captureNonFatal(const char* kind,
         char tsBuf[64] = {};
         makeUtcIsoNow(tsBuf, sizeof(tsBuf));
 
-        std::filesystem::path dir = root / tsBuf;
+        // Capture dirs are "<ts>-<kind>-<pid>", NOT the bare "<ts>" the
+        // session dir uses. A process that crashes within the same second it
+        // started would otherwise collide with its own pre-created session
+        // dir, whose context.json/dump.dmp are pre-opened with no sharing —
+        // both CreateFileW calls below fail silently and the crash record is
+        // lost (observed 2026-07-04T15-10-59Z: WARP DEVICE_REMOVED 0.98s
+        // after process start left only 0-byte files; likely also #71's
+        // "0-byte single entry" from 2026-06-12). The PID disambiguates two
+        // processes crashing in the same second during a storm.
+        char dirName[128] = {};
+        _snprintf_s(dirName, sizeof(dirName), _TRUNCATE, "%s-%s-%lu",
+                    tsBuf, kind, GetCurrentProcessId());
+        std::filesystem::path dir = root / dirName;
         std::filesystem::create_directories(dir);
 
         // Write context.json via std::ofstream (heap is fine here).
