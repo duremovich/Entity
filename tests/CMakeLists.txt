@@ -649,7 +649,15 @@ get_directory_property(_entity_all_tests TESTS)
 foreach(_entity_test IN LISTS _entity_all_tests)
     if(_entity_test MATCHES "^integration_")
         set_tests_properties(${_entity_test} PROPERTIES RESOURCE_LOCK "d3d12_warp")
+        # ENTITY_FENCE_TIMEOUT_MS: the 5000ms default is tuned for live-show
+        # hardware, where a 5s fence stall means the GPU is in real trouble.
+        # WARP starved by the parallel unit-test load (-j8) can legitimately
+        # stall past it while perfectly healthy; the watchdog then reports a
+        # spurious device-lost (RemovedReason 0x0) and kills the test — the
+        # June "watchdog-vs-TDR race" (docs/perf/device-hung-2026-06), seen
+        # again 2026-07-04 on integration_generative_layer_ops. 10s keeps a
+        # genuine wedge detectable well inside each test's TIMEOUT.
         set_property(TEST ${_entity_test} APPEND PROPERTY
-                     ENVIRONMENT "ENTITY_FORCE_WARP=1")
+                     ENVIRONMENT "ENTITY_FORCE_WARP=1;ENTITY_FENCE_TIMEOUT_MS=10000")
     endif()
 endforeach()
