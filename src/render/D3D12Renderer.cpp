@@ -1073,23 +1073,42 @@ bool D3D12Renderer::waitFenceOrDeviceLost(ID3D12Fence* fence, uint64_t value,
     // S_OK logs and RE-WAITS. Every retry rechecks GetCompletedValue first,
     // so a stale-set event or an already-signaled fence exits promptly.
     //
-    // The retry budget is a TOTAL wall-clock bound (~20s), not a fixed
-    // attempt count: it must land under the 30s ctest TIMEOUT floor with room
-    // for the crash record + fast exit (a GPU-hangs-without-TDR wedge that
-    // out-waits ctest gets SIGKILLed with no record — the #69 failure mode),
-    // and it bounds how long a live show's output can freeze before
-    // device-lost recovery starts. With the 5000ms default that's 4 attempts;
-    // with the 10000ms test override, 2. Exhaustion reports the still-S_OK
-    // reason, which handleDeviceLost prints as "(unknown reason)" — honest,
-    // since the driver never declared removal.
+    // The retry budget is a TOTAL wall-clock deadline (max(2×watchdog, 20s)),
+    // NOT an attempt count. Two reasons:
+    //  - it must land under the 30s ctest TIMEOUT floor with room for the
+    //    crash record + fast exit (a GPU-hangs-without-TDR wedge that
+    //    out-waits ctest gets SIGKILLed with no record — the #69 failure
+    //    mode), and it bounds how long a live show's output can freeze
+    //    before device-lost recovery starts;
+    //  - the auto-reset event is reused across frames, and a stale
+    //    SetEventOnCompletion registration (e.g. satisfied by waitForGpu's
+    //    editor-fence drain running on the other thread) can wake the wait
+    //    immediately with the value not yet reached. Counting wakes as
+    //    attempts let a burst of stale signals exhaust the budget in
+    //    microseconds and declare a healthy device lost 0x0 (2026-07-04
+    //    12:14 run: all 8 golden-hash tests, ~1s in). Against a clock,
+    //    spurious wakes cost nothing.
+    // Exhaustion reports the still-S_OK reason directly (no extra grace-sleep
+    // requery); handleDeviceLost re-reads the live reason for its report, and
+    // prints S_OK as "(unknown reason)" — honest, since the driver never
+    // declared removal.
     const DWORD waitMs = fenceWaitTimeoutMs();
-    const int maxAttempts = std::clamp(20000 / static_cast<int>(waitMs), 1, 4);
-    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(std::max<DWORD>(2 * waitMs, 20000));
+    for (;;) {
         if (fence->GetCompletedValue() >= value) {
             return true;
         }
+        const long long remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+        if (remainingMs <= 0) {
+            break; // budget exhausted, device never declared removal
+        }
         fence->SetEventOnCompletion(value, event);
-        const DWORD result = WaitForSingleObject(event, waitMs);
+        const DWORD result = WaitForSingleObject(
+            event,
+            static_cast<DWORD>(std::min<long long>(waitMs, remainingMs)));
         if (result == WAIT_OBJECT_0) {
             continue; // loop re-checks the completed value
         }
@@ -1102,17 +1121,11 @@ bool D3D12Renderer::waitFenceOrDeviceLost(ID3D12Fence* fence, uint64_t value,
             handleDeviceLost(reason, site);
             return false;
         }
-        std::cerr << "[D3D12] fence wait exceeded " << waitMs << "ms at "
-                  << site << " but device is healthy (RemovedReason S_OK) — "
-                  << "attempt " << (attempt + 1) << "/" << maxAttempts
-                  << (attempt + 1 < maxAttempts ? ", re-waiting"
-                                                : ", budget exhausted")
+        std::cerr << "[D3D12] fence wait stalled at " << site
+                  << " but device is healthy (RemovedReason S_OK) — "
+                  << remainingMs << "ms retry budget remaining, re-waiting"
                   << std::endl;
     }
-    // Exhausted (or WAIT_FAILED) with the device never declaring removal:
-    // report S_OK directly — the loop just queried it, no need for another
-    // grace-sleep requery. handleDeviceLost re-reads the live reason for its
-    // report anyway, so a TDR that lands this instant is still captured.
     handleDeviceLost(S_OK, site);
     return false;
 }
