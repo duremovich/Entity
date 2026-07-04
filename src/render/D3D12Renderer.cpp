@@ -475,6 +475,8 @@ void D3D12Renderer::shutdown() {
     m_showCmdList.Reset();
     m_copyCommandList.Reset();
     m_editorCopyCommandList.Reset();
+    m_captureCmdList.Reset();
+    m_captureAllocator.Reset();
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         m_editorAllocators[i].Reset();
         m_showAllocators[i].Reset();
@@ -1336,7 +1338,32 @@ Result D3D12Renderer::createCommandList() {
     m_showCmdList->SetName(L"ShowCmdList");
     m_showCmdList->Close();
 
-    std::cout << "Command lists created (editor + show)" << std::endl;
+    // Capture-only allocator + list (see the header note on m_captureCmdList:
+    // the capture path runs on the show thread and must not touch the editor
+    // thread's allocator/list).
+    hr = m_gpu->device()->CreateCommandAllocator(
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        IID_PPV_ARGS(&m_captureAllocator)
+    );
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create capture command allocator!" << std::endl;
+        return Result::Failure;
+    }
+    hr = m_gpu->device()->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        m_captureAllocator.Get(),
+        nullptr,
+        IID_PPV_ARGS(&m_captureCmdList)
+    );
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create capture command list!" << std::endl;
+        return Result::Failure;
+    }
+    m_captureCmdList->SetName(L"CaptureCmdList");
+    m_captureCmdList->Close();
+
+    std::cout << "Command lists created (editor + show + capture)" << std::endl;
     return Result::Success;
 }
 
@@ -4344,13 +4371,13 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     waitForGpu();
 
     // Reset command allocator and command list for this operation
-    HRESULT hr = m_editorAllocators[m_currentBackBufferIndex]->Reset();
+    HRESULT hr = m_captureAllocator->Reset();
     if (FAILED(hr)) {
         std::cerr << "[Readback] Failed to reset command allocator!" << std::endl;
         return false;
     }
 
-    hr = m_editorCmdList->Reset(m_editorAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    hr = m_captureCmdList->Reset(m_captureAllocator.Get(), nullptr);
     if (FAILED(hr)) {
         std::cerr << "[Readback] Failed to reset command list!" << std::endl;
         return false;
@@ -4365,7 +4392,7 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
         barrier.Transition.StateBefore = sourceState;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_editorCmdList->ResourceBarrier(1, &barrier);
+        m_captureCmdList->ResourceBarrier(1, &barrier);
     }
 
     // Set up copy locations
@@ -4385,7 +4412,7 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     dstLocation.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(m_screenshotStagingRowPitch);
 
     // Copy texture to staging buffer
-    m_editorCmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    m_captureCmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
 
     // Transition source texture back to original state
     if (sourceState != D3D12_RESOURCE_STATE_COPY_SOURCE) {
@@ -4396,17 +4423,17 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.StateAfter = sourceState;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_editorCmdList->ResourceBarrier(1, &barrier);
+        m_captureCmdList->ResourceBarrier(1, &barrier);
     }
 
     // Close and execute command list
-    hr = m_editorCmdList->Close();
+    hr = m_captureCmdList->Close();
     if (FAILED(hr)) {
         std::cerr << "[Readback] Failed to close command list!" << std::endl;
         return false;
     }
 
-    ID3D12CommandList* commandLists[] = { m_editorCmdList.Get() };
+    ID3D12CommandList* commandLists[] = { m_captureCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
 
     // Wait for GPU to finish the copy
@@ -4991,12 +5018,14 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
 
     waitForGpu();
 
-    HRESULT hr = m_editorAllocators[m_currentBackBufferIndex]->Reset();
+    // Dedicated capture allocator + list — this path runs on the show thread
+    // and must not Reset/record the editor thread's objects (see header note).
+    HRESULT hr = m_captureAllocator->Reset();
     if (FAILED(hr)) {
         std::cerr << "[Capture] command allocator Reset failed" << std::endl;
         return false;
     }
-    hr = m_editorCmdList->Reset(m_editorAllocators[m_currentBackBufferIndex].Get(), nullptr);
+    hr = m_captureCmdList->Reset(m_captureAllocator.Get(), nullptr);
     if (FAILED(hr)) {
         std::cerr << "[Capture] command list Reset failed" << std::endl;
         return false;
@@ -5004,14 +5033,14 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
 
     // 1. Bind the SRV heap, viewport, RTV, and run the tone-map pass.
     ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
-    m_editorCmdList->SetDescriptorHeaps(1, heaps);
+    m_captureCmdList->SetDescriptorHeaps(1, heaps);
     tl_currentDescriptorHeap = m_imguiSrvHeap.Get();
 
     D3D12_VIEWPORT vp = { 0, 0, static_cast<float>(target.width), static_cast<float>(target.height), 0.0f, 1.0f };
     D3D12_RECT scissor = { 0, 0, static_cast<LONG>(target.width), static_cast<LONG>(target.height) };
-    m_editorCmdList->RSSetViewports(1, &vp);
-    m_editorCmdList->RSSetScissorRects(1, &scissor);
-    m_editorCmdList->OMSetRenderTargets(1, &m_captureRtv, FALSE, nullptr);
+    m_captureCmdList->RSSetViewports(1, &vp);
+    m_captureCmdList->RSSetScissorRects(1, &scissor);
+    m_captureCmdList->OMSetRenderTargets(1, &m_captureRtv, FALSE, nullptr);
 
     // Phase C.12 #5: prefer the OCIO-spliced capture PSO so the captured
     // image matches what mapping_surface_ps puts on a sRGB monitor. Falls
@@ -5019,12 +5048,12 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     ID3D12PipelineState* capturePso = m_ocioCapturePipelineState
         ? m_ocioCapturePipelineState.Get()
         : m_capturePipelineState.Get();
-    m_editorCmdList->SetPipelineState(capturePso);
-    m_editorCmdList->SetGraphicsRootSignature(m_captureRootSignature.Get());
-    m_editorCmdList->SetGraphicsRootDescriptorTable(0, target.stableSrvHandle());
+    m_captureCmdList->SetPipelineState(capturePso);
+    m_captureCmdList->SetGraphicsRootSignature(m_captureRootSignature.Get());
+    m_captureCmdList->SetGraphicsRootDescriptorTable(0, target.stableSrvHandle());
 
-    m_editorCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_editorCmdList->DrawInstanced(3, 1, 0, 0); // full-screen triangle from SV_VERTEXID
+    m_captureCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_captureCmdList->DrawInstanced(3, 1, 0, 0); // full-screen triangle from SV_VERTEXID
 
     // 2. RENDER_TARGET -> COPY_SOURCE, copy to staging, restore.
     D3D12_RESOURCE_BARRIER toCopy = {};
@@ -5033,7 +5062,7 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     toCopy.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
     toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_editorCmdList->ResourceBarrier(1, &toCopy);
+    m_captureCmdList->ResourceBarrier(1, &toCopy);
 
     D3D12_TEXTURE_COPY_LOCATION src = {};
     src.pResource         = m_captureResource.Get();
@@ -5056,7 +5085,7 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     // resource subresource and trigger E_INVALIDARG on the second screen
     // when sizes differ.
     D3D12_BOX srcBox = { 0, 0, 0, target.width, target.height, 1 };
-    m_editorCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
+    m_captureCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
 
     D3D12_RESOURCE_BARRIER restore = {};
     restore.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -5064,16 +5093,16 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     restore.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
     restore.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
     restore.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_editorCmdList->ResourceBarrier(1, &restore);
+    m_captureCmdList->ResourceBarrier(1, &restore);
 
-    hr = m_editorCmdList->Close();
+    hr = m_captureCmdList->Close();
     if (FAILED(hr)) {
         std::cerr << "[Capture] command list Close failed hr=0x"
                   << std::hex << hr << std::dec << std::endl;
         return false;
     }
 
-    ID3D12CommandList* lists[] = { m_editorCmdList.Get() };
+    ID3D12CommandList* lists[] = { m_captureCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, lists);
     waitForGpu();
 

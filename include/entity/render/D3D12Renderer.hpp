@@ -914,6 +914,16 @@ private:
     ComPtr<ID3D12Resource>       m_captureResource;
     ComPtr<ID3D12DescriptorHeap> m_captureRtvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE  m_captureRtv{};
+    // Capture-only allocator + list. The capture path runs on the show thread
+    // (CaptureBroker drain, pre-beginShowFrame) and used to Reset/record the
+    // EDITOR allocator + cmdlist, racing the editor thread's ImGui recording —
+    // allocator Reset fails mid-recording ("[Capture] command allocator Reset
+    // failed", flaky golden-hash tests under CPU load), and a successful Reset
+    // there would be UB. Same isolation pattern as m_editorCopyCommand* vs the
+    // show copy list. Captures are serialized by the waitForGpu() bracket in
+    // tonemapAndReadbackComposeTarget, so one allocator (no ring) suffices.
+    ComPtr<ID3D12CommandAllocator>    m_captureAllocator;
+    ComPtr<ID3D12GraphicsCommandList> m_captureCmdList;
     ComPtr<ID3D12RootSignature>  m_captureRootSignature;
     ComPtr<ID3D12PipelineState>  m_capturePipelineState;
     uint32_t                     m_captureWidth{0};
