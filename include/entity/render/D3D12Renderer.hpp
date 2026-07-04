@@ -11,6 +11,7 @@
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include "entity/profile/Tracy.hpp"
+#include "entity/render/EditorReadGate.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/render/RuntimeShaderCompiler.hpp"
 #include <d3d12.h>
@@ -714,14 +715,27 @@ private:
         std::atomic<uint32_t>        lastStableIndex{UINT32_MAX}; // UINT32_MAX = no stable frame yet
         uint32_t                     writeIndex{0};               // show thread only; next sub to write
 
-        // std::atomic is not moveable, so provide an explicit move constructor
-        // so std::vector can reallocate. Safe: targets are only added during
-        // startup before the show thread is running.
+        // #75: gates editor readers across resizeComposeTarget's resource
+        // swap + descriptor rewrite. Triple-buffering (above) only guards RT
+        // *contents*; this guards *structure*. Editor-facing accessors check
+        // it before touching handles/dims; the show thread closes it, waits
+        // for in-flight editor frames, mutates, reopens. Show-side render
+        // paths never check it — the swap is synchronous on their thread.
+        EditorReadGate editorGate;
+
+        // std::atomic is not moveable, so provide an explicit move
+        // constructor — std::vector requires MoveInsertable even though
+        // m_composeTargets is reserve()d to MAX_COMPOSE_TARGETS at
+        // initialize() and never reallocates. Targets are created and
+        // resized at runtime on the show thread while the editor reads
+        // (#75); the reserve + m_composeTargetCount publish + editorGate
+        // carry that safety, not this move constructor.
         ComposeTarget() = default;
         ComposeTarget(ComposeTarget&& o) noexcept
             : srvHandles{o.srvHandles[0], o.srvHandles[1], o.srvHandles[2]}
             , lastStableIndex(o.lastStableIndex.load(std::memory_order_relaxed))
             , writeIndex(o.writeIndex)
+            , editorGate(std::move(o.editorGate))
             , snapshotResource(std::move(o.snapshotResource))
             , snapshotSrvHandle(o.snapshotSrvHandle)
             , snapshotSrvSlot(o.snapshotSrvSlot)
@@ -760,6 +774,22 @@ private:
     };
     std::vector<ComposeTarget> m_composeTargets;
     uint32_t m_currentComposeTargetSlot{0};  // Currently active slot during rendering
+
+    // #75: guard for editor-thread compose-target accessors: published-count
+    // bound check + per-target editorGate. Defined in D3D12Renderer.cpp.
+    bool composeTargetEditorReadable(uint32_t slot) const;
+
+    // #75: count of fully-initialized compose targets, published with release
+    // semantics at the end of createComposeTarget. Editor-facing accessors
+    // bound-check against THIS, never m_composeTargets.size() — size() grows
+    // at emplace_back, before the element is initialized, and reading it
+    // cross-thread races the show thread's push. The vector is reserve()d to
+    // MAX_COMPOSE_TARGETS in initialize() so element addresses are stable.
+    std::atomic<uint32_t> m_composeTargetCount{0};
+
+    // #75: editor-frame record/submit progress, consumed by the per-target
+    // editorGate (see EditorReadGate.hpp for the protocol).
+    EditorFrameTracker m_editorFrameTracker;
 
     // Double-buffered offscreen render target for the editor 3D stage view.
     // Color: RGBA16F + RTV + SRV in main heap. Depth: D32_FLOAT + DSV (own heap).

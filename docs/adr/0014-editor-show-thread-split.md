@@ -39,6 +39,26 @@
   load/close) destroys its window on the show thread. The sanctioned
   show-side registry access list (MappingSurface reads +
   same-tick VideoTexture colorSpace writes) is once again exhaustive.
+- **Amended:** 2026-07-04, issue #75 — compose-target *structure* races
+  closed (§2 only ever guarded RT *contents*). The show thread grows
+  `m_composeTargets` at runtime (screen add, first effect on a layer)
+  and `resizeComposeTarget` swaps sub-resources + rewrites SRV
+  descriptors in place, while editor ImGui frames read the same slots.
+  Three mechanisms now carry that safety: (1) the vector is `reserve()`d
+  to `MAX_COMPOSE_TARGETS` at init so `emplace_back` never reallocates;
+  (2) editor-facing accessors bound-check an atomically-published count,
+  stored only after a target is fully initialized; (3) each target has
+  an `EditorReadGate` (`include/entity/render/EditorReadGate.hpp`) — a
+  seq_cst generation gate keyed to editor-frame begin/submit counters.
+  A resize closes the gate (editor readers skip the slot for a frame or
+  two), defers until every editor frame begun before the close has
+  submitted its command list — an editor command list can hold a
+  compose SRV handle for up to a frame between record and
+  ExecuteCommandLists, which `waitForGpu()` alone cannot see — then
+  drains the GPU, swaps, and reopens. Deferral returns `false` to
+  CompositorSystem, which already retries every tick; output renders at
+  the old dimensions meanwhile, and an editor stall simply keeps the
+  resize deferred without blocking the show thread.
 
 ## Context
 
@@ -113,6 +133,11 @@ and displays `srvHandles[lastStableIndex % 3]` in ImGui. Three slots:
 
 This eliminates the "show overwrites compose target while editor samples it
 for ImGui" race without a mutex or copy.
+
+Note this guards RT *contents* only. Vector growth and the
+`resizeComposeTarget` resource swap are structural mutations with their own
+protection (reserve + published count + per-target `EditorReadGate`) — see
+the 2026-07-04 / #75 amendment above.
 
 ### 3. `ScreenRenderTargetAllocated` R2D reply
 

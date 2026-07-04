@@ -304,6 +304,13 @@ Result D3D12Renderer::initialize(GLFWwindow* window, uint32_t width, uint32_t he
         return Result::Failure;
     }
 
+    // #75: compose targets are created at runtime on the show thread while
+    // the editor thread reads the vector. Reserving the hard cap up front
+    // (createComposeTarget enforces MAX_COMPOSE_TARGETS) means emplace_back
+    // never reallocates, so element addresses — and the SRV handles the
+    // editor holds into them — stay valid for the renderer's lifetime.
+    m_composeTargets.reserve(IRenderer::MAX_COMPOSE_TARGETS);
+
     m_initialized = true;
     std::cout << "D3D12 renderer initialized successfully!" << std::endl;
 
@@ -383,6 +390,7 @@ void D3D12Renderer::shutdown() {
 
     m_videoUploadBuffer.Reset();
 
+    m_composeTargetCount.store(0, std::memory_order_release);
     for (auto& target : m_composeTargets) {
         for (uint32_t sub = 0; sub < ComposeTarget::TRIPLE; ++sub) {
             target.resources[sub].Reset();
@@ -706,6 +714,10 @@ void D3D12Renderer::endShowFrame() {
 
 void D3D12Renderer::beginEditorFrame() {
     ZoneScopedN("beginEditorFrame");
+    // #75: count the frame unconditionally (before any early return) so it
+    // stays paired with endEditorFrame's endFrame() calls, which also fire
+    // on every exit path. A skewed pair starves compose-target resizes.
+    m_editorFrameTracker.beginFrame();
     if (m_deviceLost) return;
 
     // m_currentBackBufferIndex selects which RTV/back-buffer to draw into
@@ -751,7 +763,12 @@ void D3D12Renderer::beginEditorFrame() {
 
 void D3D12Renderer::endEditorFrame() {
     ZoneScopedN("endEditorFrame");
-    if (m_deviceLost) return;
+    if (m_deviceLost) {
+        // #75: nothing was (or will be) submitted for this frame — mark it
+        // ended so EditorFrameTracker stays paired with beginEditorFrame.
+        m_editorFrameTracker.endFrame();
+        return;
+    }
 
     // Transition back buffer to PRESENT state
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -767,10 +784,18 @@ void D3D12Renderer::endEditorFrame() {
     HRESULT hr = m_editorCmdList->Close();
     if (FAILED(hr)) {
         std::cerr << "Failed to close editor command list!" << std::endl;
+        // #75: this frame's command list will never execute — count it
+        // ended so pending compose-target resizes don't starve.
+        m_editorFrameTracker.endFrame();
         return;
     }
     ID3D12CommandList* editorLists[] = { m_editorCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, editorLists);
+
+    // #75: the frame's command list — and any compose-target SRV handles it
+    // recorded — is now on the queue, where waitForGpu() can drain it. This
+    // is what EditorReadGate::mayMutate waits for.
+    m_editorFrameTracker.endFrame();
 
     // Present editor swap chain
     hr = m_swapChain->Present(1, 0);
@@ -1372,7 +1397,7 @@ void D3D12Renderer::waitForGpu() {
     // SetEventOnCompletion/WaitForSingleObject pairs on m_fenceEvent. Auto-reset
     // events are FIFO-ish but only wake one waiter per signal; the editor
     // thread's moveToNextFrame waits on m_fenceEvent with a 2-second timeout,
-    // and the show thread enters waitForGpu via createComposeTarget. With both
+    // and the show thread enters waitForGpu via resizeComposeTarget. With both
     // arming m_fenceEvent on the same fence, whichever Wait runs first steals
     // the wakeup and the other times out — surfaces as a false device-lost.
     HANDLE localEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -3614,6 +3639,12 @@ uint32_t D3D12Renderer::createComposeTarget(uint32_t width, uint32_t height) {
     target.lastStableIndex.store(UINT32_MAX, std::memory_order_relaxed);
     target.ready  = true;
 
+    // #75: publish the new target to editor-facing accessors only now that
+    // it is fully initialized. The failure paths above pop_back without ever
+    // publishing, so the editor can never observe a half-built element.
+    m_composeTargetCount.store(static_cast<uint32_t>(m_composeTargets.size()),
+                               std::memory_order_release);
+
     std::cout << "Compose target " << slot << " created successfully (triple-buffered): "
               << width << "x" << height << std::endl;
 
@@ -3638,9 +3669,27 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     ComposeTarget& target = m_composeTargets[slot];
 
     // Same-size? No-op. Saves a wait + reallocation when CompositorSystem
-    // calls us redundantly.
+    // calls us redundantly. If a deferred resize was pending and the dims
+    // drifted back to current, cancel it — reopen the gate untouched.
     if (target.ready && target.width == width && target.height == height) {
+        if (target.editorGate.isClosed()) {
+            target.editorGate.open();
+        }
         return true;
+    }
+
+    // #75: editor ImGui frames grab this slot's SRV handles mid-record and
+    // submit up to a frame later. Dropping the resources and rewriting the
+    // descriptors while such a command list exists is a GPU use-after-free
+    // (waitForGpu only drains work already on the queue). Close the gate —
+    // editor readers skip this slot from their next isReadable() check — and
+    // defer the swap until every editor frame begun before the close has
+    // submitted. CompositorSystem retries every tick on false, so a deferral
+    // just renders at the old dims for a tick or two; the editor preview
+    // skips the slot for the same window.
+    target.editorGate.close(m_editorFrameTracker);
+    if (!target.editorGate.mayMutate(m_editorFrameTracker)) {
+        return false;
     }
 
     waitForGpu();
@@ -3724,6 +3773,12 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     target.height = height;
     target.ready  = true;
 
+    // #75: reopen the gate — editor readers resume from their next frame.
+    // On the CreateCommittedResource failure paths above the gate stays
+    // closed (the target is torn down); CompositorSystem's per-tick retry
+    // re-enters with mayMutate() already true and rebuilds it.
+    target.editorGate.open();
+
     std::cout << "Resizing compose target " << slot << " to "
               << width << "x" << height << std::endl;
     return true;
@@ -3787,8 +3842,21 @@ void D3D12Renderer::endComposeTarget() {
     tl_activeCmdList->ResourceBarrier(1, &barrier);
 }
 
+// #75: common guard for the editor-thread accessors below. Bound-checks
+// against the atomically-published count (never m_composeTargets.size(),
+// which grows before the element is initialized), then checks the per-target
+// gate. Reading `ready` after the gate's seq_cst load is race-free: any
+// frame that can reach it either began before the gate closed (the show
+// thread defers mutation until that frame submits) or observes the reopened
+// gate after the mutation completed.
+bool D3D12Renderer::composeTargetEditorReadable(uint32_t slot) const {
+    if (slot >= m_composeTargetCount.load(std::memory_order_acquire)) return false;
+    const ComposeTarget& target = m_composeTargets[slot];
+    return target.editorGate.isReadable() && target.ready;
+}
+
 void* D3D12Renderer::getComposeTargetTextureID(uint32_t slot) const {
-    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) return nullptr;
+    if (!composeTargetEditorReadable(slot)) return nullptr;
     const D3D12_GPU_DESCRIPTOR_HANDLE h = m_composeTargets[slot].stableSrvHandle();
     return h.ptr ? reinterpret_cast<void*>(h.ptr) : nullptr;
 }
@@ -3805,36 +3873,46 @@ void* D3D12Renderer::getVideoTextureIDForSlot(uint32_t slot) const {
 }
 
 uint32_t D3D12Renderer::getComposeTargetStableSrvSlot(uint32_t slot) const {
-    if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) return UINT32_MAX;
+    if (!composeTargetEditorReadable(slot)) return UINT32_MAX;
     const uint32_t stableIdx = m_composeTargets[slot].lastStableIndex.load(std::memory_order_acquire);
     if (stableIdx == UINT32_MAX) return UINT32_MAX;
     return DescriptorHeapLayout::composeTargetTripleSlot(slot, stableIdx % ComposeTarget::TRIPLE);
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::getComposeTargetSrvHandle(uint32_t slot) const {
-    if (slot < m_composeTargets.size() && m_composeTargets[slot].ready) {
+    if (composeTargetEditorReadable(slot)) {
         return m_composeTargets[slot].stableSrvHandle();
     }
     D3D12_GPU_DESCRIPTOR_HANDLE nullHandle = {};
     return nullHandle;
 }
 
+// Width/height are read by BOTH threads (CompositorSystem show-side each
+// tick, StageWindow editor-side). Deliberately NOT gated on editorGate:
+// during a deferred resize the old dims are intact and the show thread must
+// keep rendering at them. Editor-side torn reads are excluded by the gate
+// protocol as long as the caller checked a gated accessor (textureID /
+// isComposeTargetReady) earlier in the same frame — which StageWindow and
+// ProjectorCalibrationWindow both do.
 uint32_t D3D12Renderer::getComposeTargetWidth(uint32_t slot) const {
-    if (slot < m_composeTargets.size()) {
+    if (slot < m_composeTargetCount.load(std::memory_order_acquire)) {
         return m_composeTargets[slot].width;
     }
     return 0;
 }
 
 uint32_t D3D12Renderer::getComposeTargetHeight(uint32_t slot) const {
-    if (slot < m_composeTargets.size()) {
+    if (slot < m_composeTargetCount.load(std::memory_order_acquire)) {
         return m_composeTargets[slot].height;
     }
     return 0;
 }
 
+// Editor-thread readiness probe (StageWindow). Show-side code checks the
+// plain `ready` member directly — it must NOT see false during a deferred
+// resize, while the editor must.
 bool D3D12Renderer::isComposeTargetReady(uint32_t slot) const {
-    return (slot < m_composeTargets.size() && m_composeTargets[slot].ready);
+    return composeTargetEditorReadable(slot);
 }
 
 // ============================================================================

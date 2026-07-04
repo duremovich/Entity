@@ -5,6 +5,7 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(EntityMediaTests
     unit/FrameCacheTests.cpp
     unit/EditorFrameRingTests.cpp
+    unit/EditorReadGateTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/RippleTimeTests.cpp
     unit/TrackInsertTests.cpp
