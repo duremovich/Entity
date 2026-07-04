@@ -1000,7 +1000,12 @@ private:
     std::unique_ptr<RecentProjects>  m_recentProjects;
     std::unique_ptr<ContentScanner>  m_contentScanner;
     std::unique_ptr<MediaProbeWorker> m_probeWorker;
-    bool m_showLauncher{false};
+    // Written on the editor thread (launcher enter/exit, project open),
+    // read every tick by the show loop — which since issue #76 gates
+    // output-window teardown on it (the launcher-idle branch destroys all
+    // windows). Atomic so that dependency isn't riding on a torn/stale
+    // plain-bool read.
+    std::atomic<bool> m_showLauncher{false};
 
     // Two-frame handshake for project open from the launcher: when the
     // user picks Open, frame N stores the path here and paints the

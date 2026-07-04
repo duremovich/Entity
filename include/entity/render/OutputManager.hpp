@@ -7,6 +7,7 @@
 #include "../render/IRenderer.hpp"
 #include <entt/entt.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <memory>
@@ -170,6 +171,20 @@ public:
     void syncCounterFromRegistry();
 
     /**
+     * Post-load geometry re-resolution (editor thread — legal registry
+     * writes + m_availableDisplays reads). The serializer restores
+     * windowX/Y/width/height verbatim from the project file, but the show
+     * thread now creates windows from those baked fields (issue #76), so a
+     * project saved under a different monitor layout would come up at
+     * stale coordinates. For each Physical output: physicalDisplayIndex in
+     * range → refresh geometry from the live display list (what the old
+     * show-side ensureOutputWindow did implicitly); out of range (rig has
+     * fewer displays than the save) → disable the output + warn, instead
+     * of creating an off-desktop window that presents to nowhere.
+     */
+    void reresolveDisplayGeometry();
+
+    /**
      * Wire in the D2R transport so assignDisplay can route swap-chain
      * teardown/rebuild through the show thread instead of calling the
      * renderer directly from the editor thread.
@@ -177,10 +192,6 @@ public:
     void setTransport(bus::IMessageTransport* transport) { m_transport = transport; }
 
 private:
-    /**
-     * Create render resources for an output (render target, etc).
-     */
-    void createOutputResources(entt::entity outputEntity);
 
     /**
      * Render to a single output from bus snapshots.
@@ -227,14 +238,37 @@ private:
     // Available physical displays from enumeration
     std::vector<DisplayInfo> m_availableDisplays;
 
-    // Authoritative output-window slot map (issue #76). SHOW-THREAD-OWNED:
+    // Authoritative output-window state (issue #76). SHOW-THREAD-OWNED:
     // written by renderOutputs' lazy creation / reconciliation and the
     // SetOutputEnabled disable handler; the only editor-side access is
     // shutdown(), which runs after the show thread has joined. The registry
     // field OutputDisplay::outputWindowSlot is a display-only mirror kept
     // roughly current via R2D OutputWindowSlotUpdated replies — never read
     // it to decide window lifecycle.
-    std::unordered_map<entt::entity, uint32_t> m_windowSlots;
+    //
+    // Each record carries the geometry the window was created with so the
+    // reconciliation sweep can destroy-and-lazily-recreate on a geometry
+    // change (display reassignment). Geometry flows exclusively through the
+    // snapshot — no message can race it.
+    struct WindowRecord {
+        uint32_t     slot{UINT32_MAX};
+        std::int32_t x{0};
+        std::int32_t y{0};
+        std::int32_t width{0};
+        std::int32_t height{0};
+    };
+    std::unordered_map<entt::entity, WindowRecord> m_windowSlots;
+
+    // Disable tombstones (issue #76 review): a SetOutputEnabled(false)
+    // message is consumed AFTER this tick's RenderFrame was built, so the
+    // stale frame still shows the output enabled and lazy creation would
+    // resurrect the just-destroyed window for a frame (or indefinitely if
+    // the editor is stalled — the ESC-panic scenario). An entity in this
+    // set is excluded from lazy creation until a RenderFrame that reflects
+    // the disable (entity absent or enabled=false) is observed, which is
+    // when the tombstone is cleared. An enable message also clears it.
+    // Same ownership as m_windowSlots: show thread only.
+    std::unordered_set<entt::entity> m_disableTombstones;
 
     // Full raster (composition canvas) size
     int32_t m_rasterWidth{1920};

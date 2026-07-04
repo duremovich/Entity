@@ -75,11 +75,12 @@ void OutputManager::shutdown() {
     // may already be cleared at this point, and shutdown runs after the
     // show thread has joined so touching m_windowSlots here is safe.
     if (m_renderer) {
-        for (const auto& [entity, slot] : m_windowSlots) {
-            m_renderer->destroyOutputWindow(slot);
+        for (const auto& [entity, rec] : m_windowSlots) {
+            m_renderer->destroyOutputWindow(rec.slot);
         }
     }
     m_windowSlots.clear();
+    m_disableTombstones.clear();
 
     m_initialized = false;
 }
@@ -237,14 +238,19 @@ void OutputManager::assignDisplay(entt::entity outputEntity, int32_t displayInde
 
     auto& output = m_registry.get<OutputDisplay>(outputEntity);
     const auto& display = m_availableDisplays[displayIndex];
-    const std::uint64_t entityId = static_cast<std::uint64_t>(outputEntity);
 
     std::cout << "[OutputManager] Assigned display '" << display.displayName
               << "' to output '" << output.name << "'" << std::endl;
 
     // Update registry fields on the editor thread (sole registry writer).
-    // The next SceneSnapshot bakes them into the OutputSnapshot the show
-    // thread creates windows from.
+    // That is ALL assignDisplay does since issue #76: the next SceneSnapshot
+    // bakes the new geometry into the OutputSnapshot, and the show thread's
+    // reconciliation sweep destroys-and-recreates the window when it sees
+    // the geometry change. No bus message — an explicit disable here would
+    // race the snapshot (the message always arrives a frame earlier, and a
+    // lazy recreate off the stale frame would pin the window at the OLD
+    // geometry forever). Geometry flows through exactly one ordered
+    // channel: the snapshot.
     output.physicalDisplayIndex = displayIndex;
     output.deviceName  = display.deviceName;
     output.displayName = display.displayName;
@@ -253,22 +259,40 @@ void OutputManager::assignDisplay(entt::entity outputEntity, int32_t displayInde
     output.refreshRate = display.refreshRate;
     output.windowX     = display.x;
     output.windowY     = display.y;
+}
 
-    if (m_transport) {
-        // Window lifecycle is show-thread-owned (issue #76). A disable
-        // message tears down any existing window between show frames (no
-        // D3D12 work in flight — destroying from the editor thread while
-        // the show thread is mid-frame causes TDR); if the output is
-        // enabled, renderOutputs lazily recreates it from the next
-        // RenderFrame's snapshot, which carries the new display geometry.
-        // No explicit enable message needed.
-        bus::SetOutputEnabled disableMsg{entityId, false};
-        m_transport->send(bus::Direction::D2R,
-                          bus::serialize(bus::Message{disableMsg}));
+void OutputManager::reresolveDisplayGeometry() {
+    // Editor thread, post-load. The serializer restores windowX/Y/width/
+    // height verbatim from the project file, but windows are created from
+    // those baked fields since issue #76 — re-anchor them to the CURRENT
+    // machine's display layout (the old show-side ensureOutputWindow did
+    // this implicitly by reading m_availableDisplays at create time).
+    auto view = m_registry.view<OutputDisplay>();
+    for (auto [entity, out] : view.each()) {
+        if (!out.isPhysical()) continue;
+        if (out.physicalDisplayIndex < 0) continue;
+        if (out.physicalDisplayIndex <
+                static_cast<int32_t>(m_availableDisplays.size())) {
+            const DisplayInfo& d = m_availableDisplays[out.physicalDisplayIndex];
+            out.deviceName  = d.deviceName;
+            out.displayName = d.displayName;
+            out.width       = d.width;
+            out.height      = d.height;
+            out.refreshRate = d.refreshRate;
+            out.windowX     = d.x;
+            out.windowY     = d.y;
+        } else if (out.enabled) {
+            // Saved on a rig with more displays than this machine has.
+            // Pre-#76 the window silently never came up (index bounds check
+            // at create time); disabling is the same net effect but visible
+            // in the UI instead of an enabled output that displays nowhere.
+            std::cerr << "[OutputManager] Output '" << out.name
+                      << "' assigned to display " << out.physicalDisplayIndex
+                      << " but only " << m_availableDisplays.size()
+                      << " display(s) present — disabling" << std::endl;
+            out.enabled = false;
+        }
     }
-    // No-transport case (early init): no show thread exists yet, so no
-    // window can exist either — the registry-field update above is all
-    // there is to do; lazy creation covers it once the show thread runs.
 }
 
 void OutputManager::setInputRegion(entt::entity outputEntity, float x, float y, float width, float height) {
@@ -319,14 +343,22 @@ void OutputManager::handleSetOutputEnabledOnShow(entt::entity outputEntity,
                                                  bool enabled) {
     // Show-thread half of the SetOutputEnabled message (issue #76). The
     // editor already wrote OutputDisplay::enabled into the registry before
-    // publishing (SetOutputEnabledCommand), so this handler owns window
-    // lifecycle only — zero registry access per ADR-0014.
+    // publishing (publishSetOutputEnabled chokepoint), so this handler owns
+    // window lifecycle only — zero registry access per ADR-0014.
     if (!enabled) {
         destroyOutputWindowFor(outputEntity);
+        // Tombstone: this tick's RenderFrame was built before the message
+        // was drained, so it still shows the output enabled — without the
+        // tombstone, renderOutputs would resurrect the window this same
+        // tick (one-frame flash on routine disables; indefinitely if the
+        // editor is stalled, defeating the ESC panic stop). Cleared by the
+        // reconciliation sweep once a frame reflects the disable.
+        m_disableTombstones.insert(outputEntity);
+    } else {
+        // enable → lift any tombstone; window creation itself is lazy (the
+        // next RenderFrame that shows the output enabled brings it up).
+        m_disableTombstones.erase(outputEntity);
     }
-    // enable → no-op: the SceneSnapshot published in the same editor
-    // iteration carries enabled=true, and renderOutputs lazily creates the
-    // window from the next RenderFrame built on it (≤1 frame later).
     std::cout << "[OutputManager] Output "
               << static_cast<uint32_t>(outputEntity) << " "
               << (enabled ? "enable (lazy window creation)" : "disabled")
@@ -417,22 +449,49 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
     // longer appears in this frame's outputs as an enabled Physical output
     // — covers output deletion, project load/close (old entities vanish
     // from the post-load snapshot), and disables whose bus message was
-    // superseded. This is what lets the editor thread never touch window
-    // lifecycle: disappearance from the snapshot IS the teardown signal.
-    if (!m_windowSlots.empty()) {
+    // superseded — or whose snapshot geometry no longer matches what the
+    // window was created with (display reassignment: destroy here, the
+    // lazy-create loop below recreates with THIS frame's new geometry in
+    // the same tick). This is what lets the editor thread never touch
+    // window lifecycle: the snapshot IS the lifecycle signal.
+    //
+    // The sweep also clears disable tombstones once the frame reflects the
+    // disable — until then, lazy creation must not resurrect a window whose
+    // disable message out-ran the snapshot (the stale frame still says
+    // enabled; with a stalled editor that staleness can last seconds — the
+    // ESC-panic scenario).
+    if (!m_windowSlots.empty() || !m_disableTombstones.empty()) {
         std::vector<entt::entity> stale;
-        for (const auto& [ent, slot] : m_windowSlots) {
-            bool live = false;
+        for (const auto& [ent, rec] : m_windowSlots) {
+            const bus::OutputSnapshot* live = nullptr;
             for (const auto& snap : rf.outputs) {
                 if (static_cast<entt::entity>(snap.entity) == ent) {
-                    live = snap.enabled && snap.isPhysical;
+                    if (snap.enabled && snap.isPhysical) live = &snap;
                     break;
                 }
             }
-            if (!live) stale.push_back(ent);
+            const bool geometryChanged = live &&
+                (live->windowX != rec.x || live->windowY != rec.y ||
+                 live->width   != rec.width || live->height != rec.height);
+            if (!live || geometryChanged) stale.push_back(ent);
         }
         for (entt::entity ent : stale) {
             destroyOutputWindowFor(ent);
+        }
+
+        std::vector<entt::entity> served;
+        for (entt::entity ent : m_disableTombstones) {
+            bool stillEnabledInFrame = false;
+            for (const auto& snap : rf.outputs) {
+                if (static_cast<entt::entity>(snap.entity) == ent) {
+                    stillEnabledInFrame = snap.enabled && snap.isPhysical;
+                    break;
+                }
+            }
+            if (!stillEnabledInFrame) served.push_back(ent);
+        }
+        for (entt::entity ent : served) {
+            m_disableTombstones.erase(ent);
         }
     }
 
@@ -443,20 +502,19 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
 
         const entt::entity entity = static_cast<entt::entity>(snap.entity);
 
+        // A tombstoned entity was disabled by a message this frame hasn't
+        // caught up with — do not resurrect its window off the stale frame.
+        if (m_disableTombstones.count(entity)) continue;
+
         // Window lifecycle is keyed off the show-owned slot map, NOT
         // snap.outputWindowSlot — the registry field is a display mirror
         // that lags by the R2D reply latency, and trusting it here would
         // double-create during that window (the original #76 failure).
-        // Lazy creation: enabled + physical but no window yet → bring it
-        // up now (covers enable messages, deserialized projects, and
-        // display reassignment recreates).
-        uint32_t windowSlot;
-        if (auto it = m_windowSlots.find(entity); it != m_windowSlots.end()) {
-            windowSlot = it->second;
-        } else {
-            windowSlot = ensureOutputWindow(snap);
-            if (windowSlot == UINT32_MAX) continue;
-        }
+        // ensureOutputWindow returns the existing slot or lazily creates —
+        // covering enables, deserialized projects, and the same-tick
+        // recreate after a geometry-change destroy above.
+        const uint32_t windowSlot = ensureOutputWindow(snap);
+        if (windowSlot == UINT32_MAX) continue;
 
         TextureRef source = resolveSourceTexture(snap, rf.screens, rf.projectors);
         if (!source.valid()) {
@@ -471,18 +529,11 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
     }
 }
 
-void OutputManager::createOutputResources(entt::entity outputEntity) {
-    // Physical outputs: the window + swap chain live in the renderer and are
-    // created lazily via ensureOutputWindow(). Preview / NDI / Virtual types
-    // don't own OS-level resources through this path — ImGui handles the
-    // preview, and NDI will own its own pipeline later.
-}
-
 void OutputManager::destroyOutputWindowFor(entt::entity outputEntity) {
     auto it = m_windowSlots.find(outputEntity);
     if (it == m_windowSlots.end()) return;
 
-    const uint32_t slot = it->second;
+    const uint32_t slot = it->second.slot;
     m_windowSlots.erase(it);
     if (m_renderer) {
         m_renderer->destroyOutputWindow(slot);
@@ -518,7 +569,7 @@ uint32_t OutputManager::ensureOutputWindow(const bus::OutputSnapshot& snap) {
 
     const entt::entity entity = static_cast<entt::entity>(snap.entity);
     if (auto it = m_windowSlots.find(entity); it != m_windowSlots.end()) {
-        return it->second;
+        return it->second.slot;
     }
     if (!snap.isPhysical || !snap.enabled) return UINT32_MAX;
     if (snap.physicalDisplayIndex < 0) return UINT32_MAX;
@@ -541,7 +592,8 @@ uint32_t OutputManager::ensureOutputWindow(const bus::OutputSnapshot& snap) {
         return UINT32_MAX;
     }
 
-    m_windowSlots[entity] = slot;
+    m_windowSlots[entity] =
+        WindowRecord{slot, snap.windowX, snap.windowY, snap.width, snap.height};
 
     // Mirror the slot into the registry via R2D so the OutputsWindow UI and
     // editor-side reads see it (display-only; this map stays authoritative).

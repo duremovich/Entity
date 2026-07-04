@@ -1200,10 +1200,12 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
         auto& registry = timeline.getRegistry();
 
         // Clear project-scoped entity types that we serialize. Without this,
-        // reloading (or autosave-then-load) would pile up duplicates. Physical
-        // output windows must have been released by the caller *before* this
-        // call (Engine::loadProject does that), because once we clear the
-        // OutputDisplay component, the renderer slot ID is lost.
+        // reloading (or autosave-then-load) would pile up duplicates.
+        // Physical output windows need no pre-release by the caller (issue
+        // #76): window slots live in OutputManager's show-thread-owned map,
+        // not the OutputDisplay component, so clearing components can't
+        // leak them — the show thread's reconciliation sweep destroys the
+        // windows once these entities vanish from the post-load snapshot.
         // Destroying the entities entirely (not just the component) because
         // these are currently "component-per-entity" with no other components
         // attached worth preserving.

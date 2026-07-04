@@ -2427,13 +2427,11 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 // that lags the show thread's window map (issue #76), and
                 // a panic stop that skips a just-created window is worse
                 // than a redundant disable message (which is a no-op).
+                // publishSetOutputEnabled writes enabled=false into the
+                // registry (single chokepoint) and the show side's disable
+                // tombstone stops lazy creation from resurrecting the
+                // window off a stale RenderFrame mid-panic.
                 if (output.isPhysical() && output.enabled) {
-                    // Write enabled=false here (editor thread, sole
-                    // registry writer) — since #76 the show-side handler
-                    // only destroys the window; if the registry stayed
-                    // enabled, the next RenderFrame's lazy creation would
-                    // resurrect it mid-panic.
-                    output.enabled = false;
                     publishSetOutputEnabled(bus::SetOutputEnabled{
                         static_cast<std::uint64_t>(entity), false});
                     killedAny = true;
@@ -4485,13 +4483,17 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     }
 
     // Post-load: sync the output-index counter so new outputs the user
-    // creates don't collide with loaded indices. Windows for outputs saved
-    // as enabled come up automatically: the first post-load snapshot
-    // carries them enabled, and renderOutputs' lazy creation brings the
-    // windows up on the show thread (issue #76 — no enable messages needed;
-    // the show thread owns all window lifecycle per ADR-0014).
+    // creates don't collide with loaded indices, and re-anchor saved output
+    // geometry to this machine's actual display layout (the serializer
+    // restores windowX/Y verbatim; monitors may have moved since the save).
+    // Windows for outputs saved as enabled come up automatically: the first
+    // post-load snapshot carries them enabled with the re-resolved geometry,
+    // and renderOutputs' lazy creation brings them up on the show thread
+    // (issue #76 — no enable messages needed; the show thread owns all
+    // window lifecycle per ADR-0014).
     if (m_outputManager) {
         m_outputManager->syncCounterFromRegistry();
+        m_outputManager->reresolveDisplayGeometry();
     }
 
     // ADR-0009 — bump Recent on every successful project load, not just
@@ -5413,6 +5415,19 @@ bool Engine::runScript(const std::string& filepath) {
 }
 
 void Engine::publishSetOutputEnabled(const bus::SetOutputEnabled& msg) {
+    // Single chokepoint for the "registry `enabled` is written editor-side
+    // before the message ships" invariant (issue #76): the show-side handler
+    // owns window lifecycle only and never writes the registry, so a caller
+    // that published without writing would either never bring the window up
+    // (enable — snapshot never carries enabled=true) or have lazy creation
+    // resurrect it (disable). All callers are editor-thread (commands,
+    // ImGui, GLFW key callback), so the write is legal here.
+    const auto entity = static_cast<entt::entity>(msg.entity);
+    if (m_registry.valid(entity)) {
+        if (auto* od = m_registry.try_get<OutputDisplay>(entity)) {
+            od->enabled = msg.enabled;
+        }
+    }
     if (!m_transport) return;
     m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
 }

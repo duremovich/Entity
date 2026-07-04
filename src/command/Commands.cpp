@@ -6913,9 +6913,9 @@ bool SetOutputEnabledCommand::execute(Engine& engine) {
         m_outputEntity    = found;
     }
 
-    // Update registry and route through the bus so the show thread handles
-    // swap-chain lifecycle safely (ADR-0014).
-    registry.get<OutputDisplay>(found).enabled = m_enabled;
+    // publishSetOutputEnabled writes the registry `enabled` (editor thread,
+    // single chokepoint per issue #76) and routes the message through the
+    // bus so the show thread handles swap-chain lifecycle safely (ADR-0014).
     engine.publishSetOutputEnabled(bus::SetOutputEnabled{
         static_cast<std::uint64_t>(found),
         m_enabled
@@ -6934,7 +6934,6 @@ bool SetOutputEnabledCommand::undo(Engine& engine) {
     if (!registry.valid(m_outputEntity)) return false;
 
     const bool prev = *m_previousEnabled;
-    registry.get<OutputDisplay>(m_outputEntity).enabled = prev;
     engine.publishSetOutputEnabled(bus::SetOutputEnabled{
         static_cast<std::uint64_t>(m_outputEntity),
         prev
