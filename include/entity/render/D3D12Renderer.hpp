@@ -605,18 +605,39 @@ private:
     // ComposeTarget::editorGate (#75): the editor thread grabs slot SRV handles
     // mid-record (getVideoTextureIDForSlot) and submits up to a frame later, so
     // any resource destruction (deferred free, dimension-change recreate) must
-    // run the close → mayMutate → waitForGpu → mutate → open protocol on the
-    // show thread. Gate writers: the beginShowFrame free drain, the show-side
-    // resize branches, and endShowFrame's backstop — show thread only.
+    // defer until no recorded-or-in-flight reference remains. Gate writers: the
+    // beginShowFrame free drain, the show-side resize branches, and
+    // endShowFrame's backstop — show thread only.
     std::array<EditorReadGate, DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS> m_videoSlotGates;
     // "This closed gate is actively driven this tick" — set by the free drain
     // and the resize branches, consumed+cleared by endShowFrame's backstop.
     // Show-thread only; plain bools are fine.
     std::array<bool, DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS> m_videoSlotGateDriven{};
-    // Show-thread staging for deferred frees that are still gate-deferred
-    // (mayMutate not yet true). Slots move here from m_deferredVideoTextureFrees
-    // (the cross-thread queue) at the top of each drain.
-    std::vector<uint32_t>   m_pendingSlotFreesShow;
+    // #89: slot is retiring — a free is pending, refuse NEW references (draws,
+    // uploads) so the fence targets captured at retire time stay authoritative.
+    // Set/cleared and read on the show thread only (the editor never uploads
+    // to a slot after scheduling its free: the owning component is gone).
+    std::array<bool, DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS> m_videoSlotRetiring{};
+    // Show-thread staging for deferred frees. The free path is deliberately
+    // NON-blocking (a waitForGpu here hitches the projector output at section
+    // breaks / clip deletes — the hottest teardown moments): at retire time we
+    // capture the fence values covering everything submitted that could still
+    // reference the slot, and free once GetCompletedValue passes them.
+    struct PendingSlotFree {
+        uint32_t slot;
+        uint64_t showTarget;           // m_lastSignaledShowFence at retire
+        uint64_t copyTarget;           // m_uploadFenceValue at retire
+        uint64_t editorTarget{0};      // last signaled editor value at mayMutate
+        bool     editorTargetCaptured{false};
+    };
+    std::vector<PendingSlotFree> m_pendingSlotFreesShow;
+    // Last value actually signaled on m_showFence (endShowFrame). Show-thread
+    // only. The per-ring-slot m_showFenceValues can't answer "what covers ALL
+    // submitted show work" without reconstructing ring order.
+    uint64_t m_lastSignaledShowFence{0};
+    // Last value signaled on m_editorFence (moveToNextFrame, editor thread);
+    // read by the show thread's free drain.
+    std::atomic<uint64_t> m_lastSignaledEditorFence{0};
 
     // Mesh vertex/index buffer pool (Phase 4+). Wired up in Phase 7 lifecycle.
     std::unique_ptr<class MeshUploader> m_meshUploader;

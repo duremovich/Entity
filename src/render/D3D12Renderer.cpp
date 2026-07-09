@@ -578,65 +578,77 @@ void D3D12Renderer::beginShowFrame() {
 
     // Drain deferred video texture slot frees (#89). The editor thread
     // (on_destroy<VideoTexture> observer, TextSystem) enqueues slots into
-    // m_deferredVideoTextureFrees; we stage them show-side and free each slot
-    // only once the full #75 protocol allows:
-    //   gate closed (editor readers skip from their next isReadable() check)
+    // m_deferredVideoTextureFrees; we retire them show-side and free each slot
+    // only once nothing can still reference it:
+    //   gate closed (editor ImGui readers skip from their next isReadable())
+    //   + retiring flag (this and later show frames refuse new draws/uploads,
+    //     so the fence targets below stay authoritative)
     //   + mayMutate (every editor frame begun before the close has submitted)
-    //   + waitForGpu (all submitted work on copy/show/editor fences complete —
-    //     the per-ring-slot fence wait above covers only frame N-FRAME_COUNT,
-    //     NOT the previous frame's draws or the copy queue's uploads).
-    // A slot that fails a condition stays queued — m_videoSlotGateDriven tells
-    // endShowFrame's backstop the closed gate is intentional. Post-free
-    // references this frame degrade gracefully (resolveTextureHandle and
-    // upload() no-op on a freed slot).
+    //   + fence targets passed (all work submitted before retire — previous
+    //     frames' draws, copy-queue uploads, submitted editor lists — has
+    //     completed; the per-ring-slot fence wait above covers only frame
+    //     N-FRAME_COUNT, none of that).
+    // Deliberately NON-blocking: no waitForGpu on this path. Clip teardown at
+    // section breaks is show-critical; a GPU drain here hitches the output
+    // (and blew the suite's playhead-pacing assertions under loaded WARP).
+    // A slot that isn't ready stays queued — m_videoSlotGateDriven tells
+    // endShowFrame's backstop the closed gate is intentional.
     {
         {
             std::lock_guard<std::mutex> lk(m_deferredVideoTextureFreesMutex);
-            m_pendingSlotFreesShow.insert(m_pendingSlotFreesShow.end(),
-                                          m_deferredVideoTextureFrees.begin(),
-                                          m_deferredVideoTextureFrees.end());
+            for (uint32_t slot : m_deferredVideoTextureFrees) {
+                if (slot >= m_videoSlotGates.size()) continue;
+                if (m_videoSlotRetiring[slot]) continue;  // double-schedule guard
+                // Retire: gate editor readers, refuse new show-side references,
+                // and stamp the fence values that cover everything already
+                // submitted that could still touch the slot.
+                m_videoSlotGates[slot].close(m_editorFrameTracker);
+                m_videoSlotRetiring[slot] = true;
+                m_pendingSlotFreesShow.push_back(PendingSlotFree{
+                    slot,
+                    m_lastSignaledShowFence,
+                    m_uploadFenceValue.load()});
+            }
             m_deferredVideoTextureFrees.clear();
         }
         if (!m_pendingSlotFreesShow.empty() && m_textureUploader) {
-            m_pendingSlotFreesShow.erase(
-                std::remove_if(m_pendingSlotFreesShow.begin(), m_pendingSlotFreesShow.end(),
-                               [&](uint32_t s) { return s >= m_videoSlotGates.size(); }),
-                m_pendingSlotFreesShow.end());
-            bool anyReady = false;
-            for (uint32_t slot : m_pendingSlotFreesShow) {
-                m_videoSlotGates[slot].close(m_editorFrameTracker);
-                m_videoSlotGateDriven[slot] = true;
-                if (m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
-                    anyReady = true;
+            const uint64_t showDone   = m_showFence   ? m_showFence->GetCompletedValue()   : UINT64_MAX;
+            const uint64_t copyDone   = m_uploadFence ? m_uploadFence->GetCompletedValue() : UINT64_MAX;
+            const uint64_t editorDone = m_editorFence ? m_editorFence->GetCompletedValue() : UINT64_MAX;
+            auto it = m_pendingSlotFreesShow.begin();
+            while (it != m_pendingSlotFreesShow.end()) {
+                PendingSlotFree& p = *it;
+                m_videoSlotGateDriven[p.slot] = true;
+                if (!p.editorTargetCaptured &&
+                    m_videoSlotGates[p.slot].mayMutate(m_editorFrameTracker)) {
+                    // All editor frames that could hold the SRV have now
+                    // submitted; the editor fence value signaled most recently
+                    // covers their GPU execution.
+                    p.editorTarget = m_lastSignaledEditorFence.load(std::memory_order_acquire);
+                    p.editorTargetCaptured = true;
                 }
-            }
-            // One batched drain per tick, only when at least one slot passed
-            // its gate. On an abandoned drain keep everything queued — unless
-            // the device is lost, in which case nothing executes and freeing
-            // is both safe and the only way the slots ever get reclaimed.
-            // Per-slot order below: open() before freeSlot() — no reader path
-            // to the slot exists here (every component referencing it was
-            // destroyed before the free was scheduled, and the slot can't be
-            // re-allocated until freeSlot clears `allocated`), and it means a
-            // slot re-allocated by the editor thread immediately after the
-            // free can never observe a stale closed gate.
-            if (anyReady) {
-                const bool gpuIdle = waitForGpu();
-                if (gpuIdle || m_deviceLost) {
-                    auto it = m_pendingSlotFreesShow.begin();
-                    while (it != m_pendingSlotFreesShow.end()) {
-                        const uint32_t slot = *it;
-                        if (m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
-                            m_videoSlotGates[slot].open();
-                            m_videoSlotGateDriven[slot] = false;
-                            m_textureUploader->freeSlot(slot);
-                            std::cout << "Freed video texture slot " << slot
-                                      << " (deferred)" << std::endl;
-                            it = m_pendingSlotFreesShow.erase(it);
-                        } else {
-                            ++it;
-                        }
-                    }
+                const bool ready = p.editorTargetCaptured &&
+                                   showDone   >= p.showTarget &&
+                                   copyDone   >= p.copyTarget &&
+                                   editorDone >= p.editorTarget;
+                // Device lost: fences are frozen but nothing executes — freeing
+                // is safe and the only way the slots ever get reclaimed.
+                if (ready || m_deviceLost) {
+                    // open() before freeSlot() — no reader path to the slot
+                    // exists here (every component referencing it was destroyed
+                    // before the free was scheduled, and the slot can't be
+                    // re-allocated until freeSlot clears `allocated`), so a
+                    // slot re-allocated by the editor thread immediately after
+                    // the free can never observe a stale closed gate.
+                    m_videoSlotGates[p.slot].open();
+                    m_videoSlotGateDriven[p.slot] = false;
+                    m_videoSlotRetiring[p.slot] = false;
+                    m_textureUploader->freeSlot(p.slot);
+                    std::cout << "Freed video texture slot " << p.slot
+                              << " (deferred)" << std::endl;
+                    it = m_pendingSlotFreesShow.erase(it);
+                } else {
+                    ++it;
                 }
             }
         }
@@ -741,6 +753,9 @@ void D3D12Renderer::endShowFrame() {
     const uint64_t showValue = m_showFenceValues[m_showBackBufferIndex];
     m_gpu->commandQueue()->Signal(m_showFence.Get(), showValue);
     m_showFenceValues[m_showBackBufferIndex] = showValue + 1;
+    // #89: high-water mark for "all show work submitted so far" — the free
+    // drain's retire-time fence target.
+    m_lastSignaledShowFence = showValue;
 
     // Collect Tracy GPU timestamp results for this frame.
     TracyD3D12Collect(m_tracyD3D12Ctx);
@@ -1695,6 +1710,9 @@ void D3D12Renderer::moveToNextFrame() {
     const uint64_t currentFenceValue = std::max(m_editorFenceValues[m_editorRingSlot],
                                                 m_editorFence->GetCompletedValue() + 1);
     m_gpu->commandQueue()->Signal(m_editorFence.Get(), currentFenceValue);
+    // #89: read by the show thread's free drain to fence-target the editor
+    // frames that mayMutate proved submitted.
+    m_lastSignaledEditorFence.store(currentFenceValue, std::memory_order_release);
 
     // The next frame will use slot ((counter+1) % FRAME_COUNT). Wait until the
     // GPU has finished that slot's PREVIOUS submission before we return, so
@@ -2496,6 +2514,12 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                            D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle,
                                            TextureFormat format) {
     if (!m_initialized || !m_textureUploader) {
+        return false;
+    }
+
+    // #89: retiring slots refuse new uploads — the free drain's fence targets
+    // only cover work submitted before the retire.
+    if (slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[slot]) {
         return false;
     }
 
@@ -4713,7 +4737,10 @@ inline DirectX::XMMATRIX glmToXm(const glm::mat4& m) {
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) const {
     switch (tex.kind) {
         case TextureRef::Kind::VideoSlot:
-            if (m_textureUploader && m_textureUploader->hasTexture(tex.slot)) {
+            // #89: retiring slots refuse new draws — the free drain's fence
+            // targets only cover work submitted before the retire.
+            if (m_textureUploader && m_textureUploader->hasTexture(tex.slot) &&
+                !(tex.slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[tex.slot])) {
                 return m_textureUploader->gpuHandle(tex.slot);
             }
             break;
@@ -4826,6 +4853,12 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
     // pair — tl_activeCmdList is the open show command list.
     if (!tl_activeCmdList) {
         std::cerr << "D3D12Renderer::copyUploadBufferToVideoTextureSlot: called outside show frame\n";
+        return false;
+    }
+
+    // #89: retiring slots refuse new uploads — the free drain's fence targets
+    // only cover work submitted before the retire.
+    if (slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[slot]) {
         return false;
     }
 
