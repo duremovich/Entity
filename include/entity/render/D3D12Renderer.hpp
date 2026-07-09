@@ -11,6 +11,7 @@
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include "entity/profile/Tracy.hpp"
+#include "entity/render/DescriptorHeapLayout.hpp"
 #include "entity/render/EditorReadGate.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/render/RuntimeShaderCompiler.hpp"
@@ -593,11 +594,28 @@ private:
     // destructs it after D3D12Renderer is shut down.
     class UploadHeapBufferPool* m_uploadHeapPool{nullptr};
 
-    // Deferred video-texture slot frees. Editor thread's on_destroy<VideoTexture>
-    // observer pushes here; show thread drains at beginShowFrame after the show
-    // fence wait so the GPU is idle before TextureUploader::freeSlot runs.
+    // Deferred video-texture slot frees. Editor thread (on_destroy<VideoTexture>
+    // observer, TextSystem) pushes here; show thread drains at beginShowFrame
+    // behind the per-slot gate protocol below (#89).
     std::mutex              m_deferredVideoTextureFreesMutex;
     std::vector<uint32_t>   m_deferredVideoTextureFrees;
+
+    // #89: per-video-slot editor read gates. Same hazard class and protocol as
+    // ComposeTarget::editorGate (#75): the editor thread grabs slot SRV handles
+    // mid-record (getVideoTextureIDForSlot) and submits up to a frame later, so
+    // any resource destruction (deferred free, dimension-change recreate) must
+    // run the close → mayMutate → waitForGpu → mutate → open protocol on the
+    // show thread. Gate writers: the beginShowFrame free drain, the show-side
+    // resize branches, and endShowFrame's backstop — show thread only.
+    std::array<EditorReadGate, DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS> m_videoSlotGates;
+    // "This closed gate is actively driven this tick" — set by the free drain
+    // and the resize branches, consumed+cleared by endShowFrame's backstop.
+    // Show-thread only; plain bools are fine.
+    std::array<bool, DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS> m_videoSlotGateDriven{};
+    // Show-thread staging for deferred frees that are still gate-deferred
+    // (mayMutate not yet true). Slots move here from m_deferredVideoTextureFrees
+    // (the cross-thread queue) at the top of each drain.
+    std::vector<uint32_t>   m_pendingSlotFreesShow;
 
     // Mesh vertex/index buffer pool (Phase 4+). Wired up in Phase 7 lifecycle.
     std::unique_ptr<class MeshUploader> m_meshUploader;

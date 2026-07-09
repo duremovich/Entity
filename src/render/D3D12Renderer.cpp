@@ -721,6 +721,20 @@ void D3D12Renderer::endShowFrame() {
         ct.resizeAttemptedThisTick = false;
     }
 
+    // #89 liveness backstop, same rule as the compose-target one above: a
+    // closed video-slot gate must be re-asserted every tick by the free drain
+    // (slot still queued) or a resize branch, or it was abandoned — e.g. the
+    // presenter stopped retrying a deferred recreate because the clip paused.
+    // Nothing else ever reopens these gates, and a stranded closed gate blanks
+    // the slot in ContentRouting/FeedMap permanently. (open() is a no-op on an
+    // already-open gate.)
+    for (uint32_t s = 0; s < m_videoSlotGates.size(); ++s) {
+        if (!m_videoSlotGateDriven[s]) {
+            m_videoSlotGates[s].open();
+        }
+        m_videoSlotGateDriven[s] = false;
+    }
+
     tl_activeCmdList = nullptr;
 }
 
@@ -4006,6 +4020,10 @@ void* D3D12Renderer::getVideoTextureIDForSlot(uint32_t slot) const {
     // most-recently-uploaded frame under the feed-map region overlay.
     // TextureUploader owns the per-slot SRV descriptor; we just relay
     // its GPU handle. Returns nullptr until an upload has succeeded.
+    if (slot >= m_videoSlotGates.size()) return nullptr;
+    // #89: closed gate = a free or recreate is pending on the show thread.
+    // Skip the slot for the rest of this editor frame (see EditorReadGate.hpp).
+    if (!m_videoSlotGates[slot].isReadable()) return nullptr;
     if (!m_textureUploader) return nullptr;
     if (!m_textureUploader->hasTexture(slot)) return nullptr;
     const D3D12_GPU_DESCRIPTOR_HANDLE h = m_textureUploader->gpuHandle(slot);
