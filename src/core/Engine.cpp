@@ -5584,7 +5584,10 @@ void Engine::drainRendererToDirector() {
                             static_cast<uint32_t>(body.descriptorSlot);
                         // Pre-allocate the D3D12 texture for this slot so the
                         // show thread's first uploadVideoFrameToSlot does NOT
-                        // hit uploadWouldResize → waitForGpu(). Mirrors the
+                        // hit uploadWouldResize — since #89 that path defers
+                        // behind the slot's editor gate (frames of latency),
+                        // and before that it was a show-thread waitForGpu
+                        // stall; either way missed first frames. Mirrors the
                         // ProjectManager::loadMedia path (Fix 9) for clips
                         // created via ImportVideo / drag-drop (which bypass
                         // the project-load path). Editor thread is safe here

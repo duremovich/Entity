@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Phase 1 (2026-05-23 follow-up) regression guard for the video texture slot leak fix. Before the fix, allocating a VideoTexture slot via ImportVideo and then deleting the clip left the slot permanently allocated until process exit (no on_destroy<VideoTexture> observer was wired). The fix adds a deferred-free observer: the editor thread's on_destroy fires and enqueues the slot; the show thread drains the queue at the top of beginShowFrame after the show fence wait. This test verifies: (1) importing a clip allocates a slot, (2) deleting the clip schedules its release, (3) after giving the show thread time to drain, the slot count returns to zero.",
+    "description": "Phase 1 (2026-05-23 follow-up) regression guard for the video texture slot leak fix. Before the fix, allocating a VideoTexture slot via ImportVideo and then deleting the clip left the slot permanently allocated until process exit (no on_destroy<VideoTexture> observer was wired). The fix adds a deferred-free observer: the editor thread's on_destroy fires and enqueues the slot; the show thread drains at beginShowFrame behind the #89 gate protocol (editor gate mayMutate + retire-fence witnesses), so the free needs a few show ticks of real GPU progress, not just one drain pass. The settle wait is sized for loaded-WARP CI where fences can lag. This test verifies: (1) importing a clip allocates a slot, (2) deleting the clip schedules its release, (3) after giving the drain time to settle, the slot count returns to zero.",
     "commands": [
         {"type": "WaitFrames", "count": 5},
 
@@ -14,7 +14,7 @@
         {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0},
         {"type": "DeleteClip"},
 
-        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "WaitSeconds", "count": 1.5},
 
         {"type": "AssertVideoTextureSlotsAllocated", "count": 0},
 

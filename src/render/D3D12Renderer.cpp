@@ -582,70 +582,91 @@ void D3D12Renderer::beginShowFrame() {
     // only once nothing can still reference it:
     //   gate closed (editor ImGui readers skip from their next isReadable())
     //   + retiring flag (this and later show frames refuse new draws/uploads,
-    //     so the fence targets below stay authoritative)
+    //     so the retire witnesses below stay authoritative)
     //   + mayMutate (every editor frame begun before the close has submitted)
-    //   + fence targets passed (all work submitted before retire — previous
-    //     frames' draws, copy-queue uploads, submitted editor lists — has
-    //     completed; the per-ring-slot fence wait above covers only frame
-    //     N-FRAME_COUNT, none of that).
+    //   + retire-fence witnesses passed. A witness is a Signal enqueued on the
+    //     queue AFTER all work that could reference the slot: copy queue at
+    //     retire (uploads), direct queue at mayMutate (show draws AND the
+    //     editor lists mayMutate proved submitted — both run on the one direct
+    //     queue). Dedicated fences with monotonic show-thread counters: the
+    //     per-frame fences signal DUPLICATED per-ring-slot values, so their
+    //     completed value is ambiguous as a witness; and the per-ring-slot
+    //     fence wait above covers only frame N-FRAME_COUNT regardless.
     // Deliberately NON-blocking: no waitForGpu on this path. Clip teardown at
     // section breaks is show-critical; a GPU drain here hitches the output
     // (and blew the suite's playhead-pacing assertions under loaded WARP).
     // A slot that isn't ready stays queued — m_videoSlotGateDriven tells
     // endShowFrame's backstop the closed gate is intentional.
     {
+        bool anyNewlyRetired = false;
         {
             std::lock_guard<std::mutex> lk(m_deferredVideoTextureFreesMutex);
             for (uint32_t slot : m_deferredVideoTextureFrees) {
                 if (slot >= m_videoSlotGates.size()) continue;
                 if (m_videoSlotRetiring[slot]) continue;  // double-schedule guard
-                // Retire: gate editor readers, refuse new show-side references,
-                // and stamp the fence values that cover everything already
-                // submitted that could still touch the slot.
                 m_videoSlotGates[slot].close(m_editorFrameTracker);
                 m_videoSlotRetiring[slot] = true;
-                m_pendingSlotFreesShow.push_back(PendingSlotFree{
-                    slot,
-                    m_lastSignaledShowFence,
-                    m_uploadFenceValue.load()});
+                m_pendingSlotFreesShow.push_back(PendingSlotFree{slot});
+                anyNewlyRetired = true;
             }
             m_deferredVideoTextureFrees.clear();
         }
-        if (!m_pendingSlotFreesShow.empty() && m_textureUploader) {
-            const uint64_t showDone   = m_showFence   ? m_showFence->GetCompletedValue()   : UINT64_MAX;
-            const uint64_t copyDone   = m_uploadFence ? m_uploadFence->GetCompletedValue() : UINT64_MAX;
-            const uint64_t editorDone = m_editorFence ? m_editorFence->GetCompletedValue() : UINT64_MAX;
+        if (!m_pendingSlotFreesShow.empty() && m_textureUploader && m_gpu) {
+            // One copy-queue witness per tick covers every slot retired this
+            // tick (entries still carrying the copyTarget{0} sentinel).
+            if (anyNewlyRetired && m_retireCopyFence && m_gpu->copyQueue()) {
+                const uint64_t v = ++m_retireCopyValue;
+                m_gpu->copyQueue()->Signal(m_retireCopyFence.Get(), v);
+                for (PendingSlotFree& p : m_pendingSlotFreesShow) {
+                    if (p.copyTarget == 0) p.copyTarget = v;
+                }
+            }
+            const uint64_t directDone = m_retireDirectFence
+                ? m_retireDirectFence->GetCompletedValue() : UINT64_MAX;
+            const uint64_t copyDone   = m_retireCopyFence
+                ? m_retireCopyFence->GetCompletedValue()   : UINT64_MAX;
+            uint64_t directSignaledThisTick = 0;  // batch one Signal per tick
             auto it = m_pendingSlotFreesShow.begin();
             while (it != m_pendingSlotFreesShow.end()) {
                 PendingSlotFree& p = *it;
                 m_videoSlotGateDriven[p.slot] = true;
-                if (!p.editorTargetCaptured &&
-                    m_videoSlotGates[p.slot].mayMutate(m_editorFrameTracker)) {
-                    // All editor frames that could hold the SRV have now
-                    // submitted; the editor fence value signaled most recently
-                    // covers their GPU execution.
-                    p.editorTarget = m_lastSignaledEditorFence.load(std::memory_order_acquire);
-                    p.editorTargetCaptured = true;
+                if (!p.directCaptured &&
+                    m_videoSlotGates[p.slot].mayMutate(m_editorFrameTracker) &&
+                    m_retireDirectFence && m_gpu->commandQueue()) {
+                    if (directSignaledThisTick == 0) {
+                        directSignaledThisTick = ++m_retireDirectValue;
+                        m_gpu->commandQueue()->Signal(m_retireDirectFence.Get(),
+                                                      directSignaledThisTick);
+                    }
+                    p.directTarget = directSignaledThisTick;
+                    p.directCaptured = true;
                 }
-                const bool ready = p.editorTargetCaptured &&
-                                   showDone   >= p.showTarget &&
-                                   copyDone   >= p.copyTarget &&
-                                   editorDone >= p.editorTarget;
-                // Device lost: fences are frozen but nothing executes — freeing
-                // is safe and the only way the slots ever get reclaimed.
-                if (ready || m_deviceLost) {
-                    // open() before freeSlot() — no reader path to the slot
-                    // exists here (every component referencing it was destroyed
-                    // before the free was scheduled, and the slot can't be
-                    // re-allocated until freeSlot clears `allocated`), so a
-                    // slot re-allocated by the editor thread immediately after
-                    // the free can never observe a stale closed gate.
+                const bool ready = p.directCaptured &&
+                                   directDone >= p.directTarget &&
+                                   copyDone   >= p.copyTarget;
+                // Bypass only on CONFIRMED removal. m_deviceLost alone can
+                // latch spuriously (fence-budget exhaustion with
+                // GetDeviceRemovedReason() == S_OK — see shutdown()) while the
+                // live GPU still executes work referencing the slot; on a
+                // spurious latch the fences keep advancing, so the normal
+                // ready path reclaims the slot anyway.
+                const bool confirmedRemoval = m_deviceLost &&
+                    m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
+                if (ready || confirmedRemoval) {
+                    // Free BEFORE reopening the gate: the gate's seq_cst
+                    // open() then publishes the freed slot state, so an editor
+                    // reader that passes isReadable() can never observe the
+                    // texture mid-destruction. The retiring flag stays set
+                    // until endShowFrame's backstop guard — a RenderFrame
+                    // built earlier this tick from a stale snapshot must not
+                    // upload into the slot if the editor re-allocates it
+                    // within the same tick.
+                    m_textureUploader->freeSlot(p.slot);
                     m_videoSlotGates[p.slot].open();
                     m_videoSlotGateDriven[p.slot] = false;
-                    m_videoSlotRetiring[p.slot] = false;
-                    m_textureUploader->freeSlot(p.slot);
+                    m_slotsFreedThisTick.push_back(p.slot);
                     std::cout << "Freed video texture slot " << p.slot
-                              << " (deferred)" << std::endl;
+                              << " (deferred)\n";
                     it = m_pendingSlotFreesShow.erase(it);
                 } else {
                     ++it;
@@ -702,6 +723,33 @@ void D3D12Renderer::endShowFrame() {
     tl_showGpuZone = nullptr;
 #endif
 
+    // #89 liveness backstop, in a scope guard so the early returns below
+    // (device lost, Close failures) can't skip it: a closed video-slot gate
+    // must be re-asserted every tick by the free drain (slot still queued) or
+    // a resize branch, or it was abandoned — e.g. the presenter stopped
+    // retrying a deferred recreate because the clip paused. Nothing else ever
+    // reopens these gates, and a stranded closed gate blanks the slot in
+    // ContentRouting/FeedMap permanently. (open() is a no-op on an already-
+    // open gate.) The guard also clears the retiring flags of slots the drain
+    // freed this tick — deferred past the frame's recording so a RenderFrame
+    // built from a stale snapshot before the drain can't upload into a slot
+    // freed and re-allocated within the same tick.
+    struct GateBackstopGuard {
+        D3D12Renderer& r;
+        ~GateBackstopGuard() {
+            for (uint32_t s = 0; s < r.m_videoSlotGates.size(); ++s) {
+                if (!r.m_videoSlotGateDriven[s]) {
+                    r.m_videoSlotGates[s].open();
+                }
+                r.m_videoSlotGateDriven[s] = false;
+            }
+            for (uint32_t s : r.m_slotsFreedThisTick) {
+                r.m_videoSlotRetiring[s] = false;
+            }
+            r.m_slotsFreedThisTick.clear();
+        }
+    } gateBackstopGuard{*this};
+
     if (m_deviceLost) return;
 
     // Phase C.11: close + execute the COPY queue's command list before the
@@ -715,8 +763,18 @@ void D3D12Renderer::endShowFrame() {
     if (m_uploadsRecordedThisFrame) {
         ID3D12CommandList* copyLists[] = { m_copyCommandList.Get() };
         m_gpu->copyQueue()->ExecuteCommandLists(1, copyLists);
-        const uint64_t copyValue = ++m_uploadFenceValue;
-        m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+        uint64_t copyValue = 0;
+        {
+            // Serialize increment+Signal with the editor thread's immediate-
+            // upload paths: unordered, the two Signals can be enqueued in the
+            // opposite order of their values, the fence value REGRESSES
+            // (ID3D12Fence sets, it doesn't max), and the direct-queue Wait
+            // below stalls the show queue until some later upload happens to
+            // re-signal past it (#89 review).
+            std::lock_guard<std::mutex> lk(m_uploadFenceSignalMutex);
+            copyValue = ++m_uploadFenceValue;
+            m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+        }
         m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
     }
 
@@ -753,9 +811,11 @@ void D3D12Renderer::endShowFrame() {
     const uint64_t showValue = m_showFenceValues[m_showBackBufferIndex];
     m_gpu->commandQueue()->Signal(m_showFence.Get(), showValue);
     m_showFenceValues[m_showBackBufferIndex] = showValue + 1;
-    // #89: high-water mark for "all show work submitted so far" — the free
-    // drain's retire-time fence target.
-    m_lastSignaledShowFence = showValue;
+    // #89: floor for waitForGpu's show-fence drain value — its
+    // GetCompletedValue()+1 alone can collide with this in-flight signal.
+    // NOT a completion witness: per-ring-slot values are duplicated across
+    // consecutive frames (see the retire fences in D3D12Renderer.hpp).
+    m_lastSignaledShowFence.store(showValue, std::memory_order_release);
 
     // Collect Tracy GPU timestamp results for this frame.
     TracyD3D12Collect(m_tracyD3D12Ctx);
@@ -783,21 +843,9 @@ void D3D12Renderer::endShowFrame() {
         ct.resizeAttemptedThisTick = false;
     }
 
-    // #89 liveness backstop, same rule as the compose-target one above: a
-    // closed video-slot gate must be re-asserted every tick by the free drain
-    // (slot still queued) or a resize branch, or it was abandoned — e.g. the
-    // presenter stopped retrying a deferred recreate because the clip paused.
-    // Nothing else ever reopens these gates, and a stranded closed gate blanks
-    // the slot in ContentRouting/FeedMap permanently. (open() is a no-op on an
-    // already-open gate.)
-    for (uint32_t s = 0; s < m_videoSlotGates.size(); ++s) {
-        if (!m_videoSlotGateDriven[s]) {
-            m_videoSlotGates[s].open();
-        }
-        m_videoSlotGateDriven[s] = false;
-    }
-
     tl_activeCmdList = nullptr;
+    // (#89 gate backstop runs in gateBackstopGuard's destructor, declared at
+    // the top of this function so the early returns above can't skip it.)
 }
 
 void D3D12Renderer::beginEditorFrame() {
@@ -1559,6 +1607,21 @@ Result D3D12Renderer::createFence() {
     }
     m_uploadFenceValue = 0;
 
+    // #89: retire witness fences (see D3D12Renderer.hpp) — signaled only by
+    // the show thread's free drain with strictly monotonic counters.
+    hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_retireDirectFence));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create retire direct fence!" << std::endl;
+        return Result::Failure;
+    }
+    hr = m_gpu->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_retireCopyFence));
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create retire copy fence!" << std::endl;
+        return Result::Failure;
+    }
+    m_retireDirectValue = 0;
+    m_retireCopyValue = 0;
+
     // Per-thread fence events: editor thread uses m_fenceEvent;
     // show thread uses m_showFenceEvent. Never share — concurrent
     // SetEventOnCompletion on the same handle is a data race.
@@ -1611,8 +1674,15 @@ bool D3D12Renderer::waitForGpu() {
     // help here because we may be called outside the per-frame loop.
     if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
         if (m_deviceLost) { CloseHandle(localEvent); return false; }
-        const uint64_t copyTarget = ++m_uploadFenceValue;
-        m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
+        uint64_t copyTarget = 0;
+        {
+            // Serialize increment+Signal with the other m_uploadFence signal
+            // sites so values are enqueued in order (see the mutex comment in
+            // the header).
+            std::lock_guard<std::mutex> lk(m_uploadFenceSignalMutex);
+            copyTarget = ++m_uploadFenceValue;
+            m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
+        }
         if (m_uploadFence->GetCompletedValue() < copyTarget) {
             m_uploadFence->SetEventOnCompletion(copyTarget, localEvent);
             DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
@@ -1647,7 +1717,14 @@ bool D3D12Renderer::waitForGpu() {
     // per-frame allocator-reuse gate still works correctly after this call.
     if (m_showFence) {
         if (m_deviceLost) { CloseHandle(localEvent); return false; }
-        const uint64_t drainValue = m_showFence->GetCompletedValue() + 1;
+        // Floor above every already-enqueued signal, not just the completed
+        // value: with 2+ frames in flight, GetCompletedValue()+1 can EQUAL an
+        // in-flight per-frame signal, so the wait would fire when that earlier
+        // signal executes — before later-enqueued lists finish — and this
+        // function would claim idle without being it (#89 review).
+        const uint64_t drainValue =
+            std::max(m_showFence->GetCompletedValue() + 1,
+                     m_lastSignaledShowFence.load(std::memory_order_acquire) + 1);
         m_gpu->commandQueue()->Signal(m_showFence.Get(), drainValue);
         m_showFence->SetEventOnCompletion(drainValue, localEvent);
         DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
@@ -1666,7 +1743,10 @@ bool D3D12Renderer::waitForGpu() {
 
     if (m_editorFence) {
         if (m_deviceLost) { CloseHandle(localEvent); return false; }
-        const uint64_t drainValue = m_editorFence->GetCompletedValue() + 1;
+        // Same floor rationale as the show-fence drain above.
+        const uint64_t drainValue =
+            std::max(m_editorFence->GetCompletedValue() + 1,
+                     m_lastSignaledEditorFence.load(std::memory_order_acquire) + 1);
         m_gpu->commandQueue()->Signal(m_editorFence.Get(), drainValue);
         m_editorFence->SetEventOnCompletion(drainValue, localEvent);
         DWORD result = WaitForSingleObject(localEvent, fenceWaitTimeoutMs());
@@ -2537,16 +2617,23 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
             return false;
         }
-        if (!waitForGpu() && !m_deviceLost) {
-            return false;  // drain abandoned on a live device — retry next tick
+        // Proceed on failure only for a CONFIRMED removal — m_deviceLost can
+        // latch spuriously (reason S_OK) on a live, still-executing device.
+        if (!waitForGpu() &&
+            !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
+            return false;  // couldn't prove idle — retry next tick
         }
         if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
                                        width, height, format)) {
             return false;  // gate stays closed; backstop reopens if abandoned
         }
         m_uploadsRecordedThisFrame = true;
-        m_videoSlotGates[slot].open();
-        m_videoSlotGateDriven[slot] = false;
+        // Deliberately NO gate reopen here: the recreate's CopyTextureRegion
+        // only executes on the copy queue at endShowFrame. Reopening now would
+        // let an editor frame submit a read of the new texture ahead of the
+        // cross-queue Wait — simultaneous copy-write + direct-read, UB. The
+        // gate stays closed (driven this tick) and endShowFrame's backstop
+        // reopens it at the end of the NEXT frame, after the copy is fenced.
     } else {
         // Phase C.11: record into the COPY queue's command list. endShowFrame()
         // executes it on the copy queue and inserts a cross-queue fence wait so
@@ -3933,7 +4020,15 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
         return false;
     }
 
-    waitForGpu();
+    // #89 review: a false return means the drain was abandoned on a live
+    // device (S_OK starvation) — in-flight work may still sample the targets
+    // we are about to Reset. Defer; CompositorSystem retries every tick.
+    // Proceed on device-lost only when the removal is CONFIRMED (a spurious
+    // latch leaves the device live and executing — see shutdown()).
+    if (!waitForGpu() &&
+        !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
+        return false;
+    }
 
     // Mark not-ready so any concurrent render path (there shouldn't be one
     // post-waitForGpu, but be defensive) skips this slot until we're done.
@@ -4832,8 +4927,13 @@ bool D3D12Renderer::uploadVideoFrameToSlotImmediate(uint32_t slot,
 
     ID3D12CommandList* copyLists[] = { m_editorCopyCommandList.Get() };
     m_gpu->copyQueue()->ExecuteCommandLists(1, copyLists);
-    const uint64_t copyValue = ++m_uploadFenceValue;
-    m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+    uint64_t copyValue = 0;
+    {
+        // Serialize with endShowFrame's Signal (see the mutex comment there).
+        std::lock_guard<std::mutex> lk(m_uploadFenceSignalMutex);
+        copyValue = ++m_uploadFenceValue;
+        m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+    }
     // Cross-queue wait: the direct queue must not sample the texture until
     // the copy queue has finished writing it.
     m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);
@@ -4881,16 +4981,20 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
             return false;
         }
-        if (!waitForGpu() && !m_deviceLost) {
-            return false;  // drain abandoned on a live device — retry next tick
+        // Confirmed removal only — see uploadVideoFrameToSlot's resize branch.
+        if (!waitForGpu() &&
+            !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
+            return false;  // couldn't prove idle — retry next tick
         }
         if (!m_textureUploader->recordDirectCopy(tl_activeCmdList, slot,
                                                  buf->resource.Get(), buf->footprint,
                                                  width, height, format)) {
             return false;  // gate stays closed; backstop reopens if abandoned
         }
-        m_videoSlotGates[slot].open();
-        m_videoSlotGateDriven[slot] = false;
+        // NO gate reopen here: the copy into the brand-new texture is only
+        // RECORDED — it executes at endShowFrame. An editor frame submitted
+        // before that would sample an unwritten texture. The backstop reopens
+        // the gate at the end of the next frame, after the list has executed.
 
         if (m_uploadHeapPool) {
             const uint64_t fenceValue = m_showFenceValues[m_showBackBufferIndex];
@@ -6837,8 +6941,13 @@ uint32_t D3D12Renderer::uploadMeshImmediate(const std::vector<MeshVertex>& verti
 
     ID3D12CommandList* copyLists[] = { m_editorCopyCommandList.Get() };
     m_gpu->copyQueue()->ExecuteCommandLists(1, copyLists);
-    const uint64_t copyValue = ++m_uploadFenceValue;
-    m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+    uint64_t copyValue = 0;
+    {
+        // Serialize with endShowFrame's Signal (see the mutex comment there).
+        std::lock_guard<std::mutex> lk(m_uploadFenceSignalMutex);
+        copyValue = ++m_uploadFenceValue;
+        m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyValue);
+    }
     // Cross-queue wait: direct queue must not read the vertex/index buffers
     // until the copy queue has finished writing them.
     m_gpu->commandQueue()->Wait(m_uploadFence.Get(), copyValue);

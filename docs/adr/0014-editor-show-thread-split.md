@@ -72,15 +72,23 @@
   no editor-thread call can be safe against the show thread's mid-record
   frame or its own frame's recorded ImGui commands). `beginShowFrame`'s
   drain frees a slot only after gate-close + a per-slot *retiring* flag
-  (new draws/uploads refused) + mayMutate + **fence targets captured at
-  retire time have completed** — the per-ring-slot fence wait covers only
-  frame N−FRAME_COUNT, not the previous frame's draws or the copy queue's
-  in-flight uploads (a freed-mid-copy resource faults the copy queue and
-  wedges the direct queue's cross-queue Wait forever). The free path is
-  deliberately non-blocking — no `waitForGpu`: clip teardown at section
-  breaks is show-critical, and a GPU drain there hitches the output (it
-  blew the suite's playhead-pacing assertions under loaded WARP before
-  the fence-target design replaced it). Show-side
+  (new draws/uploads refused) + mayMutate + **retire-fence witnesses
+  passed**: dedicated fences (`m_retireDirectFence`/`m_retireCopyFence`)
+  signaled only by the drain with strictly monotonic counters — copy
+  queue at retire, direct queue at mayMutate (one queue carries both
+  show and editor lists). Dedicated because the per-frame fences signal
+  DUPLICATED per-ring-slot values (1,1,2,2,…), so their completed value
+  is ambiguous as a completion witness — and the per-ring-slot fence
+  wait covers only frame N−FRAME_COUNT regardless, not the previous
+  frame's draws or the copy queue's in-flight uploads (a freed-mid-copy
+  resource faults the copy queue and wedges the direct queue's
+  cross-queue Wait forever). The free path is deliberately non-blocking
+  — no `waitForGpu`: clip teardown at section breaks is show-critical,
+  and a GPU drain there hitches the output (it blew the suite's
+  playhead-pacing assertions under loaded WARP before the witness design
+  replaced it). Device-lost bypasses require a CONFIRMED removal
+  (`m_deviceLostReason != S_OK`) — the latch can fire spuriously on a
+  live device (fence-budget exhaustion). Show-side
   dimension-change recreates in the upload paths run the same protocol;
   editor-side recreates are abolished (TextSystem allocates a fresh slot
   on bake-size change and schedule-frees the old one). Same

@@ -621,23 +621,46 @@ private:
     // Show-thread staging for deferred frees. The free path is deliberately
     // NON-blocking (a waitForGpu here hitches the projector output at section
     // breaks / clip deletes — the hottest teardown moments): at retire time we
-    // capture the fence values covering everything submitted that could still
+    // enqueue fence signals covering everything submitted that could still
     // reference the slot, and free once GetCompletedValue passes them.
     struct PendingSlotFree {
         uint32_t slot;
-        uint64_t showTarget;           // m_lastSignaledShowFence at retire
-        uint64_t copyTarget;           // m_uploadFenceValue at retire
-        uint64_t editorTarget{0};      // last signaled editor value at mayMutate
-        bool     editorTargetCaptured{false};
+        uint64_t copyTarget{0};        // m_retireCopyFence value signaled at retire
+        uint64_t directTarget{0};      // m_retireDirectFence value signaled at mayMutate
+        bool     directCaptured{false};
     };
     std::vector<PendingSlotFree> m_pendingSlotFreesShow;
-    // Last value actually signaled on m_showFence (endShowFrame). Show-thread
-    // only. The per-ring-slot m_showFenceValues can't answer "what covers ALL
-    // submitted show work" without reconstructing ring order.
-    uint64_t m_lastSignaledShowFence{0};
-    // Last value signaled on m_editorFence (moveToNextFrame, editor thread);
-    // read by the show thread's free drain.
+    // #89 retire witness fences. The per-frame fences can't serve as completion
+    // witnesses: endShowFrame's per-ring-slot values are DUPLICATED across
+    // consecutive in-flight frames (1,1,2,2,...), so "completed >= last
+    // signaled" can be satisfied by an older frame's identical signal while the
+    // newest still executes. These fences are signaled ONLY by the show thread's
+    // free drain with strictly monotonic private counters — one Signal enqueued
+    // on a queue completes only after all work enqueued on it beforehand.
+    ComPtr<ID3D12Fence> m_retireDirectFence;   // direct queue: show + editor lists
+    ComPtr<ID3D12Fence> m_retireCopyFence;     // copy queue: texture uploads
+    uint64_t m_retireDirectValue{0};           // show-thread only
+    uint64_t m_retireCopyValue{0};             // show-thread only
+    // Slots freed by this tick's drain; endShowFrame's backstop guard clears
+    // their retiring flags AFTER the frame's recording is done, so a stale
+    // RenderFrame built before the drain can't upload into a slot that was
+    // freed and re-allocated within the same tick. Show-thread only.
+    std::vector<uint32_t> m_slotsFreedThisTick;
+    // Last values signaled on the per-frame fences, used by waitForGpu to floor
+    // its drain values above every ALREADY-ENQUEUED signal (GetCompletedValue+1
+    // alone can collide with an in-flight signal's value, making the drain wait
+    // fire before later-enqueued lists finish). Atomics: each is written by its
+    // owning thread (show: endShowFrame / editor: moveToNextFrame) and read by
+    // waitForGpu from either thread.
+    std::atomic<uint64_t> m_lastSignaledShowFence{0};
     std::atomic<uint64_t> m_lastSignaledEditorFence{0};
+    // Serializes (increment m_uploadFenceValue, Signal m_uploadFence) pairs.
+    // Without it the editor's immediate-upload path and the show thread's
+    // endShowFrame can enqueue their Signals in the OPPOSITE order of their
+    // values; ID3D12Fence SETS the value (no max), so the completed value
+    // regresses and a direct-queue Wait on the higher value stalls the show
+    // queue until the next upload happens to re-signal past it.
+    std::mutex m_uploadFenceSignalMutex;
 
     // Mesh vertex/index buffer pool (Phase 4+). Wired up in Phase 7 lifecycle.
     std::unique_ptr<class MeshUploader> m_meshUploader;

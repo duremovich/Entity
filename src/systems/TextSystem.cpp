@@ -131,6 +131,14 @@ void TextSystem::update(entt::registry& registry, float /*deltaTime*/) {
         if (!ok) {
             std::cerr << "[TextSystem] uploadVideoFrameToSlot failed for slot "
                       << state.textureSlot << "\n";
+            // The slot may now hold a half-created texture at these dims while
+            // bakedWidth still says 0 (upload creates the texture BEFORE the
+            // copy step that can fail) — retrying at a different size would
+            // then hit the renderer's in-place-recreate refusal forever.
+            // Abandon the slot; the next tick (dirty stays set) starts clean.
+            m_renderer->scheduleVideoTextureSlotFree(
+                static_cast<uint32_t>(state.textureSlot));
+            state.textureSlot = -1;
             continue;
         }
 
