@@ -9,11 +9,20 @@
 #include "entity/remote/RemoteControlStore.hpp"
 
 #include <iostream>
+#include <unordered_map>
 
 namespace entity {
 
 struct TextSystem::Impl {
     TextRasterizer rasterizer;
+    // Consecutive failed bake attempts per layer (#89 review). Upload failure
+    // abandons the slot (a half-created texture would wedge later resizes),
+    // but each retry burns a fresh slot while the freed one takes a few show
+    // ticks to reclaim — in headless mode the editor outruns the drain, so
+    // uncapped retries could churn through the 256-slot pool. After the cap
+    // we clear `dirty` and go quiet until the next text/property change.
+    std::unordered_map<entt::entity, uint8_t> failedBakes;
+    static constexpr uint8_t MAX_BAKE_ATTEMPTS = 3;
 };
 
 TextSystem::TextSystem(IRenderer* renderer)
@@ -135,13 +144,24 @@ void TextSystem::update(entt::registry& registry, float /*deltaTime*/) {
             // bakedWidth still says 0 (upload creates the texture BEFORE the
             // copy step that can fail) — retrying at a different size would
             // then hit the renderer's in-place-recreate refusal forever.
-            // Abandon the slot; the next tick (dirty stays set) starts clean.
+            // Abandon the slot; the next attempt (dirty stays set) starts
+            // clean. Capped: unbounded retries would allocate a fresh slot
+            // per editor tick while freed ones take show ticks to reclaim.
             m_renderer->scheduleVideoTextureSlotFree(
                 static_cast<uint32_t>(state.textureSlot));
             state.textureSlot = -1;
+            if (++m_impl->failedBakes[entity] >= Impl::MAX_BAKE_ATTEMPTS) {
+                m_impl->failedBakes.erase(entity);
+                state.dirty = false;  // give up until the next edit re-dirties
+                std::cerr << "[TextSystem] giving up on entity "
+                          << static_cast<uint64_t>(entity) << " after "
+                          << int(Impl::MAX_BAKE_ATTEMPTS)
+                          << " failed bakes — layer stays blank until edited\n";
+            }
             continue;
         }
 
+        m_impl->failedBakes.erase(entity);
         state.bakedWidth  = result.width;
         state.bakedHeight = result.height;
         state.dirty       = false;
@@ -157,6 +177,7 @@ void TextSystem::onTextLayerDestroyed(entt::registry& registry, entt::entity ent
         // #89: deferred — the show thread frees the slot behind its gate.
         m_renderer->scheduleVideoTextureSlotFree(static_cast<uint32_t>(tls->textureSlot));
     }
+    if (m_impl) m_impl->failedBakes.erase(entity);
 }
 
 } // namespace entity

@@ -738,7 +738,14 @@ void D3D12Renderer::endShowFrame() {
         D3D12Renderer& r;
         ~GateBackstopGuard() {
             for (uint32_t s = 0; s < r.m_videoSlotGates.size(); ++s) {
-                if (!r.m_videoSlotGateDriven[s]) {
+                // Never reopen a retiring slot's gate: on a tick where
+                // beginShowFrame early-returned (drain skipped), pending
+                // frees weren't re-asserted as driven, but their gates must
+                // stay closed until the free executes — nothing re-closes
+                // them (staging skips retiring slots), and a future
+                // device-lost recovery would otherwise resume the drain
+                // against an open gate.
+                if (!r.m_videoSlotGateDriven[s] && !r.m_videoSlotRetiring[s]) {
                     r.m_videoSlotGates[s].open();
                 }
                 r.m_videoSlotGateDriven[s] = false;
