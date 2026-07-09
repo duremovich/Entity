@@ -576,21 +576,68 @@ void D3D12Renderer::beginShowFrame() {
         }
     }
 
-    // Drain deferred video texture slot frees. The editor thread's
-    // on_destroy<VideoTexture> observer enqueues slots into
-    // m_deferredVideoTextureFrees. We drain here, after the show fence wait,
-    // so the GPU is guaranteed not to be sampling those slots' textures.
+    // Drain deferred video texture slot frees (#89). The editor thread
+    // (on_destroy<VideoTexture> observer, TextSystem) enqueues slots into
+    // m_deferredVideoTextureFrees; we stage them show-side and free each slot
+    // only once the full #75 protocol allows:
+    //   gate closed (editor readers skip from their next isReadable() check)
+    //   + mayMutate (every editor frame begun before the close has submitted)
+    //   + waitForGpu (all submitted work on copy/show/editor fences complete —
+    //     the per-ring-slot fence wait above covers only frame N-FRAME_COUNT,
+    //     NOT the previous frame's draws or the copy queue's uploads).
+    // A slot that fails a condition stays queued — m_videoSlotGateDriven tells
+    // endShowFrame's backstop the closed gate is intentional. Post-free
+    // references this frame degrade gracefully (resolveTextureHandle and
+    // upload() no-op on a freed slot).
     {
-        std::vector<uint32_t> toFree;
         {
             std::lock_guard<std::mutex> lk(m_deferredVideoTextureFreesMutex);
-            toFree.swap(m_deferredVideoTextureFrees);
+            m_pendingSlotFreesShow.insert(m_pendingSlotFreesShow.end(),
+                                          m_deferredVideoTextureFrees.begin(),
+                                          m_deferredVideoTextureFrees.end());
+            m_deferredVideoTextureFrees.clear();
         }
-        if (m_textureUploader) {
-            for (uint32_t slot : toFree) {
-                m_textureUploader->freeSlot(slot);
-                std::cout << "Freed video texture slot " << slot
-                          << " (deferred)" << std::endl;
+        if (!m_pendingSlotFreesShow.empty() && m_textureUploader) {
+            m_pendingSlotFreesShow.erase(
+                std::remove_if(m_pendingSlotFreesShow.begin(), m_pendingSlotFreesShow.end(),
+                               [&](uint32_t s) { return s >= m_videoSlotGates.size(); }),
+                m_pendingSlotFreesShow.end());
+            bool anyReady = false;
+            for (uint32_t slot : m_pendingSlotFreesShow) {
+                m_videoSlotGates[slot].close(m_editorFrameTracker);
+                m_videoSlotGateDriven[slot] = true;
+                if (m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
+                    anyReady = true;
+                }
+            }
+            // One batched drain per tick, only when at least one slot passed
+            // its gate. On an abandoned drain keep everything queued — unless
+            // the device is lost, in which case nothing executes and freeing
+            // is both safe and the only way the slots ever get reclaimed.
+            // Per-slot order below: open() before freeSlot() — no reader path
+            // to the slot exists here (every component referencing it was
+            // destroyed before the free was scheduled, and the slot can't be
+            // re-allocated until freeSlot clears `allocated`), and it means a
+            // slot re-allocated by the editor thread immediately after the
+            // free can never observe a stale closed gate.
+            if (anyReady) {
+                const bool gpuIdle = waitForGpu();
+                if (gpuIdle || m_deviceLost) {
+                    auto it = m_pendingSlotFreesShow.begin();
+                    while (it != m_pendingSlotFreesShow.end()) {
+                        const uint32_t slot = *it;
+                        if (m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
+                            m_videoSlotGates[slot].open();
+                            m_videoSlotGateDriven[slot] = false;
+                            m_textureUploader->freeSlot(slot);
+                            std::cout << "Freed video texture slot " << slot
+                                      << " (deferred)" << std::endl;
+                            it = m_pendingSlotFreesShow.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1517,13 +1564,18 @@ Result D3D12Renderer::createFence() {
     return Result::Success;
 }
 
-void D3D12Renderer::waitForGpu() {
+// Returns true only if all three drains (copy, show, editor fences) completed —
+// i.e. the GPU is provably idle. false = device lost mid-drain, or a healthy
+// device starved past the watchdog (drain abandoned). Callers that are about to
+// destroy resources MUST NOT proceed on false (except when m_deviceLost — a dead
+// device executes nothing, so destruction is safe). (#89)
+bool D3D12Renderer::waitForGpu() {
     ZoneScopedNC("GPU fence wait", 0xCC4444);
     // Top-level early-out: if the device is already lost, no fence will ever
     // signal again. Return immediately without touching any D3D12 COM objects.
     // Also guards the nested per-branch checks below against the race where
     // device-lost transitions while we're mid-drain.
-    if (m_deviceLost) return;
+    if (m_deviceLost) return false;
 
     // Use a function-local event so this call cannot race with concurrent
     // SetEventOnCompletion/WaitForSingleObject pairs on m_fenceEvent. Auto-reset
@@ -1535,7 +1587,7 @@ void D3D12Renderer::waitForGpu() {
     HANDLE localEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!localEvent) {
         std::cerr << "[D3D12] waitForGpu: CreateEvent failed" << std::endl;
-        return;
+        return false;
     }
 
     // Drain the COPY queue first (Phase C.11). Resize/shutdown/freeSlot must
@@ -1543,7 +1595,7 @@ void D3D12Renderer::waitForGpu() {
     // queue. The direct queue's Wait(uploadFence) inside endShowFrame() does NOT
     // help here because we may be called outside the per-frame loop.
     if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
-        if (m_deviceLost) { CloseHandle(localEvent); return; }
+        if (m_deviceLost) { CloseHandle(localEvent); return false; }
         const uint64_t copyTarget = ++m_uploadFenceValue;
         m_gpu->copyQueue()->Signal(m_uploadFence.Get(), copyTarget);
         if (m_uploadFence->GetCompletedValue() < copyTarget) {
@@ -1564,12 +1616,12 @@ void D3D12Renderer::waitForGpu() {
                     handleDeviceLost(removedReason, "waitForGpu copy-queue drain timeout");
                 }
                 CloseHandle(localEvent);
-                return;
+                return false;
             }
         }
     }
 
-    if (!m_gpu) { CloseHandle(localEvent); return; }
+    if (!m_gpu) { CloseHandle(localEvent); return false; }
 
     // Drain both show and editor fences so all direct-queue work is complete.
     // Use a fresh monotonic value (GetCompletedValue + 1) so the Signal is
@@ -1579,7 +1631,7 @@ void D3D12Renderer::waitForGpu() {
     // owned by endShowFrame / moveToNextFrame and must be left intact so the
     // per-frame allocator-reuse gate still works correctly after this call.
     if (m_showFence) {
-        if (m_deviceLost) { CloseHandle(localEvent); return; }
+        if (m_deviceLost) { CloseHandle(localEvent); return false; }
         const uint64_t drainValue = m_showFence->GetCompletedValue() + 1;
         m_gpu->commandQueue()->Signal(m_showFence.Get(), drainValue);
         m_showFence->SetEventOnCompletion(drainValue, localEvent);
@@ -1593,12 +1645,12 @@ void D3D12Renderer::waitForGpu() {
                 handleDeviceLost(removedReason, "waitForGpu show-fence drain timeout");
             }
             CloseHandle(localEvent);
-            return;
+            return false;
         }
     }
 
     if (m_editorFence) {
-        if (m_deviceLost) { CloseHandle(localEvent); return; }
+        if (m_deviceLost) { CloseHandle(localEvent); return false; }
         const uint64_t drainValue = m_editorFence->GetCompletedValue() + 1;
         m_gpu->commandQueue()->Signal(m_editorFence.Get(), drainValue);
         m_editorFence->SetEventOnCompletion(drainValue, localEvent);
@@ -1612,11 +1664,12 @@ void D3D12Renderer::waitForGpu() {
                 handleDeviceLost(removedReason, "waitForGpu editor-fence drain timeout");
             }
             CloseHandle(localEvent);
-            return;
+            return false;
         }
     }
 
     CloseHandle(localEvent);
+    return true;
 }
 
 void D3D12Renderer::moveToNextFrame() {

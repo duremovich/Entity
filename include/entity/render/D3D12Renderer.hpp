@@ -403,7 +403,9 @@ private:
     Result createCommandList();
     Result createCopyCommandList();   // Phase C.11: COPY queue cmd list + per-frame allocators
     Result createFence();
-    void waitForGpu();
+    // Returns true only if all three drains (copy, show, editor fences)
+    // completed — i.e. the GPU is provably idle. See the definition (#89).
+    bool waitForGpu();
     void moveToNextFrame();
 
     // Helper methods for rendering pipeline
