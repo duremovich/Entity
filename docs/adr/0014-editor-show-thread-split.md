@@ -64,6 +64,23 @@
   re-asserting it that tick (dims reverted mid-deferral, screen deleted,
   invalid snapshot dims) is reopened by `endShowFrame`, so a stranded
   gate can never blank the editor preview permanently.
+- **Amended:** 2026-07-09, issue #89 — the same gate protocol now covers
+  **video-texture slots** (`TextureUploader`), the second resource class
+  editor ImGui frames read (`getVideoTextureIDForSlot`, gated) while the
+  show thread destroys resources. Every slot free is deferred
+  (`scheduleVideoTextureSlotFree`; the synchronous free API is deleted —
+  no editor-thread call can be safe against the show thread's mid-record
+  frame or its own frame's recorded ImGui commands). `beginShowFrame`'s
+  drain frees a slot only after gate-close + mayMutate **+ a full
+  `waitForGpu`** — the per-ring-slot fence wait covers only frame
+  N−FRAME_COUNT, not the previous frame's draws or the copy queue's
+  in-flight uploads (a freed-mid-copy resource faults the copy queue and
+  wedges the direct queue's cross-queue Wait forever). Show-side
+  dimension-change recreates in the upload paths run the same protocol;
+  editor-side recreates are abolished (TextSystem allocates a fresh slot
+  on bake-size change and schedule-frees the old one). Same
+  `endShowFrame` liveness backstop as compose targets, driven by the
+  free drain and resize branches via `m_videoSlotGateDriven`.
 
 ## Context
 
