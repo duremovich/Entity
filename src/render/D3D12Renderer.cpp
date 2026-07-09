@@ -2474,19 +2474,12 @@ bool D3D12Renderer::prepareVideoTextureSlot(uint32_t slot,
     return m_textureUploader->prepareTexture(slot, width, height, format);
 }
 
-void D3D12Renderer::freeVideoTextureSlot(uint32_t slot) {
-    if (!m_textureUploader) return;
-    // The uploader can't wait on our fence — it's our responsibility to ensure
-    // the GPU isn't using the slot's resources before we release them.
-    waitForGpu();
-    m_textureUploader->freeSlot(slot);
-    std::cout << "Freed video texture slot " << slot << std::endl;
-}
-
 void D3D12Renderer::scheduleVideoTextureSlotFree(uint32_t slot) {
-    // Safe to call from the editor thread (on_destroy<VideoTexture> observer).
-    // The slot will be freed on the show thread at the top of beginShowFrame
-    // after the show fence wait, ensuring the GPU is no longer sampling it.
+    // Safe to call from the editor thread (on_destroy<VideoTexture> observer,
+    // TextSystem). The slot is freed on the show thread by beginShowFrame's
+    // drain once the gate protocol allows (#89) — there is deliberately no
+    // synchronous free: it can't be made safe against the show thread's
+    // mid-record frame or the calling frame's own recorded ImGui commands.
     if (slot == UINT32_MAX) return;
     std::lock_guard<std::mutex> lk(m_deferredVideoTextureFreesMutex);
     m_deferredVideoTextureFrees.push_back(slot);
@@ -4762,12 +4755,19 @@ bool D3D12Renderer::uploadVideoFrameToSlotImmediate(uint32_t slot,
         return false;
     }
 
-    // A resize / format change must wait for the GPU to finish with the
-    // slot's previous resources before they are re-created.
+    // #89: an editor-thread in-place recreate can never be made safe — the
+    // show thread may be mid-record sampling the old texture and this thread's
+    // own ImGui frame may already hold its SRV; no fence covers either. Callers
+    // must allocate a fresh slot for new dimensions and schedule-free the old
+    // one (see TextSystem). Refuse loudly instead of racing.
     if (m_textureUploader->uploadWouldResize(slot, width, height,
                                              TextureFormat::RGBA8_UNORM) &&
         m_textureUploader->hasTexture(slot)) {
-        waitForGpu();
+        std::cerr << "[D3D12Renderer] uploadVideoFrameToSlotImmediate: refusing "
+                     "in-place recreate of slot " << slot
+                  << " from the editor thread — allocate a new slot instead"
+                  << std::endl;
+        return false;
     }
 
     // Record into the editor-owned copy list, NOT m_copyCommandList. The

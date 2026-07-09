@@ -97,10 +97,22 @@ void TextSystem::update(entt::registry& registry, float /*deltaTime*/) {
             std::swap(result.bgra[i], result.bgra[i + 2]);
         }
 
+        // #89: the editor thread must never recreate a slot's texture in place
+        // — the show thread may be mid-record sampling it, and our own ImGui
+        // frame may already hold its SRV. On a bake-size change, take a fresh
+        // slot and schedule-free the old one (the show thread reclaims it once
+        // nothing can reference it).
+        if (state.textureSlot >= 0 && state.bakedWidth != 0 &&
+            (state.bakedWidth != result.width || state.bakedHeight != result.height)) {
+            m_renderer->scheduleVideoTextureSlotFree(
+                static_cast<uint32_t>(state.textureSlot));
+            state.textureSlot = -1;
+        }
+
         // Allocate slot on first use.
         if (state.textureSlot < 0) {
             const uint32_t slot = m_renderer->allocateVideoTextureSlot();
-            if (slot == IRenderer::MAX_VIDEO_TEXTURE_SLOTS) {
+            if (slot == UINT32_MAX) {
                 std::cerr << "[TextSystem] Video texture pool exhausted\n";
                 continue;
             }
@@ -134,7 +146,8 @@ void TextSystem::onTextLayerDestroyed(entt::registry& registry, entt::entity ent
     if (!m_renderer) return;
     const auto* tls = registry.try_get<TextLayerState>(entity);
     if (tls && tls->textureSlot >= 0) {
-        m_renderer->freeVideoTextureSlot(static_cast<uint32_t>(tls->textureSlot));
+        // #89: deferred — the show thread frees the slot behind its gate.
+        m_renderer->scheduleVideoTextureSlotFree(static_cast<uint32_t>(tls->textureSlot));
     }
 }
 

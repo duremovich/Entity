@@ -66,7 +66,6 @@ public:
     void     endEditorFrame() override {}
 
     uint32_t allocateVideoTextureSlot() override { return 0; }
-    void     freeVideoTextureSlot(uint32_t) override {}
     void     scheduleVideoTextureSlotFree(uint32_t) override {}
     uint32_t getVideoTextureSlotsAllocated() const override { return 0; }
     bool     uploadVideoFrameToSlot(uint32_t slot,

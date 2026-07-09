@@ -53,7 +53,8 @@ struct TextureRef {
 class IRenderer {
 public:
     // Limits callers need to know about. Must match backend implementation.
-    static constexpr uint32_t MAX_VIDEO_TEXTURE_SLOTS       = 16;
+    // (Video-texture pool size lives in DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS;
+    // allocateVideoTextureSlot() returns UINT32_MAX on exhaustion.)
     // Compose-target pool — shared between screens, generative-layer RTs
     // (ADR-0018), and per-layer effect ping-pongs (issue #54, 2 RTs per
     // layer with effects). Bumped from 32 → 64 when the effects system
@@ -102,10 +103,12 @@ public:
     // Video texture slots (per-clip video uploads)
     // ------------------------------------------------------------------------
     virtual uint32_t   allocateVideoTextureSlot() = 0;
-    virtual void       freeVideoTextureSlot(uint32_t slot) = 0;
-    // Defer a slot free to the show thread's beginShowFrame (after the show
-    // fence wait). Safe to call from the editor thread's on_destroy<VideoTexture>
-    // observer — avoids freeing a slot while the GPU may still be sampling it.
+    // Defer a slot free to the show thread, which reclaims it once nothing —
+    // in-flight GPU work on any queue, or an editor ImGui frame holding the
+    // slot's SRV — can still reference it (#89; see the beginShowFrame drain).
+    // This is the ONLY way to free a slot: a synchronous editor-thread free
+    // can never be made safe against the show thread's mid-record frame or
+    // the calling frame's own recorded ImGui commands.
     // Default no-op for mock/test renderers.
     virtual void       scheduleVideoTextureSlotFree(uint32_t /*slot*/) {}
     // Returns the number of currently allocated video texture slots (including

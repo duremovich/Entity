@@ -102,7 +102,6 @@ public:
     void endEditorFrame() override;
 
     uint32_t   allocateVideoTextureSlot() override;
-    void       freeVideoTextureSlot(uint32_t slot) override;
     void       scheduleVideoTextureSlotFree(uint32_t slot) override;
     uint32_t   getVideoTextureSlotsAllocated() const override;
     bool       prepareVideoTextureSlot(uint32_t slot,
