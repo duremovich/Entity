@@ -2507,22 +2507,39 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
     }
 
     // The uploader can't wait on our fence — if a resize or format change is
-    // coming we need to ensure the GPU is done with the slot's previous
-    // resources before we re-create them. waitForGpu drains both direct and
-    // copy queues (Phase C.11).
+    // coming, the old resources are destroyed and re-created, which races both
+    // in-flight GPU work AND editor ImGui lists holding the old SRV (#89, same
+    // hazard as resizeComposeTarget). Run the #75 protocol; a deferral returns
+    // false and the presenter retries next tick (endShowFrame's backstop
+    // reopens the gate if the caller stops retrying).
     if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
-        m_textureUploader->hasTexture(slot)) {
-        waitForGpu();
+        m_textureUploader->hasTexture(slot) &&
+        slot < m_videoSlotGates.size()) {
+        m_videoSlotGates[slot].close(m_editorFrameTracker);
+        m_videoSlotGateDriven[slot] = true;
+        if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
+            return false;
+        }
+        if (!waitForGpu() && !m_deviceLost) {
+            return false;  // drain abandoned on a live device — retry next tick
+        }
+        if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
+                                       width, height, format)) {
+            return false;  // gate stays closed; backstop reopens if abandoned
+        }
+        m_uploadsRecordedThisFrame = true;
+        m_videoSlotGates[slot].open();
+        m_videoSlotGateDriven[slot] = false;
+    } else {
+        // Phase C.11: record into the COPY queue's command list. endShowFrame()
+        // executes it on the copy queue and inserts a cross-queue fence wait so
+        // the direct queue doesn't sample the texture until the copy completes.
+        if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
+                                       width, height, format)) {
+            return false;
+        }
+        m_uploadsRecordedThisFrame = true;
     }
-
-    // Phase C.11: record into the COPY queue's command list. endShowFrame()
-    // executes it on the copy queue and inserts a cross-queue fence wait so
-    // the direct queue doesn't sample the texture until the copy completes.
-    //
-    if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data, width, height, format)) {
-        return false;
-    }
-    m_uploadsRecordedThisFrame = true;
 
     if (outSrvHandle) {
         *outSrvHandle = m_textureUploader->gpuHandle(slot);
@@ -4814,16 +4831,39 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
 
     // Guard against resize / format change: if ensureTexture inside
     // recordDirectCopy would recreate the texture, the old GPU resources
-    // must be idle first.
+    // must be idle first — AND no editor ImGui list may still hold the old
+    // SRV (#89, same hazard as resizeComposeTarget). Run the #75 protocol;
+    // a deferral returns false and the presenter retries next tick.
     //
     // In steady state (post-prepareVideoTextureSlot at project load) this never
     // fires — the texture is pre-allocated at the correct dimensions. The path
     // exists as a safety net for mid-stream resolution changes. waitForGpu()
-    // blocks the show thread for up to the fence timeout (2 s); acceptable only
+    // blocks the show thread for up to the fence timeout; acceptable only
     // because it is expected to be extremely rare (resolution change mid-clip).
     if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
-        m_textureUploader->hasTexture(slot)) {
-        waitForGpu();
+        m_textureUploader->hasTexture(slot) &&
+        slot < m_videoSlotGates.size()) {
+        m_videoSlotGates[slot].close(m_editorFrameTracker);
+        m_videoSlotGateDriven[slot] = true;
+        if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
+            return false;
+        }
+        if (!waitForGpu() && !m_deviceLost) {
+            return false;  // drain abandoned on a live device — retry next tick
+        }
+        if (!m_textureUploader->recordDirectCopy(tl_activeCmdList, slot,
+                                                 buf->resource.Get(), buf->footprint,
+                                                 width, height, format)) {
+            return false;  // gate stays closed; backstop reopens if abandoned
+        }
+        m_videoSlotGates[slot].open();
+        m_videoSlotGateDriven[slot] = false;
+
+        if (m_uploadHeapPool) {
+            const uint64_t fenceValue = m_showFenceValues[m_showBackBufferIndex];
+            m_uploadHeapPool->recordCopyDone(*buf, fenceValue);
+        }
+        return true;
     }
 
     // Record CopyTextureRegion from the UploadHeapBuffer into the slot's
