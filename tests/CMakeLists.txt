@@ -357,6 +357,15 @@ entity_add_integration_test(screen_no_double_allocation screen_no_double_allocat
 # Asserts: import allocates 1 slot, delete + WaitSeconds reduces it back to 0.
 entity_add_integration_test(video_texture_slot_leak video_texture_slot_leak.json)
 
+# #90 — cross-tick stale-cached-snapshot guard. A show tick built from a
+# SceneSnapshot cached across ticks must not upload/draw a freed-and-reused
+# video-texture slot: the per-slot generation guard rejects the stale upload.
+# Plays clip A, deletes it (schedules the slot free), stalls the editor so the
+# show thread frees + bumps the slot generation while A's cached frames still
+# upload (rejected), then imports B into the reused index. Asserts the guard
+# fired via AssertVideoTextureStaleGenerationSkips.
+entity_add_integration_test(video_texture_slot_reuse_stale_snapshot video_texture_slot_reuse_stale_snapshot.json)
+
 # Phase 1 mesh-upload pacing: cold-start gate + one-per-tick steady-state cap.
 # No pixel comparison needed; asserts upload counts directly.
 entity_add_integration_test(mesh_upload_paces mesh_upload_paces.json)
