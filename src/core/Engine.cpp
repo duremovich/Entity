@@ -2254,17 +2254,26 @@ void Engine::render() {
     ZoneScopedN("Engine::render");
     // Handle pending resize before starting a new frame
     if (m_resizePending && m_renderer && m_renderer->isInitialized()) {
-        std::cout << "Applying deferred resize to " << m_pendingWidth << "x" << m_pendingHeight << std::endl;
-
-        m_windowWidth = m_pendingWidth;
-        m_windowHeight = m_pendingHeight;
-
-        Result result = m_renderer->resize(m_pendingWidth, m_pendingHeight);
-        if (result != Result::Success) {
+        const Result result = m_renderer->resize(m_pendingWidth, m_pendingHeight);
+        if (result == Result::Success) {
+            std::cout << "Applied deferred resize to " << m_pendingWidth
+                      << "x" << m_pendingHeight << std::endl;
+            m_windowWidth  = m_pendingWidth;
+            m_windowHeight = m_pendingHeight;
+            m_resizePending = false;
+            m_resizeRetryFrames = 0;
+        } else if (m_renderer->isDeviceLost() || ++m_resizeRetryFrames > 120) {
+            // Device gone (recovery path owns the swap chain from here), or
+            // ~2s of retries exhausted (hard failure, not a deferral).
             std::cerr << "Failed to resize D3D12 renderer!" << std::endl;
+            m_resizePending = false;
+            m_resizeRetryFrames = 0;
+        } else {
+            // #91: resize() deferred — waitForGpu abandoned its drain on a
+            // live device; back buffers untouched. This frame renders at the
+            // old size; retry next frame.
+            std::cerr << "[Engine] resize deferred (GPU drain abandoned) — retrying" << std::endl;
         }
-
-        m_resizePending = false;
     }
 
     if (m_renderer && m_renderer->isInitialized()) {
@@ -2412,6 +2421,7 @@ void Engine::onWindowResize(uint32_t width, uint32_t height) {
     // Store pending resize - will be applied at the start of next frame
     // This prevents deadlock when resize happens mid-frame
     m_resizePending = true;
+    m_resizeRetryFrames = 0;
     m_pendingWidth = newWidth;
     m_pendingHeight = newHeight;
 

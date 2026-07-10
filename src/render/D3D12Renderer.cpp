@@ -516,8 +516,13 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
         return Result::Failure;
     }
 
-    // Wait for GPU to finish
-    waitForGpu();
+    // #91: an abandoned drain on a live device means in-flight lists may still
+    // reference the back buffers we're about to Reset (and ResizeBuffers
+    // requires all references released). Defer — Engine::render keeps the
+    // resize pending and retries next frame.
+    if (!gpuIdleForDestroy()) {
+        return Result::Failure;
+    }
 
     // Release render targets
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
@@ -2415,8 +2420,12 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
 
     // Check if we need to recreate the texture (size changed)
     if (m_videoTexture && (m_videoTextureWidth != width || m_videoTextureHeight != height)) {
-        // Wait for GPU before releasing resources
-        waitForGpu();
+        // #91: defer on an abandoned drain — the old texture may still be
+        // GPU-referenced. (Legacy path, currently caller-less; guarded for
+        // contract completeness until it's deleted.)
+        if (!gpuIdleForDestroy()) {
+            return nullptr;
+        }
         m_videoTexture.Reset();
         m_videoUploadBuffer.Reset();
         m_videoTextureWidth = 0;
@@ -5590,7 +5599,14 @@ bool D3D12Renderer::loadOcioShaderSources() {
 
 void D3D12Renderer::setOcioManager(OcioManager* mgr) {
     if (m_ocioManager == mgr) return;
-    waitForGpu();
+    // #91: clearing the PSO caches releases pipelines in-flight lists may
+    // still execute. Defer without swapping the manager — in practice this
+    // runs once during Renderer::initialize (GPU quiet), so a deferral is a
+    // pathological-case guard, not a real retry loop.
+    if (!gpuIdleForDestroy()) {
+        std::cerr << "[OCIO/PSO] setOcioManager deferred: GPU drain abandoned\n";
+        return;
+    }
 
     m_ocioManager = mgr;
     m_ocioCompositePsoCache.clear();
@@ -6487,7 +6503,12 @@ void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
     if (!m_stageTarget.ready ||
         m_stageTarget.width  != width ||
         m_stageTarget.height != height) {
-        waitForGpu();
+        // #91: createStageRenderTarget Resets the old RTs. Defer on an
+        // abandoned drain — Stage3DRenderer calls us every frame, so the
+        // retry is free (one blank preview frame).
+        if (!gpuIdleForDestroy()) {
+            return nullptr;
+        }
         if (!createStageRenderTarget(width, height)) return nullptr;
     }
 
