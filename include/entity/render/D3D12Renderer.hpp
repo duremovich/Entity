@@ -106,6 +106,7 @@ public:
     uint32_t   getVideoTextureSlotsAllocated() const override;
     uint32_t   videoTextureSlotGeneration(uint32_t slot) const override;
     uint64_t   videoTextureStaleGenerationSkips() const override;
+    uint64_t   videoTextureStaleGenerationDrawSkips() const override;
     bool       prepareVideoTextureSlot(uint32_t slot,
                                        uint32_t width,
                                        uint32_t height,

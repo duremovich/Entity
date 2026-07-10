@@ -5597,15 +5597,11 @@ void Engine::drainRendererToDirector() {
                         // stall; either way missed first frames. Mirrors the
                         // ProjectManager::loadMedia path (Fix 9) for clips
                         // created via ImportVideo / drag-drop (which bypass
-                        // the project-load path). #90: on a REUSED slot index a
-                        // show-thread upload of the prior occupant can still be
-                        // in flight, so "no GPU work on it yet" no longer holds
-                        // — correctness now rests on (a) TextureUploader::upload
-                        // /recordDirectCopy taking m_slotMutex around their whole
-                        // body, which serializes this prepareTexture recreate
-                        // against a concurrent show-thread upload, and (b) the
-                        // per-slot generation guard rejecting the stale occupant's
-                        // uploads/draws (the generation stamped just above).
+                        // the project-load path). On a REUSED slot index this
+                        // prepareTexture races a possible in-flight show upload
+                        // of the prior occupant — made safe by m_slotMutex + the
+                        // #90 generation guard (canonical rationale in
+                        // TextureUploader::prepareTexture's threading contract).
                         if (m_renderer) {
                             if (auto* clip = m_registry.try_get<Clip>(entity);
                                 clip && clip->width > 0 && clip->height > 0) {

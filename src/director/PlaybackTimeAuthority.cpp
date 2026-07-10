@@ -935,11 +935,10 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                 ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEndFrame)
                 : 0.0;
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
-        // #90: carry the slot's reuse generation only for a real slot. The
-        // VideoTexture unallocated sentinel is UINT32_MAX (which the cast above
-        // turns into descriptorSlot == -1); 0 there matches the field default.
-        ce.descriptorGeneration =
-            (videoTex.descriptorSlot != UINT32_MAX) ? videoTex.generation : 0u;
+        // #90: an unallocated VideoTexture keeps generation 0 (never stamped),
+        // so this is unconditional — and harmless even if it weren't, since a
+        // -1 descriptorSlot is skipped downstream regardless of generation.
+        ce.descriptorGeneration = videoTex.generation;
 
         // Bake transform matrix on the editor thread (no const_cast needed here).
         // Also bake the individual axes (position/rotation/scale) so the show

@@ -110,6 +110,43 @@ public:
     }
 
     /**
+     * Count of DRAWS skipped because a TextureRef's captured generation no
+     * longer matched the slot's current generation (#90, resolveTextureHandle).
+     * Separate from the upload counter above so tests can prove the draw-side
+     * guard fired independently of the upload-side one. Monotonic.
+     */
+    uint64_t staleGenerationDrawSkips() const {
+        return m_staleGenerationDrawSkips.load(std::memory_order_relaxed);
+    }
+    /**
+     * Bump the draw-skip counter. Called lock-free from the show-thread draw
+     * path (resolveTextureHandle) when it rejects a stale VideoSlot ref.
+     */
+    void noteStaleDrawSkip() {
+        m_staleGenerationDrawSkips.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /**
+     * The upload decision for `slot`, computed atomically under m_slotMutex so
+     * the renderer branches on a consistent snapshot instead of racing
+     * lock-free reads (uploadWouldResize + hasTexture) against editor-thread
+     * ensureTexture writes (#90 F3).
+     */
+    struct UploadPlan {
+        bool reject{false};          // stale generation — already counted; caller must return false
+        bool needsResizeSync{false}; // wouldResize && hasTexture — caller must run the gate + waitForGpu path
+    };
+    /**
+     * Evaluate whether an upload to `slot` (a) is stale and must be rejected
+     * (bumps the stale-skip counter — the same predicate upload() uses, so all
+     * reject sites count identically, #90 F5) and (b) needs the resize-sync
+     * (gate + waitForGpu) path. Replaces the renderer's lock-free pre-check +
+     * separate generation early-out. UINT32_MAX skips the generation check.
+     */
+    UploadPlan planUpload(uint32_t slot, uint32_t width, uint32_t height,
+                          TextureFormat format, uint32_t expectedGeneration);
+
+    /**
      * GPU descriptor handle for sampling this slot's texture. Only valid
      * if hasTexture(slot). Returns {.ptr=0} otherwise.
      */
@@ -234,6 +271,13 @@ private:
 
     bool ensureTexture(Slot& slot, uint32_t slotIndex, uint32_t width, uint32_t height,
                        TextureFormat format);
+
+    // The single #90 upload-reject predicate. MUST be called holding
+    // m_slotMutex. Returns true (and bumps m_staleGenerationSkips) when
+    // expectedGeneration != the slot's current generation; UINT32_MAX skips.
+    // Shared by upload(), recordDirectCopy(), and planUpload() so every
+    // upload-reject site counts identically (#90 F5).
+    bool isGenerationStaleLocked(uint32_t slot, uint32_t expectedGeneration);
     bool copyPixelsAndRecord(ID3D12GraphicsCommandList* cmdList,
                               Slot& slot,
                               const uint8_t* data,
@@ -249,6 +293,8 @@ private:
     // #90: count of uploads rejected on a generation mismatch. No per-frame
     // logging — polled by AssertVideoTextureStaleGenerationSkips.
     std::atomic<uint64_t>  m_staleGenerationSkips{0};
+    // #90: count of draws skipped on a generation mismatch (resolveTextureHandle).
+    std::atomic<uint64_t>  m_staleGenerationDrawSkips{0};
 };
 
 } // namespace entity

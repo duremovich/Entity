@@ -124,7 +124,10 @@ ClipRenderState decodeClipRenderState(const json& j) {
     ClipRenderState c;
     c.entity = j.at("entity").get<std::uint64_t>();
     c.slot = j.at("slot").get<int>();
-    c.slotGeneration = j.value("slotGeneration", std::uint32_t{0});  // #90; default 0 for old captures
+    // #90 F6: absent key = "generation unknown". Default to UINT32_MAX (skip the
+    // guard) not 0 — generations are renderer-instance-local, so 0 would
+    // false-reject (silent black) a payload from a peer that didn't send it.
+    c.slotGeneration = j.value("slotGeneration", UINT32_MAX);
     c.mediaFrame = j.at("mediaFrame").get<FrameNumber>();
     c.ocioOverride = j.at("ocioOverride").get<std::string>();
     const auto& arr = j.at("transformMatrix");
@@ -634,7 +637,9 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
                                 ? ContentLayerSnapshot::SourceKind::Compose
                                 : ContentLayerSnapshot::SourceKind::Video;
     c.sourceSlot            = j.value("sourceSlot",            std::int32_t{-1});
-    c.sourceGeneration      = j.value("sourceGeneration",      std::uint32_t{0});  // #90; default 0 for old captures
+    // #90 F6: absent key = "generation unknown" → skip (UINT32_MAX), not 0
+    // (instance-local generations; 0 would false-reject a peer's payload).
+    c.sourceGeneration      = j.value("sourceGeneration",      UINT32_MAX);
     c.colorSpace            = j.value("colorSpace",            0);
     c.ocioColorSpace        = j.value("ocioColorSpace",        std::string{});
     if (j.contains("effects")) {

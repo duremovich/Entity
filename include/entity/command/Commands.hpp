@@ -1326,21 +1326,28 @@ private:
 };
 
 /**
- * Assert that the renderer's stale-generation skip counter is at least `min`
- * (#90). Every time a video-texture upload or direct-copy is rejected because
- * its captured slot generation no longer matches the slot's current generation
- * — the cross-tick stale-cached-snapshot case — the renderer bumps this
- * monotonic counter. A value >= 1 proves the generation guard actually fired.
+ * Assert that a renderer stale-generation skip counter is at least `min` (#90).
+ * When a video-texture upload/draw is rejected because its captured slot
+ * generation no longer matches the slot's current generation — the cross-tick
+ * stale-cached-snapshot case — the renderer bumps a monotonic counter. There
+ * are two counters: one for rejected UPLOADS, one for skipped DRAWS.
+ *
+ * `kind` selects which: "upload" (default — preserves the original
+ * upload-only semantics), "draw", or "any" (upload + draw summed). A value
+ * >= `min` proves the corresponding generation guard actually fired.
  *
  * JSON format:
  * {
  *     "type": "AssertVideoTextureStaleGenerationSkips",
- *     "min": 1
+ *     "min": 1,
+ *     "kind": "upload"   // optional: "upload" | "draw" | "any"
  * }
  */
 class AssertVideoTextureStaleGenerationSkipsCommand : public Command {
 public:
-    explicit AssertVideoTextureStaleGenerationSkipsCommand(uint64_t min) : m_min(min) {}
+    enum class Kind { Upload, Draw, Any };
+    AssertVideoTextureStaleGenerationSkipsCommand(uint64_t min, Kind kind)
+        : m_min(min), m_kind(kind) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "AssertVideoTextureStaleGenerationSkips"; }
@@ -1351,6 +1358,7 @@ public:
 
 private:
     uint64_t m_min;
+    Kind     m_kind;
 };
 
 /**

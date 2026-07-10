@@ -80,6 +80,47 @@ TEST(TextureUploaderGeneration, StaleGenerationRejectedLiveAccepted) {
     EXPECT_EQ(capturedByB, up.slotGeneration(slot));
 }
 
+// planUpload is the locked verdict the renderer branches on (F3). It shares
+// upload()'s reject predicate, so a stale generation both rejects AND counts
+// here (F5) — the whole point of centralizing the check. No device needed:
+// planUpload touches only m_slots + m_slotMutex.
+TEST(TextureUploaderGeneration, PlanUploadRejectsStaleAndCounts) {
+    TextureUploader up;
+    const uint32_t slot = up.allocateSlot();
+    const uint32_t captured = up.slotGeneration(slot);
+
+    up.freeSlot(slot);
+    up.allocateSlot();  // same index, generation bumped
+
+    EXPECT_EQ(up.staleGenerationSkips(), 0u);
+    const auto plan = up.planUpload(slot, 64, 64, TextureFormat::RGBA8_UNORM, captured);
+    EXPECT_TRUE(plan.reject);
+    EXPECT_FALSE(plan.needsResizeSync);
+    EXPECT_EQ(up.staleGenerationSkips(), 1u);  // the shared predicate counted the reject
+}
+
+TEST(TextureUploaderGeneration, PlanUploadAcceptsLiveGeneration) {
+    TextureUploader up;
+    const uint32_t slot = up.allocateSlot();
+    const auto plan = up.planUpload(slot, 64, 64, TextureFormat::RGBA8_UNORM,
+                                    up.slotGeneration(slot));
+    EXPECT_FALSE(plan.reject);
+    // No device → no texture ever created → the resize-sync path is never taken.
+    EXPECT_FALSE(plan.needsResizeSync);
+    EXPECT_EQ(up.staleGenerationSkips(), 0u);
+}
+
+TEST(TextureUploaderGeneration, PlanUploadSkipSentinelNeverRejects) {
+    TextureUploader up;
+    const uint32_t slot = up.allocateSlot();
+    up.freeSlot(slot);
+    up.allocateSlot();  // generation bumped, but the caller passes skip
+    const auto plan = up.planUpload(slot, 64, 64, TextureFormat::RGBA8_UNORM,
+                                    TextureUploader::kSkipGenerationCheck);
+    EXPECT_FALSE(plan.reject);
+    EXPECT_EQ(up.staleGenerationSkips(), 0u);
+}
+
 // Stress: one thread cycles allocate/free on a fixed slot index while another
 // does lock-free relaxed slotGeneration() reads. The reader asserts it never
 // observes a decreasing (torn) generation — the counter is monotonic because

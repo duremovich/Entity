@@ -2576,14 +2576,10 @@ bool D3D12Renderer::prepareVideoTextureSlot(uint32_t slot,
     // ProjectManager::loadMedia (editor thread) right after
     // allocateVideoTextureSlot so the show-thread first-frame upload
     // doesn't pay CreateCommittedResource on the hot path. See ADR-0014's
-    // editor/show split — this is editor-thread D3D12 work.
-    // #90: on a brand-new clip the slot isn't yet visible to the show thread
-    // (its catalog entry hasn't been published). On a REUSED slot index,
-    // though, a show-thread upload of the prior occupant may still be running
-    // when this recreate fires — so "not yet visible" no longer holds in
-    // general. Safety now comes from TextureUploader::prepareTexture taking
-    // m_slotMutex (serializing this recreate against upload/recordDirectCopy)
-    // plus the per-slot generation guard rejecting the stale occupant.
+    // editor/show split — this is editor-thread D3D12 work. On a REUSED slot
+    // index it can race an in-flight show upload of the prior occupant; made
+    // safe by m_slotMutex + the #90 generation guard (canonical rationale in
+    // TextureUploader::prepareTexture's threading contract).
     if (!m_initialized || !m_textureUploader) return false;
     return m_textureUploader->prepareTexture(slot, width, height, format);
 }
@@ -2614,6 +2610,11 @@ uint64_t D3D12Renderer::videoTextureStaleGenerationSkips() const {
     return m_textureUploader->staleGenerationSkips();
 }
 
+uint64_t D3D12Renderer::videoTextureStaleGenerationDrawSkips() const {
+    if (!m_textureUploader) return 0;
+    return m_textureUploader->staleGenerationDrawSkips();
+}
+
 bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                            const uint8_t* data,
                                            uint32_t width, uint32_t height,
@@ -2630,23 +2631,23 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         return false;
     }
 
+    // #90 F3/F5: decide the resize-sync need AND the stale-generation reject in
+    // one locked snapshot — no lock-free uploadWouldResize()/hasTexture() reads
+    // racing editor-thread ensureTexture writes, and stale rejects are counted
+    // (planUpload shares upload()'s reject predicate).
+    const auto plan = m_textureUploader->planUpload(slot, width, height, format,
+                                                    expectedGeneration);
+    if (plan.reject) {
+        return false;  // stale generation — the slot was freed + reassigned
+    }
+
     // The uploader can't wait on our fence — if a resize or format change is
     // coming, the old resources are destroyed and re-created, which races both
     // in-flight GPU work AND editor ImGui lists holding the old SRV (#89, same
     // hazard as resizeComposeTarget). Run the #75 protocol; a deferral returns
     // false and the presenter retries next tick (endShowFrame's backstop
     // reopens the gate if the caller stops retrying).
-    if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
-        m_textureUploader->hasTexture(slot) &&
-        slot < m_videoSlotGates.size()) {
-        // #90: bail before the expensive gate/waitForGpu dance if this upload
-        // carries a stale generation (the slot was freed + reassigned since the
-        // cached snapshot was baked). The authoritative check is still inside
-        // TextureUploader::upload under m_slotMutex; this is just an early-out.
-        if (expectedGeneration != TextureUploader::kSkipGenerationCheck &&
-            m_textureUploader->slotGeneration(slot) != expectedGeneration) {
-            return false;
-        }
+    if (plan.needsResizeSync && slot < m_videoSlotGates.size()) {
         m_videoSlotGates[slot].close(m_editorFrameTracker);
         m_videoSlotGateDriven[slot] = true;
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
@@ -4870,15 +4871,20 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) 
         case TextureRef::Kind::VideoSlot:
             // #89: retiring slots refuse new draws — the free drain's fence
             // targets only cover work submitted before the retire.
-            // #90: reject a draw whose captured generation no longer matches the
-            // slot's current generation — the slot was freed + reassigned since
-            // the cached snapshot was baked, so this TextureRef points at a
-            // different clip's texture. UINT32_MAX skips the check (callers that
-            // don't thread a generation). Mismatch → null handle, no-op draw.
-            if (m_textureUploader && m_textureUploader->hasTexture(tex.slot) &&
-                !(tex.slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[tex.slot]) &&
-                (tex.generation == UINT32_MAX ||
-                 tex.generation == m_textureUploader->slotGeneration(tex.slot))) {
+            if (!m_textureUploader) break;
+            // #90 F4: check the generation FIRST — it's a cheap atomic compare
+            // and rejects a stale ref (freed + reassigned slot, so this
+            // TextureRef points at a different clip's texture) BEFORE the
+            // lock-free s.texture read inside hasTexture(). UINT32_MAX skips the
+            // check (callers that don't thread a generation). Mismatch → count a
+            // draw-skip + null handle (no-op draw).
+            if (tex.generation != UINT32_MAX &&
+                tex.generation != m_textureUploader->slotGeneration(tex.slot)) {
+                m_textureUploader->noteStaleDrawSkip();
+                break;
+            }
+            if (m_textureUploader->hasTexture(tex.slot) &&
+                !(tex.slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[tex.slot])) {
                 return m_textureUploader->gpuHandle(tex.slot);
             }
             break;
@@ -5008,6 +5014,15 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
         return false;
     }
 
+    // #90 F3/F5: one locked snapshot of the resize-sync need + stale-generation
+    // reject (counted), replacing the lock-free uploadWouldResize()/hasTexture()
+    // reads that raced editor-thread ensureTexture writes.
+    const auto plan = m_textureUploader->planUpload(slot, width, height, format,
+                                                    expectedGeneration);
+    if (plan.reject) {
+        return false;  // stale generation — the slot was freed + reassigned
+    }
+
     // Guard against resize / format change: if ensureTexture inside
     // recordDirectCopy would recreate the texture, the old GPU resources
     // must be idle first — AND no editor ImGui list may still hold the old
@@ -5019,15 +5034,7 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
     // exists as a safety net for mid-stream resolution changes. waitForGpu()
     // blocks the show thread for up to the fence timeout; acceptable only
     // because it is expected to be extremely rare (resolution change mid-clip).
-    if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
-        m_textureUploader->hasTexture(slot) &&
-        slot < m_videoSlotGates.size()) {
-        // #90: early-out on a stale generation before the waitForGpu stall (the
-        // authoritative check is under m_slotMutex inside recordDirectCopy).
-        if (expectedGeneration != TextureUploader::kSkipGenerationCheck &&
-            m_textureUploader->slotGeneration(slot) != expectedGeneration) {
-            return false;
-        }
+    if (plan.needsResizeSync && slot < m_videoSlotGates.size()) {
         m_videoSlotGates[slot].close(m_editorFrameTracker);
         m_videoSlotGateDriven[slot] = true;
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {

@@ -2823,34 +2823,59 @@ CommandPtr AssertVideoTextureSlotsAllocatedCommand::fromJson(const nlohmann::jso
 // AssertVideoTextureStaleGenerationSkipsCommand (#90)
 // ============================================================================
 
+namespace {
+const char* staleSkipKindName(AssertVideoTextureStaleGenerationSkipsCommand::Kind k) {
+    using Kind = AssertVideoTextureStaleGenerationSkipsCommand::Kind;
+    switch (k) {
+        case Kind::Upload: return "upload";
+        case Kind::Draw:   return "draw";
+        case Kind::Any:    return "any";
+    }
+    return "upload";
+}
+} // namespace
+
 bool AssertVideoTextureStaleGenerationSkipsCommand::execute(Engine& engine) {
     auto* renderer = engine.getRenderer();
     if (!renderer) {
         std::cerr << "[AssertVideoTextureStaleGenerationSkips] No renderer" << std::endl;
         return false;
     }
-    const uint64_t actual = renderer->videoTextureStaleGenerationSkips();
+    uint64_t actual = 0;
+    switch (m_kind) {
+        case Kind::Upload: actual = renderer->videoTextureStaleGenerationSkips(); break;
+        case Kind::Draw:   actual = renderer->videoTextureStaleGenerationDrawSkips(); break;
+        case Kind::Any:    actual = renderer->videoTextureStaleGenerationSkips() +
+                                    renderer->videoTextureStaleGenerationDrawSkips(); break;
+    }
     if (actual >= m_min) {
-        std::cout << "[AssertVideoTextureStaleGenerationSkips] OK skips=" << actual
-                  << " (min " << m_min << ")" << std::endl;
+        std::cout << "[AssertVideoTextureStaleGenerationSkips] OK kind=" << staleSkipKindName(m_kind)
+                  << " skips=" << actual << " (min " << m_min << ")" << std::endl;
         return true;
     }
-    std::cerr << "[AssertVideoTextureStaleGenerationSkips] FAIL: expected >= " << m_min
-              << ", got " << actual << std::endl;
+    std::cerr << "[AssertVideoTextureStaleGenerationSkips] FAIL kind=" << staleSkipKindName(m_kind)
+              << ": expected >= " << m_min << ", got " << actual << std::endl;
     return false;
 }
 
 nlohmann::json AssertVideoTextureStaleGenerationSkipsCommand::toJson() const {
-    return {{"type", "AssertVideoTextureStaleGenerationSkips"}, {"min", m_min}};
+    return {{"type", "AssertVideoTextureStaleGenerationSkips"},
+            {"min", m_min},
+            {"kind", staleSkipKindName(m_kind)}};
 }
 
 std::string AssertVideoTextureStaleGenerationSkipsCommand::getDescription() const {
-    return "Assert video texture stale-generation skips >= " + std::to_string(m_min);
+    return std::string("Assert video texture stale-generation ") + staleSkipKindName(m_kind) +
+           " skips >= " + std::to_string(m_min);
 }
 
 CommandPtr AssertVideoTextureStaleGenerationSkipsCommand::fromJson(const nlohmann::json& j) {
     uint64_t min = j.value("min", static_cast<uint64_t>(1));
-    return std::make_unique<AssertVideoTextureStaleGenerationSkipsCommand>(min);
+    const std::string kindStr = j.value("kind", std::string("upload"));
+    Kind kind = Kind::Upload;
+    if (kindStr == "draw") kind = Kind::Draw;
+    else if (kindStr == "any") kind = Kind::Any;
+    return std::make_unique<AssertVideoTextureStaleGenerationSkipsCommand>(min, kind);
 }
 
 // ============================================================================

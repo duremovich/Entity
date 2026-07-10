@@ -153,6 +153,38 @@ uint32_t TextureUploader::slotGeneration(uint32_t slot) const {
     return m_slots[slot].generation.load(std::memory_order_relaxed);
 }
 
+bool TextureUploader::isGenerationStaleLocked(uint32_t slot, uint32_t expectedGeneration) {
+    // Caller holds m_slotMutex. UINT32_MAX = "any generation" (skip).
+    if (expectedGeneration == kSkipGenerationCheck) return false;
+    if (slot >= MAX_SLOTS) return false;  // bounds handled by the caller's own checks
+    if (m_slots[slot].generation.load(std::memory_order_relaxed) != expectedGeneration) {
+        m_staleGenerationSkips.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+TextureUploader::UploadPlan TextureUploader::planUpload(uint32_t slot,
+                                                        uint32_t width, uint32_t height,
+                                                        TextureFormat format,
+                                                        uint32_t expectedGeneration) {
+    UploadPlan plan;
+    if (slot >= MAX_SLOTS) return plan;  // caller's upload()/recordDirectCopy() bounds-fails
+    std::lock_guard<std::mutex> lk(m_slotMutex);
+    if (isGenerationStaleLocked(slot, expectedGeneration)) {
+        plan.reject = true;
+        return plan;
+    }
+    // Consistent snapshot of the resize decision under the lock — mirrors
+    // uploadWouldResize() && hasTexture() but without the lock-free races.
+    const Slot& s = m_slots[slot];
+    const bool hasTex = s.allocated && s.texture != nullptr;
+    const bool wouldResize = s.allocated &&
+        (!s.texture || s.width != width || s.height != height || s.format != format);
+    plan.needsResizeSync = wouldResize && hasTex;
+    return plan;
+}
+
 D3D12_GPU_DESCRIPTOR_HANDLE TextureUploader::gpuHandle(uint32_t slot) const {
     if (!hasTexture(slot)) return {};
     return m_slots[slot].gpuHandle;
@@ -363,10 +395,8 @@ bool TextureUploader::upload(ID3D12GraphicsCommandList* cmdList,
     Slot& s = m_slots[slot];
     // Generation check FIRST, before touching any resources: if the caller's
     // captured generation is stale, the index was freed + handed to a
-    // different clip since the snapshot was baked — skip the upload.
-    if (expectedGeneration != kSkipGenerationCheck &&
-        s.generation.load(std::memory_order_relaxed) != expectedGeneration) {
-        m_staleGenerationSkips.fetch_add(1, std::memory_order_relaxed);
+    // different clip since the snapshot was baked — skip the upload (counted).
+    if (isGenerationStaleLocked(slot, expectedGeneration)) {
         return false;
     }
     if (!s.allocated) {
@@ -399,9 +429,7 @@ bool TextureUploader::recordDirectCopy(ID3D12GraphicsCommandList* cmdList,
     // #90: same whole-body lock + generation-check-first as upload().
     std::lock_guard<std::mutex> lk(m_slotMutex);
     Slot& s = m_slots[slot];
-    if (expectedGeneration != kSkipGenerationCheck &&
-        s.generation.load(std::memory_order_relaxed) != expectedGeneration) {
-        m_staleGenerationSkips.fetch_add(1, std::memory_order_relaxed);
+    if (isGenerationStaleLocked(slot, expectedGeneration)) {
         return false;
     }
     if (!s.allocated) {

@@ -130,6 +130,10 @@ public:
     // #90 — count of uploads rejected on a generation mismatch. Polled by the
     // AssertVideoTextureStaleGenerationSkips integration command. Default 0.
     virtual uint64_t   videoTextureStaleGenerationSkips() const { return 0; }
+    // #90 — count of DRAWS skipped on a generation mismatch (resolveTextureHandle).
+    // Separate counter so tests can prove the draw guard fired independently of
+    // the upload guard. Default 0.
+    virtual uint64_t   videoTextureStaleGenerationDrawSkips() const { return 0; }
     // 2026-05-23 — Proactively create the slot's GPU texture + upload buffer
     // so the first uploadVideoFrameToSlot doesn't pay two CreateCommittedResource
     // calls (~33MB each for 4K) on the show thread. Closes the section-break
