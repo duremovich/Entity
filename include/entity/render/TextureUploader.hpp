@@ -17,6 +17,7 @@
 #include "entity/render/DescriptorHeapLayout.hpp"
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 
@@ -28,6 +29,10 @@ class TextureUploader {
 public:
     static constexpr uint32_t MAX_SLOTS = DescriptorHeapLayout::MAX_VIDEO_TEXTURE_SLOTS;
     static constexpr uint32_t INVALID_SLOT = UINT32_MAX;
+    // Passed as expectedGeneration to skip the per-slot generation check (the
+    // default for legacy/text/compose callers that never reuse a slot index
+    // across a stale cached snapshot). See slotGeneration() / #90.
+    static constexpr uint32_t kSkipGenerationCheck = UINT32_MAX;
 
     TextureUploader() = default;
     ~TextureUploader() = default;
@@ -79,6 +84,32 @@ public:
     bool hasTexture(uint32_t slot) const;
 
     /**
+     * Per-slot reuse generation (#90). Starts at 0; bumped once per free→
+     * realloc cycle inside freeSlot (the first occupant of a fresh index sees
+     * gen 0). Callers capture the generation at the time they resolve a slot
+     * (provision / bake) and pass it back as expectedGeneration; a mismatch at
+     * upload()/recordDirectCopy() means the index was freed and handed to a
+     * different clip since, so the upload is safely skipped.
+     *
+     * Invariant: the only store is in freeSlot under m_slotMutex; this read is
+     * lock-free (relaxed atomic load) because it runs on the show-thread hot
+     * path (resolveTextureHandle). Readers tolerate staleness — the worst case
+     * is one safely-skipped upload that the presenter re-issues next tick.
+     * Returns 0 for an out-of-bounds slot.
+     */
+    uint32_t slotGeneration(uint32_t slot) const;
+
+    /**
+     * Count of uploads rejected because expectedGeneration did not match the
+     * slot's current generation (#90). Monotonic; read by the
+     * AssertVideoTextureStaleGenerationSkips integration command to prove the
+     * cross-tick stale-snapshot guard actually fired.
+     */
+    uint64_t staleGenerationSkips() const {
+        return m_staleGenerationSkips.load(std::memory_order_relaxed);
+    }
+
+    /**
      * GPU descriptor handle for sampling this slot's texture. Only valid
      * if hasTexture(slot). Returns {.ptr=0} otherwise.
      */
@@ -109,14 +140,16 @@ public:
      * and format, this is a no-op. Mismatched dimensions trigger the same
      * release+recreate that ensureTexture does for upload().
      *
-     * **Threading contract:** safe to call from any thread when the slot is
-     * not concurrently being uploaded to. The intended use is at project
-     * load (editor thread, before the show thread first presents this slot),
-     * which satisfies that invariant by construction. The internal
-     * m_slotMutex serializes concurrent prepareTexture() calls but does NOT
-     * race-protect against upload() — that path doesn't lock. If we ever
-     * need mid-session prepare for an in-use slot, add waitForGpu + lock
-     * around upload's ensureTexture call first.
+     * **Threading contract:** safe to call from any thread. The intended use
+     * is at project load (editor thread, before the show thread first presents
+     * this slot). The internal m_slotMutex serializes concurrent
+     * prepareTexture() calls against each other AND against upload() /
+     * recordDirectCopy() (#90 — those paths now take m_slotMutex around their
+     * whole body, so an editor prepareTexture that recreates a slot's ComPtrs
+     * can no longer race a show-thread upload reading them). The stale-cached-
+     * snapshot hazard (editor frees + reallocates a slot index while the show
+     * thread holds a snapshot mapping the old clip to it) is defended
+     * separately by the per-slot generation guard — see slotGeneration().
      *
      * Returns false on slot-out-of-bounds, unallocated slot, or D3D12
      * resource-creation failure.
@@ -147,7 +180,8 @@ public:
                 const uint8_t* data,
                 uint32_t width,
                 uint32_t height,
-                TextureFormat format = TextureFormat::RGBA8_UNORM);
+                TextureFormat format = TextureFormat::RGBA8_UNORM,
+                uint32_t expectedGeneration = kSkipGenerationCheck);
 
 
     /**
@@ -178,7 +212,8 @@ public:
                           const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
                           uint32_t width,
                           uint32_t height,
-                          TextureFormat format = TextureFormat::RGBA8_UNORM);
+                          TextureFormat format = TextureFormat::RGBA8_UNORM,
+                          uint32_t expectedGeneration = kSkipGenerationCheck);
 
 private:
     struct Slot {
@@ -189,6 +224,12 @@ private:
         uint32_t height{0};
         TextureFormat format{TextureFormat::RGBA8_UNORM};
         bool allocated{false};
+        // #90 reuse counter. Bumped in freeSlot under m_slotMutex; read lock-
+        // free (relaxed) via slotGeneration() from the show thread. Atomic so
+        // the cross-thread read in resolveTextureHandle and the Phase-1 stress
+        // test aren't UB. Slot lives only in the fixed m_slots array and is
+        // never copied/moved, so no move-ctor is needed for the atomic member.
+        std::atomic<uint32_t> generation{0};
     };
 
     bool ensureTexture(Slot& slot, uint32_t slotIndex, uint32_t width, uint32_t height,
@@ -205,6 +246,9 @@ private:
     uint32_t               m_srvDescriptorSize{0};
     Slot                   m_slots[MAX_SLOTS];
     mutable std::mutex     m_slotMutex;
+    // #90: count of uploads rejected on a generation mismatch. No per-frame
+    // logging — polled by AssertVideoTextureStaleGenerationSkips.
+    std::atomic<uint64_t>  m_staleGenerationSkips{0};
 };
 
 } // namespace entity

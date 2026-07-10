@@ -2595,11 +2595,22 @@ uint32_t D3D12Renderer::getVideoTextureSlotsAllocated() const {
     return m_textureUploader->allocatedSlotCount();
 }
 
+uint32_t D3D12Renderer::videoTextureSlotGeneration(uint32_t slot) const {
+    if (!m_textureUploader) return 0;
+    return m_textureUploader->slotGeneration(slot);
+}
+
+uint64_t D3D12Renderer::videoTextureStaleGenerationSkips() const {
+    if (!m_textureUploader) return 0;
+    return m_textureUploader->staleGenerationSkips();
+}
+
 bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                            const uint8_t* data,
                                            uint32_t width, uint32_t height,
                                            D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle,
-                                           TextureFormat format) {
+                                           TextureFormat format,
+                                           uint32_t expectedGeneration) {
     if (!m_initialized || !m_textureUploader) {
         return false;
     }
@@ -2619,6 +2630,14 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
     if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
         m_textureUploader->hasTexture(slot) &&
         slot < m_videoSlotGates.size()) {
+        // #90: bail before the expensive gate/waitForGpu dance if this upload
+        // carries a stale generation (the slot was freed + reassigned since the
+        // cached snapshot was baked). The authoritative check is still inside
+        // TextureUploader::upload under m_slotMutex; this is just an early-out.
+        if (expectedGeneration != TextureUploader::kSkipGenerationCheck &&
+            m_textureUploader->slotGeneration(slot) != expectedGeneration) {
+            return false;
+        }
         m_videoSlotGates[slot].close(m_editorFrameTracker);
         m_videoSlotGateDriven[slot] = true;
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
@@ -2631,7 +2650,7 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
             return false;  // couldn't prove idle — retry next tick
         }
         if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
-                                       width, height, format)) {
+                                       width, height, format, expectedGeneration)) {
             return false;  // gate stays closed; backstop reopens if abandoned
         }
         m_uploadsRecordedThisFrame = true;
@@ -2645,8 +2664,9 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         // Phase C.11: record into the COPY queue's command list. endShowFrame()
         // executes it on the copy queue and inserts a cross-queue fence wait so
         // the direct queue doesn't sample the texture until the copy completes.
+        // #90: expectedGeneration is checked under m_slotMutex inside upload().
         if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
-                                       width, height, format)) {
+                                       width, height, format, expectedGeneration)) {
             return false;
         }
         m_uploadsRecordedThisFrame = true;
@@ -4841,8 +4861,15 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) 
         case TextureRef::Kind::VideoSlot:
             // #89: retiring slots refuse new draws — the free drain's fence
             // targets only cover work submitted before the retire.
+            // #90: reject a draw whose captured generation no longer matches the
+            // slot's current generation — the slot was freed + reassigned since
+            // the cached snapshot was baked, so this TextureRef points at a
+            // different clip's texture. UINT32_MAX skips the check (callers that
+            // don't thread a generation). Mismatch → null handle, no-op draw.
             if (m_textureUploader && m_textureUploader->hasTexture(tex.slot) &&
-                !(tex.slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[tex.slot])) {
+                !(tex.slot < m_videoSlotRetiring.size() && m_videoSlotRetiring[tex.slot]) &&
+                (tex.generation == UINT32_MAX ||
+                 tex.generation == m_textureUploader->slotGeneration(tex.slot))) {
                 return m_textureUploader->gpuHandle(tex.slot);
             }
             break;
@@ -4871,9 +4898,11 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
                                             const uint8_t* data,
                                             uint32_t width,
                                             uint32_t height,
-                                            TextureFormat format) {
+                                            TextureFormat format,
+                                            uint32_t expectedGeneration) {
     D3D12_GPU_DESCRIPTOR_HANDLE discard{};
-    return uploadVideoFrameToSlot(slot, data, width, height, &discard, format);
+    return uploadVideoFrameToSlot(slot, data, width, height, &discard, format,
+                                  expectedGeneration);
 }
 
 bool D3D12Renderer::uploadVideoFrameToSlotImmediate(uint32_t slot,
@@ -4952,7 +4981,8 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
         UploadHeapBuffer* buf,
         uint32_t width,
         uint32_t height,
-        TextureFormat format) {
+        TextureFormat format,
+        uint32_t expectedGeneration) {
     if (!m_initialized || !m_textureUploader || !buf || !buf->resource) {
         return false;
     }
@@ -4983,6 +5013,12 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
     if (m_textureUploader->uploadWouldResize(slot, width, height, format) &&
         m_textureUploader->hasTexture(slot) &&
         slot < m_videoSlotGates.size()) {
+        // #90: early-out on a stale generation before the waitForGpu stall (the
+        // authoritative check is under m_slotMutex inside recordDirectCopy).
+        if (expectedGeneration != TextureUploader::kSkipGenerationCheck &&
+            m_textureUploader->slotGeneration(slot) != expectedGeneration) {
+            return false;
+        }
         m_videoSlotGates[slot].close(m_editorFrameTracker);
         m_videoSlotGateDriven[slot] = true;
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
@@ -4995,7 +5031,8 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
         }
         if (!m_textureUploader->recordDirectCopy(tl_activeCmdList, slot,
                                                  buf->resource.Get(), buf->footprint,
-                                                 width, height, format)) {
+                                                 width, height, format,
+                                                 expectedGeneration)) {
             return false;  // gate stays closed; backstop reopens if abandoned
         }
         // NO gate reopen here: the copy into the brand-new texture is only
@@ -5035,7 +5072,8 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
                                               slot,
                                               buf->resource.Get(),
                                               buf->footprint,
-                                              width, height, format)) {
+                                              width, height, format,
+                                              expectedGeneration)) {
         return false;
     }
 

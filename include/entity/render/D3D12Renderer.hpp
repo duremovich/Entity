@@ -104,6 +104,8 @@ public:
     uint32_t   allocateVideoTextureSlot() override;
     void       scheduleVideoTextureSlotFree(uint32_t slot) override;
     uint32_t   getVideoTextureSlotsAllocated() const override;
+    uint32_t   videoTextureSlotGeneration(uint32_t slot) const override;
+    uint64_t   videoTextureStaleGenerationSkips() const override;
     bool       prepareVideoTextureSlot(uint32_t slot,
                                        uint32_t width,
                                        uint32_t height,
@@ -117,7 +119,8 @@ public:
                                       const uint8_t* data,
                                       uint32_t width,
                                       uint32_t height,
-                                      TextureFormat format) override;
+                                      TextureFormat format,
+                                      uint32_t expectedGeneration = UINT32_MAX) override;
     bool       uploadVideoFrameToSlotImmediate(uint32_t slot,
                                                const uint8_t* rgba,
                                                uint32_t width,
@@ -127,7 +130,8 @@ public:
                    UploadHeapBuffer* buf,
                    uint32_t width,
                    uint32_t height,
-                   TextureFormat format) override;
+                   TextureFormat format,
+                   uint32_t expectedGeneration = UINT32_MAX) override;
 
     // Phase 5 — wire the UploadHeapBufferPool so copyUploadBufferToVideoTextureSlot
     // can call recordCopyDone on buffers after recording CopyTextureRegion.
@@ -359,7 +363,8 @@ public:
                                 const uint8_t* data,
                                 uint32_t width, uint32_t height,
                                 D3D12_GPU_DESCRIPTOR_HANDLE* outSrvHandle,
-                                TextureFormat format = TextureFormat::RGBA8_UNORM);
+                                TextureFormat format = TextureFormat::RGBA8_UNORM,
+                                uint32_t expectedGeneration = UINT32_MAX);
 
     /** Draw a textured quad with D3D12 SRV + XMMATRIX. Legacy. */
     void drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,

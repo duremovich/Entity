@@ -42,12 +42,18 @@ struct TextureRef {
     };
     Kind kind{Kind::Invalid};
     uint32_t slot{0};
+    // #90 per-slot reuse generation the renderer checks against
+    // IRenderer::videoTextureSlotGeneration when resolving a VideoSlot draw.
+    // UINT32_MAX = "any generation" (skip the check) — the default for callers
+    // that don't thread a generation (legacy/compose/generative paths).
+    uint32_t generation{UINT32_MAX};
 
     bool valid() const { return kind != Kind::Invalid; }
 
-    static TextureRef invalid()            { return {}; }
-    static TextureRef video(uint32_t s)    { return {Kind::VideoSlot, s}; }
-    static TextureRef compose(uint32_t s)  { return {Kind::ComposeTarget, s}; }
+    static TextureRef invalid()                        { return {}; }
+    static TextureRef video(uint32_t s)                { return {Kind::VideoSlot, s}; }
+    static TextureRef video(uint32_t s, uint32_t gen)  { return {Kind::VideoSlot, s, gen}; }
+    static TextureRef compose(uint32_t s)              { return {Kind::ComposeTarget, s}; }
 };
 
 class IRenderer {
@@ -115,6 +121,15 @@ public:
     // pre-allocated but not yet freed). Useful for integration tests that
     // verify slot leak detection (AssertVideoTextureSlotsAllocated command).
     virtual uint32_t   getVideoTextureSlotsAllocated() const { return 0; }
+    // #90 — current reuse generation of a video texture slot. Captured right
+    // after allocateVideoTextureSlot() (provision / project-load) and threaded
+    // through the SceneSnapshot so a stale cached snapshot that reuses the same
+    // slot index has its uploads/draws rejected. Default 0 for mock/test
+    // renderers (they never reuse a slot against a stale snapshot).
+    virtual uint32_t   videoTextureSlotGeneration(uint32_t /*slot*/) const { return 0; }
+    // #90 — count of uploads rejected on a generation mismatch. Polled by the
+    // AssertVideoTextureStaleGenerationSkips integration command. Default 0.
+    virtual uint64_t   videoTextureStaleGenerationSkips() const { return 0; }
     // 2026-05-23 — Proactively create the slot's GPU texture + upload buffer
     // so the first uploadVideoFrameToSlot doesn't pay two CreateCommittedResource
     // calls (~33MB each for 4K) on the show thread. Closes the section-break
@@ -141,11 +156,17 @@ public:
     // and `format` (RGBA = w*h*4, BC* = block-packed). For HAP playback this
     // uploads pre-compressed blocks directly to a BC-format GPU texture
     // with zero CPU decompression.
+    // `expectedGeneration` (#90): the slot reuse generation captured when this
+    // clip's slot was resolved. UINT32_MAX (default) skips the check. A
+    // mismatch means the slot index was freed + reassigned since the cached
+    // snapshot was baked — the upload is rejected (returns false) so a stale
+    // snapshot can't overwrite another clip's slot.
     virtual bool       uploadVideoFrameToSlot(uint32_t slot,
                                               const uint8_t* data,
                                               uint32_t width,
                                               uint32_t height,
-                                              TextureFormat format) = 0;
+                                              TextureFormat format,
+                                              uint32_t expectedGeneration = UINT32_MAX) = 0;
     // Editor-thread upload. uploadVideoFrameToSlot records into the
     // show-thread-owned copy command list, which the show thread Resets
     // every beginShowFrame — a copy recorded from the editor thread is
@@ -175,12 +196,15 @@ public:
     // may advance lastDecodedFrame). Returns false if the call was skipped or
     // failed (no copy recorded; caller should NOT advance lastDecodedFrame —
     // retry next tick). Mocks return false because they record nothing.
+    // `expectedGeneration` (#90): see uploadVideoFrameToSlot above — same
+    // stale-slot reject semantics on the GPU-direct copy path.
     virtual bool       copyUploadBufferToVideoTextureSlot(
                            uint32_t /*slot*/,
                            struct UploadHeapBuffer* /*buf*/,
                            uint32_t /*width*/,
                            uint32_t /*height*/,
-                           TextureFormat /*format*/) { return false; }
+                           TextureFormat /*format*/,
+                           uint32_t /*expectedGeneration*/ = UINT32_MAX) { return false; }
     virtual TextureRef getVideoTexture(uint32_t slot) const = 0;
 
     // ------------------------------------------------------------------------

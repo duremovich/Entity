@@ -96,6 +96,11 @@ void TextureUploader::freeSlot(uint32_t slot) {
     s.height = 0;
     s.format = TextureFormat::RGBA8_UNORM;
     s.allocated = false;
+    // #90: one bump per free→realloc cycle. The mutex orders this store; the
+    // relaxed lock-free reader in slotGeneration() then observes the new value
+    // and rejects any upload still carrying the pre-free generation. allocate
+    // does NOT bump — the first occupant of a fresh index sees gen 0.
+    s.generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool TextureUploader::isAllocated(uint32_t slot) const {
@@ -138,6 +143,14 @@ bool TextureUploader::prepareTexture(uint32_t slot, uint32_t width, uint32_t hei
 bool TextureUploader::hasTexture(uint32_t slot) const {
     if (slot >= MAX_SLOTS) return false;
     return m_slots[slot].allocated && m_slots[slot].texture != nullptr;
+}
+
+uint32_t TextureUploader::slotGeneration(uint32_t slot) const {
+    if (slot >= MAX_SLOTS) return 0;
+    // Lock-free relaxed load — the store side (freeSlot) is serialized by
+    // m_slotMutex, readers tolerate staleness (see header). No lock here: this
+    // runs on the show-thread hot path.
+    return m_slots[slot].generation.load(std::memory_order_relaxed);
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE TextureUploader::gpuHandle(uint32_t slot) const {
@@ -333,7 +346,8 @@ bool TextureUploader::upload(ID3D12GraphicsCommandList* cmdList,
                               const uint8_t* data,
                               uint32_t width,
                               uint32_t height,
-                              TextureFormat format) {
+                              TextureFormat format,
+                              uint32_t expectedGeneration) {
     if (!m_device || !cmdList || !data || width == 0 || height == 0) {
         return false;
     }
@@ -342,7 +356,19 @@ bool TextureUploader::upload(ID3D12GraphicsCommandList* cmdList,
                   << MAX_SLOTS << ")" << std::endl;
         return false;
     }
+    // #90: serialize the whole body against freeSlot/prepareTexture so a
+    // concurrent editor prepareTexture recreating this slot's ComPtrs can't
+    // race the resource reads below (ensureTexture + copyPixelsAndRecord).
+    std::lock_guard<std::mutex> lk(m_slotMutex);
     Slot& s = m_slots[slot];
+    // Generation check FIRST, before touching any resources: if the caller's
+    // captured generation is stale, the index was freed + handed to a
+    // different clip since the snapshot was baked — skip the upload.
+    if (expectedGeneration != kSkipGenerationCheck &&
+        s.generation.load(std::memory_order_relaxed) != expectedGeneration) {
+        m_staleGenerationSkips.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     if (!s.allocated) {
         std::cerr << "TextureUploader: slot " << slot << " not allocated" << std::endl;
         return false;
@@ -360,7 +386,8 @@ bool TextureUploader::recordDirectCopy(ID3D12GraphicsCommandList* cmdList,
                                         const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
                                         uint32_t width,
                                         uint32_t height,
-                                        TextureFormat format) {
+                                        TextureFormat format,
+                                        uint32_t expectedGeneration) {
     if (!m_device || !cmdList || !uploadResource || width == 0 || height == 0) {
         return false;
     }
@@ -369,7 +396,14 @@ bool TextureUploader::recordDirectCopy(ID3D12GraphicsCommandList* cmdList,
                   << " out of bounds" << std::endl;
         return false;
     }
+    // #90: same whole-body lock + generation-check-first as upload().
+    std::lock_guard<std::mutex> lk(m_slotMutex);
     Slot& s = m_slots[slot];
+    if (expectedGeneration != kSkipGenerationCheck &&
+        s.generation.load(std::memory_order_relaxed) != expectedGeneration) {
+        m_staleGenerationSkips.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     if (!s.allocated) {
         std::cerr << "TextureUploader: recordDirectCopy slot " << slot
                   << " not allocated" << std::endl;
