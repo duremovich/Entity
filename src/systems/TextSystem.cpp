@@ -126,6 +126,10 @@ void TextSystem::update(entt::registry& registry, float /*deltaTime*/) {
                 continue;
             }
             state.textureSlot = static_cast<int>(slot);
+            // #90: capture the slot's reuse generation so the bake threads it
+            // through the snapshot and the draw guard rejects this slot if a
+            // clip later frees + reuses the index (text shares the video pool).
+            state.textureGeneration = m_renderer->videoTextureSlotGeneration(slot);
         }
 
         // Immediate editor-thread upload — TextSystem runs on the editor

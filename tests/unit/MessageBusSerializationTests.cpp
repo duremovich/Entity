@@ -86,6 +86,44 @@ TEST(MessageBusSerialization, RenderFrameRoundTrip) {
     expectByteStable(rf);
 }
 
+// #90: the per-slot reuse generation must survive the wire on all three
+// guard-consumed fields (ClipRenderState.slotGeneration for uploads,
+// ContentLayerSnapshot.sourceGeneration for clip draws, and
+// GenerativeLayerSnapshot.textTextureGeneration for text draws).
+TEST(MessageBusSerialization, GenerationFieldsRoundTrip) {
+    RenderFrame rf;
+
+    ClipRenderState clip{};
+    clip.entity = 1ull;
+    clip.slot = 5;
+    clip.slotGeneration = 7;
+    rf.activeClips.push_back(clip);
+
+    ContentLayerSnapshot cl{};
+    cl.entity = 2ull;
+    cl.sourceKind = ContentLayerSnapshot::SourceKind::Video;
+    cl.sourceSlot = 5;
+    cl.sourceGeneration = 7;
+    rf.contentLayers.push_back(cl);
+
+    GenerativeLayerSnapshot gl{};
+    gl.entity = 3ull;
+    gl.kind = GenerativeLayerSnapshot::Kind::Text;
+    gl.textTextureSlot = 5;
+    gl.textTextureGeneration = 7;
+    rf.generativeLayers.push_back(gl);
+
+    auto out = roundTripExpect(rf);
+    ASSERT_EQ(out.activeClips.size(), 1u);
+    EXPECT_EQ(out.activeClips[0].slotGeneration, 7u);
+    ASSERT_EQ(out.contentLayers.size(), 1u);
+    EXPECT_EQ(out.contentLayers[0].sourceGeneration, 7u);
+    ASSERT_EQ(out.generativeLayers.size(), 1u);
+    EXPECT_EQ(out.generativeLayers[0].textTextureGeneration, 7u);
+
+    expectByteStable(rf);
+}
+
 TEST(MessageBusSerialization, RenderFrameEmpty) {
     RenderFrame rf;
     auto out = roundTripExpect(rf);

@@ -1109,6 +1109,7 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         } else if (const auto* tls = m_registry.try_get<TextLayerState>(entity)) {
             snap.kind            = bus::GenerativeLayerSnapshot::Kind::Text;
             snap.textTextureSlot = tls->textureSlot;
+            snap.textTextureGeneration = tls->textureGeneration;  // #90
             snap.textBakedWidth  = tls->bakedWidth;
             snap.textBakedHeight = tls->bakedHeight;
         } else {

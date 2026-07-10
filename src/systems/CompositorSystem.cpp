@@ -244,6 +244,13 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                         case bus::ContentLayerSnapshot::SourceKind::Video:
                             tex = m_renderer->getVideoTexture(
                                 static_cast<uint32_t>(cl.sourceSlot));
+                            // #90 F1: getVideoTexture returns a skip-generation
+                            // ref; stamp the snapshot's captured generation so
+                            // resolveTextureHandle rejects the draw if the slot
+                            // was freed + reassigned since the bake (the common
+                            // no-effects clip path — without this, only the
+                            // effect-chain input at PASS 1.5 was guarded).
+                            tex.generation = cl.sourceGeneration;
                             if (m_playbackPresenter) {
                                 const auto& d = m_playbackPresenter->displayState(
                                     static_cast<entt::entity>(cl.entity));
@@ -600,7 +607,10 @@ void CompositorSystem::drawTextLayer(const bus::GenerativeLayerSnapshot& gl,
     // Text has already been rasterized into a video-pool slot by TextSystem
     // on the editor thread. We just blit it into the active compose target.
     if (gl.textTextureSlot < 0) return;
-    const auto ref = TextureRef::video(static_cast<std::uint32_t>(gl.textTextureSlot));
+    // #90 F2: carry the captured generation so resolveTextureHandle rejects the
+    // draw if this text slot was freed + reassigned to a clip since the bake.
+    const auto ref = TextureRef::video(static_cast<std::uint32_t>(gl.textTextureSlot),
+                                       gl.textTextureGeneration);
     m_renderer->drawTexturedQuad(ref, glm::mat4(1.0f), drawOpacity,
                                   BlendMode::Normal, TextureColorSpace::Linear);
 }

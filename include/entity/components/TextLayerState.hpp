@@ -33,6 +33,10 @@ struct TextLayerState {
     // --- Runtime fields (not persisted) ---
     bool     dirty       = true;   // set true when any authoring field changes
     int      textureSlot = -1;     // video-pool descriptor slot, -1 = not yet allocated
+    // #90: reuse generation of textureSlot, captured from the renderer right
+    // after allocateVideoTextureSlot. Baked into the snapshot so the draw guard
+    // rejects this text layer's slot if it was freed + handed to a clip.
+    uint32_t textureGeneration = 0;
     uint32_t bakedWidth  = 0;
     uint32_t bakedHeight = 0;
 };

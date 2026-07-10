@@ -24,7 +24,7 @@
 
         {"type": "AssertShowFrameCountAtLeast", "minCount": 60},
         {"type": "AssertVideoTextureSlotsAllocated", "count": 1},
-        {"type": "AssertVideoTextureStaleGenerationSkips", "min": 1},
+        {"type": "AssertVideoTextureStaleGenerationSkips", "min": 1, "kind": "upload"},
 
         {"type": "Exit"}
     ]

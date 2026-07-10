@@ -440,6 +440,7 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["muncher_score"]     = g.muncher_score;
     j["muncher_lives"]     = g.muncher_lives;
     j["textTextureSlot"]   = g.textTextureSlot;
+    j["textTextureGeneration"] = g.textTextureGeneration;
     j["textBakedWidth"]    = g.textBakedWidth;
     j["textBakedHeight"]   = g.textBakedHeight;
     auto xfArr = ojson::array();
@@ -526,6 +527,9 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     g.muncher_score     = j.value("muncher_score",     std::uint16_t{0});
     g.muncher_lives     = j.value("muncher_lives",     std::uint16_t{3});
     g.textTextureSlot   = j.value("textTextureSlot",   std::int32_t{-1});
+    // #90 F6: absent key = "generation unknown" → skip (UINT32_MAX), not 0
+    // (instance-local generations; 0 would false-reject a peer's payload).
+    g.textTextureGeneration = j.value("textTextureGeneration", UINT32_MAX);
     g.textBakedWidth    = j.value("textBakedWidth",    std::uint32_t{0});
     g.textBakedHeight   = j.value("textBakedHeight",   std::uint32_t{0});
     if (j.contains("transformMatrix")) {

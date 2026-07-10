@@ -327,6 +327,11 @@ struct GenerativeLayerSnapshot {
     // textTextureSlot is the video-pool descriptor slot TextSystem uploads
     // the rasterized RGBA8 frame into; -1 = not yet uploaded.
     std::int32_t  textTextureSlot{-1};
+    // #90: reuse generation of textTextureSlot, captured by TextSystem at
+    // allocate time. Text shares the video-texture pool with clips, so a freed
+    // text slot reused by a clip (or vice-versa) must be generation-guarded on
+    // the draw path too. 0 when no slot; UINT32_MAX from an old wire payload.
+    std::uint32_t textTextureGeneration{0};
     std::uint32_t textBakedWidth{0};
     std::uint32_t textBakedHeight{0};
 
