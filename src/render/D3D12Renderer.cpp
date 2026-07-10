@@ -348,7 +348,13 @@ void D3D12Renderer::shutdown() {
         m_deviceLost.load(std::memory_order_acquire) &&
         m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
     if (!confirmedRemoval) {
-        waitForGpu();
+        // #91: drainGpuQueues(true), NOT waitForGpu() — waitForGpu's bare-flag
+        // early-out returned false immediately on a spurious latch, so the
+        // drain this comment block promises never actually ran. The return is
+        // deliberately unused: shutdown cannot defer, and an abandoned drain
+        // (starved WARP, reason S_OK) leaves the same exposure as before —
+        // now minimized by having actually attempted the drain.
+        (void)drainGpuQueues(/*drainOnSpuriousLatch=*/true);
     }
 
     shutdownImGui();
@@ -1660,12 +1666,38 @@ Result D3D12Renderer::createFence() {
 // destroy resources MUST NOT proceed on false (except when m_deviceLost — a dead
 // device executes nothing, so destruction is safe). (#89)
 bool D3D12Renderer::waitForGpu() {
-    ZoneScopedNC("GPU fence wait", 0xCC4444);
-    // Top-level early-out: if the device is already lost, no fence will ever
-    // signal again. Return immediately without touching any D3D12 COM objects.
-    // Also guards the nested per-branch checks below against the race where
-    // device-lost transitions while we're mid-drain.
+    // Top-level early-out: if the device is already lost, no fence is trusted
+    // to signal again. Return immediately without touching any D3D12 COM
+    // objects. shutdown() uses drainGpuQueues(true) to drain past a SPURIOUS
+    // latch; every other caller treats any latch as drain-failed. (#91)
     if (m_deviceLost) return false;
+    return drainGpuQueues(/*drainOnSpuriousLatch=*/false);
+}
+
+bool D3D12Renderer::gpuIdleForDestroy() {
+    if (waitForGpu()) return true;
+    return m_deviceLost.load(std::memory_order_acquire) &&
+           m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
+}
+
+// Returns true only if all three drains (copy, show, editor fences) completed —
+// i.e. the GPU is provably idle. false = device lost mid-drain, or a healthy
+// device starved past the watchdog (drain abandoned). Callers that are about to
+// destroy resources MUST NOT proceed on false (except when the removal is
+// CONFIRMED — a dead device executes nothing, so destruction is safe). (#89/#91)
+bool D3D12Renderer::drainGpuQueues(bool drainOnSpuriousLatch) {
+    ZoneScopedNC("GPU fence wait", 0xCC4444);
+    // Abort points: a CONFIRMED removal (reason != S_OK) always aborts — the
+    // fences never signal. A spurious latch (flag set, reason S_OK) aborts
+    // only outside shutdown mode; in shutdown mode the device is live and may
+    // be executing, so we keep draining (bounded per branch). Re-evaluated at
+    // each branch to catch a device-lost transition mid-drain. (#91)
+    const auto drainAborted = [&]() -> bool {
+        if (!m_deviceLost.load(std::memory_order_acquire)) return false;
+        return !drainOnSpuriousLatch ||
+               m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
+    };
+    if (drainAborted()) return false;
 
     // Use a function-local event so this call cannot race with concurrent
     // SetEventOnCompletion/WaitForSingleObject pairs on m_fenceEvent. Auto-reset
@@ -1685,7 +1717,7 @@ bool D3D12Renderer::waitForGpu() {
     // queue. The direct queue's Wait(uploadFence) inside endShowFrame() does NOT
     // help here because we may be called outside the per-frame loop.
     if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
-        if (m_deviceLost) { CloseHandle(localEvent); return false; }
+        if (drainAborted()) { CloseHandle(localEvent); return false; }
         uint64_t copyTarget = 0;
         {
             // Serialize increment+Signal with the other m_uploadFence signal
@@ -1728,7 +1760,7 @@ bool D3D12Renderer::waitForGpu() {
     // owned by endShowFrame / moveToNextFrame and must be left intact so the
     // per-frame allocator-reuse gate still works correctly after this call.
     if (m_showFence) {
-        if (m_deviceLost) { CloseHandle(localEvent); return false; }
+        if (drainAborted()) { CloseHandle(localEvent); return false; }
         // Floor above every already-enqueued signal, not just the completed
         // value: with 2+ frames in flight, GetCompletedValue()+1 can EQUAL an
         // in-flight per-frame signal, so the wait would fire when that earlier
@@ -1754,7 +1786,7 @@ bool D3D12Renderer::waitForGpu() {
     }
 
     if (m_editorFence) {
-        if (m_deviceLost) { CloseHandle(localEvent); return false; }
+        if (drainAborted()) { CloseHandle(localEvent); return false; }
         // Same floor rationale as the show-fence drain above.
         const uint64_t drainValue =
             std::max(m_editorFence->GetCompletedValue() + 1,
@@ -2653,11 +2685,9 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
             return false;
         }
-        // Proceed on failure only for a CONFIRMED removal — m_deviceLost can
-        // latch spuriously (reason S_OK) on a live, still-executing device.
-        if (!waitForGpu() &&
-            !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
-            return false;  // couldn't prove idle — retry next tick
+        // Confirmed-removal bypass folded into gpuIdleForDestroy() (#91).
+        if (!gpuIdleForDestroy()) {
+            return false;  // couldn't prove idle — retry next tick (#89/#91)
         }
         if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
                                        width, height, format, expectedGeneration)) {
@@ -4060,10 +4090,8 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     // #89 review: a false return means the drain was abandoned on a live
     // device (S_OK starvation) — in-flight work may still sample the targets
     // we are about to Reset. Defer; CompositorSystem retries every tick.
-    // Proceed on device-lost only when the removal is CONFIRMED (a spurious
-    // latch leaves the device live and executing — see shutdown()).
-    if (!waitForGpu() &&
-        !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
+    // Confirmed-removal bypass folded into gpuIdleForDestroy() (#91).
+    if (!gpuIdleForDestroy()) {
         return false;
     }
 
@@ -5040,10 +5068,9 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
             return false;
         }
-        // Confirmed removal only — see uploadVideoFrameToSlot's resize branch.
-        if (!waitForGpu() &&
-            !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
-            return false;  // couldn't prove idle — retry next tick
+        // Confirmed-removal bypass folded into gpuIdleForDestroy() (#91).
+        if (!gpuIdleForDestroy()) {
+            return false;  // couldn't prove idle — retry next tick (#89/#91)
         }
         if (!m_textureUploader->recordDirectCopy(tl_activeCmdList, slot,
                                                  buf->resource.Get(), buf->footprint,

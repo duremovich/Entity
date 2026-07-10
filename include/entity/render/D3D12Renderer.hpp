@@ -70,7 +70,8 @@ public:
         m_deviceLostReason.store(reason, std::memory_order_release);
         m_deviceLost.store(true, std::memory_order_release);
     }
-    void waitForGpuForTesting()     { waitForGpu(); }
+    bool waitForGpuForTesting()        { return waitForGpu(); }
+    bool gpuIdleForDestroyForTesting() { return gpuIdleForDestroy(); }
 
     // Headless/CI device-lost policy (issue #69). When enabled,
     // handleDeviceLost() calls std::_Exit(kDeviceLostExitCode) right after the
@@ -410,7 +411,20 @@ private:
     Result createFence();
     // Returns true only if all three drains (copy, show, editor fences)
     // completed — i.e. the GPU is provably idle. See the definition (#89).
-    bool waitForGpu();
+    // [[nodiscard]] (#91): a discarded return at a destroy-after-drain site
+    // is exactly the bug class this issue closed — new callers must triage.
+    [[nodiscard]] bool waitForGpu();
+    // #91: the drain body. waitForGpu() = bare-flag early-out + drainGpuQueues(false).
+    // shutdown() calls drainGpuQueues(true) directly so a SPURIOUS device-lost
+    // latch (reason S_OK — device live, possibly executing) still drains;
+    // a CONFIRMED removal (reason != S_OK) aborts in either mode.
+    bool drainGpuQueues(bool drainOnSpuriousLatch);
+    // #91: the triage helper for destroy-after-drain sites. True = safe to
+    // destroy GPU resources: either the drain proved the GPU idle, or the
+    // removal is CONFIRMED (a dead device executes nothing). False = DEFER:
+    // drain abandoned on a live device (S_OK starvation) or a spurious latch —
+    // in-flight work may still reference the resources.
+    [[nodiscard]] bool gpuIdleForDestroy();
     void moveToNextFrame();
 
     // Helper methods for rendering pipeline

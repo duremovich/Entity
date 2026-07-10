@@ -75,4 +75,31 @@ TEST(WaitForGpuEarlyOut, ReturnsFastWhenDeviceLost_EditorFenceBranch) {
         << "waitForGpu() blocked despite m_deviceLost=true (editor-fence branch)";
 }
 
+// #91 — gpuIdleForDestroy() distinguishes a CONFIRMED removal (destroy allowed:
+// a dead device executes nothing) from a SPURIOUS latch (reason S_OK: device
+// live, drain abandoned — destroy must defer).
+TEST(WaitForGpuEarlyOut, GpuIdleForDestroyAllowsConfirmedRemoval) {
+    D3D12Renderer renderer;
+    renderer.setDeviceLostForTesting(DXGI_ERROR_DEVICE_HUNG);
+    EXPECT_TRUE(renderer.gpuIdleForDestroyForTesting());
+}
+
+TEST(WaitForGpuEarlyOut, GpuIdleForDestroyDefersSpuriousLatch) {
+    D3D12Renderer renderer;
+    renderer.setDeviceLostForTesting(S_OK);
+    EXPECT_FALSE(renderer.gpuIdleForDestroyForTesting());
+}
+
+// #91 — waitForGpu()'s bare-flag early-out is unchanged: even a spurious latch
+// returns false immediately (only shutdown's drainGpuQueues(true) drains past it).
+TEST(WaitForGpuEarlyOut, ReturnsFastOnSpuriousLatch) {
+    D3D12Renderer renderer;
+    renderer.setDeviceLostForTesting(S_OK);
+    auto fut = std::async(std::launch::async, [&] {
+        EXPECT_FALSE(renderer.waitForGpuForTesting());
+    });
+    EXPECT_EQ(fut.wait_for(100ms), std::future_status::ready)
+        << "waitForGpu() blocked on a spurious device-lost latch";
+}
+
 } // namespace
