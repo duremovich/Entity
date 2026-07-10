@@ -464,11 +464,15 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
     // disable message out-ran the snapshot (the stale frame still says
     // enabled; with a stalled editor that staleness can last seconds — the
     // ESC-panic scenario).
-    // #91: retry destroys deferred by an abandoned GPU drain.
+    // #91: retry destroys deferred by an abandoned GPU drain. Each failed
+    // attempt blocks the show thread up to the fence timeout, so cap the
+    // per-tick cost at one attempt: retry only the FRONT pending slot, and on
+    // failure leave it (and don't try the others this tick). The non-blocking
+    // fence-poll redesign is tracked in the #91 follow-up.
     if (!m_pendingWindowDestroys.empty() && m_renderer) {
-        std::erase_if(m_pendingWindowDestroys, [&](uint32_t slot) {
-            return m_renderer->destroyOutputWindow(slot);
-        });
+        if (m_renderer->destroyOutputWindow(m_pendingWindowDestroys.front())) {
+            m_pendingWindowDestroys.erase(m_pendingWindowDestroys.begin());
+        }
     }
 
     if (!m_windowSlots.empty() || !m_disableTombstones.empty()) {

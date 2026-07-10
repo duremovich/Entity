@@ -83,6 +83,7 @@ enum class TextureColorSpace : uint8_t {
 enum class Result {
     Success,
     Failure,
+    NotReady,  // Deferred — transient, caller should retry (e.g. GPU drain abandoned on a live device)
     NotImplemented,
     InvalidParameter,
     FileNotFound,
@@ -150,6 +151,7 @@ inline const char* ResultToString(Result result) {
     switch (result) {
         case Result::Success: return "Success";
         case Result::Failure: return "Failure";
+        case Result::NotReady: return "Not Ready";
         case Result::NotImplemented: return "Not Implemented";
         case Result::InvalidParameter: return "Invalid Parameter";
         case Result::FileNotFound: return "File Not Found";

@@ -9,6 +9,7 @@
 #include "entity/media/TranscodeManager.hpp"
 #include <entt/entt.hpp>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1390,10 +1391,11 @@ private:
     bool m_initialized{false};
     bool m_running{false};
     bool m_resizePending{false};
-    // #91: frames spent retrying a deferred renderer resize (drain abandoned
-    // on a live device). Bounds the retry loop so a hard resize failure can't
-    // spin forever; reset when a new resize request arrives.
-    uint32_t m_resizeRetryFrames{0};
+    // #91: deadline for retrying a deferred (NotReady) renderer resize. Each
+    // failed attempt can block up to 3x the fence timeout, so this bounds
+    // ATTEMPTS not total wall time — worst case is deadline + one overshooting
+    // attempt. (Re)armed only in onWindowResize when a new resize is requested.
+    std::chrono::steady_clock::time_point m_resizeRetryDeadline{};
     bool m_deviceLostPosted{false};  // Guard: post bus::DeviceLost at most once.
     bool m_relaunchRequested{false};         // Set on device-lost drain; checked by main.cpp.
     bool m_isRecoveryRelaunch{false};        // True when started via --device-lost-recovery; suppresses re-relaunch.

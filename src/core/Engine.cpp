@@ -2261,18 +2261,20 @@ void Engine::render() {
             m_windowWidth  = m_pendingWidth;
             m_windowHeight = m_pendingHeight;
             m_resizePending = false;
-            m_resizeRetryFrames = 0;
-        } else if (m_renderer->isDeviceLost() || ++m_resizeRetryFrames > 120) {
-            // Device gone (recovery path owns the swap chain from here), or
-            // ~2s of retries exhausted (hard failure, not a deferral).
-            std::cerr << "Failed to resize D3D12 renderer!" << std::endl;
-            m_resizePending = false;
-            m_resizeRetryFrames = 0;
-        } else {
+        } else if (result == Result::NotReady && !m_renderer->isDeviceLost()
+                   && std::chrono::steady_clock::now() < m_resizeRetryDeadline) {
             // #91: resize() deferred — waitForGpu abandoned its drain on a
             // live device; back buffers untouched. This frame renders at the
-            // old size; retry next frame.
+            // old size; retry next frame until the deadline armed in
+            // onWindowResize passes.
             std::cerr << "[Engine] resize deferred (GPU drain abandoned) — retrying" << std::endl;
+        } else {
+            // Hard failure (Result::Failure — back buffers already torn down),
+            // device lost (recovery path owns the swap chain from here), or the
+            // retry deadline elapsed. No retry: a hard failure returns with the
+            // render targets Reset, so retrying re-renders into null targets.
+            std::cerr << "Failed to resize D3D12 renderer!" << std::endl;
+            m_resizePending = false;
         }
     }
 
@@ -2421,7 +2423,9 @@ void Engine::onWindowResize(uint32_t width, uint32_t height) {
     // Store pending resize - will be applied at the start of next frame
     // This prevents deadlock when resize happens mid-frame
     m_resizePending = true;
-    m_resizeRetryFrames = 0;
+    // #91: arm the retry window for a deferred (NotReady) resize — bounds
+    // ATTEMPTS, see m_resizeRetryDeadline. Only (re)armed here.
+    m_resizeRetryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     m_pendingWidth = newWidth;
     m_pendingHeight = newHeight;
 
@@ -5527,8 +5531,15 @@ void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
         uint32_t width = 0;
         uint32_t height = 0;
         std::vector<uint8_t> pixels;
-        if (!m_renderer->readComposeTargetPixels(static_cast<uint32_t>(req.slot),
-                                                  width, height, pixels)) {
+        // #91: a false can be a transient deferral (drain abandoned on a live
+        // device) — retry once before declaring the capture failed.
+        bool ok = m_renderer->readComposeTargetPixels(
+            static_cast<uint32_t>(req.slot), width, height, pixels);
+        if (!ok) {
+            ok = m_renderer->readComposeTargetPixels(
+                static_cast<uint32_t>(req.slot), width, height, pixels);
+        }
+        if (!ok) {
             reply.errorMessage = "readComposeTargetPixels failed";
             sendReply();
             return;
@@ -5560,9 +5571,15 @@ void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
     }
 
     // Screenshot path -- write a PNG from compose target or back buffer.
-    bool ok = req.fullWindow
-        ? m_renderer->captureBackBufferToPNG(req.pngPath)
-        : m_renderer->captureComposeTargetToPNG(req.pngPath);
+    // #91: a false can be a transient deferral (drain abandoned on a live
+    // device) — retry once before declaring the capture failed.
+    auto capture = [&]() {
+        return req.fullWindow
+            ? m_renderer->captureBackBufferToPNG(req.pngPath)
+            : m_renderer->captureComposeTargetToPNG(req.pngPath);
+    };
+    bool ok = capture();
+    if (!ok) ok = capture();
     if (!ok) {
         reply.errorMessage = req.fullWindow
             ? "captureBackBufferToPNG failed"

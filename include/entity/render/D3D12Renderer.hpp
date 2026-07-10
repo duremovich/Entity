@@ -409,8 +409,8 @@ private:
     Result createCommandList();
     Result createCopyCommandList();   // Phase C.11: COPY queue cmd list + per-frame allocators
     Result createFence();
-    // Returns true only if all three drains (copy, show, editor fences)
-    // completed — i.e. the GPU is provably idle. See the definition (#89).
+    // Bare-flag early-out + drainGpuQueues(false); full contract lives above
+    // drainGpuQueues (below). (#89)
     // [[nodiscard]] (#91): a discarded return at a destroy-after-drain site
     // is exactly the bug class this issue closed — new callers must triage.
     [[nodiscard]] bool waitForGpu();
@@ -1084,6 +1084,7 @@ private:
         uint32_t height{0};
         uint32_t currentBackBufferIndex{0};
         bool active{false};                // false = freed slot, reusable
+        bool pendingDestroy{false};        // #91 review: destroy deferred (drain abandoned). Window hidden, Present skipped; slot stays active so it can't be reused until the retried destroy succeeds.
     };
     std::vector<OutputWindow> m_outputWindows;
     uint32_t m_currentOutputSlot{UINT32_MAX};  // Set during begin/endOutputFrame

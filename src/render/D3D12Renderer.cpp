@@ -518,10 +518,10 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
 
     // #91: an abandoned drain on a live device means in-flight lists may still
     // reference the back buffers we're about to Reset (and ResizeBuffers
-    // requires all references released). Defer — Engine::render keeps the
-    // resize pending and retries next frame.
+    // requires all references released). Defer — the back buffers are untouched
+    // here, so Engine::render keeps the resize pending and retries next frame.
     if (!gpuIdleForDestroy()) {
-        return Result::Failure;
+        return Result::NotReady;
     }
 
     // Release render targets
@@ -539,6 +539,10 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
     );
 
     if (FAILED(hr)) {
+        // Hard failure, NOT a deferral: the render targets above are already
+        // Reset() at this point, so the swap chain is in a torn-down state.
+        // Return Failure (not NotReady) so Engine gives up instead of retrying
+        // into null render targets.
         std::cerr << "Failed to resize swap chain buffers!" << std::endl;
         return Result::Failure;
     }
@@ -813,7 +817,7 @@ void D3D12Renderer::endShowFrame() {
     // Present all active output swap chains. The ExecuteCommandLists above
     // has committed all their work.
     for (auto& ow : m_outputWindows) {
-        if (!ow.active || !ow.swapChain) continue;
+        if (!ow.active || !ow.swapChain || ow.pendingDestroy) continue;
         HRESULT ohr = ow.swapChain->Present(1, 0);
         if (FAILED(ohr)) {
             if (ohr == DXGI_ERROR_DEVICE_REMOVED || ohr == DXGI_ERROR_DEVICE_RESET ||
@@ -1665,11 +1669,7 @@ Result D3D12Renderer::createFence() {
     return Result::Success;
 }
 
-// Returns true only if all three drains (copy, show, editor fences) completed —
-// i.e. the GPU is provably idle. false = device lost mid-drain, or a healthy
-// device starved past the watchdog (drain abandoned). Callers that are about to
-// destroy resources MUST NOT proceed on false (except when m_deviceLost — a dead
-// device executes nothing, so destruction is safe). (#89)
+// Bare-flag early-out + drainGpuQueues(false). Contract: see drainGpuQueues below.
 bool D3D12Renderer::waitForGpu() {
     // Top-level early-out: if the device is already lost, no fence is trusted
     // to signal again. Return immediately without touching any D3D12 COM
@@ -4478,6 +4478,16 @@ bool D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
     // reuse it) and the caller retries. Confirmed removal proceeds: a dead
     // device executes nothing, and the swap chain must go regardless.
     if (!gpuIdleForDestroy()) {
+        // Blackout/geometry changes must take visual effect NOW even though the
+        // GPU teardown waits — otherwise ESC-panic leaves a frozen frame on the
+        // projector, and a same-tick recreate shows two windows. Hide the window
+        // and mark it so Present + frame recording skip it until the retry
+        // succeeds. (glfw window calls run on this thread — see glfwDestroyWindow
+        // on the success path below.)
+        ow.pendingDestroy = true;
+        if (ow.window) {
+            glfwHideWindow(ow.window);
+        }
         return false;
     }
 
@@ -4493,6 +4503,7 @@ bool D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
     }
     ow.hwnd = nullptr;
     ow.active = false;
+    ow.pendingDestroy = false;
     ow.width = 0;
     ow.height = 0;
     ow.currentBackBufferIndex = 0;
@@ -4563,7 +4574,7 @@ uint32_t D3D12Renderer::getOutputWindowHeight(uint32_t outputSlot) const {
 void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active || ow.pendingDestroy) return;
 
     // Transition this back buffer to RENDER_TARGET.
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -4597,7 +4608,7 @@ void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
                                       float r, float g, float b, float a) {
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active || ow.pendingDestroy) return;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += ow.currentBackBufferIndex * m_rtvDescriptorSize;
@@ -4608,7 +4619,7 @@ void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
 void D3D12Renderer::endOutputFrame(uint32_t outputSlot) {
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active || ow.pendingDestroy) return;
 
     // Transition output back buffer to PRESENT state.
     // No back-buffer restore here — the show command list must not touch
