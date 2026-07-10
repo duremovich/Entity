@@ -180,7 +180,7 @@ public:
     uint32_t createOutputWindow(const char* title,
                                  int32_t x, int32_t y,
                                  uint32_t width, uint32_t height) override;
-    void     destroyOutputWindow(uint32_t outputSlot) override;
+    bool     destroyOutputWindow(uint32_t outputSlot) override;
     void     resizeOutputWindow(uint32_t outputSlot,
                                  uint32_t width, uint32_t height) override;
     uint32_t getOutputWindowWidth(uint32_t outputSlot) const override;

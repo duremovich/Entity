@@ -345,7 +345,11 @@ public:
                                          int32_t x, int32_t y,
                                          uint32_t width, uint32_t height) = 0;
 
-    virtual void     destroyOutputWindow(uint32_t outputSlot) = 0;
+    // Returns true when the window + swap chain were destroyed; false when the
+    // destroy was DEFERRED because the GPU drain was abandoned on a live device
+    // (#91) — the slot stays active and the caller must retry (OutputManager
+    // keeps a pending list, retried each show tick).
+    virtual bool     destroyOutputWindow(uint32_t outputSlot) = 0;
     virtual void     resizeOutputWindow(uint32_t outputSlot,
                                          uint32_t width, uint32_t height) = 0;
     virtual uint32_t getOutputWindowWidth(uint32_t outputSlot) const = 0;

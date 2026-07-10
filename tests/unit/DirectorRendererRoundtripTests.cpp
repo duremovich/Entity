@@ -125,7 +125,7 @@ public:
     uint32_t createOutputWindow(const char*, int32_t, int32_t, uint32_t, uint32_t) override {
         return UINT32_MAX;
     }
-    void     destroyOutputWindow(uint32_t) override {}
+    bool     destroyOutputWindow(uint32_t) override { return true; }
     void     resizeOutputWindow(uint32_t, uint32_t, uint32_t) override {}
     uint32_t getOutputWindowWidth(uint32_t) const override { return 0; }
     uint32_t getOutputWindowHeight(uint32_t) const override { return 0; }

@@ -4468,13 +4468,18 @@ uint32_t D3D12Renderer::createOutputWindow(const char* title,
     return slotIndex;
 }
 
-void D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
-    if (outputSlot >= m_outputWindows.size()) return;
+bool D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
+    if (outputSlot >= m_outputWindows.size()) return true;   // nothing to do
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active) return true;                             // nothing to do
 
-    // Wait for GPU so we don't yank back buffers still in flight.
-    waitForGpu();
+    // #91: don't yank back buffers still in flight. On an abandoned drain
+    // (live device) defer — slot stays active (so ensureOutputWindow can't
+    // reuse it) and the caller retries. Confirmed removal proceeds: a dead
+    // device executes nothing, and the swap chain must go regardless.
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         ow.renderTargets[i].Reset();
@@ -4493,6 +4498,7 @@ void D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
     ow.currentBackBufferIndex = 0;
 
     std::cout << "[OutputWindow] Destroyed slot " << outputSlot << std::endl;
+    return true;
 }
 
 void D3D12Renderer::resizeOutputWindow(uint32_t outputSlot,
@@ -4503,7 +4509,12 @@ void D3D12Renderer::resizeOutputWindow(uint32_t outputSlot,
     if (width == 0 || height == 0) return;
     if (width == ow.width && height == ow.height) return;
 
-    waitForGpu();
+    // #91: defer on an abandoned drain (currently caller-less — geometry
+    // changes go through destroy + recreate in OutputManager — but the
+    // contract holds for future callers).
+    if (!gpuIdleForDestroy()) {
+        return;
+    }
 
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         ow.renderTargets[i].Reset();
@@ -4626,8 +4637,12 @@ bool D3D12Renderer::ensureScreenshotStagingBuffer(uint32_t width, uint32_t heigh
         return true;
     }
 
-    // Wait for GPU before modifying resources
-    waitForGpu();
+    // #91: defer on an abandoned drain — Reset()ing the allocator (or Mapping
+    // a copy that hasn't provably executed) races in-flight lists. Callers
+    // treat false as capture-failed and may retry.
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
     m_screenshotStagingBuffer.Reset();
 
     // Calculate row pitch (must be 256-byte aligned for D3D12)
@@ -4693,8 +4708,10 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
         return false;
     }
 
-    // Wait for any previous GPU work
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     // Reset command allocator and command list for this operation
     HRESULT hr = m_captureAllocator->Reset();
@@ -4762,8 +4779,10 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     ID3D12CommandList* commandLists[] = { m_captureCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
 
-    // Wait for GPU to finish the copy
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     // Map staging buffer and read pixels
     void* mappedData = nullptr;
@@ -5342,7 +5361,10 @@ bool D3D12Renderer::ensureCaptureResource(uint32_t width, uint32_t height) {
         return true;
     }
 
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
     m_captureResource.Reset();
 
     if (!m_captureRtvHeap) {
@@ -5416,7 +5438,10 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     if (!ensureCaptureResource(target.width, target.height)) return false;
     if (!ensureScreenshotStagingBuffer(target.width, target.height)) return false;
 
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     // Dedicated capture allocator + list — this path runs on the show thread
     // and must not Reset/record the editor thread's objects (see header note).
@@ -5504,7 +5529,10 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
 
     ID3D12CommandList* lists[] = { m_captureCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, lists);
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     void* mapped = nullptr;
     D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(m_screenshotStagingRowPitch * target.height) };
