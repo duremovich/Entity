@@ -252,6 +252,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertScreenExists", AssertScreenExistsCommand::fromJson);
     registerFactory("AssertScreenCount", AssertScreenCountCommand::fromJson);
     registerFactory("AssertVideoTextureSlotsAllocated", AssertVideoTextureSlotsAllocatedCommand::fromJson);
+    registerFactory("AssertVideoTextureStaleGenerationSkips", AssertVideoTextureStaleGenerationSkipsCommand::fromJson);
     registerFactory("AssertFrameCached", AssertFrameCachedCommand::fromJson);
     registerFactory("SetFrameCacheBudget", SetFrameCacheBudgetCommand::fromJson);
     registerFactory("AssertFrameCacheBudgetOK", AssertFrameCacheBudgetOKCommand::fromJson);

@@ -138,6 +138,9 @@ struct OutputSnapshot {
 struct ClipRenderState {
     std::uint64_t entity{0};
     int slot{-1};
+    // #90 reuse generation of `slot` (uint32, matching the renderer's slot
+    // generation even though `slot` is an int/-1 sentinel). 0 for slot==-1.
+    std::uint32_t slotGeneration{0};
     FrameNumber mediaFrame{0};
     std::string ocioOverride;
     std::array<float, 16> transformMatrix{
@@ -447,6 +450,11 @@ struct ContentLayerSnapshot {
 
     SourceKind    sourceKind{SourceKind::Video};
     std::int32_t  sourceSlot{-1};       // -1 = no texture yet (skip draw)
+    // #90 reuse generation of `sourceSlot` (only meaningful for Video source).
+    // Threaded to TextureRef::video(slot, gen) so a stale cached snapshot's
+    // draw is rejected. 0 for compose/generative sources (skip is applied by
+    // leaving those TextureRefs on the default any-generation).
+    std::uint32_t sourceGeneration{0};
 
     // Optional colour-pipeline hints. PlaybackPresenter caches the
     // authoritative tags for clips; the compositor takes a best-effort
@@ -572,6 +580,10 @@ struct ClipCatalogEntry {
 
     // VideoTexture
     int           descriptorSlot{-1};
+    // #90 reuse generation of descriptorSlot (VideoTexture::generation).
+    // Baked show-side into ClipRenderState::slotGeneration. 0 when
+    // descriptorSlot is the -1 sentinel (no slot yet).
+    std::uint32_t descriptorGeneration{0};
 
     // Pre-baked transform matrix (column-major)
     std::array<float, 16> transformMatrix{
@@ -743,6 +755,10 @@ struct ProvisionClipResources {
 struct ResourcesProvisioned {
     std::uint64_t entity{0};
     int descriptorSlot{-1};
+    // #90 reuse generation of the just-allocated descriptorSlot, read from the
+    // renderer (videoTextureSlotGeneration). Editor writes it into
+    // VideoTexture::generation alongside descriptorSlot. 0 on failure.
+    std::uint32_t generation{0};
     bool ok{true};
     std::string errorMessage;
 };

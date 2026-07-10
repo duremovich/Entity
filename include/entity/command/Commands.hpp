@@ -1326,6 +1326,34 @@ private:
 };
 
 /**
+ * Assert that the renderer's stale-generation skip counter is at least `min`
+ * (#90). Every time a video-texture upload or direct-copy is rejected because
+ * its captured slot generation no longer matches the slot's current generation
+ * — the cross-tick stale-cached-snapshot case — the renderer bumps this
+ * monotonic counter. A value >= 1 proves the generation guard actually fired.
+ *
+ * JSON format:
+ * {
+ *     "type": "AssertVideoTextureStaleGenerationSkips",
+ *     "min": 1
+ * }
+ */
+class AssertVideoTextureStaleGenerationSkipsCommand : public Command {
+public:
+    explicit AssertVideoTextureStaleGenerationSkipsCommand(uint64_t min) : m_min(min) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertVideoTextureStaleGenerationSkips"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint64_t m_min;
+};
+
+/**
  * Assert that the engine-global FrameCache currently holds an exact entry
  * for (clipEntity at trackIndex/clipIndex, sourceFrame). This is the gate
  * for the click-to-recently-viewed-frame fast path — Phase C.10's promise

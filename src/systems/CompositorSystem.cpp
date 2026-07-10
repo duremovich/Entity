@@ -137,7 +137,8 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             // subsequent effect reads the previous output (always Compose).
             TextureRef currentInput =
                 (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
-                    ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot))
+                    ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot),
+                                        cl.sourceGeneration)  // #90 draw guard
                     : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
 
             std::uint32_t currentOutput = slotA;

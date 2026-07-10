@@ -935,6 +935,11 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                 ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEndFrame)
                 : 0.0;
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
+        // #90: carry the slot's reuse generation only for a real slot. The
+        // VideoTexture unallocated sentinel is UINT32_MAX (which the cast above
+        // turns into descriptorSlot == -1); 0 there matches the field default.
+        ce.descriptorGeneration =
+            (videoTex.descriptorSlot != UINT32_MAX) ? videoTex.generation : 0u;
 
         // Bake transform matrix on the editor thread (no const_cast needed here).
         // Also bake the individual axes (position/rotation/scale) so the show
@@ -1354,6 +1359,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         bus::ClipRenderState c;
         c.entity       = ce.entity;
         c.slot         = ce.descriptorSlot;
+        c.slotGeneration = ce.descriptorGeneration;  // #90
         c.mediaFrame   = mapToMediaFrameFromCatalog(ce, currentFrame, timelineFrameRate, rateNowNs);
         c.ocioOverride = ce.ocioOverride;
         c.transformMatrix = ce.transformMatrix;
@@ -1546,6 +1552,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder                = ac.zOrder;
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Video;
         c.sourceSlot            = ac.slot;
+        c.sourceGeneration      = ac.slotGeneration;  // #90
         // Carry remoteSlot for diagnostics / future per-entry overlay.
         if (ce) c.remoteSlot   = ce->remoteSlot;
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter

@@ -108,6 +108,7 @@ ojson encode(const ClipRenderState& c) {
     ojson j = ojson::object();
     j["entity"] = c.entity;
     j["slot"] = c.slot;
+    j["slotGeneration"] = c.slotGeneration;
     j["mediaFrame"] = c.mediaFrame;
     j["ocioOverride"] = c.ocioOverride;
     j["transformMatrix"] = c.transformMatrix;
@@ -123,6 +124,7 @@ ClipRenderState decodeClipRenderState(const json& j) {
     ClipRenderState c;
     c.entity = j.at("entity").get<std::uint64_t>();
     c.slot = j.at("slot").get<int>();
+    c.slotGeneration = j.value("slotGeneration", std::uint32_t{0});  // #90; default 0 for old captures
     c.mediaFrame = j.at("mediaFrame").get<FrameNumber>();
     c.ocioOverride = j.at("ocioOverride").get<std::string>();
     const auto& arr = j.at("transformMatrix");
@@ -576,6 +578,7 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["zOrder"]                = c.zOrder;
     j["sourceKind"]            = static_cast<int>(c.sourceKind);
     j["sourceSlot"]            = c.sourceSlot;
+    j["sourceGeneration"]      = c.sourceGeneration;
     j["colorSpace"]            = c.colorSpace;
     j["ocioColorSpace"]        = c.ocioColorSpace;
     auto fx = ojson::array();
@@ -631,6 +634,7 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
                                 ? ContentLayerSnapshot::SourceKind::Compose
                                 : ContentLayerSnapshot::SourceKind::Video;
     c.sourceSlot            = j.value("sourceSlot",            std::int32_t{-1});
+    c.sourceGeneration      = j.value("sourceGeneration",      std::uint32_t{0});  // #90; default 0 for old captures
     c.colorSpace            = j.value("colorSpace",            0);
     c.ocioColorSpace        = j.value("ocioColorSpace",        std::string{});
     if (j.contains("effects")) {
@@ -844,6 +848,7 @@ ojson encode(const ClipCatalogEntry& e) {
     j["endAlignsWithSectionBreak"] = e.endAlignsWithSectionBreak;
     j["endingBreakFadeSeconds"] = e.endingBreakFadeSeconds;
     j["descriptorSlot"]       = e.descriptorSlot;
+    j["descriptorGeneration"] = e.descriptorGeneration;
     j["transformMatrix"]      = e.transformMatrix;
     j["opacity"]              = e.opacity;
     j["blendMode"]            = e.blendMode;
@@ -902,6 +907,7 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     // behavior. New payloads carry the actual fadeSeconds.
     e.endingBreakFadeSeconds = j.value("endingBreakFadeSeconds", 0.0);
     e.descriptorSlot  = j.at("descriptorSlot").get<int>();
+    e.descriptorGeneration = j.value("descriptorGeneration", std::uint32_t{0});  // #90; default 0 for old captures
     const auto& arr   = j.at("transformMatrix");
     if (!arr.is_array() || arr.size() != 16)
         throw std::invalid_argument("ClipCatalogEntry transformMatrix must be array of 16 floats");
@@ -1128,6 +1134,7 @@ ojson encode(const ResourcesProvisioned& m) {
     ojson j = ojson::object();
     j["entity"] = m.entity;
     j["descriptorSlot"] = m.descriptorSlot;
+    j["generation"] = m.generation;
     j["ok"] = m.ok;
     j["errorMessage"] = m.errorMessage;
     return j;
@@ -1137,6 +1144,7 @@ ResourcesProvisioned decodeResourcesProvisioned(const json& j) {
     ResourcesProvisioned m;
     m.entity = j.at("entity").get<std::uint64_t>();
     m.descriptorSlot = j.at("descriptorSlot").get<int>();
+    m.generation = j.value("generation", std::uint32_t{0});  // #90; default 0 for old captures
     m.ok = j.at("ok").get<bool>();
     m.errorMessage = j.at("errorMessage").get<std::string>();
     return m;

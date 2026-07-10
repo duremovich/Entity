@@ -109,11 +109,16 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                         // propagate honestly so we don't bump lastDecodedFrame
                         // on a no-op and freeze the clip's display until the
                         // playhead moves elsewhere.
+                        // #90: ac.slotGeneration lets the renderer reject this
+                        // upload if the slot index was reused since the snapshot
+                        // was baked (stale-cached-snapshot cross-tick case).
                         return m_renderer->copyUploadBufferToVideoTextureSlot(
-                            slot, f.uploadBuf.get(), f.width, f.height, f.format);
+                            slot, f.uploadBuf.get(), f.width, f.height, f.format,
+                            ac.slotGeneration);
                     }
                     return m_renderer->uploadVideoFrameToSlot(
-                        slot, f.data(), f.width, f.height, f.format);
+                        slot, f.data(), f.width, f.height, f.format,
+                        ac.slotGeneration);
                 }();
                 if (ok) {
                     display.colorSpace = f.colorSpace;
@@ -158,10 +163,12 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                         // comment above for why hardcoding true is wrong).
                         if (f.storage == DecodedFrame::Storage::UploadHeap && f.uploadBuf) {
                             return m_renderer->copyUploadBufferToVideoTextureSlot(
-                                slot, f.uploadBuf.get(), f.width, f.height, f.format);
+                                slot, f.uploadBuf.get(), f.width, f.height, f.format,
+                                ac.slotGeneration);  // #90
                         }
                         return m_renderer->uploadVideoFrameToSlot(
-                            slot, f.data(), f.width, f.height, f.format);
+                            slot, f.data(), f.width, f.height, f.format,
+                            ac.slotGeneration);  // #90
                     }();
                     if (ok) {
                         display.colorSpace = f.colorSpace;

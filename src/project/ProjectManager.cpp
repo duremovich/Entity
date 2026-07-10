@@ -356,6 +356,10 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
             // Default to RGBA8_UNORM — ensureTexture handles format-change
             // recreation if the decoder later produces something different.
             if (videoTex.descriptorSlot != UINT32_MAX) {
+                // #90: stamp the slot's reuse generation so the bake threads it
+                // through the snapshot (same as the ResourcesProvisioned path).
+                videoTex.generation =
+                    m_renderer->videoTextureSlotGeneration(videoTex.descriptorSlot);
                 m_renderer->prepareVideoTextureSlot(
                     videoTex.descriptorSlot,
                     videoTex.width,

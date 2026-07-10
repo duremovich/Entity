@@ -1660,6 +1660,10 @@ void Engine::showThreadMain() {
                                     reply.errorMessage = "no available video texture slots";
                                 } else {
                                     reply.descriptorSlot = static_cast<int>(slot);
+                                    // #90: capture the slot's reuse generation so
+                                    // the editor stamps it on VideoTexture and the
+                                    // bake threads it through the snapshot.
+                                    reply.generation = m_renderer->videoTextureSlotGeneration(slot);
                                     reply.ok = true;
                                 }
                             } else {
@@ -5582,6 +5586,9 @@ void Engine::drainRendererToDirector() {
                     if (body.ok && body.descriptorSlot >= 0) {
                         videoTex->descriptorSlot =
                             static_cast<uint32_t>(body.descriptorSlot);
+                        // #90: stamp the slot's reuse generation alongside the
+                        // slot index so the bake threads it through the snapshot.
+                        videoTex->generation = body.generation;
                         // Pre-allocate the D3D12 texture for this slot so the
                         // show thread's first uploadVideoFrameToSlot does NOT
                         // hit uploadWouldResize — since #89 that path defers
@@ -5590,9 +5597,15 @@ void Engine::drainRendererToDirector() {
                         // stall; either way missed first frames. Mirrors the
                         // ProjectManager::loadMedia path (Fix 9) for clips
                         // created via ImportVideo / drag-drop (which bypass
-                        // the project-load path). Editor thread is safe here
-                        // — slot is freshly allocated and no GPU work is in
-                        // flight on it yet.
+                        // the project-load path). #90: on a REUSED slot index a
+                        // show-thread upload of the prior occupant can still be
+                        // in flight, so "no GPU work on it yet" no longer holds
+                        // — correctness now rests on (a) TextureUploader::upload
+                        // /recordDirectCopy taking m_slotMutex around their whole
+                        // body, which serializes this prepareTexture recreate
+                        // against a concurrent show-thread upload, and (b) the
+                        // per-slot generation guard rejecting the stale occupant's
+                        // uploads/draws (the generation stamped just above).
                         if (m_renderer) {
                             if (auto* clip = m_registry.try_get<Clip>(entity);
                                 clip && clip->width > 0 && clip->height > 0) {

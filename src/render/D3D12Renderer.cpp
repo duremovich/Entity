@@ -661,6 +661,9 @@ void D3D12Renderer::beginShowFrame() {
                     // built earlier this tick from a stale snapshot must not
                     // upload into the slot if the editor re-allocates it
                     // within the same tick.
+                    // #90: this same-tick defense is unchanged; the cross-tick
+                    // stale-cached-snapshot case is covered by the per-slot
+                    // generation guard (freeSlot bumps generation here).
                     m_textureUploader->freeSlot(p.slot);
                     m_videoSlotGates[p.slot].open();
                     m_videoSlotGateDriven[p.slot] = false;
@@ -734,6 +737,8 @@ void D3D12Renderer::endShowFrame() {
     // freed this tick — deferred past the frame's recording so a RenderFrame
     // built from a stale snapshot before the drain can't upload into a slot
     // freed and re-allocated within the same tick.
+    // #90: same-tick defense unchanged; the cross-tick stale-snapshot case
+    // (snapshot cached across ticks) is covered by the per-slot generation guard.
     struct GateBackstopGuard {
         D3D12Renderer& r;
         ~GateBackstopGuard() {
@@ -2571,10 +2576,14 @@ bool D3D12Renderer::prepareVideoTextureSlot(uint32_t slot,
     // ProjectManager::loadMedia (editor thread) right after
     // allocateVideoTextureSlot so the show-thread first-frame upload
     // doesn't pay CreateCommittedResource on the hot path. See ADR-0014's
-    // editor/show split — this is editor-thread D3D12 work, which is safe
-    // for CreateCommittedResource / CreateShaderResourceView because the
-    // slot isn't yet visible to the show thread (the SceneSnapshot bake
-    // hasn't published this clip's catalog entry yet).
+    // editor/show split — this is editor-thread D3D12 work.
+    // #90: on a brand-new clip the slot isn't yet visible to the show thread
+    // (its catalog entry hasn't been published). On a REUSED slot index,
+    // though, a show-thread upload of the prior occupant may still be running
+    // when this recreate fires — so "not yet visible" no longer holds in
+    // general. Safety now comes from TextureUploader::prepareTexture taking
+    // m_slotMutex (serializing this recreate against upload/recordDirectCopy)
+    // plus the per-slot generation guard rejecting the stale occupant.
     if (!m_initialized || !m_textureUploader) return false;
     return m_textureUploader->prepareTexture(slot, width, height, format);
 }

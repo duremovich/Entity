@@ -2820,6 +2820,40 @@ CommandPtr AssertVideoTextureSlotsAllocatedCommand::fromJson(const nlohmann::jso
 }
 
 // ============================================================================
+// AssertVideoTextureStaleGenerationSkipsCommand (#90)
+// ============================================================================
+
+bool AssertVideoTextureStaleGenerationSkipsCommand::execute(Engine& engine) {
+    auto* renderer = engine.getRenderer();
+    if (!renderer) {
+        std::cerr << "[AssertVideoTextureStaleGenerationSkips] No renderer" << std::endl;
+        return false;
+    }
+    const uint64_t actual = renderer->videoTextureStaleGenerationSkips();
+    if (actual >= m_min) {
+        std::cout << "[AssertVideoTextureStaleGenerationSkips] OK skips=" << actual
+                  << " (min " << m_min << ")" << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertVideoTextureStaleGenerationSkips] FAIL: expected >= " << m_min
+              << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertVideoTextureStaleGenerationSkipsCommand::toJson() const {
+    return {{"type", "AssertVideoTextureStaleGenerationSkips"}, {"min", m_min}};
+}
+
+std::string AssertVideoTextureStaleGenerationSkipsCommand::getDescription() const {
+    return "Assert video texture stale-generation skips >= " + std::to_string(m_min);
+}
+
+CommandPtr AssertVideoTextureStaleGenerationSkipsCommand::fromJson(const nlohmann::json& j) {
+    uint64_t min = j.value("min", static_cast<uint64_t>(1));
+    return std::make_unique<AssertVideoTextureStaleGenerationSkipsCommand>(min);
+}
+
+// ============================================================================
 // AssertFrameCachedCommand
 // ============================================================================
 

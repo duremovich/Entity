@@ -21,6 +21,12 @@ struct VideoTexture {
     // Allocate via IRenderer::allocateVideoTextureSlot().
     uint32_t descriptorSlot{UINT32_MAX};
 
+    // #90 — reuse generation of descriptorSlot, captured from the renderer at
+    // allocation time (ResourcesProvisioned / project-load). Threaded through
+    // the SceneSnapshot bake so a stale cached snapshot that reuses this slot
+    // index has its uploads/draws rejected by the renderer's generation guard.
+    uint32_t generation{0};
+
     // Texture dimensions (set after upload)
     uint32_t width{0};
     uint32_t height{0};
