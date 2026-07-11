@@ -361,7 +361,7 @@ if (result == entity::Result::Success) {
 | `CMakeLists.txt` | Modified | ✓ Source file added |
 | `vcpkg.json` | Modified | ✓ "stb" dependency added |
 | `tests/test_png_sequence_decoder.cpp` | Created | ✓ |
-| `docs/png_sequence_decoder.md` | Created | ✓ |
+| `docs/png_sequence_decoder.md` | Created | ✓ (since moved to `docs/archive/png_sequence_decoder.md`) |
 
 ## Code Quality Checklist
 

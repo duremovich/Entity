@@ -140,7 +140,7 @@ The three build directories you may see in a working checkout: `build/`
 
 ## Troubleshooting
 
-**For comprehensive troubleshooting information, see [docs/troubleshooting.md](docs/troubleshooting.md)**
+**For comprehensive troubleshooting information, see [docs/reference/TROUBLESHOOTING.md](docs/reference/TROUBLESHOOTING.md)**
 
 Common issues are listed below for quick reference:
 
