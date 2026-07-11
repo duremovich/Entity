@@ -7,6 +7,7 @@
 #include "entity/director/CaptureBroker.hpp"
 #include "entity/director/Director.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/precomp/PrecompLibrary.hpp"
 #include "entity/remote/RemoteControlStore.hpp"
 #include "entity/components/RemotePatch.hpp"
 #include "entity/remote/RemotePatchUtil.hpp"
@@ -281,6 +282,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     // Live remote-control value plane (ADR-0028). Any-thread writes via
     // plugin-api seam; show-thread reads are indexed atomics, no locks.
     m_remoteControlStore = std::make_unique<remote::RemoteControlStore>();
+
+    // Precomp definition library (ADR-0029). Definition Timelines share
+    // m_registry and are never handed to playback systems.
+    m_precompLibrary = std::make_unique<PrecompLibrary>(m_registry);
 
     // Per-layer effects registry (issue #54). Built once at startup with
     // the engine-shipped effect catalog; pointers propagated to both the

@@ -56,6 +56,8 @@ class PlaybackPresenter;
 class SeekSyncController;
 namespace effects { class EffectKindRegistry; }
 namespace remote { class RemoteControlStore; }
+class PrecompLibrary; // ADR-0029 — Engine-owned precomp definition
+                      // library. Defined in entity/precomp/.
 class Director;       // Phase D entry — owns Timeline, ProjectManager,
                       // TranscodeManager, CommandDispatcher,
                       // AnimationSystem (subtasks 4 + 5).
@@ -175,6 +177,14 @@ public:
     // threads + editor UI; sampled lock-free by the show thread.
     remote::RemoteControlStore* getRemoteControlStore() {
         return m_remoteControlStore.get();
+    }
+
+    // Precomp definition library (ADR-0029). Editor-thread authoring
+    // state; definition Timelines share m_registry and are never handed
+    // to playback systems. Returns null until initialize().
+    PrecompLibrary* getPrecompLibrary() { return m_precompLibrary.get(); }
+    const PrecompLibrary* getPrecompLibrary() const {
+        return m_precompLibrary.get();
     }
 
     /**
@@ -979,6 +989,11 @@ private:
     // Live remote-control value plane (ADR-0028). Written by plugin
     // threads + editor UI; sampled lock-free by the show thread.
     std::unique_ptr<remote::RemoteControlStore> m_remoteControlStore;
+
+    // Precomp definition library (ADR-0029 Decision 2). Engine-owned;
+    // definition Timelines share m_registry and are never handed to
+    // playback systems.
+    std::unique_ptr<PrecompLibrary> m_precompLibrary;
 
     // Raw shortcuts into m_rendererService. Set during initialize(); valid
     // for the rest of Engine's lifetime. Existing call sites use the member

@@ -222,6 +222,9 @@ target_sources(EntityMediaCore
         # src/timeline/Transport.cpp (to be implemented later)
         # src/timeline/TimeMapping.cpp (to be implemented later)
 
+        # Precomp (ADR-0029)
+        src/precomp/PrecompLibrary.cpp
+
         # UI
         src/ui/MathInput.cpp
         src/ui/WindowManager.cpp
