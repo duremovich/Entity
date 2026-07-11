@@ -9,6 +9,7 @@
 #include "entity/bus/Message.hpp"
 #include "entity/director/CatalogClipMath.hpp"
 #include "entity/profile/Tracy.hpp"
+#include "entity/timeline/PlaybackWrap.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Clip.hpp"
@@ -335,36 +336,15 @@ void DecodeSystem::update(entt::registry& registry, float deltaTime) {
             }
 
             FrameNumber sourceLength = effectivePlaybackLength(clip);
-            FrameNumber mediaFrame = clip.mediaStartFrame;
-
-            if (sourceLocalFrame < sourceLength) {
-                mediaFrame = clip.mediaStartFrame + sourceLocalFrame;
-            } else {
-                switch (clip.playbackMode) {
-                    case PlaybackMode::Freeze:
-                        mediaFrame = clip.mediaStartFrame + sourceLength - 1;
-                        break;
-                    case PlaybackMode::Loop:
-                        mediaFrame = clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
-                        break;
-                    case PlaybackMode::PingPong: {
-                        FrameNumber cycle = sourceLocalFrame / sourceLength;
-                        FrameNumber pos = sourceLocalFrame % sourceLength;
-                        if (cycle % 2 == 0) {
-                            mediaFrame = clip.mediaStartFrame + pos;
-                        } else {
-                            mediaFrame = clip.mediaStartFrame + (sourceLength - 1 - pos);
-                        }
-                        break;
-                    }
-                }
-            }
-
-            bool isReverse = false;
-            if (clip.playbackMode == PlaybackMode::PingPong && sourceLength > 0) {
-                FrameNumber cycle = sourceLocalFrame / sourceLength;
-                isReverse = (cycle % 2 == 1);
-            }
+            // Shared wrap primitive (ADR-0029 D3): one call yields the
+            // wrapped frame and the PingPong cycle parity the steering
+            // needs (parity was previously recomputed out-of-band; on the
+            // in-window leg cycle was 0, so it was always false — same as
+            // the primitive's passthrough).
+            const WrapResult w =
+                wrapLocalFrame(clip.playbackMode, sourceLength, sourceLocalFrame);
+            const FrameNumber mediaFrame = clip.mediaStartFrame + w.frame;
+            const bool isReverse = w.reverse;
 
             if (steerWorker(entity, *worker, mediaFrame, isReverse, inTailHeld,
                             sourceLength, clip.mediaStartFrame,
