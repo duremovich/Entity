@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -11,12 +10,23 @@ namespace entity {
 
 namespace {
 
-bool allDigits(std::string_view s) {
-    if (s.empty()) return false;
-    for (char c : s) {
-        if (c < '0' || c > '9') return false;
-    }
-    return true;
+std::size_t leadingDigitCount(std::string_view s) {
+    std::size_t n = 0;
+    while (n < s.size() && s[n] >= '0' && s[n] <= '9') ++n;
+    return n;
+}
+
+// Compare two non-empty digit runs as arbitrary-precision unsigned
+// integers (no conversion, so no overflow): strip leading zeros, then a
+// longer run is greater, then lexicographic settles equal lengths.
+// "1" and "01" compare equal.
+int compareDigitRuns(std::string_view a, std::string_view b) {
+    a.remove_prefix(std::min(a.find_first_not_of('0'), a.size()));
+    b.remove_prefix(std::min(b.find_first_not_of('0'), b.size()));
+    if (a.size() != b.size()) return a.size() < b.size() ? -1 : 1;
+    if (a < b) return -1;
+    if (a > b) return  1;
+    return 0;
 }
 
 bool allAlnum(std::string_view s) {
@@ -63,7 +73,10 @@ PathParts splitPath(std::string_view path) {
 }  // namespace
 
 ParsedVersion parseVersion(std::string_view stem) {
-    // Pattern: ^(.+)_[vV]([A-Za-z0-9]+)$ — anchored to the end of stem.
+    // Pattern: ^(.+)_[vV]([0-9][A-Za-z0-9]*)$ — anchored to the end of stem.
+    // The tag must start with a digit so that word suffixes containing a
+    // `_v` (`intro_visual`, `title_video`, `cut_version`) are not mistaken
+    // for version tags and mis-grouped with their prefix (`intro.mov`).
     // Lowercase a copy so the rfind is case-insensitive on the marker;
     // the tag is extracted from the original to preserve any user
     // casing (display normalizes anyway).
@@ -76,7 +89,9 @@ ParsedVersion parseVersion(std::string_view stem) {
         return {std::string(stem), {}};
     }
     std::string_view tagCandidate = stem.substr(marker + 2);
-    if (!allAlnum(tagCandidate)) {
+    if (tagCandidate.empty() ||
+        tagCandidate.front() < '0' || tagCandidate.front() > '9' ||
+        !allAlnum(tagCandidate)) {
         return {std::string(stem), {}};
     }
     return {std::string(stem.substr(0, marker)), std::string(tagCandidate)};
@@ -87,17 +102,19 @@ int compareVersionTags(std::string_view a, std::string_view b) {
     if (a.empty()) return -1;
     if (b.empty()) return  1;
 
-    if (allDigits(a) && allDigits(b)) {
-        // Compare as unsigned integers. Use uint64_t — version tags
-        // realistically never overflow, but be defensive.
-        unsigned long long ai = 0, bi = 0;
-        std::from_chars(a.data(), a.data() + a.size(), ai);
-        std::from_chars(b.data(), b.data() + b.size(), bi);
-        if (ai < bi) return -1;
-        if (ai > bi) return  1;
-        return 0;
+    const std::size_t da = leadingDigitCount(a);
+    const std::size_t db = leadingDigitCount(b);
+    if (da > 0 && db > 0) {
+        // Numeric on the leading digits, so "2" < "10" and "2a" < "10a";
+        // an alnum suffix breaks ties lexicographically ("2a" < "2b",
+        // and plain "2" < suffixed "2a").
+        const int num = compareDigitRuns(a.substr(0, da), b.substr(0, db));
+        if (num != 0) return num;
+        a.remove_prefix(da);
+        b.remove_prefix(db);
     }
-    // Lexicographic fallback.
+    // Lexicographic fallback (defensive — parseVersion only emits
+    // digit-leading tags, so both runs above are normally non-empty).
     if (a < b) return -1;
     if (a > b) return  1;
     return 0;

@@ -536,13 +536,17 @@ void MediaBinWindow::render() {
     // Build a per-path metadata cache from whatever clips exist (may be
     // empty — a freshly-imported file that's still transcoding has no
     // clip yet, so its resolution / duration cells will show "--").
+    // Keyed by LOGICAL path (version tag stripped) so a row — which
+    // represents a version group — finds the metadata regardless of
+    // whether the clip pins a specific version or auto-rolls.
     std::unordered_map<std::string, std::tuple<uint32_t, uint32_t, double, FrameNumber, bool>> metadataCache;
     {
         auto& registry = m_engine->getRegistry();
         auto clipView = registry.view<Clip>();
         for (auto [entity, clip] : clipView.each()) {
-            if (metadataCache.find(clip.filepath) == metadataCache.end()) {
-                metadataCache[clip.filepath] = std::make_tuple(
+            std::string key = toLogicalPath(clip.filepath);
+            if (metadataCache.find(key) == metadataCache.end()) {
+                metadataCache[std::move(key)] = std::make_tuple(
                     clip.width, clip.height, clip.framerate,
                     clip.totalMediaFrames, clip.hasAlpha);
             }
@@ -818,7 +822,7 @@ void MediaBinWindow::render() {
             FrameNumber duration = 0;
             double framerate = 0.0;
             bool hasAlpha = false;
-            if (auto it = metadataCache.find(filepath); it != metadataCache.end()) {
+            if (auto it = metadataCache.find(logicalPath); it != metadataCache.end()) {
                 hasMetadata = true;
                 std::tie(width, height, framerate, duration, hasAlpha) = it->second;
             } else if (probe && probe->valid) {

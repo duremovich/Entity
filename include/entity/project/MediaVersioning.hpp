@@ -13,12 +13,15 @@
  *
  * Conventions (fixed, not configurable):
  *   - Marker `_v` is case-insensitive (`_V01` matches the same as `_v01`).
- *   - Tag is alphanumeric only (`[A-Za-z0-9]+`). `_v01_alpha.mov` is NOT
- *     a versioned file — the whole stem is the base. Role-suffixed files
- *     get their own group, the safer default when a role taxonomy is
- *     unspecified.
- *   - Smart sort: numeric tags compare numerically (`v2 < v10`); otherwise
- *     lexicographic (handles date-style `v20210602a`).
+ *   - Tag is alphanumeric and must START WITH A DIGIT
+ *     (`[0-9][A-Za-z0-9]*`). `_v01_alpha.mov` is NOT a versioned file —
+ *     the whole stem is the base — and neither is a word suffix that
+ *     merely contains `_v` (`intro_visual.mov`, `title_video.mov`).
+ *     Role-suffixed files get their own group, the safer default when a
+ *     role taxonomy is unspecified.
+ *   - Smart sort: tags compare numerically on their leading digits
+ *     (`v2 < v10`, `v2a < v10a`); an alnum suffix breaks ties
+ *     lexicographically (handles date-style `v20210602a < v20210602b`).
  *
  * Pure functions, no project / filesystem dependencies. Unit tested in
  * `tests/unit/MediaVersioningTests.cpp`.
@@ -36,16 +39,19 @@ struct ParsedVersion {
 
 /**
  * Parse a filename stem (no extension) into base + tag. If `stem` does
- * not match `^(.+)_v([A-Za-z0-9]+)$`, returns `{stem, ""}`.
+ * not match `^(.+)_v([0-9][A-Za-z0-9]*)$` (marker case-insensitive),
+ * returns `{stem, ""}`.
  */
 ParsedVersion parseVersion(std::string_view stem);
 
 /**
  * Compare two version tags. Returns <0, 0, or >0 like strcmp.
  *
- * If both tags parse cleanly as base-10 unsigned integers, compares
- * numerically (so `v02 < v10` even though lexicographically `v10 < v02`).
- * Otherwise compares lexicographically (handles date-style tags).
+ * Tags compare numerically on their leading digit runs (so `v02 < v10`
+ * and `v2a < v10a` even though lexicographically `10 < 2`); when the
+ * leading numbers tie, the remaining suffix compares lexicographically
+ * (date-style `v20210602a < v20210602b`). Tags without leading digits
+ * (which parseVersion no longer produces) fall back to lexicographic.
  *
  * Empty tags sort BEFORE any non-empty tag, so an unversioned file is
  * the "earliest" member of its group.

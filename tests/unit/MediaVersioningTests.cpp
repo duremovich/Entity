@@ -42,6 +42,12 @@ TEST(MediaVersioning, ParsePicksLastVMarker) {
     EXPECT_EQ(pv.tag,  "2");
 }
 
+TEST(MediaVersioning, ParseDigitLeadingTagWithSuffix) {
+    auto pv = parseVersion("intro_v2a");
+    EXPECT_EQ(pv.base, "intro");
+    EXPECT_EQ(pv.tag,  "2a");
+}
+
 // ---------------------------------------------------------------------------
 // parseVersion — non-matches (whole stem is base)
 // ---------------------------------------------------------------------------
@@ -62,6 +68,25 @@ TEST(MediaVersioning, RoleSuffixDefeatsMatch) {
 TEST(MediaVersioning, EmptyTagDefeatsMatch) {
     auto pv = parseVersion("intro_v");
     EXPECT_EQ(pv.base, "intro_v");
+    EXPECT_TRUE(pv.tag.empty());
+}
+
+TEST(MediaVersioning, WordSuffixContainingVIsNotAVersion) {
+    // Issue #83 regression: `_visual` / `_video` / `_version` contain the
+    // `_v` marker but are word suffixes, not version tags. The tag must
+    // start with a digit; a letter-leading candidate defeats the match.
+    for (const char* stem : {"intro_visual", "title_video", "cut_version"}) {
+        auto pv = parseVersion(stem);
+        EXPECT_EQ(pv.base, stem);
+        EXPECT_TRUE(pv.tag.empty()) << stem;
+    }
+}
+
+TEST(MediaVersioning, LetterLeadingTagAfterRealVersionDefeatsMatch) {
+    // Rightmost `_v` is `_version...` (letter-leading) — no fallback to
+    // the earlier `_v2`, since a valid tag must reach the end of stem.
+    auto pv = parseVersion("intro_v2_versionB");
+    EXPECT_EQ(pv.base, "intro_v2_versionB");
     EXPECT_TRUE(pv.tag.empty());
 }
 
@@ -119,6 +144,18 @@ TEST(MediaVersioning, SortDateStyleLexicographic) {
     EXPECT_LT(compareVersionTags("20210601a", "20210602a"), 0);
 }
 
+TEST(MediaVersioning, MixedTagsCompareNumericallyOnLeadingDigits) {
+    // Issue #83 regression: mixed tags used to fall to pure lexicographic
+    // compare, so "10a" < "2a". The leading digit run decides numerically.
+    EXPECT_LT(compareVersionTags("2a", "10a"), 0);
+    EXPECT_GT(compareVersionTags("10a", "2a"), 0);
+    EXPECT_LT(compareVersionTags("2", "10a"), 0);
+    EXPECT_LT(compareVersionTags("02a", "10a"), 0);
+    EXPECT_EQ(compareVersionTags("02a", "2a"), 0);
+    // Bare number sorts before the same number with a suffix.
+    EXPECT_LT(compareVersionTags("2", "2a"), 0);
+}
+
 TEST(MediaVersioning, EmptyTagSortsBeforeAny) {
     EXPECT_LT(compareVersionTags("", "01"), 0);
     EXPECT_LT(compareVersionTags("", "anything"), 0);
@@ -149,6 +186,14 @@ TEST(MediaVersioning, GroupKeyKeepsBackslashSubdirPrefix) {
 TEST(MediaVersioning, GroupKeyDifferentSubdirsDoNotCollide) {
     EXPECT_NE(groupKeyOf("act1/intro_v03.mov"),
               groupKeyOf("act2/intro_v03.mov"));
+}
+
+TEST(MediaVersioning, GroupKeyRoleSuffixedFileDoesNotJoinPrefixGroup) {
+    // Issue #83 regression: `intro_visual.mov` used to collapse into the
+    // `intro.mov` group (base "intro", bogus tag "isual") and, ranking
+    // above the empty tag, hijacked the row as its "latest" version.
+    EXPECT_NE(groupKeyOf("intro_visual.mov"), groupKeyOf("intro.mov"));
+    EXPECT_EQ(groupKeyOf("intro_visual.mov"), "intro_visual");
 }
 
 TEST(MediaVersioning, GroupKeyExtensionIgnored) {
