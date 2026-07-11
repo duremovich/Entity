@@ -563,13 +563,15 @@ six-line decode-pipeline fix.
 1. **Check ADR-0014 fallback list.** Timeline (`ee99a99`) and
    DecodeSystem (`a9bcd8b`) already have show-thread fallbacks in
    `Engine::showThreadMain` next to the editor-heartbeat staleness check.
-2. **AnimationSystem freeze** is a known gap (CODE_ISSUES NEW-07).
-   Animated clip properties (opacity, transform, rotation, scale)
-   freeze during stalls. Tracked on the project board; needs an
-   architectural choice (snapshot-bake vs. system-split) because
-   AnimationSystem writes registry components.
-3. **SectionScheduler freeze** is a known gap (CODE_ISSUES NEW-08).
-   Cues fire late after the stall ends. Same constraint.
+2. **AnimationSystem** — fixed (CODE_ISSUES NEW-07, closed 2026-05-11).
+   Animated clip properties are snapshot-baked (`BakedTrack` in the
+   scene snapshot) and re-evaluated on the show thread, so they keep
+   animating through editor stalls. If they freeze anyway, the bake
+   path regressed — see `docs/design/animation-snapshot-bake.md`.
+3. **SectionScheduler** — fixed (CODE_ISSUES NEW-08, closed 2026-05-20).
+   Break-crossing detection runs on the show thread and the editor
+   applies it from an R2D `SectionBreakDetected` drain, so cues fire
+   on time during stalls. See SYSTEM_ORDERING.md's fallback table.
 4. **A new system you just added doesn't fall back?** See the "Future
    Systems" rule in ADR-0014's Show-Thread Fallback Pattern section
    for the three options.
@@ -696,8 +698,12 @@ six-line decode-pipeline fix.
 If issues persist after trying these solutions:
 
 1. **Check Documentation**:
-   - Review `CLAUDE.md` for architecture details
-   - Check phase-specific docs in `docs/phases/`
+   - Architecture decisions: `docs/adr/` (start at `docs/adr/README.md`)
+   - Reference docs: `docs/reference/` (ECS principles, system ordering,
+     archetypes)
+   - Past phase work: `docs/status/HISTORY.md`
+   - (`CLAUDE.md` rule sheets are gitignored and live only on the
+     maintainer's machine — don't expect them in a fresh clone.)
 
 2. **Enable Verbose Logging**:
    - Add detailed logging to narrow down issues
@@ -715,5 +721,6 @@ If issues persist after trying these solutions:
 
 ---
 
-**Last Updated**: 2024-11-24
+**Last Updated**: 2026-07-11 (stall-fallback and doc-pointer sections;
+older sections may predate the editor/show thread split, ADR-0014)
 **Maintained By**: Development Team

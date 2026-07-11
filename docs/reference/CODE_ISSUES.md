@@ -2,7 +2,7 @@
 
 Re-verified against the codebase on 2026-04-19; HIGH-02 line refs updated 2026-04-28 after the PlaybackController -> PlaybackTimeAuthority + PlaybackPresenter split (Phase D entry, subtask 6). HIGH-02 follow-up (#10) closed and MED-13 fixed 2026-05-08 by Phase A of issue #42; NEW-06 partially addressed (detection only). HIGH-02 fully closed and NEW-06 robust-recovery status updated 2026-05-08 by Phase B of issue #42 (editor/show thread split). NEW-07/08/09 added 2026-05-08 evening after the output-freeze-during-editor-drag debug session — same root cause as `a9bcd8b` (DecodeSystem fallback) but for AnimationSystem, SectionScheduler, and missing test coverage. Full original details in `docs/archive/CODE_REVIEW_2025-11-27.md`.
 
-**Current state**: 0 Critical, 1 High, ~20 Medium, ~14 Low — down from 7 / 18 / 27 / 15.
+**Current state**: 0 Critical, 0 High, ~20 Medium (unverified), ~14 Low — down from 7 / 18 / 27 / 15. (HIGH-13/NEW-01 re-verified fixed 2026-07-11: the HAP decoder shipped in Phase C.9 — see the High table below.)
 NEW-07 closed 2026-05-11 (AnimationSystem snapshot-bake).
 Phase 3.8 (2026-05-11): OA freeze hook landed — `SectionScheduler::seedContinuationAt`
 freezes Locked OA layers at section breaks; `clearAllContinuation` unfreezes on GO/Stop.
@@ -46,16 +46,15 @@ _(none)_
 
 ## High Priority Issues
 
-### Still Open (1)
+### Still Open (0)
 
-| ID | File:Line | Details |
-|----|-----------|---------|
-| HIGH-13 | HAPDecoder.cpp | Every method returns `Result::NotImplemented`. Phase A mitigation landed: factory no longer constructs the stub (Decoder.cpp now returns nullptr for HAP types with a clear log). Actual codec implementation deferred to Phase D. |
+None.
 
 ### Recently fixed
 
 | ID | Fixed In | Details |
 |----|----------|---------|
+| HIGH-13 / NEW-01 | Phase C.9 (ADR-0002), re-verified 2026-07-11 | **Fixed.** HAPDecoder is substantially implemented: BCn variant dispatch for HAP / HAP Q / HAP Alpha / HAP HDR, factory constructs it, and `hap_roundtrip` / `hap_q_roundtrip` / `hap_hdr_smoke` golden tests cover it. The only remaining `Result::NotImplemented` returns are the `#else` branches for FFmpeg-unavailable builds (HAPDecoder.cpp:200,257,342) and the never-called software BC-decompress fallback stub (:361). Known gaps are tracked as feature issues, not decoder bugs: HapM second/alpha plane (#6), HapH user-facing import enable (#9). |
 | HIGH-02 | 31b928b (Phase A1), Phase B of #42 (2026-05-08) | **Fully closed.** Phase A1 moved all per-clip data onto `bus::RenderFrame::activeClips` (transform / opacity / blend / target screen / section fade / z-order / mediaFrame / slot). Phase B landed the show thread (ADR-0014): editor thread is now the sole registry writer; `m_registryMutex` wrapper removed; `CompositorSystem::update` has zero registry writes. The `videoTex->descriptorSlot` data race (show thread reading a plain `uint32_t` written by the editor) was fixed by gating on `crs->slot >= 0` (baked from editor thread via `ClipCatalogEntry::descriptorSlot`) instead of reading `VideoTexture::descriptorSlot` on the show thread. Issue #10 closed. |
 
 ### Re-evaluated (Not Actually Bugs)
@@ -103,7 +102,8 @@ _(none)_
 
 ### Still Open / Unverified (~20)
 
-Not individually re-verified in this pass. The original list (MED-02, MED-03, MED-05, MED-06, MED-07, MED-10–18, MED-21, MED-23–27) is largely still applicable. Highlights of what matters most for Phase B:
+Not individually re-verified since **2026-04-19** — treat these as leads to
+re-check against current code, not ground truth. The original list (MED-02, MED-03, MED-05, MED-06, MED-07, MED-10–18, MED-21, MED-23–27) is largely still applicable. Highlights of what matters most for Phase B:
 
 - **MED-05** (Engine.cpp) — Three separate maps for per-clip data. Fragmentation; consolidate into a single per-clip struct. Touches Phase B Engine decomposition.
 - ~~**MED-13** (D3D12Renderer.cpp:561-577) — `moveToNextFrame()` has INFINITE GPU wait. Real hang risk on device loss; pair with Phase A crash-recovery work.~~ **Fixed 2026-05-08 (commit d92fd13, Phase A2 of #42)** — replaced `WaitForSingleObject(INFINITE)` with a 2-second timeout that delegates to `handleDeviceLost` on timeout/failure. The three INFINITE waits in `D3D12Renderer::waitForGpu()` (copy/show/editor drains) were bounded the same way in commit `2e003d3` (2026-06-03) — the last app-level unbounded GPU wait in the renderer.
@@ -134,7 +134,7 @@ Not in the original review, surfaced while writing this update:
 
 | ID | File:Line | Severity | Details |
 |----|-----------|----------|---------|
-| NEW-01 | HAPDecoder.cpp:20,46,67,90,109,127 | High | 6 `TODO` blocks spanning every method. The entire decoder is a scaffolded stub. Factory path (Decoder.cpp) constructs it anyway. |
+| NEW-01 | HAPDecoder.cpp:20,46,67,90,109,127 | ~~High~~ **Fixed (Phase C.9, ADR-0002; re-verified 2026-07-11)** | ~~6 `TODO` blocks spanning every method. The entire decoder is a scaffolded stub.~~ Decoder fully implemented — see HIGH-13 entry above for the current state and residual stubs. |
 | NEW-02 | Engine.cpp:91-92 | Low | Commented-out `Transport` class — dead code. Either implement or delete. |
 | NEW-03 | Engine.cpp | Low | 4 `TODO` comments for unfinished integration points. |
 | NEW-04 | OutputManager.cpp | ~~Medium~~ **Fixed (Phase C #1, 2026-04-20)** | OutputManager now drives physical displays. Per-output swap chains on `IRenderer`; `renderOutputs()` fans the selected Screen's compose target to each enabled Physical output with InputRegion UV cropping. Mapping-surface warping + soft edges deferred to Phase C #2. |

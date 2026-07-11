@@ -3,8 +3,9 @@
 Entity follows **Entity Component System** (ECS) + **Data-Oriented Design**
 (DOD). This file is the canonical statement of *why* and *how*. The shorter
 operator-facing rule sheets live in `include/entity/components/CLAUDE.md` and
-`include/entity/systems/CLAUDE.md`; this file is the longer reference they
-both point back to.
+`include/entity/systems/CLAUDE.md` (gitignored — present only on the
+maintainer's machine, so a fresh clone won't have them); this file is the
+longer, in-repo reference they both point back to.
 
 If anything in this file disagrees with current code, **the code wins** —
 file an issue and update this doc.
@@ -184,9 +185,13 @@ atomic fields (e.g. `Timeline::m_currentTime`). When the editor
 stalls (Win32 modal, project load, slow file dialog), critical time-
 driven systems also tick on the show thread, but **only those that
 don't write the registry**. Today: Timeline and DecodeSystem fall
-back; AnimationSystem and SectionScheduler don't (they write registry
-components — see `CODE_ISSUES.md` NEW-07 / NEW-08 for the planned
-fix). Full rationale: `docs/adr/0014-editor-show-thread-split.md`.
+back directly; AnimationSystem keeps animating via snapshot-baked
+tracks re-evaluated show-side (NEW-07, closed 2026-05-11), and
+section-break detection runs show-side with the editor applying it
+from an R2D drain (NEW-08, closed 2026-05-20). See
+`SYSTEM_ORDERING.md`'s fallback-coverage table for the current
+per-system state. Full rationale:
+`docs/adr/0014-editor-show-thread-split.md`.
 
 ---
 
@@ -218,8 +223,8 @@ Examples that don't:
 
 ## See also
 
-- `include/entity/components/CLAUDE.md` — operator-facing component rule sheet
-- `include/entity/systems/CLAUDE.md` — operator-facing system rule sheet, threading model
+- `include/entity/components/CLAUDE.md` — operator-facing component rule sheet (gitignored; maintainer-local only)
+- `include/entity/systems/CLAUDE.md` — operator-facing system rule sheet, threading model (gitignored; maintainer-local only)
 - `docs/reference/ENTITY_ARCHETYPES.md` — what combinations of components define a "Clip", "Screen", etc.
 - `docs/reference/SYSTEM_ORDERING.md` — per-frame system update order + dependency graph
 - `docs/adr/0014-editor-show-thread-split.md` — threading architecture
