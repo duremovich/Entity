@@ -213,6 +213,7 @@ target_sources(EntityMediaCore
         src/render/UploadHeapBufferPool.cpp
 
         # Timeline
+        src/timeline/PrecompMath.cpp
         src/timeline/SectionFade.cpp
         src/timeline/Timeline.cpp
         src/timeline/TimelineWidget.cpp
