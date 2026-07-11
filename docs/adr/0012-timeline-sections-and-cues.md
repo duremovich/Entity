@@ -12,6 +12,10 @@
   - `2409d74` — Phase D: section fade envelopes
   - `ec04926`, `6121995` — review-driven fixups
 
+> **Note on amendment ordering:** the amendment blocks appended below are
+> grouped by topic, not strictly chronological — some later-round blocks
+> carry earlier dates. Read them as a set, not a timeline.
+
 ## Context
 
 Live-show timelines need two structural-playback primitives that the

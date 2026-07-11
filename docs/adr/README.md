@@ -38,6 +38,31 @@ that have moved on.
 | 0026 | [Seek-sync preroll gate — hold playhead until all decoders reach the target frame](0026-seek-sync-preroll-gate.md) | Accepted | 2026-05-22 |
 | 0027 | [Signal Output Layer — timeline-driven OSC/plugin event dispatch](0027-signal-output-layer.md) | Accepted | 2026-06-02 |
 
+### Known gaps in the series (as of 2026-07-11)
+
+- **ADR-0028 is referenced by 40+ code sites but does not exist.** The
+  RemotePatch remote-control plane (RemoteControlStore, per-layer
+  patching, plugin API v2 `setRemoteParam`, schema v27) shipped without
+  its ADR being written. Tracked in issue #96.
+- **Project schema versions:** ADR coverage ends at v26 (ADR-0027).
+  v27 (RemotePatch persistence) and v28 (TrackUiState / hideShyTracks /
+  editorLayout embed) are documented only in the changelog comment block
+  in `include/entity/project/ProjectSerializer.hpp` — treat that header
+  as the schema's source of truth.
+- **Plugin API versions:** 0 → 1 (`drainSignalEmits`) is documented in
+  ADR-0027; 1 → 2 (`setRemoteParam` / `setRemoteParamString`) awaits
+  ADR-0028. Current version constant: `plugin-api/.../Plugin.hpp`
+  `PLUGIN_API_VERSION`.
+
+### A note on "Context source" links
+
+Many ADRs cite `~/.claude/plans/*.md` working plans (and gitignored
+`CLAUDE.md` rule sheets) as their context source. Those files live only on
+the maintainer's machine — they are provenance breadcrumbs, **not**
+required reading. Every ADR is written to be self-contained; if an ADR's
+text isn't enough to understand the decision, that's a bug in the ADR —
+fix the ADR rather than hunting for the private plan.
+
 ## Format
 
 ADRs use the short [MADR](https://adr.github.io/madr/) form. Every file has:

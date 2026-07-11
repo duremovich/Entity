@@ -126,6 +126,8 @@ Slot pool: generative layers and screens share the same
 shared pool isn't the bottleneck for typical multi-screen + multi-
 generative shows). Revisit when an installation pushes the combined
 count past 32, or split into per-archetype pools at that point.
+*[Superseded: ADR-0019 (per-layer effects) bumped the pool 32 → 64;
+code is 64 today — `IRenderer.hpp` `MAX_COMPOSE_TARGETS`.]*
 
 ### 3. ECS contract — composition still selects, no Kind enum dispatch
 
@@ -187,7 +189,8 @@ populates a video-texture slot or owns a compose target.**
 
 - Two compose targets per generative layer present (one for the
   layer's own RT, one for the screen). `MAX_COMPOSE_TARGETS = 32`
-  caps total active compose targets across screens + generative
+  *[since bumped to 64 by ADR-0019]* caps total active compose targets
+  across screens + generative
   layers. Generous for current use cases (typical show: 1-4 screens
   + 1-5 generative layers). Raise the constant or split into
   per-archetype pools when an installation hits the wall.

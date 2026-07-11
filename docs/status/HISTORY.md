@@ -100,6 +100,9 @@ seek-sync preroll gate (ADR-0026, 2026-05-22) landed:
    `m_workers`); runs while `Paused` so an operator who pauses,
    scrubs, then Plays still benefits. Tracy zone:
    `DecodeSystem::prefetchUpcoming`. Commit `6297353`.
+   *[See the Fix 3 follow-up below: this prefetch turned out to be a
+   no-op in practice — the real cause was LRU eviction (Fix 4), and the
+   prefetch path no longer exists in current code.]*
 
 **Files.** `src/director/PlaybackTimeAuthority.cpp` +
 `include/entity/director/PlaybackTimeAuthority.hpp` (Fixes 1 + 2),
