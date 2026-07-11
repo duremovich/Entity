@@ -338,6 +338,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Posts a hard-coded SignalEmit through Engine::postSignalEmit so the
     // osc-sender loopback can be exercised from a headless script.
     registerFactory("TestSignalEmit", TestSignalEmitCommand::fromJson);
+
+    // Precomp commands (ADR-0029 Phase A).
+    registerFactory("CreatePrecompDefinition",      CreatePrecompDefinitionCommand::fromJson);
+    registerFactory("AssertPrecompDefinitionCount", AssertPrecompDefinitionCountCommand::fromJson);
 }
 
 CommandPtr CommandDispatcher::createFromJson(const nlohmann::json& json) {

@@ -2512,6 +2512,71 @@ private:
 };
 
 // ============================================================================
+// Precomp commands (ADR-0029 Phase A)
+// ============================================================================
+
+/**
+ * CreatePrecompDefinitionCommand — create a precomp definition in the
+ * Engine-owned PrecompLibrary. Phase A: definition only (no tracks, no
+ * instances). Modeled on CreateSignalLayerCommand.
+ *
+ * JSON format:
+ * {
+ *     "type": "CreatePrecompDefinition",
+ *     "name": "Intro",
+ *     "width": 1920,
+ *     "height": 1080,
+ *     "frameRate": 30.0,
+ *     "durationFrames": 300
+ * }
+ */
+class CreatePrecompDefinitionCommand : public Command {
+public:
+    CreatePrecompDefinitionCommand(std::string name, std::uint32_t width,
+                                   std::uint32_t height, double frameRate,
+                                   FrameNumber durationFrames)
+        : m_name(std::move(name)), m_width(width), m_height(height)
+        , m_frameRate(frameRate), m_durationFrames(durationFrames) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreatePrecompDefinition"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string   m_name;
+    std::uint32_t m_width{1920};
+    std::uint32_t m_height{1080};
+    double        m_frameRate{30.0};
+    FrameNumber   m_durationFrames{300};
+    std::string   m_createdId;   // set by execute; future undo/inspection hook
+};
+
+/**
+ * AssertPrecompDefinitionCountCommand — assert the PrecompLibrary holds
+ * exactly N definitions. Script assert, modeled on AssertScreenCountCommand.
+ *
+ * JSON format:
+ * { "type": "AssertPrecompDefinitionCount", "count": 1 }
+ */
+class AssertPrecompDefinitionCountCommand : public Command {
+public:
+    explicit AssertPrecompDefinitionCountCommand(size_t count) : m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertPrecompDefinitionCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    size_t m_count;
+};
+
+// ============================================================================
 // Input Bus commands
 // ============================================================================
 

@@ -45,6 +45,7 @@
 #include "entity/systems/AudioSystem.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/input/InputBus.hpp"
+#include "entity/precomp/PrecompLibrary.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include "entity/media/FrameCache.hpp"
@@ -7057,6 +7058,88 @@ CommandPtr CreateSignalLayerCommand::fromJson(const nlohmann::json& j) {
         j.value("trackIndex", 0),
         j.value("startFrame", FrameNumber{0}),
         j.value("duration",   FrameNumber{60}));
+}
+
+// ============================================================================
+// Precomp commands (ADR-0029 Phase A)
+// ============================================================================
+
+bool CreatePrecompDefinitionCommand::execute(Engine& engine) {
+    auto* lib = engine.getPrecompLibrary();
+    if (!lib) {
+        std::cerr << "[CreatePrecompDefinition] FAIL: no PrecompLibrary"
+                  << std::endl;
+        return false;
+    }
+    auto* def = lib->createDefinition(m_name, m_width, m_height,
+                                      m_frameRate, m_durationFrames);
+    if (!def) {
+        std::cerr << "[CreatePrecompDefinition] FAIL: createDefinition "
+                     "returned null" << std::endl;
+        return false;
+    }
+    m_createdId = def->id;
+    std::cout << "[CreatePrecompDefinition] OK name=" << m_name
+              << " id=" << def->id
+              << " canvas=" << m_width << "x" << m_height
+              << " fps=" << m_frameRate
+              << " durationFrames=" << m_durationFrames << std::endl;
+    return true;
+}
+
+nlohmann::json CreatePrecompDefinitionCommand::toJson() const {
+    return {{"type", "CreatePrecompDefinition"},
+            {"name", m_name},
+            {"width", m_width},
+            {"height", m_height},
+            {"frameRate", m_frameRate},
+            {"durationFrames", m_durationFrames}};
+}
+
+std::string CreatePrecompDefinitionCommand::getDescription() const {
+    return "Create precomp definition '" + m_name + "' " +
+           std::to_string(m_width) + "x" + std::to_string(m_height) +
+           " dur=" + std::to_string(m_durationFrames);
+}
+
+CommandPtr CreatePrecompDefinitionCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<CreatePrecompDefinitionCommand>(
+        j.value("name", std::string{"Precomp"}),
+        j.value("width",  std::uint32_t{1920}),
+        j.value("height", std::uint32_t{1080}),
+        j.value("frameRate", 30.0),
+        j.value("durationFrames", FrameNumber{300}));
+}
+
+bool AssertPrecompDefinitionCountCommand::execute(Engine& engine) {
+    auto* lib = engine.getPrecompLibrary();
+    if (!lib) {
+        std::cerr << "[AssertPrecompDefinitionCount] FAIL: no PrecompLibrary"
+                  << std::endl;
+        return false;
+    }
+    const size_t actual = lib->count();
+    if (actual == m_count) {
+        std::cout << "[AssertPrecompDefinitionCount] OK count=" << actual
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertPrecompDefinitionCount] FAIL: expected " << m_count
+              << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertPrecompDefinitionCountCommand::toJson() const {
+    return {{"type", "AssertPrecompDefinitionCount"}, {"count", m_count}};
+}
+
+std::string AssertPrecompDefinitionCountCommand::getDescription() const {
+    return "Assert precomp definition count == " + std::to_string(m_count);
+}
+
+CommandPtr AssertPrecompDefinitionCountCommand::fromJson(const nlohmann::json& j) {
+    const size_t count = j.value("count", static_cast<size_t>(0));
+    return std::make_unique<AssertPrecompDefinitionCountCommand>(count);
 }
 
 // ============================================================================
