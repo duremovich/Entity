@@ -8,6 +8,7 @@
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/ClipPlaybackPhase.hpp"
 #include "entity/media/Decoder.hpp"
+#include "entity/timeline/PlaybackWrap.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/systems/WarmSet.hpp"
@@ -367,24 +368,12 @@ void AudioSystem::update(entt::registry& registry, float /*deltaTime*/) {
         const FrameNumber sourceLength = effectivePlaybackLength(clip);
         if (sourceLength <= 0) continue;
 
-        // Wrap sourceLocalFrame per PlaybackMode to get media frame.
-        FrameNumber mediaLocalFrame = sourceLocalFrame;
-        if (sourceLocalFrame >= sourceLength) {
-            switch (clip.playbackMode) {
-                case PlaybackMode::Freeze:
-                    mediaLocalFrame = sourceLength - 1;
-                    break;
-                case PlaybackMode::Loop:
-                    mediaLocalFrame = sourceLocalFrame % sourceLength;
-                    break;
-                case PlaybackMode::PingPong: {
-                    const FrameNumber cycle = sourceLocalFrame / sourceLength;
-                    const FrameNumber pos   = sourceLocalFrame % sourceLength;
-                    mediaLocalFrame = (cycle % 2 == 0) ? pos : (sourceLength - 1 - pos);
-                    break;
-                }
-            }
-        }
+        // Wrap sourceLocalFrame per PlaybackMode. This site is already
+        // source-local (the sample conversion below needs no
+        // mediaStartFrame offset), so the shared primitive's result is
+        // used directly; audio never reverse-decodes, so parity is unused.
+        const FrameNumber mediaLocalFrame =
+            wrapLocalFrame(clip.playbackMode, sourceLength, sourceLocalFrame).frame;
 
         // Convert media frame to clip-local output-rate sample.
         const double fps = clip.framerate > 0.0 ? clip.framerate : 30.0;
