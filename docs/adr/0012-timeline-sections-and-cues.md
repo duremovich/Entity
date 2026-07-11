@@ -1067,7 +1067,9 @@ re-enabled: frames advance naturally, evictions need recovery (same
 contract as inAuthored). Outside the extension (pure held-tail),
 Fix 6's no-recovery contract is preserved.
 
-**Default `frameCacheBytes` bumped to 2 GiB.** Even with extension
+**Default `frameCacheBytes` bumped to 2 GiB.** *[2026-07-11: since
+superseded — bumped to 3 GiB in the Phase 3b perf sweep (2026-05-24);
+see `include/entity/core/Settings.hpp`.]* Even with extension
 correctly capped, 2-clip 4K H.264 crossfades legitimately need
 ~594 MB working set. Default went 512 MiB → 2 GiB (multi-layer
 realtime headroom). Override via `settings.json` per existing

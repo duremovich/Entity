@@ -50,7 +50,7 @@ void renderFrameCacheRow(uint64_t& bytes) {
         ImGui::TextUnformatted(
             "RAM budget for decoded frames. Higher = fewer re-decodes when\n"
             "scrubbing back into already-viewed regions, more RAM in use.\n"
-            "Default 512 MiB ≈ 128 frames @ 4K HAP-Q.\n"
+            "Default 3 GiB ≈ 770 frames @ 4K HAP-Q (~90 @ 4K RGBA).\n"
             "Bump on a workstation with lots of RAM; drop on a laptop.\n"
             "Wired up by Phase C.10 (FrameCache).");
         ImGui::EndTooltip();

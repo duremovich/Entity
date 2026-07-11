@@ -611,6 +611,9 @@ reading live Timeline section state. Baked editor-side via the new
 `sectionFadeTailFrames`.
 
 **Fix part 2 — default `frameCacheBytes` 512 MiB → 2 GiB.**
+*[Editor's note 2026-07-11: later bumped again to 3 GiB in the Phase 3b
+perf sweep (2026-05-24) — current default lives in
+`include/entity/core/Settings.hpp`.]*
 At ~33 MB per 4K H.264 RGBA frame, `DECODE_AHEAD_FRAMES=8` + current
 frame = 297 MB per active clip. 2 GiB holds ~62 frames = ~6
 simultaneous 4K working sets, comfortable headroom for 2-clip

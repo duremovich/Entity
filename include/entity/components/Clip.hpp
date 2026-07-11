@@ -222,7 +222,7 @@ inline FrameNumber effectivePlaybackLength(const Clip& clip) {
 // ran past visibility, two 4K H.264 decoders competed for cache
 // indefinitely, Fix 4 cache-miss recovery thrashed. Post-fix the
 // extra decoder runs only for the legitimate fade window; combined
-// with the 2 GiB FrameCache default, 2× 4K H.264 fits comfortably.
+// with the 3 GiB FrameCache default, 2× 4K H.264 fits comfortably.
 inline FrameNumber computeExtendedDuration(const Clip& clip,
                                             double timelineFrameRate,
                                             bool endAlignsWithBreak,

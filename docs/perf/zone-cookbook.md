@@ -5,7 +5,9 @@ Which zones and plots to look at for which class of problem. Pair with
 `docs/adr/0015-profiling-with-tracy.md` (for the architecture rationale).
 
 The instrumentation map below mirrors what's in the editor as of
-2026-05-23. If you add a new system, append it to the relevant table.
+2026-07-11 (originally 2026-05-23; `SignalOutputSystem` added with
+ADR-0027). If you add a new system, append it to the relevant table —
+the tables are a curated map, not an exhaustive `ZoneScopedN` inventory.
 
 ---
 
@@ -81,7 +83,8 @@ Reminder: editor stalls **do not** stop the show thread anymore
 (ADR-0014). If the output also froze, look at the systems with
 show-thread fallbacks (Timeline, Decode, Audio, SectionDetect) — they
 should keep ticking, and animation re-evaluates from the baked snapshot
-show-side. CODE_ISSUES.md NEW-07 / NEW-08 are closed.
+show-side. Signal output (`SignalOutputSystem`) is show-native and
+unaffected by editor stalls. CODE_ISSUES.md NEW-07 / NEW-08 are closed.
 
 ## "Cache thrash"
 
@@ -97,10 +100,13 @@ re-seek constantly.
 | Working-set sum | plot `FrameCache entries` | proxy for # of cached frames |
 | Per-clip seeks | `Decode` zone density per thread | back-to-back `Decode` zones with no idle = clip is re-decoding |
 
-Fix is usually `frameCacheBytes` — default bumped to 2 GiB in Fix 10
-(2026-05-23). On laptops with <16 GB RAM, may need to drop. Per
-HISTORY.md: ~33 MB per 4K RGBA frame × 9 (current + DECODE_AHEAD_FRAMES)
-= ~297 MB per active 4K clip.
+Fix is usually `frameCacheBytes` — default is 3 GiB since the Phase 3b
+perf sweep (2026-05-24; history: 512 MiB → 2 GiB in Fix 10 → 3 GiB in
+Phase 3b; the sweep evidence lives in the comment block on
+`Settings::frameCacheBytes`, `include/entity/core/Settings.hpp`). On
+laptops with <16 GB RAM, may need to drop. Per HISTORY.md: ~33 MB per
+4K RGBA frame × 9 (current + DECODE_AHEAD_FRAMES) = ~297 MB per active
+4K clip.
 
 ## "Section break glitch"
 
@@ -111,6 +117,7 @@ apply to the editor thread (mutates the registry).
 | Zone | Where | What it tells you |
 |---|---|---|
 | `SectionDetect` | Show thread | break-crossing detected this frame (look here for delay between break time and detection) |
+| `SignalOutputSystem` | Show thread | signal-layer evaluation + emit posts (ADR-0027); at-break suppresses momentary fires without consuming the arm |
 | `SectionScheduler::handleBreakAt` | Editor thread | editor applied the crossing — registry mutation cost |
 | `SectionScheduler::seedContinuationAt` | Editor thread | Loop/PingPong clips set up for continuation |
 | `SectionScheduler::go` | Editor thread | Section GO command fired |
@@ -194,7 +201,8 @@ hit a hard error before reaching it.
 
 ## Adding a new zone or plot
 
-Per `CLAUDE.md` "Tracy instrumentation checklist for new systems":
+Per the "Tracy instrumentation checklist for new systems" (originally in
+the maintainer-local `CLAUDE.md`; steps reproduced here in full):
 
 1. `tracy::SetThreadName("Name")` at thread startup
 2. `ZoneScopedN("SystemName")` at the top of per-frame `update()`/`tick()`
