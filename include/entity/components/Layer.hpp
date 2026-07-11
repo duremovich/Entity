@@ -21,6 +21,7 @@ namespace entity {
  *   - ObjectAnimation — keyframed transform on a Screen or Prop target.
  *   - Generative      — procedural texture source (Muncher, Text — ADR-0017).
  *   - Signal          — timeline-driven signal output (OSC — ADR-0027).
+ *   - Precomp         — instance of a PrecompLibrary definition (ADR-0029).
  *
  * Per ADR-0016, system selection is by component composition (
  * view<Layer, Clip>, view<Layer, ObjectAnimationLayer>, ...). The Kind
@@ -38,6 +39,7 @@ struct Layer {
         ObjectAnimation = 1,
         Generative      = 2,  // procedural texture source (Muncher mini-game, future particles, ...)
         Signal          = 3,  // signal output layer (OSC / plugin event dispatch)
+        Precomp         = 4,  // precomp instance — nested-timeline container (ADR-0029)
     };
 
     FrameNumber startFrame{0};
@@ -57,6 +59,7 @@ inline const char* layerKindName(Layer::Kind k) {
         case Layer::Kind::ObjectAnimation: return "Object Animation";
         case Layer::Kind::Generative:      return "Generative";
         case Layer::Kind::Signal:          return "Signal";
+        case Layer::Kind::Precomp:         return "Precomp";
     }
     return "Unknown";
 }
