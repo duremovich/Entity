@@ -1,46 +1,11 @@
 #include "entity/director/CatalogClipMath.hpp"
 
+#include "entity/timeline/PlaybackWrap.hpp"
+
 #include <algorithm>
 #include <cmath>
 
 namespace entity {
-
-namespace {
-
-// One wrap of a source-local frame into the [mediaStartFrame, +sourceLength)
-// window per PlaybackMode. The switch used to be repeated verbatim in the
-// anchor / natural / continuation branches below; the parity output is what
-// the Ex variant reports as pingPongReverse.
-struct WrapResult {
-    FrameNumber frame{0};
-    bool reverse{false};
-};
-
-WrapResult wrapSourceLocalFrame(const Clip& clip,
-                                FrameNumber sourceLength,
-                                FrameNumber sourceLocalFrame) {
-    if (sourceLocalFrame < sourceLength) {
-        return { clip.mediaStartFrame + sourceLocalFrame, false };
-    }
-    switch (clip.playbackMode) {
-        case PlaybackMode::Freeze:
-            return { clip.mediaStartFrame + sourceLength - 1, false };
-        case PlaybackMode::Loop:
-            return { clip.mediaStartFrame + (sourceLocalFrame % sourceLength),
-                     false };
-        case PlaybackMode::PingPong: {
-            const FrameNumber cycle = sourceLocalFrame / sourceLength;
-            const FrameNumber pos   = sourceLocalFrame % sourceLength;
-            const bool reverse = (cycle % 2 == 1);
-            return { reverse ? clip.mediaStartFrame + (sourceLength - 1 - pos)
-                             : clip.mediaStartFrame + pos,
-                     reverse };
-        }
-    }
-    return { clip.mediaStartFrame + sourceLength - 1, false };
-}
-
-} // namespace
 
 Clip clipFromCatalog(const bus::ClipCatalogEntry& e) {
     Clip c;
@@ -123,8 +88,8 @@ CatalogMediaFrameResult mapToMediaFrameFromCatalogEx(
                 std::floor(std::max(localFloat, 0.0)));
 
             const WrapResult w =
-                wrapSourceLocalFrame(clip, sourceLength, sourceLocalFrame);
-            result.mediaFrame      = w.frame;
+                wrapLocalFrame(clip.playbackMode, sourceLength, sourceLocalFrame);
+            result.mediaFrame      = clip.mediaStartFrame + w.frame;
             result.pingPongReverse = w.reverse;
             return result;
         }
@@ -151,8 +116,8 @@ CatalogMediaFrameResult mapToMediaFrameFromCatalogEx(
         const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
             std::floor(localFrame * frameRateRatio));
         const WrapResult w =
-            wrapSourceLocalFrame(clip, sourceLength, sourceLocalFrame);
-        result.mediaFrame      = w.frame;
+            wrapLocalFrame(clip.playbackMode, sourceLength, sourceLocalFrame);
+        result.mediaFrame      = clip.mediaStartFrame + w.frame;
         result.pingPongReverse = w.reverse;
         return result;
     }
@@ -179,14 +144,17 @@ CatalogMediaFrameResult mapToMediaFrameFromCatalogEx(
     }
     const double phaseClamped = std::max(effectivePhase, 0.0);
     const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
-    // Freeze clamps to the last source frame instead of wrapping.
+    // Freeze clamps to the last source frame instead of wrapping. (The
+    // pre-clamp is redundant with wrapLocalFrame's Freeze case — min then
+    // passthrough equals the Freeze wrap for phaseFrame >= 0 — but keeping
+    // it makes this path's behavior locally obvious.)
     const FrameNumber continuationLocal =
         (clip.playbackMode == PlaybackMode::Freeze)
             ? std::min(phaseFrame, sourceLength - 1)
             : phaseFrame;
     const WrapResult w =
-        wrapSourceLocalFrame(clip, sourceLength, continuationLocal);
-    result.mediaFrame      = w.frame;
+        wrapLocalFrame(clip.playbackMode, sourceLength, continuationLocal);
+    result.mediaFrame      = clip.mediaStartFrame + w.frame;
     result.pingPongReverse = w.reverse;
     return result;
 }
