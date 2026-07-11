@@ -30,6 +30,7 @@
 #include "entity/components/VideoTexture.hpp"
 #include "entity/director/CatalogClipMath.hpp"
 #include "entity/project/ProjectManager.hpp"
+#include "entity/timeline/PlaybackWrap.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
 
@@ -488,26 +489,10 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(const Clip& clip, FrameNumber
     FrameNumber localFrame = timelineFrame - clip.startFrame;
     FrameNumber sourceLocalFrame = static_cast<FrameNumber>(std::floor(localFrame * frameRateRatio));
 
-    if (sourceLocalFrame < sourceLength) {
-        return clip.mediaStartFrame + sourceLocalFrame;
-    }
-
-    switch (clip.playbackMode) {
-        case PlaybackMode::Freeze:
-            return clip.mediaStartFrame + sourceLength - 1;
-        case PlaybackMode::Loop:
-            return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
-        case PlaybackMode::PingPong: {
-            FrameNumber cycle = sourceLocalFrame / sourceLength;
-            FrameNumber pos = sourceLocalFrame % sourceLength;
-            if (cycle % 2 == 0) {
-                return clip.mediaStartFrame + pos;
-            } else {
-                return clip.mediaStartFrame + (sourceLength - 1 - pos);
-            }
-        }
-    }
-    return clip.mediaStartFrame + sourceLength - 1;
+    // Shared wrap primitive (ADR-0029 D3); parity output unused here — the
+    // presenter path never needed decode direction.
+    return clip.mediaStartFrame +
+           wrapLocalFrame(clip.playbackMode, sourceLength, sourceLocalFrame).frame;
 }
 
 FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
@@ -574,23 +559,9 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
             const FrameNumber sourceLocalFrame = static_cast<FrameNumber>(
                 std::floor(std::max(localFloat, 0.0)));
 
-            if (sourceLocalFrame < sourceLength) {
-                return clip.mediaStartFrame + sourceLocalFrame;
-            }
-            switch (clip.playbackMode) {
-                case PlaybackMode::Freeze:
-                    return clip.mediaStartFrame + sourceLength - 1;
-                case PlaybackMode::Loop:
-                    return clip.mediaStartFrame + (sourceLocalFrame % sourceLength);
-                case PlaybackMode::PingPong: {
-                    const FrameNumber cycle = sourceLocalFrame / sourceLength;
-                    const FrameNumber pos   = sourceLocalFrame % sourceLength;
-                    return (cycle % 2 == 0)
-                        ? clip.mediaStartFrame + pos
-                        : clip.mediaStartFrame + (sourceLength - 1 - pos);
-                }
-            }
-            return clip.mediaStartFrame + sourceLength - 1;
+            return clip.mediaStartFrame +
+                   wrapLocalFrame(clip.playbackMode, sourceLength,
+                                  sourceLocalFrame).frame;
         }
         return mapToMediaFrame(clip, timelineFrame);
     }
@@ -606,22 +577,16 @@ FrameNumber PlaybackTimeAuthority::mapToMediaFrame(entt::entity entity,
     const double phaseClamped = std::max(phase->sourcePhaseFrames, 0.0);
     const FrameNumber phaseFrame = static_cast<FrameNumber>(std::floor(phaseClamped));
 
-    switch (clip.playbackMode) {
-        case PlaybackMode::Freeze:
-            return clip.mediaStartFrame + std::min(phaseFrame, sourceLength - 1);
-        case PlaybackMode::Loop:
-            return clip.mediaStartFrame + (phaseFrame % sourceLength);
-        case PlaybackMode::PingPong: {
-            const FrameNumber cycle = phaseFrame / sourceLength;
-            const FrameNumber pos   = phaseFrame % sourceLength;
-            if (cycle % 2 == 0) {
-                return clip.mediaStartFrame + pos;
-            } else {
-                return clip.mediaStartFrame + (sourceLength - 1 - pos);
-            }
-        }
-    }
-    return clip.mediaStartFrame + sourceLength - 1;
+    // Historically this branch ran the Freeze/Loop/PingPong switch
+    // unconditionally on phaseFrame, with Freeze spelled as
+    // min(phaseFrame, sourceLength - 1) instead of an in-window
+    // early-return. That is exactly wrapLocalFrame: phaseFrame >= 0
+    // (clamped above) and sourceLength >= 1 (guarded above), so for
+    // phaseFrame < sourceLength the passthrough returns phaseFrame —
+    // which is what min/modulo/cycle-0 each produced — and past the end
+    // the Freeze/Loop/PingPong formulas are verbatim identical.
+    return clip.mediaStartFrame +
+           wrapLocalFrame(clip.playbackMode, sourceLength, phaseFrame).frame;
 }
 
 std::string PlaybackTimeAuthority::lookupInputColorSpaceOverride(const Clip& clip) const {
