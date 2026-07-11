@@ -43,6 +43,7 @@ add_executable(EntityMediaTests
     unit/SceneStateTests.cpp
     unit/PlaybackTimeAuthorityTests.cpp
     unit/CatalogClipMathTests.cpp
+    unit/PrecompMathTests.cpp
     unit/OAShowSideReevalTests.cpp
     unit/DirectorRendererRoundtripTests.cpp
     unit/AssetIdTests.cpp
