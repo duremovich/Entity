@@ -19,7 +19,8 @@ namespace entity {
  * Kinds shipped with the abstraction:
  *   - Clip            — video / image source backed by the Clip component.
  *   - ObjectAnimation — keyframed transform on a Screen or Prop target.
- *   - Generative      — reserved for future generative layers.
+ *   - Generative      — procedural texture source (Muncher, Text — ADR-0017).
+ *   - Signal          — timeline-driven signal output (OSC — ADR-0027).
  *
  * Per ADR-0016, system selection is by component composition (
  * view<Layer, Clip>, view<Layer, ObjectAnimationLayer>, ...). The Kind

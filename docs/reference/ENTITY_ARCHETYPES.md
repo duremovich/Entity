@@ -24,15 +24,16 @@ keep this file in sync.
 ## Layer — Generic timeline-resident entity (Phase 3, ADR-0016)
 
 `Layer` is the component that says "this entity lives on a `TimelineTrack`."
-Every timeline-resident archetype (Clip, ObjectAnimation, future Generative)
-carries a `Layer` alongside its kind-specific data components. Single
-contract — start frame, duration, owning track, label, color, Kind enum —
-shared across kinds. See `include/entity/components/Layer.hpp`.
+Every timeline-resident archetype (Clip, ObjectAnimation, Generative,
+Signal) carries a `Layer` alongside its kind-specific data components.
+Single contract — start frame, duration, owning track, label, color, Kind
+enum — shared across kinds. See `include/entity/components/Layer.hpp`.
 
-**Kinds shipped with the abstraction**:
+**Kinds shipped**:
 - `Kind::Clip` — paired with the `Clip` archetype below
 - `Kind::ObjectAnimation` — paired with `ObjectAnimationLayer` (Phase 3, see below)
-- `Kind::Generative` — reserved for future generative layers
+- `Kind::Generative` — procedural texture sources (Muncher, Text — ADR-0017, see below)
+- `Kind::Signal` — timeline-driven signal output (OSC/plugin events — ADR-0027, see below)
 
 **Phase 3 migration window**: for Clip-backed layer entities,
 `Clip::startFrame` / `Clip::duration` remain the source of truth and the
@@ -218,6 +219,34 @@ The compositor's PASS 2 is *kind-blind*: it only reads the unified
   shallow-copy applied to both kinds from a shared tail in
   `materializeClipFromSnapshot`. OA layers are intentionally excluded from
   copy/paste (entity-ID cross-session validity).
+
+---
+
+## Signal — Timeline-driven signal output layer (ADR-0027)
+
+| Required | Optional |
+|---|---|
+| `Layer` (kind == Signal) | — |
+| `SignalLayer` | |
+| `AnimatedProperties` | |
+
+A Signal layer dispatches plugin events (OSC packets in Phase 1) while the
+playhead is inside its timeline window. It is deliberately **not** a content
+layer: no `MediaLayer`, no `Transform`, nothing to composite. See
+`include/entity/components/SignalLayer.hpp`.
+
+- `SignalLayer` carries the authoring data: `Mode` (Momentary = fire once on
+  window entry; Continuous = re-emit every tick), `Transport` (OSC only in
+  Phase 1), `ValueSource` (playhead Progress or a Keyframe track), the OSC
+  address pattern, an ordered `Arg` list (at most one arg may be value-bound
+  to the continuous pipeline), and the output range mapping.
+- `SignalOutputSystem::evaluate` runs on the **show thread** against baked
+  `bus::SignalLayerSnapshot` entries (zero registry access — the editor
+  bakes them into the scene snapshot), so signal emission keeps firing
+  through editor stalls. Emits post `bus::SignalEmit`; control-plane
+  plugins drain them via `IPluginContext::drainSignalEmits` (plugin API
+  v1, ADR-0027).
+- Serialization: schema v26 (mode/transport/valueSource/address/args/mapping).
 
 ---
 
@@ -542,4 +571,4 @@ Props at high frequency, revisit.
 - `docs/reference/ECS_PRINCIPLES.md` — the rules these archetypes follow
 - `docs/reference/SYSTEM_ORDERING.md` — which systems read/write these archetypes per frame
 - `docs/adr/0014-editor-show-thread-split.md` — why some archetypes are excluded from the show-thread snapshot
-- `include/entity/components/CLAUDE.md` — operator-facing rule sheet
+- `include/entity/components/CLAUDE.md` — operator-facing rule sheet (gitignored; maintainer-local only)

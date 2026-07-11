@@ -145,7 +145,16 @@ framerate (typically vsync on the primary output, 60 Hz).
           no registry writes. The editor applies the crossing via
           SectionScheduler::handleBreakAt (editor step 10).
 
-1.2 (after the D2R drain) if editor heartbeat > 50ms stale
+1.2 SignalOutputSystem::evaluate  (ADR-0027, the `SignalOutputSystem` zone)
+       └─ Evaluates active Signal layers from the cached SceneSnapshot's
+          baked SignalLayerSnapshot entries — momentary crossing
+          detection + continuous value mapping — and posts bus::SignalEmit
+          via Engine::postSignalEmit. Runs unconditionally on the show
+          thread (no registry reads/writes), so signal output keeps
+          firing through editor stalls. Control-plane plugins drain the
+          emits via IPluginContext::drainSignalEmits.
+
+1.3 (after the D2R drain) if editor heartbeat > 50ms stale
     and no bulk registry mutation in progress:
        └─ DecodeSystem::tickFromSnapshot()  ← registry-free fallback (#74)
        └─ AudioSystem::tickFromSnapshot()   ← registry-free fallback (#74)
@@ -260,6 +269,7 @@ mutation — the pre-#74 crash class).
 | `drainContentScannerDeltas` | step 4 | no -- not needed | Filesystem-watcher updates can wait until stall ends. |
 | `DecodeSystem::update` | step 5 | yes via `tickFromSnapshot` (#74, replaced `a9bcd8b`'s update() re-entry) | update() is editor-only (asserted). The fallback steers existing workers' atomics (`targetFrame`, seek, `pingPongReverse`) from the clip catalog — zero registry access. Worker map guarded by a mutex (also covers PlaybackPresenter's per-frame `getWorker`). |
 | `AudioSystem::update` | step 5.5 | yes via `tickFromSnapshot` (#74) | update() is editor-only (asserted). The fallback drives `mixSource.active` + discontinuity re-seeks from the catalog; discontinuity threshold scales with the measured steering-tick gap so fallback handoffs never seek-storm (audible ring-clears). Gain/mute/solo mirroring + the `hasAudioStream` registry write stay editor-only. |
+| `SignalOutputSystem::evaluate` | show step 1.2 (show-native) | n/a — already show-native (ADR-0027) | Never runs on the editor tick at all: the editor only bakes `SignalLayerSnapshot` entries into the scene snapshot; evaluation (crossing detection, value mapping, `bus::SignalEmit` posts) happens on the show thread with zero registry access, so signal output fires through editor stalls by construction. |
 | `SeekSyncController::tick` | step 5.6 | no — not needed | Polls readiness predicates and releases `Timeline::m_seekSyncGate` when all active decoders reach the parked frame. The gate itself is an `std::atomic<bool>` read by both the show-thread and editor-thread `Timeline::update`; both respect the hold without SeekSyncController needing a show-thread presence. During an editor stall the gate stays held (no tick = no release), which is correct — audio and video decode workers keep running independently, so by the time the editor resumes the predicates may already be satisfied and the gate releases on the first tick. Timeout failsafe (3000 ms) guards against indefinite holds (ADR-0026). |
 
 Every editor-tick system that drives the projector output now has a
@@ -314,4 +324,4 @@ checklist.
 - `docs/adr/0014-editor-show-thread-split.md` — threading architecture rationale
 - `docs/reference/ECS_PRINCIPLES.md` — the ECS rules
 - `docs/reference/ENTITY_ARCHETYPES.md` — what data the systems are reading and writing
-- `include/entity/systems/CLAUDE.md` — operator-facing rule sheet
+- `include/entity/systems/CLAUDE.md` — operator-facing rule sheet (gitignored; maintainer-local only)
