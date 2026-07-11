@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    # claude/codebase-roadmap-review-1jlm2s is temporary (Precomp Phase A
+    # verification — the integration cannot fire workflow_dispatch); remove
+    # before merging the branch.
+    branches: [ master, main, claude/codebase-roadmap-review-1jlm2s ]
   pull_request:
     branches: [ master, main ]
   workflow_dispatch:
