@@ -31,14 +31,17 @@ Multi-projector calibration, real-time GPU compositing, show control.
 - **Show-grade timing.** A dedicated show thread owns GPU compositing
   and output Present. Editor modals, file dialogs, and resize loops
   don't freeze the projectors.
-- **OSC control.** Inbound OSC over UDP — play, pause, seek, fire
-  sections, jump to cues. Pairs natively with Bitfocus Companion.
+- **Show control.** Bidirectional OSC over UDP — play, pause, seek,
+  fire sections, jump to cues inbound; transport and cue events
+  outbound. Pairs natively with Bitfocus Companion. DMX/Art-Net
+  input maps channels to commands and layer parameters.
 - **Projects travel.** A project is a folder. Copy it to a USB stick,
   sync to another machine — media, timeline, calibration, and settings
   move together as one tree.
-- **Layered timeline.** Three layer kinds on one timeline: clip,
-  object-animation (keyframe-drive screen and prop transforms),
-  generative (procedural content like Muncher).
+- **Layered timeline.** Four layer kinds on one timeline: clip,
+  object-animation (keyframe-driven screen and prop transforms),
+  generative (procedural content like Muncher), and signal (timeline-
+  driven OSC/DMX output to external gear).
 - **Per-layer effects.** Ordered shader chain on every layer with nine
   engine effects (blur, sharpen, vignette, pixelate, chromatic
   aberration, edge detect, brightness/contrast, hue/saturation,
@@ -57,9 +60,13 @@ See the [feature overview](https://entitymedia.art/) and
 
 Pre-1.0, active development. Core engine (playback, mapping, OSC,
 effects, layers, content routing, plugins) is shipping and used
-day-to-day. **510 / 510 ctest green** at current HEAD.
+day-to-day, backed by a ctest suite of 750+ unit/golden test cases
+plus ~55 headless integration scenarios (counts drift upward; run
+`ctest -N` for the live number).
 
-Latest shipped milestone: Content Routing library + Feed Maps
+Recent milestones: Signal Output Layer — timeline-driven OSC/DMX
+(ADR-0027, June 2026); WASAPI audio playback with rate-locked sync
+(ADR-0025/0026, May–June 2026); Content Routing library + Feed Maps
 (ADR-0022, May 2026).
 
 The editor/show thread split is complete — timeline, decode, animation,
@@ -101,8 +108,8 @@ Full install guide with system requirements and troubleshooting:
   Present. Editor stalls don't pause the projector output. See
   [`docs/adr/0014-editor-show-thread-split.md`](docs/adr/0014-editor-show-thread-split.md).
 - **Plugin system** — Apache-2.0 plugin API with first-party plugins
-  for OSC and bus-logging. Pro plugins live in a sibling private repo
-  and link via `EXTRA_PLUGIN_DIRS`. See
+  for OSC (in and out), DMX/Art-Net, and bus-logging. Pro plugins live
+  in a sibling private repo and link via `EXTRA_PLUGIN_DIRS`. See
   [`docs/adr/0005-open-core-dual-license.md`](docs/adr/0005-open-core-dual-license.md).
 - **Tracy profiling** integrated with on-demand capture, named frame
   contexts for Editor and Show, per-system zones, and D3D12 GPU zones.
@@ -110,7 +117,7 @@ Full install guide with system requirements and troubleshooting:
 
 Architecture decisions live in [`docs/adr/`](docs/adr/) — start at
 [`docs/adr/README.md`](docs/adr/README.md). The full ADR index covers
-twenty-plus decisions spanning licensing, threading, codec strategy,
+twenty-seven decisions spanning licensing, threading, codec strategy,
 calibration math, and the layer / effects / content-routing data
 models.
 
@@ -129,7 +136,8 @@ entity/
 │   ├── director/             Snapshot bake, R2D/D2R bus drains
 │   └── ui/                   ImGui windows
 ├── plugin-api/               Apache 2.0 plugin API headers
-├── plugins/                  First-party plugins (osc-receiver, bus-logger)
+├── plugins/                  First-party plugins (osc-receiver, osc-sender,
+│                             dmx-artnet, bus-logger)
 ├── shaders/                  HLSL shaders
 ├── tests/                    ctest suites
 ├── docs/
