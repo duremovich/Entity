@@ -180,7 +180,8 @@ entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
 # parked source frame into FrameCache without a Play or seek. Guards the
 # drainRendererToDirector-before-buildSceneSnapshot provisioning-latency
 # fix and the broader "visible while parked, no Play/seek dependency"
-# contract.
+# contract. Requires test_media/basic_loop.mov — generate once with
+# scripts/perf/setup-test-media.ps1 (CI runs it before ctest).
 entity_add_integration_test(park_then_import_visible park_then_import_visible.json)
 # Phase D entry, subtask 8 -- per-tick Director->Renderer bus loop end-to-end.
 entity_add_integration_test(director_renderer_smoke director_renderer_smoke.json)

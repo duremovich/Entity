@@ -5,7 +5,7 @@
         {"type": "AddScreen", "name": "ParkVisibleScreen", "width": 256, "height": 256},
         {"type": "SeekToFrame", "frame": 90},
         {"type": "WaitSeconds", "count": 0.3},
-        {"type": "ImportVideo", "filepath": "test_media/Basic loop.mov", "trackIndex": 0, "position": 0},
+        {"type": "ImportVideo", "filepath": "test_media/basic_loop.mov", "trackIndex": 0, "position": 0},
         {"type": "SetClipTargetScreen", "trackIndex": 0, "clipIndex": 0, "screenName": "ParkVisibleScreen"},
         {"type": "AssertPlaybackState", "state": "Stopped"},
         {"type": "WaitSeconds", "count": 0.3},

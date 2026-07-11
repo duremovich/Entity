@@ -19,6 +19,20 @@ The app:
    a golden file.
 4. Exits on `Exit` command. Non-zero exit code if any `CaptureHash` failed.
 
+## Fixture media
+
+Most scripts import committed media under `test_media/` (PNG sequences, HAP
+gradients). Two sets are **generated, not committed** — run the generators
+once before `ctest` on a fresh clone (CI runs both; requires ffmpeg on PATH):
+
+```powershell
+.\scripts\perf\setup-audio-fixtures.ps1   # tests/fixtures/audio/tone_1khz.mov
+.\scripts\perf\setup-test-media.ps1       # test_media/basic_loop.mov, loop_60fps.mov
+```
+
+`scripts/perf/setup-fixtures.ps1` (large perf stress fixtures, ~9 GB) is NOT
+needed for the ctest suite — only for `scripts/perf/` scenarios.
+
 ## Script conventions
 
 - Test scripts live in `scripts/integration/`.

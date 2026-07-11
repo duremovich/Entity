@@ -126,6 +126,18 @@ jobs:
           & $dxc --version
           "DXC_EXECUTABLE=$dxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # Fixture media for the ctest integration suite (issue #86). These files
+      # are generated, not committed: ~17 tests import
+      # tests/fixtures/audio/tone_1khz.mov and test_media/basic_loop.mov and
+      # fail with import errors if the generators never ran. ffmpeg is on PATH
+      # from the FFMPEG_ROOT bin export above. Runs before the build so a
+      # generation failure surfaces in seconds, not after a 40-minute compile.
+      - name: Generate test fixture media
+        shell: pwsh
+        run: |
+          ./scripts/perf/setup-audio-fixtures.ps1
+          ./scripts/perf/setup-test-media.ps1
+
       # =====================================================================
       # Caching strategy (two layers):
       #
