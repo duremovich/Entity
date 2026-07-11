@@ -2,7 +2,7 @@
   "name":               "osc-sender",
   "version":            "0.1.0",
   "license":            "Apache-2.0",
-  "requiredApiVersion": 0,
+  "requiredApiVersion": 1,
   "description":        "Outbound OSC over UDP. Broadcasts Entity transport state (play/pause/stop, section, cue, frame) to one or more OSC destinations. Supports per-project mapping tables for custom address namespaces. Destinations configured via Settings; mapping tables per-project via OscMappingsWindow.",
   "kind":               "control-plane"
 }

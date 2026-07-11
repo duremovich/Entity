@@ -28,7 +28,10 @@
 namespace entity::plugin {
 
 // Bumped on any incompatible change to plugin-api/. A plugin whose manifest
-// declares a different requiredApiVersion is refused at load time.
+// declares a requiredApiVersion newer than the engine's PLUGIN_API_VERSION
+// is refused at load time (the engine's vtable would be missing methods the
+// plugin calls). Version history: 1 added drainSignalEmits (ADR-0027);
+// 2 added setRemoteParam/setRemoteParamString (remote-control plane).
 constexpr int PLUGIN_API_VERSION = 2;
 
 class IPluginContext;

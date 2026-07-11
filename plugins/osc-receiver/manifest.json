@@ -2,7 +2,7 @@
   "name":               "osc-receiver",
   "version":            "0.1.0",
   "license":            "Apache-2.0",
-  "requiredApiVersion": 0,
+  "requiredApiVersion": 2,
   "description":        "Inbound OSC over UDP. Translates a small fixed namespace (/entity/play, /entity/pause, /entity/stop, /entity/section/next, /entity/cue/{n}/go, /entity/seek) into Director commands. Default port 53000. Built for triggering Entity from show-control and stage-manager systems.",
   "kind":               "control-plane"
 }

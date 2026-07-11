@@ -55,11 +55,30 @@ plugin's `manifest.json` declares an alternate license (rare).
      "name":               "<name>",
      "version":            "0.1.0",
      "license":            "Apache-2.0",
-     "requiredApiVersion": 0,
+     "requiredApiVersion": 2,
      "description":        "What this plugin does.",
      "kind":               "control-plane"
    }
    ```
+
+   `requiredApiVersion` is the minimum engine API your plugin can run
+   against: declare the **highest API version whose `IPluginContext`
+   methods you actually call** — not 0. Versioned method families are
+   tagged `ABI: PLUGIN_API_VERSION n` in
+   `plugin-api/include/entity/plugin/PluginContext.hpp`; anything
+   untagged is version 0. Current tiers:
+
+   | Version | Adds |
+   |---------|------|
+   | 0 | `bus`, `log`, `enqueueCommand`, `registerShutdownHook`, settings getters, `getTransportSnapshot` |
+   | 1 | `drainSignalEmits` (ADR-0027) |
+   | 2 | `setRemoteParam`, `setRemoteParamString` |
+
+   Declaring lower than the methods you call lets an older engine load
+   the plugin and dispatch past the end of its vtable (undefined
+   behavior). When unsure, use the current `PLUGIN_API_VERSION` from
+   `Plugin.hpp`. Review checklist: whenever you start calling a method
+   from a newer tier, bump `requiredApiVersion` in the same change.
 
    `kind` is `"control-plane"` for plugins that talk only to `entity-bus`,
    or `"hot-path"` for plugins that implement `OutputDriver` /

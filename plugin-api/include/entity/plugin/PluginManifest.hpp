@@ -18,10 +18,19 @@ namespace entity::plugin {
 //   "name":               "bus-logger",
 //   "version":            "0.1.0",
 //   "license":            "MIT",
-//   "requiredApiVersion": 0,
+//   "requiredApiVersion": 2,
 //   "description":        "Logs bus traffic to stdout for debugging.",
 //   "kind":               "control-plane"
 // }
+//
+// `requiredApiVersion` is the MINIMUM engine API the plugin can run
+// against: declare the highest PLUGIN_API_VERSION whose IPluginContext
+// methods your plugin actually calls (each versioned method family is
+// tagged "ABI: PLUGIN_API_VERSION n" in PluginContext.hpp; untagged
+// methods are version 0). Declaring lower than that lets an older engine
+// load the plugin and dispatch calls past the end of its vtable --
+// undefined behavior. When in doubt, declare the current
+// PLUGIN_API_VERSION (the struct's default below).
 //
 // `kind` is informational today (drives the static dispatcher's link
 // rules in CMake -- "hot-path" plugins skip the entity-bus link). When
