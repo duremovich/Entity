@@ -37,6 +37,7 @@ that have moved on.
 | 0025 | [Timeline clock — separate rate authority from position authority](0025-clock-rate-vs-position-authority.md) | Accepted | 2026-05-21 |
 | 0026 | [Seek-sync preroll gate — hold playhead until all decoders reach the target frame](0026-seek-sync-preroll-gate.md) | Accepted | 2026-05-22 |
 | 0027 | [Signal Output Layer — timeline-driven OSC/plugin event dispatch](0027-signal-output-layer.md) | Accepted | 2026-06-02 |
+| 0029 | [Precomps — nested timeline containers via shadow-entity instancing](0029-precomps-shadow-entity-instancing.md) | Proposed | 2026-07-11 |
 
 ### Known gaps in the series (as of 2026-07-11)
 
