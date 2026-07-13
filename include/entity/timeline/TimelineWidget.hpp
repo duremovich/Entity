@@ -100,14 +100,38 @@ public:
     Timeline* getTimeline() const { return m_timeline; }
 
     /**
-     * Discrete zoom ladder, in frames per tick. Single tier — the ladder
-     * value IS the tick spacing AND the snap increment AND the dropdown
-     * label. "10f" means: tick lines every 10 frames, scrub snaps to every
-     * 10 frames. No separate minor/major hierarchy (it confused users about
-     * what the snap actually was). Discrete-step zoom ladder.
+     * Discrete zoom ladder. Single tier — the ladder value IS the tick spacing
+     * AND the snap increment AND the dropdown label. "10f" means: tick lines
+     * every 10 frames, scrub snaps to every 10 frames. No separate minor/major
+     * hierarchy (it confused users about what the snap actually was).
+     *
+     * Stops are expressed in frames OR seconds. The seconds stops are the point:
+     * a pure frame ladder has no stop that lands on a second boundary at 30fps
+     * (or 23.976, or 59.94), so you can't count seconds off the grid to space
+     * keyframes by eye. A Seconds stop resolves against the project frame rate,
+     * so "1s" is 30 frames at 30fps and 24 at 24fps.
      */
-    static constexpr int FRAMES_PER_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
-    static constexpr int ZOOM_LEVEL_COUNT = 9;
+    struct ZoomStop {
+        enum class Unit { Frames, Seconds };
+        Unit        unit;
+        int         count;
+        const char* label;
+    };
+    static constexpr ZoomStop ZOOM_STOPS[] = {
+        {ZoomStop::Unit::Frames,   1, "1f"},
+        {ZoomStop::Unit::Frames,   2, "2f"},
+        {ZoomStop::Unit::Frames,   5, "5f"},
+        {ZoomStop::Unit::Frames,  10, "10f"},
+        {ZoomStop::Unit::Seconds,  1, "1s"},
+        {ZoomStop::Unit::Seconds,  2, "2s"},
+        {ZoomStop::Unit::Seconds,  5, "5s"},
+        {ZoomStop::Unit::Seconds, 10, "10s"},
+        {ZoomStop::Unit::Seconds, 30, "30s"},
+        {ZoomStop::Unit::Seconds, 60, "1m"},
+    };
+    static constexpr int ZOOM_LEVEL_COUNT =
+        static_cast<int>(sizeof(ZOOM_STOPS) / sizeof(ZOOM_STOPS[0]));
+    static constexpr int DEFAULT_ZOOM_INDEX = 4;  // "1s"
     static constexpr float TICK_PX = 20.0f;  // visual width of one tick division (fixed — zoom changes the time each tick represents, not the spacing)
 
     int getZoomIndex() const { return m_zoomIndex; }
@@ -118,7 +142,15 @@ public:
      * pixels and zoom changes the px/sec ratio.
      */
     void setZoomIndex(int idx);
-    int framesPerTick() const { return FRAMES_PER_TICK[m_zoomIndex]; }
+
+    /**
+     * Frames per tick division at the current zoom. The single seam every other
+     * consumer goes through — applyZoomIndex, snapTimeToTickGrid, the ruler tick
+     * loop, and the body gridlines. Seconds stops resolve against the timeline's
+     * frame rate here, and never resolve to 0 (a 0 stride would hang the tick
+     * loops).
+     */
+    int framesPerTick() const;
 
     /**
      * Derived pixels-per-second based on current zoom level + timeline framerate.
@@ -459,7 +491,7 @@ private:
     Timeline* m_timeline{nullptr};
 
     // View settings
-    int m_zoomIndex{3};                // index into FRAMES_PER_TICK; default 10f tick
+    int m_zoomIndex{DEFAULT_ZOOM_INDEX};  // index into ZOOM_STOPS; default 1s tick
     float m_pixelsPerSecond{100.0f};  // derived from zoom index + frame rate, refreshed each render()
     float m_scrollX{0.0f};             // Horizontal scroll position
     float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks

@@ -9,6 +9,7 @@ add_executable(EntityMediaTests
     unit/TextureUploaderGenerationTests.cpp
     unit/KeyframeRoundtripTests.cpp
     unit/KeyframeEasingTests.cpp
+    unit/TimelineZoomLadderTests.cpp
     unit/RippleTimeTests.cpp
     unit/TrackInsertTests.cpp
     unit/DeleteClipUndoTests.cpp
