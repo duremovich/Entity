@@ -1481,6 +1481,60 @@ CommandPtr SelectTabCommand::fromJson(const nlohmann::json& j) {
 // SetClipRotationCommand
 // ============================================================================
 
+namespace {
+// Defined further down this file, in the same (anonymous) namespace.
+entt::entity resolveLayer(Engine& engine, int trackIndex, int clipIndex);
+}  // namespace
+
+bool SetClipScaleCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) {
+        std::cerr << "[SetClipScale] Invalid track/clip index" << std::endl;
+        return false;
+    }
+    auto* transform = registry.try_get<Transform>(layer);
+    if (!transform) return false;
+
+    if (!m_previousScale.has_value()) {
+        m_previousScale = std::array<float, 3>{
+            transform->scale.x, transform->scale.y, transform->scale.z};
+    }
+    transform->setScale(glm::vec3(m_x, m_y, m_z));
+    return true;
+}
+
+bool SetClipScaleCommand::undo(Engine& engine) {
+    if (!m_previousScale.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) return false;
+    auto* transform = registry.try_get<Transform>(layer);
+    if (!transform) return false;
+
+    const auto& p = *m_previousScale;
+    transform->setScale(glm::vec3(p[0], p[1], p[2]));
+    return true;
+}
+
+nlohmann::json SetClipScaleCommand::toJson() const {
+    return {{"type", "SetClipScale"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"x", m_x}, {"y", m_y}, {"z", m_z}};
+}
+
+std::string SetClipScaleCommand::getDescription() const {
+    return "Set clip scale to (" + std::to_string(m_x) + ", " + std::to_string(m_y)
+         + ", " + std::to_string(m_z) + ")";
+}
+
+CommandPtr SetClipScaleCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetClipScaleCommand>(
+        j.value("trackIndex", 0), j.value("clipIndex", 0),
+        j.value("x", 1.0f), j.value("y", 1.0f), j.value("z", 1.0f));
+}
+
 bool SetClipRotationCommand::execute(Engine& engine) {
     std::cout << "[SetClipRotation] Track " << m_trackIndex << ", Clip " << m_clipIndex
               << " -> (" << m_rotX << ", " << m_rotY << ", " << m_rotZ << ")" << std::endl;

@@ -273,76 +273,6 @@ entt::entity TimelineWidget::findClipAtPosition(ImVec2 mousePos, ImVec2 windowPo
     return entt::null;
 }
 
-TimelineWidget::KeyframeHit
-TimelineWidget::findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const {
-    KeyframeHit hit;
-    if (!m_timeline) return hit;
-
-    auto& registry = m_timeline->getRegistry();
-    const double fps = m_timeline->getFrameRate();
-    if (fps <= 0.0) return hit;
-
-    // Hit zone = glyph half-size + a few px slack, matching the keyframe
-    // size used in renderPropertyTracks.
-    constexpr float kKfSize = 5.0f;
-    constexpr float kHitPad = 3.0f;
-
-    // Iterate the per-frame row cache (same layout the renderer + other
-    // hit-tests use); hidden tracks are skipped.
-    for (const auto& row : m_trackRows) {
-        const float trackY = windowPos.y + row.y;
-        const entt::entity clipAtPlayhead = row.clipAtPlayhead;
-
-        if (clipAtPlayhead != entt::null) {
-            const TimelinePlacement place = readPlacement(registry, clipAtPlayhead);
-            const auto* animProps = registry.try_get<AnimatedProperties>(clipAtPlayhead);
-            if (place.valid && animProps) {
-                // Keyframe screen math is byte-identical to renderPropertyTracks.
-                const float startSeconds =
-                    static_cast<float>(place.startFrame) / static_cast<float>(fps);
-                const float clipX = windowPos.x +
-                    timeToPixel(static_cast<Timecode>(startSeconds * 1000000.0f));
-                const float clipWidth = timeToPixel(static_cast<Timecode>(
-                    (place.duration / static_cast<float>(fps)) * 1000000.0f));
-                const float propY0 = trackY + TRACK_HEIGHT;
-
-                const auto properties = propertyListForEntity(clipAtPlayhead);
-                for (size_t p = 0; p < properties.size(); ++p) {
-                    // Effect-keyframe drag-to-move + right-click is a
-                    // Phase 4 follow-up. For now, skip non-Transform
-                    // rows so the right-pane hit-test stays consistent
-                    // with what renderPropertyTracks draws ring-able.
-                    if (properties[p].source !=
-                        TimelinePropertyDef::Source::Transform) continue;
-                    const KeyframeTrack* kfTrack =
-                        animProps->getTrack(properties[p].prop);
-                    if (!kfTrack || !kfTrack->hasKeyframes()) continue;
-                    const float rowY =
-                        propY0 + static_cast<float>(p) * PROPERTY_ROW_HEIGHT;
-                    const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
-                    if (mousePos.y < keyframeY - kKfSize - kHitPad ||
-                        mousePos.y > keyframeY + kKfSize + kHitPad) continue;
-                    for (const auto& kf : kfTrack->keyframes) {
-                        const float kfSeconds =
-                            static_cast<float>(kf.frame) / static_cast<float>(fps);
-                        const float kfX = clipX + kfSeconds * m_pixelsPerSecond;
-                        if (kfX < clipX || kfX > clipX + clipWidth) continue;
-                        if (mousePos.x >= kfX - kKfSize - kHitPad &&
-                            mousePos.x <= kfX + kKfSize + kHitPad) {
-                            hit.valid    = true;
-                            hit.clip     = clipAtPlayhead;
-                            hit.property = properties[p].prop;
-                            hit.frame    = kf.frame;
-                            return hit;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return hit;
-}
-
 bool TimelineWidget::isInPropertyRowBand(ImVec2 mousePos, ImVec2 windowPos) const {
     if (!m_timeline) return false;
 
@@ -2235,6 +2165,10 @@ void TimelineWidget::handleContextMenus() {
     if (m_showKeyframeContextMenu) {
         ImGui::OpenPopup("KeyframeContextMenu");
         m_showKeyframeContextMenu = false;
+        // Clear the "user is typing" flag so the Set Value field re-seeds from the
+        // keyframe under the cursor. Dismissing the popup by clicking away leaves
+        // the flag set, which would otherwise show the PREVIOUS keyframe's value.
+        m_kfValueEntryActive = false;
     }
 
     if (ImGui::BeginPopup("KeyframeContextMenu")) {

@@ -405,13 +405,6 @@ private:
      * A keyframe identified by its owning layer entity, animated property,
      * and clip-relative frame. `valid == false` means no keyframe was hit.
      */
-    struct KeyframeHit {
-        bool               valid{false};
-        entt::entity       clip{entt::null};
-        AnimatableProperty property{AnimatableProperty::PositionX};
-        FrameNumber        frame{0};
-    };
-
     /**
      * Identity of one keyframe, for multi-selection. Covers both track kinds:
      * transform rows are keyed by (clip, prop), effect-param rows by
@@ -446,13 +439,6 @@ private:
         }
     };
 
-    /**
-     * Hit-test the expanded property-track rows for a keyframe diamond at
-     * mousePos. Walks tracks with the same cumulative-Y layout as
-     * findClipAtPosition; the keyframe screen math mirrors
-     * renderPropertyTracks so the hit zone matches what is drawn.
-     */
-    KeyframeHit findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const;
 
     /**
      * True if mousePos is inside any expanded track's property-panel Y band.
@@ -848,6 +834,13 @@ private:
             std::optional<float> keyframeValue;  // nullopt = no kf existed at frame
         };
         std::vector<LinkedAxis> linkedScaleAxes;
+
+        // Whole scale vector before the drag. A locked scale drag moves axes that
+        // may be static (no keyframe, so no UpsertKeyframeCommand to undo); the
+        // commit pairs a SetClipScaleCommand with this so undo restores every axis
+        // rather than only the animated ones.
+        glm::vec3 preDragScale{1.0f, 1.0f, 1.0f};
+        bool      scaleLockDrag{false};  // this drag is a locked scale edit
     };
     TwirldownPreEdit m_twirldownPreEdit;
 
@@ -974,7 +967,7 @@ private:
      *  are interleaved; rows inside collapsed groups are filtered out so
      *  all consumers iterate the same flat visible list. Shared by
      *  renderPropertyTracks (body), renderClipPropertyPanel (header) and
-     *  findKeyframeAtPosition. */
+     *  keyframeAddrFor (paramHash -> paramName recovery). */
     std::vector<TimelinePropertyDef> propertyListForEntity(entt::entity e) const;
 
     /** True iff the group at this canonical path is currently collapsed
@@ -1026,8 +1019,8 @@ private:
 
     // The keyframe glyph under a screen-space point, if any. Reads the same cache
     // the renderer filled, so the clickable zone is exactly the drawn glyph.
-    // Supersedes findKeyframeAtPosition's geometry re-derivation, and unlike it,
-    // this one sees effect-param keyframes too.
+    // Unlike the geometry re-derivation this replaced, it sees effect-param
+    // keyframes too.
     std::optional<KeyframeRef> findKeyframeGlyphAt(ImVec2 mousePos) const;
 
     // Build the command-layer address for a selected keyframe. Returns nullopt if

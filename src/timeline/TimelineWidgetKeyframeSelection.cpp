@@ -20,6 +20,8 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <unordered_map>
+#include <utility>
 #include <string>
 
 namespace entity {
@@ -136,8 +138,33 @@ TimelineWidget::keyframeAddrFor(const KeyframeRef& ref) const {
 std::vector<KeyframeAddr> TimelineWidget::selectedKeyframeAddrs() const {
     std::vector<KeyframeAddr> addrs;
     addrs.reserve(m_selectedKeyframes.size());
+
+    // keyframeAddrFor sweeps every track x layer to recover (trackIndex, clipIndex),
+    // and that answer is the same for every keyframe on a given clip. Memoize it —
+    // a 200-keyframe box selection would otherwise do 200 full sweeps per commit.
+    std::unordered_map<std::uint32_t, std::pair<int, int>> clipIndices;
+
     for (const auto& ref : m_selectedKeyframes) {
-        if (auto addr = keyframeAddrFor(ref)) addrs.push_back(*addr);
+        if (ref.isEffect) {
+            if (auto addr = keyframeAddrFor(ref)) addrs.push_back(*addr);
+            continue;
+        }
+
+        const auto key = static_cast<std::uint32_t>(ref.clip);
+        auto it = clipIndices.find(key);
+        if (it == clipIndices.end()) {
+            auto addr = keyframeAddrFor(ref);
+            if (!addr) continue;  // layer no longer in any track
+            it = clipIndices.emplace(key,
+                std::make_pair(addr->trackIndex, addr->clipIndex)).first;
+        }
+
+        KeyframeAddr addr;
+        addr.trackIndex = it->second.first;
+        addr.clipIndex  = it->second.second;
+        addr.property   = ref.prop;
+        addr.frame      = ref.frame;
+        addrs.push_back(addr);
     }
     return addrs;
 }
@@ -379,6 +406,13 @@ void TimelineWidget::renderKeyframeOffsetEntry() {
         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_EnterReturnsTrue |
         ImGuiInputTextFlags_AutoSelectAll);
 
+    // Clicking away abandons the entry. Without this the field keeps its "active"
+    // flag after losing focus, and the guard in handleTracksInteraction that lets
+    // the entry own the interaction would swallow every click on the tracks —
+    // wedging the timeline until the user happened to press Escape.
+    const bool abandoned =
+        !committed && !m_kfOffsetFocusPending && ImGui::IsItemDeactivated();
+
     ImGui::SameLine();
     ImGui::TextUnformatted("s from prev");
 
@@ -393,7 +427,7 @@ void TimelineWidget::renderKeyframeOffsetEntry() {
         m_dragDelta = std::clamp(wanted, m_dragDeltaMin, m_dragDeltaMax);
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    if (abandoned || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         m_dragDelta           = 0;   // snap the preview back
         m_kfOffsetEntryActive = false;
         m_dragAnchor          = KeyframeRef{};

@@ -288,6 +288,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AddEffect", AddEffectCommand::fromJson);
     registerFactory("RemoveEffect", RemoveEffectCommand::fromJson);
     registerFactory("SetScaleLock", SetScaleLockCommand::fromJson);
+    registerFactory("SetClipScale", SetClipScaleCommand::fromJson);
     registerFactory("SetEffectEnabled", SetEffectEnabledCommand::fromJson);
     registerFactory("SetEffectFloatParam", SetEffectFloatParamCommand::fromJson);
 

@@ -90,6 +90,12 @@ bool isScaleLocked(entt::registry& registry, entt::entity e) {
     return lock == nullptr || lock->uniform;
 }
 
+// Scale vector, or identity when the entity has no Transform (OA layers).
+glm::vec3 transformScaleOr(entt::registry& registry, entt::entity e) {
+    const auto* t = registry.try_get<Transform>(e);
+    return t ? t->scale : glm::vec3(1.0f);
+}
+
 } // namespace
 
 void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
@@ -184,7 +190,7 @@ void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
 // Channels to show under an expanded layer. OA layers get the full 3D set
 // (9 channels — Pos/Rot/Scale × X/Y/Z); Clip-backed and Generative layers
 // keep the 2D set (6 channels). Shared by renderPropertyTracks (body),
-// renderClipPropertyPanel (header) and findKeyframeAtPosition so they all
+// renderClipPropertyPanel (header) and the keyframe glyph cache so they all
 // stay in lockstep.
 bool TimelineWidget::isGroupCollapsed(entt::entity layerEntity,
                                       const std::string& groupPath) const {
@@ -1997,14 +2003,23 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                 m_twirldownPreEdit.wasKeyframed = false;
                 m_twirldownPreEdit.keyframeValue.reset();
                 m_twirldownPreEdit.linkedScaleAxes.clear();
+                // Reset unconditionally. The branches below only assign this when
+                // the dragged row is itself keyframed, but the linked-scale commit
+                // reads it even when the dragged axis is static — it would
+                // otherwise write a linked axis's keyframe at whatever frame a
+                // previous edit left here.
+                m_twirldownPreEdit.keyframeFrame = localFrame;
+                m_twirldownPreEdit.preDragScale  = transformScaleOr(registry, clipEntity);
 
                 // A locked scale drag writes the other two axes as well, so snapshot
                 // their pre-edit keyframe state now — the commit below emits one
-                // UpsertKeyframeCommand per animated axis.
-                if (!isOA && row.source == TimelinePropertyDef::Source::Transform &&
-                    isScaleProp(row.prop) && localFrame >= 0 &&
-                    isScaleLocked(registry, clipEntity))
-                {
+                // UpsertKeyframeCommand per animated axis, plus one
+                // SetClipScaleCommand covering the axes that are static.
+                m_twirldownPreEdit.scaleLockDrag =
+                    !isOA && row.source == TimelinePropertyDef::Source::Transform &&
+                    isScaleProp(row.prop) && isScaleLocked(registry, clipEntity);
+
+                if (m_twirldownPreEdit.scaleLockDrag && localFrame >= 0) {
                     for (AnimatableProperty axis : {AnimatableProperty::ScaleX,
                                                     AnimatableProperty::ScaleY,
                                                     AnimatableProperty::ScaleZ})
@@ -2302,9 +2317,11 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                     // Axes the uniform-scale lock dragged along. Emitted outside the
                     // chain above because the dragged axis itself may be static while
                     // a linked one is animated — that case takes the scalar branch,
-                    // which has no command for scale, yet the linked keyframe was
+                    // which has no keyframe command, yet the linked keyframe was
                     // still written live and needs to be undoable.
-                    if (idx && transformForCommit) {
+                    if (idx && transformForCommit &&
+                        m_twirldownPreEdit.scaleLockDrag)
+                    {
                         for (const auto& linked : m_twirldownPreEdit.linkedScaleAxes) {
                             auto cmd = std::make_unique<UpsertKeyframeCommand>(
                                 idx->first, idx->second, linked.prop,
@@ -2313,6 +2330,20 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                             cmd->setPreviousValue(linked.keyframeValue);
                             m_commandDispatcher->enqueue(std::move(cmd));
                         }
+
+                        // The static axes have no keyframe to undo, so without this
+                        // an undo would restore the animated axes and leave the
+                        // static ones scaled — permanently skewing the layer.
+                        // Committing the whole vector keeps undo coherent whichever
+                        // axes happen to be animated.
+                        const glm::vec3& pre = m_twirldownPreEdit.preDragScale;
+                        auto scaleCmd = std::make_unique<SetClipScaleCommand>(
+                            idx->first, idx->second,
+                            transformForCommit->scale.x,
+                            transformForCommit->scale.y,
+                            transformForCommit->scale.z);
+                        scaleCmd->setPreviousScale(pre.x, pre.y, pre.z);
+                        m_commandDispatcher->enqueue(std::move(scaleCmd));
                     }
                 } else { // EffectParam
                     if (m_twirldownPreEdit.wasKeyframed && registry.valid(row.effectEntity)) {

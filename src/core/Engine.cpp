@@ -2656,7 +2656,12 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                     // A keyframe selection wins over the clip selection: the
                     // keyframes live *inside* the selected clip, so deleting the
                     // clip out from under them is never what Delete meant.
-                    if (m_timelineWidget && m_timelineWidget->hasKeyframeSelection()) {
+                    //
+                    // Plain Delete only. Ctrl+Shift+Delete is the ripple-delete-time
+                    // shortcut, handled by the second switch in this same function —
+                    // it must not also eat the keyframe selection on its way past.
+                    if (!ctrlPressed && !shiftPressed &&
+                        m_timelineWidget && m_timelineWidget->hasKeyframeSelection()) {
                         m_timelineWidget->deleteSelectedKeyframes();
                         break;
                     }

@@ -777,6 +777,44 @@ private:
     std::optional<std::array<float, 3>> m_previousRotation;
 };
 
+/**
+ * Set a clip's scale vector, undoably.
+ *
+ * Scale used to be live-write-only (no scalar command existed), which was
+ * survivable while an edit only touched the axis you dragged. The uniform-scale
+ * lock (ScaleLock) breaks that: a locked Scale X drag also moves Y and Z, and if
+ * X is animated its keyframe is undoable while a static Y/Z is not — undo would
+ * restore X and leave Y/Z scaled, permanently skewing the layer. Committing the
+ * whole vector keeps undo coherent whichever axes happen to be animated.
+ *
+ * JSON format:
+ * { "type": "SetClipScale", "trackIndex": 0, "clipIndex": 0, "x": 1.5, "y": 1.5, "z": 1.5 }
+ */
+class SetClipScaleCommand : public UndoableCommand {
+public:
+    SetClipScaleCommand(int trackIndex, int clipIndex, float x, float y, float z)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_x(x), m_y(y), m_z(z) {}
+
+    void setPreviousScale(float prevX, float prevY, float prevZ) {
+        m_previousScale = std::array<float, 3>{prevX, prevY, prevZ};
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipScale"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    float m_x, m_y, m_z;
+    std::optional<std::array<float, 3>> m_previousScale;
+};
+
 // ============================================================================
 // Keyframe Animation Commands
 // ============================================================================
