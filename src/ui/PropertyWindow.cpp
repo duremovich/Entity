@@ -1758,20 +1758,28 @@ void PropertyWindow::renderKeyframeControls(AnimatableProperty property, const c
     // Push unique ID for this property's controls
     ImGui::PushID(static_cast<int>(property));
 
-    // Stopwatch button (filled if has keyframes)
+    // Stopwatch button (filled if has keyframes). AE semantics: it toggles
+    // ANIMATION for the property, not a single keyframe — switching it off deletes
+    // every keyframe on the track and leaves the property static at the value it
+    // was showing. Destructive on purpose; one undo restores the whole track.
+    // The diamond below is still the single-keyframe add/remove.
     ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255) : IM_COL32(128, 128, 128, 255);
     ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
     if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
-        // Toggle animation - if no keyframes, add one at current frame
-        // If has keyframes, we could clear them (but let's just add at current frame for now)
-        if (clipFrame >= 0) {
+        if (hasKeyframes && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                m_dispatcher->enqueue(std::make_unique<ClearPropertyKeyframesCommand>(
+                    idx->first, idx->second, property, currentValue));
+            }
+        } else if (clipFrame >= 0) {
             toggleKeyframeAtCurrentFrame(property, currentValue);
         }
     }
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(hasKeyframes ? "Animation enabled - click to toggle keyframe at current frame"
-                                       : "Click to add keyframe at current frame");
+        ImGui::SetTooltip(hasKeyframes
+            ? "Animation enabled - click to REMOVE ALL keyframes on this property"
+            : "Click to animate this property (adds a keyframe at the playhead)");
     }
 
     ImGui::SameLine();
@@ -1864,27 +1872,26 @@ void PropertyWindow::renderEffectKeyframeControls(
 
     ImGui::PushID(static_cast<int>(hash));
 
-    // Stopwatch — toggles a keyframe at the current frame (add if none
-    // exist, or remove if one exists at this exact frame).
+    // Stopwatch — toggles ANIMATION for the parameter (AE semantics). Switching it
+    // off deletes every keyframe on the param and holds the value it was showing.
+    // The diamond is still the single-keyframe add/remove.
     ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255)
                                         : IM_COL32(128, 128, 128, 255);
     ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
     if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
-        if (localFrame >= 0 && m_dispatcher) {
-            if (hasKeyframeAtCurrentFrame) {
-                m_dispatcher->enqueue(std::make_unique<RemoveEffectKeyframeCommand>(
-                    effectEntity, schema.name, localFrame));
-            } else {
-                m_dispatcher->enqueue(std::make_unique<UpsertEffectKeyframeCommand>(
-                    effectEntity, schema.name, localFrame, currentValue));
-            }
+        if (hasKeyframes && m_dispatcher) {
+            m_dispatcher->enqueue(std::make_unique<ClearEffectParamKeyframesCommand>(
+                effectEntity, schema.name, currentValue));
+        } else if (localFrame >= 0 && m_dispatcher) {
+            m_dispatcher->enqueue(std::make_unique<UpsertEffectKeyframeCommand>(
+                effectEntity, schema.name, localFrame, currentValue));
         }
     }
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(hasKeyframes
-            ? "Toggle keyframe at current frame"
-            : "Click to add keyframe at current frame");
+            ? "Animation enabled - click to REMOVE ALL keyframes on this parameter"
+            : "Click to animate this parameter (adds a keyframe at the playhead)");
     }
 
     ImGui::SameLine();

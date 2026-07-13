@@ -215,6 +215,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertSectionCount", AssertSectionCountCommand::fromJson);
     registerFactory("AssertPlayheadAtFrame", AssertPlayheadAtFrameCommand::fromJson);
     registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
+    registerFactory("AssertKeyframeInterpolation", AssertKeyframeInterpolationCommand::fromJson);
     registerFactory("AssertClipMediaFrame", AssertClipMediaFrameCommand::fromJson);
     registerFactory("AssertClipPresentedFrame", AssertClipPresentedFrameCommand::fromJson);
     registerFactory("LogClipPlayback", LogClipPlaybackCommand::fromJson);
@@ -239,6 +240,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
     registerFactory("UpsertKeyframe", UpsertKeyframeCommand::fromJson);
     registerFactory("SetKeyframeInterpolation", SetKeyframeInterpolationCommand::fromJson);
+    registerFactory("ClearPropertyKeyframes", ClearPropertyKeyframesCommand::fromJson);
+    registerFactory("ClearEffectParamKeyframes", ClearEffectParamKeyframesCommand::fromJson);
     registerFactory("MoveKeyframe", MoveKeyframeCommand::fromJson);
     registerFactory("RemoveKeyframe", RemoveKeyframeCommand::fromJson);
     registerFactory("UpsertEffectKeyframe", UpsertEffectKeyframeCommand::fromJson);

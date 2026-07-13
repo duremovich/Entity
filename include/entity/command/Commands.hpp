@@ -1021,6 +1021,92 @@ private:
 };
 
 /**
+ * Delete EVERY keyframe on one property of one layer — the AE stopwatch's
+ * "toggle animation off" behavior. The property then holds a static value.
+ *
+ * Distinct from ClearKeyframesCommand, which removes the whole
+ * AnimatedProperties component (every property on the clip) and isn't undoable.
+ *
+ * `holdValue` is the value the property should keep once its animation is gone —
+ * normally the track's evaluated value at the playhead, so toggling the stopwatch
+ * off doesn't make the layer jump. The UI passes it; the script path may omit it,
+ * in which case the static slot is left as-is.
+ *
+ * JSON format:
+ * {
+ *     "type": "ClearPropertyKeyframes",
+ *     "trackIndex": 0,
+ *     "clipIndex": 1,
+ *     "property": "ScaleX",
+ *     "holdValue": 1.5          // optional
+ * }
+ */
+class ClearPropertyKeyframesCommand : public UndoableCommand {
+public:
+    ClearPropertyKeyframesCommand(int trackIndex, int clipIndex,
+                                  AnimatableProperty property,
+                                  std::optional<float> holdValue = std::nullopt)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_holdValue(holdValue) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ClearPropertyKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    std::optional<float> m_holdValue;
+
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_removedKeyframes;  // full track, restored verbatim by undo
+    bool  m_removedTrackEnabled{true};
+    std::optional<float> m_previousSlotValue;  // static slot before the hold-write
+};
+
+/**
+ * Per-parameter sibling of ClearPropertyKeyframesCommand for effect params
+ * (hash-keyed EffectAnimatedParameters tracks).
+ *
+ * JSON format:
+ * {
+ *     "type": "ClearEffectParamKeyframes",
+ *     "effectEntity": 17,
+ *     "paramName": "brightness",
+ *     "holdValue": 0.5          // optional
+ * }
+ */
+class ClearEffectParamKeyframesCommand : public UndoableCommand {
+public:
+    ClearEffectParamKeyframesCommand(entt::entity effectEntity, std::string paramName,
+                                     std::optional<float> holdValue = std::nullopt)
+        : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
+          m_holdValue(holdValue) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ClearEffectParamKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_effectEntity;
+    std::string  m_paramName;
+    std::optional<float> m_holdValue;
+
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_removedKeyframes;
+    std::optional<float> m_previousSlotValue;
+};
+
+/**
  * Insert / overwrite a keyframe on an effect parameter (hash-keyed, on
  * EffectAnimatedParameters). Parallel to UpsertKeyframeCommand but
  * keyed by (effectEntity, paramName) — the effect param namespace is
@@ -1039,9 +1125,11 @@ private:
  */
 class UpsertEffectKeyframeCommand : public UndoableCommand {
 public:
+    // interp nullopt = "preserve the keyframe's existing easing" — see
+    // UpsertKeyframeCommand, which has the same contract for transform tracks.
     UpsertEffectKeyframeCommand(entt::entity effectEntity, std::string paramName,
                                 FrameNumber frame, float newValue,
-                                InterpolationType interp = InterpolationType::Linear)
+                                std::optional<InterpolationType> interp = std::nullopt)
         : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
           m_frame(frame), m_newValue(newValue), m_interp(interp) {}
 
@@ -1063,9 +1151,13 @@ private:
     std::string       m_paramName;
     FrameNumber       m_frame;
     float             m_newValue;
-    InterpolationType m_interp;
+    std::optional<InterpolationType> m_interp;  // nullopt = preserve existing
     bool                 m_hasPreviousState{false};
     std::optional<float> m_previousValue;  // nullopt = no kf at this frame before exec
+    bool                 m_hasPreviousEasing{false};
+    InterpolationType    m_previousInterp{InterpolationType::Linear};
+    float                m_previousEaseIn{0.42f};
+    float                m_previousEaseOut{0.58f};
 };
 
 /**
@@ -1761,6 +1853,44 @@ public:
 private:
     FrameNumber m_frame;
     FrameNumber m_tolerance;
+};
+
+/**
+ * Assert a single keyframe's interpolation type (and optionally its bezier
+ * handles). Gates the "editing a keyframe's value must not reset its easing"
+ * contract at the command layer, where the UI actually goes through.
+ *
+ * Interp strings: "Linear" | "Step" | "EaseIn" | "EaseOut" | "EaseInOut".
+ *
+ * JSON:
+ * {"type":"AssertKeyframeInterpolation","trackIndex":0,"clipIndex":0,
+ *  "property":"ScaleX","frame":30,"interpolation":"EaseInOut",
+ *  "easeIn":0.25,"easeOut":0.75}     // easeIn/easeOut optional
+ */
+class AssertKeyframeInterpolationCommand : public Command {
+public:
+    AssertKeyframeInterpolationCommand(int trackIndex, int clipIndex,
+                                       AnimatableProperty property, FrameNumber frame,
+                                       InterpolationType interp,
+                                       std::optional<float> easeIn = std::nullopt,
+                                       std::optional<float> easeOut = std::nullopt)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_property(property),
+          m_frame(frame), m_interp(interp), m_easeIn(easeIn), m_easeOut(easeOut) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertKeyframeInterpolation"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    FrameNumber m_frame;
+    InterpolationType m_interp;
+    std::optional<float> m_easeIn;
+    std::optional<float> m_easeOut;
 };
 
 /**

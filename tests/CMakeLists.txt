@@ -493,6 +493,22 @@ set_tests_properties(integration_generative_layer_ops PROPERTIES
     TIMEOUT 60
 )
 
+# Keyframe easing preservation + the AE stopwatch (remove-all-keyframes).
+# Gates that a value edit through UpsertKeyframe does NOT reset an EaseInOut
+# keyframe back to Linear (it used to), and that ClearPropertyKeyframes removes
+# exactly one property's track and is undoable as a single step.
+add_test(
+    NAME integration_keyframe_easing_and_stopwatch
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/keyframe_easing_and_stopwatch.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_keyframe_easing_and_stopwatch PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+
 # Generative-layer keyframe persistence round-trip. Save creates a Text layer,
 # adds Opacity + PositionX keyframes, moves one via MoveKeyframe; load asserts
 # the keyframe tracks survived serialization, then exercises RemoveKeyframe.

@@ -2144,6 +2144,156 @@ CommandPtr RemoveKeyframeCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// ClearPropertyKeyframesCommand
+//
+// The AE stopwatch's "toggle animation off": drop every keyframe on one
+// property and leave it static at the value it was showing.
+// ============================================================================
+
+namespace {
+
+// The property's static slot — the value AnimationSystem overwrites each tick
+// while the track is animated, and the value the property keeps once it isn't.
+// Opacity lives on MediaLayer, everything else on Transform.
+std::optional<float> readStaticSlot(entt::registry& registry, entt::entity e,
+                                    AnimatableProperty prop) {
+    if (prop == AnimatableProperty::Opacity) {
+        const auto* ml = registry.try_get<MediaLayer>(e);
+        return ml ? std::optional<float>(ml->opacity) : std::nullopt;
+    }
+    const auto* t = registry.try_get<Transform>(e);
+    if (!t) return std::nullopt;
+    switch (prop) {
+        case AnimatableProperty::PositionX: return t->position.x;
+        case AnimatableProperty::PositionY: return t->position.y;
+        case AnimatableProperty::PositionZ: return t->position.z;
+        case AnimatableProperty::RotationX: return t->rotation.x;
+        case AnimatableProperty::RotationY: return t->rotation.y;
+        case AnimatableProperty::Rotation:
+        case AnimatableProperty::RotationZ: return t->rotation.z;
+        case AnimatableProperty::ScaleX:    return t->scale.x;
+        case AnimatableProperty::ScaleY:    return t->scale.y;
+        case AnimatableProperty::ScaleZ:    return t->scale.z;
+        default:                            return std::nullopt;
+    }
+}
+
+void writeStaticSlot(entt::registry& registry, entt::entity e,
+                     AnimatableProperty prop, float value) {
+    if (prop == AnimatableProperty::Opacity) {
+        if (auto* ml = registry.try_get<MediaLayer>(e)) ml->opacity = value;
+        return;
+    }
+    auto* t = registry.try_get<Transform>(e);
+    if (!t) return;
+    glm::vec3 pos = t->position, rot = t->rotation, scl = t->scale;
+    switch (prop) {
+        case AnimatableProperty::PositionX: pos.x = value; t->setPosition(pos); break;
+        case AnimatableProperty::PositionY: pos.y = value; t->setPosition(pos); break;
+        case AnimatableProperty::PositionZ: pos.z = value; t->setPosition(pos); break;
+        case AnimatableProperty::RotationX: rot.x = value; t->setRotation(rot); break;
+        case AnimatableProperty::RotationY: rot.y = value; t->setRotation(rot); break;
+        case AnimatableProperty::Rotation:
+        case AnimatableProperty::RotationZ: rot.z = value; t->setRotation(rot); break;
+        case AnimatableProperty::ScaleX:    scl.x = value; t->setScale(scl);    break;
+        case AnimatableProperty::ScaleY:    scl.y = value; t->setScale(scl);    break;
+        case AnimatableProperty::ScaleZ:    scl.z = value; t->setScale(scl);    break;
+        default: break;
+    }
+}
+
+// Resolve (trackIndex, clipIndex) to a layer entity. Same guard chain the other
+// index-addressed keyframe commands use.
+entt::entity resolveLayer(Engine& engine, int trackIndex, int clipIndex) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return entt::null;
+    const auto& tracks = timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return entt::null;
+    auto* track = engine.getRegistry().try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track || clipIndex < 0 || clipIndex >= static_cast<int>(track->layers.size())) {
+        return entt::null;
+    }
+    return track->layers[clipIndex];
+}
+
+} // namespace
+
+bool ClearPropertyKeyframesCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) return false;
+
+    auto* animProps = registry.try_get<AnimatedProperties>(layer);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack || kfTrack->keyframes.empty()) return false;  // nothing to clear
+
+    if (!m_hasPreviousState) {
+        m_removedKeyframes    = kfTrack->keyframes;
+        m_removedTrackEnabled = kfTrack->enabled;
+        m_previousSlotValue   = readStaticSlot(registry, layer, m_property);
+        m_hasPreviousState    = true;
+    }
+
+    // Erase the whole track, not just its keyframes — an empty track would still
+    // read as "this property is animated" to the stopwatch and the twirl-down.
+    auto& tracks = animProps->tracks;
+    tracks.erase(std::remove_if(tracks.begin(), tracks.end(),
+        [this](const KeyframeTrack& t) { return t.property == m_property; }),
+        tracks.end());
+
+    // Hold the value the property was showing. Without this the layer would snap
+    // to whatever stale value sat in the static slot.
+    if (m_holdValue.has_value()) {
+        writeStaticSlot(registry, layer, m_property, *m_holdValue);
+    }
+    return true;
+}
+
+bool ClearPropertyKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) return false;
+
+    auto& animProps = registry.get_or_emplace<AnimatedProperties>(layer);
+    KeyframeTrack& kfTrack = animProps.getOrCreateTrack(m_property);
+    kfTrack.keyframes = m_removedKeyframes;  // verbatim: values, interps, handles
+    kfTrack.enabled   = m_removedTrackEnabled;
+
+    if (m_previousSlotValue.has_value()) {
+        writeStaticSlot(registry, layer, m_property, *m_previousSlotValue);
+    }
+    return true;
+}
+
+nlohmann::json ClearPropertyKeyframesCommand::toJson() const {
+    nlohmann::json j = {
+        {"type", "ClearPropertyKeyframes"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"property", animatablePropertyName(m_property)}
+    };
+    if (m_holdValue.has_value()) j["holdValue"] = *m_holdValue;
+    return j;
+}
+
+std::string ClearPropertyKeyframesCommand::getDescription() const {
+    return std::string("Remove all keyframes on ") + animatablePropertyName(m_property);
+}
+
+CommandPtr ClearPropertyKeyframesCommand::fromJson(const nlohmann::json& j) {
+    const int trackIndex = j.value("trackIndex", 0);
+    const int clipIndex  = j.value("clipIndex", 0);
+    const AnimatableProperty prop =
+        parseAnimatableProperty(j.value("property", std::string{"Opacity"}))
+            .value_or(AnimatableProperty::Opacity);
+    std::optional<float> hold;
+    if (j.contains("holdValue")) hold = j["holdValue"].get<float>();
+    return std::make_unique<ClearPropertyKeyframesCommand>(trackIndex, clipIndex, prop, hold);
+}
+
+// ============================================================================
 // UpsertEffectKeyframeCommand / RemoveEffectKeyframeCommand
 //
 // Hash-keyed effect-param keyframe commands (Phase 3, 2026-05-25).
@@ -2172,16 +2322,19 @@ getOrCreateEffectTrack(EffectAnimatedParameters& anim, std::uint32_t hash) {
 
 void upsertKeyframeInTrack(EffectAnimatedParameters::NamedTrack& track,
                            FrameNumber frame, float value,
-                           InterpolationType interp) {
-    // Mirrors KeyframeTrack::addKeyframe: binary-search insert / replace.
+                           std::optional<InterpolationType> interp = std::nullopt) {
+    // Mirrors KeyframeTrack::addKeyframe, including its optional-interp contract:
+    // nullopt preserves an existing keyframe's easing so a value-only edit can't
+    // silently reset Easy Ease back to Linear.
     auto it = std::lower_bound(track.keyframes.begin(), track.keyframes.end(), frame,
         [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
     if (it != track.keyframes.end() && it->frame == frame) {
         it->value = value;
-        it->interpolation = interp;
+        if (interp.has_value()) it->interpolation = *interp;
         return;
     }
-    track.keyframes.insert(it, Keyframe{frame, value, interp});
+    track.keyframes.insert(it, Keyframe{frame, value,
+                                        interp.value_or(InterpolationType::Linear)});
 }
 
 bool removeKeyframeFromTrack(EffectAnimatedParameters::NamedTrack& track,
@@ -2201,6 +2354,52 @@ const Keyframe* findKeyframeAt(const EffectAnimatedParameters::NamedTrack& track
         if (kf.frame == frame) return &kf;
     }
     return nullptr;
+}
+
+Keyframe* findKeyframeAt(EffectAnimatedParameters::NamedTrack& track,
+                         FrameNumber frame) {
+    for (auto& kf : track.keyframes) {
+        if (kf.frame == frame) return &kf;
+    }
+    return nullptr;
+}
+
+// Defined further down this file, in the same (anonymous) namespace.
+int findParamSlotByName(const effects::EffectKind& kind, const std::string& name);
+
+// An effect param's static slot — the EffectParameters value that holds when the
+// param isn't animated. Sibling of readStaticSlot/writeStaticSlot for transforms.
+// Both return/no-op cleanly on an unknown kind or a non-float param.
+std::optional<float> readEffectFloatParam(Engine& engine, entt::entity effectEntity,
+                                          const std::string& paramName) {
+    auto& registry = engine.getRegistry();
+    const auto* fx = registry.try_get<Effect>(effectEntity);
+    const auto* ep = registry.try_get<EffectParameters>(effectEntity);
+    const auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!fx || !ep || !kindRegistry) return std::nullopt;
+    const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
+    if (!kind) return std::nullopt;
+
+    const int slot = findParamSlotByName(*kind, paramName);
+    if (slot < 0 || static_cast<std::size_t>(slot) >= ep->values.size()) return std::nullopt;
+    if (ep->values[slot].type != ParamValue::Type::Float) return std::nullopt;
+    return ep->values[slot].f4[0];
+}
+
+void writeEffectFloatParam(Engine& engine, entt::entity effectEntity,
+                           const std::string& paramName, float value) {
+    auto& registry = engine.getRegistry();
+    const auto* fx = registry.try_get<Effect>(effectEntity);
+    auto* ep = registry.try_get<EffectParameters>(effectEntity);
+    const auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!fx || !ep || !kindRegistry) return;
+    const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
+    if (!kind) return;
+
+    const int slot = findParamSlotByName(*kind, paramName);
+    if (slot < 0 || static_cast<std::size_t>(slot) >= ep->values.size()) return;
+    if (ep->values[slot].type != ParamValue::Type::Float) return;
+    ep->values[slot].f4[0] = value;
 }
 
 } // namespace
@@ -2227,6 +2426,19 @@ bool UpsertEffectKeyframeCommand::execute(Engine& engine) {
         m_hasPreviousState = true;
     }
 
+    // Pre-edit easing, restored by undo alongside the value. Own once-only flag so
+    // a redo doesn't re-capture the easing this command itself applied.
+    if (!m_hasPreviousEasing) {
+        if (const auto* t = findEffectTrack(anim, hash)) {
+            if (const Keyframe* existing = findKeyframeAt(*t, m_frame)) {
+                m_previousInterp  = existing->interpolation;
+                m_previousEaseIn  = existing->easeIn;
+                m_previousEaseOut = existing->easeOut;
+            }
+        }
+        m_hasPreviousEasing = true;
+    }
+
     auto& track = getOrCreateEffectTrack(anim, hash);
     upsertKeyframeInTrack(track, m_frame, m_newValue, m_interp);
     return true;
@@ -2242,8 +2454,14 @@ bool UpsertEffectKeyframeCommand::undo(Engine& engine) {
     if (!track) return false;
 
     if (m_previousValue.has_value()) {
-        // Overwrite with the prior value.
-        upsertKeyframeInTrack(*track, m_frame, *m_previousValue, m_interp);
+        // Overwrite with the prior value, restoring the easing explicitly: execute()
+        // may have overwritten it (when m_interp was set), and upsertKeyframeInTrack
+        // carries the interp type but not the bezier handles.
+        upsertKeyframeInTrack(*track, m_frame, *m_previousValue, m_previousInterp);
+        if (Keyframe* restored = findKeyframeAt(*track, m_frame)) {
+            restored->easeIn  = m_previousEaseIn;
+            restored->easeOut = m_previousEaseOut;
+        }
     } else {
         // No keyframe existed before — remove the one we just added.
         removeKeyframeFromTrack(*track, m_frame);
@@ -2352,6 +2570,160 @@ CommandPtr RemoveEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
     auto paramName = j.value("paramName", std::string{});
     FrameNumber frame = j.value("frame", 0);
     return std::make_unique<RemoveEffectKeyframeCommand>(effEnt, std::move(paramName), frame);
+}
+
+// ============================================================================
+// AssertKeyframeInterpolationCommand
+//
+// Script-side gate for "editing a keyframe's value must not reset its easing".
+// AssertKeyframeCount (further down) already covers the stopwatch's track removal.
+// ============================================================================
+
+bool AssertKeyframeInterpolationCommand::execute(Engine& engine) {
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: no layer at track "
+                  << m_trackIndex << ", clip " << m_clipIndex << std::endl;
+        return false;
+    }
+    auto* animProps = engine.getRegistry().try_get<AnimatedProperties>(layer);
+    const KeyframeTrack* kfTrack = animProps ? animProps->getTrack(m_property) : nullptr;
+    const Keyframe* kf = kfTrack ? kfTrack->getKeyframeAt(m_frame) : nullptr;
+    if (!kf) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: no keyframe on "
+                  << animatablePropertyName(m_property) << " at frame " << m_frame << std::endl;
+        return false;
+    }
+
+    if (kf->interpolation != m_interp) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: "
+                  << animatablePropertyName(m_property) << " @ " << m_frame
+                  << " expected " << interpName(m_interp)
+                  << ", got " << interpName(kf->interpolation) << std::endl;
+        return false;
+    }
+    const float kEps = 1e-4f;
+    if (m_easeIn.has_value() && std::fabs(kf->easeIn - *m_easeIn) > kEps) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: easeIn expected " << *m_easeIn
+                  << ", got " << kf->easeIn << std::endl;
+        return false;
+    }
+    if (m_easeOut.has_value() && std::fabs(kf->easeOut - *m_easeOut) > kEps) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: easeOut expected " << *m_easeOut
+                  << ", got " << kf->easeOut << std::endl;
+        return false;
+    }
+
+    std::cout << "[AssertKeyframeInterpolation] OK "
+              << animatablePropertyName(m_property) << " @ " << m_frame
+              << " == " << interpName(kf->interpolation) << std::endl;
+    return true;
+}
+
+nlohmann::json AssertKeyframeInterpolationCommand::toJson() const {
+    nlohmann::json j = {{"type", "AssertKeyframeInterpolation"},
+                        {"trackIndex", m_trackIndex},
+                        {"clipIndex", m_clipIndex},
+                        {"property", animatablePropertyName(m_property)},
+                        {"frame", m_frame},
+                        {"interpolation", interpName(m_interp)}};
+    if (m_easeIn.has_value())  j["easeIn"]  = *m_easeIn;
+    if (m_easeOut.has_value()) j["easeOut"] = *m_easeOut;
+    return j;
+}
+
+std::string AssertKeyframeInterpolationCommand::getDescription() const {
+    return std::string("Assert ") + animatablePropertyName(m_property) + " @ frame "
+         + std::to_string(m_frame) + " is " + interpName(m_interp);
+}
+
+CommandPtr AssertKeyframeInterpolationCommand::fromJson(const nlohmann::json& j) {
+    const int trackIndex = j.value("trackIndex", 0);
+    const int clipIndex  = j.value("clipIndex", 0);
+    const AnimatableProperty prop =
+        parseAnimatableProperty(j.value("property", std::string{"Opacity"}))
+            .value_or(AnimatableProperty::Opacity);
+    const FrameNumber frame = j.value("frame", 0);
+    const InterpolationType interp =
+        parseInterp(j.value("interpolation", std::string{"linear"}));
+    std::optional<float> easeIn, easeOut;
+    if (j.contains("easeIn"))  easeIn  = j["easeIn"].get<float>();
+    if (j.contains("easeOut")) easeOut = j["easeOut"].get<float>();
+    return std::make_unique<AssertKeyframeInterpolationCommand>(
+        trackIndex, clipIndex, prop, frame, interp, easeIn, easeOut);
+}
+
+// ============================================================================
+// ClearEffectParamKeyframesCommand
+//
+// Effect-param sibling of ClearPropertyKeyframesCommand — the stopwatch on an
+// effect parameter row.
+// ============================================================================
+
+bool ClearEffectParamKeyframesCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+
+    auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity);
+    if (!anim) return false;
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    auto* track = findEffectTrack(*anim, hash);
+    if (!track || track->keyframes.empty()) return false;  // nothing to clear
+
+    if (!m_hasPreviousState) {
+        m_removedKeyframes  = track->keyframes;
+        m_previousSlotValue = readEffectFloatParam(engine, m_effectEntity, m_paramName);
+        m_hasPreviousState  = true;
+    }
+
+    anim->tracks.erase(std::remove_if(anim->tracks.begin(), anim->tracks.end(),
+        [hash](const EffectAnimatedParameters::NamedTrack& t) {
+            return t.paramKeyHash == hash;
+        }), anim->tracks.end());
+
+    if (m_holdValue.has_value()) {
+        writeEffectFloatParam(engine, m_effectEntity, m_paramName, *m_holdValue);
+    }
+    return true;
+}
+
+bool ClearEffectParamKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+
+    auto& anim = registry.get_or_emplace<EffectAnimatedParameters>(m_effectEntity);
+    auto& track = getOrCreateEffectTrack(anim, effects::fnv1a32(m_paramName));
+    track.keyframes = m_removedKeyframes;  // verbatim: values, interps, handles
+
+    if (m_previousSlotValue.has_value()) {
+        writeEffectFloatParam(engine, m_effectEntity, m_paramName, *m_previousSlotValue);
+    }
+    return true;
+}
+
+nlohmann::json ClearEffectParamKeyframesCommand::toJson() const {
+    nlohmann::json j = {
+        {"type", "ClearEffectParamKeyframes"},
+        {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+        {"paramName", m_paramName}
+    };
+    if (m_holdValue.has_value()) j["holdValue"] = *m_holdValue;
+    return j;
+}
+
+std::string ClearEffectParamKeyframesCommand::getDescription() const {
+    return "Remove all keyframes on " + m_paramName;
+}
+
+CommandPtr ClearEffectParamKeyframesCommand::fromJson(const nlohmann::json& j) {
+    const auto effEnt = static_cast<entt::entity>(
+        j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    std::optional<float> hold;
+    if (j.contains("holdValue")) hold = j["holdValue"].get<float>();
+    return std::make_unique<ClearEffectParamKeyframesCommand>(
+        effEnt, std::move(paramName), hold);
 }
 
 // ============================================================================

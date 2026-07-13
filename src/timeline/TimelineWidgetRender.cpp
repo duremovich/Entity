@@ -1861,6 +1861,23 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             const float arrowSize = 3.0f;
             const float diamondSize = 4.0f;
 
+            // Stopwatch (AE-style animation toggle), left of the prev-keyframe arrow.
+            // Lit == this property is animated. Clicking it OFF deletes every keyframe
+            // on the property; clicking it ON starts animating from the current value.
+            // The diamond next to it is still the single-keyframe add/remove.
+            const float stopwatchX = controlsX - 14.0f;
+            const float stopwatchR = 4.5f;
+            const ImU32 stopwatchCol = hasKeyframes
+                ? IM_COL32(255, 200, 50, 255) : IM_COL32(90, 90, 90, 255);
+            drawList->AddCircle(ImVec2(stopwatchX, centerY), stopwatchR, stopwatchCol, 10, 1.2f);
+            if (hasKeyframes) {
+                drawList->AddCircleFilled(ImVec2(stopwatchX, centerY), 1.8f, stopwatchCol, 8);
+            }
+            // The winding stem, so it reads as a stopwatch and not just a dot.
+            drawList->AddLine(ImVec2(stopwatchX, centerY - stopwatchR - 2.0f),
+                              ImVec2(stopwatchX, centerY - stopwatchR),
+                              stopwatchCol, 1.2f);
+
             const float leftArrowX = controlsX;
             ImVec2 leftArrow[3] = {
                 ImVec2(leftArrowX - arrowSize, centerY),
@@ -2305,6 +2322,43 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             // === HANDLE CLICKS ===
             if (ImGui::IsMouseClicked(0)) {
                 const ImVec2 mp = ImGui::GetMousePos();
+
+                // Stopwatch click — toggles animation on the whole property.
+                // OFF (currently animated): delete every keyframe, hold the value
+                // the property is showing right now. Destructive by design, AE-style;
+                // one undo brings the whole track back.
+                // ON: start animating by dropping a keyframe at the playhead.
+                if (m_commandDispatcher && localFrame >= 0 &&
+                    mp.x >= stopwatchX - stopwatchR - 4 && mp.x <= stopwatchX + stopwatchR + 4 &&
+                    mp.y >= centerY - stopwatchR - 4 && mp.y <= centerY + stopwatchR + 4)
+                {
+                    if (row.source == TimelinePropertyDef::Source::Transform) {
+                        if (auto clipIdx = renderFindClipIndices(m_timeline, clipEntity)) {
+                            if (hasKeyframes) {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<ClearPropertyKeyframesCommand>(
+                                        clipIdx->first, clipIdx->second, row.prop,
+                                        currentValue));
+                            } else {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<UpsertKeyframeCommand>(
+                                        clipIdx->first, clipIdx->second, row.prop,
+                                        localFrame, currentValue));
+                            }
+                        }
+                    } else if (registry.valid(row.effectEntity)) {  // EffectParam
+                        if (hasKeyframes) {
+                            m_commandDispatcher->enqueue(
+                                std::make_unique<ClearEffectParamKeyframesCommand>(
+                                    row.effectEntity, row.paramName, currentValue));
+                        } else {
+                            m_commandDispatcher->enqueue(
+                                std::make_unique<UpsertEffectKeyframeCommand>(
+                                    row.effectEntity, row.paramName,
+                                    localFrame, currentValue));
+                        }
+                    }
+                }
 
                 // Left arrow click (prev keyframe)
                 if (hasKeyframes &&
