@@ -589,6 +589,15 @@ private:
     // the TrackContextMenu's Paste item.
     FrameNumber m_rightClickedTrackFrame{0};
 
+    // Follow-playhead. When on, render() scrolls the view to keep the playhead
+    // visible while the timeline is playing. m_followSuspended is set when the
+    // user scrolls by hand mid-playback — otherwise the view snaps back the
+    // instant they try to look ahead of the playhead — and is cleared on the next
+    // play, seek, or toggle.
+    bool m_followPlayhead{true};
+    bool m_followSuspended{false};
+    bool m_wasPlaying{false};       // play-edge detect, re-arms following on each play
+
     // Snapping
     static constexpr float SNAP_THRESHOLD_PIXELS = 10.0f;  // Pixels threshold for snapping
     bool m_snappingEnabled{true};

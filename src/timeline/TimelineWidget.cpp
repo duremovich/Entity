@@ -126,6 +126,20 @@ void TimelineWidget::render() {
     applyZoomIndex();
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
 
+    // Follow the playhead during playback. Must run HERE, before the tracks child
+    // is submitted below: ensurePlayheadVisible() writes m_pendingScrollX, which is
+    // consumed by the SetNextWindowScroll ahead of that child's Begin(). Called any
+    // later and the scroll wouldn't land until the following frame.
+    const bool isPlaying = (m_timeline->getPlaybackState() == PlaybackState::Playing);
+    if (isPlaying && !m_wasPlaying) {
+        m_followSuspended = false;  // a fresh play re-arms following
+    }
+    m_wasPlaying = isPlaying;
+
+    if (isPlaying && m_followPlayhead && !m_followSuspended) {
+        ensurePlayheadVisible();
+    }
+
     // Build the per-frame track-row layout cache (Phase 9). This is the single
     // source of truth for which tracks are visible (shy tracks skipped when the
     // global hide toggle is on) and their cumulative Y / height. Every renderer
@@ -227,7 +241,18 @@ void TimelineWidget::render() {
     // value, so keep our target for that one frame (matches the documented
     // SetScroll-vs-GetScroll lag).
     if (!m_pendingScrollX) {
-        m_syncScrollX = ImGui::GetScrollX();
+        const float committedScrollX = ImGui::GetScrollX();
+        // A horizontal scroll we didn't ask for, mid-playback, is the user reaching
+        // for a different part of the timeline — stop following so the view doesn't
+        // yank straight back to the playhead. On frames where follow moved the
+        // scroll itself, m_pendingScrollX is set and this read-back is skipped
+        // entirely, so our own moves can't trip this.
+        if (isPlaying && m_followPlayhead && !m_followSuspended &&
+            std::fabs(committedScrollX - m_syncScrollX) > 2.0f)
+        {
+            m_followSuspended = true;
+        }
+        m_syncScrollX = committedScrollX;
     }
     if (!m_pendingScrollY) {
         m_syncScrollY = ImGui::GetScrollY();
@@ -470,6 +495,21 @@ void TimelineWidget::render() {
     ImGui::Separator();
     ImGui::SameLine();
 
+    // Follow-playhead toggle. Re-arms the suspend so a scroll during the previous
+    // playback doesn't leave following silently dead after the user re-enables it.
+    if (ImGui::Checkbox("Follow", &m_followPlayhead)) {
+        m_followSuspended = false;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Scroll the timeline to keep the playhead in view during "
+                          "playback.\nScrolling by hand pauses following until the "
+                          "next play or seek.");
+    }
+
+    ImGui::SameLine();
+    ImGui::Separator();
+    ImGui::SameLine();
+
     // Add Track button
     if (ImGui::Button("+ Add Track")) {
         std::ostringstream trackName;
@@ -536,6 +576,13 @@ entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const 
 
 void TimelineWidget::ensurePlayheadVisible() {
     if (!m_timeline) return;
+
+    // Every explicit playhead jump (J/L, arrows, Home/End — see Engine.cpp) lands
+    // here, and deliberately moving the playhead is a statement that you want to
+    // look at it again. So re-arm following, which a manual scroll may have
+    // suspended. Follow's own per-frame call clears an already-clear flag: a no-op.
+    m_followSuspended = false;
+
     if (m_lastVisibleWidth <= 0.0f) return;
     applyZoomIndex();
 
