@@ -216,6 +216,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertPlayheadAtFrame", AssertPlayheadAtFrameCommand::fromJson);
     registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
     registerFactory("AssertClipMediaFrame", AssertClipMediaFrameCommand::fromJson);
+    registerFactory("AssertClipPresentedFrame", AssertClipPresentedFrameCommand::fromJson);
+    registerFactory("LogClipPlayback", LogClipPlaybackCommand::fromJson);
     registerFactory("AssertClipFadeMultiplier", AssertClipFadeMultiplierCommand::fromJson);
     registerFactory("AssertRemoteRenderOpacity", AssertRemoteRenderOpacityCommand::fromJson);
 

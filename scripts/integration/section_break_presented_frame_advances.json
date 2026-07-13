@@ -1,0 +1,30 @@
+{
+    "version": 1,
+    "description": "END-TO-END SMOKE TEST, NOT THE REGRESSION GUARD. Drives a Normal+Loop clip through a section-break park and checks the PRESENTED frame (what reached the GPU texture) advances, not just the MAPPED frame (what the engine wants to show) -- the distinction section_loop_normal.json cannot make. 500-frame source so the 2s park can't wrap back onto the frozen value and pass by luck. IMPORTANT: this test PASSES against the pre-fix binary and therefore does not guard the section-break freeze. On a lightly-loaded box the decoder stays AHEAD of the mapped frame, so the exact-frame cache hit always lands and PlaybackPresenter's nearest-frame fallback -- the code the fix changes -- is never exercised. Reproducing the freeze needs the decoder to fall behind, which isn't something a script can force deterministically. The real guards are the unit tests DirectorRendererRoundtripTest.PausedContinuationClipUploadsNearestFrame (verified to fail without the fix) and PausedNonContinuationClipHoldsTextureOnMiss. This test earns its keep by exercising the whole path -- Director bake, bus serialization of inContinuation, presenter upload -- on real media.",
+    "commands": [
+        {"type": "AddScreen", "name": "PresentedScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/Basic loop.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+        {"type": "SetClipPlaybackMode", "trackIndex": 0, "clipIndex": 0, "mode": "Loop"},
+        {"type": "SetClipDuration", "trackIndex": 0, "clipIndex": 0, "duration": 200},
+        {"type": "SetClipSectionBehavior", "trackIndex": 0, "clipIndex": 0, "behavior": "Normal"},
+        {"type": "AddSectionBreak", "breakFrame": 8, "name": "LoopBreak"},
+
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "WaitFrames", "count": 5},
+        {"type": "Play"},
+
+        {"type": "WaitSeconds", "count": 1.5},
+        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
+        {"type": "LogClipPlayback", "trackIndex": 0, "clipIndex": 0, "label": "at-break"},
+
+        {"type": "WaitSeconds", "count": 2.0},
+        {"type": "LogClipPlayback", "trackIndex": 0, "clipIndex": 0, "label": "parked-2s"},
+
+        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 3, "mode": "notEqual"},
+        {"type": "AssertClipPresentedFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 3, "mode": "notEqual"},
+
+        {"type": "Exit"}
+    ]
+}

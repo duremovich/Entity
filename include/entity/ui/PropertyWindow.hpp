@@ -15,6 +15,7 @@ namespace entity {
 class Timeline;
 class CommandDispatcher;
 class Engine;
+struct Clip;
 namespace effects { class EffectKindRegistry; struct ParamSchema; }
 namespace remote { class RemoteControlStore; }
 
@@ -81,6 +82,13 @@ private:
      * Render clip info (read-only).
      */
     void renderClipInfo();
+
+    /**
+     * Live per-clip transport readout at the foot of Clip Info: mapped vs
+     * presented media frame, decoder worker position, cache hit, and
+     * section-break continuation state. Diagnostic — read-only.
+     */
+    void renderClipPlaybackReadout(entt::entity clipEntity, const Clip& clip);
 
     /**
      * Render timeline properties (when no clip selected).

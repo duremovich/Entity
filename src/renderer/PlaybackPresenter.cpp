@@ -47,6 +47,12 @@ void PlaybackPresenter::refreshFadeMultiplierCache(const bus::RenderFrame& rf) {
     }
 }
 
+FrameNumber PlaybackPresenter::presentedFrame(entt::entity entity) const {
+    std::lock_guard<std::mutex> lock(m_presentedMutex);
+    auto it = m_presentedFrames.find(entity);
+    return it != m_presentedFrames.end() ? it->second : INVALID_FRAME;
+}
+
 void PlaybackPresenter::present(const bus::RenderFrame& rf) {
     ZoneScopedN("PlaybackPresenter::present");
     // Refresh fade cache before the renderer-null short-circuit so the
@@ -128,7 +134,8 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                     display.ocioColorSpace = ac.ocioOverride.empty()
                         ? f.ocioColorSpace
                         : ac.ocioOverride;
-                    display.lastDecodedFrame = ac.mediaFrame;
+                    display.lastDecodedFrame  = ac.mediaFrame;
+                    display.lastUploadedFrame = ac.mediaFrame;
                     uploadCount++;
                 }
                 cacheHits++;
@@ -137,19 +144,27 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
         }
         cacheMisses++;
 
-        // Closest-available-frame fallback ONLY during Playing. The
-        // fallback exists so playback keeps progressing when the
-        // decoder is one frame behind moving in the right direction --
-        // showing N-1 instead of N for one tick is fine and avoids
-        // visible stutter.
+        // Closest-available-frame fallback for clips that are ADVANCING. The
+        // fallback exists so playback keeps progressing when the decoder is a
+        // frame or two behind but moving in the right direction -- showing
+        // N-1 instead of N for one tick is fine and avoids visible stutter.
         //
-        // During Paused/Scrubbing it's actively wrong: the decoder may
-        // be mid-seek with stale frames in flight, and showing the
-        // "closest" would mean visibly bouncing through the decoder's
-        // prior progress while the user waits for the actually-clicked
-        // frame. Leave the texture as-is and let the next tick try
-        // again.
-        if (playState != TransportState::Playing) continue;
+        // For a clip parked under a scrub it's actively wrong: the decoder may
+        // be mid-seek with stale frames in flight, and showing the "closest"
+        // would mean visibly bouncing through the decoder's prior progress
+        // while the user waits for the actually-clicked frame. Leave the
+        // texture as-is and let the next tick try again.
+        //
+        // `playState` alone does NOT separate those two cases. A clip cycling
+        // through a section-break park is advancing in wall-clock while the
+        // transport reads Paused, so gating on Playing alone froze it: every
+        // tick where the decoder hadn't landed exactly on the (continuously
+        // moving) mapped frame skipped the upload entirely, and the clip's
+        // texture held its last frame for the whole park while mediaFrame ran
+        // away from it. Under load an exact hit essentially never lands, so
+        // the picture never updated again. `inContinuation` is the per-clip
+        // "this one is genuinely moving" signal.
+        if (playState != TransportState::Playing && !ac.inContinuation) continue;
 
         {
             ZoneScopedN("PP::cache_lookup");
@@ -177,7 +192,11 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                             : ac.ocioOverride;
                         // Don't bump lastDecodedFrame -- we want to re-try
                         // the exact frame next tick now that decoder has
-                        // more time.
+                        // more time. lastUploadedFrame DOES move: this
+                        // frame is on the texture now, and a diagnostic
+                        // that missed it would report a moving picture as
+                        // frozen.
+                        display.lastUploadedFrame = *nearestN;
                         uploadCount++;
                     }
                     nearestFallbacks++;
@@ -207,6 +226,30 @@ void PlaybackPresenter::present(const bus::RenderFrame& rf) {
                                   << std::endl;
                     }
                 }
+            }
+        }
+    }
+
+    // Republish the editor-readable mirror of what actually reached the GPU.
+    // Covers every active clip, including the ones that took the `continue`
+    // paths above without uploading — a clip whose presented frame stops
+    // tracking its mapped frame is precisely the case worth seeing.
+    //
+    // Entries are updated in place and never erased. A clip that drops out of
+    // activeClips still has its last-uploaded frame sitting on its texture, so
+    // dropping it would report "never uploaded" for a clip that plainly has a
+    // picture. Entries for destroyed entities leak, exactly as m_clipDisplayState
+    // already does (bounded by clips-ever-active in the session). In-place also
+    // keeps this off the per-frame allocator: this runs on the show thread's
+    // render path, and rebuilding a fresh map every frame would malloc per clip
+    // per frame purely to service a usually-collapsed diagnostic panel.
+    {
+        std::lock_guard<std::mutex> lock(m_presentedMutex);
+        for (const bus::ClipRenderState& ac : rf.activeClips) {
+            const auto entity = static_cast<entt::entity>(ac.entity);
+            auto it = m_clipDisplayState.find(entity);
+            if (it != m_clipDisplayState.end()) {
+                m_presentedFrames[entity] = it->second.lastUploadedFrame;
             }
         }
     }

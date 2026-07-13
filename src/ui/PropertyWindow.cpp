@@ -40,6 +40,7 @@
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/core/ClipPlaybackDiagnostics.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
@@ -928,6 +929,89 @@ void PropertyWindow::renderClipInfo() {
 
     // Media type (use helper function from Types.hpp)
     ImGui::Text("Media Type: %s", MediaTypeToString(clip->mediaType));
+
+    renderClipPlaybackReadout(selectedClip, *clip);
+}
+
+// Live transport readout for the selected clip. The point of this panel is
+// the Mapped-vs-Presented pair: "Mapped" is the source frame the engine has
+// decided the clip should be showing right now, "Presented" is the one that
+// actually reached its GPU texture. They track each other in steady state.
+// When they diverge the picture is frozen (or stale) even though every
+// upstream number keeps advancing — which is invisible from the mapped frame
+// alone, and is the failure this readout exists to make legible.
+void PropertyWindow::renderClipPlaybackReadout(entt::entity clipEntity,
+                                               const Clip& clip) {
+    ImGui::Separator();
+    ImGui::TextDisabled("Playback (live)");
+
+    if (!m_engine) {
+        ImGui::TextDisabled("(engine not bound)");
+        return;
+    }
+
+    const ClipPlaybackDiagnostics d =
+        gatherClipPlaybackDiagnostics(*m_engine, clipEntity, clip);
+
+    ImGui::Text("Timeline: %lld  (clip-local %lld)",
+                static_cast<long long>(d.timelineFrame),
+                static_cast<long long>(d.localFrame));
+
+    // Mapped - the source frame the engine wants on screen.
+    if (d.mapped >= 0) {
+        ImGui::Text("Mapped:   %lld / %lld",
+                    static_cast<long long>(d.mapped),
+                    static_cast<long long>(d.sourceLength));
+    } else {
+        ImGui::TextDisabled("Mapped:   n/a");
+    }
+
+    // Presented - the frame that actually reached the texture. Divergence from
+    // Mapped is the frozen-picture signature; a small lag is normal (see
+    // ClipPlaybackDiagnostics::kStaleLagFrames).
+    if (!d.everPresented()) {
+        ImGui::TextDisabled("Presented: (never uploaded)");
+    } else if (d.stale()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                           "Presented: %lld / %lld   STALE (%+lld)",
+                           static_cast<long long>(d.presented),
+                           static_cast<long long>(d.sourceLength),
+                           static_cast<long long>(-d.lag()));
+    } else {
+        ImGui::Text("Presented: %lld / %lld   (lag %+lld)%s",
+                    static_cast<long long>(d.presented),
+                    static_cast<long long>(d.sourceLength),
+                    static_cast<long long>(-d.lag()),
+                    d.clipActive ? "" : "  [inactive]");
+    }
+
+    // Decoder + cache. If Presented is stuck, these say why: either the worker
+    // isn't being steered toward the mapped frame, or it is and the frame just
+    // isn't in the cache yet.
+    if (d.hasWorker) {
+        ImGui::Text("Decoder:  decoded %lld  target %lld%s",
+                    static_cast<long long>(d.decoderFrame),
+                    static_cast<long long>(d.decoderTarget),
+                    d.seeking ? "  (seeking)" : "");
+    } else {
+        ImGui::TextDisabled("Decoder:  (no worker)");
+    }
+    if (d.mapped >= 0) {
+        ImGui::Text("Cache:    mapped frame %s", d.cacheHit ? "HIT" : "MISS");
+    }
+
+    // Section-break continuation. While parked at a break a Normal clip keeps
+    // walking sourcePhaseFrames in wall-clock; a Locked one holds.
+    if (d.inContinuation) {
+        ImGui::Text("Continuation: ON  phase %.1f", d.sourcePhaseFrames);
+    } else {
+        ImGui::TextDisabled("Continuation: off");
+    }
+
+    ImGui::Text("Extend: %s   Section: %s",
+                clip.playbackMode == PlaybackMode::Freeze ? "Freeze"
+                    : clip.playbackMode == PlaybackMode::Loop ? "Loop" : "Ping-Pong",
+                clip.sectionBehavior == SectionBehavior::Locked ? "Locked" : "Normal");
 }
 
 void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {

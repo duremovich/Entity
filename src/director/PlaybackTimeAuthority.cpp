@@ -1368,6 +1368,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder       = ce.zOrder;
         c.targetScreen = ce.targetScreen;
         c.sectionFadeMultiplier = computeSectionFadeMultiplier(clip);
+        // Same predicate mapToMediaFrameFromCatalogEx uses to take its
+        // continuation branch — keep the two in lockstep, or the renderer's
+        // idea of "is this clip moving" drifts from the frame math's.
+        c.inContinuation = ce.hasPhase && ce.phase_inContinuation
+            && clip.sectionBehavior == SectionBehavior::Normal;
 
         // NEW-07 + ADR-0028: re-evaluate animation tracks at the show thread's
         // current frame; apply engaged remote overlay on top. No-op for static

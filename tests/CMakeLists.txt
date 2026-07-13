@@ -223,6 +223,7 @@ entity_add_integration_test(section_manual_resume   section_manual_resume.json)
 # Phase C — Normal continuation phase (Loop / PingPong cycling at-break)
 # plus Locked-overrides-PlaybackMode regression guard.
 entity_add_integration_test(section_loop_normal     section_loop_normal.json)
+entity_add_integration_test(section_break_presented_frame_advances section_break_presented_frame_advances.json)
 entity_add_integration_test(section_pingpong_normal section_pingpong_normal.json)
 entity_add_integration_test(section_locked_clip     section_locked_clip.json)
 # Regression guard: flipping Normal -> Locked while parked at a break

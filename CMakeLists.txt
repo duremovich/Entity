@@ -177,6 +177,7 @@ target_sources(EntityMediaCore
     PRIVATE
         # Core
         src/core/Engine.cpp
+        src/core/ClipPlaybackDiagnostics.cpp
         src/core/Application.cpp
         src/core/Settings.cpp
         src/core/EnginePluginContext.cpp

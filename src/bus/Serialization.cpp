@@ -117,6 +117,7 @@ ojson encode(const ClipRenderState& c) {
     j["targetScreen"] = c.targetScreen;
     j["sectionFadeMultiplier"] = c.sectionFadeMultiplier;
     j["zOrder"] = c.zOrder;
+    j["inContinuation"] = c.inContinuation;
     return j;
 }
 
@@ -144,6 +145,9 @@ ClipRenderState decodeClipRenderState(const json& j) {
     // missing key is a no-op envelope rather than a parse failure.
     c.sectionFadeMultiplier = j.value("sectionFadeMultiplier", 1.0f);
     c.zOrder = j.value("zOrder", std::uint32_t{0});
+    // Absent key = not continuing, which is the pre-existing behavior for any
+    // payload written before the flag existed.
+    c.inContinuation = j.value("inContinuation", false);
     return c;
 }
 

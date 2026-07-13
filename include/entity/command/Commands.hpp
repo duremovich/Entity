@@ -1812,6 +1812,76 @@ private:
 };
 
 /**
+ * Assert the media frame the clip has actually PRESENTED — the last frame
+ * uploaded to its GPU texture (PlaybackPresenter::presentedFrame) — against
+ * `expected` within `tolerance`.
+ *
+ * Distinct from AssertClipMediaFrame, which asserts the *mapped* frame (what
+ * the engine decided to show). The two diverge exactly when an upload is
+ * skipped, which is what a frozen picture is; a test on the mapped frame alone
+ * passes happily while the screen holds a stale image. Use `notEqual` against
+ * the frame a frozen clip would be stuck on to prove the picture is moving.
+ */
+class AssertClipPresentedFrameCommand : public Command {
+public:
+    enum class Mode { Equal, NotEqual };
+
+    AssertClipPresentedFrameCommand(int trackIndex, int clipIndex,
+                                    FrameNumber expected,
+                                    FrameNumber tolerance = 0,
+                                    Mode mode = Mode::Equal)
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_expected(expected)
+        , m_tolerance(tolerance)
+        , m_mode(mode) {}
+
+    bool execute(Engine& engine) override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    const char* getTypeName() const override { return "AssertClipPresentedFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    FrameNumber m_expected;
+    FrameNumber m_tolerance;
+    Mode        m_mode;
+};
+
+/**
+ * Diagnostic: dump the clip's live transport state to stdout — the same
+ * fields the Clip Info "Playback (live)" panel shows. Read-only.
+ *
+ * The load-bearing pair is mapped vs presented: `mapped` is the source frame
+ * the engine decided the clip should show, `presented` is the one that last
+ * reached its GPU texture. A frozen picture with an advancing `mapped` is
+ * invisible to AssertClipMediaFrame (which only sees `mapped`), so this
+ * exists to make the upload side observable from a headless script.
+ */
+class LogClipPlaybackCommand : public Command {
+public:
+    LogClipPlaybackCommand(int trackIndex, int clipIndex, std::string label = "")
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_label(std::move(label)) {}
+
+    bool execute(Engine& engine) override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    const char* getTypeName() const override { return "LogClipPlayback"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    std::string m_label;
+};
+
+/**
  * Assert the clip at (trackIndex, clipIndex) currently has a section-fade
  * envelope multiplier matching `expected` within `tolerance`. Reads
  * `PlaybackTimeAuthority::computeSectionFadeMultiplier(clip)` against the

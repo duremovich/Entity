@@ -161,6 +161,14 @@ struct ClipRenderState {
     // MediaLayer::zOrder; present on the bus so CompositorSystem can sort
     // without touching the registry.
     std::uint32_t zOrder{0};
+    // True when this clip is cycling through a section-break park (Normal
+    // sectionBehavior + ClipPlaybackPhase::inContinuation). The transport is
+    // Paused in that state, but the clip's mediaFrame is still advancing in
+    // wall-clock — so `playState` alone can't tell the renderer whether a clip
+    // is moving. PlaybackPresenter needs the distinction: its nearest-frame
+    // upload fallback is correct for a clip that's advancing and actively
+    // wrong for one parked under a scrub.
+    bool inContinuation{false};
 };
 
 // One frame the Renderer should warm into the FrameCache this tick.

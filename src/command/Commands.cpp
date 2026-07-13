@@ -49,6 +49,8 @@
 #include "entity/media/DecodedFrame.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/media/ObjLoader.hpp"
+#include "entity/core/ClipPlaybackDiagnostics.hpp"
+#include "entity/renderer/PlaybackPresenter.hpp"   // AssertClipPresentedFrame
 #include <imgui.h>
 #include <chrono>
 #include <cstring>
@@ -3867,6 +3869,160 @@ nlohmann::json AssertClipMediaFrameCommand::toJson() const {
 std::string AssertClipMediaFrameCommand::getDescription() const {
     return "Assert clip media frame for track " + std::to_string(m_trackIndex) +
            ", clip " + std::to_string(m_clipIndex);
+}
+
+bool AssertClipPresentedFrameCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: timeline unavailable" << std::endl;
+        return false;
+    }
+    auto* presenter = engine.getPlaybackPresenter();
+    if (!presenter) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: no PlaybackPresenter" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+
+    const FrameNumber actual = presenter->presentedFrame(clipEntity);
+    if (actual < 0) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " has never presented a frame (no upload reached its texture)"
+                  << std::endl;
+        return false;
+    }
+
+    const FrameNumber diff = actual >= m_expected ? (actual - m_expected)
+                                                  : (m_expected - actual);
+    const bool inBracket = (diff <= m_tolerance);
+    const bool pass = (m_mode == Mode::Equal) ? inBracket : !inBracket;
+    const char* op = (m_mode == Mode::Equal) ? "==" : "!=";
+    if (pass) {
+        std::cout << "[AssertClipPresentedFrame] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " presentedFrame=" << actual
+                  << " (" << op << " " << m_expected << " +/-" << m_tolerance << ")"
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertClipPresentedFrame] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex
+              << " expected " << op << " " << m_expected
+              << " (+/-" << m_tolerance << "), got=" << actual
+              << "  (texture is holding a stale frame)" << std::endl;
+    return false;
+}
+
+nlohmann::json AssertClipPresentedFrameCommand::toJson() const {
+    return {{"type", "AssertClipPresentedFrame"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance},
+            {"mode", (m_mode == Mode::Equal) ? "equal" : "notEqual"}};
+}
+
+std::string AssertClipPresentedFrameCommand::getDescription() const {
+    return "Assert clip presented frame for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertClipPresentedFrameCommand::fromJson(const nlohmann::json& j) {
+    const auto modeStr = j.value("mode", std::string{"equal"});
+    return std::make_unique<AssertClipPresentedFrameCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex", 0),
+        j.value("expected", static_cast<FrameNumber>(0)),
+        j.value("tolerance", static_cast<FrameNumber>(0)),
+        modeStr == "notEqual" ? AssertClipPresentedFrameCommand::Mode::NotEqual
+                              : AssertClipPresentedFrameCommand::Mode::Equal);
+}
+
+bool LogClipPlaybackCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[LogClipPlayback] FAIL: timeline unavailable" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[LogClipPlayback] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[LogClipPlayback] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[LogClipPlayback] FAIL: no Clip component" << std::endl;
+        return false;
+    }
+
+    const ClipPlaybackDiagnostics d =
+        gatherClipPlaybackDiagnostics(engine, clipEntity, *clip);
+
+    std::cout << "[LogClipPlayback] " << (m_label.empty() ? "" : m_label + " ")
+              << "track=" << m_trackIndex << " clip=" << m_clipIndex
+              << " timeline=" << d.timelineFrame
+              << " local=" << d.localFrame
+              << " mapped=" << d.mapped
+              << " presented=" << d.presented
+              << " lag=" << d.lag()
+              << " stale=" << (d.stale() ? "YES" : "no")
+              << " active=" << (d.clipActive ? "yes" : "no")
+              << " decoder=" << (d.hasWorker ? std::to_string(d.decoderFrame)
+                                             : std::string("-"))
+              << " target=" << (d.hasWorker ? std::to_string(d.decoderTarget)
+                                            : std::string("-"))
+              << (d.seeking ? " seeking" : "")
+              << " cache=" << (d.cacheHit ? "HIT" : "MISS")
+              << " continuation=" << (d.inContinuation ? "ON" : "off")
+              << " phase=" << d.sourcePhaseFrames
+              << std::endl;
+    return true;
+}
+
+nlohmann::json LogClipPlaybackCommand::toJson() const {
+    return {{"type", "LogClipPlayback"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"label", m_label}};
+}
+
+std::string LogClipPlaybackCommand::getDescription() const {
+    return "Log clip playback state for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr LogClipPlaybackCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<LogClipPlaybackCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex", 0),
+        j.value("label", std::string{}));
 }
 
 CommandPtr AssertClipMediaFrameCommand::fromJson(const nlohmann::json& j) {

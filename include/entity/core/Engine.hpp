@@ -201,6 +201,18 @@ public:
      */
     FrameCache* getFrameCache() { return m_frameCache; }
 
+    /**
+     * Get the DecodeSystem (per-clip decode workers). Used by the Clip Info
+     * playback readout to show the worker's decoded / target frame.
+     */
+    DecodeSystem* getDecodeSystem() { return m_decodeSystem; }
+
+    /**
+     * Get the PlaybackPresenter (GPU upload pass). Used by the Clip Info
+     * playback readout for the last frame actually presented to the texture.
+     */
+    PlaybackPresenter* getPlaybackPresenter() { return m_playbackPresenter; }
+
     // TODO: Implement this when class is ready
     // Transport* getTransport() { return m_transport.get(); }
 

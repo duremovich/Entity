@@ -275,6 +275,69 @@ TEST_F(DirectorRendererRoundtripTest, ClipsWithoutCachedFrameAreSkippedWhenNotPl
     EXPECT_TRUE(renderer.uploads.empty());
 }
 
+// Section-break continuation regression. A Normal clip cycling through a
+// section-break park keeps advancing its mediaFrame in wall-clock while the
+// transport reads Paused. Gating the nearest-frame fallback on `playState ==
+// Playing` alone therefore froze it: the decoder trails the (continuously
+// moving) mapped frame by a frame or two, so exact cache hits are rare, and
+// every miss skipped the upload entirely. The clip's texture held its last
+// frame for the whole park while mediaFrame ran away from it -- on a loaded
+// show an exact hit essentially never lands, so the picture never updated
+// again. `inContinuation` is the per-clip "this one is genuinely advancing"
+// signal that separates it from a clip parked under a scrub.
+TEST_F(DirectorRendererRoundtripTest, PausedContinuationClipUploadsNearestFrame) {
+    // Cache holds frame 100; the clip has advanced past it to 105. This is
+    // the steady state of a continuing clip: decoder a few frames behind.
+    auto e = primeClip(/*slot*/5, /*mediaFrame*/100, /*fill*/0xC0);
+
+    bus::RenderFrame rf;
+    rf.playState = TransportState::Paused;   // parked at a section break
+    bus::ClipRenderState c;
+    c.entity = static_cast<uint64_t>(e);
+    c.slot = 5;
+    c.mediaFrame = 105;                      // exact frame NOT in cache
+    c.inContinuation = true;                 // ...but the clip is advancing
+    rf.activeClips.push_back(c);
+
+    transport.send(bus::Direction::D2R, bus::serialize(bus::Message{rf}));
+    drainAndApply(transport, presenter);
+
+    // The fallback must fire: nearest (100) goes to the texture rather than
+    // the clip freezing on whatever was there before.
+    ASSERT_EQ(renderer.uploads.size(), 1u);
+    EXPECT_EQ(renderer.uploads[0].slot, 5u);
+    EXPECT_EQ(renderer.uploads[0].firstByte, 0xC0u);
+
+    // lastDecodedFrame stays unset -- the exact frame still hasn't landed, and
+    // next tick must retry it rather than assume 105 is on the GPU.
+    EXPECT_NE(presenter.displayState(e).lastDecodedFrame, FrameNumber{105});
+    // ...but the diagnostic readout must report the frame that IS on the
+    // texture, or a moving picture reads as frozen in Clip Info.
+    EXPECT_EQ(presenter.presentedFrame(e), FrameNumber{100});
+}
+
+// The other half of the contract: a clip parked under a SCRUB (not continuing)
+// must still hold its texture on an exact miss. Showing the "closest" frame
+// there means visibly bouncing through the decoder's prior progress while the
+// user waits on the frame they actually clicked.
+TEST_F(DirectorRendererRoundtripTest, PausedNonContinuationClipHoldsTextureOnMiss) {
+    auto e = primeClip(/*slot*/6, /*mediaFrame*/100, /*fill*/0xD0);
+
+    bus::RenderFrame rf;
+    rf.playState = TransportState::Paused;
+    bus::ClipRenderState c;
+    c.entity = static_cast<uint64_t>(e);
+    c.slot = 6;
+    c.mediaFrame = 105;
+    c.inContinuation = false;   // parked under a scrub, NOT advancing
+    rf.activeClips.push_back(c);
+
+    transport.send(bus::Direction::D2R, bus::serialize(bus::Message{rf}));
+    drainAndApply(transport, presenter);
+
+    EXPECT_TRUE(renderer.uploads.empty());
+}
+
 TEST_F(DirectorRendererRoundtripTest, RepeatedFrameSkipsRedundantUpload) {
     // ClipDecodeState's lastDecodedFrame is the per-clip "we already put
     // this on the GPU" memo. Renderer-side stamps it after a successful
