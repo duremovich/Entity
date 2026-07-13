@@ -1055,6 +1055,38 @@ private:
     // Compute the legal delta window for the current selection. Called at drag start.
     void computeDragDeltaBounds();
 
+    /**
+     * Gap, in frames, from a keyframe at `atFrame` to its nearest neighbours on
+     * the same track that are NOT part of the selection. Unselected because a
+     * selected neighbour is moving by the same delta, so the gap to it never
+     * changes — it's not the distance the user is trying to judge.
+     * has* is false when there's no neighbour on that side.
+     */
+    struct KeyframeSpacing {
+        bool        hasPrev{false};
+        FrameNumber prevGap{0};
+        bool        hasNext{false};
+        FrameNumber nextGap{0};
+    };
+    KeyframeSpacing keyframeSpacingFor(const KeyframeRef& ref, FrameNumber atFrame) const;
+
+    // TAB numeric entry: type an exact offset in seconds from the previous
+    // keyframe, instead of eyeballing a drag. Reachable mid-drag (TAB hands the
+    // drag off to the field, keeping the live preview) or with a keyframe merely
+    // selected. m_dragDelta stays the single source of truth for the preview, so
+    // the keyframe moves as you type.
+    bool        m_kfOffsetEntryActive{false};
+    bool        m_kfOffsetFocusPending{false};  // steal keyboard focus on the first frame
+    char        m_kfOffsetEntryBuf[32]{};
+    ImVec2      m_kfOffsetEntryPos{0, 0};       // screen pos of the anchor glyph
+
+    // Open / drive / close the offset entry. Called from handleTracksInteraction,
+    // which runs inside the tracks child (so the field lands in the right window).
+    void beginKeyframeOffsetEntry();
+    void renderKeyframeOffsetEntry();
+    // Floating "1.40s (42f) from prev" readout drawn beside the dragged keyframe.
+    void renderKeyframeDragReadout();
+
     // Keyframe rubber-band box select, inside the expanded property-row band.
     // Armed on an empty mouse-down there; upgrades to active once the drag passes
     // the threshold, so a plain click stays a deselect rather than a 0-size box.

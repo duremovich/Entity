@@ -1232,11 +1232,45 @@ void TimelineWidget::handleTracksInteraction() {
         return;
     }
 
+    // TAB numeric entry owns the interaction while it's open — the keyframe is
+    // being positioned by typing, not by the mouse.
+    if (m_kfOffsetEntryActive) {
+        renderKeyframeDragReadout();
+        renderKeyframeOffsetEntry();
+        return;
+    }
+
+    // TAB with a keyframe selected (and no drag) opens the same field. Mid-drag
+    // TAB is handled inside the drag block below.
+    //
+    // Gated on the timeline being under the cursor and no other text field having
+    // the keyboard — IsKeyPressed reads global IO, so without this a TAB typed
+    // into any other window would yank a keyframe entry open behind it.
+    if (!m_isDraggingKeyframe && !m_selectedKeyframes.empty() &&
+        isWindowHovered && !ImGui::GetIO().WantTextInput &&
+        ImGui::IsKeyPressed(ImGuiKey_Tab, false))
+    {
+        beginKeyframeOffsetEntry();
+        return;
+    }
+
     // Active keyframe drag — owns all track interaction until release. The
     // keyframe data is not mutated mid-drag; renderPropertyTracks previews every
     // SELECTED keyframe at frame + m_dragDelta, and a single undoable
     // MoveKeyframesCommand is committed for the whole selection on mouse-up.
     if (m_isDraggingKeyframe) {
+        // TAB mid-drag hands the drag off to the numeric field, keeping the delta
+        // it has so far — type an exact offset instead of eyeballing it. The mouse
+        // button is still down, so the drag is explicitly ended here rather than
+        // letting the release path fire behind the field.
+        if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+            m_isDraggingKeyframe = false;
+            beginKeyframeOffsetEntry();
+            return;
+        }
+
+        renderKeyframeDragReadout();
+
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             if (registry.valid(m_dragAnchor.clip)) {
                 const double fps = m_timeline->getFrameRate();

@@ -1312,8 +1312,10 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
             const bool isSelected = isKeyframeSelected(ref);
 
             // A drag moves the WHOLE selection by one delta, so every selected
-            // keyframe previews at frame + delta.
-            const bool isDragged = m_isDraggingKeyframe && isSelected;
+            // keyframe previews at frame + delta. The TAB offset field drives the
+            // same delta, so the selection previews live as the user types.
+            const bool isDragged =
+                (m_isDraggingKeyframe || m_kfOffsetEntryActive) && isSelected;
             const FrameNumber drawFrame =
                 isDragged ? kf.frame + m_dragDelta : kf.frame;
 
