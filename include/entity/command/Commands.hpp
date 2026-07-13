@@ -831,10 +831,13 @@ private:
  */
 class UpsertKeyframeCommand : public UndoableCommand {
 public:
+    // interp defaults to nullopt = "preserve whatever easing the keyframe already
+    // has". Value-edit callers must leave it unset, or they silently reset an
+    // Easy Ease keyframe back to Linear on every drag.
     UpsertKeyframeCommand(int trackIndex, int clipIndex,
                           AnimatableProperty property, FrameNumber frame,
                           float newValue,
-                          InterpolationType interp = InterpolationType::Linear)
+                          std::optional<InterpolationType> interp = std::nullopt)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
           m_property(property), m_frame(frame),
           m_newValue(newValue), m_interp(interp) {}
@@ -844,6 +847,16 @@ public:
     void setPreviousValue(std::optional<float> prev) {
         m_previousValue = prev;
         m_hasPreviousState = true;
+    }
+
+    // Pre-edit easing, restored by undo alongside the value. Only meaningful
+    // when a keyframe existed at m_frame. execute() auto-captures this when the
+    // caller doesn't supply it.
+    void setPreviousEasing(InterpolationType interp, float easeIn, float easeOut) {
+        m_previousInterp    = interp;
+        m_previousEaseIn    = easeIn;
+        m_previousEaseOut   = easeOut;
+        m_hasPreviousEasing = true;
     }
 
     bool execute(Engine& engine) override;
@@ -860,9 +873,13 @@ private:
     AnimatableProperty m_property;
     FrameNumber m_frame;
     float m_newValue;
-    InterpolationType m_interp;
+    std::optional<InterpolationType> m_interp;  // nullopt = preserve existing
     bool m_hasPreviousState{false};
     std::optional<float> m_previousValue;  // nullopt = keyframe didn't exist
+    bool m_hasPreviousEasing{false};
+    InterpolationType m_previousInterp{InterpolationType::Linear};
+    float m_previousEaseIn{0.42f};
+    float m_previousEaseOut{0.58f};
 };
 
 /**

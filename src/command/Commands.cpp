@@ -1777,6 +1777,21 @@ bool UpsertKeyframeCommand::execute(Engine& engine) {
         m_hasPreviousState = true;
     }
 
+    // Easing is captured separately from the value: the UI's mouse-down snapshot
+    // (setPreviousValue) only records the value, and undo has to put the ease back
+    // too. Guarded by its own once-only flag so a redo doesn't re-capture the
+    // easing this command itself already applied.
+    if (!m_hasPreviousEasing) {
+        if (const KeyframeTrack* kfTrack = animProps.getTrack(m_property)) {
+            if (const Keyframe* existing = kfTrack->getKeyframeAt(m_frame)) {
+                m_previousInterp  = existing->interpolation;
+                m_previousEaseIn  = existing->easeIn;
+                m_previousEaseOut = existing->easeOut;
+            }
+        }
+        m_hasPreviousEasing = true;
+    }
+
     animProps.addKeyframe(m_property, m_frame, m_newValue, m_interp);
     return true;
 }
@@ -1797,7 +1812,14 @@ bool UpsertKeyframeCommand::undo(Engine& engine) {
     KeyframeTrack& kfTrack = animProps->getOrCreateTrack(m_property);
     if (m_previousValue.has_value()) {
         // Overwrite with the prior value — addKeyframe replaces at the same frame.
-        kfTrack.addKeyframe(m_frame, *m_previousValue);
+        // Restore the easing explicitly: execute() may have overwritten it (when
+        // m_interp was set), and addKeyframe only carries the interp type, not the
+        // bezier handles.
+        kfTrack.addKeyframe(m_frame, *m_previousValue, m_previousInterp);
+        if (Keyframe* restored = kfTrack.getKeyframeAt(m_frame)) {
+            restored->easeIn  = m_previousEaseIn;
+            restored->easeOut = m_previousEaseOut;
+        }
     } else {
         // No keyframe existed before — remove the one we just added.
         kfTrack.removeKeyframe(m_frame);

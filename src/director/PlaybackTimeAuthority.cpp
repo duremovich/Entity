@@ -181,36 +181,24 @@ void marshalParamValueToSlot(const ParamValue& v, std::uint8_t* slotPtr) {
     }
 }
 
+// Bus-side keyframes are a wire mirror of entity::Keyframe, so the interpolation
+// itself delegates to the one implementation in AnimatedProperties.hpp. This used
+// to be a hand-copied duplicate of that math, which meant every easing change had
+// to be made twice or the projector output would silently diverge from what the
+// editor previewed.
 float interpolateBakedKeyframes(const bus::BakedKeyframe& a,
                                 const bus::BakedKeyframe& b,
                                 float t) {
-    // Step on `a` holds the start value across the interval.
-    if (static_cast<InterpolationType>(a.interpolation) == InterpolationType::Step) {
-        return a.value;
-    }
-    const float delta = b.value - a.value;
-    switch (static_cast<InterpolationType>(b.interpolation)) {
-        case InterpolationType::Step:      return a.value + delta * t;
-        case InterpolationType::EaseIn:    return a.value + delta * (t * t);
-        case InterpolationType::EaseOut: {
-            const float inv = 1.0f - t;
-            return a.value + delta * (1.0f - inv * inv);
-        }
-        case InterpolationType::EaseInOut: {
-            // Cubic bezier with P0=(0,0), P1=(easeIn,0), P2=(easeOut,1), P3=(1,1).
-            // Matches the simplified bezier in KeyframeTrack::cubicBezier
-            // — same omissions (P1.y = 0 zeroes its term).
-            const float mt  = 1.0f - t;
-            const float t2  = t * t;
-            const float t3  = t2 * t;
-            const float mt2 = mt * mt;
-            const float y   = 3.0f * mt  * t2 * 1.0f  // P2.y term
-                            + t3        * 1.0f;       // P3.y term
-            return a.value + delta * y;
-        }
-        case InterpolationType::Linear:
-        default:                           return a.value + delta * t;
-    }
+    auto toKeyframe = [](const bus::BakedKeyframe& k) {
+        Keyframe out;
+        out.frame         = k.frame;
+        out.value         = k.value;
+        out.interpolation = static_cast<InterpolationType>(k.interpolation);
+        out.easeIn        = k.easeIn;
+        out.easeOut       = k.easeOut;
+        return out;
+    };
+    return KeyframeTrack::interpolate(toKeyframe(a), toKeyframe(b), t);
 }
 
 float defaultValueForProperty(AnimatableProperty p) {

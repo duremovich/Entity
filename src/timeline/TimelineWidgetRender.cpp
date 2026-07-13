@@ -2053,8 +2053,10 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                         }
                         // Keyframe upsert during drag (animated non-OA channels).
                         if (hasKeyframes && localFrame >= 0 && animProps) {
-                            animProps->addKeyframe(row.prop, localFrame, writtenVal,
-                                                   InterpolationType::Linear);
+                            // No interp arg: a value drag must not reset the
+                            // keyframe's easing (it upserts onto an existing
+                            // keyframe whenever the playhead sits on one).
+                            animProps->addKeyframe(row.prop, localFrame, writtenVal);
                         }
                     }
                 } else { // EffectParam
