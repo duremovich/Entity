@@ -219,6 +219,7 @@ target_sources(EntityMediaCore
         src/timeline/TimelineWidget.cpp
         src/timeline/TimelineWidgetRender.cpp
         src/timeline/TimelineWidgetInput.cpp
+        src/timeline/TimelineWidgetKeyframeSelection.cpp
         # src/timeline/Transport.cpp (to be implemented later)
         # src/timeline/TimeMapping.cpp (to be implemented later)
 

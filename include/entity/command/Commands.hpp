@@ -6,6 +6,7 @@
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
+#include "entity/command/KeyframeAddr.hpp"  // KeyframeAddr (multi-select commands)
 #include "entity/components/EffectParam.hpp"  // ParamValue
 #include "entity/timeline/Timeline.hpp"  // Ripple{Insert,Delete}Result
 #include "entity/timeline/CueTag.hpp"
@@ -1018,6 +1019,131 @@ private:
     InterpolationType m_removedInterp{InterpolationType::Linear};
     float m_removedEaseIn{0.42f};
     float m_removedEaseOut{0.58f};
+};
+
+/**
+ * Move a whole selection of keyframes by the same frame delta, as one undo step.
+ *
+ * Atomic: validates every destination first and fails without mutating anything
+ * if any would land before frame 0 or on top of a keyframe that isn't part of the
+ * selection. A group drag can't silently eat a keyframe it didn't select.
+ *
+ * JSON format:
+ * {
+ *     "type": "MoveKeyframes",
+ *     "delta": 12,
+ *     "keyframes": [
+ *         {"trackIndex":0,"clipIndex":0,"property":"ScaleX","frame":30},
+ *         {"effectEntity":17,"paramName":"blur","frame":45}
+ *     ]
+ * }
+ */
+class MoveKeyframesCommand : public UndoableCommand {
+public:
+    MoveKeyframesCommand(std::vector<KeyframeAddr> addrs, FrameNumber delta)
+        : m_addrs(std::move(addrs)), m_delta(delta) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "MoveKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    FrameNumber m_delta;
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_originals;  // parallel to m_addrs; full pre-move keyframes
+};
+
+/**
+ * Set the interpolation (and bezier handles) on a whole selection, as one undo step.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetKeyframesInterpolation",
+ *     "interpolation": "ease_in_out",
+ *     "easeIn": 0.42, "easeOut": 0.58,
+ *     "keyframes": [ ... same addr shape as MoveKeyframes ... ]
+ * }
+ */
+class SetKeyframesInterpolationCommand : public UndoableCommand {
+public:
+    SetKeyframesInterpolationCommand(std::vector<KeyframeAddr> addrs,
+                                     InterpolationType interp,
+                                     float easeIn = 0.42f, float easeOut = 0.58f)
+        : m_addrs(std::move(addrs)), m_interp(interp),
+          m_easeIn(easeIn), m_easeOut(easeOut) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetKeyframesInterpolation"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    InterpolationType m_interp;
+    float m_easeIn;
+    float m_easeOut;
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_originals;  // parallel to m_addrs
+};
+
+/**
+ * Set the value on a whole selection, as one undo step. Easing is untouched —
+ * same contract as a single-keyframe value edit.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetKeyframesValue",
+ *     "value": 1.5,
+ *     "keyframes": [ ... ]
+ * }
+ */
+class SetKeyframesValueCommand : public UndoableCommand {
+public:
+    SetKeyframesValueCommand(std::vector<KeyframeAddr> addrs, float value)
+        : m_addrs(std::move(addrs)), m_value(value) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetKeyframesValue"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    float m_value;
+    bool m_hasPreviousState{false};
+    std::vector<float> m_previousValues;  // parallel to m_addrs
+};
+
+/**
+ * Delete a whole selection of keyframes, as one undo step.
+ *
+ * JSON format:
+ * { "type": "RemoveKeyframes", "keyframes": [ ... ] }
+ */
+class RemoveKeyframesCommand : public UndoableCommand {
+public:
+    explicit RemoveKeyframesCommand(std::vector<KeyframeAddr> addrs)
+        : m_addrs(std::move(addrs)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_originals;  // parallel to m_addrs
 };
 
 /**

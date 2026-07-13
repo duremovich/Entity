@@ -1294,17 +1294,28 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
         const float size = 5.0f;
         const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
 
+        // Identity of this row, shared by every keyframe drawn on it.
+        KeyframeRef rowRef;
+        rowRef.clip     = clipEntity;
+        rowRef.isEffect = (row.source == TimelinePropertyDef::Source::EffectParam);
+        if (rowRef.isEffect) {
+            rowRef.effectEntity = row.effectEntity;
+            rowRef.paramHash    = row.paramHash;
+        } else {
+            rowRef.prop = row.prop;
+        }
+
         for (const auto& kf : *kfs) {
-            // Drag-preview only applies to Transform rows in v1
-            // (effect-keyframe drag-to-move lands in a follow-up).
-            const bool isDragged =
-                row.source == TimelinePropertyDef::Source::Transform &&
-                m_isDraggingKeyframe &&
-                m_dragKeyframeClip == clipEntity &&
-                m_dragKeyframeProperty == row.prop &&
-                m_dragKeyframeOriginalFrame == kf.frame;
+            KeyframeRef ref = rowRef;
+            ref.frame = kf.frame;
+
+            const bool isSelected = isKeyframeSelected(ref);
+
+            // A drag moves the WHOLE selection by one delta, so every selected
+            // keyframe previews at frame + delta.
+            const bool isDragged = m_isDraggingKeyframe && isSelected;
             const FrameNumber drawFrame =
-                isDragged ? m_dragKeyframeCurrentFrame : kf.frame;
+                isDragged ? kf.frame + m_dragDelta : kf.frame;
 
             const float kfSeconds =
                 static_cast<float>(drawFrame) / static_cast<float>(timelineFrameRate);
@@ -1313,15 +1324,17 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
             if (kfX >= clipX && kfX <= clipX + clipWidth) {
                 drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
 
-                const bool isSelected =
-                    row.source == TimelinePropertyDef::Source::Transform &&
-                    m_selectedKeyframeClip == clipEntity &&
-                    m_selectedKeyframeProperty == row.prop &&
-                    m_selectedKeyframeFrame == kf.frame;
                 if (isSelected || isDragged) {
                     drawList->AddCircle(ImVec2(kfX, keyframeY), size + 3.0f,
                                         IM_COL32(255, 255, 255, 255), 0, 2.0f);
                 }
+
+                // Feed the per-frame glyph cache. The hit-test and box-select read
+                // this instead of re-deriving glyph geometry, so what you can click
+                // is exactly what was drawn. Cache the keyframe's REAL frame, not
+                // the drag preview — a drag is uncommitted.
+                m_keyframeGlyphs.push_back(
+                    KeyframeGlyph{ref, ImVec2(kfX, keyframeY), size});
             }
         }
     }

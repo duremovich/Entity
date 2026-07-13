@@ -112,6 +112,11 @@ void TimelineWidget::render() {
         m_ghost.active = false;
     }
 
+    // Rebuilt by renderPropertyTracks below, consumed by the keyframe hit-test and
+    // box-select in handleTracksInteraction — which runs after renderTracks() in
+    // the same frame, so it never reads a stale cache.
+    m_keyframeGlyphs.clear();
+
     // Clean up stale entity references in expansion state
     {
         auto& reg = m_timeline->getRegistry();

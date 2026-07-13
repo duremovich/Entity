@@ -1196,16 +1196,52 @@ void TimelineWidget::handleTracksInteraction() {
         return;  // Don't process other interactions while trimming
     }
 
+    // Keyframe box-select. Armed by an empty mouse-down in the property-row band;
+    // becomes active once the drag crosses the threshold. Owns interaction while
+    // active so it can't also scrub or start a clip drag.
+    if (m_kfBoxArmed || m_kfBoxActive) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (!m_kfBoxActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                m_kfBoxActive     = true;
+                m_kfBoxBaseline   = m_selectedKeyframes;  // what ctrl+box adds onto
+            }
+            if (m_kfBoxActive) {
+                m_kfBoxCurrent = mousePos;
+
+                // Recomputed from the baseline every frame, so shrinking the box
+                // un-selects again instead of ratcheting.
+                m_selectedKeyframes = m_kfBoxAdditive ? m_kfBoxBaseline
+                                                      : std::vector<KeyframeRef>{};
+                for (const auto& ref : keyframesInRect(m_kfBoxAnchor, m_kfBoxCurrent)) {
+                    if (!isKeyframeSelected(ref)) m_selectedKeyframes.push_back(ref);
+                }
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 rmin(std::min(m_kfBoxAnchor.x, m_kfBoxCurrent.x),
+                                  std::min(m_kfBoxAnchor.y, m_kfBoxCurrent.y));
+                const ImVec2 rmax(std::max(m_kfBoxAnchor.x, m_kfBoxCurrent.x),
+                                  std::max(m_kfBoxAnchor.y, m_kfBoxCurrent.y));
+                dl->AddRectFilled(rmin, rmax, IM_COL32(80, 160, 255, 40));
+                dl->AddRect(rmin, rmax, IM_COL32(120, 200, 255, 200));
+            }
+            return;
+        }
+        m_kfBoxArmed  = false;
+        m_kfBoxActive = false;
+        m_kfBoxBaseline.clear();
+        return;
+    }
+
     // Active keyframe drag — owns all track interaction until release. The
-    // keyframe data is not mutated mid-drag; renderPropertyTracks draws a live
-    // preview from m_dragKeyframeCurrentFrame and a single undoable
-    // MoveKeyframeCommand is committed on mouse-up.
+    // keyframe data is not mutated mid-drag; renderPropertyTracks previews every
+    // SELECTED keyframe at frame + m_dragDelta, and a single undoable
+    // MoveKeyframesCommand is committed for the whole selection on mouse-up.
     if (m_isDraggingKeyframe) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            if (registry.valid(m_dragKeyframeClip)) {
+            if (registry.valid(m_dragAnchor.clip)) {
                 const double fps = m_timeline->getFrameRate();
                 const TimelinePlacement place =
-                    readPlacement(registry, m_dragKeyframeClip);
+                    readPlacement(registry, m_dragAnchor.clip);
                 const float startSeconds =
                     static_cast<float>(place.startFrame) / static_cast<float>(fps);
                 const float clipX = windowPos.x +
@@ -1213,47 +1249,38 @@ void TimelineWidget::handleTracksInteraction() {
                 const float pxPerFrame = (fps > 0.0)
                     ? m_pixelsPerSecond / static_cast<float>(fps) : 1.0f;
 
-                FrameNumber newFrame = m_dragKeyframeOriginalFrame;
+                // The cursor drives the ANCHOR keyframe; everything else in the
+                // selection rides the same delta.
+                FrameNumber anchorFrame = m_dragKeyframeOriginalFrame;
                 if (pxPerFrame > 0.0f) {
-                    newFrame = static_cast<FrameNumber>(
+                    anchorFrame = static_cast<FrameNumber>(
                         std::lround((mousePos.x - clipX) / pxPerFrame));
                 }
+                FrameNumber delta = anchorFrame - m_dragKeyframeOriginalFrame;
 
-                // Clamp to the clip's frame range and to the gap between the
-                // adjacent keyframes on the same track — a drag can't cross
-                // or collide with another keyframe.
-                FrameNumber lo = 0;
-                FrameNumber hi = (place.duration > 0) ? place.duration - 1 : 0;
-                if (const auto* animProps =
-                        registry.try_get<AnimatedProperties>(m_dragKeyframeClip)) {
-                    if (const KeyframeTrack* kt =
-                            animProps->getTrack(m_dragKeyframeProperty)) {
-                        for (const auto& kf : kt->keyframes) {
-                            if (kf.frame < m_dragKeyframeOriginalFrame)
-                                lo = std::max(lo, kf.frame + 1);
-                            else if (kf.frame > m_dragKeyframeOriginalFrame)
-                                hi = std::min(hi, kf.frame - 1);
-                        }
-                    }
-                }
-                if (hi < lo) hi = lo;
-                m_dragKeyframeCurrentFrame = std::clamp(newFrame, lo, hi);
+                // Keep the anchor inside the clip, on top of the selection-wide
+                // neighbour clamp computed at drag start.
+                const FrameNumber clipHi = (place.duration > 0) ? place.duration - 1 : 0;
+                delta = std::clamp(delta,
+                                   -m_dragKeyframeOriginalFrame,
+                                   clipHi - m_dragKeyframeOriginalFrame);
+                m_dragDelta = std::clamp(delta, m_dragDeltaMin, m_dragDeltaMax);
             }
         } else {
-            // Release — commit a single undoable MoveKeyframeCommand.
-            if (m_dragKeyframeCurrentFrame != m_dragKeyframeOriginalFrame &&
-                m_commandDispatcher) {
-                if (auto idx = findClipIndices(m_timeline, m_dragKeyframeClip)) {
-                    m_commandDispatcher->enqueue(std::make_unique<MoveKeyframeCommand>(
-                        idx->first, idx->second, m_dragKeyframeProperty,
-                        m_dragKeyframeOriginalFrame, m_dragKeyframeCurrentFrame));
-                    m_selectedKeyframeClip     = m_dragKeyframeClip;
-                    m_selectedKeyframeProperty = m_dragKeyframeProperty;
-                    m_selectedKeyframeFrame    = m_dragKeyframeCurrentFrame;
+            // Release — one undoable MoveKeyframesCommand for the whole selection.
+            if (m_dragDelta != 0 && m_commandDispatcher) {
+                auto addrs = selectedKeyframeAddrs();
+                if (!addrs.empty()) {
+                    m_commandDispatcher->enqueue(
+                        std::make_unique<MoveKeyframesCommand>(addrs, m_dragDelta));
+                    // Selection follows the keyframes to their new frames, so a
+                    // second drag continues from where the first left off.
+                    for (auto& ref : m_selectedKeyframes) ref.frame += m_dragDelta;
                 }
             }
             m_isDraggingKeyframe = false;
-            m_dragKeyframeClip   = entt::null;
+            m_dragDelta          = 0;
+            m_dragAnchor         = KeyframeRef{};
         }
         return;
     }
@@ -1575,20 +1602,42 @@ void TimelineWidget::handleTracksInteraction() {
         // clip's hit zone). An empty click inside a property row is a no-op
         // for the same reason — it must not fall through to clip drag.
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            KeyframeHit kfHit = findKeyframeAtPosition(mousePos, windowPos);
-            if (kfHit.valid) {
-                m_selectedKeyframeClip      = kfHit.clip;
-                m_selectedKeyframeProperty  = kfHit.property;
-                m_selectedKeyframeFrame     = kfHit.frame;
+            if (auto hit = findKeyframeGlyphAt(mousePos)) {
+                const ImGuiIO& io = ImGui::GetIO();
+                const bool additive = io.KeyCtrl || io.KeyShift;
+
+                if (additive) {
+                    // Toggle in/out of the selection. Don't start a drag — the
+                    // user is building a selection, and a stray pixel of movement
+                    // shouldn't move keyframes.
+                    toggleKeyframeSelection(*hit);
+                    return;
+                }
+
+                // Plain click on an already-selected keyframe keeps the selection
+                // (so you can grab a group and drag it). On anything else it
+                // becomes the selection.
+                if (!isKeyframeSelected(*hit)) {
+                    selectOnlyKeyframe(*hit);
+                }
+
                 m_isDraggingKeyframe        = true;
-                m_dragKeyframeClip          = kfHit.clip;
-                m_dragKeyframeProperty      = kfHit.property;
-                m_dragKeyframeOriginalFrame = kfHit.frame;
-                m_dragKeyframeCurrentFrame  = kfHit.frame;
+                m_dragAnchor                = *hit;
+                m_dragKeyframeOriginalFrame = hit->frame;
+                m_dragDelta                 = 0;
+                computeDragDeltaBounds();
                 return;
             }
             if (isInPropertyRowBand(mousePos, windowPos)) {
-                m_selectedKeyframeClip = entt::null;
+                // Empty click inside the property band starts a keyframe box-select
+                // (armed here, upgraded to active once it crosses the drag
+                // threshold — a plain click stays a deselect).
+                if (!ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift) {
+                    clearKeyframeSelection();
+                }
+                m_kfBoxArmed  = true;
+                m_kfBoxAnchor = mousePos;
+                m_kfBoxAdditive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
                 return;
             }
         }
@@ -1629,7 +1678,7 @@ void TimelineWidget::handleTracksInteraction() {
             const bool ctrl = ImGui::GetIO().KeyCtrl;
 
             if (clipUnderMouse != entt::null) {
-                m_selectedKeyframeClip = entt::null;  // selecting a clip clears keyframe selection
+                clearKeyframeSelection();  // selecting a clip clears keyframe selection
 
                 if (ctrl) {
                     // Ctrl-click toggles set membership. No drag, no scrub — a
@@ -1703,7 +1752,7 @@ void TimelineWidget::handleTracksInteraction() {
                 if (!ctrl) {
                     m_selectedClip = entt::null;
                     m_selectedClipTrackIndex = -1;
-                    m_selectedKeyframeClip = entt::null;
+                    clearKeyframeSelection();
                     m_timeline->setSelectedClip(entt::null);
                 }
                 m_pendingCollapseClip = entt::null;
@@ -1730,11 +1779,17 @@ void TimelineWidget::handleTracksInteraction() {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             // Right-click on a keyframe diamond → interpolation context menu,
             // routed through the same hit-test as left-click select/drag.
-            KeyframeHit kfHit = findKeyframeAtPosition(mousePos, windowPos);
-            if (kfHit.valid) {
-                m_keyframeEditClip     = kfHit.clip;
-                m_keyframeEditProperty = kfHit.property;
-                m_keyframeEditFrame    = kfHit.frame;
+            auto kfHit = findKeyframeGlyphAt(mousePos);
+            if (kfHit && !kfHit->isEffect) {
+                // Right-clicking outside the selection replaces it, so the menu
+                // always acts on what's under the cursor. Right-clicking INTO the
+                // selection keeps it, so the group operations stay reachable.
+                if (!isKeyframeSelected(*kfHit)) {
+                    selectOnlyKeyframe(*kfHit);
+                }
+                m_keyframeEditClip     = kfHit->clip;
+                m_keyframeEditProperty = kfHit->prop;
+                m_keyframeEditFrame    = kfHit->frame;
                 m_showKeyframeContextMenu = true;
                 m_showClipContextMenu  = false;
                 m_showTrackContextMenu = false;
@@ -2165,7 +2220,28 @@ void TimelineWidget::handleContextMenus() {
                         // there's no dispatcher (script-driven embedding,
                         // tests) or no clip index — preserves prior
                         // behavior so nothing regresses.
+                        // The right-clicked keyframe, as a selection ref — used to
+                        // decide whether the menu acts on the whole selection.
+                        KeyframeRef clickedRef;
+                        clickedRef.clip  = m_keyframeEditClip;
+                        clickedRef.prop  = m_keyframeEditProperty;
+                        clickedRef.frame = m_keyframeEditFrame;
+
+                        // Every interpolation item routes through here, so making
+                        // this selection-aware makes all of them group operations.
+                        const bool actOnSelection =
+                            m_selectedKeyframes.size() > 1 && isKeyframeSelected(clickedRef);
+
                         auto setInterp = [&](InterpolationType newInterp) {
+                            if (actOnSelection && m_commandDispatcher) {
+                                auto addrs = selectedKeyframeAddrs();
+                                if (!addrs.empty()) {
+                                    m_commandDispatcher->enqueue(
+                                        std::make_unique<SetKeyframesInterpolationCommand>(
+                                            addrs, newInterp, kf->easeIn, kf->easeOut));
+                                    return;
+                                }
+                            }
                             if (m_commandDispatcher && idx) {
                                 auto cmd = std::make_unique<SetKeyframeInterpolationCommand>(
                                     idx->first, idx->second,
@@ -2177,6 +2253,12 @@ void TimelineWidget::handleContextMenus() {
                                 kf->interpolation = newInterp;
                             }
                         };
+
+                        if (actOnSelection) {
+                            ImGui::TextDisabled("%d keyframes selected",
+                                                static_cast<int>(m_selectedKeyframes.size()));
+                            ImGui::Separator();
+                        }
 
                         ImGui::TextDisabled("Interpolation:");
 
@@ -2289,24 +2371,65 @@ void TimelineWidget::handleContextMenus() {
 
                         ImGui::Separator();
 
-                        if (ImGui::MenuItem("Delete Keyframe")) {
-                            // Undoable via RemoveKeyframeCommand; direct-write
-                            // fallback for the no-dispatcher (script / test)
-                            // embedding, mirroring setInterp above.
-                            if (m_commandDispatcher && idx) {
-                                m_commandDispatcher->enqueue(
-                                    std::make_unique<RemoveKeyframeCommand>(
-                                        idx->first, idx->second,
-                                        m_keyframeEditProperty, m_keyframeEditFrame));
-                            } else {
-                                track->removeKeyframe(m_keyframeEditFrame);
+                        // Set value across the selection. Seeded with the clicked
+                        // keyframe's value; commits one SetKeyframesValueCommand on
+                        // Enter / focus-loss. Easing is untouched, same as a drag.
+                        {
+                            ImGui::TextDisabled(actOnSelection ? "Set value (all selected):"
+                                                               : "Set value:");
+                            if (!m_kfValueEntryActive) {
+                                m_kfValueEntry = kf->value;
                             }
-                            // Drop the timeline keyframe selection if it
-                            // pointed at the keyframe just deleted.
-                            if (m_selectedKeyframeClip == m_keyframeEditClip &&
-                                m_selectedKeyframeProperty == m_keyframeEditProperty &&
-                                m_selectedKeyframeFrame == m_keyframeEditFrame) {
-                                m_selectedKeyframeClip = entt::null;
+                            ImGui::SetNextItemWidth(140.0f);
+                            const bool committed = ImGui::InputFloat(
+                                "##kfSetValue", &m_kfValueEntry, 0.0f, 0.0f, "%.3f",
+                                ImGuiInputTextFlags_EnterReturnsTrue);
+                            m_kfValueEntryActive = ImGui::IsItemActive();
+
+                            if (committed && m_commandDispatcher) {
+                                std::vector<KeyframeAddr> addrs;
+                                if (actOnSelection) {
+                                    addrs = selectedKeyframeAddrs();
+                                } else if (auto one = keyframeAddrFor(clickedRef)) {
+                                    addrs.push_back(*one);
+                                }
+                                if (!addrs.empty()) {
+                                    m_commandDispatcher->enqueue(
+                                        std::make_unique<SetKeyframesValueCommand>(
+                                            addrs, m_kfValueEntry));
+                                }
+                                m_kfValueEntryActive = false;
+                                ImGui::CloseCurrentPopup();
+                            }
+                        }
+
+                        ImGui::Separator();
+
+                        const bool deleteAll = actOnSelection;
+                        const char* deleteLabel = deleteAll ? "Delete Keyframes" : "Delete Keyframe";
+                        if (ImGui::MenuItem(deleteLabel)) {
+                            if (deleteAll && m_commandDispatcher) {
+                                auto addrs = selectedKeyframeAddrs();
+                                if (!addrs.empty()) {
+                                    m_commandDispatcher->enqueue(
+                                        std::make_unique<RemoveKeyframesCommand>(addrs));
+                                }
+                                clearKeyframeSelection();
+                            } else {
+                                // Undoable via RemoveKeyframeCommand; direct-write
+                                // fallback for the no-dispatcher (script / test)
+                                // embedding, mirroring setInterp above.
+                                if (m_commandDispatcher && idx) {
+                                    m_commandDispatcher->enqueue(
+                                        std::make_unique<RemoveKeyframeCommand>(
+                                            idx->first, idx->second,
+                                            m_keyframeEditProperty, m_keyframeEditFrame));
+                                } else {
+                                    track->removeKeyframe(m_keyframeEditFrame);
+                                }
+                                if (isKeyframeSelected(clickedRef)) {
+                                    toggleKeyframeSelection(clickedRef);
+                                }
                             }
                         }
                     }

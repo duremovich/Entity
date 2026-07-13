@@ -2653,6 +2653,13 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 // DeleteClipsCommand (single undo step); a single clip keeps
                 // the original DeleteClipCommand path.
                 {
+                    // A keyframe selection wins over the clip selection: the
+                    // keyframes live *inside* the selected clip, so deleting the
+                    // clip out from under them is never what Delete meant.
+                    if (m_timelineWidget && m_timelineWidget->hasKeyframeSelection()) {
+                        m_timelineWidget->deleteSelectedKeyframes();
+                        break;
+                    }
                     const auto& sel = m_timeline->getSelectedClips();
                     if (m_commandDispatcher && sel.size() > 1) {
                         // Fix A: capture the (track,layer) targets NOW, at

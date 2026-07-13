@@ -2573,6 +2573,373 @@ CommandPtr RemoveEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// Plural (multi-select) keyframe commands
+//
+// MoveKeyframes / SetKeyframesInterpolation / SetKeyframesValue / RemoveKeyframes.
+// Each is ONE undo step for the whole selection. They resolve both track kinds
+// through resolveKeyframes() so there's no duplicate command family for effect
+// params.
+// ============================================================================
+
+namespace {
+
+// The keyframe vector a KeyframeAddr points into. Transform rows live in
+// AnimatedProperties (enum-keyed), effect params in EffectAnimatedParameters
+// (hash-keyed); past the lookup the two are the same std::vector<Keyframe>.
+// `create` is for undo, which may need to rebuild a track it emptied.
+std::vector<Keyframe>* resolveKeyframes(Engine& engine, const KeyframeAddr& addr,
+                                        bool create) {
+    auto& registry = engine.getRegistry();
+
+    if (addr.isEffect) {
+        if (!registry.valid(addr.effectEntity)) return nullptr;
+        const std::uint32_t hash = effects::fnv1a32(addr.paramName);
+        if (create) {
+            auto& anim = registry.get_or_emplace<EffectAnimatedParameters>(addr.effectEntity);
+            return &getOrCreateEffectTrack(anim, hash).keyframes;
+        }
+        auto* anim = registry.try_get<EffectAnimatedParameters>(addr.effectEntity);
+        if (!anim) return nullptr;
+        auto* track = findEffectTrack(*anim, hash);
+        return track ? &track->keyframes : nullptr;
+    }
+
+    entt::entity layer = resolveLayer(engine, addr.trackIndex, addr.clipIndex);
+    if (layer == entt::null) return nullptr;
+    if (create) {
+        auto& animProps = registry.get_or_emplace<AnimatedProperties>(layer);
+        return &animProps.getOrCreateTrack(addr.property).keyframes;
+    }
+    auto* animProps = registry.try_get<AnimatedProperties>(layer);
+    if (!animProps) return nullptr;
+    KeyframeTrack* track = animProps->getTrack(addr.property);
+    return track ? &track->keyframes : nullptr;
+}
+
+Keyframe* findKeyframeInVec(std::vector<Keyframe>& kfs, FrameNumber frame) {
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == frame) return &(*it);
+    return nullptr;
+}
+
+void insertKeyframeSorted(std::vector<Keyframe>& kfs, const Keyframe& kf) {
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), kf.frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == kf.frame) {
+        *it = kf;  // replace in place
+        return;
+    }
+    kfs.insert(it, kf);
+}
+
+void eraseKeyframeAt(std::vector<Keyframe>& kfs, FrameNumber frame) {
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == frame) kfs.erase(it);
+}
+
+// Two addrs point at the same track when everything but the frame matches.
+bool sameTrack(const KeyframeAddr& a, const KeyframeAddr& b) {
+    if (a.isEffect != b.isEffect) return false;
+    if (a.isEffect) {
+        return a.effectEntity == b.effectEntity && a.paramName == b.paramName;
+    }
+    return a.trackIndex == b.trackIndex && a.clipIndex == b.clipIndex
+        && a.property == b.property;
+}
+
+nlohmann::json addrToJson(const KeyframeAddr& a) {
+    nlohmann::json j;
+    if (a.isEffect) {
+        j["effectEntity"] = static_cast<std::uint32_t>(a.effectEntity);
+        j["paramName"]    = a.paramName;
+    } else {
+        j["trackIndex"] = a.trackIndex;
+        j["clipIndex"]  = a.clipIndex;
+        j["property"]   = animatablePropertyName(a.property);
+    }
+    j["frame"] = a.frame;
+    return j;
+}
+
+KeyframeAddr addrFromJson(const nlohmann::json& j) {
+    KeyframeAddr a;
+    // An effectEntity key is what makes it an effect-param address; without one
+    // it's a transform row.
+    if (j.contains("effectEntity")) {
+        a.isEffect     = true;
+        a.effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+        a.paramName    = j.value("paramName", std::string{});
+    } else {
+        a.trackIndex = j.value("trackIndex", 0);
+        a.clipIndex  = j.value("clipIndex", 0);
+        a.property   = parseAnimatableProperty(j.value("property", std::string{"Opacity"}))
+                           .value_or(AnimatableProperty::Opacity);
+    }
+    a.frame = j.value("frame", 0);
+    return a;
+}
+
+std::vector<KeyframeAddr> addrsFromJson(const nlohmann::json& j) {
+    std::vector<KeyframeAddr> addrs;
+    if (!j.contains("keyframes") || !j["keyframes"].is_array()) return addrs;
+    for (const auto& e : j["keyframes"]) addrs.push_back(addrFromJson(e));
+    return addrs;
+}
+
+nlohmann::json addrsToJson(const std::vector<KeyframeAddr>& addrs) {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& a : addrs) arr.push_back(addrToJson(a));
+    return arr;
+}
+
+} // namespace
+
+bool MoveKeyframesCommand::execute(Engine& engine) {
+    if (m_addrs.empty() || m_delta == 0) return false;
+
+    // --- Validation pass. Nothing is mutated until every destination checks out,
+    // so a rejected group drag can't leave half the selection moved. ---
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        const KeyframeAddr& addr = m_addrs[i];
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, /*create=*/false);
+        if (!kfs) return false;
+        if (!findKeyframeInVec(*kfs, addr.frame)) return false;  // stale selection
+
+        const FrameNumber dest = addr.frame + m_delta;
+        if (dest < 0) return false;
+
+        // Landing on an existing keyframe is only OK if that keyframe is itself
+        // part of the selection (and therefore moving out of the way).
+        if (findKeyframeInVec(*kfs, dest)) {
+            bool destIsSelected = false;
+            for (const auto& other : m_addrs) {
+                if (sameTrack(other, addr) && other.frame == dest) {
+                    destIsSelected = true;
+                    break;
+                }
+            }
+            if (!destIsSelected) return false;
+        }
+    }
+
+    if (!m_hasPreviousState) {
+        m_originals.clear();
+        m_originals.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            m_originals.push_back(*findKeyframeInVec(*kfs, addr.frame));  // validated above
+        }
+        m_hasPreviousState = true;
+    }
+
+    // --- Mutation pass. Erase every selected keyframe first, THEN re-insert them
+    // shifted: doing it one at a time would let an earlier move clobber a keyframe
+    // a later one still needs to read. ---
+    for (const auto& addr : m_addrs) {
+        eraseKeyframeAt(*resolveKeyframes(engine, addr, false), addr.frame);
+    }
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        Keyframe moved = m_originals[i];
+        moved.frame = m_addrs[i].frame + m_delta;
+        insertKeyframeSorted(*resolveKeyframes(engine, m_addrs[i], /*create=*/true), moved);
+    }
+    return true;
+}
+
+bool MoveKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+
+    for (const auto& addr : m_addrs) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+        if (!kfs) return false;
+        eraseKeyframeAt(*kfs, addr.frame + m_delta);
+    }
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], /*create=*/true);
+        if (!kfs) return false;
+        insertKeyframeSorted(*kfs, m_originals[i]);
+    }
+    return true;
+}
+
+nlohmann::json MoveKeyframesCommand::toJson() const {
+    return {{"type", "MoveKeyframes"},
+            {"delta", m_delta},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string MoveKeyframesCommand::getDescription() const {
+    return "Move " + std::to_string(m_addrs.size()) + " keyframes by "
+         + std::to_string(m_delta) + " frames";
+}
+
+CommandPtr MoveKeyframesCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<MoveKeyframesCommand>(
+        addrsFromJson(j), j.value("delta", FrameNumber{0}));
+}
+
+bool SetKeyframesInterpolationCommand::execute(Engine& engine) {
+    if (m_addrs.empty()) return false;
+
+    if (!m_hasPreviousState) {
+        m_originals.clear();
+        m_originals.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+            if (!kf) return false;
+            m_originals.push_back(*kf);
+        }
+        m_hasPreviousState = true;
+    }
+
+    for (const auto& addr : m_addrs) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+        Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+        if (!kf) continue;
+        kf->interpolation = m_interp;
+        kf->easeIn        = m_easeIn;
+        kf->easeOut       = m_easeOut;
+    }
+    return true;
+}
+
+bool SetKeyframesInterpolationCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], false);
+        Keyframe* kf = kfs ? findKeyframeInVec(*kfs, m_addrs[i].frame) : nullptr;
+        if (!kf) continue;
+        kf->interpolation = m_originals[i].interpolation;
+        kf->easeIn        = m_originals[i].easeIn;
+        kf->easeOut       = m_originals[i].easeOut;
+    }
+    return true;
+}
+
+nlohmann::json SetKeyframesInterpolationCommand::toJson() const {
+    return {{"type", "SetKeyframesInterpolation"},
+            {"interpolation", interpName(m_interp)},
+            {"easeIn", m_easeIn},
+            {"easeOut", m_easeOut},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string SetKeyframesInterpolationCommand::getDescription() const {
+    return "Set " + std::to_string(m_addrs.size()) + " keyframes to "
+         + interpName(m_interp);
+}
+
+CommandPtr SetKeyframesInterpolationCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetKeyframesInterpolationCommand>(
+        addrsFromJson(j),
+        parseInterp(j.value("interpolation", std::string{"linear"})),
+        j.value("easeIn", 0.42f),
+        j.value("easeOut", 0.58f));
+}
+
+bool SetKeyframesValueCommand::execute(Engine& engine) {
+    if (m_addrs.empty()) return false;
+
+    if (!m_hasPreviousState) {
+        m_previousValues.clear();
+        m_previousValues.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+            if (!kf) return false;
+            m_previousValues.push_back(kf->value);
+        }
+        m_hasPreviousState = true;
+    }
+
+    // Value only — easing is left alone, same contract as a single-keyframe edit.
+    for (const auto& addr : m_addrs) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+        if (Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr) {
+            kf->value = m_value;
+        }
+    }
+    return true;
+}
+
+bool SetKeyframesValueCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], false);
+        if (Keyframe* kf = kfs ? findKeyframeInVec(*kfs, m_addrs[i].frame) : nullptr) {
+            kf->value = m_previousValues[i];
+        }
+    }
+    return true;
+}
+
+nlohmann::json SetKeyframesValueCommand::toJson() const {
+    return {{"type", "SetKeyframesValue"},
+            {"value", m_value},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string SetKeyframesValueCommand::getDescription() const {
+    return "Set " + std::to_string(m_addrs.size()) + " keyframes to "
+         + std::to_string(m_value);
+}
+
+CommandPtr SetKeyframesValueCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetKeyframesValueCommand>(
+        addrsFromJson(j), j.value("value", 0.0f));
+}
+
+bool RemoveKeyframesCommand::execute(Engine& engine) {
+    if (m_addrs.empty()) return false;
+
+    if (!m_hasPreviousState) {
+        m_originals.clear();
+        m_originals.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+            if (!kf) return false;
+            m_originals.push_back(*kf);
+        }
+        m_hasPreviousState = true;
+    }
+
+    for (const auto& addr : m_addrs) {
+        if (std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false)) {
+            eraseKeyframeAt(*kfs, addr.frame);
+        }
+    }
+    return true;
+}
+
+bool RemoveKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        // create=true: deleting the last keyframe may have left no track at all.
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], /*create=*/true);
+        if (!kfs) return false;
+        insertKeyframeSorted(*kfs, m_originals[i]);
+    }
+    return true;
+}
+
+nlohmann::json RemoveKeyframesCommand::toJson() const {
+    return {{"type", "RemoveKeyframes"},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string RemoveKeyframesCommand::getDescription() const {
+    return "Delete " + std::to_string(m_addrs.size()) + " keyframes";
+}
+
+CommandPtr RemoveKeyframesCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<RemoveKeyframesCommand>(addrsFromJson(j));
+}
+
+// ============================================================================
 // AssertKeyframeInterpolationCommand
 //
 // Script-side gate for "editing a keyframe's value must not reset its easing".

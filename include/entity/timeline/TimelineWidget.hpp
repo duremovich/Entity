@@ -2,6 +2,7 @@
 
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/command/KeyframeAddr.hpp"
 #include <imgui.h>
 #include <algorithm>
 #include <functional>
@@ -214,6 +215,14 @@ public:
      */
     void ensurePlayheadVisible();
 
+    /** True when one or more keyframes are selected. Engine checks this so the
+     *  Delete key deletes keyframes rather than the clip they live on. */
+    bool hasKeyframeSelection() const { return !m_selectedKeyframes.empty(); }
+
+    /** Delete every selected keyframe as one undoable step. No-op when the
+     *  selection is empty or the dispatcher isn't wired. */
+    void deleteSelectedKeyframes();
+
 private:
     /**
      * Render the time ruler (top bar with timecode markers).
@@ -401,6 +410,40 @@ private:
         entt::entity       clip{entt::null};
         AnimatableProperty property{AnimatableProperty::PositionX};
         FrameNumber        frame{0};
+    };
+
+    /**
+     * Identity of one keyframe, for multi-selection. Covers both track kinds:
+     * transform rows are keyed by (clip, prop), effect-param rows by
+     * (effectEntity, paramHash). `isEffect` picks which half is meaningful.
+     *
+     * Deliberately does NOT use TimelinePropertyDef::Source — that type is
+     * declared further down this header, and a plain bool keeps the ordering
+     * dependency out of the public section.
+     */
+    struct KeyframeRef {
+        entt::entity       clip{entt::null};   // owning layer, both kinds
+        bool               isEffect{false};
+        AnimatableProperty prop{AnimatableProperty::PositionX};  // !isEffect
+        entt::entity       effectEntity{entt::null};             // isEffect
+        std::uint32_t      paramHash{0};                         // isEffect
+        FrameNumber        frame{0};           // layer-local
+
+        bool operator==(const KeyframeRef& o) const {
+            if (isEffect != o.isEffect || frame != o.frame) return false;
+            if (isEffect) {
+                return effectEntity == o.effectEntity && paramHash == o.paramHash;
+            }
+            return clip == o.clip && prop == o.prop;
+        }
+        // Same track, ignoring the frame — "are these two on the same row".
+        bool sameTrack(const KeyframeRef& o) const {
+            if (isEffect != o.isEffect) return false;
+            if (isEffect) {
+                return effectEntity == o.effectEntity && paramHash == o.paramHash;
+            }
+            return clip == o.clip && prop == o.prop;
+        }
     };
 
     /**
@@ -942,26 +985,89 @@ private:
     void toggleGroupCollapsed(entt::entity layerEntity,
                               const std::string& groupPath);
 
+    // "Set value" field in the keyframe context menu. Seeded from the clicked
+    // keyframe while the field is idle; left alone while the user is typing so it
+    // doesn't get stomped mid-edit.
+    float m_kfValueEntry{0.0f};
+    bool  m_kfValueEntryActive{false};
+
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};
     AnimatableProperty m_keyframeEditProperty{AnimatableProperty::PositionX};
     FrameNumber m_keyframeEditFrame{0};
     bool m_showKeyframeContextMenu{false};
 
-    // Keyframe selection (single-select). entt::null clip = nothing selected.
-    // The identity of a keyframe is (clip, property, clip-relative frame).
-    entt::entity       m_selectedKeyframeClip{entt::null};
-    AnimatableProperty m_selectedKeyframeProperty{AnimatableProperty::PositionX};
-    FrameNumber        m_selectedKeyframeFrame{0};
+    // Keyframe selection. Empty = nothing selected. Plain click replaces the
+    // selection; Ctrl/Shift+click toggles one in or out; a box drag inside the
+    // property-row band adds everything it covers.
+    std::vector<KeyframeRef> m_selectedKeyframes;
+
+    bool isKeyframeSelected(const KeyframeRef& ref) const;
+    void selectOnlyKeyframe(const KeyframeRef& ref);
+    void toggleKeyframeSelection(const KeyframeRef& ref);
+    void clearKeyframeSelection();
+
+    // Every keyframe glyph drawn this frame, with the rect it was drawn at.
+    // renderPropertyTracks appends; the hit-test and the box-select read it, so
+    // both agree with what's actually on screen instead of re-deriving the glyph
+    // geometry from scratch. Cleared at the top of each render().
+    //
+    // Safe to consume as input in the same frame: renderTracks() runs before
+    // handleTracksInteraction() inside the tracks child.
+    struct KeyframeGlyph {
+        KeyframeRef ref;
+        ImVec2      center;
+        float       radius{5.0f};
+    };
+    std::vector<KeyframeGlyph> m_keyframeGlyphs;
+
+    // Keyframes covered by a screen-space rect (box select).
+    std::vector<KeyframeRef> keyframesInRect(const ImVec2& a, const ImVec2& b) const;
+
+    // The keyframe glyph under a screen-space point, if any. Reads the same cache
+    // the renderer filled, so the clickable zone is exactly the drawn glyph.
+    // Supersedes findKeyframeAtPosition's geometry re-derivation, and unlike it,
+    // this one sees effect-param keyframes too.
+    std::optional<KeyframeRef> findKeyframeGlyphAt(ImVec2 mousePos) const;
+
+    // Build the command-layer address for a selected keyframe. Returns nullopt if
+    // the owning layer is no longer in a track (stale selection).
+    std::optional<KeyframeAddr> keyframeAddrFor(const KeyframeRef& ref) const;
+    // Addresses for the whole current selection, stale entries dropped.
+    std::vector<KeyframeAddr> selectedKeyframeAddrs() const;
 
     // Keyframe drag-to-move state. The keyframe data is NOT mutated during the
-    // drag — m_dragKeyframeCurrentFrame drives a live preview, and a single
-    // undoable MoveKeyframeCommand is committed on release.
-    bool               m_isDraggingKeyframe{false};
-    entt::entity       m_dragKeyframeClip{entt::null};
-    AnimatableProperty m_dragKeyframeProperty{AnimatableProperty::PositionX};
-    FrameNumber        m_dragKeyframeOriginalFrame{0};  // clip-relative, fixed
-    FrameNumber        m_dragKeyframeCurrentFrame{0};   // clip-relative, live
+    // drag — m_dragDelta drives a live preview of the whole selection, and a
+    // single undoable MoveKeyframesCommand is committed on release.
+    //
+    // The drag moves EVERY selected keyframe by the same delta, so the clamp is a
+    // delta range computed once at drag start: the tightest window that keeps
+    // every selected keyframe between its nearest UNSELECTED neighbours. That's
+    // what stops a group drag from reordering or silently overwriting a keyframe
+    // it didn't select.
+    bool        m_isDraggingKeyframe{false};
+    KeyframeRef m_dragAnchor;                     // the keyframe under the cursor
+    FrameNumber m_dragKeyframeOriginalFrame{0};   // anchor's frame at drag start
+    FrameNumber m_dragDelta{0};                   // live, applied to all selected
+    FrameNumber m_dragDeltaMin{0};                // inclusive clamp, <= 0
+    FrameNumber m_dragDeltaMax{0};                // inclusive clamp, >= 0
+
+    // Compute the legal delta window for the current selection. Called at drag start.
+    void computeDragDeltaBounds();
+
+    // Keyframe rubber-band box select, inside the expanded property-row band.
+    // Armed on an empty mouse-down there; upgrades to active once the drag passes
+    // the threshold, so a plain click stays a deselect rather than a 0-size box.
+    // Mirrors the clip box-select (m_isBoxSelecting / m_boxSelectArmed) one band up.
+    bool   m_kfBoxArmed{false};
+    bool   m_kfBoxActive{false};
+    bool   m_kfBoxAdditive{false};   // ctrl/shift held: add to selection, don't replace
+    ImVec2 m_kfBoxAnchor{0, 0};
+    ImVec2 m_kfBoxCurrent{0, 0};
+    // Selection as it stood when the box drag began. The live selection is
+    // recomputed from this every frame, so shrinking the box releases keyframes
+    // instead of ratcheting them in.
+    std::vector<KeyframeRef> m_kfBoxBaseline;
 
     // Pre-edit snapshot for the bezier-tangent DragFloat sliders in the
     // keyframe context menu. Captured on ImGui::IsItemActivated so we can

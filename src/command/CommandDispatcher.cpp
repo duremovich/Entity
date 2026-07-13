@@ -242,6 +242,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetKeyframeInterpolation", SetKeyframeInterpolationCommand::fromJson);
     registerFactory("ClearPropertyKeyframes", ClearPropertyKeyframesCommand::fromJson);
     registerFactory("ClearEffectParamKeyframes", ClearEffectParamKeyframesCommand::fromJson);
+    registerFactory("MoveKeyframes", MoveKeyframesCommand::fromJson);
+    registerFactory("SetKeyframesInterpolation", SetKeyframesInterpolationCommand::fromJson);
+    registerFactory("SetKeyframesValue", SetKeyframesValueCommand::fromJson);
+    registerFactory("RemoveKeyframes", RemoveKeyframesCommand::fromJson);
     registerFactory("MoveKeyframe", MoveKeyframeCommand::fromJson);
     registerFactory("RemoveKeyframe", RemoveKeyframeCommand::fromJson);
     registerFactory("UpsertEffectKeyframe", UpsertEffectKeyframeCommand::fromJson);
