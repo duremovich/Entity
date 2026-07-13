@@ -752,6 +752,18 @@ private:
         bool                  wasKeyframed{false};
         FrameNumber           keyframeFrame{0};
         std::optional<float>  keyframeValue;  // nullopt = no kf existed at frame
+
+        // Scale axes dragged along by the uniform-scale lock (ScaleLock). A
+        // locked Scale X drag also writes Scale Y and Z, so their pre-edit
+        // keyframe state is captured too and each animated axis commits its own
+        // UpsertKeyframeCommand. Empty when the row isn't a scale axis or the
+        // lock is off.
+        struct LinkedAxis {
+            AnimatableProperty   prop{AnimatableProperty::ScaleX};
+            bool                 wasKeyframed{false};
+            std::optional<float> keyframeValue;  // nullopt = no kf existed at frame
+        };
+        std::vector<LinkedAxis> linkedScaleAxes;
     };
     TwirldownPreEdit m_twirldownPreEdit;
 

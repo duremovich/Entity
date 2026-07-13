@@ -283,9 +283,6 @@ private:
     Engine* m_engine{nullptr};  // Non-owning, optional (for Media combo media-library access)
     remote::RemoteControlStore* m_remoteStore{nullptr};  // Non-owning, optional (ADR-0028)
 
-    // Per-entity UI state (prevents static variable leak between clips)
-    std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
-
     // Pre-edit snapshot captured on IsItemActivated. If the property was
     // keyframed at drag start AND the playhead is inside the clip,
     // updateKeyframeOnValueChange() rewrites the keyframe at that clip

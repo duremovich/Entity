@@ -29,9 +29,11 @@
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
 #include "entity/components/Prop.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/components/TrackUiState.hpp"
+#include "entity/components/Transform.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -2031,5 +2033,147 @@ TEST(ProjectSerializer, MissingEditorLayoutLoadsEmpty) {
         ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
             << entity::ProjectSerializer::getLastError();
         EXPECT_TRUE(pm.getEditorLayoutJson().empty());
+    }
+}
+
+// ScaleLock (uniform-scale lock) moved out of PropertyWindow's UI-only map and
+// onto the entity so the timeline twirl-down honors it too. It has to survive a
+// save/load, and — critically — projects written before the component existed
+// carry no "scaleLock" key at all and must load as LOCKED, the historical default.
+namespace {
+
+entt::entity makeScaleLockClip(entt::registry& registry, entity::Timeline& timeline,
+                               const std::string& path, bool uniform) {
+    entt::entity trackEntity = timeline.createTrack("Track 0");
+    auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+    EXPECT_NE(track, nullptr);
+
+    entt::entity clipEnt = registry.create();
+    auto& clip = registry.emplace<entity::Clip>(clipEnt);
+    clip.filepath   = path;
+    clip.mediaType  = entity::MediaType::VideoProRes4444;
+    clip.startFrame = 0;
+    clip.duration   = 60;
+    clip.framerate  = 30.0;
+    auto& lay = registry.emplace<entity::Layer>(clipEnt);
+    lay.kind       = entity::Layer::Kind::Clip;
+    lay.startFrame = 0;
+    lay.duration   = 60;
+
+    registry.emplace<entity::Transform>(clipEnt);
+    registry.emplace<entity::ScaleLock>(clipEnt, entity::ScaleLock{uniform});
+
+    track->layers.push_back(clipEnt);
+    return clipEnt;
+}
+
+entt::entity findClipByPath(entt::registry& registry, const std::string& path) {
+    for (auto [e, lay, clip] : registry.view<entity::Layer, entity::Clip>().each()) {
+        if (clip.filepath == path) return e;
+    }
+    return entt::null;
+}
+
+}  // namespace
+
+TEST(ProjectSerializer, ScaleLockUnlockedRoundTrips) {
+    TempFile tf("scalelock_unlocked");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        makeScaleLockClip(registry, timeline, "content/unlocked.mov", /*uniform=*/false);
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        entt::entity clip = findClipByPath(registry, "content/unlocked.mov");
+        ASSERT_TRUE(registry.valid(clip)) << "clip not found after load";
+        const auto* lock = registry.try_get<entity::ScaleLock>(clip);
+        ASSERT_NE(lock, nullptr);
+        EXPECT_FALSE(lock->uniform);
+    }
+}
+
+TEST(ProjectSerializer, ScaleLockLockedRoundTrips) {
+    TempFile tf("scalelock_locked");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        makeScaleLockClip(registry, timeline, "content/locked.mov", /*uniform=*/true);
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        entt::entity clip = findClipByPath(registry, "content/locked.mov");
+        ASSERT_TRUE(registry.valid(clip)) << "clip not found after load";
+        const auto* lock = registry.try_get<entity::ScaleLock>(clip);
+        ASSERT_NE(lock, nullptr);
+        EXPECT_TRUE(lock->uniform);
+    }
+}
+
+TEST(ProjectSerializer, ProjectWithoutScaleLockKeyLoadsAsLocked) {
+    TempFile tf("scalelock_absent");
+
+    // Save normally, then strip the key back out of the JSON to forge a project
+    // written before ScaleLock existed.
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        makeScaleLockClip(registry, timeline, "content/legacy.mov", /*uniform=*/false);
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+    {
+        std::ifstream in(tf.path);
+        ASSERT_TRUE(in.is_open());
+        nlohmann::json j;
+        in >> j;
+        in.close();
+
+        bool stripped = false;
+        for (auto& trackJson : j["tracks"]) {
+            // v-current writes "layers"; older files used "clips".
+            const char* key = trackJson.contains("layers") ? "layers" : "clips";
+            if (!trackJson.contains(key)) continue;
+            for (auto& clipJson : trackJson[key]) {
+                if (clipJson.contains("transform") &&
+                    clipJson["transform"].contains("scaleLock")) {
+                    clipJson["transform"].erase("scaleLock");
+                    stripped = true;
+                }
+            }
+        }
+        ASSERT_TRUE(stripped) << "expected a scaleLock key to strip";
+
+        std::ofstream out(tf.path);
+        out << j.dump(2);
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        entt::entity clip = findClipByPath(registry, "content/legacy.mov");
+        ASSERT_TRUE(registry.valid(clip)) << "clip not found after load";
+        const auto* lock = registry.try_get<entity::ScaleLock>(clip);
+        ASSERT_NE(lock, nullptr) << "loader must materialize ScaleLock even when absent";
+        EXPECT_TRUE(lock->uniform) << "absent scaleLock must mean LOCKED";
     }
 }

@@ -12,6 +12,7 @@
 #include "entity/director/SectionScheduler.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/VideoTexture.hpp"
@@ -5286,6 +5287,39 @@ CommandPtr RemoveEffectCommand::fromJson(const nlohmann::json& j) {
     const auto layerEntity  = static_cast<entt::entity>(j.value("layerEntity",  std::uint32_t{0}));
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
     return std::make_unique<RemoveEffectCommand>(layerEntity, effectEntity);
+}
+
+bool SetScaleLockCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) return false;
+    auto& lock = registry.get_or_emplace<ScaleLock>(m_layerEntity);
+    if (!m_previousUniform.has_value()) m_previousUniform = lock.uniform;
+    lock.uniform = m_uniform;
+    return true;
+}
+
+bool SetScaleLockCommand::undo(Engine& engine) {
+    if (!m_previousUniform.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) return false;
+    registry.get_or_emplace<ScaleLock>(m_layerEntity).uniform = *m_previousUniform;
+    return true;
+}
+
+nlohmann::json SetScaleLockCommand::toJson() const {
+    return {{"type", "SetScaleLock"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"uniform", m_uniform}};
+}
+
+std::string SetScaleLockCommand::getDescription() const {
+    return m_uniform ? "Lock uniform scale" : "Unlock uniform scale";
+}
+
+CommandPtr SetScaleLockCommand::fromJson(const nlohmann::json& j) {
+    const auto layerEntity = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const bool uniform = j.value("uniform", true);
+    return std::make_unique<SetScaleLockCommand>(layerEntity, uniform);
 }
 
 bool SetEffectEnabledCommand::execute(Engine& engine) {

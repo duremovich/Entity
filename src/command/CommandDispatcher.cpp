@@ -280,6 +280,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Per-layer effects (issue #54)
     registerFactory("AddEffect", AddEffectCommand::fromJson);
     registerFactory("RemoveEffect", RemoveEffectCommand::fromJson);
+    registerFactory("SetScaleLock", SetScaleLockCommand::fromJson);
     registerFactory("SetEffectEnabled", SetEffectEnabledCommand::fromJson);
     registerFactory("SetEffectFloatParam", SetEffectFloatParamCommand::fromJson);
 

@@ -3074,6 +3074,30 @@ private:
 };
 
 /**
+ * Toggle a layer's uniform-scale lock (ScaleLock component).
+ *
+ * JSON format:
+ * { "type": "SetScaleLock", "layerEntity": 12345, "uniform": true }
+ */
+class SetScaleLockCommand : public UndoableCommand {
+public:
+    SetScaleLockCommand(entt::entity layerEntity, bool uniform)
+        : m_layerEntity(layerEntity), m_uniform(uniform) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetScaleLock"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    bool         m_uniform;
+    std::optional<bool> m_previousUniform;
+};
+
+/**
  * Toggle an effect's enabled flag.
  *
  * JSON format:

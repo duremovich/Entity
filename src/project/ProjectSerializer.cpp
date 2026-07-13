@@ -8,6 +8,7 @@
 #include "entity/core/AtomicFile.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
@@ -498,6 +499,12 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                             transform->scale.y,
                             transform->scale.z
                         };
+                        // Uniform-scale lock. Only written when unlocked — absent
+                        // means locked, which is the default and what every project
+                        // saved before this component existed implies.
+                        if (const auto* lock = registry.try_get<ScaleLock>(layerEntity)) {
+                            if (!lock->uniform) clipJson["transform"]["scaleLock"] = false;
+                        }
                     }
 
                     // MediaLayer component (if exists)
@@ -628,6 +635,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         genJson["transform"]["position"] = { t->position.x, t->position.y, t->position.z };
                         genJson["transform"]["rotation"] = { t->rotation.x, t->rotation.y, t->rotation.z };
                         genJson["transform"]["scale"]    = { t->scale.x,    t->scale.y,    t->scale.z    };
+                        if (const auto* lock = registry.try_get<ScaleLock>(layerEntity)) {
+                            if (!lock->uniform) genJson["transform"]["scaleLock"] = false;
+                        }
                     }
 
                     // MediaLayer
@@ -1899,6 +1909,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                     t.setRotation({ tj["rotation"][0], tj["rotation"][1], tj["rotation"][2] });
                                 if (tj.contains("scale") && tj["scale"].size() >= 3)
                                     t.setScale({ tj["scale"][0], tj["scale"][1], tj["scale"][2] });
+                                // Absent == locked (the pre-component default).
+                                registry.emplace_or_replace<ScaleLock>(
+                                    layerEntity, ScaleLock{tj.value("scaleLock", true)});
                             }
 
                             auto& ml = registry.emplace<MediaLayer>(layerEntity);
@@ -2242,6 +2255,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 );
                             }
                             transform.dirty = true;
+                            // Absent == locked (the pre-component default).
+                            registry.emplace_or_replace<ScaleLock>(
+                                clipEntity, ScaleLock{transformJson.value("scaleLock", true)});
                         }
 
                         // Load MediaLayer if present

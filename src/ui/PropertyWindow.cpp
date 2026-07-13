@@ -27,6 +27,7 @@
 #include "entity/remote/RemoteControlStore.hpp"
 #include "entity/render/TextRasterizer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -383,10 +384,13 @@ void PropertyWindow::renderTransformSection() {
         ImGui::SetTooltip("Scale factor. 1.0 = fullscreen, 0.5 = half size");
     }
 
-    // Uniform scale checkbox - use per-entity state map to prevent static variable leak
-    auto [it, inserted] = m_uniformScaleState.try_emplace(selectedClip, true);
-    bool& uniformScale = it->second;
-    ImGui::Checkbox("Uniform Scale", &uniformScale);
+    // Uniform scale lock lives on the entity (ScaleLock) so the timeline's
+    // twirl-down scale rows honor the same flag and it survives a project reload.
+    bool uniformScale = registry.get_or_emplace<ScaleLock>(selectedClip).uniform;
+    if (ImGui::Checkbox("Uniform Scale", &uniformScale) && m_dispatcher) {
+        m_dispatcher->enqueue(
+            std::make_unique<SetScaleLockCommand>(selectedClip, uniformScale));
+    }
 
     // Scale X with keyframe controls
     renderKeyframeControls(AnimatableProperty::ScaleX, "Scale X", transform->scale.x);
@@ -2860,9 +2864,11 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             }
 
             ImGui::Spacing();
-            auto [it, inserted] = m_uniformScaleState.try_emplace(entity, true);
-            bool& uniformScale = it->second;
-            ImGui::Checkbox("Uniform Scale", &uniformScale);
+            bool uniformScale = registry.get_or_emplace<ScaleLock>(entity).uniform;
+            if (ImGui::Checkbox("Uniform Scale", &uniformScale) && m_dispatcher) {
+                m_dispatcher->enqueue(
+                    std::make_unique<SetScaleLockCommand>(entity, uniformScale));
+            }
 
             renderKeyframeControls(AnimatableProperty::ScaleX, "Scale X", t->scale.x);
             ImGui::SameLine();

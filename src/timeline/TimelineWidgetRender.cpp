@@ -18,6 +18,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -64,6 +65,29 @@ renderFindClipIndices(Timeline* timeline, entt::entity entity) {
         }
     }
     return std::nullopt;
+}
+
+bool isScaleProp(AnimatableProperty p) {
+    return p == AnimatableProperty::ScaleX
+        || p == AnimatableProperty::ScaleY
+        || p == AnimatableProperty::ScaleZ;
+}
+
+float scaleAxis(const Transform& t, AnimatableProperty p) {
+    switch (p) {
+        case AnimatableProperty::ScaleX: return t.scale.x;
+        case AnimatableProperty::ScaleY: return t.scale.y;
+        case AnimatableProperty::ScaleZ: return t.scale.z;
+        default:                         return 1.0f;
+    }
+}
+
+// Uniform-scale lock state for an entity. An absent ScaleLock counts as locked —
+// that's the historical default the Properties panel has always used, and it
+// keeps projects saved before the component existed behaving as they did.
+bool isScaleLocked(entt::registry& registry, entt::entity e) {
+    const auto* lock = registry.try_get<ScaleLock>(e);
+    return lock == nullptr || lock->uniform;
 }
 
 } // namespace
@@ -1940,6 +1964,33 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                 m_twirldownPreEdit.scalarValue  = currentValue;
                 m_twirldownPreEdit.wasKeyframed = false;
                 m_twirldownPreEdit.keyframeValue.reset();
+                m_twirldownPreEdit.linkedScaleAxes.clear();
+
+                // A locked scale drag writes the other two axes as well, so snapshot
+                // their pre-edit keyframe state now — the commit below emits one
+                // UpsertKeyframeCommand per animated axis.
+                if (!isOA && row.source == TimelinePropertyDef::Source::Transform &&
+                    isScaleProp(row.prop) && localFrame >= 0 &&
+                    isScaleLocked(registry, clipEntity))
+                {
+                    for (AnimatableProperty axis : {AnimatableProperty::ScaleX,
+                                                    AnimatableProperty::ScaleY,
+                                                    AnimatableProperty::ScaleZ})
+                    {
+                        if (axis == row.prop) continue;
+                        const KeyframeTrack* t = animProps ? animProps->getTrack(axis) : nullptr;
+                        if (!t || !t->hasKeyframes()) continue;  // static axis — no kf to undo
+
+                        TwirldownPreEdit::LinkedAxis linked;
+                        linked.prop         = axis;
+                        linked.wasKeyframed = true;
+                        const Keyframe* existing = t->getKeyframeAt(localFrame);
+                        linked.keyframeValue =
+                            existing ? std::optional<float>(existing->value) : std::nullopt;
+                        m_twirldownPreEdit.linkedScaleAxes.push_back(linked);
+                    }
+                }
+
                 if (isOA && row.source == TimelinePropertyDef::Source::Transform) {
                     // OA: every edit is a keyframe upsert regardless of whether
                     // a keyframe already exists at this frame. Capture the frame
@@ -2005,6 +2056,13 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                     } else {
                         auto* transform = registry.try_get<Transform>(clipEntity);
                         auto* ml        = registry.try_get<MediaLayer>(clipEntity);
+
+                        // Captured before the switch overwrites the axis — the
+                        // uniform-scale ratio below needs the pre-drag value.
+                        const float prevAxis =
+                            (transform && isScaleProp(row.prop))
+                                ? scaleAxis(*transform, row.prop) : 0.0f;
+
                         switch (row.prop) {
                             case AnimatableProperty::PositionX:
                                 if (transform) transform->setPosition(
@@ -2051,12 +2109,47 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                                 break;
                             default: break;
                         }
+
+                        // Properties this drag actually wrote. Normally just the
+                        // dragged row — but a scale edit under the uniform lock
+                        // drags the other two axes along, and each of those needs
+                        // its own keyframe upsert.
+                        std::vector<std::pair<AnimatableProperty, float>> written;
+                        written.emplace_back(row.prop, writtenVal);
+
+                        // Uniform-scale lock. The Properties panel has always
+                        // honored this; the twirl-down used to write the dragged
+                        // axis alone, silently breaking the lock.
+                        if (transform && isScaleProp(row.prop) && prevAxis > 0.0001f &&
+                            isScaleLocked(registry, clipEntity))
+                        {
+                            const float ratio = writtenVal / prevAxis;
+                            glm::vec3 s = transform->scale;  // dragged axis already written
+                            if (row.prop != AnimatableProperty::ScaleX) s.x *= ratio;
+                            if (row.prop != AnimatableProperty::ScaleY) s.y *= ratio;
+                            if (row.prop != AnimatableProperty::ScaleZ) s.z *= ratio;
+                            transform->setScale(s);
+
+                            if (row.prop != AnimatableProperty::ScaleX)
+                                written.emplace_back(AnimatableProperty::ScaleX, s.x);
+                            if (row.prop != AnimatableProperty::ScaleY)
+                                written.emplace_back(AnimatableProperty::ScaleY, s.y);
+                            if (row.prop != AnimatableProperty::ScaleZ)
+                                written.emplace_back(AnimatableProperty::ScaleZ, s.z);
+                        }
+
                         // Keyframe upsert during drag (animated non-OA channels).
-                        if (hasKeyframes && localFrame >= 0 && animProps) {
-                            // No interp arg: a value drag must not reset the
-                            // keyframe's easing (it upserts onto an existing
-                            // keyframe whenever the playhead sits on one).
-                            animProps->addKeyframe(row.prop, localFrame, writtenVal);
+                        // No interp arg: a value drag must not reset the keyframe's
+                        // easing (it upserts onto an existing keyframe whenever the
+                        // playhead sits on one). Only animated axes get a keyframe —
+                        // a static Scale Y stays static even when the lock scales it.
+                        if (localFrame >= 0 && animProps) {
+                            for (const auto& [prop, val] : written) {
+                                const KeyframeTrack* t = animProps->getTrack(prop);
+                                if (t && t->hasKeyframes()) {
+                                    animProps->addKeyframe(prop, localFrame, val);
+                                }
+                            }
                         }
                     }
                 } else { // EffectParam
@@ -2116,6 +2209,9 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             {
                 const float committedVal = isOpacity ? dragVal / 100.0f : dragVal;
                 auto idx = renderFindClipIndices(m_timeline, clipEntity);
+                // Post-drag transform — the linked scale axes commit the values the
+                // live-write already put here.
+                const auto* transformForCommit = registry.try_get<Transform>(clipEntity);
 
                 if (row.source == TimelinePropertyDef::Source::Transform) {
                     if (isOA) {
@@ -2168,6 +2264,22 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                                 // PositionX/Y/Z, ScaleX/Y/Z:
                                 // live-write-only (no scalar command exists, matches PropertyWindow).
                                 break;
+                        }
+                    }
+
+                    // Axes the uniform-scale lock dragged along. Emitted outside the
+                    // chain above because the dragged axis itself may be static while
+                    // a linked one is animated — that case takes the scalar branch,
+                    // which has no command for scale, yet the linked keyframe was
+                    // still written live and needs to be undoable.
+                    if (idx && transformForCommit) {
+                        for (const auto& linked : m_twirldownPreEdit.linkedScaleAxes) {
+                            auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                                idx->first, idx->second, linked.prop,
+                                m_twirldownPreEdit.keyframeFrame,
+                                scaleAxis(*transformForCommit, linked.prop));
+                            cmd->setPreviousValue(linked.keyframeValue);
+                            m_commandDispatcher->enqueue(std::move(cmd));
                         }
                     }
                 } else { // EffectParam
