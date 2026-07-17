@@ -611,6 +611,7 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["effects"]               = std::move(fx);
     j["effectChainSlotA"]      = c.effectChainSlotA;
     j["effectChainSlotB"]      = c.effectChainSlotB;
+    j["effectsOutputIndex"]    = c.effectsOutputIndex;
     j["postEffectsSlot"]       = c.postEffectsSlot;
     j["remoteSlot"]            = c.remoteSlot;
     return j;
@@ -673,6 +674,7 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     }
     c.effectChainSlotA      = j.value("effectChainSlotA",      std::int32_t{-1});
     c.effectChainSlotB      = j.value("effectChainSlotB",      std::int32_t{-1});
+    c.effectsOutputIndex    = j.value("effectsOutputIndex",    std::int32_t{-1});
     c.postEffectsSlot       = j.value("postEffectsSlot",       std::int32_t{-1});
     c.remoteSlot            = j.value("remoteSlot",            std::int32_t{-1});
     return c;
@@ -814,6 +816,9 @@ ojson encode(const EffectSnapshot& e) {
     for (const auto& t : e.tracks) tracks.push_back(encode(t));
     j["tracks"] = std::move(tracks);
     j["inputCount"] = static_cast<int>(e.inputCount);
+    auto inputs = ojson::array();
+    for (std::int32_t in : e.inputs) inputs.push_back(in);
+    j["inputs"] = std::move(inputs);
     return j;
 }
 
@@ -834,6 +839,11 @@ EffectSnapshot decodeEffectSnapshot(const json& j) {
             e.tracks.push_back(decodeBakedEffectTrack(t));
         }
     }
+    if (j.contains("inputs")) {
+        for (const auto& in : j.at("inputs")) {
+            e.inputs.push_back(in.get<std::int32_t>());
+        }
+    }
     return e;
 }
 
@@ -847,6 +857,7 @@ ojson encode(const LayerEffectsSnapshot& l) {
     j["slotB"]   = l.slotB;
     j["width"]   = l.width;
     j["height"]  = l.height;
+    j["outputIndex"] = l.outputIndex;
     return j;
 }
 
@@ -862,6 +873,7 @@ LayerEffectsSnapshot decodeLayerEffectsSnapshot(const json& j) {
     l.slotB  = j.value("slotB",  std::int32_t{-1});
     l.width  = j.value("width",  std::uint32_t{0});
     l.height = j.value("height", std::uint32_t{0});
+    l.outputIndex = j.value("outputIndex", std::int32_t{-1});
     return l;
 }
 

@@ -293,6 +293,9 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SetEffectFloatParam", SetEffectFloatParamCommand::fromJson);
     registerFactory("SetEffectParam", SetEffectParamCommand::fromJson);
     registerFactory("AssertEffectKeyframeCount", AssertEffectKeyframeCountCommand::fromJson);
+    registerFactory("ConnectEffect", ConnectEffectCommand::fromJson);
+    registerFactory("DisconnectEffect", DisconnectEffectCommand::fromJson);
+    registerFactory("SetEffectGraphTopology", SetEffectGraphTopologyCommand::fromJson);
 
     // Object Animation Layer commands (Phase 3.3 + 3.4)
     registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);

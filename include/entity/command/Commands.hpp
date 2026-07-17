@@ -7,6 +7,7 @@
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
 #include "entity/command/KeyframeAddr.hpp"  // KeyframeAddr (multi-select commands)
+#include "entity/components/EffectChain.hpp"  // EffectConnection
 #include "entity/components/EffectParam.hpp"  // ParamValue
 #include "entity/timeline/Timeline.hpp"  // Ripple{Insert,Delete}Result
 #include "entity/timeline/CueTag.hpp"
@@ -3195,6 +3196,15 @@ private:
     float                   m_savedGraphY{0.0f};
     std::vector<ParamValue> m_savedParams;
     std::size_t             m_savedPositionInChain{0};
+    // Graph topology + animated tracks snapshot. Execute heals the graph
+    // (bridges the removed node's first input through to its consumers);
+    // undo restores the snapshot with the removed node's entity ID
+    // remapped to the recreated one (EnTT may hand back a different ID —
+    // without the remap, restored links would silently dangle).
+    std::vector<EffectConnection> m_savedConnections;
+    entt::entity                  m_savedOutputNode{entt::null};
+    std::vector<std::pair<std::uint32_t, std::vector<Keyframe>>> m_savedTracks;
+    std::vector<bool>             m_savedTrackEnabled;
 };
 
 // ============================================================================
@@ -3596,6 +3606,153 @@ private:
     ParamValue   m_value;
     std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<ParamValue> m_previousValue;
+};
+
+/**
+ * Connect two effect nodes in a layer's effect graph (src's output feeds
+ * dst's input socket). srcEffectIndex / dstEffectIndex of -1 mean the
+ * layer-source / final-output sentinel respectively. The first graph
+ * gesture on a never-edited chain materializes the implicit linear stack
+ * into explicit connections first, so editing starts from the topology
+ * the user was seeing. Connecting into an occupied (dst, dstSocket)
+ * replaces the incumbent link. Fails (no mutation) if the
+ * edge would create a cycle.
+ *
+ * Undo restores the whole pre-edit {connections, outputNode} snapshot —
+ * one undo step per gesture even when the gesture implied multiple edits
+ * (materialization + replacement).
+ *
+ * JSON format:
+ * { "type": "ConnectEffect", "trackIndex": 0, "clipIndex": 0,
+ *   "srcEffectIndex": 0, "dstEffectIndex": 2, "srcSocket": 0, "dstSocket": 1 }
+ * (live-session alternative: "layerEntity" + "srcEffectEntity"/"dstEffectEntity")
+ */
+class ConnectEffectCommand : public UndoableCommand {
+public:
+    ConnectEffectCommand(entt::entity layerEntity,
+                         entt::entity srcNode, entt::entity dstNode,
+                         std::uint8_t srcSocket, std::uint8_t dstSocket)
+        : m_layerEntity(layerEntity), m_srcNode(srcNode), m_dstNode(dstNode),
+          m_srcSocket(srcSocket), m_dstSocket(dstSocket) {}
+
+    // Script addressing: node indices into the chain (-1 = sentinel).
+    void setScriptAddress(int trackIndex, int clipIndex,
+                          int srcEffectIndex, int dstEffectIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+        m_addrSrc = srcEffectIndex; m_addrDst = dstEffectIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ConnectEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    entt::entity m_srcNode;
+    entt::entity m_dstNode;
+    std::uint8_t m_srcSocket;
+    std::uint8_t m_dstSocket;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0}, m_addrSrc{-1}, m_addrDst{-1};
+
+    bool m_hasSnapshot{false};
+    std::vector<EffectConnection> m_prevConnections;
+    entt::entity                  m_prevOutputNode{entt::null};
+};
+
+/**
+ * Remove the connection feeding dst's input socket (and, when dst is the
+ * -1 sentinel, the link into the final output). Same whole-topology
+ * snapshot undo as ConnectEffectCommand.
+ *
+ * JSON format:
+ * { "type": "DisconnectEffect", "trackIndex": 0, "clipIndex": 0,
+ *   "dstEffectIndex": 2, "dstSocket": 1 }
+ */
+class DisconnectEffectCommand : public UndoableCommand {
+public:
+    DisconnectEffectCommand(entt::entity layerEntity,
+                            entt::entity dstNode, std::uint8_t dstSocket)
+        : m_layerEntity(layerEntity), m_dstNode(dstNode), m_dstSocket(dstSocket) {}
+
+    void setScriptAddress(int trackIndex, int clipIndex, int dstEffectIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex; m_addrDst = dstEffectIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "DisconnectEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    entt::entity m_dstNode;
+    std::uint8_t m_dstSocket;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0}, m_addrDst{-1};
+
+    bool m_hasSnapshot{false};
+    std::vector<EffectConnection> m_prevConnections;
+    entt::entity                  m_prevOutputNode{entt::null};
+};
+
+/**
+ * Replace a layer's whole effect-graph topology in one undoable step.
+ * Empty connections + null output = reset to the implicit linear stack.
+ * Also the "Set as output" backing command (pass the current connections
+ * with a new outputNode). Bulk escape hatch for scripts / future
+ * copy-paste.
+ *
+ * JSON format (indices into the chain, -1 = sentinel/null):
+ * { "type": "SetEffectGraphTopology", "trackIndex": 0, "clipIndex": 0,
+ *   "connections": [{"src": -1, "dst": 0, "srcSocket": 0, "dstSocket": 0}],
+ *   "outputNode": 0 }
+ */
+class SetEffectGraphTopologyCommand : public UndoableCommand {
+public:
+    SetEffectGraphTopologyCommand(entt::entity layerEntity,
+                                  std::vector<EffectConnection> connections,
+                                  entt::entity outputNode)
+        : m_layerEntity(layerEntity),
+          m_connections(std::move(connections)),
+          m_outputNode(outputNode) {}
+
+    // Script form: connections as node indices, resolved at execute.
+    struct IndexedConnection {
+        int src{-1};
+        int dst{-1};
+        std::uint8_t srcSocket{0};
+        std::uint8_t dstSocket{0};
+    };
+    void setScriptAddress(int trackIndex, int clipIndex,
+                          std::vector<IndexedConnection> conns, int outputIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+        m_indexedConnections = std::move(conns); m_addrOutput = outputIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetEffectGraphTopology"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::vector<EffectConnection> m_connections;
+    entt::entity m_outputNode;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0}, m_addrOutput{-1};
+    std::vector<IndexedConnection> m_indexedConnections;
+
+    bool m_hasSnapshot{false};
+    std::vector<EffectConnection> m_prevConnections;
+    entt::entity                  m_prevOutputNode{entt::null};
 };
 
 /**

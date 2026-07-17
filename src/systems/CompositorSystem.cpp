@@ -54,16 +54,9 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             [id](const bus::GenerativeLayerSnapshot& g) { return g.entity == id; });
         it = found ? std::next(it) : m_pendingGenerativeAllocations.erase(it);
     }
-    for (auto it = m_pendingEffectAllocations.begin();
-         it != m_pendingEffectAllocations.end(); )
-    {
-        const std::uint64_t id = static_cast<std::uint64_t>(it->first);
-        const bool found = std::any_of(rf.contentLayers.begin(), rf.contentLayers.end(),
-            [id](const bus::ContentLayerSnapshot& cl) {
-                return cl.entity == id && !cl.effects.empty();
-            });
-        it = found ? std::next(it) : m_pendingEffectAllocations.erase(it);
-    }
+    // Effect scratch: release everything from last frame (including the
+    // held postEffectsSlot outputs — PASS 2 consumed them last update()).
+    resetEffectScratch();
 
     // ------------------------------------------------------------------
     // PASS 1 — Render each active generative layer's procedural content
@@ -109,90 +102,150 @@ void CompositorSystem::update(bus::RenderFrame& rf,
     }
 
     // ------------------------------------------------------------------
-    // PASS 1.5 — Per-layer effect chains. For each ContentLayerSnapshot
-    // that carries non-empty `effects`, walk the chain via ping-pong
-    // compose targets and produce a post-effects texture in
-    // `ContentLayerSnapshot::postEffectsSlot`. PASS 2 prefers
-    // postEffectsSlot over sourceSlot when set. Kind-blind: works
-    // identically for Video and Compose source kinds. Issue #54.
+    // PASS 1.5 — Per-layer effect chains (DAG executor). The editor bake
+    // ships each layer's effects pre-sorted in topological order with
+    // per-node `inputs` resolved (index of producing effect, -1 = layer
+    // source, -2 = unconnected), so this loop executes a straight-line
+    // plan: acquire a scratch RT per node, draw, release intermediates at
+    // their last use. The final node's RT is published to
+    // `ContentLayerSnapshot::postEffectsSlot` (held until next update()'s
+    // resetEffectScratch), which PASS 2 prefers over sourceSlot. Legacy
+    // payloads with no `inputs` synthesize the linear prev-feeds-next
+    // chain. Kind-blind: identical for Video and Compose sources.
     // ------------------------------------------------------------------
     {
         ZoneScopedN("Compositor::pass1_5_effects");
 
         for (auto& cl : rf.contentLayers) {
             if (cl.effects.empty()) continue;
-            // Input-not-ready gate — but only when the first enabled effect
-            // actually samples its input. A chain that opens with a
-            // generator (inputCount == 0) seeds itself and can run with no
-            // source texture at all.
-            if (cl.sourceSlot < 0) {
-                bool firstEnabledNeedsInput = false;
-                for (const auto& fx : cl.effects) {
-                    if (!fx.enabled) continue;
-                    firstEnabledNeedsInput = (fx.inputCount > 0);
-                    break;
-                }
-                if (firstEnabledNeedsInput) continue;
+
+            // Enabled steps in emitted order. New bakes emit enabled-only;
+            // legacy payloads may interleave disabled entries — drop them
+            // and remap effectsOutputIndex accordingly.
+            std::vector<const bus::EffectSnapshot*> steps;
+            std::vector<int> emittedToStep(cl.effects.size(), -1);
+            for (std::size_t i = 0; i < cl.effects.size(); ++i) {
+                if (!cl.effects[i].enabled) continue;
+                emittedToStep[i] = static_cast<int>(steps.size());
+                steps.push_back(&cl.effects[i]);
             }
+            if (steps.empty()) continue;
+
+            // Input-not-ready gate — only when the first step actually
+            // samples the layer source. Generator-led chains self-seed.
+            if (cl.sourceSlot < 0 && steps.front()->inputCount > 0) continue;
 
             // Size effect RTs from the layer's source content dims (clip
             // media size / generative render size) so effects run in
-            // content space before the UV transform — keeps blur radii and
-            // pixelate cells texel-true. 0 = unknown → 1920x1080 fallback;
-            // 4096 ceiling bounds compose-pool pressure.
+            // content space before the UV transform. 0 = unknown →
+            // 1920x1080 fallback; 4096 ceiling bounds pool pressure.
             const std::uint32_t rtW =
                 std::clamp(cl.sourceWidth  ? cl.sourceWidth  : 1920u, 16u, 4096u);
             const std::uint32_t rtH =
                 std::clamp(cl.sourceHeight ? cl.sourceHeight : 1080u, 16u, 4096u);
 
-            std::uint32_t slotA = UINT32_MAX, slotB = UINT32_MAX;
-            if (!ensureEffectPingPongTargets(cl.entity,
-                                              cl.effectChainSlotA,
-                                              cl.effectChainSlotB,
-                                              rtW, rtH,
-                                              slotA, slotB)) {
-                continue;  // R2D ack still in flight — try again next frame
+            const int stepCount = static_cast<int>(steps.size());
+
+            // Output step: remap the emitted-index outputIndex; -1 or
+            // unmapped (legacy / disabled output node) = last step.
+            int outputStep = stepCount - 1;
+            if (cl.effectsOutputIndex >= 0 &&
+                cl.effectsOutputIndex < static_cast<int>(emittedToStep.size()) &&
+                emittedToStep[static_cast<std::size_t>(cl.effectsOutputIndex)] >= 0) {
+                outputStep = emittedToStep[static_cast<std::size_t>(cl.effectsOutputIndex)];
             }
 
-            // Resolve the chain's input as a TextureRef. The first effect
-            // reads from the layer's raw source (Video or Compose); each
-            // subsequent effect reads the previous output (always Compose).
-            // No source (generator-led chain) → invalid ref; drawEffectPass
-            // skips the SRV bind and the generator never samples it.
-            TextureRef currentInput = TextureRef::invalid();
-            if (cl.sourceSlot >= 0) {
-                currentInput =
-                    (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
-                        ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot),
-                                            cl.sourceGeneration)  // #90 draw guard
-                        : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
+            // Per-step input-0 (multi-input binding lands with the t0-t3
+            // root-signature work; until then only the first socket draws).
+            // Legacy payloads (empty inputs) = linear prev-feeds-next.
+            auto input0Of = [&](int stepIdx) -> int {
+                const auto& fx = *steps[static_cast<std::size_t>(stepIdx)];
+                if (fx.inputCount == 0) return -2;             // generator
+                if (!fx.inputs.empty()) {
+                    // Wire indices address the emitted vector — remap.
+                    const std::int32_t in = fx.inputs[0];
+                    if (in < 0) return static_cast<int>(in);
+                    if (in < static_cast<std::int32_t>(emittedToStep.size())) {
+                        return emittedToStep[static_cast<std::size_t>(in)];
+                    }
+                    return -2;
+                }
+                return stepIdx == 0 ? -1 : stepIdx - 1;        // legacy linear
+            };
+
+            // Liveness: last step index that reads each step's output.
+            std::vector<int> lastUse(static_cast<std::size_t>(stepCount), -1);
+            for (int i = 0; i < stepCount; ++i) {
+                const int in = input0Of(i);
+                if (in >= 0) lastUse[static_cast<std::size_t>(in)] = i;
             }
+            lastUse[static_cast<std::size_t>(outputStep)] = stepCount;  // held past the loop
 
-            std::uint32_t currentOutput = slotA;
-            std::uint32_t nextOutput    = slotB;
+            const TextureRef sourceRef =
+                (cl.sourceSlot < 0) ? TextureRef::invalid()
+                : (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
+                    ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot),
+                                        cl.sourceGeneration)  // #90 draw guard
+                    : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
 
-            bool ran = false;
-            for (const auto& fx : cl.effects) {
-                if (!fx.enabled) continue;
-                m_renderer->beginComposeTarget(currentOutput);
-                m_renderer->drawEffectPass(currentInput, fx.kindIdHash,
+            std::vector<std::uint32_t> results(
+                static_cast<std::size_t>(stepCount), UINT32_MAX);
+            bool aborted = false;
+            for (int i = 0; i < stepCount && !aborted; ++i) {
+                const auto& fx = *steps[static_cast<std::size_t>(i)];
+
+                const int in0 = input0Of(i);
+                TextureRef inputRef = TextureRef::invalid();
+                if (in0 == -1) {
+                    inputRef = sourceRef;
+                } else if (in0 >= 0 &&
+                           results[static_cast<std::size_t>(in0)] != UINT32_MAX) {
+                    inputRef = TextureRef::compose(results[static_cast<std::size_t>(in0)]);
+                }
+                // in0 == -2 (generator / unconnected) stays invalid — the
+                // renderer skips the SRV bind.
+
+                const std::uint32_t out = acquireEffectScratch(rtW, rtH);
+                if (out == UINT32_MAX) {
+                    // Pool exhausted — abandon this layer's chain; PASS 2
+                    // falls back to the raw source.
+                    aborted = true;
+                    break;
+                }
+                results[static_cast<std::size_t>(i)] = out;
+
+                m_renderer->beginComposeTarget(out);
+                m_renderer->drawEffectPass(inputRef, fx.kindIdHash,
                                             fx.paramBlob.data(),
                                             fx.paramBlob.size(),
                                             rtW, rtH);
                 m_renderer->endComposeTarget();
-                currentInput = TextureRef::compose(currentOutput);
-                std::swap(currentOutput, nextOutput);
-                ran = true;
+
+                // Recycle intermediates whose last consumer just ran (the
+                // output step's lastUse is past the loop, so it survives).
+                for (int j = 0; j <= i; ++j) {
+                    if (lastUse[static_cast<std::size_t>(j)] == i &&
+                        results[static_cast<std::size_t>(j)] != UINT32_MAX) {
+                        releaseEffectScratch(results[static_cast<std::size_t>(j)]);
+                    }
+                }
             }
 
-            // Publish the final output slot. The last write went into
-            // `currentInput`'s slot (post-swap), so PASS 2 reads from
-            // there. If no effect actually ran (all disabled), keep
-            // postEffectsSlot at -1 so PASS 2 falls back to sourceSlot.
-            if (ran) {
-                cl.postEffectsSlot = static_cast<std::int32_t>(currentInput.slot);
+            if (!aborted &&
+                results[static_cast<std::size_t>(outputStep)] != UINT32_MAX) {
+                cl.postEffectsSlot = static_cast<std::int32_t>(
+                    results[static_cast<std::size_t>(outputStep)]);
+            } else {
+                // Free anything acquired before the abort.
+                for (std::uint32_t slot : results) {
+                    if (slot != UINT32_MAX) releaseEffectScratch(slot);
+                }
             }
         }
+
+        [[maybe_unused]] const auto poolSize =
+            static_cast<std::int64_t>(m_effectScratchPool.size());
+        TracyPlot("Effect scratch pool", poolSize);
     }
 
     // ------------------------------------------------------------------
@@ -501,70 +554,53 @@ std::uint32_t CompositorSystem::ensureGenerativeRenderTarget(
     return slot;
 }
 
-bool CompositorSystem::ensureEffectPingPongTargets(std::uint64_t layerEntity,
-                                                    std::int32_t snapshotSlotA,
-                                                    std::int32_t snapshotSlotB,
-                                                    std::uint32_t width,
-                                                    std::uint32_t height,
-                                                    std::uint32_t& outSlotA,
-                                                    std::uint32_t& outSlotB) {
-    if (!m_renderer) return false;
-    const auto ent = static_cast<entt::entity>(layerEntity);
+std::uint32_t CompositorSystem::acquireEffectScratch(std::uint32_t width,
+                                                     std::uint32_t height) {
+    if (!m_renderer) return UINT32_MAX;
 
-    // 1) Editor has both slots — reuse / resize in place. Unconditional
-    //    calls every tick (#75): the same-size early-out is cheap and the
-    //    call self-heals abandoned deferral gates / failed rebuilds. Unlike
-    //    the screen path, a deferred or failed resize here returns false —
-    //    the effect-pass UV/viewport math assumes the requested dims, so
-    //    running it against stale-size RTs would mis-scale live output.
-    //    The caller skips the effect chain for that tick and retries.
-    if (snapshotSlotA >= 0 && snapshotSlotB >= 0) {
-        m_pendingEffectAllocations.erase(ent);
-        outSlotA = static_cast<std::uint32_t>(snapshotSlotA);
-        outSlotB = static_cast<std::uint32_t>(snapshotSlotB);
-        const bool okA = m_renderer->resizeComposeTarget(outSlotA, width, height);
-        const bool okB = m_renderer->resizeComposeTarget(outSlotB, width, height);
-        return okA && okB;
+    // 1) Exact-size free slot.
+    for (auto& s : m_effectScratchPool) {
+        if (!s.inUse && s.width == width && s.height == height) {
+            s.inUse = true;
+            return s.slot;
+        }
     }
-
-    auto& cached = m_pendingEffectAllocations[ent];
-    cached.width  = width;
-    cached.height = height;
-
-    auto allocSide = [&](std::uint32_t& slot, std::uint8_t side) -> bool {
-        if (slot != UINT32_MAX) return true;
-        const std::uint32_t newSlot = m_renderer->createComposeTarget(width, height);
-        if (newSlot == UINT32_MAX) {
-            std::cerr << "[Compositor] Effect ping-pong RT alloc failed for layer "
-                      << layerEntity << " side " << int(side) << std::endl;
-            return false;
+    // 2) Resize any free slot — bounds pool growth to the peak concurrent
+    //    scratch count across all sizes instead of per-size high-water.
+    //    A deferred/failed resize (#75 gate) falls through to a fresh
+    //    allocation rather than drawing at the wrong dims.
+    for (auto& s : m_effectScratchPool) {
+        if (s.inUse) continue;
+        if (m_renderer->resizeComposeTarget(s.slot, width, height)) {
+            s.width  = width;
+            s.height = height;
+            s.inUse  = true;
+            return s.slot;
         }
-        slot = newSlot;
-        if (m_transport) {
-            bus::EffectChainRenderTargetAllocated reply{};
-            reply.entity = layerEntity;
-            reply.slot   = newSlot;
-            reply.side   = side;
-            reply.width  = width;
-            reply.height = height;
-            m_transport->send(bus::Direction::R2D,
-                              bus::serialize(bus::Message{reply}));
+    }
+    // 3) Fresh compose target.
+    const std::uint32_t slot = m_renderer->createComposeTarget(width, height);
+    if (slot == UINT32_MAX) {
+        std::cerr << "[Compositor] Effect scratch alloc failed ("
+                  << width << "x" << height << ") — compose pool exhausted"
+                  << std::endl;
+        return UINT32_MAX;
+    }
+    m_effectScratchPool.push_back({slot, width, height, true});
+    return slot;
+}
+
+void CompositorSystem::releaseEffectScratch(std::uint32_t slot) {
+    for (auto& s : m_effectScratchPool) {
+        if (s.slot == slot) {
+            s.inUse = false;
+            return;
         }
-        return true;
-    };
+    }
+}
 
-    // Mirror any side the editor has already acked into the cache so we
-    // don't reallocate it; the other side keeps going until the editor
-    // catches up.
-    if (snapshotSlotA >= 0) cached.slotA = static_cast<std::uint32_t>(snapshotSlotA);
-    if (snapshotSlotB >= 0) cached.slotB = static_cast<std::uint32_t>(snapshotSlotB);
-
-    if (!allocSide(cached.slotA, 0)) return false;
-    if (!allocSide(cached.slotB, 1)) return false;
-
-    outSlotA = cached.slotA;
-    outSlotB = cached.slotB;
-    return true;
+void CompositorSystem::resetEffectScratch() {
+    for (auto& s : m_effectScratchPool) s.inUse = false;
 }
 
 std::uint32_t CompositorSystem::ensureScreenRenderTarget(const bus::ScreenSnapshot& screenSnap) {

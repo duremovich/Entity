@@ -30,6 +30,7 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/director/CatalogClipMath.hpp"
+#include "entity/effects/EffectChainTopo.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/timeline/SectionFade.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -1218,8 +1219,28 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                             : FrameNumber{0};
         }
 
-        lfx.effects.reserve(chain.nodes.size());
-        for (auto effectEnt : chain.nodes) {
+        // Resolve the chain to an enabled-only, topologically ordered
+        // execution plan (linear stacks are the degenerate case). The show
+        // thread executes the emitted vector as a straight line — all
+        // graph reasoning happens here on the editor thread.
+        const effects::EffectExecutionPlan plan =
+            effects::buildEffectExecutionPlan(m_registry, chain,
+                                              m_effectKindRegistry);
+        if (plan.linearFallback) {
+            // Throttled: once per layer per second at 60 editor fps.
+            static int s_fallbackLogCounter = 0;
+            if ((s_fallbackLogCounter++ % 60) == 0) {
+                std::cerr << "[EffectBake] Effect graph on layer "
+                          << lfx.entity
+                          << " rejected (cycle or too wide) — evaluating "
+                             "as a linear stack" << std::endl;
+            }
+        }
+        lfx.outputIndex = plan.outputIndex;
+
+        lfx.effects.reserve(plan.steps.size());
+        for (const auto& step : plan.steps) {
+            const auto effectEnt = step.node;
             if (!m_registry.valid(effectEnt)) continue;
             const auto* fx = m_registry.try_get<Effect>(effectEnt);
             if (!fx) continue;
@@ -1227,6 +1248,7 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             bus::EffectSnapshot es;
             es.kindIdHash = fx->kindId;
             es.enabled    = fx->enabled;
+            es.inputs.assign(step.inputs.begin(), step.inputs.end());
             es.paramBlob.assign(kEffectBlobBytes, std::uint8_t{0});
 
             // Look up the kind so we know each param's slot index +
@@ -1571,9 +1593,10 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
         // for Video-source layers (per-entity cached on the show side).
         if (const auto* le = findLayerEffects(ac.entity)) {
-            c.effects          = le->effects;
-            c.effectChainSlotA = le->slotA;
-            c.effectChainSlotB = le->slotB;
+            c.effects            = le->effects;
+            c.effectChainSlotA   = le->slotA;
+            c.effectChainSlotB   = le->slotB;
+            c.effectsOutputIndex = le->outputIndex;
             // postEffectsSlot stays -1 here — PASS 1.5 fills it after it
             // actually draws the chain.
         }
@@ -1637,9 +1660,10 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.remoteSlot            = gl.remoteSlot;
         // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
         if (const auto* le = findLayerEffects(gl.entity)) {
-            c.effects          = le->effects;
-            c.effectChainSlotA = le->slotA;
-            c.effectChainSlotB = le->slotB;
+            c.effects            = le->effects;
+            c.effectChainSlotA   = le->slotA;
+            c.effectChainSlotB   = le->slotB;
+            c.effectsOutputIndex = le->outputIndex;
         }
         out.contentLayers.push_back(c);
     }

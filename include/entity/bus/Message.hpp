@@ -408,6 +408,16 @@ struct EffectSnapshot {
     // no source texture and drawEffectPass skips the SRV bind). Default 1
     // (filter) matches every pre-upgrade payload.
     std::uint8_t                   inputCount{1};
+
+    // Resolved DAG inputs, one entry per texture-input socket:
+    //   >= 0  index of the producing effect in this layer's effects vector
+    //   -1    the layer's source texture
+    //   -2    unconnected (renderer binds nothing / black)
+    // The editor bake emits effects pre-sorted in topological order with
+    // disabled nodes dropped (bypass-rewired), so the show thread executes
+    // this as a straight-line plan — zero graph logic. Empty = legacy
+    // linear payload: the executor synthesizes prev-feeds-next.
+    std::vector<std::int32_t>      inputs;
 };
 
 // Per-layer effects bundle. Side-table off SceneSnapshot — keyed by
@@ -419,14 +429,17 @@ struct EffectSnapshot {
 struct LayerEffectsSnapshot {
     std::uint64_t                  entity{0};
     std::vector<EffectSnapshot>    effects;
-    // Ping-pong compose-target slots allocated by PASS 1.5 via the R2D
-    // ack pattern (`EffectChainRenderTargetAllocated`). -1 until both
-    // sides are allocated; PASS 1.5 holds off running effects on this
-    // layer until both are valid.
+    // DEPRECATED (DAG executor, issue #54 Phase 4): PASS 1.5 now draws
+    // into a show-thread-local scratch pool instead of per-layer acked
+    // ping-pong slots. Fields kept wire-inert for one version per bus
+    // rule 3; the `EffectChainRenderTargetAllocated` ack is never sent.
     std::int32_t                   slotA{-1};
     std::int32_t                   slotB{-1};
     std::uint32_t                  width{0};
     std::uint32_t                  height{0};
+    // Index into `effects` whose output feeds PASS 2. -1 = last effect
+    // (legacy payloads / default).
+    std::int32_t                   outputIndex{-1};
 };
 
 // Unified content-layer snapshot — the only data the compositor's PASS 2
@@ -509,13 +522,13 @@ struct ContentLayerSnapshot {
     // Empty vector = no effects, PASS 2 reads sourceSlot directly.
     std::vector<EffectSnapshot> effects;
 
-    // Ping-pong compose-target slots for the effect chain (-1 = pending
-    // allocation, R2D ack still in flight). Editor side fills these from
-    // EffectChainRenderTargets on the layer entity during the buildRender-
-    // Frame fold-in step, so PASS 1.5 reads them directly off the cl
-    // entry without needing a side-table lookup.
+    // DEPRECATED — see LayerEffectsSnapshot: PASS 1.5 scratch-pools its
+    // RTs show-side now. Wire-inert for one version.
     std::int32_t  effectChainSlotA{-1};
     std::int32_t  effectChainSlotB{-1};
+
+    // Index into `effects` whose output feeds PASS 2 (-1 = last).
+    std::int32_t  effectsOutputIndex{-1};
 
     // Post-effects compose-target slot. -1 = no effects or PASS 1.5
     // hasn't produced output this frame yet (RT allocation pending).

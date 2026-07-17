@@ -45,6 +45,7 @@
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/audio/LoopbackDevice.hpp"
 #include "entity/systems/AudioSystem.hpp"
+#include "entity/effects/EffectChainTopo.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/effects/EffectParamJson.hpp"
 #include "entity/input/InputBus.hpp"
@@ -6157,6 +6158,48 @@ bool RemoveEffectCommand::execute(Engine& engine) {
     if (auto* params = registry.try_get<EffectParameters>(m_effectEntity)) {
         m_savedParams = params->values;
     }
+    if (const auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity)) {
+        m_savedTracks.clear();
+        m_savedTrackEnabled.clear();
+        for (const auto& t : anim->tracks) {
+            m_savedTracks.emplace_back(t.paramKeyHash, t.keyframes);
+            m_savedTrackEnabled.push_back(t.enabled);
+        }
+    }
+    m_savedConnections = chain->connections;
+    m_savedOutputNode  = chain->outputNode;
+
+    // Heal the explicit graph: bridge the removed node's first-input
+    // producer through to every consumer of its output, then drop all
+    // links touching the node. A removed generator (no input link) just
+    // leaves its consumers unconnected.
+    if (!chain->connections.empty()) {
+        entt::entity bridge = entt::null;
+        bool haveBridge = false;
+        for (const auto& c : chain->connections) {
+            if (c.dstNode == m_effectEntity && c.dstSocket == 0) {
+                bridge = c.srcNode;
+                haveBridge = true;
+                break;
+            }
+        }
+        std::vector<EffectConnection> healed;
+        healed.reserve(chain->connections.size());
+        for (const auto& c : chain->connections) {
+            if (c.dstNode == m_effectEntity) continue;  // into the node — drop
+            if (c.srcNode == m_effectEntity) {
+                if (haveBridge) {
+                    EffectConnection b = c;
+                    b.srcNode   = bridge;
+                    b.srcSocket = 0;
+                    healed.push_back(b);
+                }
+                continue;
+            }
+            healed.push_back(c);
+        }
+        chain->connections = std::move(healed);
+    }
 
     chain->nodes.erase(it);
     if (chain->outputNode == m_effectEntity) {
@@ -6187,12 +6230,35 @@ bool RemoveEffectCommand::undo(Engine& engine) {
     fx.ownerLayer = m_layerEntity;
     auto& params = registry.emplace<EffectParameters>(fxEnt);
     params.values = m_savedParams;
-    registry.emplace<EffectAnimatedParameters>(fxEnt);
+    auto& anim = registry.emplace<EffectAnimatedParameters>(fxEnt);
+    for (std::size_t i = 0; i < m_savedTracks.size(); ++i) {
+        EffectAnimatedParameters::NamedTrack nt;
+        nt.paramKeyHash = m_savedTracks[i].first;
+        nt.keyframes    = m_savedTracks[i].second;
+        nt.enabled      = (i < m_savedTrackEnabled.size()) ? m_savedTrackEnabled[i] : true;
+        anim.tracks.push_back(std::move(nt));
+    }
 
     auto& chain = registry.get_or_emplace<EffectChain>(m_layerEntity);
     const std::size_t insertAt = std::min(m_savedPositionInChain, chain.nodes.size());
     chain.nodes.insert(chain.nodes.begin() + insertAt, fxEnt);
-    if (chain.outputNode == entt::null) chain.outputNode = fxEnt;
+
+    // Restore the pre-removal topology with the destroyed entity's ID
+    // remapped to the recreated one — without this the restored links
+    // reference a dead entity and silently drop on the next bake/save.
+    chain.connections = m_savedConnections;
+    for (auto& c : chain.connections) {
+        if (c.srcNode == m_effectEntity) c.srcNode = fxEnt;
+        if (c.dstNode == m_effectEntity) c.dstNode = fxEnt;
+    }
+    chain.outputNode = (m_savedOutputNode == m_effectEntity)
+        ? fxEnt
+        : m_savedOutputNode;
+    if (chain.outputNode == entt::null && !chain.nodes.empty()) {
+        chain.outputNode = chain.nodes.back();
+    }
+    // Keep the resurrected ID for a possible redo cycle.
+    m_effectEntity = fxEnt;
     return true;
 }
 
@@ -6213,6 +6279,282 @@ CommandPtr RemoveEffectCommand::fromJson(const nlohmann::json& j) {
     if (j.contains("trackIndex")) {
         cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
                                j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+// ============================================================================
+// Effect graph topology commands (ConnectEffect / DisconnectEffect /
+// SetEffectGraphTopology). All three snapshot + restore the whole
+// {connections, outputNode} pair — the vectors are tiny and diff-undo of
+// implied edits (linear materialization, input replacement) is fiddly.
+// ============================================================================
+
+namespace {
+
+// Resolve a chain-node index to an entity (-1 = the entt::null sentinel).
+// Returns false for an out-of-range index.
+bool chainNodeAt(const EffectChain& chain, int index, entt::entity& out) {
+    if (index == -1) { out = entt::null; return true; }
+    if (index < 0 || index >= static_cast<int>(chain.nodes.size())) return false;
+    out = chain.nodes[static_cast<std::size_t>(index)];
+    return true;
+}
+
+} // namespace
+
+bool ConnectEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) {
+        std::cerr << "[ConnectEffect] layer has no effect chain" << std::endl;
+        return false;
+    }
+    if (m_addrTrack) {
+        if (!chainNodeAt(*chain, m_addrSrc, m_srcNode) ||
+            !chainNodeAt(*chain, m_addrDst, m_dstNode)) {
+            std::cerr << "[ConnectEffect] node index out of range" << std::endl;
+            return false;
+        }
+    }
+    if (m_srcNode == m_dstNode && m_srcNode != entt::null) {
+        std::cerr << "[ConnectEffect] refusing self-edge" << std::endl;
+        return false;
+    }
+
+    if (!m_hasSnapshot) {
+        m_prevConnections = chain->connections;
+        m_prevOutputNode  = chain->outputNode;
+        m_hasSnapshot     = true;
+    }
+
+    // First-ever graph edit: materialize the implicit linear stack so the
+    // user edits the topology they were already seeing.
+    if (chain->connections.empty()) {
+        chain->connections = effects::materializeLinearTopology(*chain);
+    }
+
+    // Cycle check against the post-materialization topology.
+    if (effects::topologyWouldCycle(*chain, m_srcNode, m_dstNode)) {
+        std::cerr << "[ConnectEffect] refused: would create a cycle" << std::endl;
+        chain->connections = m_prevConnections;  // roll back materialization
+        chain->outputNode  = m_prevOutputNode;
+        m_hasSnapshot = false;
+        return false;
+    }
+
+    // Single-input rule: a new link into an occupied (dst, dstSocket)
+    // replaces the incumbent.
+    chain->connections.erase(
+        std::remove_if(chain->connections.begin(), chain->connections.end(),
+            [&](const EffectConnection& c) {
+                return c.dstNode == m_dstNode && c.dstSocket == m_dstSocket;
+            }),
+        chain->connections.end());
+
+    chain->connections.push_back({m_srcNode, m_dstNode, m_srcSocket, m_dstSocket});
+
+    // Wiring into the final-output sentinel re-points the chain's output.
+    if (m_dstNode == entt::null && m_srcNode != entt::null) {
+        chain->outputNode = m_srcNode;
+    }
+    return true;
+}
+
+bool ConnectEffectCommand::undo(Engine& engine) {
+    if (!m_hasSnapshot) return false;
+    auto& registry = engine.getRegistry();
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    chain->connections = m_prevConnections;
+    chain->outputNode  = m_prevOutputNode;
+    return true;
+}
+
+nlohmann::json ConnectEffectCommand::toJson() const {
+    return {{"type", "ConnectEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"srcEffectEntity", static_cast<std::uint32_t>(m_srcNode)},
+            {"dstEffectEntity", static_cast<std::uint32_t>(m_dstNode)},
+            {"srcSocket", m_srcSocket},
+            {"dstSocket", m_dstSocket}};
+}
+
+std::string ConnectEffectCommand::getDescription() const {
+    return "Connect effects";
+}
+
+CommandPtr ConnectEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const auto src   = static_cast<entt::entity>(
+        j.value("srcEffectEntity", static_cast<std::uint32_t>(entt::null)));
+    const auto dst   = static_cast<entt::entity>(
+        j.value("dstEffectEntity", static_cast<std::uint32_t>(entt::null)));
+    auto cmd = std::make_unique<ConnectEffectCommand>(
+        layer, src, dst,
+        static_cast<std::uint8_t>(j.value("srcSocket", 0)),
+        static_cast<std::uint8_t>(j.value("dstSocket", 0)));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0),
+                              j.value("srcEffectIndex", -1),
+                              j.value("dstEffectIndex", -1));
+    }
+    return cmd;
+}
+
+bool DisconnectEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain || chain->connections.empty()) return false;
+    if (m_addrTrack && !chainNodeAt(*chain, m_addrDst, m_dstNode)) return false;
+
+    if (!m_hasSnapshot) {
+        m_prevConnections = chain->connections;
+        m_prevOutputNode  = chain->outputNode;
+        m_hasSnapshot     = true;
+    }
+
+    const std::size_t before = chain->connections.size();
+    chain->connections.erase(
+        std::remove_if(chain->connections.begin(), chain->connections.end(),
+            [&](const EffectConnection& c) {
+                return c.dstNode == m_dstNode && c.dstSocket == m_dstSocket;
+            }),
+        chain->connections.end());
+    if (chain->connections.size() == before) {
+        m_hasSnapshot = false;
+        return false;  // nothing matched
+    }
+    return true;
+}
+
+bool DisconnectEffectCommand::undo(Engine& engine) {
+    if (!m_hasSnapshot) return false;
+    auto* chain = engine.getRegistry().try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    chain->connections = m_prevConnections;
+    chain->outputNode  = m_prevOutputNode;
+    return true;
+}
+
+nlohmann::json DisconnectEffectCommand::toJson() const {
+    return {{"type", "DisconnectEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"dstEffectEntity", static_cast<std::uint32_t>(m_dstNode)},
+            {"dstSocket", m_dstSocket}};
+}
+
+std::string DisconnectEffectCommand::getDescription() const {
+    return "Disconnect effects";
+}
+
+CommandPtr DisconnectEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const auto dst   = static_cast<entt::entity>(
+        j.value("dstEffectEntity", static_cast<std::uint32_t>(entt::null)));
+    auto cmd = std::make_unique<DisconnectEffectCommand>(
+        layer, dst, static_cast<std::uint8_t>(j.value("dstSocket", 0)));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0),
+                              j.value("dstEffectIndex", -1));
+    }
+    return cmd;
+}
+
+bool SetEffectGraphTopologyCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+
+    if (m_addrTrack) {
+        // Resolve indexed connections against the live chain.
+        m_connections.clear();
+        for (const auto& ic : m_indexedConnections) {
+            entt::entity src{entt::null};
+            entt::entity dst{entt::null};
+            if (!chainNodeAt(*chain, ic.src, src) ||
+                !chainNodeAt(*chain, ic.dst, dst)) {
+                std::cerr << "[SetEffectGraphTopology] connection index out of range"
+                          << std::endl;
+                return false;
+            }
+            m_connections.push_back({src, dst, ic.srcSocket, ic.dstSocket});
+        }
+        if (!chainNodeAt(*chain, m_addrOutput, m_outputNode)) return false;
+    }
+
+    if (!m_hasSnapshot) {
+        m_prevConnections = chain->connections;
+        m_prevOutputNode  = chain->outputNode;
+        m_hasSnapshot     = true;
+    }
+
+    chain->connections = m_connections;
+    chain->outputNode  = (m_outputNode == entt::null && !chain->nodes.empty())
+        ? chain->nodes.back()
+        : m_outputNode;
+    return true;
+}
+
+bool SetEffectGraphTopologyCommand::undo(Engine& engine) {
+    if (!m_hasSnapshot) return false;
+    auto* chain = engine.getRegistry().try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    chain->connections = m_prevConnections;
+    chain->outputNode  = m_prevOutputNode;
+    return true;
+}
+
+nlohmann::json SetEffectGraphTopologyCommand::toJson() const {
+    nlohmann::json conns = nlohmann::json::array();
+    for (const auto& c : m_connections) {
+        conns.push_back({{"srcEffectEntity", static_cast<std::uint32_t>(c.srcNode)},
+                         {"dstEffectEntity", static_cast<std::uint32_t>(c.dstNode)},
+                         {"srcSocket", c.srcSocket},
+                         {"dstSocket", c.dstSocket}});
+    }
+    return {{"type", "SetEffectGraphTopology"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"connectionsByEntity", std::move(conns)},
+            {"outputEntity", static_cast<std::uint32_t>(m_outputNode)}};
+}
+
+std::string SetEffectGraphTopologyCommand::getDescription() const {
+    return m_connections.empty() && !m_addrTrack
+        ? "Reset effect graph to linear stack"
+        : "Set effect graph topology";
+}
+
+CommandPtr SetEffectGraphTopologyCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    auto cmd = std::make_unique<SetEffectGraphTopologyCommand>(
+        layer, std::vector<EffectConnection>{}, entt::null);
+    if (j.contains("trackIndex")) {
+        std::vector<SetEffectGraphTopologyCommand::IndexedConnection> conns;
+        if (j.contains("connections") && j["connections"].is_array()) {
+            for (const auto& cj : j["connections"]) {
+                SetEffectGraphTopologyCommand::IndexedConnection ic;
+                ic.src       = cj.value("src", -1);
+                ic.dst       = cj.value("dst", -1);
+                ic.srcSocket = static_cast<std::uint8_t>(cj.value("srcSocket", 0));
+                ic.dstSocket = static_cast<std::uint8_t>(cj.value("dstSocket", 0));
+                conns.push_back(ic);
+            }
+        }
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0),
+                              std::move(conns), j.value("outputNode", -1));
     }
     return cmd;
 }
