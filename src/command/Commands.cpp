@@ -6246,9 +6246,9 @@ bool RemoveEffectCommand::execute(Engine& engine) {
     // producer through to every consumer of its output, then drop all
     // links touching the node. A removed generator (no input link) just
     // leaves its consumers unconnected.
+    entt::entity bridge = entt::null;
+    bool haveBridge = false;
     if (!chain->connections.empty()) {
-        entt::entity bridge = entt::null;
-        bool haveBridge = false;
         for (const auto& c : chain->connections) {
             if (c.dstNode == m_effectEntity && c.dstSocket == 0) {
                 bridge = c.srcNode;
@@ -6276,7 +6276,18 @@ bool RemoveEffectCommand::execute(Engine& engine) {
 
     chain->nodes.erase(it);
     if (chain->outputNode == m_effectEntity) {
-        chain->outputNode = chain->nodes.empty() ? entt::null : chain->nodes.back();
+        // Follow the heal: if the removed node fed the output and its
+        // input was bridged through, the bridge producer IS the new
+        // output — matching the healed link the graph now displays.
+        // (nodes.back() would silently re-point the render at an
+        // unrelated declaration-order node.) Bridge of entt::null =
+        // layer source feeds output directly → no effect output.
+        if (haveBridge && bridge != entt::null) {
+            chain->outputNode = bridge;
+        } else {
+            chain->outputNode = chain->nodes.empty() ? entt::null
+                                                     : chain->nodes.back();
+        }
     }
     registry.destroy(m_effectEntity);
     if (chain->nodes.empty()) {
@@ -6506,6 +6517,14 @@ bool DisconnectEffectCommand::execute(Engine& engine) {
         m_hasSnapshot = false;
         return false;  // nothing matched
     }
+    // Deleting the link INTO the final-output sentinel must also clear
+    // outputNode — ConnectEffect keeps the two in sync when wiring the
+    // output, so Disconnect has to as well or the deletion is a visual
+    // no-op (the bake keeps rendering the old output; null falls back
+    // to the last node, the documented default).
+    if (m_dstNode == entt::null) {
+        chain->outputNode = entt::null;
+    }
     return true;
 }
 
@@ -6612,8 +6631,27 @@ std::string SetEffectGraphTopologyCommand::getDescription() const {
 
 CommandPtr SetEffectGraphTopologyCommand::fromJson(const nlohmann::json& j) {
     const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    // Live-session / replay form: entity-ID connections, matching what
+    // toJson() emits (recorded sessions must round-trip — without this
+    // branch a replayed SetEffectGraphTopology deserialized as an empty
+    // topology, i.e. a silent reset-to-linear-stack).
+    std::vector<EffectConnection> entityConnections;
+    if (j.contains("connectionsByEntity") && j["connectionsByEntity"].is_array()) {
+        for (const auto& cj : j["connectionsByEntity"]) {
+            EffectConnection c;
+            c.srcNode   = static_cast<entt::entity>(
+                cj.value("srcEffectEntity", static_cast<std::uint32_t>(entt::null)));
+            c.dstNode   = static_cast<entt::entity>(
+                cj.value("dstEffectEntity", static_cast<std::uint32_t>(entt::null)));
+            c.srcSocket = static_cast<std::uint8_t>(cj.value("srcSocket", 0));
+            c.dstSocket = static_cast<std::uint8_t>(cj.value("dstSocket", 0));
+            entityConnections.push_back(c);
+        }
+    }
+    const auto outputEntity = static_cast<entt::entity>(
+        j.value("outputEntity", static_cast<std::uint32_t>(entt::null)));
     auto cmd = std::make_unique<SetEffectGraphTopologyCommand>(
-        layer, std::vector<EffectConnection>{}, entt::null);
+        layer, std::move(entityConnections), outputEntity);
     if (j.contains("trackIndex")) {
         std::vector<SetEffectGraphTopologyCommand::IndexedConnection> conns;
         if (j.contains("connections") && j["connections"].is_array()) {
@@ -6714,13 +6752,13 @@ CommandPtr SetEffectEnabledCommand::fromJson(const nlohmann::json& j) {
 namespace {
 
 // Shared body of SetEffectParam / SetEffectFloatParam: resolve the slot
-// by name via the kind schema, type-check, capture the pre-edit value
-// once, write. `expectType` nullopt skips the type check (the Float
-// command pre-dates typed params and its check is the makeFloat write).
+// by name via the kind schema, type-check against the schema (a Float
+// write into an Enum/Color/Bool slot would corrupt the tagged union —
+// the bake would read the float bits as an int and the UI would snap
+// the slot back to its default), capture the pre-edit value once, write.
 bool setEffectParamImpl(Engine& engine, entt::entity effectEntity,
                         const std::string& paramName, const ParamValue& value,
-                        std::optional<ParamValue>& previousValue,
-                        bool typeCheck) {
+                        std::optional<ParamValue>& previousValue) {
     auto& registry = engine.getRegistry();
     if (!registry.valid(effectEntity)) return false;
     auto* fx = registry.try_get<Effect>(effectEntity);
@@ -6742,9 +6780,11 @@ bool setEffectParamImpl(Engine& engine, entt::entity effectEntity,
             params->values[i] = kind->params[i].defaultValue;
         }
     }
-    if (typeCheck && value.type != kind->params[slot].type) {
+    if (value.type != kind->params[slot].type) {
         std::cerr << "[SetEffectParam] type mismatch on '" << paramName
-                  << "' of kind '" << kind->stableId << "'" << std::endl;
+                  << "' of kind '" << kind->stableId << "' (schema "
+                  << static_cast<int>(kind->params[slot].type) << ", got "
+                  << static_cast<int>(value.type) << ")" << std::endl;
         return false;
     }
     if (!previousValue.has_value()) {
@@ -6783,8 +6823,7 @@ bool SetEffectFloatParamCommand::execute(Engine& engine) {
     std::optional<ParamValue> prev;
     if (m_previousValue.has_value()) prev = ParamValue::makeFloat(*m_previousValue);
     if (!setEffectParamImpl(engine, m_effectEntity, m_paramName,
-                            ParamValue::makeFloat(m_value), prev,
-                            /*typeCheck=*/false)) {
+                            ParamValue::makeFloat(m_value), prev)) {
         return false;
     }
     if (!m_previousValue.has_value() && prev.has_value()) {
@@ -6831,7 +6870,7 @@ bool SetEffectParamCommand::execute(Engine& engine) {
         }
     }
     return setEffectParamImpl(engine, m_effectEntity, m_paramName, m_value,
-                              m_previousValue, /*typeCheck=*/true);
+                              m_previousValue);
 }
 
 bool SetEffectParamCommand::undo(Engine& engine) {

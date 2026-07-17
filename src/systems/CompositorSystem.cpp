@@ -131,9 +131,31 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             }
             if (steps.empty()) continue;
 
-            // Input-not-ready gate — only when the first step actually
-            // samples the layer source. Generator-led chains self-seed.
-            if (cl.sourceSlot < 0 && steps.front()->inputCount > 0) continue;
+            // Input-not-ready gate: if ANY step consumes the layer source
+            // (input -1 — not just the first; a DAG can route the source
+            // into a later combiner socket) while the source texture
+            // doesn't exist yet, skip the whole chain this frame. Running
+            // it would substitute the black fallback for the source and
+            // flash wrong content on clip start/seek; skipping lets PASS 2
+            // fall back exactly like the no-effects path. Legacy payloads
+            // (empty inputs) imply the first step reads the source.
+            if (cl.sourceSlot < 0) {
+                bool consumesSource = false;
+                for (const auto* fx : steps) {
+                    if (fx->inputs.empty()) {
+                        if (fx->inputCount > 0 && fx == steps.front()) {
+                            consumesSource = true;  // legacy linear head
+                            break;
+                        }
+                        continue;
+                    }
+                    for (std::int32_t in : fx->inputs) {
+                        if (in == -1) { consumesSource = true; break; }
+                    }
+                    if (consumesSource) break;
+                }
+                if (consumesSource) continue;
+            }
 
             // Size effect RTs from the layer's source content dims (clip
             // media size / generative render size) so effects run in
@@ -238,13 +260,23 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 results[static_cast<std::size_t>(i)] = out;
 
                 m_renderer->beginComposeTarget(out);
-                m_renderer->drawEffectPass(inputRefs,
-                                            static_cast<std::size_t>(std::max(nIn, 1)),
-                                            fx.kindIdHash,
-                                            fx.paramBlob.data(),
-                                            fx.paramBlob.size(),
-                                            rtW, rtH);
+                const bool drew = m_renderer->drawEffectPass(
+                    inputRefs,
+                    static_cast<std::size_t>(std::max(nIn, 1)),
+                    fx.kindIdHash,
+                    fx.paramBlob.data(),
+                    fx.paramBlob.size(),
+                    rtW, rtH);
                 m_renderer->endComposeTarget();
+                if (!drew) {
+                    // The pass skipped (input mid-recreate under the #90
+                    // generation guard, PSO missing/failed) and the
+                    // scratch RT holds only its clear. Publishing it
+                    // would hard-cut the layer to black — abort instead
+                    // so PASS 2 falls back to the raw source this frame.
+                    aborted = true;
+                    break;
+                }
 
                 // Recycle intermediates whose last consumer just ran (the
                 // output step's lastUse is past the loop, so it survives).
@@ -585,34 +617,37 @@ std::uint32_t CompositorSystem::acquireEffectScratch(std::uint32_t width,
                                                      std::uint32_t height) {
     if (!m_renderer) return UINT32_MAX;
 
-    // 1) Exact-size free slot.
+    // 1) Exact-size free slot. Intra-frame reuse of a matching slot is
+    //    safe: begin/endComposeTarget barriers order the earlier read
+    //    before the re-clear on the GPU timeline.
     for (auto& s : m_effectScratchPool) {
         if (!s.inUse && s.width == width && s.height == height) {
             s.inUse = true;
             return s.slot;
         }
     }
-    // 2) Resize any free slot — bounds pool growth to the peak concurrent
-    //    scratch count across all sizes instead of per-size high-water.
-    //    A deferred/failed resize (#75 gate) falls through to a fresh
-    //    allocation rather than drawing at the wrong dims.
-    for (auto& s : m_effectScratchPool) {
-        if (s.inUse) continue;
-        if (m_renderer->resizeComposeTarget(s.slot, width, height)) {
-            s.width  = width;
-            s.height = height;
-            s.inUse  = true;
-            return s.slot;
-        }
-    }
-    // 3) Fresh compose target.
+    // 2) Fresh compose target. Deliberately NO resize-a-free-slot path:
+    //    resizing a slot already recorded into this frame's open show
+    //    command list is a GPU use-after-free (gpuIdleForDestroy only
+    //    drains SUBMITTED work), and a deferred/failed resize (#75)
+    //    can't be told apart from a hard failure show-side, leaving the
+    //    pool's size bookkeeping out of sync with a torn-down target.
+    //    Cost: one retained slot per (size x concurrent-node) high-water
+    //    mark instead of per concurrent-node — acceptable against the
+    //    shared pool cap, and exhaustion degrades to raw source.
     const std::uint32_t slot = m_renderer->createComposeTarget(width, height);
     if (slot == UINT32_MAX) {
-        std::cerr << "[Compositor] Effect scratch alloc failed ("
-                  << width << "x" << height << ") — compose pool exhausted"
-                  << std::endl;
+        if (!m_effectScratchExhaustedLogged) {
+            std::cerr << "[Compositor] Effect scratch alloc failed ("
+                      << width << "x" << height << ") — compose pool "
+                         "exhausted; affected effect chains fall back to "
+                         "their raw source (logged once)"
+                      << std::endl;
+            m_effectScratchExhaustedLogged = true;
+        }
         return UINT32_MAX;
     }
+    m_effectScratchExhaustedLogged = false;
     m_effectScratchPool.push_back({slot, width, height, true});
     return slot;
 }

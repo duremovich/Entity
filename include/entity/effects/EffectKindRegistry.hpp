@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -85,9 +86,24 @@ public:
     }
 
     // Lookup by hash. nullptr if no kind with this hash exists.
+    // EDITOR THREAD ONLY: hot reload mutates m_kinds on the editor
+    // thread, so the returned pointer (and the map walk itself) is only
+    // safe from that thread. The show thread must use findCopy().
     const EffectKind* find(std::uint32_t kindIdHash) const noexcept {
         auto it = m_kinds.find(kindIdHash);
         return (it == m_kinds.end()) ? nullptr : &it->second;
+    }
+
+    // Show-thread-safe lookup: copies the kind under the registry lock
+    // so hot reload's erase/re-insert (editor thread) can never leave
+    // the caller holding a dangling pointer or walking a rehashing map.
+    // Copy cost (strings + schema vectors) only lands on the PSO-cache
+    // miss path — cold by construction.
+    std::optional<EffectKind> findCopy(std::uint32_t kindIdHash) const {
+        std::lock_guard<std::mutex> lk(m_kindsMutex);
+        auto it = m_kinds.find(kindIdHash);
+        if (it == m_kinds.end()) return std::nullopt;
+        return it->second;
     }
 
     // Direct add — used by registerBuiltins and the future user-scan
@@ -114,6 +130,12 @@ public:
     }
 
 private:
+    // Guards m_kinds for the one cross-thread reader (findCopy on the
+    // show thread's PSO-miss path). All mutation (registerBuiltins /
+    // scanUserEffects / hotReload) and the pointer-returning find() are
+    // editor-thread-only; mutators take this lock so findCopy can't
+    // observe an erase/rehash mid-walk.
+    mutable std::mutex m_kindsMutex;
     std::unordered_map<std::uint32_t, EffectKind> m_kinds;
 
     // Compiled-bytecode storage for user-authored kinds. Keyed by kind

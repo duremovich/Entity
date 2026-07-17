@@ -1638,7 +1638,10 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
             // only this per-frame copy, never the cached snapshot.
             if (ce) reEvaluateEffectTracks(c, ce->startFrame, currentFrame);
         }
-        out.contentLayers.push_back(c);
+        // Move — `c` carries routes + effect paramBlobs/tracks; a copy
+        // here would double the per-frame allocation tax on the show
+        // thread for every effect-carrying layer.
+        out.contentLayers.push_back(std::move(c));
     }
 
     // Live re-filter, mirroring the isClipActiveAtFrame re-check on the clip
@@ -1705,7 +1708,7 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
             // NEW-07 for effect params — see the clip branch above.
             reEvaluateEffectTracks(c, gl.startFrame, currentFrame);
         }
-        out.contentLayers.push_back(c);
+        out.contentLayers.push_back(std::move(c));  // see clip branch
     }
 
     std::sort(out.contentLayers.begin(), out.contentLayers.end(),

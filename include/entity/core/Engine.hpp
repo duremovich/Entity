@@ -1055,6 +1055,10 @@ private:
     // library, call addMediaFile / mark-missing on the main thread.
     void drainContentScannerDeltas();
 
+    // Send one InvalidateEffectPso per user kind the last effect scan
+    // touched (project-load rescan + hot reload share this).
+    void broadcastEffectPsoInvalidations();
+
     // ADR-0009 — current import mode + target subfolder. Default is Link
     // so legacy / script-driven flows keep their pre-launcher behavior;
     // MediaBin's toolbar flips it to Copy + "unsorted" on first render.

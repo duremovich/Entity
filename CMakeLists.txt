@@ -379,7 +379,9 @@ target_compile_features(EntityMediaCore PUBLIC cxx_std_20)
 
 # Compiler warnings
 if(MSVC)
-    target_compile_options(EntityMediaCore PRIVATE /W4 /WX-)
+    # /bigobj: Engine.cpp exceeds the default COFF section limit in Debug
+    # (no /O2 COMDAT folding) since the effects-system work landed.
+    target_compile_options(EntityMediaCore PRIVATE /W4 /WX- /bigobj)
 else()
     target_compile_options(EntityMediaCore PRIVATE -Wall -Wextra -Wpedantic)
 endif()

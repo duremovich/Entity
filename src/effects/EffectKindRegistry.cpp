@@ -388,23 +388,27 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
     m_lastScanTouchedKinds.clear();
     m_compileErrors.clear();
 
-    // Drop previously-scanned user kinds so the call is idempotent.
-    // builtin=true entries stay; builtin=false get torn down. Their
-    // compiled-bytecode artifacts get evicted alongside. Every dropped
-    // hash lands in the touched list so stale PSOs get invalidated even
-    // when the kind doesn't come back.
-    for (auto it = m_kinds.begin(); it != m_kinds.end(); ) {
-        if (!it->second.builtin) {
-            m_lastScanTouchedKinds.push_back(it->first);
-            {
-                std::lock_guard<std::mutex> lk(m_userArtifactsMutex);
-                m_userArtifacts.erase(it->first);
+    // Snapshot the existing user kinds instead of dropping them up
+    // front: a kind whose recompile FAILS below must keep its last-good
+    // registration + bytecode (and must NOT land in the touched list,
+    // or the PSO invalidation would kill the running effect) — an
+    // operator saving a syntax error mid-show keeps yesterday's shader
+    // on the output, with the error surfaced in the UI. Kinds whose
+    // manifests vanished entirely are removed at the end.
+    std::unordered_map<std::uint32_t, EffectKind> previousUserKinds;
+    {
+        std::lock_guard<std::mutex> lk(m_kindsMutex);
+        for (auto it = m_kinds.begin(); it != m_kinds.end(); ) {
+            if (!it->second.builtin) {
+                previousUserKinds.emplace(it->first, std::move(it->second));
+                it = m_kinds.erase(it);
+            } else {
+                ++it;
             }
-            it = m_kinds.erase(it);
-        } else {
-            ++it;
         }
     }
+    // Hashes seen in this scan (registered fresh OR kept as last-good).
+    std::vector<std::uint32_t> liveUserKinds;
 
     std::error_code ec;
     if (!fs::exists(projectEffectsDir, ec) || !fs::is_directory(projectEffectsDir, ec)) {
@@ -486,10 +490,20 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
         if (!result.success || !result.blob) {
             std::cerr << "[scanUserEffects] HLSL compile failed for "
                       << stableId << ":\n" << result.errors << std::endl;
-            // Surface in the UI (red badge on the stack header). The kind
-            // itself is not registered — an existing effect entity keeps
-            // rendering with its last-good PSO until invalidation lands.
-            m_compileErrors[fnv1a32(stableId)] = result.errors;
+            // Surface in the UI (red badge on the stack header) and KEEP
+            // the last-good registration + bytecode + PSO: the hash is
+            // deliberately not added to the touched list, so no
+            // InvalidateEffectPso fires and the running effect renders
+            // yesterday's shader until the error is fixed.
+            const std::uint32_t failedHash = fnv1a32(stableId);
+            m_compileErrors[failedHash] = result.errors;
+            auto prevIt = previousUserKinds.find(failedHash);
+            if (prevIt != previousUserKinds.end()) {
+                std::lock_guard<std::mutex> lk(m_kindsMutex);
+                m_kinds.insert_or_assign(failedHash, std::move(prevIt->second));
+                previousUserKinds.erase(prevIt);
+                liveUserKinds.push_back(failedHash);
+            }
             continue;
         }
 
@@ -529,9 +543,24 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
             m_userArtifacts[kind.kindIdHash] = std::move(artifact);
         }
         m_lastScanTouchedKinds.push_back(kind.kindIdHash);
+        liveUserKinds.push_back(kind.kindIdHash);
 
         registerKind(std::move(kind));
         ++registered;
+    }
+
+    // Kinds whose manifests vanished entirely: gone for real. Their
+    // artifacts drop and their stale PSOs get invalidated.
+    for (auto& [hash, kind] : previousUserKinds) {
+        if (std::find(liveUserKinds.begin(), liveUserKinds.end(), hash)
+            != liveUserKinds.end()) {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_userArtifactsMutex);
+            m_userArtifacts.erase(hash);
+        }
+        m_lastScanTouchedKinds.push_back(hash);
     }
 
     // Dedup touched hashes (a kind both dropped and re-registered
@@ -554,6 +583,7 @@ void EffectKindRegistry::hotReload() {
 }
 
 void EffectKindRegistry::registerKind(EffectKind kind) {
+    std::lock_guard<std::mutex> lk(m_kindsMutex);
     m_kinds.insert_or_assign(kind.kindIdHash, std::move(kind));
 }
 

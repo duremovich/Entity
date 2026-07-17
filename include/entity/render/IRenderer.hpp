@@ -317,7 +317,11 @@ public:
     // combiner kinds read t0 + t1). Invalid refs bind the shared black
     // fallback texture (generators / unconnected DAG sockets); a VALID ref
     // that fails to resolve (texture not ready yet) skips the whole pass.
-    virtual void drawEffectPass(const TextureRef* inputs,
+    // Returns true iff the pass actually drew — a false means the bound
+    // scratch RT holds only its clear, and the caller must NOT publish it
+    // as the layer's output (black-flash on the projector; PASS 2 should
+    // fall back to the raw source instead).
+    virtual bool drawEffectPass(const TextureRef* inputs,
                                 std::size_t inputCount,
                                 std::uint32_t kindIdHash,
                                 const std::uint8_t* paramBlob,
@@ -326,14 +330,14 @@ public:
                                 std::uint32_t viewportHeight) = 0;
 
     // Single-input convenience (filters / generators).
-    void drawEffectPass(TextureRef input,
+    bool drawEffectPass(TextureRef input,
                         std::uint32_t kindIdHash,
                         const std::uint8_t* paramBlob,
                         std::size_t paramBlobSize,
                         std::uint32_t viewportWidth,
                         std::uint32_t viewportHeight) {
-        drawEffectPass(&input, 1, kindIdHash, paramBlob, paramBlobSize,
-                       viewportWidth, viewportHeight);
+        return drawEffectPass(&input, 1, kindIdHash, paramBlob, paramBlobSize,
+                              viewportWidth, viewportHeight);
     }
 
     // Draws the projector calibration crosshair overlay directly onto the

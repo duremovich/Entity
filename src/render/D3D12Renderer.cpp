@@ -21,6 +21,7 @@
 
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -3676,12 +3677,26 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
                   << std::endl;
         return nullptr;
     }
-    const effects::EffectKind* kind = m_effectKindRegistry->find(kindIdHash);
-    if (!kind) {
-        std::cerr << "[drawEffectPass] Unknown effect kind 0x"
-                  << std::hex << kindIdHash << std::dec << std::endl;
+    // findCopy, not find(): this runs on the SHOW thread while hot
+    // reload mutates the registry's kind map on the editor thread — the
+    // copy is taken under the registry lock so we never hold a pointer
+    // into a map an erase/rehash can invalidate. Cold path (PSO-cache
+    // miss only), so the copy cost is irrelevant.
+    const std::optional<effects::EffectKind> kindCopy =
+        m_effectKindRegistry->findCopy(kindIdHash);
+    if (!kindCopy) {
+        // Once per hash — a project referencing a missing user pack
+        // would otherwise spam this every draw of every frame from the
+        // show thread.
+        if (m_effectKindWarned.insert(kindIdHash).second) {
+            std::cerr << "[drawEffectPass] Unknown effect kind 0x"
+                      << std::hex << kindIdHash << std::dec
+                      << " (logged once)" << std::endl;
+        }
         return nullptr;
     }
+    m_effectKindWarned.erase(kindIdHash);
+    const effects::EffectKind* kind = &*kindCopy;
 
     // Load PS bytecode. User-authored kinds register their compiled
     // bytecode in-memory via RuntimeShaderCompiler (Phase 6 — see
@@ -3824,14 +3839,14 @@ bool D3D12Renderer::ensureEffectFallbackTexture() {
     return true;
 }
 
-void D3D12Renderer::drawEffectPass(const TextureRef* inputs,
+bool D3D12Renderer::drawEffectPass(const TextureRef* inputs,
                                     std::size_t inputCount,
                                     std::uint32_t kindIdHash,
                                     const std::uint8_t* paramBlob,
                                     std::size_t paramBlobSize,
                                     std::uint32_t viewportWidth,
                                     std::uint32_t viewportHeight) {
-    if (!m_initialized || !tl_activeCmdList) return;
+    if (!m_initialized || !tl_activeCmdList) return false;
     if (m_effectDrawIndex >= MAX_EFFECT_DRAWS_PER_FRAME) {
         if (!m_effectOverflowed) {
             std::cerr << "[drawEffectPass] Effect draw limit ("
@@ -3840,10 +3855,10 @@ void D3D12Renderer::drawEffectPass(const TextureRef* inputs,
                       << std::endl;
             m_effectOverflowed = true;
         }
-        return;
+        return false;
     }
 
-    if (!ensureEffectFallbackTexture()) return;
+    if (!ensureEffectFallbackTexture()) return false;
     const D3D12_GPU_DESCRIPTOR_HANDLE fallbackSrv =
         DescriptorHeapLayout::gpuHandle(m_imguiSrvHeap.Get(),
                                         DescriptorHeapLayout::EFFECT_FALLBACK_SLOT,
@@ -3859,12 +3874,12 @@ void D3D12Renderer::drawEffectPass(const TextureRef* inputs,
     for (std::size_t i = 0; i < boundInputs; ++i) {
         if (!inputs[i].valid()) continue;  // fallback stays bound
         auto srv = resolveTextureHandle(inputs[i]);
-        if (srv.ptr == 0) return;          // real input, not ready yet
+        if (srv.ptr == 0) return false;    // real input, not ready yet
         srvs[i] = srv;
     }
 
     ID3D12PipelineState* pso = getOrBuildEffectPso(kindIdHash);
-    if (!pso) return;
+    if (!pso) return false;
 
     // Marshal the param blob into a per-frame cbuffer ring slot. Clamp the
     // copy to the slot size; the bake side promises ≤ 256 bytes.
@@ -3926,6 +3941,7 @@ void D3D12Renderer::drawEffectPass(const TextureRef* inputs,
     tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
 
     ++m_effectDrawIndex;
+    return true;
 }
 
 void D3D12Renderer::drawOutputSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,

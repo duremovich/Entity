@@ -105,10 +105,12 @@ private:
     std::unordered_map<entt::entity, PendingAllocation> m_pendingAllocations;
     std::unordered_map<entt::entity, PendingAllocation> m_pendingGenerativeAllocations;
 
-    // PASS 1.5 scratch pool — show-thread-only. Exact-size reuse first,
-    // then resize of any free slot, then a fresh compose target. Retained
-    // at high-water (no releaseComposeTarget exists — same bounded-growth
-    // posture as the rest of the compose pool).
+    // PASS 1.5 scratch pool — show-thread-only. Exact-size reuse, else a
+    // fresh compose target; NEVER resize (a scratch slot may already be
+    // recorded into this frame's open show command list, and
+    // resizeComposeTarget's idle-drain only covers SUBMITTED work).
+    // Retained at high-water per size (no releaseComposeTarget exists —
+    // same bounded-growth posture as the rest of the compose pool).
     struct EffectScratchSlot {
         std::uint32_t slot{UINT32_MAX};
         std::uint32_t width{0};
@@ -116,6 +118,7 @@ private:
         bool          inUse{false};
     };
     std::vector<EffectScratchSlot> m_effectScratchPool;
+    bool m_effectScratchExhaustedLogged{false};  // one-shot, resets on success
 };
 
 } // namespace entity

@@ -118,9 +118,9 @@ public:
     void drawOutputSurface(TextureRef, const glm::vec2[4], const glm::vec2[4],
                             const glm::vec4&, float, float, float) override {}
     void drawMeshTriangle(TextureRef, const glm::vec2[3], const glm::vec2[3]) override {}
-    void drawEffectPass(const TextureRef*, std::size_t, std::uint32_t,
+    bool drawEffectPass(const TextureRef*, std::size_t, std::uint32_t,
                         const std::uint8_t*, std::size_t,
-                        std::uint32_t, std::uint32_t) override {}
+                        std::uint32_t, std::uint32_t) override { return true; }
     void drawCalibrationOverlay(const float*, int, int, bool) override {}
 
     uint32_t createOutputWindow(const char*, int32_t, int32_t, uint32_t, uint32_t) override {

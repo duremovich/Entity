@@ -109,7 +109,7 @@ void LayersWindow::render() {
         layerPaletteRow(
             "Solid",
             "Drag onto a track to create a Solid color layer.\n"
-            "A flat color fill — the classic host for generator effects\n"
+            "A flat color fill -- the classic host for generator effects\n"
             "(noise, gradients) and effect-chain experiments.\n"
             "Set color and resolution in the Properties panel.",
             Layer::Kind::Generative,

@@ -4600,15 +4600,7 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
             // Cross-project hygiene: the PSO cache is process-lifetime,
             // so a user kind loaded for the previous project (same hash,
             // different bytecode) must be evicted now.
-            if (m_transport) {
-                for (std::uint32_t hash :
-                     m_effectKindRegistry->lastScanTouchedKinds()) {
-                    bus::InvalidateEffectPso msg{};
-                    msg.kindIdHash = hash;
-                    m_transport->send(bus::Direction::D2R,
-                                      bus::serialize(bus::Message{msg}));
-                }
-            }
+            broadcastEffectPsoInvalidations();
         }
     }
 
@@ -4994,6 +4986,20 @@ void Engine::applyEditorLayoutAfterLoad() {
     m_windowManager->requestIniApply(imguiIni, hiddenWindows, layoutLocked, focusedTabs);
 }
 
+void Engine::broadcastEffectPsoInvalidations() {
+    // Evict stale PSOs for every user kind the last effect scan touched —
+    // the show thread parks them frame-aged and rebuilds from the fresh
+    // bytecode on next use. Shared by the project-load rescan and the
+    // hot-reload rescan so the two eviction paths can never diverge.
+    if (!m_transport || !m_effectKindRegistry) return;
+    for (std::uint32_t hash : m_effectKindRegistry->lastScanTouchedKinds()) {
+        bus::InvalidateEffectPso msg{};
+        msg.kindIdHash = hash;
+        m_transport->send(bus::Direction::D2R,
+                          bus::serialize(bus::Message{msg}));
+    }
+}
+
 void Engine::drainContentScannerDeltas() {
     ZoneScopedN("ContentScanner::drainDeltas");
     if (!m_contentScanner || !m_projectManager) return;
@@ -5016,17 +5022,7 @@ void Engine::drainContentScannerDeltas() {
     }
     if (effectsChanged && m_effectKindRegistry) {
         m_effectKindRegistry->hotReload();
-        // Evict stale PSOs for every user kind the rescan touched —
-        // the show thread parks them frame-aged and rebuilds from the
-        // fresh bytecode on next use.
-        if (m_transport) {
-            for (std::uint32_t hash : m_effectKindRegistry->lastScanTouchedKinds()) {
-                bus::InvalidateEffectPso msg{};
-                msg.kindIdHash = hash;
-                m_transport->send(bus::Direction::D2R,
-                                  bus::serialize(bus::Message{msg}));
-            }
-        }
+        broadcastEffectPsoInvalidations();
     }
 
     for (const auto& d : deltas) {

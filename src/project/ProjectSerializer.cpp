@@ -411,18 +411,31 @@ static void deserializeEffectChain(const json& entryJson,
             } else if (kind) {
                 // Known kind: start from schema defaults (guarantees the
                 // slot count matches what commands/bake expect), then
-                // apply saved entries by name. Unknown names log + drop.
+                // apply saved entries by name. A NAMELESS entry (the file
+                // was saved while this kind's pack was missing, so the
+                // serializer couldn't resolve names) falls back to its
+                // array position — otherwise restoring the pack would
+                // silently reset every param to defaults, destroying the
+                // very values the nameless degradation preserved.
+                // Unknown non-empty names log + drop.
                 for (const auto& schema : kind->params) {
                     params.values.push_back(schema.defaultValue);
                 }
-                for (const auto& p : pj) {
+                for (std::size_t pi = 0; pi < pj.size(); ++pi) {
+                    const auto& p = pj[pi];
                     if (!p.is_object()) continue;
                     const std::string name = p.value("name", std::string{});
                     int slot = -1;
-                    for (std::size_t i = 0; i < kind->params.size(); ++i) {
-                        if (kind->params[i].name == name) {
-                            slot = static_cast<int>(i);
-                            break;
+                    if (name.empty()) {
+                        if (pi < params.values.size()) {
+                            slot = static_cast<int>(pi);  // positional fallback
+                        }
+                    } else {
+                        for (std::size_t i = 0; i < kind->params.size(); ++i) {
+                            if (kind->params[i].name == name) {
+                                slot = static_cast<int>(i);
+                                break;
+                            }
                         }
                     }
                     if (slot < 0) {

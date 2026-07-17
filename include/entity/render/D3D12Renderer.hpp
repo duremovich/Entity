@@ -27,6 +27,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward declarations
@@ -291,7 +292,7 @@ public:
 
     // Per-layer effect pass (issue #54). See IRenderer comment for contract.
     using IRenderer::drawEffectPass;  // keep the single-input convenience visible
-    void     drawEffectPass(const TextureRef* inputs,
+    bool     drawEffectPass(const TextureRef* inputs,
                             std::size_t inputCount,
                             std::uint32_t kindIdHash,
                             const std::uint8_t* paramBlob,
@@ -777,6 +778,9 @@ private:
     ComPtr<ID3D12RootSignature> m_effectRootSignature;
     ComPtr<ID3DBlob>            m_effectVsBlob;
     std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> m_effectPsoCache;
+    // Kinds already warned about as unknown (log-once; cleared when the
+    // kind appears, e.g. after a hot reload restores it).
+    std::unordered_set<uint32_t> m_effectKindWarned;
 
     static constexpr uint32_t MAX_EFFECT_DRAWS_PER_FRAME = 256;
     static constexpr uint32_t EFFECT_CBUFFER_SLOT_SIZE   = 256;
