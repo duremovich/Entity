@@ -24,6 +24,7 @@
 #include "entity/components/EffectParameters.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/effects/EffectKind.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/components/Layer.hpp"
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/OutputDisplay.hpp"
@@ -1236,6 +1237,358 @@ TEST(ProjectSerializer, V15ProjectLoadsWithEmptyEffectChain) {
     EXPECT_EQ(registry.view<entity::EffectChain>().size(), 0u);
     // Clip is still loaded normally.
     EXPECT_GT(registry.view<entity::Clip>().size(), 0u);
+}
+
+namespace {
+
+// A test effect kind covering every ParamValue type, for v29 typed-param
+// round-trip coverage. Registered into a local EffectKindRegistry that
+// tests hand to ProjectSerializer via a bare ProjectManager.
+entity::effects::EffectKind makeMixedParamsKind() {
+    using PV = entity::ParamValue;
+    entity::effects::EffectKind k;
+    k.stableId    = "test.mixed_params";
+    k.kindIdHash  = entity::effects::fnv1a32("test.mixed_params");
+    k.displayName = "Mixed Params";
+    k.category    = "Test";
+
+    entity::effects::ParamSchema amount;
+    amount.name = "amount"; amount.displayName = "Amount";
+    amount.type = PV::Type::Float; amount.defaultValue = PV::makeFloat(1.0f);
+    amount.min = 0.0f; amount.max = 10.0f;
+
+    entity::effects::ParamSchema tint;
+    tint.name = "tint"; tint.displayName = "Tint";
+    tint.type = PV::Type::Color; tint.defaultValue = PV::makeColor(1, 1, 1, 1);
+    tint.uiHint = 1;
+
+    entity::effects::ParamSchema center;
+    center.name = "center"; center.displayName = "Center";
+    center.type = PV::Type::Vec2; center.defaultValue = PV::makeVec2(0.5f, 0.5f);
+
+    entity::effects::ParamSchema mode;
+    mode.name = "mode"; mode.displayName = "Mode";
+    mode.type = PV::Type::Enum; mode.defaultValue = PV::makeEnum(0);
+    mode.uiHint = 2; mode.enumLabels = {"A", "B", "C"};
+
+    entity::effects::ParamSchema invert;
+    invert.name = "invert"; invert.displayName = "Invert";
+    invert.type = PV::Type::Bool; invert.defaultValue = PV::makeBool(false);
+    invert.uiHint = 3;
+
+    k.params = {amount, tint, center, mode, invert};
+    return k;
+}
+
+} // namespace
+
+TEST(ProjectSerializer, EffectChainV29FullFidelityRoundTrip) {
+    // v29 round-trip with a live kind registry: typed name-keyed params of
+    // every ParamValue type, animated parameter tracks (the pre-v29
+    // silent-loss bug), and explicit graph topology (connections +
+    // non-trailing outputNode).
+    TempFile tf("effect_chain_v29_full");
+    const std::uint32_t kKindHash = entity::effects::fnv1a32("test.mixed_params");
+    const std::uint32_t kAmountHash = entity::effects::fnv1a32("amount");
+
+    entity::effects::EffectKindRegistry kindRegistry;
+    kindRegistry.registerKind(makeMixedParamsKind());
+    entity::ProjectManager pm;
+    pm.setEffectKindRegistry(&kindRegistry);
+
+    // --- Save ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        entt::entity clipEnt = registry.create();
+        auto& clip = registry.emplace<entity::Clip>(clipEnt);
+        clip.filepath  = "content/test.mov";
+        clip.mediaType = entity::MediaType::VideoProRes4444;
+        clip.startFrame = 0;
+        clip.duration   = 60;
+        clip.framerate  = 30.0;
+        auto& lay = registry.emplace<entity::Layer>(clipEnt);
+        lay.kind       = entity::Layer::Kind::Clip;
+        lay.startFrame = 0;
+        lay.duration   = 60;
+
+        auto makeFx = [&](float amount) {
+            entt::entity fxEnt = registry.create();
+            auto& fx = registry.emplace<entity::Effect>(fxEnt);
+            fx.kindId  = kKindHash;
+            fx.enabled = true;
+            fx.ownerLayer = clipEnt;
+            auto& params = registry.emplace<entity::EffectParameters>(fxEnt);
+            params.values.push_back(entity::ParamValue::makeFloat(amount));
+            params.values.push_back(entity::ParamValue::makeColor(1.0f, 0.25f, 0.0f, 0.5f));
+            params.values.push_back(entity::ParamValue::makeVec2(0.25f, 0.75f));
+            params.values.push_back(entity::ParamValue::makeEnum(2));
+            params.values.push_back(entity::ParamValue::makeBool(true));
+            registry.emplace<entity::EffectAnimatedParameters>(fxEnt);
+            return fxEnt;
+        };
+        entt::entity fx0 = makeFx(2.5f);
+        entt::entity fx1 = makeFx(7.0f);
+
+        // Animated "amount" on fx0 — two keyframes with non-default easing.
+        {
+            auto& eap = registry.get<entity::EffectAnimatedParameters>(fx0);
+            entity::EffectAnimatedParameters::NamedTrack nt;
+            nt.paramKeyHash = kAmountHash;
+            nt.enabled = true;
+            entity::Keyframe k0;
+            k0.frame = 0;  k0.value = 0.0f;
+            k0.interpolation = entity::InterpolationType::EaseInOut;
+            k0.easeIn = 0.1f; k0.easeOut = 0.9f;
+            entity::Keyframe k1;
+            k1.frame = 30; k1.value = 8.0f;
+            k1.interpolation = entity::InterpolationType::Step;
+            nt.keyframes = {k0, k1};
+            eap.tracks.push_back(nt);
+        }
+        // Disabled single-keyframe track on fx1 — enabled flag must survive.
+        {
+            auto& eap = registry.get<entity::EffectAnimatedParameters>(fx1);
+            entity::EffectAnimatedParameters::NamedTrack nt;
+            nt.paramKeyHash = kAmountHash;
+            nt.enabled = false;
+            entity::Keyframe k0;
+            k0.frame = 10; k0.value = 3.0f;
+            nt.keyframes = {k0};
+            eap.tracks.push_back(nt);
+        }
+
+        // Topology: layer source -> fx1 -> fx0 -> output; declaration order
+        // [fx0, fx1] and outputNode = fx0 so the explicit (non-trailing)
+        // output restore is exercised, not the last-node default.
+        auto& chain = registry.emplace<entity::EffectChain>(clipEnt);
+        chain.nodes = {fx0, fx1};
+        chain.connections.push_back({entt::null, fx1, 0, 0});
+        chain.connections.push_back({fx1, fx0, 0, 1});
+        chain.connections.push_back({fx0, entt::null, 0, 0});
+        chain.outputNode = fx0;
+
+        track->layers.push_back(clipEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path, &pm))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // --- Load ---
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path, nullptr, &pm))
+            << entity::ProjectSerializer::getLastError();
+
+        entt::entity loadedClip = entt::null;
+        for (auto [e, lay, clip] :
+             registry.view<entity::Layer, entity::Clip>().each()) {
+            if (clip.filepath == "content/test.mov") { loadedClip = e; break; }
+        }
+        ASSERT_TRUE(registry.valid(loadedClip));
+
+        const auto* chain = registry.try_get<entity::EffectChain>(loadedClip);
+        ASSERT_NE(chain, nullptr);
+        ASSERT_EQ(chain->nodes.size(), 2u);
+        entt::entity fx0 = chain->nodes[0];
+        entt::entity fx1 = chain->nodes[1];
+
+        // Kind restored via stableId.
+        EXPECT_EQ(registry.get<entity::Effect>(fx0).kindId, kKindHash);
+        EXPECT_EQ(registry.get<entity::Effect>(fx1).kindId, kKindHash);
+
+        // Typed params — every type round-trips with its value.
+        const auto& p0 = registry.get<entity::EffectParameters>(fx0);
+        ASSERT_EQ(p0.values.size(), 5u);
+        EXPECT_EQ(p0.values[0].type, entity::ParamValue::Type::Float);
+        EXPECT_FLOAT_EQ(p0.values[0].f4[0], 2.5f);
+        EXPECT_EQ(p0.values[1].type, entity::ParamValue::Type::Color);
+        EXPECT_FLOAT_EQ(p0.values[1].f4[1], 0.25f);
+        EXPECT_FLOAT_EQ(p0.values[1].f4[3], 0.5f);
+        EXPECT_EQ(p0.values[2].type, entity::ParamValue::Type::Vec2);
+        EXPECT_FLOAT_EQ(p0.values[2].f4[0], 0.25f);
+        EXPECT_FLOAT_EQ(p0.values[2].f4[1], 0.75f);
+        EXPECT_EQ(p0.values[3].type, entity::ParamValue::Type::Enum);
+        EXPECT_EQ(p0.values[3].i, 2);
+        EXPECT_EQ(p0.values[4].type, entity::ParamValue::Type::Bool);
+        EXPECT_TRUE(p0.values[4].b);
+        EXPECT_FLOAT_EQ(registry.get<entity::EffectParameters>(fx1).values[0].f4[0], 7.0f);
+
+        // Animated tracks — the v29 bug fix.
+        {
+            const auto& eap = registry.get<entity::EffectAnimatedParameters>(fx0);
+            ASSERT_EQ(eap.tracks.size(), 1u);
+            const auto& nt = eap.tracks[0];
+            EXPECT_EQ(nt.paramKeyHash, kAmountHash);
+            EXPECT_TRUE(nt.enabled);
+            ASSERT_EQ(nt.keyframes.size(), 2u);
+            EXPECT_EQ(nt.keyframes[0].frame, 0);
+            EXPECT_FLOAT_EQ(nt.keyframes[0].value, 0.0f);
+            EXPECT_EQ(nt.keyframes[0].interpolation, entity::InterpolationType::EaseInOut);
+            EXPECT_FLOAT_EQ(nt.keyframes[0].easeIn, 0.1f);
+            EXPECT_FLOAT_EQ(nt.keyframes[0].easeOut, 0.9f);
+            EXPECT_EQ(nt.keyframes[1].frame, 30);
+            EXPECT_FLOAT_EQ(nt.keyframes[1].value, 8.0f);
+            EXPECT_EQ(nt.keyframes[1].interpolation, entity::InterpolationType::Step);
+        }
+        {
+            const auto& eap = registry.get<entity::EffectAnimatedParameters>(fx1);
+            ASSERT_EQ(eap.tracks.size(), 1u);
+            EXPECT_FALSE(eap.tracks[0].enabled);
+            ASSERT_EQ(eap.tracks[0].keyframes.size(), 1u);
+            EXPECT_EQ(eap.tracks[0].keyframes[0].frame, 10);
+        }
+
+        // Topology — connections remapped to the fresh entities, sockets
+        // intact, explicit non-trailing outputNode restored.
+        ASSERT_EQ(chain->connections.size(), 3u);
+        EXPECT_EQ(chain->connections[0].srcNode, entt::entity{entt::null});
+        EXPECT_EQ(chain->connections[0].dstNode, fx1);
+        EXPECT_EQ(chain->connections[1].srcNode, fx1);
+        EXPECT_EQ(chain->connections[1].dstNode, fx0);
+        EXPECT_EQ(chain->connections[1].dstSocket, 1);
+        EXPECT_EQ(chain->connections[2].srcNode, fx0);
+        EXPECT_EQ(chain->connections[2].dstNode, entt::entity{entt::null});
+        EXPECT_EQ(chain->outputNode, fx0);
+    }
+}
+
+TEST(ProjectSerializer, EffectChainV28ParamsLoadAsFloats) {
+    // Back-compat: a pre-v29 file stores params as a flat numeric array.
+    // The loader must read those positionally as Floats (with or without
+    // a kind registry present).
+    TempFile tf("effect_chain_v28_flat_params");
+    const std::uint32_t kBlurKindHash = entity::effects::fnv1a32("core.gaussian_blur");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 28,
+  "timeline": {"duration": 600, "framerate": 30, "currentTime": 0},
+  "tracks": [
+    {
+      "index": 0,
+      "layers": [
+        {
+          "kind": "clip",
+          "filepath": "content/test.mov",
+          "mediaType": "prores4444",
+          "startFrame": 0,
+          "duration": 60,
+          "mediaStartFrame": 0,
+          "mediaOutFrame": 59,
+          "totalMediaFrames": 60,
+          "playbackMode": 0,
+          "framerate": 30.0,
+          "width": 1920,
+          "height": 1080,
+          "targetScreenName": "",
+          "effects": [
+            {"kindIdHash": )" << kBlurKindHash << R"(, "enabled": true,
+             "graphX": 0.0, "graphY": 0.0, "params": [4.5, 2.0]}
+          ]
+        }
+      ]
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    auto chainView = registry.view<entity::EffectChain>();
+    ASSERT_EQ(chainView.size(), 1u);
+    const auto& chain = chainView.get<entity::EffectChain>(chainView.front());
+    ASSERT_EQ(chain.nodes.size(), 1u);
+    const auto& params = registry.get<entity::EffectParameters>(chain.nodes[0]);
+    ASSERT_EQ(params.values.size(), 2u);
+    EXPECT_EQ(params.values[0].type, entity::ParamValue::Type::Float);
+    EXPECT_FLOAT_EQ(params.values[0].f4[0], 4.5f);
+    EXPECT_FLOAT_EQ(params.values[1].f4[0], 2.0f);
+    EXPECT_TRUE(chain.connections.empty());
+}
+
+TEST(ProjectSerializer, EffectAnimatedParamsSurviveMissingKind) {
+    // Animated tracks must load even when no registry can resolve the
+    // kind: a name-keyed track rehashes the wire name, a hash-only track
+    // (saved while the user kind itself was already missing) keeps its
+    // stored hash.
+    TempFile tf("effect_anim_missing_kind");
+
+    {
+        std::ofstream out(tf.path);
+        out << R"({
+  "format": "entity_project",
+  "version": 29,
+  "timeline": {"duration": 600, "framerate": 30, "currentTime": 0},
+  "tracks": [
+    {
+      "index": 0,
+      "layers": [
+        {
+          "kind": "clip",
+          "filepath": "content/test.mov",
+          "mediaType": "prores4444",
+          "startFrame": 0,
+          "duration": 60,
+          "mediaStartFrame": 0,
+          "mediaOutFrame": 59,
+          "totalMediaFrames": 60,
+          "playbackMode": 0,
+          "framerate": 30.0,
+          "width": 1920,
+          "height": 1080,
+          "targetScreenName": "",
+          "effects": [
+            {"kindIdHash": 123456789, "enabled": true,
+             "params": [{"type": "float", "value": 1.5}],
+             "animatedParams": [
+               {"param": "radius", "enabled": true,
+                "keyframes": [{"frame": 0, "value": 0.0},
+                              {"frame": 20, "value": 5.0}]},
+               {"paramHash": 777, "enabled": true,
+                "keyframes": [{"frame": 5, "value": 1.0}]}
+             ]}
+          ]
+        }
+      ]
+    }
+  ]
+})";
+    }
+
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+
+    auto chainView = registry.view<entity::EffectChain>();
+    ASSERT_EQ(chainView.size(), 1u);
+    const auto& chain = chainView.get<entity::EffectChain>(chainView.front());
+    ASSERT_EQ(chain.nodes.size(), 1u);
+
+    // Unresolvable kind: typed params restore positionally.
+    const auto& params = registry.get<entity::EffectParameters>(chain.nodes[0]);
+    ASSERT_EQ(params.values.size(), 1u);
+    EXPECT_FLOAT_EQ(params.values[0].f4[0], 1.5f);
+
+    const auto& eap = registry.get<entity::EffectAnimatedParameters>(chain.nodes[0]);
+    ASSERT_EQ(eap.tracks.size(), 2u);
+    EXPECT_EQ(eap.tracks[0].paramKeyHash, entity::effects::fnv1a32("radius"));
+    ASSERT_EQ(eap.tracks[0].keyframes.size(), 2u);
+    EXPECT_EQ(eap.tracks[0].keyframes[1].frame, 20);
+    EXPECT_FLOAT_EQ(eap.tracks[0].keyframes[1].value, 5.0f);
+    EXPECT_EQ(eap.tracks[1].paramKeyHash, 777u);
+    ASSERT_EQ(eap.tracks[1].keyframes.size(), 1u);
 }
 
 // --- v19 stage-view opacity for Screen / Prop ----------------------------

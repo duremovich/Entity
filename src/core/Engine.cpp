@@ -301,6 +301,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
         d3d->setEffectKindRegistry(m_effectKindRegistry.get());
     }
+    if (m_projectManager) {
+        // v29 serialization writes stable kind IDs + param names through
+        // the registry (ProjectSerializer reads it off ProjectManager).
+        m_projectManager->setEffectKindRegistry(m_effectKindRegistry.get());
+    }
 
     // Cross-system input channel bus. Constructed here (before any plugin
     // worker spins up that might write to it) and handed to systems +

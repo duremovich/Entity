@@ -172,7 +172,20 @@ public:
     //          back into WindowManager::requestIniApply on load. Files without
     //          the key (older projects, headless saves) keep the current
     //          workspace layout, exactly as before.
-    static constexpr int PROJECT_VERSION = 28;
+    // v29: effect-chain persistence upgrade (effects node-graph work).
+    //      Per-effect: "stableId" string (preferred over the retained
+    //      "kindIdHash" fallback), typed name-keyed "params" object
+    //      entries [{name,type,value}] replacing the flat Float array,
+    //      and "animatedParams" keyframe tracks (fixes silent loss of
+    //      effect keyframes on save/load — pre-v29 never wrote them).
+    //      Per-layer: optional "effectConnections" + "effectOutputNode"
+    //      (graph topology; indices into the same entry's effects array,
+    //      -1 = layer-source / final-output sentinel), and generative
+    //      layers now persist their effect chains (previously clip-only).
+    //      Also "solid" generative sub-kind. Pre-v29 files load
+    //      unchanged: a numeric params array is read positionally as
+    //      Floats; missing keys mean empty tracks / linear stack.
+    static constexpr int PROJECT_VERSION = 29;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**
