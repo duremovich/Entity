@@ -290,7 +290,9 @@ public:
                               const glm::vec2 uvs[3]);
 
     // Per-layer effect pass (issue #54). See IRenderer comment for contract.
-    void     drawEffectPass(TextureRef input,
+    using IRenderer::drawEffectPass;  // keep the single-input convenience visible
+    void     drawEffectPass(const TextureRef* inputs,
+                            std::size_t inputCount,
                             std::uint32_t kindIdHash,
                             const std::uint8_t* paramBlob,
                             std::size_t paramBlobSize,
@@ -786,6 +788,14 @@ private:
     // in drawEffectPass). Renderer-local by design — see ADR-0025.
     std::chrono::steady_clock::time_point m_effectTimeStart{
         std::chrono::steady_clock::now()};
+    // 4x4 black texture bound to unconnected / absent effect inputs so
+    // every root-signature SRV table (t0-t3) always has a valid
+    // descriptor. Created lazily on the show thread (needs an open
+    // command list for the one-time clear); SRV lives at
+    // DescriptorHeapLayout::EFFECT_FALLBACK_SLOT.
+    ComPtr<ID3D12Resource>       m_effectFallbackTexture;
+    ComPtr<ID3D12DescriptorHeap> m_effectFallbackRtvHeap;
+    bool ensureEffectFallbackTexture();
 
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {
@@ -891,6 +901,13 @@ private:
         D3D12_GPU_DESCRIPTOR_HANDLE stableSrvHandle() const {
             const uint32_t idx = lastStableIndex.load(std::memory_order_acquire);
             return (idx != UINT32_MAX) ? srvHandles[idx % TRIPLE] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+        }
+
+        // SRV handle for the sub-resource being written THIS frame — for
+        // intra-frame producer→consumer sampling (TextureRef::composeWrite).
+        // Show-thread only.
+        D3D12_GPU_DESCRIPTOR_HANDLE writeSrvHandle() const {
+            return srvHandles[writeIndex % TRIPLE];
         }
 
         // Read-back copy for shader-blend modes (Overlay, Difference, etc.).

@@ -854,7 +854,8 @@ bool CaptureScreenshotCommand::execute(Engine& engine) {
         std::cerr << "[CaptureScreenshot] No capture broker available" << std::endl;
         return false;
     }
-    return broker->requestScreenshotCapture(/*slot*/0, m_filepath,
+    return broker->requestScreenshotCapture(static_cast<int>(m_composeSlot),
+                                            m_filepath,
                                             m_region == Region::FullWindow);
 }
 
@@ -878,7 +879,8 @@ CommandPtr CaptureScreenshotCommand::fromJson(const nlohmann::json& j) {
     if (regionStr == "fullWindow") {
         region = Region::FullWindow;
     }
-    return std::make_unique<CaptureScreenshotCommand>(filepath, region);
+    return std::make_unique<CaptureScreenshotCommand>(
+        filepath, region, j.value("composeSlot", 0u));
 }
 
 bool CaptureHashCommand::execute(Engine& engine) {

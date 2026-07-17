@@ -33,9 +33,20 @@ cbuffer EffectParams : register(b0) {
 };
 
 Texture2D    g_input  : register(t0);
+// Secondary inputs for combiner kinds (blend / mask / displace). The
+// renderer binds a 4x4 black fallback to any register the effect's
+// sockets don't connect, so sampling an unconnected input reads opaque
+// black rather than garbage. Unreferenced declarations are stripped by
+// the compiler — single-input effects are unaffected.
+Texture2D    g_input1 : register(t1);
+Texture2D    g_input2 : register(t2);
+Texture2D    g_input3 : register(t3);
 SamplerState g_samp   : register(s0);
 
-float4 sampleInput(float2 uv) { return g_input.Sample(g_samp, uv); }
+float4 sampleInput(float2 uv)  { return g_input.Sample(g_samp, uv); }
+float4 sampleInput1(float2 uv) { return g_input1.Sample(g_samp, uv); }
+float4 sampleInput2(float2 uv) { return g_input2.Sample(g_samp, uv); }
+float4 sampleInput3(float2 uv) { return g_input3.Sample(g_samp, uv); }
 
 struct EffectVSOut {
     float4 pos : SV_POSITION;

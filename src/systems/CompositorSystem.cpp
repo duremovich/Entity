@@ -155,38 +155,51 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 outputStep = emittedToStep[static_cast<std::size_t>(cl.effectsOutputIndex)];
             }
 
-            // Per-step input-0 (multi-input binding lands with the t0-t3
-            // root-signature work; until then only the first socket draws).
+            // Per-step resolved inputs (every texture socket, up to 4).
             // Legacy payloads (empty inputs) = linear prev-feeds-next.
-            auto input0Of = [&](int stepIdx) -> int {
+            constexpr int kMaxEffectInputs = 4;
+            auto inputsOf = [&](int stepIdx, int (&out)[kMaxEffectInputs]) -> int {
                 const auto& fx = *steps[static_cast<std::size_t>(stepIdx)];
-                if (fx.inputCount == 0) return -2;             // generator
-                if (!fx.inputs.empty()) {
-                    // Wire indices address the emitted vector — remap.
-                    const std::int32_t in = fx.inputs[0];
-                    if (in < 0) return static_cast<int>(in);
-                    if (in < static_cast<std::int32_t>(emittedToStep.size())) {
-                        return emittedToStep[static_cast<std::size_t>(in)];
+                const int nIn = std::min<int>(fx.inputCount, kMaxEffectInputs);
+                for (int s = 0; s < nIn; ++s) {
+                    int resolved = -2;
+                    if (s < static_cast<int>(fx.inputs.size())) {
+                        // Wire indices address the emitted vector — remap.
+                        const std::int32_t in = fx.inputs[static_cast<std::size_t>(s)];
+                        if (in < 0) {
+                            resolved = static_cast<int>(in);
+                        } else if (in < static_cast<std::int32_t>(emittedToStep.size())) {
+                            resolved = emittedToStep[static_cast<std::size_t>(in)];
+                        }
+                    } else if (s == 0 && fx.inputs.empty()) {
+                        resolved = stepIdx == 0 ? -1 : stepIdx - 1;  // legacy linear
                     }
-                    return -2;
+                    out[s] = resolved;
                 }
-                return stepIdx == 0 ? -1 : stepIdx - 1;        // legacy linear
+                return nIn;
             };
 
-            // Liveness: last step index that reads each step's output.
+            // Liveness: last step index that reads each step's output —
+            // across every input socket, not just the first.
             std::vector<int> lastUse(static_cast<std::size_t>(stepCount), -1);
             for (int i = 0; i < stepCount; ++i) {
-                const int in = input0Of(i);
-                if (in >= 0) lastUse[static_cast<std::size_t>(in)] = i;
+                int ins[kMaxEffectInputs];
+                const int n = inputsOf(i, ins);
+                for (int s = 0; s < n; ++s) {
+                    if (ins[s] >= 0) lastUse[static_cast<std::size_t>(ins[s])] = i;
+                }
             }
             lastUse[static_cast<std::size_t>(outputStep)] = stepCount;  // held past the loop
 
+            // Compose sources (generative/solid RTs) were written by PASS 1
+            // THIS frame — sample the write sub, not the one-frame-old
+            // stable sub.
             const TextureRef sourceRef =
                 (cl.sourceSlot < 0) ? TextureRef::invalid()
                 : (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
                     ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot),
                                         cl.sourceGeneration)  // #90 draw guard
-                    : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
+                    : TextureRef::composeWrite(static_cast<std::uint32_t>(cl.sourceSlot));
 
             std::vector<std::uint32_t> results(
                 static_cast<std::size_t>(stepCount), UINT32_MAX);
@@ -194,16 +207,26 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             for (int i = 0; i < stepCount && !aborted; ++i) {
                 const auto& fx = *steps[static_cast<std::size_t>(i)];
 
-                const int in0 = input0Of(i);
-                TextureRef inputRef = TextureRef::invalid();
-                if (in0 == -1) {
-                    inputRef = sourceRef;
-                } else if (in0 >= 0 &&
-                           results[static_cast<std::size_t>(in0)] != UINT32_MAX) {
-                    inputRef = TextureRef::compose(results[static_cast<std::size_t>(in0)]);
+                int ins[kMaxEffectInputs];
+                const int nIn = inputsOf(i, ins);
+                TextureRef inputRefs[kMaxEffectInputs] = {
+                    TextureRef::invalid(), TextureRef::invalid(),
+                    TextureRef::invalid(), TextureRef::invalid()};
+                for (int s = 0; s < nIn; ++s) {
+                    if (ins[s] == -1) {
+                        inputRefs[s] = sourceRef;
+                    } else if (ins[s] >= 0 &&
+                               results[static_cast<std::size_t>(ins[s])] != UINT32_MAX) {
+                        // Intra-frame chain read — MUST be the write sub.
+                        // The stable sub is last frame's content, and a
+                        // scratch slot reused within this frame would hand
+                        // us a different node's output entirely.
+                        inputRefs[s] = TextureRef::composeWrite(
+                            results[static_cast<std::size_t>(ins[s])]);
+                    }
+                    // -2 (generator / unconnected) stays invalid — the
+                    // renderer binds the black fallback.
                 }
-                // in0 == -2 (generator / unconnected) stays invalid — the
-                // renderer skips the SRV bind.
 
                 const std::uint32_t out = acquireEffectScratch(rtW, rtH);
                 if (out == UINT32_MAX) {
@@ -215,7 +238,9 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 results[static_cast<std::size_t>(i)] = out;
 
                 m_renderer->beginComposeTarget(out);
-                m_renderer->drawEffectPass(inputRef, fx.kindIdHash,
+                m_renderer->drawEffectPass(inputRefs,
+                                            static_cast<std::size_t>(std::max(nIn, 1)),
+                                            fx.kindIdHash,
                                             fx.paramBlob.data(),
                                             fx.paramBlob.size(),
                                             rtW, rtH);
@@ -314,10 +339,12 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 TextureColorSpace colorSpace = TextureColorSpace::Linear;
                 std::string ocioColorSpace;
                 // If PASS 1.5 produced a post-effects RT, PASS 2 reads
-                // from it (always Compose, linear). Otherwise fall back to
-                // the layer's source slot resolved by sourceKind.
+                // from it (always Compose, linear) — via the write sub,
+                // since the chain rendered it THIS frame and scratch slots
+                // recycle across frames. Otherwise fall back to the
+                // layer's source slot resolved by sourceKind.
                 if (cl.postEffectsSlot >= 0) {
-                    tex = m_renderer->getComposeTargetTexture(
+                    tex = TextureRef::composeWrite(
                         static_cast<uint32_t>(cl.postEffectsSlot));
                 } else if (cl.sourceSlot >= 0) {
                     switch (cl.sourceKind) {

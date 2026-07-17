@@ -11,7 +11,7 @@
 #include "_effect_common.hlsli"
 
 float4 PSMain(EffectVSOut i) : SV_TARGET {
-    int   shape    = (int)g_params[0].x;
+    int   shape    = asint(g_params[0].x);  // Enum slots are bit-cast ints
     float size     = saturate(g_params[1].x);
     float softness = clamp(g_params[2].x, 0.0f, 0.5f);
     float4 color   = g_params[3];

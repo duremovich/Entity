@@ -138,8 +138,12 @@ entity_compile_shader(effects/gen_checkerboard_ps.hlsl      ps PSMain 6_0)
 entity_compile_shader(effects/gen_fractal_noise_ps.hlsl     ps PSMain 6_0)
 entity_compile_shader(effects/gen_plasma_ps.hlsl            ps PSMain 6_0)
 entity_compile_shader(effects/gen_shape_ps.hlsl             ps PSMain 6_0)
+# Combiner effects (two texture inputs — blend / mask / displace).
+entity_compile_shader(effects/comb_blend_ps.hlsl            ps PSMain 6_0)
+entity_compile_shader(effects/comb_mask_ps.hlsl             ps PSMain 6_0)
+entity_compile_shader(effects/comb_displace_ps.hlsl         ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 31 shaders")
+message(STATUS "Configured offline HLSL compilation for 34 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler

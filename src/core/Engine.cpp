@@ -5680,7 +5680,8 @@ void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
     auto capture = [&]() {
         return req.fullWindow
             ? m_renderer->captureBackBufferToPNG(req.pngPath)
-            : m_renderer->captureComposeTargetToPNG(req.pngPath);
+            : m_renderer->captureComposeTargetToPNG(
+                  req.pngPath, static_cast<uint32_t>(req.slot));
     };
     bool ok = capture();
     if (!ok) ok = capture();

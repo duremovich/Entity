@@ -39,6 +39,13 @@ struct TextureRef {
         Invalid,
         VideoSlot,      // Allocated via IRenderer::allocateVideoTextureSlot
         ComposeTarget,  // Allocated via IRenderer::createComposeTarget
+        // Same pool as ComposeTarget, but resolves to the sub-resource
+        // being WRITTEN this frame instead of the last stably-presented
+        // one. Required for intra-frame producer→consumer chains (PASS
+        // 1.5 effect scratch): the stable sub is one frame old, and a
+        // scratch slot reused within a frame would hand the consumer a
+        // different node's output entirely.
+        ComposeWrite,
     };
     Kind kind{Kind::Invalid};
     uint32_t slot{0};
@@ -54,6 +61,7 @@ struct TextureRef {
     static TextureRef video(uint32_t s)                { return {Kind::VideoSlot, s}; }
     static TextureRef video(uint32_t s, uint32_t gen)  { return {Kind::VideoSlot, s, gen}; }
     static TextureRef compose(uint32_t s)              { return {Kind::ComposeTarget, s}; }
+    static TextureRef composeWrite(uint32_t s)         { return {Kind::ComposeWrite, s}; }
 };
 
 class IRenderer {
@@ -305,12 +313,28 @@ public:
     // renderer copies it verbatim into a per-frame upload-heap ring slot bound
     // at root parameter 1 (b0). Must be called between beginComposeTarget and
     // endComposeTarget. ------------------------------------------------------------------------
-    virtual void drawEffectPass(TextureRef input,
+    // Multi-input form: `inputs[i]` binds to register t<i> (up to 4 —
+    // combiner kinds read t0 + t1). Invalid refs bind the shared black
+    // fallback texture (generators / unconnected DAG sockets); a VALID ref
+    // that fails to resolve (texture not ready yet) skips the whole pass.
+    virtual void drawEffectPass(const TextureRef* inputs,
+                                std::size_t inputCount,
                                 std::uint32_t kindIdHash,
                                 const std::uint8_t* paramBlob,
                                 std::size_t paramBlobSize,
                                 std::uint32_t viewportWidth,
                                 std::uint32_t viewportHeight) = 0;
+
+    // Single-input convenience (filters / generators).
+    void drawEffectPass(TextureRef input,
+                        std::uint32_t kindIdHash,
+                        const std::uint8_t* paramBlob,
+                        std::size_t paramBlobSize,
+                        std::uint32_t viewportWidth,
+                        std::uint32_t viewportHeight) {
+        drawEffectPass(&input, 1, kindIdHash, paramBlob, paramBlobSize,
+                       viewportWidth, viewportHeight);
+    }
 
     // Draws the projector calibration crosshair overlay directly onto the
     // currently-bound output RTV. Show-thread call (ADR-0014); records on the

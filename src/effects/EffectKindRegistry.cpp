@@ -151,6 +151,22 @@ EffectKind makeGeneratorKind(const char* stableId,
     return k;
 }
 
+// Combiner variant: two texture inputs (a = t0, b = t1). In a linear
+// stack the second input is unconnected (black fallback); the graph
+// editor wires branches into it.
+EffectKind makeCombinerKind(const char* stableId,
+                             const char* displayName,
+                             const char* psoFilename,
+                             const char* secondInputName,
+                             std::vector<ParamSchema> params)
+{
+    EffectKind k = makeBuiltinKind(stableId, displayName, "Combine",
+                                   psoFilename, std::move(params));
+    k.sockets = { textureInput("a"), textureInput(secondInputName),
+                  textureOutput("out") };
+    return k;
+}
+
 } // namespace
 
 void EffectKindRegistry::registerBuiltins() {
@@ -315,6 +331,46 @@ void EffectKindRegistry::registerBuiltins() {
             makeFloatSchema("size",     "Size",     0.5f, 0.0f, 1.0f),
             makeFloatSchema("softness", "Softness", 0.02f, 0.0f, 0.5f),
             makeColorSchema("color", "Color", 1.0f, 1.0f, 1.0f, 1.0f),
+        }
+    ));
+
+    // ---- Combiners (two texture inputs — the graph editor wires a
+    // second branch into socket "b" / "mask" / "map"). ----
+
+    registerKind(makeCombinerKind(
+        "core.comb.blend",
+        "Blend",
+        "comb_blend_ps.cso",
+        "b",
+        {
+            makeEnumSchema("mode", "Mode",
+                           {"Normal", "Add", "Multiply", "Screen",
+                            "Overlay", "Difference"}, 0),
+            makeFloatSchema("opacity", "Opacity", 1.0f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeCombinerKind(
+        "core.comb.mask",
+        "Mask",
+        "comb_mask_ps.cso",
+        "mask",
+        {
+            makeEnumSchema("channel", "Channel",
+                           {"Luma", "Alpha", "R", "G", "B"}, 0),
+            makeEnumSchema("invert", "Invert", {"Off", "On"}, 0),
+            makeFloatSchema("softness", "Softness", 0.0f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeCombinerKind(
+        "core.comb.displace",
+        "Displace",
+        "comb_displace_ps.cso",
+        "map",
+        {
+            makeFloatSchema("amountX", "Amount X (px)", 16.0f, -256.0f, 256.0f),
+            makeFloatSchema("amountY", "Amount Y (px)", 16.0f, -256.0f, 256.0f),
         }
     ));
 }

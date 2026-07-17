@@ -520,8 +520,9 @@ public:
         FullWindow      // Entire window with UI
     };
 
-    explicit CaptureScreenshotCommand(std::string filepath, Region region = Region::ComposeTarget)
-        : m_filepath(std::move(filepath)), m_region(region) {}
+    explicit CaptureScreenshotCommand(std::string filepath, Region region = Region::ComposeTarget,
+                                      std::uint32_t composeSlot = 0)
+        : m_filepath(std::move(filepath)), m_region(region), m_composeSlot(composeSlot) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "CaptureScreenshot"; }
@@ -533,6 +534,7 @@ public:
 private:
     std::string m_filepath;
     Region m_region;
+    std::uint32_t m_composeSlot{0};
 };
 
 // Capture a pixel-hash of a compose target. Used by integration tests for

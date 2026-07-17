@@ -3530,29 +3530,37 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
 
 Result D3D12Renderer::createEffectRootSignature() {
     // Root parameters:
-    // [0] Descriptor table for input texture SRV (t0)
-    // [1] CBV for EffectParams (b0) — points at a slot in the per-frame ring.
+    // [0..3] One single-descriptor SRV table per input register t0-t3.
+    //        Four SEPARATE tables (not one 4-wide range) because effect
+    //        inputs come from non-contiguous heap slots — compose targets,
+    //        video-pool textures, and the black fallback all live in
+    //        different heap regions, and a contiguous range would force
+    //        per-draw descriptor staging for nothing. 4 tables + 1 CBV =
+    //        5 DWORDs of root cost, fine.
+    // [4]    CBV for EffectParams (b0) — a slot in the per-frame ring.
     // Static sampler at s0 (LINEAR, CLAMP).
     //
     // Pixel-only SRV visibility (the shared VS is pure positional math).
 
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;
-    srvRange.RegisterSpace = 0;
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE srvRanges[4] = {};
+    D3D12_ROOT_PARAMETER rootParams[5] = {};
+    for (UINT i = 0; i < 4; ++i) {
+        srvRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRanges[i].NumDescriptors = 1;
+        srvRanges[i].BaseShaderRegister = i;  // t<i>
+        srvRanges[i].RegisterSpace = 0;
+        srvRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParams[2] = {};
-    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
-    rootParams[0].DescriptorTable.pDescriptorRanges = &srvRange;
-    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParams[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParams[i].DescriptorTable.NumDescriptorRanges = 1;
+        rootParams[i].DescriptorTable.pDescriptorRanges = &srvRanges[i];
+        rootParams[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
 
-    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParams[1].Descriptor.ShaderRegister = 0;  // b0
-    rootParams[1].Descriptor.RegisterSpace  = 0;
-    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[4].Descriptor.ShaderRegister = 0;  // b0
+    rootParams[4].Descriptor.RegisterSpace  = 0;
+    rootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -3568,7 +3576,7 @@ Result D3D12Renderer::createEffectRootSignature() {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc = {};
-    desc.NumParameters = 2;
+    desc.NumParameters = 5;
     desc.pParameters = rootParams;
     desc.NumStaticSamplers = 1;
     desc.pStaticSamplers = &sampler;
@@ -3720,7 +3728,78 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
     return raw;
 }
 
-void D3D12Renderer::drawEffectPass(TextureRef input,
+bool D3D12Renderer::ensureEffectFallbackTexture() {
+    if (m_effectFallbackTexture) return true;
+    if (!tl_activeCmdList || !m_gpu) return false;
+
+    // 4x4 R16G16B16A16_FLOAT (same as compose targets), cleared to opaque
+    // black once via a transient RTV, then parked in PIXEL_SHADER_RESOURCE
+    // forever. Created lazily here because the clear needs an open show
+    // command list.
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = 4;
+    desc.Height           = 4;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    // TRANSPARENT black — an unconnected combiner input contributes
+    // nothing (blend weight 0 keeps input A; a missing matte masks out).
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
+        IID_PPV_ARGS(&m_effectFallbackTexture));
+    if (FAILED(hr)) {
+        std::cerr << "[drawEffectPass] fallback texture create failed" << std::endl;
+        return false;
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.NumDescriptors = 1;
+    hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc,
+                                               IID_PPV_ARGS(&m_effectFallbackRtvHeap));
+    if (FAILED(hr)) {
+        m_effectFallbackTexture.Reset();
+        return false;
+    }
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+        m_effectFallbackRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_gpu->device()->CreateRenderTargetView(m_effectFallbackTexture.Get(),
+                                            nullptr, rtv);
+
+    const float black[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    tl_activeCmdList->ClearRenderTargetView(rtv, black, 0, nullptr);
+
+    D3D12_RESOURCE_BARRIER toSrv = {};
+    toSrv.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toSrv.Transition.pResource   = m_effectFallbackTexture.Get();
+    toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    tl_activeCmdList->ResourceBarrier(1, &toSrv);
+
+    // Shader-visible SRV at the reserved heap slot.
+    m_gpu->device()->CreateShaderResourceView(
+        m_effectFallbackTexture.Get(), nullptr,
+        DescriptorHeapLayout::cpuHandle(m_imguiSrvHeap.Get(),
+                                        DescriptorHeapLayout::EFFECT_FALLBACK_SLOT,
+                                        m_srvDescriptorSize));
+    return true;
+}
+
+void D3D12Renderer::drawEffectPass(const TextureRef* inputs,
+                                    std::size_t inputCount,
                                     std::uint32_t kindIdHash,
                                     const std::uint8_t* paramBlob,
                                     std::size_t paramBlobSize,
@@ -3738,12 +3817,25 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
         return;
     }
 
-    // Generators (zero texture-input sockets) run with no input texture:
-    // an invalid ref is expected, the SRV bind below is skipped, and the
-    // PS never samples t0. Filters with a not-ready input still skip the
-    // whole pass — sampling a stale/unbound descriptor is never OK.
-    auto srv = resolveTextureHandle(input);
-    if (srv.ptr == 0 && input.valid()) return;  // real input, not ready yet
+    if (!ensureEffectFallbackTexture()) return;
+    const D3D12_GPU_DESCRIPTOR_HANDLE fallbackSrv =
+        DescriptorHeapLayout::gpuHandle(m_imguiSrvHeap.Get(),
+                                        DescriptorHeapLayout::EFFECT_FALLBACK_SLOT,
+                                        m_srvDescriptorSize);
+
+    // Resolve every input register. Invalid refs (generators, unconnected
+    // DAG sockets) bind the black fallback; a VALID ref that fails to
+    // resolve means the texture isn't ready — skip the whole pass rather
+    // than sample a stale/unbound descriptor.
+    D3D12_GPU_DESCRIPTOR_HANDLE srvs[4] = {fallbackSrv, fallbackSrv,
+                                            fallbackSrv, fallbackSrv};
+    const std::size_t boundInputs = (inputCount > 4) ? 4 : inputCount;
+    for (std::size_t i = 0; i < boundInputs; ++i) {
+        if (!inputs[i].valid()) continue;  // fallback stays bound
+        auto srv = resolveTextureHandle(inputs[i]);
+        if (srv.ptr == 0) return;          // real input, not ready yet
+        srvs[i] = srv;
+    }
 
     ID3D12PipelineState* pso = getOrBuildEffectPso(kindIdHash);
     if (!pso) return;
@@ -3798,8 +3890,10 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
 
     tl_activeCmdList->SetPipelineState(pso);
     tl_activeCmdList->SetGraphicsRootSignature(m_effectRootSignature.Get());
-    tl_activeCmdList->SetGraphicsRootDescriptorTable(0, srv);
-    tl_activeCmdList->SetGraphicsRootConstantBufferView(1, cbufferGpuAddr);
+    for (UINT i = 0; i < 4; ++i) {
+        tl_activeCmdList->SetGraphicsRootDescriptorTable(i, srvs[i]);
+    }
+    tl_activeCmdList->SetGraphicsRootConstantBufferView(4, cbufferGpuAddr);
     tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     // No vertex / index buffer — VS synthesises positions from SV_VertexID.
     tl_activeCmdList->IASetVertexBuffers(0, 0, nullptr);
@@ -4973,6 +5067,14 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) 
         case TextureRef::Kind::ComposeTarget:
             if (tex.slot < m_composeTargets.size() && m_composeTargets[tex.slot].ready) {
                 return m_composeTargets[tex.slot].stableSrvHandle();
+            }
+            break;
+        case TextureRef::Kind::ComposeWrite:
+            // This-frame write sub — intra-frame producer→consumer reads
+            // (effect scratch). Barriers inserted by begin/endComposeTarget
+            // order the write before the sample on the GPU timeline.
+            if (tex.slot < m_composeTargets.size() && m_composeTargets[tex.slot].ready) {
+                return m_composeTargets[tex.slot].writeSrvHandle();
             }
             break;
         case TextureRef::Kind::Invalid:
