@@ -21,6 +21,7 @@
 #include <DirectXMath.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -781,6 +782,10 @@ private:
     uint8_t*               m_effectCbufferRingMapped{nullptr};
     uint32_t               m_effectDrawIndex{0};      // resets each frame
     bool                   m_effectOverflowed{false}; // one-shot log
+    // Aesthetic clock for animated generator effects (g_timeSeconds patch
+    // in drawEffectPass). Renderer-local by design — see ADR-0025.
+    std::chrono::steady_clock::time_point m_effectTimeStart{
+        std::chrono::steady_clock::now()};
 
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {

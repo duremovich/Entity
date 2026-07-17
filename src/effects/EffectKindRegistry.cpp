@@ -74,6 +74,33 @@ ParamSchema makeFloatSchema(std::string name, std::string displayName,
     return p;
 }
 
+ParamSchema makeColorSchema(std::string name, std::string displayName,
+                             float r, float g, float b, float a) {
+    ParamSchema p;
+    p.name         = std::move(name);
+    p.displayName  = std::move(displayName);
+    p.type         = ParamValue::Type::Color;
+    p.defaultValue = ParamValue::makeColor(r, g, b, a);
+    p.min          = 0.0f;
+    p.max          = 1.0f;
+    p.uiHint       = 1;  // color picker
+    return p;
+}
+
+ParamSchema makeEnumSchema(std::string name, std::string displayName,
+                            std::vector<std::string> labels, int defaultIdx) {
+    ParamSchema p;
+    p.name         = std::move(name);
+    p.displayName  = std::move(displayName);
+    p.type         = ParamValue::Type::Enum;
+    p.defaultValue = ParamValue::makeEnum(defaultIdx);
+    p.min          = 0.0f;
+    p.max          = static_cast<float>(labels.empty() ? 0 : labels.size() - 1);
+    p.uiHint       = 2;  // dropdown
+    p.enumLabels   = std::move(labels);
+    return p;
+}
+
 SocketSchema textureInput(const char* name) {
     SocketSchema s;
     s.name      = name;
@@ -107,6 +134,20 @@ EffectKind makeBuiltinKind(const char* stableId,
     k.shaderPath  = std::string("shaders/") + psoFilename;
     k.passCount   = 1;
     k.builtin     = true;
+    return k;
+}
+
+// Generator variant: zero texture-input sockets — the kind's role marker
+// (EffectKind::textureInputCount() == 0). The PS never samples g_input;
+// PASS 1.5 may run a generator-led chain with no source texture at all.
+EffectKind makeGeneratorKind(const char* stableId,
+                              const char* displayName,
+                              const char* psoFilename,
+                              std::vector<ParamSchema> params)
+{
+    EffectKind k = makeBuiltinKind(stableId, displayName, "Generate",
+                                   psoFilename, std::move(params));
+    k.sockets = { textureOutput("out") };
     return k;
 }
 
@@ -212,6 +253,68 @@ void EffectKindRegistry::registerBuiltins() {
         "invert_ps.cso",
         {
             makeFloatSchema("amount", "Amount", 1.0f, 0.0f, 1.0f),
+        }
+    ));
+
+    // ---- Generators (zero texture inputs — replace the layer's content;
+    // the AE model: drop one on a Solid). ----
+
+    registerKind(makeGeneratorKind(
+        "core.gen.linear_gradient",
+        "Linear Gradient",
+        "gen_linear_gradient_ps.cso",
+        {
+            makeFloatSchema("angle", "Angle (deg)", 0.0f, -180.0f, 180.0f),
+            makeColorSchema("colorA", "Color A", 0.0f, 0.0f, 0.0f, 1.0f),
+            makeColorSchema("colorB", "Color B", 1.0f, 1.0f, 1.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.checkerboard",
+        "Checkerboard",
+        "gen_checkerboard_ps.cso",
+        {
+            makeFloatSchema("cols", "Columns", 8.0f, 1.0f, 128.0f),
+            makeFloatSchema("rows", "Rows",    8.0f, 1.0f, 128.0f),
+            makeColorSchema("colorA", "Color A", 0.0f, 0.0f, 0.0f, 1.0f),
+            makeColorSchema("colorB", "Color B", 1.0f, 1.0f, 1.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.fractal_noise",
+        "Fractal Noise",
+        "gen_fractal_noise_ps.cso",
+        {
+            makeFloatSchema("scale",    "Scale",    8.0f, 0.1f, 64.0f),
+            makeFloatSchema("octaves",  "Octaves",  4.0f, 1.0f, 8.0f),
+            makeFloatSchema("speed",    "Speed",    0.0f, 0.0f, 4.0f),
+            makeFloatSchema("contrast", "Contrast", 1.0f, 0.0f, 4.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.plasma",
+        "Plasma",
+        "gen_plasma_ps.cso",
+        {
+            makeFloatSchema("scale", "Scale", 8.0f, 0.1f, 64.0f),
+            makeFloatSchema("speed", "Speed", 0.0f, 0.0f, 4.0f),
+            makeColorSchema("colorA", "Color A", 0.0f, 0.0f, 0.2f, 1.0f),
+            makeColorSchema("colorB", "Color B", 1.0f, 0.4f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.shape",
+        "Shape",
+        "gen_shape_ps.cso",
+        {
+            makeEnumSchema("shape", "Shape", {"Circle", "Rectangle", "Ring"}, 0),
+            makeFloatSchema("size",     "Size",     0.5f, 0.0f, 1.0f),
+            makeFloatSchema("softness", "Softness", 0.02f, 0.0f, 0.5f),
+            makeColorSchema("color", "Color", 1.0f, 1.0f, 1.0f, 1.0f),
         }
     ));
 }

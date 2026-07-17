@@ -71,6 +71,21 @@ struct EffectKind {
     std::string                shaderPath;   // .cso (engine) or .hlsl (user)
     int                        passCount{1}; // >1 for separable passes etc.
     bool                       builtin{true};
+
+    // Number of Texture-kind input sockets. The single source of truth
+    // for a kind's role: 0 = generator (ignores/replaces its input —
+    // noise, gradients), 1 = filter, >= 2 = combiner (blend/mask). No
+    // separate isGenerator flag to drift out of sync with the sockets.
+    int textureInputCount() const {
+        int n = 0;
+        for (const auto& s : sockets) {
+            if (s.kind == SocketSchema::Kind::Texture &&
+                s.direction == SocketSchema::Direction::Input) {
+                ++n;
+            }
+        }
+        return n;
+    }
 };
 
 } // namespace entity::effects

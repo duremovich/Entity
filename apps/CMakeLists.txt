@@ -132,8 +132,14 @@ entity_compile_shader(effects/sharpen_ps.hlsl               ps PSMain 6_0)
 entity_compile_shader(effects/chromatic_aberration_ps.hlsl  ps PSMain 6_0)
 entity_compile_shader(effects/edge_ps.hlsl                  ps PSMain 6_0)
 entity_compile_shader(effects/invert_ps.hlsl                ps PSMain 6_0)
+# Generator effects (zero-input kinds — replace the layer's content).
+entity_compile_shader(effects/gen_linear_gradient_ps.hlsl   ps PSMain 6_0)
+entity_compile_shader(effects/gen_checkerboard_ps.hlsl      ps PSMain 6_0)
+entity_compile_shader(effects/gen_fractal_noise_ps.hlsl     ps PSMain 6_0)
+entity_compile_shader(effects/gen_plasma_ps.hlsl            ps PSMain 6_0)
+entity_compile_shader(effects/gen_shape_ps.hlsl             ps PSMain 6_0)
 
-message(STATUS "Configured offline HLSL compilation for 26 shaders")
+message(STATUS "Configured offline HLSL compilation for 31 shaders")
 
 # =============================================================================
 # Deploy HLSL source files alongside the exe so RuntimeShaderCompiler

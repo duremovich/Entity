@@ -813,6 +813,7 @@ ojson encode(const EffectSnapshot& e) {
     auto tracks = ojson::array();
     for (const auto& t : e.tracks) tracks.push_back(encode(t));
     j["tracks"] = std::move(tracks);
+    j["inputCount"] = static_cast<int>(e.inputCount);
     return j;
 }
 
@@ -820,6 +821,7 @@ EffectSnapshot decodeEffectSnapshot(const json& j) {
     EffectSnapshot e;
     e.kindIdHash = j.value("kindIdHash", std::uint32_t{0});
     e.enabled    = j.value("enabled",    true);
+    e.inputCount = static_cast<std::uint8_t>(j.value("inputCount", 1));
     if (j.contains("paramBlob")) {
         const auto& arr = j.at("paramBlob");
         e.paramBlob.reserve(arr.size());

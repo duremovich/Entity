@@ -3738,8 +3738,12 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
         return;
     }
 
+    // Generators (zero texture-input sockets) run with no input texture:
+    // an invalid ref is expected, the SRV bind below is skipped, and the
+    // PS never samples t0. Filters with a not-ready input still skip the
+    // whole pass — sampling a stale/unbound descriptor is never OK.
     auto srv = resolveTextureHandle(input);
-    if (srv.ptr == 0) return;  // Input texture not ready; skip the pass.
+    if (srv.ptr == 0 && input.valid()) return;  // real input, not ready yet
 
     ID3D12PipelineState* pso = getOrBuildEffectPso(kindIdHash);
     if (!pso) return;
@@ -3769,6 +3773,17 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
     };
     std::memcpy(m_effectCbufferRingMapped + slotOffset + 224,
                 viewportFloats, sizeof(viewportFloats));
+    // Patch g_timeSeconds (bytes 232-235) — an aesthetic clock for
+    // animated generators (plasma / noise scroll), anchored to renderer
+    // start. Deliberately NOT the timeline/timecode clock (ADR-0025 —
+    // this drives visual drift, not sync); goldens that capture animated
+    // generators must use static params or accept nondeterminism.
+    {
+        const float t = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - m_effectTimeStart).count();
+        std::memcpy(m_effectCbufferRingMapped + slotOffset + 232,
+                    &t, sizeof(float));
+    }
 
     const D3D12_GPU_VIRTUAL_ADDRESS cbufferGpuAddr =
         m_effectCbufferRing->GetGPUVirtualAddress() + slotOffset;

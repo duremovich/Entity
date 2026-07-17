@@ -403,6 +403,11 @@ struct EffectSnapshot {
     bool                           enabled{true};
     std::vector<std::uint8_t>      paramBlob;   // cbuffer-layout bytes
     std::vector<BakedEffectTrack>  tracks;
+    // Texture-input socket count baked from EffectKind::textureInputCount.
+    // 0 = generator (never samples its input — PASS 1.5 may run it with
+    // no source texture and drawEffectPass skips the SRV bind). Default 1
+    // (filter) matches every pre-upgrade payload.
+    std::uint8_t                   inputCount{1};
 };
 
 // Per-layer effects bundle. Side-table off SceneSnapshot — keyed by

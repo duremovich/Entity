@@ -25,7 +25,10 @@
 cbuffer EffectParams : register(b0) {
     float4 g_params[14];   //   0–223 : per-effect param slots
     float2 g_viewportSize; // 224–231 : input texture pixel dimensions
-    float2 _ec_pad0;       // 232–239
+    float  g_timeSeconds;  // 232–235 : renderer-local aesthetic clock
+                           //           (animated generators; patched by
+                           //           drawEffectPass alongside viewport)
+    float  _ec_pad0;       // 236–239
     float4 _ec_pad1;       // 240–255 — total 256 bytes
 };
 

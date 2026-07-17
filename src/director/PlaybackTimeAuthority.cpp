@@ -1237,6 +1237,14 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                 ? m_effectKindRegistry->find(fx->kindId)
                 : nullptr;
 
+            // Role on the wire: 0 = generator, 1 = filter, 2+ = combiner.
+            // Unknown kind defaults to filter (input required) so PASS 1.5
+            // keeps its input-not-ready gate.
+            if (kind) {
+                es.inputCount = static_cast<std::uint8_t>(
+                    std::clamp(kind->textureInputCount(), 0, 4));
+            }
+
             if (kind) {
                 const auto* params =
                     m_registry.try_get<EffectParameters>(effectEnt);

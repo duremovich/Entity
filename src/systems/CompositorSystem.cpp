@@ -121,7 +121,19 @@ void CompositorSystem::update(bus::RenderFrame& rf,
 
         for (auto& cl : rf.contentLayers) {
             if (cl.effects.empty()) continue;
-            if (cl.sourceSlot < 0) continue;  // input not ready
+            // Input-not-ready gate — but only when the first enabled effect
+            // actually samples its input. A chain that opens with a
+            // generator (inputCount == 0) seeds itself and can run with no
+            // source texture at all.
+            if (cl.sourceSlot < 0) {
+                bool firstEnabledNeedsInput = false;
+                for (const auto& fx : cl.effects) {
+                    if (!fx.enabled) continue;
+                    firstEnabledNeedsInput = (fx.inputCount > 0);
+                    break;
+                }
+                if (firstEnabledNeedsInput) continue;
+            }
 
             // Size effect RTs from the layer's source content dims (clip
             // media size / generative render size) so effects run in
@@ -145,11 +157,16 @@ void CompositorSystem::update(bus::RenderFrame& rf,
             // Resolve the chain's input as a TextureRef. The first effect
             // reads from the layer's raw source (Video or Compose); each
             // subsequent effect reads the previous output (always Compose).
-            TextureRef currentInput =
-                (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
-                    ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot),
-                                        cl.sourceGeneration)  // #90 draw guard
-                    : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
+            // No source (generator-led chain) → invalid ref; drawEffectPass
+            // skips the SRV bind and the generator never samples it.
+            TextureRef currentInput = TextureRef::invalid();
+            if (cl.sourceSlot >= 0) {
+                currentInput =
+                    (cl.sourceKind == bus::ContentLayerSnapshot::SourceKind::Video)
+                        ? TextureRef::video(static_cast<std::uint32_t>(cl.sourceSlot),
+                                            cl.sourceGeneration)  // #90 draw guard
+                        : TextureRef::compose(static_cast<std::uint32_t>(cl.sourceSlot));
+            }
 
             std::uint32_t currentOutput = slotA;
             std::uint32_t nextOutput    = slotB;
