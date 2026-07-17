@@ -787,6 +787,7 @@ ojson encode(const BakedEffectTrack& t) {
     auto kfs = ojson::array();
     for (const auto& k : t.keyframes) kfs.push_back(encode(k));
     j["keyframes"] = std::move(kfs);
+    j["slotIndex"] = t.slotIndex;
     return j;
 }
 
@@ -799,6 +800,7 @@ BakedEffectTrack decodeBakedEffectTrack(const json& j) {
             t.keyframes.push_back(decodeBakedKeyframe(kf));
         }
     }
+    t.slotIndex = j.value("slotIndex", std::int32_t{-1});
     return t;
 }
 

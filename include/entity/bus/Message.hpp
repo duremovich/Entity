@@ -386,6 +386,12 @@ struct BakedEffectTrack {
     std::string                paramName;
     bool                       enabled{true};
     std::vector<BakedKeyframe> keyframes;
+    // Schema slot the track drives (paramBlob byte offset = slotIndex*16).
+    // Baked editor-side where the name→slot resolution already happened,
+    // so the show thread can re-evaluate registry-free during editor
+    // stalls (NEW-07 for effect params). -1 = unresolved (legacy payloads
+    // / unknown kind) — show side leaves the blob untouched.
+    std::int32_t               slotIndex{-1};
 };
 
 // One effect node baked into the snapshot. Carries the kind hash, a

@@ -219,22 +219,23 @@ float defaultValueForProperty(AnimatableProperty p) {
     }
 }
 
-float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
-    const auto property = static_cast<AnimatableProperty>(track.property);
-    if (track.keyframes.empty()) return defaultValueForProperty(property);
-
-    const auto& first = track.keyframes.front();
-    const auto& last  = track.keyframes.back();
+// Evaluate a non-empty baked keyframe list at `frame`. Shared by the
+// transform-track evaluator below and the effect-param re-eval in
+// buildRenderFrame (both are the show side's stall-safe path).
+float evaluateBakedKeyframeList(const std::vector<bus::BakedKeyframe>& keyframes,
+                                FrameNumber frame) {
+    const auto& first = keyframes.front();
+    const auto& last  = keyframes.back();
     if (frame <= first.frame) return first.value;
     if (frame >= last.frame)  return last.value;
 
     // First keyframe with .frame >= frame; binary search.
     auto it = std::lower_bound(
-        track.keyframes.begin(), track.keyframes.end(), frame,
+        keyframes.begin(), keyframes.end(), frame,
         [](const bus::BakedKeyframe& k, FrameNumber f) { return k.frame < f; });
 
-    if (it != track.keyframes.end() && it->frame == frame) return it->value;
-    if (it == track.keyframes.begin() || it == track.keyframes.end()) {
+    if (it != keyframes.end() && it->frame == frame) return it->value;
+    if (it == keyframes.begin() || it == keyframes.end()) {
         return last.value;
     }
 
@@ -243,6 +244,36 @@ float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
     const float t = static_cast<float>(frame - prev.frame)
                   / static_cast<float>(next.frame - prev.frame);
     return interpolateBakedKeyframes(prev, next, t);
+}
+
+float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
+    const auto property = static_cast<AnimatableProperty>(track.property);
+    if (track.keyframes.empty()) return defaultValueForProperty(property);
+    return evaluateBakedKeyframeList(track.keyframes, frame);
+}
+
+// Re-evaluate a layer's animated effect params at the live frame and
+// patch the results into each effect's paramBlob (Float slots only —
+// slotIndex*16 = the slot's .x). Registry-free: everything needed was
+// baked (NEW-07 for effect params — animation keeps moving on the
+// projector while the editor thread is stalled, and between editor
+// bake ticks the show side is a frame fresher than the blob).
+void reEvaluateEffectTracks(bus::ContentLayerSnapshot& c,
+                            FrameNumber layerStart,
+                            FrameNumber currentFrame) {
+    if (c.effects.empty()) return;
+    const FrameNumber localFrame =
+        (currentFrame >= layerStart) ? (currentFrame - layerStart)
+                                     : FrameNumber{0};
+    for (auto& fx : c.effects) {
+        for (const auto& t : fx.tracks) {
+            if (!t.enabled || t.slotIndex < 0 || t.keyframes.empty()) continue;
+            const std::size_t off = static_cast<std::size_t>(t.slotIndex) * 16;
+            if (off + sizeof(float) > fx.paramBlob.size()) continue;
+            const float v = evaluateBakedKeyframeList(t.keyframes, localFrame);
+            std::memcpy(fx.paramBlob.data() + off, &v, sizeof(float));
+        }
+    }
 }
 
 // Copy AnimatedProperties keyframe tracks into the bus BakedTrack form.
@@ -1327,6 +1358,9 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                         bus::BakedEffectTrack dst;
                         dst.paramName = schema.name;
                         dst.enabled   = src.enabled;
+                        // Slot resolved right here — bake it so the show
+                        // side can patch paramBlob registry-free (NEW-07).
+                        dst.slotIndex = static_cast<std::int32_t>(slotN);
                         dst.keyframes.reserve(src.keyframes.size());
                         for (const auto& sk : src.keyframes) {
                             bus::BakedKeyframe k;
@@ -1599,6 +1633,10 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
             c.effectsOutputIndex = le->outputIndex;
             // postEffectsSlot stays -1 here — PASS 1.5 fills it after it
             // actually draws the chain.
+            // Animated effect params: re-evaluate at the live frame so
+            // they keep moving during editor stalls (NEW-07). Mutates
+            // only this per-frame copy, never the cached snapshot.
+            if (ce) reEvaluateEffectTracks(c, ce->startFrame, currentFrame);
         }
         out.contentLayers.push_back(c);
     }
@@ -1664,6 +1702,8 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
             c.effectChainSlotA   = le->slotA;
             c.effectChainSlotB   = le->slotB;
             c.effectsOutputIndex = le->outputIndex;
+            // NEW-07 for effect params — see the clip branch above.
+            reEvaluateEffectTracks(c, gl.startFrame, currentFrame);
         }
         out.contentLayers.push_back(c);
     }
