@@ -797,6 +797,24 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_effectFallbackRtvHeap;
     bool ensureEffectFallbackTexture();
 
+    // Hot-reload PSO eviction (InvalidateEffectPso D2R). Evicted PSOs
+    // park here for FRAME_COUNT+1 frames — an in-flight frame's command
+    // list may still reference them. Show-thread only; aged in
+    // endShowFrame.
+    struct RetiredEffectPso {
+        ComPtr<ID3D12PipelineState> pso;
+        uint32_t                    framesLeft{0};
+    };
+    std::vector<RetiredEffectPso> m_retiredEffectPsos;
+
+public:
+    // Show-thread handler for InvalidateEffectPso: evict the cached PSO
+    // for a user kind whose bytecode changed (or vanished); the next
+    // drawEffectPass rebuilds from the fresh registry artifact.
+    void invalidateEffectPso(uint32_t kindIdHash);
+
+private:
+
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {
         DirectX::XMFLOAT4 corners[4];      // Corner positions (xy used, zw padding)

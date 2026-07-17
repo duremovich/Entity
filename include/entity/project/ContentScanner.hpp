@@ -58,6 +58,12 @@ public:
     enum class DeltaSource {
         Media,
         Object,
+        // <project>/effects — user-authored HLSL effect packs (.hlsl /
+        // .json manifests / .hlsli). Unlike Media/Object, a CHANGED
+        // effect file re-emits Added once it re-stabilizes: the whole
+        // point of watching this root is hot reload, whereas in-place
+        // media rewrites stay silent by design (transcode replace).
+        EffectSource,
     };
 
     struct ScanDelta {

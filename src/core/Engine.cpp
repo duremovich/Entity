@@ -1680,6 +1680,14 @@ void Engine::showThreadMain() {
                             if (m_frameCache) {
                                 m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
                             }
+                        } else if constexpr (std::is_same_v<T, bus::InvalidateEffectPso>) {
+                            // Hot reload: evict the stale PSO (parks
+                            // frame-aged; rebuilt from fresh bytecode on
+                            // next drawEffectPass).
+                            if (auto* d3d = m_rendererService
+                                    ? m_rendererService->getD3D12Renderer() : nullptr) {
+                                d3d->invalidateEffectPso(body.kindIdHash);
+                            }
                         } else if constexpr (std::is_same_v<T, bus::RequestComposeCapture>) {
                             // Capture requests are serviced by the pre-frame
                             // drain (drainCaptureRequestsPreFrame), not here —
@@ -4589,6 +4597,18 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
                 std::filesystem::path("shaders");
             m_effectKindRegistry->scanUserEffects(
                 effectsDir, d3d->getRuntimeShaderCompiler(), exeShadersDir);
+            // Cross-project hygiene: the PSO cache is process-lifetime,
+            // so a user kind loaded for the previous project (same hash,
+            // different bytecode) must be evicted now.
+            if (m_transport) {
+                for (std::uint32_t hash :
+                     m_effectKindRegistry->lastScanTouchedKinds()) {
+                    bus::InvalidateEffectPso msg{};
+                    msg.kindIdHash = hash;
+                    m_transport->send(bus::Direction::D2R,
+                                      bus::serialize(bus::Message{msg}));
+                }
+            }
         }
     }
 
@@ -4980,7 +5000,37 @@ void Engine::drainContentScannerDeltas() {
     auto deltas = m_contentScanner->drain();
     if (deltas.empty()) return;
 
+    // User effect pack hot reload (issue #54 Phase 6): any Added delta
+    // under <project>/effects triggers ONE full rescan per drain (the
+    // scanner re-arms Added on file change for this root). Removed
+    // deltas are ignored — keep the last-good kind through brief
+    // unlink-then-rename sync windows, same policy as media.
+    bool effectsChanged = false;
     for (const auto& d : deltas) {
+        if (d.source == ContentScanner::DeltaSource::EffectSource &&
+            d.kind == ContentScanner::DeltaKind::Added) {
+            effectsChanged = true;
+            std::cout << "[ContentScanner] effect file changed: "
+                      << d.relativePath << std::endl;
+        }
+    }
+    if (effectsChanged && m_effectKindRegistry) {
+        m_effectKindRegistry->hotReload();
+        // Evict stale PSOs for every user kind the rescan touched —
+        // the show thread parks them frame-aged and rebuilds from the
+        // fresh bytecode on next use.
+        if (m_transport) {
+            for (std::uint32_t hash : m_effectKindRegistry->lastScanTouchedKinds()) {
+                bus::InvalidateEffectPso msg{};
+                msg.kindIdHash = hash;
+                m_transport->send(bus::Direction::D2R,
+                                  bus::serialize(bus::Message{msg}));
+            }
+        }
+    }
+
+    for (const auto& d : deltas) {
+        if (d.source == ContentScanner::DeltaSource::EffectSource) continue;
         const bool isObject = (d.source == ContentScanner::DeltaSource::Object);
 
         switch (d.kind) {

@@ -6,6 +6,7 @@
 #include <dxcapi.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -380,12 +381,25 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
                                           const std::filesystem::path& shaderIncludeDir) {
     namespace fs = std::filesystem;
 
+    // Remember the arguments so hotReload() can re-run the scan.
+    m_lastEffectsDir = projectEffectsDir;
+    m_lastIncludeDir = shaderIncludeDir;
+    m_lastCompiler   = &compiler;
+    m_lastScanTouchedKinds.clear();
+    m_compileErrors.clear();
+
     // Drop previously-scanned user kinds so the call is idempotent.
     // builtin=true entries stay; builtin=false get torn down. Their
-    // compiled-bytecode artifacts get evicted alongside.
+    // compiled-bytecode artifacts get evicted alongside. Every dropped
+    // hash lands in the touched list so stale PSOs get invalidated even
+    // when the kind doesn't come back.
     for (auto it = m_kinds.begin(); it != m_kinds.end(); ) {
         if (!it->second.builtin) {
-            m_userArtifacts.erase(it->first);
+            m_lastScanTouchedKinds.push_back(it->first);
+            {
+                std::lock_guard<std::mutex> lk(m_userArtifactsMutex);
+                m_userArtifacts.erase(it->first);
+            }
             it = m_kinds.erase(it);
         } else {
             ++it;
@@ -472,6 +486,10 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
         if (!result.success || !result.blob) {
             std::cerr << "[scanUserEffects] HLSL compile failed for "
                       << stableId << ":\n" << result.errors << std::endl;
+            // Surface in the UI (red badge on the stack header). The kind
+            // itself is not registered — an existing effect entity keeps
+            // rendering with its last-good PSO until invalidation lands.
+            m_compileErrors[fnv1a32(stableId)] = result.errors;
             continue;
         }
 
@@ -498,19 +516,30 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
             { "out", SocketSchema::Kind::Texture, SocketSchema::Direction::Output },
         };
 
-        // Snapshot bytecode into an owned byte vector so the IDxcBlob
-        // can be dropped without dangling pointers in the renderer's
-        // PSO creation path later.
-        UserArtifact artifact;
+        // Snapshot bytecode into an owned, immutable byte vector so the
+        // IDxcBlob can be dropped and the show thread can hold the
+        // shared_ptr across PSO creation while hot reload swaps the map.
         const std::uint8_t* bytes = static_cast<const std::uint8_t*>(
             result.blob->GetBufferPointer());
         const std::size_t bytesLen = result.blob->GetBufferSize();
-        artifact.psBytecode.assign(bytes, bytes + bytesLen);
-        m_userArtifacts.emplace(kind.kindIdHash, std::move(artifact));
+        auto artifact = std::make_shared<const std::vector<std::uint8_t>>(
+            bytes, bytes + bytesLen);
+        {
+            std::lock_guard<std::mutex> lk(m_userArtifactsMutex);
+            m_userArtifacts[kind.kindIdHash] = std::move(artifact);
+        }
+        m_lastScanTouchedKinds.push_back(kind.kindIdHash);
 
         registerKind(std::move(kind));
         ++registered;
     }
+
+    // Dedup touched hashes (a kind both dropped and re-registered
+    // appears twice).
+    std::sort(m_lastScanTouchedKinds.begin(), m_lastScanTouchedKinds.end());
+    m_lastScanTouchedKinds.erase(
+        std::unique(m_lastScanTouchedKinds.begin(), m_lastScanTouchedKinds.end()),
+        m_lastScanTouchedKinds.end());
 
     if (scanned > 0) {
         std::cout << "[scanUserEffects] " << projectEffectsDir.string()
@@ -519,10 +548,9 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
     }
 }
 
-void EffectKindRegistry::hotReload(const std::filesystem::path& /*changedFile*/) {
-    // Follow-up: re-scan the single changed file. Until ContentScanner
-    // integration lands, callers re-invoke scanUserEffects() for a full
-    // rescan of the project's effects dir.
+void EffectKindRegistry::hotReload() {
+    if (!m_lastCompiler || m_lastEffectsDir.empty()) return;
+    scanUserEffects(m_lastEffectsDir, *m_lastCompiler, m_lastIncludeDir);
 }
 
 void EffectKindRegistry::registerKind(EffectKind kind) {

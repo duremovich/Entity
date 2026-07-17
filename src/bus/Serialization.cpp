@@ -1341,6 +1341,18 @@ EffectCompileFailed decodeEffectCompileFailed(const json& j) {
     return m;
 }
 
+ojson encode(const InvalidateEffectPso& m) {
+    ojson j = ojson::object();
+    j["kindIdHash"] = m.kindIdHash;
+    return j;
+}
+
+InvalidateEffectPso decodeInvalidateEffectPso(const json& j) {
+    InvalidateEffectPso m;
+    m.kindIdHash = j.at("kindIdHash").get<std::uint32_t>();
+    return m;
+}
+
 ojson encode(const CreateOutputWindowRequest& m) {
     ojson j = ojson::object();
     j["entity"]     = m.entity;
@@ -1531,6 +1543,7 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, GenerativeLayerRenderTargetAllocated>) return "GenerativeLayerRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, EffectChainRenderTargetAllocated>) return "EffectChainRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, EffectCompileFailed>)        return "EffectCompileFailed";
+        else if constexpr (std::is_same_v<T, InvalidateEffectPso>)        return "InvalidateEffectPso";
         else if constexpr (std::is_same_v<T, SetOutputEnabled>)            return "SetOutputEnabled";
         else if constexpr (std::is_same_v<T, ApplySettings>)               return "ApplySettings";
         else if constexpr (std::is_same_v<T, DeviceLost>)                  return "DeviceLost";
@@ -1579,6 +1592,7 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "GenerativeLayerRenderTargetAllocated") return Message{decodeGenerativeLayerRenderTargetAllocated(data)};
         if (type == "EffectChainRenderTargetAllocated") return Message{decodeEffectChainRenderTargetAllocated(data)};
         if (type == "EffectCompileFailed")            return Message{decodeEffectCompileFailed(data)};
+        if (type == "InvalidateEffectPso")            return Message{decodeInvalidateEffectPso(data)};
         if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
         if (type == "SectionBreakDetected")          return Message{decodeSectionBreakDetected(data)};

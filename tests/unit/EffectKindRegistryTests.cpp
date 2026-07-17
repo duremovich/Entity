@@ -97,8 +97,8 @@ TEST(EffectKindRegistry, ScanRegistersUserKindFromManifest) {
     EXPECT_FLOAT_EQ(kind->params[0].defaultValue.f4[0], 0.5f);
 
     auto bytecode = reg.tryGetUserPsBytecode(hash);
-    EXPECT_TRUE(bytecode.valid()) << "user kind compiled but bytecode missing";
-    EXPECT_GT(bytecode.size, 0u);
+    ASSERT_NE(bytecode, nullptr) << "user kind compiled but bytecode missing";
+    EXPECT_GT(bytecode->size(), 0u);
 }
 
 TEST(EffectKindRegistry, ScanSkipsBrokenShaderButContinuesOthers) {

@@ -1138,6 +1138,19 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
         if (open) {
             if (!kind) {
                 ImGui::TextDisabled("Kind 0x%08x not registered", fx->kindId);
+                // Hot reload: if the last user-effect scan failed to
+                // compile this kind, surface the compiler output (the
+                // effect keeps rendering with its last-good PSO).
+                if (m_effectKindRegistry) {
+                    auto errIt = m_effectKindRegistry->compileErrors().find(fx->kindId);
+                    if (errIt != m_effectKindRegistry->compileErrors().end()) {
+                        ImGui::PushStyleColor(ImGuiCol_Text,
+                                              ImVec4(0.95f, 0.35f, 0.35f, 1.0f));
+                        ImGui::TextWrapped("[!] HLSL compile failed:\n%s",
+                                           errIt->second.c_str());
+                        ImGui::PopStyleColor();
+                    }
+                }
             } else if (!params) {
                 ImGui::TextDisabled("No EffectParameters component");
             } else {

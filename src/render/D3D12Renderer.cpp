@@ -741,6 +741,18 @@ void D3D12Renderer::endShowFrame() {
     tl_showGpuZone = nullptr;
 #endif
 
+    // Age hot-reload-retired effect PSOs; release once every in-flight
+    // frame that could have referenced them has drained.
+    if (!m_retiredEffectPsos.empty()) {
+        for (auto& r : m_retiredEffectPsos) {
+            if (r.framesLeft > 0) --r.framesLeft;
+        }
+        m_retiredEffectPsos.erase(
+            std::remove_if(m_retiredEffectPsos.begin(), m_retiredEffectPsos.end(),
+                [](const RetiredEffectPso& r) { return r.framesLeft == 0; }),
+            m_retiredEffectPsos.end());
+    }
+
     // #89 liveness backstop, in a scope guard so the early returns below
     // (device lost, Close failures) can't skip it: a closed video-slot gate
     // must be re-asserted every tick by the free drain (slot still queued) or
@@ -3679,10 +3691,13 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
     std::size_t         psSize  = 0;
     ComPtr<ID3DBlob>    psBlob;  // owns the bytes when loaded from disk
 
-    auto userView = m_effectKindRegistry->tryGetUserPsBytecode(kindIdHash);
-    if (userView.valid()) {
-        psBytes = userView.data;
-        psSize  = userView.size;
+    // Held across PSO creation: hot reload swaps the registry's map
+    // entry on the editor thread, but this shared_ptr keeps the vector
+    // we're reading alive (published vectors are immutable).
+    auto userBytecode = m_effectKindRegistry->tryGetUserPsBytecode(kindIdHash);
+    if (userBytecode && !userBytecode->empty()) {
+        psBytes = userBytecode->data();
+        psSize  = userBytecode->size();
     } else {
         std::wstring psPathW(kind->shaderPath.begin(), kind->shaderPath.end());
         if (loadCompiledShader(psPathW, &psBlob) != Result::Success) {
@@ -3726,6 +3741,17 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
     auto* raw = psoObj.Get();
     m_effectPsoCache.emplace(kindIdHash, std::move(psoObj));
     return raw;
+}
+
+void D3D12Renderer::invalidateEffectPso(uint32_t kindIdHash) {
+    auto it = m_effectPsoCache.find(kindIdHash);
+    if (it == m_effectPsoCache.end()) return;
+    // Park instead of destroy — FRAME_COUNT in-flight frames may still
+    // execute draws recorded with this PSO. Aged in endShowFrame.
+    m_retiredEffectPsos.push_back({std::move(it->second), FRAME_COUNT + 1});
+    m_effectPsoCache.erase(it);
+    std::cout << "[drawEffectPass] PSO invalidated for kind 0x" << std::hex
+              << kindIdHash << std::dec << " (hot reload)" << std::endl;
 }
 
 bool D3D12Renderer::ensureEffectFallbackTexture() {

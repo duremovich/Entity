@@ -887,6 +887,15 @@ struct EffectCompileFailed {
     std::string   errorMessage;
 };
 
+// Director → Renderer. A user effect kind's bytecode changed (hot
+// reload) or the kind was removed — the renderer must evict the cached
+// PSO for this hash so the next drawEffectPass rebuilds from the fresh
+// artifact. The old PSO parks in a frame-aged graveyard (in-flight
+// frames may still reference it). Issue #54 Phase 6.
+struct InvalidateEffectPso {
+    std::uint32_t kindIdHash{0};
+};
+
 // Director → Renderer. Toggles a physical output's swap chain.
 struct SetOutputEnabled {
     std::uint64_t entity{0};
@@ -972,6 +981,7 @@ using Message = std::variant<
     GenerativeLayerRenderTargetAllocated,
     EffectChainRenderTargetAllocated,
     EffectCompileFailed,
+    InvalidateEffectPso,
     OutputWindowSlotUpdated,
     SetOutputEnabled,
     ApplySettings,
