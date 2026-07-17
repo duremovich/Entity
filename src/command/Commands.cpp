@@ -45,6 +45,7 @@
 #include "entity/audio/LoopbackDevice.hpp"
 #include "entity/systems/AudioSystem.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/effects/EffectParamJson.hpp"
 #include "entity/input/InputBus.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
@@ -2270,6 +2271,32 @@ entt::entity resolveLayer(Engine& engine, int trackIndex, int clipIndex) {
     return track->layers[clipIndex];
 }
 
+// Resolve script-style {trackIndex, clipIndex, effectIndex} to (layer,
+// effect) entities via the layer's EffectChain node order. needEffect
+// false = caller only wants the layer (AddEffect). Logs and returns
+// false on any out-of-range component of the address.
+bool resolveEffectScriptAddr(Engine& engine, const EffectScriptAddr& addr,
+                             bool needEffect, entt::entity& layerOut,
+                             entt::entity& effectOut) {
+    layerOut = resolveLayer(engine, addr.trackIndex, addr.clipIndex);
+    if (layerOut == entt::null) {
+        std::cerr << "[EffectScriptAddr] no layer at track=" << addr.trackIndex
+                  << " clip=" << addr.clipIndex << std::endl;
+        return false;
+    }
+    if (!needEffect) return true;
+    const auto* chain = engine.getRegistry().try_get<EffectChain>(layerOut);
+    if (!chain || addr.effectIndex < 0
+        || addr.effectIndex >= static_cast<int>(chain->nodes.size())) {
+        std::cerr << "[EffectScriptAddr] no effect at index=" << addr.effectIndex
+                  << " (chain size=" << (chain ? chain->nodes.size() : 0) << ")"
+                  << std::endl;
+        return false;
+    }
+    effectOut = chain->nodes[static_cast<std::size_t>(addr.effectIndex)];
+    return true;
+}
+
 } // namespace
 
 bool ClearPropertyKeyframesCommand::execute(Engine& engine) {
@@ -2459,6 +2486,12 @@ void writeEffectFloatParam(Engine& engine, entt::entity effectEntity,
 } // namespace
 
 bool UpsertEffectKeyframeCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity) || !registry.all_of<Effect>(m_effectEntity)) {
         std::cerr << "[UpsertEffectKeyframe] invalid effect entity" << std::endl;
@@ -2553,10 +2586,22 @@ CommandPtr UpsertEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
     auto paramName = j.value("paramName", std::string{});
     FrameNumber frame = j.value("frame", 0);
     float value = j.value("value", 0.0f);
-    return std::make_unique<UpsertEffectKeyframeCommand>(effEnt, std::move(paramName), frame, value);
+    auto cmd = std::make_unique<UpsertEffectKeyframeCommand>(
+        effEnt, std::move(paramName), frame, value);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
 bool RemoveEffectKeyframeCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity)) return false;
     auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity);
@@ -2623,7 +2668,13 @@ CommandPtr RemoveEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
         j.value("effectEntity", std::uint32_t{0}));
     auto paramName = j.value("paramName", std::string{});
     FrameNumber frame = j.value("frame", 0);
-    return std::make_unique<RemoveEffectKeyframeCommand>(effEnt, std::move(paramName), frame);
+    auto cmd = std::make_unique<RemoveEffectKeyframeCommand>(
+        effEnt, std::move(paramName), frame);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
 // ============================================================================
@@ -3082,6 +3133,12 @@ CommandPtr AssertKeyframeInterpolationCommand::fromJson(const nlohmann::json& j)
 // ============================================================================
 
 bool ClearEffectParamKeyframesCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity)) return false;
 
@@ -3143,8 +3200,13 @@ CommandPtr ClearEffectParamKeyframesCommand::fromJson(const nlohmann::json& j) {
     auto paramName = j.value("paramName", std::string{});
     std::optional<float> hold;
     if (j.contains("holdValue")) hold = j["holdValue"].get<float>();
-    return std::make_unique<ClearEffectParamKeyframesCommand>(
+    auto cmd = std::make_unique<ClearEffectParamKeyframesCommand>(
         effEnt, std::move(paramName), hold);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
 // ============================================================================
@@ -5921,6 +5983,13 @@ int findParamSlotByName(const effects::EffectKind& kind, const std::string& name
 } // namespace
 
 bool AddEffectCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity effectUnused{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, false, m_layerEntity,
+                                     effectUnused)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_layerEntity)) {
         std::cerr << "[AddEffect] layerEntity invalid" << std::endl;
@@ -6002,10 +6071,20 @@ CommandPtr AddEffectCommand::fromJson(const nlohmann::json& j) {
     const auto layerEntity = static_cast<entt::entity>(
         j.value("layerEntity", std::uint32_t{0}));
     auto kind = j.value("kindStableId", std::string{});
-    return std::make_unique<AddEffectCommand>(layerEntity, std::move(kind));
+    auto cmd = std::make_unique<AddEffectCommand>(layerEntity, std::move(kind));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0), 0});
+    }
+    return cmd;
 }
 
 bool RemoveEffectCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, m_layerEntity,
+                                     m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_layerEntity) || !registry.valid(m_effectEntity)) {
         return false;
@@ -6079,7 +6158,12 @@ std::string RemoveEffectCommand::getDescription() const {
 CommandPtr RemoveEffectCommand::fromJson(const nlohmann::json& j) {
     const auto layerEntity  = static_cast<entt::entity>(j.value("layerEntity",  std::uint32_t{0}));
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
-    return std::make_unique<RemoveEffectCommand>(layerEntity, effectEntity);
+    auto cmd = std::make_unique<RemoveEffectCommand>(layerEntity, effectEntity);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
 bool SetScaleLockCommand::execute(Engine& engine) {
@@ -6116,6 +6200,12 @@ CommandPtr SetScaleLockCommand::fromJson(const nlohmann::json& j) {
 }
 
 bool SetEffectEnabledCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity)) return false;
     auto* fx = registry.try_get<Effect>(m_effectEntity);
@@ -6147,14 +6237,28 @@ std::string SetEffectEnabledCommand::getDescription() const {
 CommandPtr SetEffectEnabledCommand::fromJson(const nlohmann::json& j) {
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
     const bool enabled = j.value("enabled", true);
-    return std::make_unique<SetEffectEnabledCommand>(effectEntity, enabled);
+    auto cmd = std::make_unique<SetEffectEnabledCommand>(effectEntity, enabled);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
-bool SetEffectFloatParamCommand::execute(Engine& engine) {
+namespace {
+
+// Shared body of SetEffectParam / SetEffectFloatParam: resolve the slot
+// by name via the kind schema, type-check, capture the pre-edit value
+// once, write. `expectType` nullopt skips the type check (the Float
+// command pre-dates typed params and its check is the makeFloat write).
+bool setEffectParamImpl(Engine& engine, entt::entity effectEntity,
+                        const std::string& paramName, const ParamValue& value,
+                        std::optional<ParamValue>& previousValue,
+                        bool typeCheck) {
     auto& registry = engine.getRegistry();
-    if (!registry.valid(m_effectEntity)) return false;
-    auto* fx = registry.try_get<Effect>(m_effectEntity);
-    auto* params = registry.try_get<EffectParameters>(m_effectEntity);
+    if (!registry.valid(effectEntity)) return false;
+    auto* fx = registry.try_get<Effect>(effectEntity);
+    auto* params = registry.try_get<EffectParameters>(effectEntity);
     if (!fx || !params) return false;
 
     auto* kindRegistry = engine.getEffectKindRegistry();
@@ -6162,7 +6266,7 @@ bool SetEffectFloatParamCommand::execute(Engine& engine) {
     const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
     if (!kind) return false;
 
-    const int slot = findParamSlotByName(*kind, m_paramName);
+    const int slot = findParamSlotByName(*kind, paramName);
     if (slot < 0) return false;
     if (static_cast<std::size_t>(slot) >= params->values.size()) {
         // Schema grew since the effect was created — extend with defaults.
@@ -6172,27 +6276,61 @@ bool SetEffectFloatParamCommand::execute(Engine& engine) {
             params->values[i] = kind->params[i].defaultValue;
         }
     }
-    if (!m_previousValue.has_value()) {
-        m_previousValue = params->values[slot].f4[0];
+    if (typeCheck && value.type != kind->params[slot].type) {
+        std::cerr << "[SetEffectParam] type mismatch on '" << paramName
+                  << "' of kind '" << kind->stableId << "'" << std::endl;
+        return false;
     }
-    params->values[slot] = ParamValue::makeFloat(m_value);
+    if (!previousValue.has_value()) {
+        previousValue = params->values[slot];
+    }
+    params->values[slot] = value;
     return true;
 }
 
-bool SetEffectFloatParamCommand::undo(Engine& engine) {
-    if (!m_previousValue.has_value()) return false;
+// Undo half: write a captured ParamValue back to the named slot.
+bool restoreEffectParamImpl(Engine& engine, entt::entity effectEntity,
+                            const std::string& paramName, const ParamValue& prev) {
     auto& registry = engine.getRegistry();
-    auto* fx = registry.try_get<Effect>(m_effectEntity);
-    auto* params = registry.try_get<EffectParameters>(m_effectEntity);
+    auto* fx = registry.try_get<Effect>(effectEntity);
+    auto* params = registry.try_get<EffectParameters>(effectEntity);
     if (!fx || !params) return false;
     auto* kindRegistry = engine.getEffectKindRegistry();
     if (!kindRegistry) return false;
     const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
     if (!kind) return false;
-    const int slot = findParamSlotByName(*kind, m_paramName);
+    const int slot = findParamSlotByName(*kind, paramName);
     if (slot < 0 || static_cast<std::size_t>(slot) >= params->values.size()) return false;
-    params->values[slot] = ParamValue::makeFloat(*m_previousValue);
+    params->values[slot] = prev;
     return true;
+}
+
+} // namespace
+
+bool SetEffectFloatParamCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
+    std::optional<ParamValue> prev;
+    if (m_previousValue.has_value()) prev = ParamValue::makeFloat(*m_previousValue);
+    if (!setEffectParamImpl(engine, m_effectEntity, m_paramName,
+                            ParamValue::makeFloat(m_value), prev,
+                            /*typeCheck=*/false)) {
+        return false;
+    }
+    if (!m_previousValue.has_value() && prev.has_value()) {
+        m_previousValue = prev->f4[0];
+    }
+    return true;
+}
+
+bool SetEffectFloatParamCommand::undo(Engine& engine) {
+    if (!m_previousValue.has_value()) return false;
+    return restoreEffectParamImpl(engine, m_effectEntity, m_paramName,
+                                  ParamValue::makeFloat(*m_previousValue));
 }
 
 nlohmann::json SetEffectFloatParamCommand::toJson() const {
@@ -6210,8 +6348,116 @@ CommandPtr SetEffectFloatParamCommand::fromJson(const nlohmann::json& j) {
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
     auto paramName = j.value("paramName", std::string{});
     float value = j.value("value", 0.0f);
-    return std::make_unique<SetEffectFloatParamCommand>(
+    auto cmd = std::make_unique<SetEffectFloatParamCommand>(
         effectEntity, std::move(paramName), value);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+bool SetEffectParamCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
+    return setEffectParamImpl(engine, m_effectEntity, m_paramName, m_value,
+                              m_previousValue, /*typeCheck=*/true);
+}
+
+bool SetEffectParamCommand::undo(Engine& engine) {
+    if (!m_previousValue.has_value()) return false;
+    return restoreEffectParamImpl(engine, m_effectEntity, m_paramName,
+                                  *m_previousValue);
+}
+
+nlohmann::json SetEffectParamCommand::toJson() const {
+    return {{"type", "SetEffectParam"},
+            {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+            {"paramName", m_paramName},
+            {"value", {{"type", effects::paramTypeToJson(m_value.type)},
+                       {"value", effects::paramValueToJson(m_value)}}}};
+}
+
+std::string SetEffectParamCommand::getDescription() const {
+    return "Set effect param " + m_paramName;
+}
+
+CommandPtr SetEffectParamCommand::fromJson(const nlohmann::json& j) {
+    const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    ParamValue value;
+    if (j.contains("value") && j["value"].is_object()) {
+        const auto& vj = j["value"];
+        value = effects::jsonToParamValue(
+            effects::jsonToParamType(vj.value("type", std::string{"float"})),
+            vj.contains("value") ? vj["value"] : nlohmann::json{});
+    } else if (j.contains("value") && j["value"].is_number()) {
+        // Bare-number convenience: treat as Float.
+        value = ParamValue::makeFloat(j["value"].get<float>());
+    }
+    auto cmd = std::make_unique<SetEffectParamCommand>(
+        effectEntity, std::move(paramName), value);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+bool AssertEffectKeyframeCountCommand::execute(Engine& engine) {
+    entt::entity layer{entt::null};
+    entt::entity fxEnt{entt::null};
+    if (!resolveEffectScriptAddr(engine,
+                                 {m_trackIndex, m_clipIndex, m_effectIndex},
+                                 true, layer, fxEnt)) {
+        std::cerr << "[AssertEffectKeyframeCount] FAIL: bad address track="
+                  << m_trackIndex << " clip=" << m_clipIndex
+                  << " effect=" << m_effectIndex << std::endl;
+        return false;
+    }
+    const auto* anim =
+        engine.getRegistry().try_get<EffectAnimatedParameters>(fxEnt);
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    std::size_t actual = 0;
+    if (anim) {
+        for (const auto& t : anim->tracks) {
+            if (t.paramKeyHash == hash) { actual = t.keyframes.size(); break; }
+        }
+    }
+    if (actual == m_count) {
+        std::cout << "[AssertEffectKeyframeCount] OK effect=" << m_effectIndex
+                  << " " << m_paramName << " count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertEffectKeyframeCount] FAIL: effect=" << m_effectIndex
+              << " " << m_paramName << " expected=" << m_count
+              << " got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertEffectKeyframeCountCommand::toJson() const {
+    return {{"type", "AssertEffectKeyframeCount"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"effectIndex", m_effectIndex},
+            {"paramName", m_paramName},
+            {"count", m_count}};
+}
+
+std::string AssertEffectKeyframeCountCommand::getDescription() const {
+    return "Assert effect " + std::to_string(m_effectIndex) + " " + m_paramName
+         + " has " + std::to_string(m_count) + " keyframe(s)";
+}
+
+CommandPtr AssertEffectKeyframeCountCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertEffectKeyframeCountCommand>(
+        j.value("trackIndex", 0), j.value("clipIndex", 0),
+        j.value("effectIndex", 0), j.value("paramName", std::string{}),
+        j.value("count", static_cast<std::size_t>(0)));
 }
 
 // ============================================================================

@@ -170,6 +170,8 @@ entity_add_integration_test(mixed_fps          mixed_fps.json)
 entity_add_integration_test(ping_pong          ping_pong.json)
 entity_add_integration_test(blend              blend.json)
 entity_add_integration_test(blend_difference   blend_difference.json)
+# Effect render golden — first GPU coverage of PASS 1.5 (blur on a still).
+entity_add_integration_test(effect_blur        effect_blur.json)
 entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
 entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
 entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)
@@ -559,6 +561,36 @@ set_tests_properties(integration_generative_keyframe_persistence_save PROPERTIES
     FIXTURES_SETUP generative_keyframe_persistence_data)
 set_tests_properties(integration_generative_keyframe_persistence_load PROPERTIES
     FIXTURES_REQUIRED generative_keyframe_persistence_data)
+
+# Effect-keyframe persistence round-trip (v29 EffectAnimatedParameters
+# serialization — the pre-v29 bug silently dropped effect keyframes on
+# save/load). Save half keyframes 'brightness'; load half asserts survival.
+add_test(
+    NAME integration_effect_anim_persistence_save
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/effect_anim_persistence_save.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_effect_anim_persistence_save PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+add_test(
+    NAME integration_effect_anim_persistence_load
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/effect_anim_persistence_load.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_effect_anim_persistence_load PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+set_tests_properties(integration_effect_anim_persistence_save PROPERTIES
+    FIXTURES_SETUP effect_anim_persistence_data)
+set_tests_properties(integration_effect_anim_persistence_load PROPERTIES
+    FIXTURES_REQUIRED effect_anim_persistence_data)
 
 # Phase F audio tests — require tests/fixtures/audio/tone_1khz.mov.
 # Generate the fixture once with: .\scripts\perf\setup-audio-fixtures.ps1

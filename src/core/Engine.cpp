@@ -1670,6 +1670,21 @@ void Engine::showThreadMain() {
                             if (m_frameCache) {
                                 m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
                             }
+                        } else if constexpr (std::is_same_v<T, bus::RequestComposeCapture>) {
+                            // Capture requests are serviced by the pre-frame
+                            // drain (drainCaptureRequestsPreFrame), not here —
+                            // beginShowFrame has already run. A request that
+                            // lands in this drain's window used to be silently
+                            // DROPPED (visitor fell through), which is why
+                            // golden captures queued late in a show frame
+                            // never completed. Park it back on the queue for
+                            // the next frame's pre-frame drain. Safe from
+                            // requeue loops: drain() swaps the queue into a
+                            // local batch before invoking the sink.
+                            if (m_transport) {
+                                m_transport->send(bus::Direction::D2R,
+                                                  bus::serialize(bus::Message{body}));
+                            }
                         } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
                             bus::ResourcesProvisioned reply{};
                             reply.entity = body.entity;

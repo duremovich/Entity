@@ -1,0 +1,20 @@
+{
+    "version": 1,
+    "description": "Record-pass for the effect-render integration test. Same steps as effect_blur.json but without golden comparison — emits test_output/effect_blur/effect_off.hash and effect_on.hash for promotion into tests/goldens/effect_blur/. Before promoting, verify the two hashes DIFFER: identical hashes mean the blur pass produced identity output and the golden would bake a no-op in.",
+    "commands": [
+        {"type": "AddScreen", "name": "FxScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 20},
+
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_blur/effect_off.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.gaussian_blur"},
+        {"type": "SetEffectFloatParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "radius", "value": 8.0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_blur/effect_on.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+
+        {"type": "Exit"}
+    ]
+}

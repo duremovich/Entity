@@ -1,0 +1,20 @@
+{
+    "version": 1,
+    "description": "Effect-render integration test — first GPU golden coverage of PASS 1.5. Imports a mid-tone still on one 64x64 screen, captures the clean compose target (effect_off golden), then adds core.gaussian_blur via script index addressing, sets radius via SetEffectFloatParam, and asserts the composed output matches the effect_on golden. Regression gate for AddEffect -> bake (PlaybackTimeAuthority effect fold-in) -> CompositorSystem PASS 1.5 -> D3D12Renderer::drawEffectPass. Goldens recorded on this machine class (WARP); regenerate with scripts/integration/record_effect_blur.json and copy test_output/effect_blur/*.hash into tests/goldens/effect_blur/.",
+    "commands": [
+        {"type": "AddScreen", "name": "FxScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 20},
+
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_blur/effect_off.hash", "goldenFilepath": "tests/goldens/effect_blur/effect_off.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.gaussian_blur"},
+        {"type": "SetEffectFloatParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "radius", "value": 8.0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_blur/effect_on.hash", "goldenFilepath": "tests/goldens/effect_blur/effect_on.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+
+        {"type": "Exit"}
+    ]
+}

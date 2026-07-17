@@ -199,16 +199,44 @@ void EffectGraphWindow::render() {
         ed::EndPin();
 
         // Param value summary so the node is informative without making
-        // the user open PropertyWindow for everything.
+        // the user open PropertyWindow for everything. Float prints the
+        // number, Color shows a swatch, Enum its label; other types are
+        // skipped (edit them in PropertyWindow).
         if (kind) {
             const auto* params = registry.try_get<EffectParameters>(fxEnt);
             for (std::size_t s = 0; s < kind->params.size(); ++s) {
                 const auto& schema = kind->params[s];
-                if (schema.type != ParamValue::Type::Float) continue;
-                const float v = (params && s < params->values.size())
-                    ? params->values[s].f4[0]
-                    : schema.defaultValue.f4[0];
-                ImGui::Text("%s: %.2f", schema.displayName.c_str(), v);
+                const ParamValue v = (params && s < params->values.size())
+                    ? params->values[s]
+                    : schema.defaultValue;
+                switch (schema.type) {
+                    case ParamValue::Type::Float:
+                        ImGui::Text("%s: %.2f", schema.displayName.c_str(), v.f4[0]);
+                        break;
+                    case ParamValue::Type::Color: {
+                        ImGui::Text("%s:", schema.displayName.c_str());
+                        ImGui::SameLine();
+                        // Non-interactive swatch (a real picker popup can't
+                        // live inside the node-editor canvas).
+                        ImGui::ColorButton("##swatch",
+                                           ImVec4(v.f4[0], v.f4[1], v.f4[2], v.f4[3]),
+                                           ImGuiColorEditFlags_NoTooltip |
+                                           ImGuiColorEditFlags_NoPicker,
+                                           ImVec2(28, 14));
+                        break;
+                    }
+                    case ParamValue::Type::Enum: {
+                        const int idx = v.i;
+                        const char* label =
+                            (idx >= 0 && idx < static_cast<int>(schema.enumLabels.size()))
+                                ? schema.enumLabels[static_cast<std::size_t>(idx)].c_str()
+                                : "?";
+                        ImGui::Text("%s: %s", schema.displayName.c_str(), label);
+                        break;
+                    }
+                    default:
+                        break;
+                }
             }
         }
 

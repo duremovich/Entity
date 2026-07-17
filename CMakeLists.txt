@@ -264,6 +264,7 @@ target_sources(EntityMediaCore
 
         # Effects (issue #54)
         src/effects/EffectKindRegistry.cpp
+        src/effects/EffectParamJson.cpp
 
         # Input
         src/input/InputBus.cpp

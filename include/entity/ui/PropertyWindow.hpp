@@ -2,6 +2,7 @@
 
 #include "EditorWindow.hpp"
 #include "../components/AnimatedProperties.hpp"
+#include "../components/EffectParam.hpp"
 #include "../core/Types.hpp"
 #include <imgui.h>
 #include <functional>
@@ -16,6 +17,7 @@ class Timeline;
 class CommandDispatcher;
 class Engine;
 struct Clip;
+struct EffectParameters;
 namespace effects { class EffectKindRegistry; struct ParamSchema; }
 namespace remote { class RemoteControlStore; }
 
@@ -276,6 +278,18 @@ private:
                                       const effects::ParamSchema& schema,
                                       float currentValue);
 
+    /**
+     * Widget row for a non-Float effect parameter (Vec2 / Vec3 / Color /
+     * Int / Bool / Enum). No stopwatch — only Float params have timeline
+     * lanes in v1 (per-channel tracks are a future data-model change).
+     * Drag widgets follow the optimistic-mutate + Activated/Deactivated
+     * undo idiom; Checkbox / Combo commit instantly.
+     */
+    void renderNonFloatEffectParam(entt::entity effectEntity,
+                                   const effects::ParamSchema& schema,
+                                   std::size_t slot,
+                                   EffectParameters& params);
+
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
     CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
@@ -334,6 +348,7 @@ private:
     // active in ImGui at a time, so a single struct is enough.
     struct EffectPreEditState {
         float                scalarValue{0.0f};
+        ParamValue           paramValue{};             // full pre-edit value (non-Float widgets)
         bool                 wasKeyframed{false};      // dispatch Upsert vs scalar set
         FrameNumber          keyframeFrame{0};         // layer-local frame at drag start
         std::optional<float> keyframeValue;            // nullopt = no kf existed pre-edit

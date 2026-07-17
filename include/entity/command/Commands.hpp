@@ -1245,12 +1245,29 @@ private:
  *     "holdValue": 0.5          // optional
  * }
  */
+
+/**
+ * Script-style effect addressing. Scripts can't know entity IDs ahead of
+ * time, so every effect command's JSON alternatively accepts
+ * { "trackIndex": 0, "clipIndex": 0, "effectIndex": 0 } and resolves it
+ * to (layer, effect) entities at execute time via the layer's EffectChain
+ * node order. Commands that only need the layer (AddEffect) ignore
+ * effectIndex.
+ */
+struct EffectScriptAddr {
+    int trackIndex{0};
+    int clipIndex{0};
+    int effectIndex{0};
+};
+
 class ClearEffectParamKeyframesCommand : public UndoableCommand {
 public:
     ClearEffectParamKeyframesCommand(entt::entity effectEntity, std::string paramName,
                                      std::optional<float> holdValue = std::nullopt)
         : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
           m_holdValue(holdValue) {}
+
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -1264,6 +1281,7 @@ private:
     entt::entity m_effectEntity;
     std::string  m_paramName;
     std::optional<float> m_holdValue;
+    std::optional<EffectScriptAddr> m_scriptAddr;
 
     bool m_hasPreviousState{false};
     std::vector<Keyframe> m_removedKeyframes;
@@ -1302,6 +1320,8 @@ public:
         m_hasPreviousState = true;
     }
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "UpsertEffectKeyframe"; }
@@ -1316,6 +1336,7 @@ private:
     FrameNumber       m_frame;
     float             m_newValue;
     std::optional<InterpolationType> m_interp;  // nullopt = preserve existing
+    std::optional<EffectScriptAddr>  m_scriptAddr;
     bool                 m_hasPreviousState{false};
     std::optional<float> m_previousValue;  // nullopt = no kf at this frame before exec
     bool                 m_hasPreviousEasing{false};
@@ -1344,6 +1365,8 @@ public:
         : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
           m_frame(frame) {}
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "RemoveEffectKeyframe"; }
@@ -1356,6 +1379,7 @@ private:
     entt::entity      m_effectEntity;
     std::string       m_paramName;
     FrameNumber       m_frame;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     bool                m_hasPreviousState{false};
     float               m_removedValue{0.0f};
     InterpolationType   m_removedInterp{InterpolationType::Linear};
@@ -3085,6 +3109,8 @@ public:
     AddEffectCommand(entt::entity layerEntity, std::string kindStableId)
         : m_layerEntity(layerEntity), m_kindStableId(std::move(kindStableId)) {}
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "AddEffect"; }
@@ -3095,6 +3121,7 @@ public:
 private:
     entt::entity m_layerEntity;
     std::string  m_kindStableId;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<entt::entity> m_createdEffectEntity;
 };
 
@@ -3114,6 +3141,8 @@ public:
     RemoveEffectCommand(entt::entity layerEntity, entt::entity effectEntity)
         : m_layerEntity(layerEntity), m_effectEntity(effectEntity) {}
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "RemoveEffect"; }
@@ -3124,6 +3153,7 @@ public:
 private:
     entt::entity m_layerEntity;
     entt::entity m_effectEntity;
+    std::optional<EffectScriptAddr> m_scriptAddr;
 
     // Captured on execute, replayed on undo.
     bool                    m_savedExecuted{false};
@@ -3403,6 +3433,7 @@ public:
         : m_effectEntity(effectEntity), m_enabled(enabled) {}
 
     void setPreviousEnabled(bool v) { m_previousEnabled = v; }
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -3414,6 +3445,7 @@ public:
 private:
     entt::entity m_effectEntity;
     bool         m_enabled;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<bool> m_previousEnabled;
 };
 
@@ -3439,6 +3471,7 @@ public:
           m_value(value) {}
 
     void setPreviousValue(float prev) { m_previousValue = prev; }
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -3451,7 +3484,83 @@ private:
     entt::entity m_effectEntity;
     std::string  m_paramName;
     float        m_value;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<float> m_previousValue;
+};
+
+/**
+ * Set any parameter on an effect, identified by parameter name — the
+ * type-generic sibling of SetEffectFloatParamCommand. Carries a full
+ * ParamValue; execute validates the value's type against the kind's
+ * ParamSchema slot and fails (with a log) on mismatch. Slot index is
+ * resolved at execute time via EffectKindRegistry so the command stays
+ * wire-stable across schema reordering.
+ *
+ * JSON format (value payload shape per EffectParamJson.hpp):
+ * { "type": "SetEffectParam", "effectEntity": 67890,
+ *   "paramName": "tint", "value": {"type": "color", "value": [1,0,0,1]} }
+ * or script-addressed:
+ * { "type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0,
+ *   "effectIndex": 0, "paramName": "mode",
+ *   "value": {"type": "enum", "value": 2} }
+ */
+class SetEffectParamCommand : public UndoableCommand {
+public:
+    SetEffectParamCommand(entt::entity effectEntity,
+                          std::string paramName,
+                          ParamValue value)
+        : m_effectEntity(effectEntity),
+          m_paramName(std::move(paramName)),
+          m_value(value) {}
+
+    void setPreviousValue(const ParamValue& prev) { m_previousValue = prev; }
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetEffectParam"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_effectEntity;
+    std::string  m_paramName;
+    ParamValue   m_value;
+    std::optional<EffectScriptAddr> m_scriptAddr;
+    std::optional<ParamValue> m_previousValue;
+};
+
+/**
+ * Test assertion: an effect parameter's keyframe track has exactly
+ * `count` keyframes (0 = no track). Mirrors AssertKeyframeCount for the
+ * hash-keyed EffectAnimatedParameters store.
+ *
+ * JSON format:
+ * { "type": "AssertEffectKeyframeCount", "trackIndex": 0, "clipIndex": 0,
+ *   "effectIndex": 0, "paramName": "radius", "count": 2 }
+ */
+class AssertEffectKeyframeCountCommand : public Command {
+public:
+    AssertEffectKeyframeCountCommand(int trackIndex, int clipIndex,
+                                     int effectIndex, std::string paramName,
+                                     std::size_t count)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_effectIndex(effectIndex), m_paramName(std::move(paramName)),
+          m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertEffectKeyframeCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    int         m_effectIndex;
+    std::string m_paramName;
+    std::size_t m_count;
 };
 
 // ============================================================================

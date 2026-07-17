@@ -1,0 +1,20 @@
+{
+    "version": 1,
+    "description": "Effect-keyframe persistence round-trip (save half). Regression gate for the pre-v29 bug where EffectAnimatedParameters was never serialized, silently losing effect keyframes on save/load. Imports a still, adds core.brightness_contrast, keyframes 'brightness' at frames 0 and 30 via script index addressing, asserts the count, and saves. The load half asserts the keyframes survive.",
+    "commands": [
+        {"type": "AddScreen", "name": "FxAnimScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 10},
+
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.brightness_contrast"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "UpsertEffectKeyframe", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "brightness", "frame": 0, "value": -0.5},
+        {"type": "UpsertEffectKeyframe", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "brightness", "frame": 30, "value": 0.5},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertEffectKeyframeCount", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "brightness", "count": 2},
+
+        {"type": "SaveProject", "filepath": "test_output/effect_anim_persistence/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "Exit"}
+    ]
+}

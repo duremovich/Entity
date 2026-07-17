@@ -1118,12 +1118,10 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
                 for (std::size_t slot = 0; slot < kind->params.size(); ++slot) {
                     const auto& schema = kind->params[slot];
 
-                    // Only Float params are editable in v1 (the only type
-                    // ParamSchema-defines for built-in effects today). When
-                    // other types ship the dispatch widens here.
+                    // Non-Float types get their own widget row (no
+                    // stopwatch — Float-only timeline lanes in v1).
                     if (schema.type != ParamValue::Type::Float) {
-                        ImGui::TextDisabled("%s: (non-Float types not editable yet)",
-                                            schema.displayName.c_str());
+                        renderNonFloatEffectParam(fxEnt, schema, slot, *params);
                         continue;
                     }
 
@@ -1274,6 +1272,124 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
 
         ImGui::PopID();
     }
+}
+
+void PropertyWindow::renderNonFloatEffectParam(entt::entity effectEntity,
+                                               const effects::ParamSchema& schema,
+                                               std::size_t slot,
+                                               EffectParameters& params) {
+    ImGui::PushID(static_cast<int>(slot));
+
+    // Ensure the slot exists and matches the schema type (stale saves /
+    // schema growth degrade to the default, same as the loader).
+    if (slot >= params.values.size()) {
+        params.values.resize(slot + 1);
+        params.values[slot] = schema.defaultValue;
+    }
+    ParamValue& stored = params.values[slot];
+    if (stored.type != schema.type) stored = schema.defaultValue;
+
+    ImGui::Text("%s", schema.displayName.c_str());
+    ImGui::SetNextItemWidth(-1);
+
+    // Drag/picker widgets edit a local copy; `stored` still holds the
+    // pre-edit value on the IsItemActivated frame, so the capture below
+    // reads the true prior state before the optimistic write.
+    ParamValue edited = stored;
+    bool changed = false;
+    bool instantCommit = false;   // Checkbox / Combo have no drag lifecycle
+
+    const float dragSpeed =
+        std::max(0.001f, (schema.max - schema.min) / 200.0f);
+
+    switch (schema.type) {
+        case ParamValue::Type::Vec2:
+            changed = entity::ui::DragFloat2("##param", edited.f4, dragSpeed,
+                                             schema.min, schema.max, "%.3f");
+            break;
+        case ParamValue::Type::Vec3:
+            if (schema.uiHint == 1) {
+                changed = ImGui::ColorEdit3("##param", edited.f4,
+                                            ImGuiColorEditFlags_Float);
+            } else {
+                changed = entity::ui::DragFloat3("##param", edited.f4, dragSpeed,
+                                                 schema.min, schema.max, "%.3f");
+            }
+            break;
+        case ParamValue::Type::Color:
+            changed = ImGui::ColorEdit4("##param", edited.f4,
+                                        ImGuiColorEditFlags_Float |
+                                        ImGuiColorEditFlags_AlphaBar);
+            break;
+        case ParamValue::Type::Int: {
+            int v = edited.i;
+            changed = entity::ui::DragInt("##param", &v, 1.0f,
+                                          static_cast<int>(schema.min),
+                                          static_cast<int>(schema.max));
+            edited.i = v;
+            break;
+        }
+        case ParamValue::Type::Bool: {
+            bool v = edited.b;
+            if (ImGui::Checkbox("##param", &v)) {
+                edited.b = v;
+                changed = true;
+                instantCommit = true;
+            }
+            break;
+        }
+        case ParamValue::Type::Enum: {
+            int v = edited.i;
+            std::vector<const char*> labels;
+            labels.reserve(schema.enumLabels.size());
+            for (const auto& s : schema.enumLabels) labels.push_back(s.c_str());
+            if (!labels.empty()
+                && ImGui::Combo("##param", &v, labels.data(),
+                                static_cast<int>(labels.size()))) {
+                edited.i = v;
+                changed = true;
+                instantCommit = true;
+            }
+            break;
+        }
+        case ParamValue::Type::Float:
+            break;  // handled by the slider path in renderEffectsSection
+    }
+
+    if (instantCommit) {
+        // No drag lifecycle: prev is the stored value right now, commit
+        // in one step.
+        if (m_dispatcher) {
+            auto cmd = std::make_unique<SetEffectParamCommand>(
+                effectEntity, schema.name, edited);
+            cmd->setPreviousValue(stored);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+        stored = edited;
+    } else {
+        if (ImGui::IsItemActivated()) {
+            m_preEditEffect.paramValue   = stored;
+            m_preEditEffect.paramName    = schema.name;
+            m_preEditEffect.effectEntity = effectEntity;
+            m_preEditEffect.wasKeyframed = false;
+        }
+        if (changed) {
+            // Optimistic write so the widget tracks the drag without
+            // waiting for the dispatched command.
+            stored = edited;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            auto cmd = std::make_unique<SetEffectParamCommand>(
+                effectEntity, schema.name, stored);
+            if (m_preEditEffect.effectEntity == effectEntity &&
+                m_preEditEffect.paramName == schema.name) {
+                cmd->setPreviousValue(m_preEditEffect.paramValue);
+            }
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+    }
+
+    ImGui::PopID();
 }
 
 void PropertyWindow::renderTimelineProperties() {
