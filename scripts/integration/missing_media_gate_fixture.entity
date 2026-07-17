@@ -1,0 +1,433 @@
+{
+ "audioMasterGain": 1.0,
+ "audioMasterMute": false,
+ "contentRoutingAssets": [
+  {
+   "kind": "FeedMap",
+   "name": "1920x4",
+   "sourceHeight": 1080,
+   "sourceWidth": 7680,
+   "targets": [
+    {
+     "name": "Region 1",
+     "screenName": "CH01",
+     "uvRect": [
+      0.0,
+      0.0,
+      0.25,
+      1.0
+     ]
+    },
+    {
+     "name": "Region 2",
+     "screenName": "CH02",
+     "uvRect": [
+      0.25,
+      0.0,
+      0.25,
+      1.0
+     ]
+    },
+    {
+     "name": "Region 3",
+     "screenName": "CH03",
+     "uvRect": [
+      0.5,
+      0.0,
+      0.25,
+      1.0
+     ]
+    },
+    {
+     "name": "Region 4",
+     "screenName": "CH04",
+     "uvRect": [
+      0.75,
+      0.0,
+      0.25,
+      1.0
+     ]
+    }
+   ]
+  }
+ ],
+ "cues": [],
+ "dmxMappingsJson": "",
+ "format": "entity_project",
+ "mappingSurfaces": [
+  {
+   "brightness": 1.0,
+   "corners": [
+    [
+     -1.0,
+     1.0
+    ],
+    [
+     1.0,
+     1.0
+    ],
+    [
+     1.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     -1.0
+    ]
+   ],
+   "gamma": 1.0,
+   "gridSubdivisions": 1,
+   "name": "Surface 2",
+   "outputIndex": 0,
+   "softEdge": {
+    "bottom": 0.0,
+    "left": 0.0,
+    "right": 0.0,
+    "top": 0.0
+   },
+   "sourceUVs": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     1.0,
+     1.0
+    ],
+    [
+     0.0,
+     1.0
+    ]
+   ],
+   "surfaceIndex": 1,
+   "visible": true
+  },
+  {
+   "brightness": 1.0,
+   "corners": [
+    [
+     -1.0,
+     1.0
+    ],
+    [
+     1.0,
+     1.0
+    ],
+    [
+     1.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     -1.0
+    ]
+   ],
+   "gamma": 1.0,
+   "gridSubdivisions": 1,
+   "name": "Surface 1",
+   "outputIndex": 0,
+   "softEdge": {
+    "bottom": 0.0,
+    "left": 0.0,
+    "right": 0.0,
+    "top": 0.0
+   },
+   "sourceUVs": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     1.0,
+     1.0
+    ],
+    [
+     0.0,
+     1.0
+    ]
+   ],
+   "surfaceIndex": 0,
+   "visible": true
+  }
+ ],
+ "mediaLibrary": [
+  {
+   "lastProbeMtimeUnix": 1779062741,
+   "lastProbeSizeBytes": 198021,
+   "originalPath": "content/FEEDMAPTEST.png",
+   "pathKind": "managed",
+   "probe": {
+    "displayCodecName": "PNG sequence",
+    "framerate": 30.0,
+    "hasAlpha": false,
+    "height": 1080,
+    "isHap": false,
+    "sourceCodecName": "png",
+    "tier": 2,
+    "totalFrames": 1,
+    "valid": true,
+    "width": 7680
+   },
+   "transcodedPath": "",
+   "variant": ""
+  },
+  {
+   "lastProbeMtimeUnix": 1779395044,
+   "lastProbeSizeBytes": 633016449,
+   "originalPath": "content/bbb_sunflower_2160p_30fps_normal.mp4",
+   "pathKind": "managed",
+   "probe": {
+    "displayCodecName": "H.264",
+    "framerate": 30.0,
+    "hasAlpha": false,
+    "height": 2160,
+    "isHap": false,
+    "sourceCodecName": "h264",
+    "tier": 3,
+    "totalFrames": 19036,
+    "valid": true,
+    "width": 3840
+   },
+   "transcodedPath": "",
+   "variant": ""
+  }
+ ],
+ "models": [],
+ "nonHapImportPolicy": 0,
+ "objectLibrary": [],
+ "oscInboundMappingsJson": "",
+ "oscOutboundMappingsJson": "",
+ "outputs": [
+  {
+   "brightness": 1.0,
+   "deviceName": "\\\\.\\DISPLAY3",
+   "displayName": "Generic PnP Monitor",
+   "enabled": true,
+   "fullscreen": false,
+   "gamma": 1.0,
+   "height": 1080,
+   "inputRegion": {
+    "height": 1.0,
+    "width": 1.0,
+    "x": 0.0,
+    "y": 0.0
+   },
+   "name": "Output 2",
+   "ocioDisplay": "",
+   "ocioView": "",
+   "outputIndex": 0,
+   "physicalDisplayIndex": 2,
+   "refreshRate": 60.0,
+   "sourceScreenName": "CH01",
+   "type": 0,
+   "width": 1920,
+   "windowHeight": 720,
+   "windowWidth": 1280,
+   "windowX": 3840,
+   "windowY": 0
+  },
+  {
+   "brightness": 1.0,
+   "deviceName": "\\\\.\\DISPLAY2",
+   "displayName": "Generic PnP Monitor",
+   "enabled": true,
+   "fullscreen": false,
+   "gamma": 1.0,
+   "height": 1080,
+   "inputRegion": {
+    "height": 1.0,
+    "width": 1.0,
+    "x": 0.0,
+    "y": 0.0
+   },
+   "name": "Output 1",
+   "ocioDisplay": "",
+   "ocioView": "",
+   "outputIndex": 0,
+   "physicalDisplayIndex": 1,
+   "refreshRate": 60.0,
+   "sourceScreenName": "CH04",
+   "type": 0,
+   "width": 1920,
+   "windowHeight": 720,
+   "windowWidth": 1280,
+   "windowX": 5760,
+   "windowY": 0
+  }
+ ],
+ "projectors": [],
+ "props": [],
+ "screens": [
+  {
+   "height": 1080,
+   "modelName": "",
+   "name": "CH04",
+   "opacity": 1.0,
+   "position": [
+    4.699999809265137,
+    1.125,
+    0.0
+   ],
+   "rotation": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "size": [
+    4.0,
+    2.25,
+    0.0
+   ],
+   "visible": true,
+   "width": 1920,
+   "zOrder": 0
+  },
+  {
+   "height": 1080,
+   "modelName": "",
+   "name": "CH03",
+   "opacity": 1.0,
+   "position": [
+    0.0,
+    1.125,
+    0.0
+   ],
+   "rotation": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "size": [
+    4.0,
+    2.25,
+    0.0
+   ],
+   "visible": true,
+   "width": 1920,
+   "zOrder": 0
+  },
+  {
+   "height": 1080,
+   "modelName": "",
+   "name": "CH02",
+   "opacity": 1.0,
+   "position": [
+    -4.699999809265137,
+    1.125,
+    0.0
+   ],
+   "rotation": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "size": [
+    4.0,
+    2.25,
+    0.0
+   ],
+   "visible": true,
+   "width": 1920,
+   "zOrder": 0
+  },
+  {
+   "height": 1080,
+   "modelName": "",
+   "name": "CH01",
+   "opacity": 1.0,
+   "position": [
+    -9.899999618530273,
+    1.125,
+    0.0
+   ],
+   "rotation": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "size": [
+    4.0,
+    2.25,
+    0.0
+   ],
+   "visible": true,
+   "width": 1920,
+   "zOrder": 0
+  }
+ ],
+ "sections": [
+  {
+   "breakFrame": 3000,
+   "color": 4292901498,
+   "fadeSeconds": 5.0
+  }
+ ],
+ "timeline": {
+  "currentTime": 71333333,
+  "duration": 718933349,
+  "framerate": 30.0
+ },
+ "tracks": [
+  {
+   "index": 0,
+   "layers": [
+    {
+     "animatedProperties": [],
+     "audio": {
+      "gain": 1.0,
+      "mute": false,
+      "solo": false
+     },
+     "duration": 2819,
+     "effects": [],
+     "filepath": "content/__intentionally_missing_media__.mp4",
+     "frameBlending": false,
+     "framerate": 30.0,
+     "hasAlpha": false,
+     "height": 2160,
+     "kind": "clip",
+     "layer": {
+      "blendMode": "normal",
+      "opacity": 1.0,
+      "visible": true,
+      "zOrder": 1000
+     },
+     "mediaOutFrame": 19035,
+     "mediaStartFrame": 0,
+     "mediaType": "prores4444",
+     "playbackMode": 0,
+     "sectionBehavior": "Normal",
+     "startFrame": 0,
+     "totalMediaFrames": 19036,
+     "transform": {
+      "position": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "scale": [
+       1.0,
+       1.0,
+       1.0
+      ]
+     },
+     "width": 3840
+    }
+   ]
+  }
+ ],
+ "version": 24
+}

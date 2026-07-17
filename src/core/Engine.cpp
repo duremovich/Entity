@@ -746,8 +746,17 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         SeekSyncController::ReadinessFn videoReady = [=]() -> bool {
             if (!decodeSystem || !timeAuthority || !timeline || !reg) return true;
             const FrameNumber currentFrame = timeline->getCurrentFrame();
-            auto view = reg->view<Clip>();
+            // The gate must only wait on clips DecodeSystem will actually
+            // service, or it hangs until the 3s preroll failsafe on a clip
+            // no worker exists for. DecodeSystem iterates view<Clip,
+            // FrameBuffer> and skips !clip.loaded; mirror both here. A clip
+            // whose media failed to open (missing file, bad codec) never
+            // gets FrameBuffer / loaded=true (ProjectManager's open path
+            // returns before either), so without this filter its permanent
+            // absence of a worker reads as "not ready yet" forever.
+            auto view = reg->view<Clip, FrameBuffer>();
             for (auto [entity, clip] : view.each()) {
+                if (!clip.loaded) continue;
                 if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
                 const FrameNumber mediaFrame =
                     timeAuthority->mapToMediaFrame(entity, clip, currentFrame);
@@ -791,6 +800,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                 auto view = reg->view<Clip, AudioSource>();
                 for (auto [entity, clip, audio] : view.each()) {
                     (void)audio;
+                    // Mirror AudioSystem's servicing skip: it iterates
+                    // view<Clip, AudioSource> and skips !clip.loaded, so a
+                    // clip with a serialized AudioSource but unopened media
+                    // (loaded=false) never gets an audio worker. Skipping it
+                    // here keeps the gate from waiting on a worker that will
+                    // never exist. See the videoReady note above.
+                    if (!clip.loaded) continue;
                     if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
                     if (!audioSystem->isWorkerSeekReady(entity)) {
                         // Same rate-limited diagnostic as videoReady.

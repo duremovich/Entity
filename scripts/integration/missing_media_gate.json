@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "description": "Regression: a clip whose media file fails to open must NOT hold the seek-sync gate. The fixture's only clip points at a missing file, so its media never opens (loaded=false, no FrameBuffer), but its serialized AudioSource is still emplaced. Before the fix, the gate's videoReady/audioReady predicates waited on that clip for the full 3s preroll failsafe, freezing the playhead (Timeline advances only when Playing && !gated). After the fix the predicates skip unserviceable clips, the gate releases immediately, and the playhead advances. We assert the playhead moved ~1s worth of frames after a 1s wall-clock play; a stuck-at-0 playhead (gate held) fails the assert. Wait stays well under the 3s failsafe so a held gate can't be masked by the timeout firing.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "scripts/integration/missing_media_gate_fixture.entity"},
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "SeekToFrame", "frame": 0},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "AssertPlayheadAtFrame", "frame": 30, "tolerance": 20},
+        {"type": "Exit"}
+    ]
+}

@@ -177,6 +177,13 @@ entity_add_integration_test(hap_hdr_smoke        hap_hdr_smoke.json)
 entity_add_integration_test(aces_smoke           aces_smoke.json)
 entity_add_integration_test(cache_hit_after_seek cache_hit_after_seek.json)
 entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
+# Missing-media seek-sync gate: a clip whose media file fails to open
+# (loaded=false, no FrameBuffer) but carries a serialized AudioSource must
+# not hold the seek-sync gate. Before the fix, videoReady/audioReady waited
+# on that clip until the 3s preroll failsafe, freezing the playhead. The
+# assert catches a stuck playhead (gate held) vs. one that advanced (gate
+# released promptly).
+entity_add_integration_test(missing_media_gate missing_media_gate.json)
 # Parked-clip visibility: a clip dropped onto a PARKED (paused, never
 # played) playhead inside its range must resolve its GPU slot + decode the
 # parked source frame into FrameCache without a Play or seek. Guards the
