@@ -245,6 +245,7 @@ target_sources(EntityMediaCore
         src/ui/ShowControlWindow.cpp
         src/ui/LayersWindow.cpp
         src/ui/EffectGraphWindow.cpp
+        src/ui/EffectUiCommon.cpp
         src/ui/WorkspaceStore.cpp
 
         # Calibration

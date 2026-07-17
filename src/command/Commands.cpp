@@ -6067,8 +6067,8 @@ bool AddEffectCommand::execute(Engine& engine) {
     Effect& fx = registry.emplace<Effect>(fxEnt);
     fx.kindId     = kindHash;
     fx.enabled    = true;
-    fx.graphX     = 0.0f;
-    fx.graphY     = 0.0f;
+    fx.graphX     = m_graphX.value_or(0.0f);
+    fx.graphY     = m_graphY.value_or(0.0f);
     fx.ownerLayer = m_layerEntity;
 
     EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
@@ -6128,6 +6128,77 @@ CommandPtr AddEffectCommand::fromJson(const nlohmann::json& j) {
     auto cmd = std::make_unique<AddEffectCommand>(layerEntity, std::move(kind));
     if (j.contains("trackIndex")) {
         cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0), 0});
+    }
+    if (j.contains("graphX") || j.contains("graphY")) {
+        cmd->setInitialGraphPos(j.value("graphX", 0.0f), j.value("graphY", 0.0f));
+    }
+    return cmd;
+}
+
+// ============================================================================
+// ReorderEffectCommand
+// ============================================================================
+
+bool ReorderEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    const int n = static_cast<int>(chain->nodes.size());
+    if (m_fromIndex < 0 || m_fromIndex >= n ||
+        m_toIndex   < 0 || m_toIndex   >= n || m_fromIndex == m_toIndex) {
+        return false;
+    }
+    // Declaration order IS evaluation order only for linear stacks; the
+    // UI disables reorder when connections exist, and scripts get the
+    // same guard here for consistency.
+    if (!chain->connections.empty()) {
+        std::cerr << "[ReorderEffect] chain has explicit graph topology — "
+                     "reorder via the Effect Graph instead" << std::endl;
+        return false;
+    }
+    entt::entity node = chain->nodes[static_cast<std::size_t>(m_fromIndex)];
+    chain->nodes.erase(chain->nodes.begin() + m_fromIndex);
+    chain->nodes.insert(chain->nodes.begin() + m_toIndex, node);
+    m_executed = true;
+    return true;
+}
+
+bool ReorderEffectCommand::undo(Engine& engine) {
+    if (!m_executed) return false;
+    auto* chain = engine.getRegistry().try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    const int n = static_cast<int>(chain->nodes.size());
+    if (m_toIndex < 0 || m_toIndex >= n || m_fromIndex < 0 || m_fromIndex >= n) {
+        return false;
+    }
+    entt::entity node = chain->nodes[static_cast<std::size_t>(m_toIndex)];
+    chain->nodes.erase(chain->nodes.begin() + m_toIndex);
+    chain->nodes.insert(chain->nodes.begin() + m_fromIndex, node);
+    return true;
+}
+
+nlohmann::json ReorderEffectCommand::toJson() const {
+    return {{"type", "ReorderEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"fromIndex", m_fromIndex},
+            {"toIndex", m_toIndex}};
+}
+
+std::string ReorderEffectCommand::getDescription() const {
+    return "Reorder effect " + std::to_string(m_fromIndex) + " -> "
+         + std::to_string(m_toIndex);
+}
+
+CommandPtr ReorderEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    auto cmd = std::make_unique<ReorderEffectCommand>(
+        layer, j.value("fromIndex", 0), j.value("toIndex", 0));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0));
     }
     return cmd;
 }

@@ -3145,6 +3145,9 @@ public:
         : m_layerEntity(layerEntity), m_kindStableId(std::move(kindStableId)) {}
 
     void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+    // Initial node-editor position (graph context menu drops the node at
+    // the cursor). Unset = the graph view's auto-layout.
+    void setInitialGraphPos(float x, float y) { m_graphX = x; m_graphY = y; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -3157,6 +3160,7 @@ private:
     entt::entity m_layerEntity;
     std::string  m_kindStableId;
     std::optional<EffectScriptAddr> m_scriptAddr;
+    std::optional<float> m_graphX, m_graphY;
     std::optional<entt::entity> m_createdEffectEntity;
 };
 
@@ -3608,6 +3612,41 @@ private:
     ParamValue   m_value;
     std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<ParamValue> m_previousValue;
+};
+
+/**
+ * Move an effect within the chain's declaration order (the stack view's
+ * Up/Down buttons). Only meaningful while the chain is an implicit
+ * linear stack — the UI disables reordering once explicit connections
+ * exist (evaluation order is then the graph's, not the list's).
+ *
+ * JSON format:
+ * { "type": "ReorderEffect", "trackIndex": 0, "clipIndex": 0,
+ *   "fromIndex": 2, "toIndex": 1 }
+ */
+class ReorderEffectCommand : public UndoableCommand {
+public:
+    ReorderEffectCommand(entt::entity layerEntity, int fromIndex, int toIndex)
+        : m_layerEntity(layerEntity), m_fromIndex(fromIndex), m_toIndex(toIndex) {}
+
+    void setScriptAddress(int trackIndex, int clipIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ReorderEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    int m_fromIndex;
+    int m_toIndex;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0};
+    bool m_executed{false};
 };
 
 /**

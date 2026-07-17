@@ -177,6 +177,8 @@ entity_add_integration_test(effect_blur        effect_blur.json)
 entity_add_integration_test(solid_layer_create solid_layer_create.json)
 # Generator-on-solid golden — zero-input effect replaces the solid's content.
 entity_add_integration_test(effect_generator_solid effect_generator_solid.json)
+# Two-branch DAG golden — gradient + shape branches into a blend combiner.
+entity_add_integration_test(effect_dag_branch     effect_dag_branch.json)
 entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
 entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
 entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)

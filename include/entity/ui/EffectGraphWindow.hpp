@@ -14,23 +14,24 @@ class CommandDispatcher;
 namespace effects { class EffectKindRegistry; }
 
 /**
- * EffectGraphWindow - Visualises a layer's effect chain as a node graph
+ * EffectGraphWindow - Edits a layer's effect chain as a node graph
  * (issue #54, Phase 4).
  *
- * v1 scope:
- *   - Reads the currently-selected layer's EffectChain via Timeline (same
- *     pattern as PropertyWindow).
- *   - Renders synthetic "Layer Source" → effect nodes → "To Screen"
- *     pins, with linear-chain edges drawn between them.
- *   - Node drag-to-move updates each effect's graphX / graphY on the
- *     fly (live in the component; persistence to project files happens
- *     via the existing serialization layer).
+ * Shipped:
+ *   - Synthetic "Layer Source" → effect nodes → "To Screen"; pins
+ *     rendered from each kind's SocketSchema (combiners show two
+ *     texture inputs). Node drag persists graphX / graphY.
+ *   - Drag-connect (ConnectEffectCommand — materializes the implicit
+ *     linear chain on first edit, replaces occupied inputs, refuses
+ *     cycles with a tooltip), link/node deletion, background
+ *     context-menu add-at-cursor, node menu (enable/disable, set as
+ *     output, delete). Every mutation is an undoable command.
+ *   - Role styling: generators green, combiners amber, filters by
+ *     category; disabled nodes dim with an ASCII "[off]" tag.
  *
  * Deferred to follow-up:
- *   - Drag-connect / disconnect, cycle detection, branching topology
  *   - Selection routing back to PropertyWindow (focused-effect view)
  *   - Custom socket types (Float / Color sockets feeding param inputs)
- *   - Right-click context menu (insert effect, delete, duplicate)
  *
  * Implementation note: uses `unofficial::imgui-node-editor` vendored via
  * vcpkg. One persistent editor context per window; the context owns its
@@ -81,6 +82,11 @@ private:
     // effect at the same numeric ID gets a fresh placement.
     std::unordered_set<std::uint64_t> m_placedNodes;
     entt::entity                      m_lastSelectedClip{entt::null};
+
+    // Context-menu state: canvas position of the background right-click
+    // (new nodes land there) and the node the node-menu targets.
+    ImVec2       m_contextCanvasPos{0.0f, 0.0f};
+    entt::entity m_contextNode{entt::null};
 };
 
 } // namespace entity

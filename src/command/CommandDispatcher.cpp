@@ -296,6 +296,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("ConnectEffect", ConnectEffectCommand::fromJson);
     registerFactory("DisconnectEffect", DisconnectEffectCommand::fromJson);
     registerFactory("SetEffectGraphTopology", SetEffectGraphTopologyCommand::fromJson);
+    registerFactory("ReorderEffect", ReorderEffectCommand::fromJson);
 
     // Object Animation Layer commands (Phase 3.3 + 3.4)
     registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);

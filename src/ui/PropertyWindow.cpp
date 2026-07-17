@@ -23,6 +23,8 @@
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/effects/EffectChainTopo.hpp"
+#include "entity/ui/EffectUiCommon.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/components/RemotePatch.hpp"
 #include "entity/remote/RemoteControlStore.hpp"
@@ -1024,43 +1026,19 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
     auto& registry = m_timeline->getRegistry();
     if (!registry.valid(layerEntity)) return;
 
-    // "Add Effect" button. Opens a popup populated from the registry.
+    // "Add Effect" button. Opens a popup populated from the registry
+    // (shared picker with the Effect Graph's context menu).
     if (ImGui::Button("+ Add Effect", ImVec2(-1, 0))) {
         ImGui::OpenPopup("AddEffectPopup");
     }
     if (ImGui::BeginPopup("AddEffectPopup")) {
-        if (!m_effectKindRegistry) {
-            ImGui::TextDisabled("(EffectKindRegistry not bound)");
-        } else {
-            // Group by category, stable order.
-            const auto& kinds = m_effectKindRegistry->kinds();
-            std::vector<const effects::EffectKind*> sorted;
-            sorted.reserve(kinds.size());
-            for (const auto& [_, k] : kinds) sorted.push_back(&k);
-            std::sort(sorted.begin(), sorted.end(),
-                [](const effects::EffectKind* a, const effects::EffectKind* b) {
-                    if (a->category != b->category) return a->category < b->category;
-                    return a->displayName < b->displayName;
-                });
-
-            std::string lastCategory;
-            for (const effects::EffectKind* k : sorted) {
-                if (k->category != lastCategory) {
-                    if (!lastCategory.empty()) ImGui::Separator();
-                    ImGui::TextDisabled("%s", k->category.c_str());
-                    lastCategory = k->category;
+        ui::renderEffectKindMenu(m_effectKindRegistry,
+            [&](const effects::EffectKind& k) {
+                if (m_dispatcher) {
+                    m_dispatcher->enqueue(std::make_unique<AddEffectCommand>(
+                        layerEntity, k.stableId));
                 }
-                if (ImGui::MenuItem(k->displayName.c_str())) {
-                    if (m_dispatcher) {
-                        m_dispatcher->enqueue(std::make_unique<AddEffectCommand>(
-                            layerEntity, k->stableId));
-                    }
-                }
-            }
-            if (sorted.empty()) {
-                ImGui::TextDisabled("(no effect kinds registered)");
-            }
-        }
+            });
         ImGui::EndPopup();
     }
 
@@ -1072,12 +1050,43 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
 
     ImGui::Spacing();
 
+    // Stack order must always be truthful about evaluation. Linear stacks
+    // display (and reorder) in declaration order. Once the graph editor
+    // has written explicit connections, evaluation order is the topo sort
+    // — show that instead (via the SAME resolver the bake uses, so the
+    // stack and the engine can never disagree), lock the reorder buttons,
+    // and offer a reset back to a linear stack. Disabled / dead nodes
+    // (not in the enabled-only plan) trail at the end.
+    const bool graphDriven = !chain->connections.empty();
+    std::vector<entt::entity> displayOrder;
+    if (graphDriven) {
+        const auto plan = effects::buildEffectExecutionPlan(
+            registry, *chain, m_effectKindRegistry);
+        displayOrder.reserve(chain->nodes.size());
+        for (const auto& step : plan.steps) displayOrder.push_back(step.node);
+        for (auto fxEnt : chain->nodes) {
+            if (std::find(displayOrder.begin(), displayOrder.end(), fxEnt)
+                == displayOrder.end()) {
+                displayOrder.push_back(fxEnt);
+            }
+        }
+        ImGui::TextDisabled("Graph topology active (%d links)",
+                            static_cast<int>(chain->connections.size()));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset to linear stack") && m_dispatcher) {
+            m_dispatcher->enqueue(std::make_unique<SetEffectGraphTopologyCommand>(
+                layerEntity, std::vector<EffectConnection>{}, entt::null));
+        }
+    } else {
+        displayOrder = chain->nodes;
+    }
+
     // Walk the chain and render one collapsible header per effect.
     // Iterating by index so we can capture entities for delete commands
     // without invalidating during the render pass — commands enqueue
     // and apply on the next dispatcher tick.
-    for (std::size_t i = 0; i < chain->nodes.size(); ++i) {
-        const entt::entity fxEnt = chain->nodes[i];
+    for (std::size_t i = 0; i < displayOrder.size(); ++i) {
+        const entt::entity fxEnt = displayOrder[i];
         if (!registry.valid(fxEnt)) continue;
         auto* fx     = registry.try_get<Effect>(fxEnt);
         auto* params = registry.try_get<EffectParameters>(fxEnt);
@@ -1106,6 +1115,23 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
         ImGui::SetNextItemAllowOverlap();
         const bool open = ImGui::CollapsingHeader(displayName,
                                                    ImGuiTreeNodeFlags_DefaultOpen);
+        // Reorder buttons — meaningful only while the list order IS the
+        // evaluation order (implicit linear stack). Graph-driven chains
+        // reorder in the Effect Graph.
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 76.0f);
+        ImGui::BeginDisabled(graphDriven);
+        const bool moveUp = ImGui::SmallButton("^") && i > 0;
+        ImGui::SameLine();
+        const bool moveDown = ImGui::SmallButton("v") && i + 1 < displayOrder.size();
+        ImGui::EndDisabled();
+        if (graphDriven && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Ordering is edited in the Effect Graph for this layer");
+        }
+        if ((moveUp || moveDown) && m_dispatcher && !graphDriven) {
+            m_dispatcher->enqueue(std::make_unique<ReorderEffectCommand>(
+                layerEntity, static_cast<int>(i),
+                static_cast<int>(moveUp ? i - 1 : i + 1)));
+        }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 28.0f);
         const bool deleteClicked = ImGui::SmallButton("X");
 
