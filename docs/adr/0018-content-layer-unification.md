@@ -161,6 +161,11 @@ The unifying invariant: **a content layer is anything with a Layer +
 Transform + MediaLayer + one kind-specific component that either
 populates a video-texture slot or owns a compose target.**
 
+(2026-07-17: the Solid kind — `SolidLayerState`, a flat color filled
+into its own compose target by one PASS 1 `drawColoredQuad` — landed
+via exactly this recipe as the hosting surface for generator effects;
+see ADR-0019's amendment.)
+
 ## Consequences
 
 **Positive**

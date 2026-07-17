@@ -1,10 +1,13 @@
 # ADR-0019: Per-layer effects — ordered shader chain with stack + graph editors over one data model
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-07-17 — see "Amendment
+  2026-07-17" at the bottom: Phases 4 + 6 shipped, plus generators,
+  combiners, DAG evaluation, and a scratch-pool executor replacing the
+  ping-pong + R2D-ack RT scheme)
 - **Date:** 2026-05-12
 - **Implemented by:** Issue #54, commits `85bc6ac` … `44676c3`
-  (Phases 1, 2, 3, 5 — Phase 4 node graph editor and Phase 6
-  user-authored HLSL deferred).
+  (Phases 1, 2, 3, 5); amendment implemented on branch
+  `effects-node-graph` (2026-07-17).
 - **Relates to:** ADR-0014 (editor/show thread split — the snapshot
   bake + R2D ack patterns reused here), ADR-0018 (content-layer
   unification — PASS 1.5 slots between PASS 1 generative and PASS 2
@@ -316,3 +319,106 @@ target). Defer until the per-layer plumbing has settled.
   `src/project/ProjectSerializer.cpp`
 - **Shaders:** `shaders/effects/` (9 PS files + 1 shared VS + 1
   shared header)
+
+## Amendment 2026-07-17 — graph evaluation, generators, combiners, scratch-pool executor
+
+The deferred phases shipped, plus the "replace the layer" half of the
+AE model. Summary of what changed relative to the original decision;
+the rest of this ADR remains accurate.
+
+### 1. DAG evaluation is real (Phase 4 complete)
+
+One shared resolver — `effects::buildEffectExecutionPlan`
+(`include/entity/effects/EffectChainTopo.hpp`) — turns an
+`EffectChain` into an enabled-only, topologically ordered execution
+plan. Linear stacks are the degenerate case of the same code path.
+Kahn's sort runs editor-side at every bake, uncached (chains are tiny;
+caching would buy invalidation bugs). Disabled nodes are
+bypass-rewired: consumers re-point through runs of disabled nodes to
+the first enabled producer. Cycles and graphs needing more than
+`kMaxEffectGraphLiveIntermediates` (4) simultaneously-live
+intermediates degrade to the linear plan with a throttled log — the
+emitted plan is always valid; cycle *rejection* is the connect
+command's job, the bake fallback is defense-in-depth.
+
+Wire: `EffectSnapshot` gained `inputs` (per texture-input-socket
+producer index; -1 = layer source, -2 = unconnected) and `inputCount`;
+`LayerEffectsSnapshot`/`ContentLayerSnapshot` gained
+`outputIndex`/`effectsOutputIndex`. The bake emits effects pre-sorted,
+so the show thread executes a straight-line plan with zero graph
+logic. Legacy payloads without `inputs` synthesize prev-feeds-next.
+
+The same resolver orders the PropertyWindow stack view when a chain is
+graph-driven, so the stack and the engine can never disagree about
+evaluation order. `ConnectEffect` / `DisconnectEffect` /
+`SetEffectGraphTopology` / `ReorderEffect` commands mutate topology
+with whole-snapshot undo; the first graph gesture materializes the
+implicit linear chain (`materializeLinearTopology`).
+
+### 2. Ping-pong + `EffectChainRenderTargetAllocated` ack → show-local scratch pool
+
+The original per-layer ping-pong RT pair with an R2D ack round-trip is
+gone. PASS 1.5 now acquires intermediates from a show-thread-local
+scratch pool (`CompositorSystem::acquireEffectScratch`): exact-size
+reuse first, then resize-a-free-slot, then a fresh compose target;
+released at each step's last use (liveness), the final output held
+until next frame's reset. This is ADR-0014-compliant — no registry
+writes, and the editor never needed those slots (`postEffectsSlot`
+already travels via show-side RenderFrame mutation). Linear chains
+cost the same 2 RTs as before; the pool is shared across layers so
+compose-pool pressure went *down*. `EffectChainRenderTargets` and the
+ack message remain wire-inert for one version per bus rule 3.
+
+Critical correctness detail discovered by pixel-probing:
+intra-frame chain reads must sample the compose target's **write sub**
+(`TextureRef::composeWrite`), not the stable sub — the stable sub is
+one frame old, and a scratch slot reused within a frame would hand a
+consumer a different node's output entirely. This also retired the
+old ping-pong path's one-frame-per-chain-step latency on animated
+content.
+
+### 3. Generators and combiners (the AE model)
+
+A kind's role derives from its sockets (`EffectKind::
+textureInputCount()` — no separate flag to drift): 0 = generator,
+1 = filter, 2+ = combiner. Five `core.gen.*` generators (linear
+gradient, checkerboard, fractal noise, plasma, shape) and three
+`core.comb.*` combiners (blend, mask, displace) shipped. Generator-led
+chains run with no source texture at all; a new `SolidLayerState`
+generative kind (ADR-0018 recipe, one `drawColoredQuad` in PASS 1) is
+the classic hosting surface. The effect root signature grew to four
+single-descriptor SRV tables (t0–t3) + CBV; every register always
+binds a valid descriptor — unconnected/absent inputs get a 4x4
+TRANSPARENT-black fallback texture (blend weight 0 = passthrough).
+`_effect_common.hlsli` gained `g_input1..3`, `g_timeSeconds`
+(renderer-local aesthetic clock — deliberately not the timeline clock,
+ADR-0025), and the reminder that Int/Enum slots are `asint()` bit-cast.
+
+### 4. Resolved open questions
+
+- **Effect animation during editor stalls** — closed.
+  `BakedEffectTrack::slotIndex` is baked where name→slot resolution
+  happens; `buildRenderFrame` re-evaluates animated Float params at
+  the live frame and patches the per-frame paramBlob copy,
+  registry-free (NEW-07 shape).
+- **Project files store hashes, not stable IDs** — closed. v29
+  serialization writes `stableId` (hash retained as fallback), typed
+  name-keyed params, `animatedParams` keyframe tracks (fixing silent
+  keyframe loss on save/load), and graph topology as effects-array
+  indices. Generative layers persist chains too (was clip-only).
+- **Phase 6 user HLSL + hot reload** — closed. ContentScanner watches
+  `<project>/effects` (changed files re-emit Added, unlike media);
+  `EffectKindRegistry::hotReload()` re-scans; a new
+  `InvalidateEffectPso` D2R message evicts stale PSOs into a
+  frame-aged graveyard. User bytecode is `shared_ptr<const vector>`
+  behind a mutex — fixing the pre-existing editor-write/show-read
+  race on `m_userArtifacts`.
+- **RT sizing** — effect RTs and generative compose targets now size
+  from source content dims (`ContentLayerSnapshot::sourceWidth/
+  Height`; clamp 16..4096), so blur radii and pixelate cells are
+  texel-true to the source.
+
+Still open: color management through effects (PASS 1.5 runs before the
+PASS 2 OCIO transform — unchanged from the original trade-off), and
+`Backend::HLSLCompute` (declared, unimplemented; particles are the
+motivating follow-up).
