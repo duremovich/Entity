@@ -105,6 +105,16 @@ void LayersWindow::render() {
             Layer::Kind::Generative,
             ImVec4(0.20f, 0.72f, 0.85f, 1.0f),
             1);  // subKind 1 = Text
+
+        layerPaletteRow(
+            "Solid",
+            "Drag onto a track to create a Solid color layer.\n"
+            "A flat color fill — the classic host for generator effects\n"
+            "(noise, gradients) and effect-chain experiments.\n"
+            "Set color and resolution in the Properties panel.",
+            Layer::Kind::Generative,
+            ImVec4(0.62f, 0.62f, 0.62f, 1.0f),
+            2);  // subKind 2 = Solid
     }
 
     // === Previz ===

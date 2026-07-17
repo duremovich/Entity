@@ -18,6 +18,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/OutputSurface.hpp"
 #include "entity/components/Model.hpp"
@@ -1076,6 +1077,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         // layer (R2D ack wrote it on the editor thread). -1 if not yet
         // allocated — PASS 2 compositor skips the blit until then.
         snap.renderTargetSlot = gen.renderTargetSlot;
+        snap.renderWidth      = gen.renderWidth;
+        snap.renderHeight     = gen.renderHeight;
 
         // Sub-kind dispatch by component composition (ADR-0016) — same rule
         // GenerativeSystem uses on the editor side.
@@ -1100,6 +1103,9 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             snap.textTextureGeneration = tls->textureGeneration;  // #90
             snap.textBakedWidth  = tls->bakedWidth;
             snap.textBakedHeight = tls->bakedHeight;
+        } else if (const auto* sls = m_registry.try_get<SolidLayerState>(entity)) {
+            snap.kind       = bus::GenerativeLayerSnapshot::Kind::Solid;
+            snap.solidColor = sls->color;
         } else {
             // No kind-specific state component → skip (defensive — the
             // editor-side creation paths always attach one).

@@ -5,6 +5,7 @@
 #include "../components/EffectParam.hpp"
 #include "../core/Types.hpp"
 #include <imgui.h>
+#include <array>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -360,6 +361,9 @@ private:
     // Filter text for the Media combo dropdown. Cleared on dropdown open
     // (see IsWindowAppearing branch in renderPlaybackSection).
     char m_mediaFilterBuf[256]{0};
+
+    // Pre-edit capture for the Solid layer color picker.
+    std::array<float, 4> m_preEditSolidColor{1.0f, 1.0f, 1.0f, 1.0f};
 
     // Pre-edit captures for Text layer property DragFloat / InputTextMultiline.
     // Populated on IsItemActivated; consumed on IsItemDeactivatedAfterEdit.

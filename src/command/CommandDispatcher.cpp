@@ -302,6 +302,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Generative layer commands
     registerFactory("CreateMuncherLayer", CreateMuncherLayerCommand::fromJson);
     registerFactory("CreateTextLayer", CreateTextLayerCommand::fromJson);
+    registerFactory("CreateSolidLayer", CreateSolidLayerCommand::fromJson);
+    registerFactory("SetSolidColor", SetSolidColorCommand::fromJson);
 
     // Generative layer property commands
     registerFactory("SetGenerativeRenderSize", SetGenerativeRenderSizeCommand::fromJson);

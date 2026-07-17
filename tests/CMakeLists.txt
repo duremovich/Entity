@@ -172,6 +172,8 @@ entity_add_integration_test(blend              blend.json)
 entity_add_integration_test(blend_difference   blend_difference.json)
 # Effect render golden — first GPU coverage of PASS 1.5 (blur on a still).
 entity_add_integration_test(effect_blur        effect_blur.json)
+# Solid layer golden — PASS 1 Kind::Solid fill through the PASS 2 blit.
+entity_add_integration_test(solid_layer_create solid_layer_create.json)
 entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
 entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
 entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)

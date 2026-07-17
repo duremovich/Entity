@@ -35,6 +35,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/RemotePatch.hpp"
 #include "entity/components/AudioSource.hpp"
@@ -5755,6 +5756,56 @@ CommandPtr CreateTextLayerCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// CreateSolidLayerCommand
+// ============================================================================
+
+bool CreateSolidLayerCommand::execute(Engine& engine) {
+    // Resolve target: first Screen entity in the registry. Same policy as
+    // CreateTextLayerCommand — the user retargets via Properties.
+    auto& registry = engine.getRegistry();
+    entt::entity targetEntity = entt::null;
+    auto screenView = registry.view<Screen>();
+    if (!screenView.empty()) {
+        targetEntity = *screenView.begin();
+    }
+
+    m_createdEntity = engine.createSolidLayer(targetEntity,
+                                              m_trackIndex,
+                                              m_startFrame,
+                                              m_duration);
+    if (m_createdEntity == entt::null) {
+        std::cerr << "[CreateSolidLayer] FAIL: createSolidLayer returned null" << std::endl;
+        return false;
+    }
+    std::cout << "[CreateSolidLayer] OK track=" << m_trackIndex
+              << " start=" << m_startFrame
+              << " duration=" << m_duration
+              << " entity=" << static_cast<uint32_t>(m_createdEntity)
+              << std::endl;
+    return true;
+}
+
+nlohmann::json CreateSolidLayerCommand::toJson() const {
+    return {{"type", "CreateSolidLayer"},
+            {"trackIndex", m_trackIndex},
+            {"startFrame", m_startFrame},
+            {"duration", m_duration}};
+}
+
+std::string CreateSolidLayerCommand::getDescription() const {
+    return "Create Solid layer on track " + std::to_string(m_trackIndex) +
+           " at " + std::to_string(m_startFrame) +
+           " dur=" + std::to_string(m_duration);
+}
+
+CommandPtr CreateSolidLayerCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex       = j.value("trackIndex", 0);
+    FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
+    FrameNumber duration = j.value("duration", static_cast<FrameNumber>(300));
+    return std::make_unique<CreateSolidLayerCommand>(trackIndex, start, duration);
+}
+
+// ============================================================================
 // SetInputChannelCommand
 // ============================================================================
 
@@ -7103,6 +7154,54 @@ CommandPtr SetTextColorCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetTextColorCommand>(
         e,
         j.value("r", 1.0f), j.value("g", 1.0f), j.value("b", 1.0f), j.value("a", 1.0f));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetSolidColorCommand::execute(Engine& engine) {
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+        if (m_layerEntity == entt::null) {
+            std::cerr << "[SetSolidColor] no layer at track=" << *m_addrTrack
+                      << " clip=" << m_addrClip << std::endl;
+            return false;
+        }
+    }
+    auto* s = engine.getRegistry().try_get<SolidLayerState>(m_layerEntity);
+    if (!s) return false;
+    if (!m_prevR.has_value()) {
+        m_prevR = s->color[0]; m_prevG = s->color[1];
+        m_prevB = s->color[2]; m_prevA = s->color[3];
+    }
+    s->color = {m_r, m_g, m_b, m_a};
+    return true;
+}
+
+bool SetSolidColorCommand::undo(Engine& engine) {
+    if (!m_prevR.has_value()) return false;
+    auto* s = engine.getRegistry().try_get<SolidLayerState>(m_layerEntity);
+    if (!s) return false;
+    s->color = {*m_prevR, *m_prevG, *m_prevB, *m_prevA};
+    return true;
+}
+
+nlohmann::json SetSolidColorCommand::toJson() const {
+    return {{"type", "SetSolidColor"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"r", m_r}, {"g", m_g}, {"b", m_b}, {"a", m_a}};
+}
+
+std::string SetSolidColorCommand::getDescription() const { return "Set solid color"; }
+
+CommandPtr SetSolidColorCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    auto cmd = std::make_unique<SetSolidColorCommand>(
+        e,
+        j.value("r", 1.0f), j.value("g", 1.0f), j.value("b", 1.0f), j.value("a", 1.0f));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0));
+    }
+    return cmd;
 }
 
 // ----------------------------------------------------------------------------

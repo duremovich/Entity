@@ -1330,6 +1330,11 @@ public:
                                  FrameNumber startFrame,
                                  FrameNumber duration);
 
+    entt::entity createSolidLayer(entt::entity targetScreen,
+                                  int trackIndex,
+                                  FrameNumber startFrame,
+                                  FrameNumber duration);
+
     // --- Clipboard + clip clone (timeline ergonomics) -----------------
     //
     // Unified deep-clone path for Duplicate, Cut/Copy/Paste, and any

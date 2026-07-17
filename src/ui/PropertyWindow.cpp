@@ -21,6 +21,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/components/RemotePatch.hpp"
@@ -2891,6 +2892,7 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     const char* subKind = "Generative";
     if (registry.all_of<MunchersGameState>(entity)) subKind = "Muncher";
     if (registry.all_of<TextLayerState>(entity))    subKind = "Text";
+    if (registry.all_of<SolidLayerState>(entity))   subKind = "Solid";
     ImGui::Text("%s Layer", subKind);
     ImGui::Separator();
 
@@ -3122,7 +3124,54 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             cmd->setPreviousSize(gen->renderWidth, prevH);
             m_dispatcher->enqueue(std::move(cmd));
         }
+        // Size presets. "Match Screen" reads the target screen's pixel size.
+        {
+            auto applyPreset = [&](std::uint32_t w, std::uint32_t h) {
+                if ((gen->renderWidth == w && gen->renderHeight == h) || !m_dispatcher) return;
+                auto cmd = std::make_unique<SetGenerativeRenderSizeCommand>(entity, w, h);
+                cmd->setPreviousSize(gen->renderWidth, gen->renderHeight);
+                m_dispatcher->enqueue(std::move(cmd));
+                gen->renderWidth  = w;   // optimistic; command re-applies
+                gen->renderHeight = h;
+                if (auto* tls = registry.try_get<TextLayerState>(entity)) tls->dirty = true;
+            };
+            if (ImGui::SmallButton("1920x1080")) applyPreset(1920, 1080);
+            if (gen->targetScreen != entt::null && registry.valid(gen->targetScreen)) {
+                if (const auto* scr = registry.try_get<Screen>(gen->targetScreen)) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Match Screen")) {
+                        applyPreset(scr->width, scr->height);
+                    }
+                }
+            }
+        }
         ImGui::TextDisabled("Slot: %d", gen->renderTargetSlot);
+    }
+
+    // ---- Solid layer properties (Solid sub-kind only) ----
+    if (auto* sls = registry.try_get<SolidLayerState>(entity)) {
+        if (ImGui::CollapsingHeader("Solid", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float col[4] = {sls->color[0], sls->color[1], sls->color[2], sls->color[3]};
+            ImGui::SetNextItemWidth(-1);
+            const bool changed = ImGui::ColorEdit4("##solidcolor", col,
+                                                   ImGuiColorEditFlags_Float |
+                                                   ImGuiColorEditFlags_AlphaBar);
+            if (ImGui::IsItemActivated()) {
+                m_preEditSolidColor = sls->color;
+            }
+            if (changed) {
+                sls->color = {col[0], col[1], col[2], col[3]};
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+                auto cmd = std::make_unique<SetSolidColorCommand>(
+                    entity, sls->color[0], sls->color[1], sls->color[2], sls->color[3]);
+                cmd->setPreviousColor(m_preEditSolidColor[0], m_preEditSolidColor[1],
+                                      m_preEditSolidColor[2], m_preEditSolidColor[3]);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Color");
+        }
     }
 
     // ---- Text layer properties (Text sub-kind only) ----

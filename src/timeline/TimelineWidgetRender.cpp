@@ -757,7 +757,9 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     case Layer::Kind::ObjectAnimation: ghostLabel = "OA Layer"; break;
                     case Layer::Kind::Clip:            ghostLabel = "Clip Layer"; break;
                     case Layer::Kind::Generative:
-                        ghostLabel = (subKind == 1) ? "Text Layer" : "Muncher Layer";
+                        ghostLabel = (subKind == 1) ? "Text Layer"
+                                   : (subKind == 2) ? "Solid Layer"
+                                   : "Muncher Layer";
                         break;
                     case Layer::Kind::Signal:          ghostLabel = "Signal Layer"; break;
                     default: ghostLabel = "Layer"; break;
@@ -814,6 +816,10 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     if (subKind == 1) {
                         if (m_textLayerDropCallback) {
                             m_textLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                        }
+                    } else if (subKind == 2) {
+                        if (m_solidLayerDropCallback) {
+                            m_solidLayerDropCallback(trackIndex, startFrame, defaultDuration);
                         }
                     } else {
                         if (m_generativeLayerDropCallback) {

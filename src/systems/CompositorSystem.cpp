@@ -94,6 +94,15 @@ void CompositorSystem::update(bus::RenderFrame& rf,
                 case bus::GenerativeLayerSnapshot::Kind::Text:
                     drawTextLayer(gl, 1.0f);
                     break;
+                case bus::GenerativeLayerSnapshot::Kind::Solid:
+                    // Flat fill: one fullscreen quad in the layer's own RT.
+                    // Layer opacity/blend apply in PASS 2 like any layer.
+                    m_renderer->drawColoredQuad(
+                        glm::mat4(1.0f),
+                        glm::vec4(gl.solidColor[0], gl.solidColor[1],
+                                  gl.solidColor[2], gl.solidColor[3]),
+                        1.0f);
+                    break;
             }
             m_renderer->endComposeTarget();
         }

@@ -22,6 +22,7 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/AudioSource.hpp"
@@ -898,6 +899,14 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         tsJson["bold"]       = tls.bold;
                         tsJson["italic"]     = tls.italic;
                         genJson["text_state"] = tsJson;
+                    } else if (registry.all_of<SolidLayerState>(layerEntity)) {
+                        // v29 — Solid sub-kind: flat fill color.
+                        genJson["sub_kind"] = "solid";
+                        const auto& sls = registry.get<SolidLayerState>(layerEntity);
+                        genJson["solid_state"] = {
+                            {"color", { sls.color[0], sls.color[1],
+                                        sls.color[2], sls.color[3] }}
+                        };
                     } else {
                         genJson["sub_kind"] = "muncher";
                         // MunchersGameState resets each session — no persistent fields.
@@ -2191,6 +2200,19 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                     tls.italic    = ts.value("italic", false);
                                 }
                                 tls.dirty = true;  // force re-bake on first tick
+                            } else if (subKind == "solid") {
+                                // v29 — Solid sub-kind.
+                                auto& sls = registry.emplace<SolidLayerState>(layerEntity);
+                                if (entryJson.contains("solid_state")) {
+                                    const auto& ss = entryJson["solid_state"];
+                                    if (ss.contains("color") && ss["color"].is_array()
+                                        && ss["color"].size() >= 4) {
+                                        sls.color = { ss["color"][0].get<float>(),
+                                                      ss["color"][1].get<float>(),
+                                                      ss["color"][2].get<float>(),
+                                                      ss["color"][3].get<float>() };
+                                    }
+                                }
                             } else {
                                 // Muncher or unrecognised sub-kind — emplace Muncher state
                                 // (game state resets each session; no persistent fields)

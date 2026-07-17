@@ -3019,6 +3019,38 @@ private:
 };
 
 /**
+ * CreateSolidLayerCommand — script / UI command for creating a Solid
+ * generative layer (flat color fill) on the timeline.
+ *
+ * Mirrors CreateTextLayerCommand. Targets the first Screen entity found
+ * in the registry; retargetable via the Properties panel.
+ *
+ * Params:
+ *   trackIndex — 0-based index into timeline tracks
+ *   startFrame — first frame of the layer on the timeline
+ *   duration   — length in timeline frames
+ */
+class CreateSolidLayerCommand : public Command {
+public:
+    CreateSolidLayerCommand(int trackIndex, FrameNumber startFrame,
+                            FrameNumber duration)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreateSolidLayer"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int          m_trackIndex;
+    FrameNumber  m_startFrame;
+    FrameNumber  m_duration;
+    entt::entity m_createdEntity{entt::null};
+};
+
+/**
  * AssertScreenSnapshotCommand — integration-test assertion.
  *
  * Calls PlaybackTimeAuthority::buildSceneSnapshot on demand and asserts a
@@ -3315,6 +3347,41 @@ public:
 private:
     entt::entity m_layerEntity;
     float m_r, m_g, m_b, m_a;
+    std::optional<float> m_prevR, m_prevG, m_prevB, m_prevA;
+};
+
+/**
+ * SetSolidColorCommand — update the fill color of a Solid generative layer.
+ *
+ * JSON format (scripts may pass {trackIndex, clipIndex} instead of the
+ * raw layerEntity ID):
+ * { "type": "SetSolidColor", "layerEntity": 12345,
+ *   "r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0 }
+ */
+class SetSolidColorCommand : public UndoableCommand {
+public:
+    SetSolidColorCommand(entt::entity layerEntity, float r, float g, float b, float a)
+        : m_layerEntity(layerEntity), m_r(r), m_g(g), m_b(b), m_a(a) {}
+
+    void setPreviousColor(float r, float g, float b, float a) {
+        m_prevR = r; m_prevG = g; m_prevB = b; m_prevA = a;
+    }
+    void setScriptAddress(int trackIndex, int clipIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSolidColor"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    float m_r, m_g, m_b, m_a;
+    std::optional<int> m_addrTrack;
+    int                m_addrClip{0};
     std::optional<float> m_prevR, m_prevG, m_prevB, m_prevA;
 };
 

@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "Solid layer integration test. Creates a Solid generative layer on a 64x64 screen, sets its fill to pure red via SetSolidColor script addressing, and asserts two goldens: compose slot 0 (the solid's own PASS 1 render target, 1920x1080 red fill) and slot 1 (the 64x64 SolidScreen after the PASS 2 blit). Covers CreateSolidLayer -> bake (GenerativeLayerSnapshot Kind::Solid + solidColor) -> PASS 1 drawColoredQuad -> PASS 2 composite. Slot order is deterministic for this script (solid RT allocates before the screen target). Regenerate with scripts/integration/record_solid_layer.json and copy test_output/solid_layer/*.hash into tests/goldens/solid_layer/.",
+    "commands": [
+        {"type": "AddScreen", "name": "SolidScreen", "width": 64, "height": 64},
+        {"type": "CreateSolidLayer", "trackIndex": 0, "startFrame": 0, "duration": 300},
+        {"type": "SetSolidColor", "trackIndex": 0, "clipIndex": 0, "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/solid_layer/solid_red.hash", "goldenFilepath": "tests/goldens/solid_layer/solid_red.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/solid_layer/solid_red_screen.hash", "goldenFilepath": "tests/goldens/solid_layer/solid_red_screen.hash", "composeSlot": 1},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

@@ -23,6 +23,9 @@
 #include "entity/components/EffectParam.hpp"
 #include "entity/components/EffectParameters.hpp"
 #include "entity/components/GenerativeLayer.hpp"
+#include "entity/components/MediaLayer.hpp"
+#include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/effects/EffectKind.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 #include "entity/components/Layer.hpp"
@@ -1281,6 +1284,58 @@ entity::effects::EffectKind makeMixedParamsKind() {
 }
 
 } // namespace
+
+TEST(ProjectSerializer, SolidLayerRoundTrip) {
+    // v29 — Solid generative sub-kind: color + render size survive
+    // save/load; the loader re-attaches SolidLayerState (not Muncher).
+    TempFile tf("solid_layer_roundtrip");
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        entt::entity trackEntity = timeline.createTrack("Track 0");
+        auto* track = registry.try_get<entity::TimelineTrack>(trackEntity);
+        ASSERT_NE(track, nullptr);
+
+        entt::entity layerEnt = registry.create();
+        auto& lay = registry.emplace<entity::Layer>(layerEnt);
+        lay.kind       = entity::Layer::Kind::Generative;
+        lay.startFrame = 0;
+        lay.duration   = 120;
+        lay.name       = "Solid";
+        auto& gen = registry.emplace<entity::GenerativeLayer>(layerEnt);
+        gen.renderWidth  = 640;
+        gen.renderHeight = 360;
+        auto& sls = registry.emplace<entity::SolidLayerState>(layerEnt);
+        sls.color = {0.9f, 0.2f, 0.1f, 0.8f};
+        registry.emplace<entity::MediaLayer>(layerEnt);
+        registry.emplace<entity::Transform>(layerEnt);
+
+        track->layers.push_back(layerEnt);
+
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        auto view = registry.view<entity::SolidLayerState, entity::GenerativeLayer>();
+        ASSERT_EQ(view.size_hint(), 1u);
+        for (auto [e, sls, gen] : view.each()) {
+            EXPECT_FLOAT_EQ(sls.color[0], 0.9f);
+            EXPECT_FLOAT_EQ(sls.color[1], 0.2f);
+            EXPECT_FLOAT_EQ(sls.color[2], 0.1f);
+            EXPECT_FLOAT_EQ(sls.color[3], 0.8f);
+            EXPECT_EQ(gen.renderWidth,  640u);
+            EXPECT_EQ(gen.renderHeight, 360u);
+            EXPECT_FALSE(registry.any_of<entity::MunchersGameState>(e));
+        }
+    }
+}
 
 TEST(ProjectSerializer, EffectChainV29FullFidelityRoundTrip) {
     // v29 round-trip with a live kind registry: typed name-keyed params of

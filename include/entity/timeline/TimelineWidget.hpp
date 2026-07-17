@@ -48,6 +48,10 @@ using GenerativeLayerDropCallback = std::function<void(int, FrameNumber, FrameNu
 // Parameters: track index, start frame (timeline), duration in frames
 using TextLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
+// Callback for when a Solid generative layer is dropped onto a track.
+// Parameters: track index, start frame (timeline), duration in frames
+using SolidLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
 // Callback for when a Signal Output layer is dropped onto a track.
 // Parameters: track index, start frame (timeline), duration in frames
 using SignalLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
@@ -175,6 +179,7 @@ public:
     void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
     void setGenerativeLayerDropCallback(GenerativeLayerDropCallback callback) { m_generativeLayerDropCallback = std::move(callback); }
     void setTextLayerDropCallback(TextLayerDropCallback callback) { m_textLayerDropCallback = std::move(callback); }
+    void setSolidLayerDropCallback(SolidLayerDropCallback callback) { m_solidLayerDropCallback = std::move(callback); }
     void setSignalLayerDropCallback(SignalLayerDropCallback callback) { m_signalLayerDropCallback = std::move(callback); }
 
     /**
@@ -873,6 +878,7 @@ private:
     ClipLayerDropCallback m_clipLayerDropCallback;
     GenerativeLayerDropCallback m_generativeLayerDropCallback;
     TextLayerDropCallback m_textLayerDropCallback;
+    SolidLayerDropCallback m_solidLayerDropCallback;
     SignalLayerDropCallback m_signalLayerDropCallback;
     MediaDurationLookup m_mediaDurationLookup;
 

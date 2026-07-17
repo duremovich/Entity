@@ -279,11 +279,22 @@ struct SignalLayerSnapshot {
 //       this each render frame to drive the placeholder hue-cycle. Real
 //       game state (Muncher pos, ghosts, pellets, score) lands here in v2.
 struct GenerativeLayerSnapshot {
-    enum class Kind : int { Muncher = 0, Text = 1 };
+    enum class Kind : int { Muncher = 0, Text = 1, Solid = 2 };
 
     std::uint64_t entity{0};
     Kind          kind{Kind::Muncher};
     std::uint64_t targetScreen{UINT64_MAX};
+
+    // Layer render-target size, mirrored from GenerativeLayer::renderWidth/
+    // Height for every kind. PASS 1 sizes the layer's compose target from
+    // these (and PASS 1.5 sizes effect RTs from the matching
+    // ContentLayerSnapshot::sourceWidth/Height).
+    std::uint32_t renderWidth{1920};
+    std::uint32_t renderHeight{1080};
+
+    // Solid-specific baked state (meaningful only when kind == Solid):
+    // linear-light RGBA fill color from SolidLayerState.
+    std::array<float, 4> solidColor{1.0f, 1.0f, 1.0f, 1.0f};
 
     // Plane A content routing (ADR-0021). Same contract as
     // ClipCatalogEntry: editor-baked from the GenerativeLayer entity's

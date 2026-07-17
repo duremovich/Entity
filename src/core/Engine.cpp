@@ -66,6 +66,7 @@
 #include "entity/components/EffectChainRenderTargets.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/systems/AudioSystem.hpp"
@@ -542,6 +543,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             auto screenView = m_registry.view<Screen>();
             if (!screenView.empty()) target = *screenView.begin();
             entt::entity created = this->createTextLayer(target, trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
+        timelineWidget->setSolidLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            entt::entity target = entt::null;
+            auto screenView = m_registry.view<Screen>();
+            if (!screenView.empty()) target = *screenView.begin();
+            entt::entity created = this->createSolidLayer(target, trackIndex, startFrame, duration);
             if (created != entt::null && m_timeline) {
                 m_timeline->setSelectedClip(created);
             }
@@ -4223,6 +4233,52 @@ entt::entity Engine::createTextLayer(entt::entity targetScreen,
     track->sortLayers(m_registry);
 
     std::cout << "[Engine] Created Text generative layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
+}
+
+entt::entity Engine::createSolidLayer(entt::entity targetScreen,
+                                      int trackIndex,
+                                      FrameNumber startFrame,
+                                      FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createSolidLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::Generative;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    // Neutral gray: distinct from Clip (blue), Muncher (yellow), Text (cyan).
+    lay.color      = {0.62f, 0.62f, 0.62f, 1.0f};
+    lay.name       = "Solid";
+
+    auto& gl = m_registry.emplace<GenerativeLayer>(layerEntity);
+    gl.targetScreen = targetScreen;
+    gl.renderWidth  = 1920;
+    gl.renderHeight = 1080;
+
+    m_registry.emplace<SolidLayerState>(layerEntity);
+    m_registry.emplace<MediaLayer>(layerEntity);
+    m_registry.emplace<Transform>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created Solid generative layer entity="
               << static_cast<uint32_t>(layerEntity)
               << " track=" << trackIndex
               << " start=" << startFrame

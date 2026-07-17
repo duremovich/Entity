@@ -447,6 +447,11 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["textTextureGeneration"] = g.textTextureGeneration;
     j["textBakedWidth"]    = g.textBakedWidth;
     j["textBakedHeight"]   = g.textBakedHeight;
+    j["renderWidth"]       = g.renderWidth;
+    j["renderHeight"]      = g.renderHeight;
+    auto solidArr = ojson::array();
+    for (float v : g.solidColor) solidArr.push_back(v);
+    j["solidColor"]        = std::move(solidArr);
     auto xfArr = ojson::array();
     for (float v : g.transformMatrix) xfArr.push_back(v);
     j["transformMatrix"]   = std::move(xfArr);
@@ -473,9 +478,9 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     GenerativeLayerSnapshot g;
     g.entity            = j.value("entity",            std::uint64_t{0});
     int kindInt         = j.value("kind",              0);
-    g.kind              = (kindInt == 1)
-                            ? GenerativeLayerSnapshot::Kind::Text
-                            : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
+    g.kind              = (kindInt == 1) ? GenerativeLayerSnapshot::Kind::Text
+                        : (kindInt == 2) ? GenerativeLayerSnapshot::Kind::Solid
+                        : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
     g.targetScreen      = j.value("targetScreen",      std::uint64_t{UINT64_MAX});
     int gModeRaw        = j.value("mode",              0);
     g.mode              = (gModeRaw == 1) ? 1 : 0;
@@ -536,6 +541,13 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     g.textTextureGeneration = j.value("textTextureGeneration", UINT32_MAX);
     g.textBakedWidth    = j.value("textBakedWidth",    std::uint32_t{0});
     g.textBakedHeight   = j.value("textBakedHeight",   std::uint32_t{0});
+    g.renderWidth       = j.value("renderWidth",       std::uint32_t{1920});
+    g.renderHeight      = j.value("renderHeight",      std::uint32_t{1080});
+    if (j.contains("solidColor")) {
+        const auto& arr = j.at("solidColor");
+        for (std::size_t i = 0; i < g.solidColor.size() && i < arr.size(); ++i)
+            g.solidColor[i] = arr[i].get<float>();
+    }
     if (j.contains("transformMatrix")) {
         const auto& arr = j.at("transformMatrix");
         for (std::size_t i = 0; i < g.transformMatrix.size() && i < arr.size(); ++i)
