@@ -480,6 +480,15 @@ struct ContentLayerSnapshot {
     // leaving those TextureRefs on the default any-generation).
     std::uint32_t sourceGeneration{0};
 
+    // Source content dimensions in pixels: clip media size for Video
+    // sources, GenerativeLayer::renderWidth/Height for Compose sources.
+    // 0 = unknown (pre-upgrade payloads / media not probed yet) — effect
+    // RT sizing falls back to 1920x1080. Effects run in layer-content
+    // space before the UV transform, so RTs sized from these keep blur
+    // radii / pixelate cells texel-true to the source.
+    std::uint32_t sourceWidth{0};
+    std::uint32_t sourceHeight{0};
+
     // Optional colour-pipeline hints. PlaybackPresenter caches the
     // authoritative tags for clips; the compositor takes a best-effort
     // hint here and falls back to the presenter when bound to a video slot.
@@ -601,6 +610,12 @@ struct ClipCatalogEntry {
     // thrashed past the fade window). ADR-0012 amendment 2026-05-23
     // follow-up.
     double        endingBreakFadeSeconds{0.0};
+
+    // Media pixel dimensions (Clip::width/height). 0 = unknown (media not
+    // probed / failed to open). Feeds ContentLayerSnapshot::sourceWidth/
+    // Height so effect RTs size to the source content.
+    std::uint32_t mediaWidth{0};
+    std::uint32_t mediaHeight{0};
 
     // VideoTexture
     int           descriptorSlot{-1};

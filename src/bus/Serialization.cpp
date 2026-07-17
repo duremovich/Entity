@@ -602,6 +602,8 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["sourceKind"]            = static_cast<int>(c.sourceKind);
     j["sourceSlot"]            = c.sourceSlot;
     j["sourceGeneration"]      = c.sourceGeneration;
+    j["sourceWidth"]           = c.sourceWidth;
+    j["sourceHeight"]          = c.sourceHeight;
     j["colorSpace"]            = c.colorSpace;
     j["ocioColorSpace"]        = c.ocioColorSpace;
     auto fx = ojson::array();
@@ -660,6 +662,8 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     // #90 F6: absent key = "generation unknown" → skip (UINT32_MAX), not 0
     // (instance-local generations; 0 would false-reject a peer's payload).
     c.sourceGeneration      = j.value("sourceGeneration",      UINT32_MAX);
+    c.sourceWidth           = j.value("sourceWidth",           std::uint32_t{0});
+    c.sourceHeight          = j.value("sourceHeight",          std::uint32_t{0});
     c.colorSpace            = j.value("colorSpace",            0);
     c.ocioColorSpace        = j.value("ocioColorSpace",        std::string{});
     if (j.contains("effects")) {
@@ -872,6 +876,8 @@ ojson encode(const ClipCatalogEntry& e) {
     j["sectionBehavior"]      = e.sectionBehavior;
     j["endAlignsWithSectionBreak"] = e.endAlignsWithSectionBreak;
     j["endingBreakFadeSeconds"] = e.endingBreakFadeSeconds;
+    j["mediaWidth"]           = e.mediaWidth;
+    j["mediaHeight"]          = e.mediaHeight;
     j["descriptorSlot"]       = e.descriptorSlot;
     j["descriptorGeneration"] = e.descriptorGeneration;
     j["transformMatrix"]      = e.transformMatrix;
@@ -931,6 +937,8 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     // endAlignsWithSectionBreak is true, preserving prior single-clip
     // behavior. New payloads carry the actual fadeSeconds.
     e.endingBreakFadeSeconds = j.value("endingBreakFadeSeconds", 0.0);
+    e.mediaWidth      = j.value("mediaWidth",  std::uint32_t{0});
+    e.mediaHeight     = j.value("mediaHeight", std::uint32_t{0});
     e.descriptorSlot  = j.at("descriptorSlot").get<int>();
     e.descriptorGeneration = j.value("descriptorGeneration", std::uint32_t{0});  // #90; default 0 for old captures
     const auto& arr   = j.at("transformMatrix");

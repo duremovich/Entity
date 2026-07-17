@@ -119,27 +119,28 @@ void CompositorSystem::update(bus::RenderFrame& rf,
     {
         ZoneScopedN("Compositor::pass1_5_effects");
 
-        // Default ping-pong RT size for the effect chain. v1: hardcoded
-        // 1920x1080 — matches ensureGenerativeRenderTarget. Phase 4 can
-        // size from the target screen or input texture dimensions.
-        constexpr std::uint32_t kDefaultEffectRtW = 1920;
-        constexpr std::uint32_t kDefaultEffectRtH = 1080;
-
         for (auto& cl : rf.contentLayers) {
             if (cl.effects.empty()) continue;
             if (cl.sourceSlot < 0) continue;  // input not ready
+
+            // Size effect RTs from the layer's source content dims (clip
+            // media size / generative render size) so effects run in
+            // content space before the UV transform — keeps blur radii and
+            // pixelate cells texel-true. 0 = unknown → 1920x1080 fallback;
+            // 4096 ceiling bounds compose-pool pressure.
+            const std::uint32_t rtW =
+                std::clamp(cl.sourceWidth  ? cl.sourceWidth  : 1920u, 16u, 4096u);
+            const std::uint32_t rtH =
+                std::clamp(cl.sourceHeight ? cl.sourceHeight : 1080u, 16u, 4096u);
 
             std::uint32_t slotA = UINT32_MAX, slotB = UINT32_MAX;
             if (!ensureEffectPingPongTargets(cl.entity,
                                               cl.effectChainSlotA,
                                               cl.effectChainSlotB,
-                                              kDefaultEffectRtW,
-                                              kDefaultEffectRtH,
+                                              rtW, rtH,
                                               slotA, slotB)) {
                 continue;  // R2D ack still in flight — try again next frame
             }
-            const std::uint32_t rtW = kDefaultEffectRtW;
-            const std::uint32_t rtH = kDefaultEffectRtH;
 
             // Resolve the chain's input as a TextureRef. The first effect
             // reads from the layer's raw source (Video or Compose); each
@@ -424,10 +425,11 @@ std::uint32_t CompositorSystem::ensureGenerativeRenderTarget(
     if (!m_renderer) return UINT32_MAX;
 
     const auto entity = static_cast<entt::entity>(gl.entity);
-    const uint32_t width  = 1920;  // GenerativeLayer default — kind-specific
-    const uint32_t height = 1080;  // override could plumb through later
-    // (renderWidth/renderHeight live on the editor-side component; not yet
-    // mirrored on the snapshot since the playfield draw is fixed-grid).
+    // Size from the layer's authored render-target dims (mirrored onto the
+    // snapshot from GenerativeLayer::renderWidth/Height). Clamp: 16 floor
+    // guards degenerate authored values, 4096 ceiling bounds pool pressure.
+    const uint32_t width  = std::clamp(gl.renderWidth,  16u, 4096u);
+    const uint32_t height = std::clamp(gl.renderHeight, 16u, 4096u);
 
     // 1. Editor has acknowledged a slot — reuse, resize in place if dims
     //    drifted. Called unconditionally every tick (#75): the same-size

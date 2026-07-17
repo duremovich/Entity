@@ -923,6 +923,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             m_timeline
                 ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEndFrame)
                 : 0.0;
+        ce.mediaWidth      = clip.width;
+        ce.mediaHeight     = clip.height;
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
         // #90: an unallocated VideoTexture keeps generation 0 (never stamped),
         // so this is unconditional — and harmless even if it weren't, since a
@@ -1552,6 +1554,10 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Video;
         c.sourceSlot            = ac.slot;
         c.sourceGeneration      = ac.slotGeneration;  // #90
+        if (ce) {
+            c.sourceWidth  = ce->mediaWidth;
+            c.sourceHeight = ce->mediaHeight;
+        }
         // Carry remoteSlot for diagnostics / future per-entry overlay.
         if (ce) c.remoteSlot   = ce->remoteSlot;
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
@@ -1618,6 +1624,8 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder                = gl.zOrder;
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Compose;
         c.sourceSlot            = gl.renderTargetSlot;
+        c.sourceWidth           = gl.renderWidth;
+        c.sourceHeight          = gl.renderHeight;
         c.remoteSlot            = gl.remoteSlot;
         // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
         if (const auto* le = findLayerEffects(gl.entity)) {
