@@ -116,6 +116,34 @@ if(IMGUI_USE_WCHAR32)
     target_compile_definitions(${PROJECT_NAME} PUBLIC IMGUI_USE_WCHAR32)
 endif()
 
+if(IMGUI_TEST_ENGINE)
+    target_sources(${PROJECT_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_context.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_coroutine.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_engine.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_exporters.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_perftool.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_ui.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_te_utils.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/imgui_capture_tool.cpp
+    )
+    target_include_directories(${PROJECT_NAME} PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test-engine>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test-engine/thirdparty>
+        $<INSTALL_INTERFACE:include/imgui_test_engine>
+    )
+    # IMGUI_ENABLE_TEST_ENGINE must be PUBLIC: it compiles the hook points
+    # into imgui.cpp AND must be visible to app code including test-engine
+    # headers. Coroutine runs on the std::thread implementation.
+    target_compile_definitions(${PROJECT_NAME} PUBLIC
+        IMGUI_ENABLE_TEST_ENGINE
+        IMGUI_TEST_ENGINE_ENABLE_COROUTINE_STDTHREAD=1)
+    # The capture tool vendors stb_image_write; internal linkage keeps its
+    # stbi_* symbols from colliding with a consumer's own stb implementation.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE STB_IMAGE_WRITE_STATIC)
+    target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_14)
+endif()
+
 list(REMOVE_DUPLICATES BINDINGS_SOURCES)
 
 install(
@@ -216,6 +244,13 @@ if(NOT IMGUI_SKIP_HEADERS)
 
     if(IMGUI_FREETYPE)
         install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/misc/freetype/imgui_freetype.h DESTINATION include)
+    endif()
+
+    if(IMGUI_TEST_ENGINE)
+        file(GLOB TEST_ENGINE_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/*.h)
+        install(FILES ${TEST_ENGINE_HEADERS} DESTINATION include/imgui_test_engine)
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test-engine/thirdparty/Str
+                DESTINATION include/imgui_test_engine/thirdparty)
     endif()
 endif()
 

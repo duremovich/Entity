@@ -1,6 +1,7 @@
 # Build directories
 build/
 build-noprof/
+build-uitest/
 out/
 bin/
 lib/

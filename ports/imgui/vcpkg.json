@@ -1,7 +1,7 @@
 {
   "name": "imgui",
   "version": "1.89.7",
-  "port-version": 3,
+  "port-version": 4,
   "description": "Bloat-free Immediate Mode Graphical User interface for C++ with minimal dependencies.",
   "homepage": "https://github.com/ocornut/imgui",
   "license": "MIT",
@@ -91,6 +91,9 @@
       "dependencies": [
         "sdl2"
       ]
+    },
+    "test-engine": {
+      "description": "Build with Dear ImGui Test Engine (dual-licensed: free for OSI-licensed open source / <$2M turnover; see imgui_test_engine LICENSE.txt)"
     },
     "vulkan-binding": {
       "description": "Make available Vulkan binding",

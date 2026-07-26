@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 
+# Must be set before project(): the vcpkg toolchain reads
+# VCPKG_MANIFEST_FEATURES when project() runs.
+option(ENTITY_ENABLE_UI_TESTS "Build the ImGui Test Engine UI test harness" OFF)
+if(ENTITY_ENABLE_UI_TESTS)
+    list(APPEND VCPKG_MANIFEST_FEATURES "ui-tests")
+endif()
+
 project(EntityMediaServer
     VERSION 0.1.0
     DESCRIPTION "High-Performance Realtime Media Server and Projection Mapping Engine"
@@ -379,6 +386,10 @@ if(ENTITY_ENABLE_TRACY)
         PUBLIC ENTITY_ENABLE_TRACY TRACY_ENABLE)
 endif()
 
+if(ENTITY_ENABLE_UI_TESTS)
+    target_compile_definitions(EntityMediaCore PUBLIC ENTITY_ENABLE_UI_TESTS)
+endif()
+
 target_compile_features(EntityMediaCore PUBLIC cxx_std_20)
 
 # Compiler warnings
@@ -417,6 +428,16 @@ add_subdirectory(apps)
 # ----------------------------------------------------------------------------
 set(EXTRA_PLUGIN_DIRS "" CACHE STRING
     "Semicolon-separated list of external plugin parent directories (e.g. an Entity-Pro plugins/ dir)")
+
+if(ENTITY_ENABLE_UI_TESTS AND EXTRA_PLUGIN_DIRS)
+    message(WARNING
+        "ENTITY_ENABLE_UI_TESTS is combined with EXTRA_PLUGIN_DIRS "
+        "(proprietary plugins). The resulting binary links Dear ImGui Test "
+        "Engine but is not a purely OSI-licensed artifact, so the test "
+        "engine's Free License rests solely on the <$2M-turnover criterion. "
+        "Fine today (solo/pre-revenue); revisit before commercial scale. "
+        "CI (no EXTRA_PLUGIN_DIRS) is the canonical UI-test build.")
+endif()
 
 entity_discover_plugins("${CMAKE_SOURCE_DIR}/plugins")
 foreach(_extra IN LISTS EXTRA_PLUGIN_DIRS)
@@ -459,5 +480,6 @@ message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build Tests: ${BUILD_TESTS}")
 message(STATUS "  D3D12 Debug: ${ENABLE_D3D12_DEBUG}")
 message(STATUS "  Tracy: ${ENTITY_ENABLE_TRACY}")
+message(STATUS "  UI tests (ImGui Test Engine): ${ENTITY_ENABLE_UI_TESTS}")
 message(STATUS "========================================")
 message(STATUS "")

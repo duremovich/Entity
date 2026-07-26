@@ -42,6 +42,17 @@
           ]
         }
       ]
+    },
+    "ui-tests": {
+      "description": "Build imgui with the Dear ImGui Test Engine for the UI test harness (dual-licensed upstream; free for the public GPLv3 build)",
+      "dependencies": [
+        {
+          "name": "imgui",
+          "features": [
+            "test-engine"
+          ]
+        }
+      ]
     }
   },
   "default-features": [

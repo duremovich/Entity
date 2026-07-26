@@ -18,6 +18,23 @@ else()
     )
 endif()
 
+if ("test-engine" IN_LIST FEATURES)
+    vcpkg_from_github(
+        OUT_SOURCE_PATH TEST_ENGINE_SOURCE_PATH
+        REPO ocornut/imgui_test_engine
+        REF v1.89.7
+        SHA512 b904a2dbde94aaed4324f97fde6a3733a45270764107ff960c4fa614b3348497df03bda3dc69f372abd9059b4fda05db88731b2d94214c0d14bebcfbbe6f3050
+        HEAD_REF main
+    )
+    # Only the imgui_test_engine/ subfolder is the library (and the only part
+    # under the DISCO HELLO dual license); the rest of the repo is MIT samples.
+    file(COPY "${TEST_ENGINE_SOURCE_PATH}/imgui_test_engine/" DESTINATION "${SOURCE_PATH}/test-engine")
+    # thirdparty/ is kept whole: Str is a single vendored header nowhere else,
+    # and the capture tool's imstb_image_write.h is compiled with
+    # STB_IMAGE_WRITE_STATIC (see CMakeLists.txt) so its symbols cannot
+    # collide with a consumer's own stb_image_write implementation.
+endif()
+
 file(COPY "${CMAKE_CURRENT_LIST_DIR}/imgui-config.cmake.in" DESTINATION "${SOURCE_PATH}")
 file(COPY "${CMAKE_CURRENT_LIST_DIR}/CMakeLists.txt" DESTINATION "${SOURCE_PATH}")
 
@@ -77,6 +94,7 @@ vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     osx-binding                 IMGUI_BUILD_OSX_BINDING
     sdl2-binding                IMGUI_BUILD_SDL2_BINDING
     sdl2-renderer-binding       IMGUI_BUILD_SDL2_RENDERER_BINDING
+    test-engine                 IMGUI_TEST_ENGINE
     vulkan-binding              IMGUI_BUILD_VULKAN_BINDING
     win32-binding               IMGUI_BUILD_WIN32_BINDING
     freetype                    IMGUI_FREETYPE
