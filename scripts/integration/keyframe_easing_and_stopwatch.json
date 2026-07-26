@@ -1,0 +1,131 @@
+{
+    "version": 1,
+    "description": "Gates two keyframe contracts end-to-end through the command layer. (1) Easing survives a value edit: an EaseInOut keyframe with non-default bezier handles (0.25/0.75, so a silent reset to the 0.42/0.58 defaults is caught too) keeps its interpolation AND its handles when UpsertKeyframe rewrites its value — the exact path the UI's value drag takes. Undo restores the prior value without disturbing the easing. (2) The stopwatch (ClearPropertyKeyframes) removes the WHOLE track for one property, leaves other properties untouched, and one Undo brings the entire track back with its easing intact.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "KfScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitSeconds", "count": 0.1 },
+
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 0, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30, "value": 2.0,
+            "interpolation": "EaseInOut"
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 60, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 0, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 45, "value": 0.0
+        },
+
+        {
+            "type": "SetKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+
+        {
+            "type": "UpsertKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30, "value": 3.5
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+
+        { "type": "Undo" },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+
+        {
+            "type": "ClearPropertyKeyframes",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX",
+            "holdValue": 2.0
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 0
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 2
+        },
+
+        { "type": "Undo" },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 2
+        },
+
+        { "type": "Exit" }
+    ]
+}

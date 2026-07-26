@@ -67,6 +67,7 @@
 #include "entity/components/EffectChainRenderTargets.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/systems/AudioSystem.hpp"
@@ -305,6 +306,11 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     }
     if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
         d3d->setEffectKindRegistry(m_effectKindRegistry.get());
+    }
+    if (m_projectManager) {
+        // v29 serialization writes stable kind IDs + param names through
+        // the registry (ProjectSerializer reads it off ProjectManager).
+        m_projectManager->setEffectKindRegistry(m_effectKindRegistry.get());
     }
 
     // Cross-system input channel bus. Constructed here (before any plugin
@@ -546,6 +552,15 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                 m_timeline->setSelectedClip(created);
             }
         });
+        timelineWidget->setSolidLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
+            entt::entity target = entt::null;
+            auto screenView = m_registry.view<Screen>();
+            if (!screenView.empty()) target = *screenView.begin();
+            entt::entity created = this->createSolidLayer(target, trackIndex, startFrame, duration);
+            if (created != entt::null && m_timeline) {
+                m_timeline->setSelectedClip(created);
+            }
+        });
         timelineWidget->setSignalLayerDropCallback([this](int trackIndex, FrameNumber startFrame, FrameNumber duration) {
             entt::entity created = this->createSignalLayer(trackIndex, startFrame, duration);
             if (created != entt::null && m_timeline) {
@@ -751,8 +766,17 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         SeekSyncController::ReadinessFn videoReady = [=]() -> bool {
             if (!decodeSystem || !timeAuthority || !timeline || !reg) return true;
             const FrameNumber currentFrame = timeline->getCurrentFrame();
-            auto view = reg->view<Clip>();
+            // The gate must only wait on clips DecodeSystem will actually
+            // service, or it hangs until the 3s preroll failsafe on a clip
+            // no worker exists for. DecodeSystem iterates view<Clip,
+            // FrameBuffer> and skips !clip.loaded; mirror both here. A clip
+            // whose media failed to open (missing file, bad codec) never
+            // gets FrameBuffer / loaded=true (ProjectManager's open path
+            // returns before either), so without this filter its permanent
+            // absence of a worker reads as "not ready yet" forever.
+            auto view = reg->view<Clip, FrameBuffer>();
             for (auto [entity, clip] : view.each()) {
+                if (!clip.loaded) continue;
                 if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
                 const FrameNumber mediaFrame =
                     timeAuthority->mapToMediaFrame(entity, clip, currentFrame);
@@ -796,6 +820,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
                 auto view = reg->view<Clip, AudioSource>();
                 for (auto [entity, clip, audio] : view.each()) {
                     (void)audio;
+                    // Mirror AudioSystem's servicing skip: it iterates
+                    // view<Clip, AudioSource> and skips !clip.loaded, so a
+                    // clip with a serialized AudioSource but unopened media
+                    // (loaded=false) never gets an audio worker. Skipping it
+                    // here keeps the gate from waiting on a worker that will
+                    // never exist. See the videoReady note above.
+                    if (!clip.loaded) continue;
                     if (!timeAuthority->isClipActiveAtFrame(clip, currentFrame)) continue;
                     if (!audioSystem->isWorkerSeekReady(entity)) {
                         // Same rate-limited diagnostic as videoReady.
@@ -1654,6 +1685,29 @@ void Engine::showThreadMain() {
                             if (m_frameCache) {
                                 m_frameCache->setMaxBytes(static_cast<size_t>(body.frameCacheBytes));
                             }
+                        } else if constexpr (std::is_same_v<T, bus::InvalidateEffectPso>) {
+                            // Hot reload: evict the stale PSO (parks
+                            // frame-aged; rebuilt from fresh bytecode on
+                            // next drawEffectPass).
+                            if (auto* d3d = m_rendererService
+                                    ? m_rendererService->getD3D12Renderer() : nullptr) {
+                                d3d->invalidateEffectPso(body.kindIdHash);
+                            }
+                        } else if constexpr (std::is_same_v<T, bus::RequestComposeCapture>) {
+                            // Capture requests are serviced by the pre-frame
+                            // drain (drainCaptureRequestsPreFrame), not here —
+                            // beginShowFrame has already run. A request that
+                            // lands in this drain's window used to be silently
+                            // DROPPED (visitor fell through), which is why
+                            // golden captures queued late in a show frame
+                            // never completed. Park it back on the queue for
+                            // the next frame's pre-frame drain. Safe from
+                            // requeue loops: drain() swaps the queue into a
+                            // local batch before invoking the sink.
+                            if (m_transport) {
+                                m_transport->send(bus::Direction::D2R,
+                                                  bus::serialize(bus::Message{body}));
+                            }
                         } else if constexpr (std::is_same_v<T, bus::ProvisionClipResources>) {
                             bus::ResourcesProvisioned reply{};
                             reply.entity = body.entity;
@@ -2259,17 +2313,28 @@ void Engine::render() {
     ZoneScopedN("Engine::render");
     // Handle pending resize before starting a new frame
     if (m_resizePending && m_renderer && m_renderer->isInitialized()) {
-        std::cout << "Applying deferred resize to " << m_pendingWidth << "x" << m_pendingHeight << std::endl;
-
-        m_windowWidth = m_pendingWidth;
-        m_windowHeight = m_pendingHeight;
-
-        Result result = m_renderer->resize(m_pendingWidth, m_pendingHeight);
-        if (result != Result::Success) {
+        const Result result = m_renderer->resize(m_pendingWidth, m_pendingHeight);
+        if (result == Result::Success) {
+            std::cout << "Applied deferred resize to " << m_pendingWidth
+                      << "x" << m_pendingHeight << std::endl;
+            m_windowWidth  = m_pendingWidth;
+            m_windowHeight = m_pendingHeight;
+            m_resizePending = false;
+        } else if (result == Result::NotReady && !m_renderer->isDeviceLost()
+                   && std::chrono::steady_clock::now() < m_resizeRetryDeadline) {
+            // #91: resize() deferred — waitForGpu abandoned its drain on a
+            // live device; back buffers untouched. This frame renders at the
+            // old size; retry next frame until the deadline armed in
+            // onWindowResize passes.
+            std::cerr << "[Engine] resize deferred (GPU drain abandoned) — retrying" << std::endl;
+        } else {
+            // Hard failure (Result::Failure — back buffers already torn down),
+            // device lost (recovery path owns the swap chain from here), or the
+            // retry deadline elapsed. No retry: a hard failure returns with the
+            // render targets Reset, so retrying re-renders into null targets.
             std::cerr << "Failed to resize D3D12 renderer!" << std::endl;
+            m_resizePending = false;
         }
-
-        m_resizePending = false;
     }
 
     if (m_renderer && m_renderer->isInitialized()) {
@@ -2417,6 +2482,9 @@ void Engine::onWindowResize(uint32_t width, uint32_t height) {
     // Store pending resize - will be applied at the start of next frame
     // This prevents deadlock when resize happens mid-frame
     m_resizePending = true;
+    // #91: arm the retry window for a deferred (NotReady) resize — bounds
+    // ATTEMPTS, see m_resizeRetryDeadline. Only (re)armed here.
+    m_resizeRetryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     m_pendingWidth = newWidth;
     m_pendingHeight = newHeight;
 
@@ -2644,6 +2712,18 @@ void Engine::onKeyEvent(int key, int scancode, int action, int mods) {
                 // DeleteClipsCommand (single undo step); a single clip keeps
                 // the original DeleteClipCommand path.
                 {
+                    // A keyframe selection wins over the clip selection: the
+                    // keyframes live *inside* the selected clip, so deleting the
+                    // clip out from under them is never what Delete meant.
+                    //
+                    // Plain Delete only. Ctrl+Shift+Delete is the ripple-delete-time
+                    // shortcut, handled by the second switch in this same function —
+                    // it must not also eat the keyframe selection on its way past.
+                    if (!ctrlPressed && !shiftPressed &&
+                        m_timelineWidget && m_timelineWidget->hasKeyframeSelection()) {
+                        m_timelineWidget->deleteSelectedKeyframes();
+                        break;
+                    }
                     const auto& sel = m_timeline->getSelectedClips();
                     if (m_commandDispatcher && sel.size() > 1) {
                         // Fix A: capture the (track,layer) targets NOW, at
@@ -4173,6 +4253,52 @@ entt::entity Engine::createTextLayer(entt::entity targetScreen,
     return layerEntity;
 }
 
+entt::entity Engine::createSolidLayer(entt::entity targetScreen,
+                                      int trackIndex,
+                                      FrameNumber startFrame,
+                                      FrameNumber duration) {
+    if (!m_timeline) return entt::null;
+    const auto& tracks = m_timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        std::cerr << "[Engine::createSolidLayer] trackIndex "
+                  << trackIndex << " out of range" << std::endl;
+        return entt::null;
+    }
+
+    auto* track = m_registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track) return entt::null;
+
+    entt::entity layerEntity = m_registry.create();
+
+    auto& lay = m_registry.emplace<Layer>(layerEntity);
+    lay.kind       = Layer::Kind::Generative;
+    lay.startFrame = startFrame;
+    lay.duration   = duration;
+    lay.trackIndex = static_cast<uint32_t>(trackIndex);
+    // Neutral gray: distinct from Clip (blue), Muncher (yellow), Text (cyan).
+    lay.color      = {0.62f, 0.62f, 0.62f, 1.0f};
+    lay.name       = "Solid";
+
+    auto& gl = m_registry.emplace<GenerativeLayer>(layerEntity);
+    gl.targetScreen = targetScreen;
+    gl.renderWidth  = 1920;
+    gl.renderHeight = 1080;
+
+    m_registry.emplace<SolidLayerState>(layerEntity);
+    m_registry.emplace<MediaLayer>(layerEntity);
+    m_registry.emplace<Transform>(layerEntity);
+
+    track->addLayer(layerEntity);
+    track->sortLayers(m_registry);
+
+    std::cout << "[Engine] Created Solid generative layer entity="
+              << static_cast<uint32_t>(layerEntity)
+              << " track=" << trackIndex
+              << " start=" << startFrame
+              << " duration=" << duration << std::endl;
+    return layerEntity;
+}
+
 void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackIndex, Timecode position) {
     std::cout << "\n========================================" << std::endl;
     std::cout << "Media Dropped on Timeline" << std::endl;
@@ -4476,6 +4602,10 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
                 std::filesystem::path("shaders");
             m_effectKindRegistry->scanUserEffects(
                 effectsDir, d3d->getRuntimeShaderCompiler(), exeShadersDir);
+            // Cross-project hygiene: the PSO cache is process-lifetime,
+            // so a user kind loaded for the previous project (same hash,
+            // different bytecode) must be evicted now.
+            broadcastEffectPsoInvalidations();
         }
     }
 
@@ -4861,13 +4991,47 @@ void Engine::applyEditorLayoutAfterLoad() {
     m_windowManager->requestIniApply(imguiIni, hiddenWindows, layoutLocked, focusedTabs);
 }
 
+void Engine::broadcastEffectPsoInvalidations() {
+    // Evict stale PSOs for every user kind the last effect scan touched —
+    // the show thread parks them frame-aged and rebuilds from the fresh
+    // bytecode on next use. Shared by the project-load rescan and the
+    // hot-reload rescan so the two eviction paths can never diverge.
+    if (!m_transport || !m_effectKindRegistry) return;
+    for (std::uint32_t hash : m_effectKindRegistry->lastScanTouchedKinds()) {
+        bus::InvalidateEffectPso msg{};
+        msg.kindIdHash = hash;
+        m_transport->send(bus::Direction::D2R,
+                          bus::serialize(bus::Message{msg}));
+    }
+}
+
 void Engine::drainContentScannerDeltas() {
     ZoneScopedN("ContentScanner::drainDeltas");
     if (!m_contentScanner || !m_projectManager) return;
     auto deltas = m_contentScanner->drain();
     if (deltas.empty()) return;
 
+    // User effect pack hot reload (issue #54 Phase 6): any Added delta
+    // under <project>/effects triggers ONE full rescan per drain (the
+    // scanner re-arms Added on file change for this root). Removed
+    // deltas are ignored — keep the last-good kind through brief
+    // unlink-then-rename sync windows, same policy as media.
+    bool effectsChanged = false;
     for (const auto& d : deltas) {
+        if (d.source == ContentScanner::DeltaSource::EffectSource &&
+            d.kind == ContentScanner::DeltaKind::Added) {
+            effectsChanged = true;
+            std::cout << "[ContentScanner] effect file changed: "
+                      << d.relativePath << std::endl;
+        }
+    }
+    if (effectsChanged && m_effectKindRegistry) {
+        m_effectKindRegistry->hotReload();
+        broadcastEffectPsoInvalidations();
+    }
+
+    for (const auto& d : deltas) {
+        if (d.source == ContentScanner::DeltaSource::EffectSource) continue;
         const bool isObject = (d.source == ContentScanner::DeltaSource::Object);
 
         switch (d.kind) {
@@ -5522,8 +5686,15 @@ void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
         uint32_t width = 0;
         uint32_t height = 0;
         std::vector<uint8_t> pixels;
-        if (!m_renderer->readComposeTargetPixels(static_cast<uint32_t>(req.slot),
-                                                  width, height, pixels)) {
+        // #91: a false can be a transient deferral (drain abandoned on a live
+        // device) — retry once before declaring the capture failed.
+        bool ok = m_renderer->readComposeTargetPixels(
+            static_cast<uint32_t>(req.slot), width, height, pixels);
+        if (!ok) {
+            ok = m_renderer->readComposeTargetPixels(
+                static_cast<uint32_t>(req.slot), width, height, pixels);
+        }
+        if (!ok) {
             reply.errorMessage = "readComposeTargetPixels failed";
             sendReply();
             return;
@@ -5555,9 +5726,16 @@ void Engine::handleCaptureRequest(const bus::RequestComposeCapture& req) {
     }
 
     // Screenshot path -- write a PNG from compose target or back buffer.
-    bool ok = req.fullWindow
-        ? m_renderer->captureBackBufferToPNG(req.pngPath)
-        : m_renderer->captureComposeTargetToPNG(req.pngPath);
+    // #91: a false can be a transient deferral (drain abandoned on a live
+    // device) — retry once before declaring the capture failed.
+    auto capture = [&]() {
+        return req.fullWindow
+            ? m_renderer->captureBackBufferToPNG(req.pngPath)
+            : m_renderer->captureComposeTargetToPNG(
+                  req.pngPath, static_cast<uint32_t>(req.slot));
+    };
+    bool ok = capture();
+    if (!ok) ok = capture();
     if (!ok) {
         reply.errorMessage = req.fullWindow
             ? "captureBackBufferToPNG failed"

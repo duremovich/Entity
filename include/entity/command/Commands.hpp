@@ -6,6 +6,8 @@
 #include "entity/core/Types.hpp"
 #include "entity/components/Clip.hpp"   // PlaybackMode
 #include "entity/components/AnimatedProperties.hpp"  // AnimatableProperty, InterpolationType
+#include "entity/command/KeyframeAddr.hpp"  // KeyframeAddr (multi-select commands)
+#include "entity/components/EffectChain.hpp"  // EffectConnection
 #include "entity/components/EffectParam.hpp"  // ParamValue
 #include "entity/timeline/Timeline.hpp"  // Ripple{Insert,Delete}Result
 #include "entity/timeline/CueTag.hpp"
@@ -518,8 +520,9 @@ public:
         FullWindow      // Entire window with UI
     };
 
-    explicit CaptureScreenshotCommand(std::string filepath, Region region = Region::ComposeTarget)
-        : m_filepath(std::move(filepath)), m_region(region) {}
+    explicit CaptureScreenshotCommand(std::string filepath, Region region = Region::ComposeTarget,
+                                      std::uint32_t composeSlot = 0)
+        : m_filepath(std::move(filepath)), m_region(region), m_composeSlot(composeSlot) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "CaptureScreenshot"; }
@@ -531,6 +534,7 @@ public:
 private:
     std::string m_filepath;
     Region m_region;
+    std::uint32_t m_composeSlot{0};
 };
 
 // Capture a pixel-hash of a compose target. Used by integration tests for
@@ -776,6 +780,44 @@ private:
     std::optional<std::array<float, 3>> m_previousRotation;
 };
 
+/**
+ * Set a clip's scale vector, undoably.
+ *
+ * Scale used to be live-write-only (no scalar command existed), which was
+ * survivable while an edit only touched the axis you dragged. The uniform-scale
+ * lock (ScaleLock) breaks that: a locked Scale X drag also moves Y and Z, and if
+ * X is animated its keyframe is undoable while a static Y/Z is not — undo would
+ * restore X and leave Y/Z scaled, permanently skewing the layer. Committing the
+ * whole vector keeps undo coherent whichever axes happen to be animated.
+ *
+ * JSON format:
+ * { "type": "SetClipScale", "trackIndex": 0, "clipIndex": 0, "x": 1.5, "y": 1.5, "z": 1.5 }
+ */
+class SetClipScaleCommand : public UndoableCommand {
+public:
+    SetClipScaleCommand(int trackIndex, int clipIndex, float x, float y, float z)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_x(x), m_y(y), m_z(z) {}
+
+    void setPreviousScale(float prevX, float prevY, float prevZ) {
+        m_previousScale = std::array<float, 3>{prevX, prevY, prevZ};
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetClipScale"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    float m_x, m_y, m_z;
+    std::optional<std::array<float, 3>> m_previousScale;
+};
+
 // ============================================================================
 // Keyframe Animation Commands
 // ============================================================================
@@ -831,10 +873,13 @@ private:
  */
 class UpsertKeyframeCommand : public UndoableCommand {
 public:
+    // interp defaults to nullopt = "preserve whatever easing the keyframe already
+    // has". Value-edit callers must leave it unset, or they silently reset an
+    // Easy Ease keyframe back to Linear on every drag.
     UpsertKeyframeCommand(int trackIndex, int clipIndex,
                           AnimatableProperty property, FrameNumber frame,
                           float newValue,
-                          InterpolationType interp = InterpolationType::Linear)
+                          std::optional<InterpolationType> interp = std::nullopt)
         : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
           m_property(property), m_frame(frame),
           m_newValue(newValue), m_interp(interp) {}
@@ -844,6 +889,16 @@ public:
     void setPreviousValue(std::optional<float> prev) {
         m_previousValue = prev;
         m_hasPreviousState = true;
+    }
+
+    // Pre-edit easing, restored by undo alongside the value. Only meaningful
+    // when a keyframe existed at m_frame. execute() auto-captures this when the
+    // caller doesn't supply it.
+    void setPreviousEasing(InterpolationType interp, float easeIn, float easeOut) {
+        m_previousInterp    = interp;
+        m_previousEaseIn    = easeIn;
+        m_previousEaseOut   = easeOut;
+        m_hasPreviousEasing = true;
     }
 
     bool execute(Engine& engine) override;
@@ -860,9 +915,13 @@ private:
     AnimatableProperty m_property;
     FrameNumber m_frame;
     float m_newValue;
-    InterpolationType m_interp;
+    std::optional<InterpolationType> m_interp;  // nullopt = preserve existing
     bool m_hasPreviousState{false};
     std::optional<float> m_previousValue;  // nullopt = keyframe didn't exist
+    bool m_hasPreviousEasing{false};
+    InterpolationType m_previousInterp{InterpolationType::Linear};
+    float m_previousEaseIn{0.42f};
+    float m_previousEaseOut{0.58f};
 };
 
 /**
@@ -1004,6 +1063,235 @@ private:
 };
 
 /**
+ * Move a whole selection of keyframes by the same frame delta, as one undo step.
+ *
+ * Atomic: validates every destination first and fails without mutating anything
+ * if any would land before frame 0 or on top of a keyframe that isn't part of the
+ * selection. A group drag can't silently eat a keyframe it didn't select.
+ *
+ * JSON format:
+ * {
+ *     "type": "MoveKeyframes",
+ *     "delta": 12,
+ *     "keyframes": [
+ *         {"trackIndex":0,"clipIndex":0,"property":"ScaleX","frame":30},
+ *         {"effectEntity":17,"paramName":"blur","frame":45}
+ *     ]
+ * }
+ */
+class MoveKeyframesCommand : public UndoableCommand {
+public:
+    MoveKeyframesCommand(std::vector<KeyframeAddr> addrs, FrameNumber delta)
+        : m_addrs(std::move(addrs)), m_delta(delta) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "MoveKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    FrameNumber m_delta;
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_originals;  // parallel to m_addrs; full pre-move keyframes
+};
+
+/**
+ * Set the interpolation (and bezier handles) on a whole selection, as one undo step.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetKeyframesInterpolation",
+ *     "interpolation": "ease_in_out",
+ *     "easeIn": 0.42, "easeOut": 0.58,
+ *     "keyframes": [ ... same addr shape as MoveKeyframes ... ]
+ * }
+ */
+class SetKeyframesInterpolationCommand : public UndoableCommand {
+public:
+    SetKeyframesInterpolationCommand(std::vector<KeyframeAddr> addrs,
+                                     InterpolationType interp,
+                                     float easeIn = 0.42f, float easeOut = 0.58f)
+        : m_addrs(std::move(addrs)), m_interp(interp),
+          m_easeIn(easeIn), m_easeOut(easeOut) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetKeyframesInterpolation"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    InterpolationType m_interp;
+    float m_easeIn;
+    float m_easeOut;
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_originals;  // parallel to m_addrs
+};
+
+/**
+ * Set the value on a whole selection, as one undo step. Easing is untouched —
+ * same contract as a single-keyframe value edit.
+ *
+ * JSON format:
+ * {
+ *     "type": "SetKeyframesValue",
+ *     "value": 1.5,
+ *     "keyframes": [ ... ]
+ * }
+ */
+class SetKeyframesValueCommand : public UndoableCommand {
+public:
+    SetKeyframesValueCommand(std::vector<KeyframeAddr> addrs, float value)
+        : m_addrs(std::move(addrs)), m_value(value) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetKeyframesValue"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    float m_value;
+    bool m_hasPreviousState{false};
+    std::vector<float> m_previousValues;  // parallel to m_addrs
+};
+
+/**
+ * Delete a whole selection of keyframes, as one undo step.
+ *
+ * JSON format:
+ * { "type": "RemoveKeyframes", "keyframes": [ ... ] }
+ */
+class RemoveKeyframesCommand : public UndoableCommand {
+public:
+    explicit RemoveKeyframesCommand(std::vector<KeyframeAddr> addrs)
+        : m_addrs(std::move(addrs)) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "RemoveKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::vector<KeyframeAddr> m_addrs;
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_originals;  // parallel to m_addrs
+};
+
+/**
+ * Delete EVERY keyframe on one property of one layer — the AE stopwatch's
+ * "toggle animation off" behavior. The property then holds a static value.
+ *
+ * Distinct from ClearKeyframesCommand, which removes the whole
+ * AnimatedProperties component (every property on the clip) and isn't undoable.
+ *
+ * `holdValue` is the value the property should keep once its animation is gone —
+ * normally the track's evaluated value at the playhead, so toggling the stopwatch
+ * off doesn't make the layer jump. The UI passes it; the script path may omit it,
+ * in which case the static slot is left as-is.
+ *
+ * JSON format:
+ * {
+ *     "type": "ClearPropertyKeyframes",
+ *     "trackIndex": 0,
+ *     "clipIndex": 1,
+ *     "property": "ScaleX",
+ *     "holdValue": 1.5          // optional
+ * }
+ */
+class ClearPropertyKeyframesCommand : public UndoableCommand {
+public:
+    ClearPropertyKeyframesCommand(int trackIndex, int clipIndex,
+                                  AnimatableProperty property,
+                                  std::optional<float> holdValue = std::nullopt)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_property(property), m_holdValue(holdValue) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ClearPropertyKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    std::optional<float> m_holdValue;
+
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_removedKeyframes;  // full track, restored verbatim by undo
+    bool  m_removedTrackEnabled{true};
+    std::optional<float> m_previousSlotValue;  // static slot before the hold-write
+};
+
+/**
+ * Per-parameter sibling of ClearPropertyKeyframesCommand for effect params
+ * (hash-keyed EffectAnimatedParameters tracks).
+ *
+ * JSON format:
+ * {
+ *     "type": "ClearEffectParamKeyframes",
+ *     "effectEntity": 17,
+ *     "paramName": "brightness",
+ *     "holdValue": 0.5          // optional
+ * }
+ */
+
+/**
+ * Script-style effect addressing. Scripts can't know entity IDs ahead of
+ * time, so every effect command's JSON alternatively accepts
+ * { "trackIndex": 0, "clipIndex": 0, "effectIndex": 0 } and resolves it
+ * to (layer, effect) entities at execute time via the layer's EffectChain
+ * node order. Commands that only need the layer (AddEffect) ignore
+ * effectIndex.
+ */
+struct EffectScriptAddr {
+    int trackIndex{0};
+    int clipIndex{0};
+    int effectIndex{0};
+};
+
+class ClearEffectParamKeyframesCommand : public UndoableCommand {
+public:
+    ClearEffectParamKeyframesCommand(entt::entity effectEntity, std::string paramName,
+                                     std::optional<float> holdValue = std::nullopt)
+        : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
+          m_holdValue(holdValue) {}
+
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ClearEffectParamKeyframes"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_effectEntity;
+    std::string  m_paramName;
+    std::optional<float> m_holdValue;
+    std::optional<EffectScriptAddr> m_scriptAddr;
+
+    bool m_hasPreviousState{false};
+    std::vector<Keyframe> m_removedKeyframes;
+    std::optional<float> m_previousSlotValue;
+};
+
+/**
  * Insert / overwrite a keyframe on an effect parameter (hash-keyed, on
  * EffectAnimatedParameters). Parallel to UpsertKeyframeCommand but
  * keyed by (effectEntity, paramName) — the effect param namespace is
@@ -1022,9 +1310,11 @@ private:
  */
 class UpsertEffectKeyframeCommand : public UndoableCommand {
 public:
+    // interp nullopt = "preserve the keyframe's existing easing" — see
+    // UpsertKeyframeCommand, which has the same contract for transform tracks.
     UpsertEffectKeyframeCommand(entt::entity effectEntity, std::string paramName,
                                 FrameNumber frame, float newValue,
-                                InterpolationType interp = InterpolationType::Linear)
+                                std::optional<InterpolationType> interp = std::nullopt)
         : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
           m_frame(frame), m_newValue(newValue), m_interp(interp) {}
 
@@ -1032,6 +1322,8 @@ public:
         m_previousValue = prev;
         m_hasPreviousState = true;
     }
+
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -1046,9 +1338,14 @@ private:
     std::string       m_paramName;
     FrameNumber       m_frame;
     float             m_newValue;
-    InterpolationType m_interp;
+    std::optional<InterpolationType> m_interp;  // nullopt = preserve existing
+    std::optional<EffectScriptAddr>  m_scriptAddr;
     bool                 m_hasPreviousState{false};
     std::optional<float> m_previousValue;  // nullopt = no kf at this frame before exec
+    bool                 m_hasPreviousEasing{false};
+    InterpolationType    m_previousInterp{InterpolationType::Linear};
+    float                m_previousEaseIn{0.42f};
+    float                m_previousEaseOut{0.58f};
 };
 
 /**
@@ -1071,6 +1368,8 @@ public:
         : m_effectEntity(effectEntity), m_paramName(std::move(paramName)),
           m_frame(frame) {}
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "RemoveEffectKeyframe"; }
@@ -1083,6 +1382,7 @@ private:
     entt::entity      m_effectEntity;
     std::string       m_paramName;
     FrameNumber       m_frame;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     bool                m_hasPreviousState{false};
     float               m_removedValue{0.0f};
     InterpolationType   m_removedInterp{InterpolationType::Linear};
@@ -1747,6 +2047,44 @@ private:
 };
 
 /**
+ * Assert a single keyframe's interpolation type (and optionally its bezier
+ * handles). Gates the "editing a keyframe's value must not reset its easing"
+ * contract at the command layer, where the UI actually goes through.
+ *
+ * Interp strings: "Linear" | "Step" | "EaseIn" | "EaseOut" | "EaseInOut".
+ *
+ * JSON:
+ * {"type":"AssertKeyframeInterpolation","trackIndex":0,"clipIndex":0,
+ *  "property":"ScaleX","frame":30,"interpolation":"EaseInOut",
+ *  "easeIn":0.25,"easeOut":0.75}     // easeIn/easeOut optional
+ */
+class AssertKeyframeInterpolationCommand : public Command {
+public:
+    AssertKeyframeInterpolationCommand(int trackIndex, int clipIndex,
+                                       AnimatableProperty property, FrameNumber frame,
+                                       InterpolationType interp,
+                                       std::optional<float> easeIn = std::nullopt,
+                                       std::optional<float> easeOut = std::nullopt)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex), m_property(property),
+          m_frame(frame), m_interp(interp), m_easeIn(easeIn), m_easeOut(easeOut) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertKeyframeInterpolation"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int m_trackIndex;
+    int m_clipIndex;
+    AnimatableProperty m_property;
+    FrameNumber m_frame;
+    InterpolationType m_interp;
+    std::optional<float> m_easeIn;
+    std::optional<float> m_easeOut;
+};
+
+/**
  * Assert the timeline is currently in the requested playback state.
  * State strings: "Stopped" | "Playing" | "Paused".
  *
@@ -1809,6 +2147,76 @@ private:
     FrameNumber m_expected;
     FrameNumber m_tolerance;
     Mode        m_mode;
+};
+
+/**
+ * Assert the media frame the clip has actually PRESENTED — the last frame
+ * uploaded to its GPU texture (PlaybackPresenter::presentedFrame) — against
+ * `expected` within `tolerance`.
+ *
+ * Distinct from AssertClipMediaFrame, which asserts the *mapped* frame (what
+ * the engine decided to show). The two diverge exactly when an upload is
+ * skipped, which is what a frozen picture is; a test on the mapped frame alone
+ * passes happily while the screen holds a stale image. Use `notEqual` against
+ * the frame a frozen clip would be stuck on to prove the picture is moving.
+ */
+class AssertClipPresentedFrameCommand : public Command {
+public:
+    enum class Mode { Equal, NotEqual };
+
+    AssertClipPresentedFrameCommand(int trackIndex, int clipIndex,
+                                    FrameNumber expected,
+                                    FrameNumber tolerance = 0,
+                                    Mode mode = Mode::Equal)
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_expected(expected)
+        , m_tolerance(tolerance)
+        , m_mode(mode) {}
+
+    bool execute(Engine& engine) override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    const char* getTypeName() const override { return "AssertClipPresentedFrame"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    FrameNumber m_expected;
+    FrameNumber m_tolerance;
+    Mode        m_mode;
+};
+
+/**
+ * Diagnostic: dump the clip's live transport state to stdout — the same
+ * fields the Clip Info "Playback (live)" panel shows. Read-only.
+ *
+ * The load-bearing pair is mapped vs presented: `mapped` is the source frame
+ * the engine decided the clip should show, `presented` is the one that last
+ * reached its GPU texture. A frozen picture with an advancing `mapped` is
+ * invisible to AssertClipMediaFrame (which only sees `mapped`), so this
+ * exists to make the upload side observable from a headless script.
+ */
+class LogClipPlaybackCommand : public Command {
+public:
+    LogClipPlaybackCommand(int trackIndex, int clipIndex, std::string label = "")
+        : m_trackIndex(trackIndex)
+        , m_clipIndex(clipIndex)
+        , m_label(std::move(label)) {}
+
+    bool execute(Engine& engine) override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    const char* getTypeName() const override { return "LogClipPlayback"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    std::string m_label;
 };
 
 /**
@@ -2679,6 +3087,38 @@ private:
 };
 
 /**
+ * CreateSolidLayerCommand — script / UI command for creating a Solid
+ * generative layer (flat color fill) on the timeline.
+ *
+ * Mirrors CreateTextLayerCommand. Targets the first Screen entity found
+ * in the registry; retargetable via the Properties panel.
+ *
+ * Params:
+ *   trackIndex — 0-based index into timeline tracks
+ *   startFrame — first frame of the layer on the timeline
+ *   duration   — length in timeline frames
+ */
+class CreateSolidLayerCommand : public Command {
+public:
+    CreateSolidLayerCommand(int trackIndex, FrameNumber startFrame,
+                            FrameNumber duration)
+        : m_trackIndex(trackIndex), m_startFrame(startFrame), m_duration(duration) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "CreateSolidLayer"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int          m_trackIndex;
+    FrameNumber  m_startFrame;
+    FrameNumber  m_duration;
+    entt::entity m_createdEntity{entt::null};
+};
+
+/**
  * AssertScreenSnapshotCommand — integration-test assertion.
  *
  * Calls PlaybackTimeAuthority::buildSceneSnapshot on demand and asserts a
@@ -2769,6 +3209,11 @@ public:
     AddEffectCommand(entt::entity layerEntity, std::string kindStableId)
         : m_layerEntity(layerEntity), m_kindStableId(std::move(kindStableId)) {}
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+    // Initial node-editor position (graph context menu drops the node at
+    // the cursor). Unset = the graph view's auto-layout.
+    void setInitialGraphPos(float x, float y) { m_graphX = x; m_graphY = y; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "AddEffect"; }
@@ -2779,6 +3224,8 @@ public:
 private:
     entt::entity m_layerEntity;
     std::string  m_kindStableId;
+    std::optional<EffectScriptAddr> m_scriptAddr;
+    std::optional<float> m_graphX, m_graphY;
     std::optional<entt::entity> m_createdEffectEntity;
 };
 
@@ -2798,6 +3245,8 @@ public:
     RemoveEffectCommand(entt::entity layerEntity, entt::entity effectEntity)
         : m_layerEntity(layerEntity), m_effectEntity(effectEntity) {}
 
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
     const char* getTypeName() const override { return "RemoveEffect"; }
@@ -2808,6 +3257,7 @@ public:
 private:
     entt::entity m_layerEntity;
     entt::entity m_effectEntity;
+    std::optional<EffectScriptAddr> m_scriptAddr;
 
     // Captured on execute, replayed on undo.
     bool                    m_savedExecuted{false};
@@ -2817,6 +3267,15 @@ private:
     float                   m_savedGraphY{0.0f};
     std::vector<ParamValue> m_savedParams;
     std::size_t             m_savedPositionInChain{0};
+    // Graph topology + animated tracks snapshot. Execute heals the graph
+    // (bridges the removed node's first input through to its consumers);
+    // undo restores the snapshot with the removed node's entity ID
+    // remapped to the recreated one (EnTT may hand back a different ID —
+    // without the remap, restored links would silently dangle).
+    std::vector<EffectConnection> m_savedConnections;
+    entt::entity                  m_savedOutputNode{entt::null};
+    std::vector<std::pair<std::uint32_t, std::vector<Keyframe>>> m_savedTracks;
+    std::vector<bool>             m_savedTrackEnabled;
 };
 
 // ============================================================================
@@ -2973,6 +3432,41 @@ private:
 };
 
 /**
+ * SetSolidColorCommand — update the fill color of a Solid generative layer.
+ *
+ * JSON format (scripts may pass {trackIndex, clipIndex} instead of the
+ * raw layerEntity ID):
+ * { "type": "SetSolidColor", "layerEntity": 12345,
+ *   "r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0 }
+ */
+class SetSolidColorCommand : public UndoableCommand {
+public:
+    SetSolidColorCommand(entt::entity layerEntity, float r, float g, float b, float a)
+        : m_layerEntity(layerEntity), m_r(r), m_g(g), m_b(b), m_a(a) {}
+
+    void setPreviousColor(float r, float g, float b, float a) {
+        m_prevR = r; m_prevG = g; m_prevB = b; m_prevA = a;
+    }
+    void setScriptAddress(int trackIndex, int clipIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetSolidColor"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    float m_r, m_g, m_b, m_a;
+    std::optional<int> m_addrTrack;
+    int                m_addrClip{0};
+    std::optional<float> m_prevR, m_prevG, m_prevB, m_prevA;
+};
+
+/**
  * SetTextAlignmentCommand — update the text alignment of a Text generative layer.
  *
  * JSON format:
@@ -3052,6 +3546,30 @@ private:
 };
 
 /**
+ * Toggle a layer's uniform-scale lock (ScaleLock component).
+ *
+ * JSON format:
+ * { "type": "SetScaleLock", "layerEntity": 12345, "uniform": true }
+ */
+class SetScaleLockCommand : public UndoableCommand {
+public:
+    SetScaleLockCommand(entt::entity layerEntity, bool uniform)
+        : m_layerEntity(layerEntity), m_uniform(uniform) {}
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetScaleLock"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    bool         m_uniform;
+    std::optional<bool> m_previousUniform;
+};
+
+/**
  * Toggle an effect's enabled flag.
  *
  * JSON format:
@@ -3063,6 +3581,7 @@ public:
         : m_effectEntity(effectEntity), m_enabled(enabled) {}
 
     void setPreviousEnabled(bool v) { m_previousEnabled = v; }
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -3074,6 +3593,7 @@ public:
 private:
     entt::entity m_effectEntity;
     bool         m_enabled;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<bool> m_previousEnabled;
 };
 
@@ -3099,6 +3619,7 @@ public:
           m_value(value) {}
 
     void setPreviousValue(float prev) { m_previousValue = prev; }
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
 
     bool execute(Engine& engine) override;
     bool undo(Engine& engine) override;
@@ -3111,7 +3632,265 @@ private:
     entt::entity m_effectEntity;
     std::string  m_paramName;
     float        m_value;
+    std::optional<EffectScriptAddr> m_scriptAddr;
     std::optional<float> m_previousValue;
+};
+
+/**
+ * Set any parameter on an effect, identified by parameter name — the
+ * type-generic sibling of SetEffectFloatParamCommand. Carries a full
+ * ParamValue; execute validates the value's type against the kind's
+ * ParamSchema slot and fails (with a log) on mismatch. Slot index is
+ * resolved at execute time via EffectKindRegistry so the command stays
+ * wire-stable across schema reordering.
+ *
+ * JSON format (value payload shape per EffectParamJson.hpp):
+ * { "type": "SetEffectParam", "effectEntity": 67890,
+ *   "paramName": "tint", "value": {"type": "color", "value": [1,0,0,1]} }
+ * or script-addressed:
+ * { "type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0,
+ *   "effectIndex": 0, "paramName": "mode",
+ *   "value": {"type": "enum", "value": 2} }
+ */
+class SetEffectParamCommand : public UndoableCommand {
+public:
+    SetEffectParamCommand(entt::entity effectEntity,
+                          std::string paramName,
+                          ParamValue value)
+        : m_effectEntity(effectEntity),
+          m_paramName(std::move(paramName)),
+          m_value(value) {}
+
+    void setPreviousValue(const ParamValue& prev) { m_previousValue = prev; }
+    void setScriptAddress(const EffectScriptAddr& a) { m_scriptAddr = a; }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetEffectParam"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_effectEntity;
+    std::string  m_paramName;
+    ParamValue   m_value;
+    std::optional<EffectScriptAddr> m_scriptAddr;
+    std::optional<ParamValue> m_previousValue;
+};
+
+/**
+ * Move an effect within the chain's declaration order (the stack view's
+ * Up/Down buttons). Only meaningful while the chain is an implicit
+ * linear stack — the UI disables reordering once explicit connections
+ * exist (evaluation order is then the graph's, not the list's).
+ *
+ * JSON format:
+ * { "type": "ReorderEffect", "trackIndex": 0, "clipIndex": 0,
+ *   "fromIndex": 2, "toIndex": 1 }
+ */
+class ReorderEffectCommand : public UndoableCommand {
+public:
+    ReorderEffectCommand(entt::entity layerEntity, int fromIndex, int toIndex)
+        : m_layerEntity(layerEntity), m_fromIndex(fromIndex), m_toIndex(toIndex) {}
+
+    void setScriptAddress(int trackIndex, int clipIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ReorderEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    int m_fromIndex;
+    int m_toIndex;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0};
+    bool m_executed{false};
+};
+
+/**
+ * Connect two effect nodes in a layer's effect graph (src's output feeds
+ * dst's input socket). srcEffectIndex / dstEffectIndex of -1 mean the
+ * layer-source / final-output sentinel respectively. The first graph
+ * gesture on a never-edited chain materializes the implicit linear stack
+ * into explicit connections first, so editing starts from the topology
+ * the user was seeing. Connecting into an occupied (dst, dstSocket)
+ * replaces the incumbent link. Fails (no mutation) if the
+ * edge would create a cycle.
+ *
+ * Undo restores the whole pre-edit {connections, outputNode} snapshot —
+ * one undo step per gesture even when the gesture implied multiple edits
+ * (materialization + replacement).
+ *
+ * JSON format:
+ * { "type": "ConnectEffect", "trackIndex": 0, "clipIndex": 0,
+ *   "srcEffectIndex": 0, "dstEffectIndex": 2, "srcSocket": 0, "dstSocket": 1 }
+ * (live-session alternative: "layerEntity" + "srcEffectEntity"/"dstEffectEntity")
+ */
+class ConnectEffectCommand : public UndoableCommand {
+public:
+    ConnectEffectCommand(entt::entity layerEntity,
+                         entt::entity srcNode, entt::entity dstNode,
+                         std::uint8_t srcSocket, std::uint8_t dstSocket)
+        : m_layerEntity(layerEntity), m_srcNode(srcNode), m_dstNode(dstNode),
+          m_srcSocket(srcSocket), m_dstSocket(dstSocket) {}
+
+    // Script addressing: node indices into the chain (-1 = sentinel).
+    void setScriptAddress(int trackIndex, int clipIndex,
+                          int srcEffectIndex, int dstEffectIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+        m_addrSrc = srcEffectIndex; m_addrDst = dstEffectIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "ConnectEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    entt::entity m_srcNode;
+    entt::entity m_dstNode;
+    std::uint8_t m_srcSocket;
+    std::uint8_t m_dstSocket;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0}, m_addrSrc{-1}, m_addrDst{-1};
+
+    bool m_hasSnapshot{false};
+    std::vector<EffectConnection> m_prevConnections;
+    entt::entity                  m_prevOutputNode{entt::null};
+};
+
+/**
+ * Remove the connection feeding dst's input socket (and, when dst is the
+ * -1 sentinel, the link into the final output). Same whole-topology
+ * snapshot undo as ConnectEffectCommand.
+ *
+ * JSON format:
+ * { "type": "DisconnectEffect", "trackIndex": 0, "clipIndex": 0,
+ *   "dstEffectIndex": 2, "dstSocket": 1 }
+ */
+class DisconnectEffectCommand : public UndoableCommand {
+public:
+    DisconnectEffectCommand(entt::entity layerEntity,
+                            entt::entity dstNode, std::uint8_t dstSocket)
+        : m_layerEntity(layerEntity), m_dstNode(dstNode), m_dstSocket(dstSocket) {}
+
+    void setScriptAddress(int trackIndex, int clipIndex, int dstEffectIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex; m_addrDst = dstEffectIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "DisconnectEffect"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    entt::entity m_dstNode;
+    std::uint8_t m_dstSocket;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0}, m_addrDst{-1};
+
+    bool m_hasSnapshot{false};
+    std::vector<EffectConnection> m_prevConnections;
+    entt::entity                  m_prevOutputNode{entt::null};
+};
+
+/**
+ * Replace a layer's whole effect-graph topology in one undoable step.
+ * Empty connections + null output = reset to the implicit linear stack.
+ * Also the "Set as output" backing command (pass the current connections
+ * with a new outputNode). Bulk escape hatch for scripts / future
+ * copy-paste.
+ *
+ * JSON format (indices into the chain, -1 = sentinel/null):
+ * { "type": "SetEffectGraphTopology", "trackIndex": 0, "clipIndex": 0,
+ *   "connections": [{"src": -1, "dst": 0, "srcSocket": 0, "dstSocket": 0}],
+ *   "outputNode": 0 }
+ */
+class SetEffectGraphTopologyCommand : public UndoableCommand {
+public:
+    SetEffectGraphTopologyCommand(entt::entity layerEntity,
+                                  std::vector<EffectConnection> connections,
+                                  entt::entity outputNode)
+        : m_layerEntity(layerEntity),
+          m_connections(std::move(connections)),
+          m_outputNode(outputNode) {}
+
+    // Script form: connections as node indices, resolved at execute.
+    struct IndexedConnection {
+        int src{-1};
+        int dst{-1};
+        std::uint8_t srcSocket{0};
+        std::uint8_t dstSocket{0};
+    };
+    void setScriptAddress(int trackIndex, int clipIndex,
+                          std::vector<IndexedConnection> conns, int outputIndex) {
+        m_addrTrack = trackIndex; m_addrClip = clipIndex;
+        m_indexedConnections = std::move(conns); m_addrOutput = outputIndex;
+    }
+
+    bool execute(Engine& engine) override;
+    bool undo(Engine& engine) override;
+    const char* getTypeName() const override { return "SetEffectGraphTopology"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    entt::entity m_layerEntity;
+    std::vector<EffectConnection> m_connections;
+    entt::entity m_outputNode;
+    std::optional<int> m_addrTrack;
+    int m_addrClip{0}, m_addrOutput{-1};
+    std::vector<IndexedConnection> m_indexedConnections;
+
+    bool m_hasSnapshot{false};
+    std::vector<EffectConnection> m_prevConnections;
+    entt::entity                  m_prevOutputNode{entt::null};
+};
+
+/**
+ * Test assertion: an effect parameter's keyframe track has exactly
+ * `count` keyframes (0 = no track). Mirrors AssertKeyframeCount for the
+ * hash-keyed EffectAnimatedParameters store.
+ *
+ * JSON format:
+ * { "type": "AssertEffectKeyframeCount", "trackIndex": 0, "clipIndex": 0,
+ *   "effectIndex": 0, "paramName": "radius", "count": 2 }
+ */
+class AssertEffectKeyframeCountCommand : public Command {
+public:
+    AssertEffectKeyframeCountCommand(int trackIndex, int clipIndex,
+                                     int effectIndex, std::string paramName,
+                                     std::size_t count)
+        : m_trackIndex(trackIndex), m_clipIndex(clipIndex),
+          m_effectIndex(effectIndex), m_paramName(std::move(paramName)),
+          m_count(count) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertEffectKeyframeCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int         m_trackIndex;
+    int         m_clipIndex;
+    int         m_effectIndex;
+    std::string m_paramName;
+    std::size_t m_count;
 };
 
 // ============================================================================

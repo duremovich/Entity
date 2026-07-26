@@ -215,7 +215,10 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertSectionCount", AssertSectionCountCommand::fromJson);
     registerFactory("AssertPlayheadAtFrame", AssertPlayheadAtFrameCommand::fromJson);
     registerFactory("AssertPlaybackState", AssertPlaybackStateCommand::fromJson);
+    registerFactory("AssertKeyframeInterpolation", AssertKeyframeInterpolationCommand::fromJson);
     registerFactory("AssertClipMediaFrame", AssertClipMediaFrameCommand::fromJson);
+    registerFactory("AssertClipPresentedFrame", AssertClipPresentedFrameCommand::fromJson);
+    registerFactory("LogClipPlayback", LogClipPlaybackCommand::fromJson);
     registerFactory("AssertClipFadeMultiplier", AssertClipFadeMultiplierCommand::fromJson);
     registerFactory("AssertRemoteRenderOpacity", AssertRemoteRenderOpacityCommand::fromJson);
 
@@ -237,6 +240,12 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("ClearKeyframes", ClearKeyframesCommand::fromJson);
     registerFactory("UpsertKeyframe", UpsertKeyframeCommand::fromJson);
     registerFactory("SetKeyframeInterpolation", SetKeyframeInterpolationCommand::fromJson);
+    registerFactory("ClearPropertyKeyframes", ClearPropertyKeyframesCommand::fromJson);
+    registerFactory("ClearEffectParamKeyframes", ClearEffectParamKeyframesCommand::fromJson);
+    registerFactory("MoveKeyframes", MoveKeyframesCommand::fromJson);
+    registerFactory("SetKeyframesInterpolation", SetKeyframesInterpolationCommand::fromJson);
+    registerFactory("SetKeyframesValue", SetKeyframesValueCommand::fromJson);
+    registerFactory("RemoveKeyframes", RemoveKeyframesCommand::fromJson);
     registerFactory("MoveKeyframe", MoveKeyframeCommand::fromJson);
     registerFactory("RemoveKeyframe", RemoveKeyframeCommand::fromJson);
     registerFactory("UpsertEffectKeyframe", UpsertEffectKeyframeCommand::fromJson);
@@ -278,8 +287,16 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Per-layer effects (issue #54)
     registerFactory("AddEffect", AddEffectCommand::fromJson);
     registerFactory("RemoveEffect", RemoveEffectCommand::fromJson);
+    registerFactory("SetScaleLock", SetScaleLockCommand::fromJson);
+    registerFactory("SetClipScale", SetClipScaleCommand::fromJson);
     registerFactory("SetEffectEnabled", SetEffectEnabledCommand::fromJson);
     registerFactory("SetEffectFloatParam", SetEffectFloatParamCommand::fromJson);
+    registerFactory("SetEffectParam", SetEffectParamCommand::fromJson);
+    registerFactory("AssertEffectKeyframeCount", AssertEffectKeyframeCountCommand::fromJson);
+    registerFactory("ConnectEffect", ConnectEffectCommand::fromJson);
+    registerFactory("DisconnectEffect", DisconnectEffectCommand::fromJson);
+    registerFactory("SetEffectGraphTopology", SetEffectGraphTopologyCommand::fromJson);
+    registerFactory("ReorderEffect", ReorderEffectCommand::fromJson);
 
     // Object Animation Layer commands (Phase 3.3 + 3.4)
     registerFactory("CreateObjectAnimationLayer", CreateObjectAnimationLayerCommand::fromJson);
@@ -289,6 +306,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Generative layer commands
     registerFactory("CreateMuncherLayer", CreateMuncherLayerCommand::fromJson);
     registerFactory("CreateTextLayer", CreateTextLayerCommand::fromJson);
+    registerFactory("CreateSolidLayer", CreateSolidLayerCommand::fromJson);
+    registerFactory("SetSolidColor", SetSolidColorCommand::fromJson);
 
     // Generative layer property commands
     registerFactory("SetGenerativeRenderSize", SetGenerativeRenderSizeCommand::fromJson);

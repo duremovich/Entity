@@ -8,6 +8,7 @@
 #include "entity/core/AtomicFile.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
@@ -21,6 +22,7 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/AudioSource.hpp"
@@ -37,10 +39,13 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Prop.hpp"
+#include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/effects/EffectParamJson.hpp"
 #include "entity/media/ObjLoader.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
+#include <unordered_map>
 #include <unordered_set>
 
 using json = nlohmann::json;
@@ -216,16 +221,36 @@ static json serializeAnimatedProperties(const AnimatedProperties* ap) {
     return tracksJson;
 }
 
-// Serialize a layer entity's EffectChain (issue #54). Returns an empty
-// array if the layer has no chain. v16+. Each entry carries the kind's
-// stable string ID + enabled flag + graph-editor x/y + a flat array of
-// param values (all params currently typed Float; richer types arrive
-// when v1 grows beyond Float).
-static json serializeEffectChain(const entt::registry& registry,
-                                  entt::entity layerEntity) {
+// v29 — ParamValue <-> JSON lives in entity/effects/EffectParamJson.hpp
+// (shared with SetEffectParamCommand).
+using effects::paramTypeToJson;
+using effects::jsonToParamType;
+using effects::paramValueToJson;
+using effects::jsonToParamValue;
+
+// Serialize a layer entity's EffectChain into its JSON entry (issue #54,
+// v16+; upgraded v29). Writes three keys:
+//   "effects"            — always (empty array when no chain)
+//   "effectConnections"  — only when the chain is an explicit DAG
+//   "effectOutputNode"   — only alongside effectConnections
+// Each effect carries the kind's stableId (when the registry can resolve
+// it; kindIdHash is always written as the fallback), enabled flag,
+// graph-editor x/y, typed name-keyed params, and animatedParams keyframe
+// tracks. Topology references are indices into this entry's effects
+// array (-1 = the entt::null layer-source / final-output sentinel)
+// because entity IDs are not stable across sessions.
+static void serializeEffectChainInto(json& layerJson,
+                                     const entt::registry& registry,
+                                     entt::entity layerEntity,
+                                     const effects::EffectKindRegistry* kindReg) {
     json effectsJson = json::array();
     const auto* chain = registry.try_get<EffectChain>(layerEntity);
-    if (!chain) return effectsJson;
+    if (!chain) {
+        layerJson["effects"] = std::move(effectsJson);
+        return;
+    }
+
+    std::unordered_map<entt::entity, int> emittedIndex;
 
     for (auto fxEnt : chain->nodes) {
         if (!registry.valid(fxEnt)) continue;
@@ -233,45 +258,119 @@ static json serializeEffectChain(const entt::registry& registry,
         const auto* params = registry.try_get<EffectParameters>(fxEnt);
         if (!fx) continue;
 
+        const effects::EffectKind* kind = kindReg ? kindReg->find(fx->kindId) : nullptr;
+
         json fxJson;
-        // We don't have the registry-side reverse map (kindIdHash → stableId)
-        // here without an EffectKindRegistry pointer. Serializing the hash
-        // works but isn't wire-friendly. The bake side (PlaybackTimeAuthority)
-        // is the canonical place for the stableId mapping; the project
-        // serializer takes the pragmatic approach and stores the hash plus
-        // the stableId for engine-shipped kinds (lookup happens at load).
-        //
-        // Phase 6 (user-authored HLSL) will store stableId by writing it
-        // through from the SetEffect* commands that created the effect, or
-        // by threading the registry pointer in.
         fxJson["kindIdHash"] = fx->kindId;
-        fxJson["enabled"]    = fx->enabled;
-        fxJson["graphX"]     = fx->graphX;
-        fxJson["graphY"]     = fx->graphY;
+        if (kind) fxJson["stableId"] = kind->stableId;
+        fxJson["enabled"] = fx->enabled;
+        fxJson["graphX"]  = fx->graphX;
+        fxJson["graphY"]  = fx->graphY;
 
         json paramsJson = json::array();
         if (params) {
-            for (const auto& v : params->values) {
-                // v1 engine effects are all Float. Bool / Int / Vec types
-                // arrive in Phase 6 when user-authored effects can declare
-                // them — the array shape upgrades to object entries then.
-                paramsJson.push_back(v.f4[0]);
+            for (std::size_t slot = 0; slot < params->values.size(); ++slot) {
+                const ParamValue& v = params->values[slot];
+                json pj;
+                // Name-keyed so a schema reorder can't shift values on
+                // load. A kind the registry can't resolve (deleted user
+                // effect) degrades to nameless entries the loader reads
+                // positionally.
+                if (kind && slot < kind->params.size()) {
+                    pj["name"] = kind->params[slot].name;
+                }
+                pj["type"]  = paramTypeToJson(v.type);
+                pj["value"] = paramValueToJson(v);
+                paramsJson.push_back(std::move(pj));
             }
         }
-        fxJson["params"] = paramsJson;
+        fxJson["params"] = std::move(paramsJson);
 
-        effectsJson.push_back(fxJson);
+        // v29 — animated parameter tracks. Pre-v29 never wrote these, so
+        // effect keyframes were silently lost on save/load. Write the
+        // wire-stable param name when the kind schema can resolve the
+        // hash, and the hash always, so the data survives a user kind
+        // that's missing at save time.
+        if (const auto* eap = registry.try_get<EffectAnimatedParameters>(fxEnt);
+            eap && !eap->tracks.empty()) {
+            json tracksJson = json::array();
+            for (const auto& nt : eap->tracks) {
+                if (nt.keyframes.empty()) continue;
+                json tj;
+                if (kind) {
+                    for (const auto& ps : kind->params) {
+                        if (effects::fnv1a32(ps.name) == nt.paramKeyHash) {
+                            tj["param"] = ps.name;
+                            break;
+                        }
+                    }
+                }
+                tj["paramHash"] = nt.paramKeyHash;
+                tj["enabled"]   = nt.enabled;
+                json kfsJson = json::array();
+                for (const auto& kf : nt.keyframes) {
+                    json kj;
+                    kj["frame"]         = kf.frame;
+                    kj["value"]         = kf.value;
+                    kj["interpolation"] = interpolationTypeToJson(kf.interpolation);
+                    kj["easeIn"]        = kf.easeIn;
+                    kj["easeOut"]       = kf.easeOut;
+                    kfsJson.push_back(std::move(kj));
+                }
+                tj["keyframes"] = std::move(kfsJson);
+                tracksJson.push_back(std::move(tj));
+            }
+            if (!tracksJson.empty()) fxJson["animatedParams"] = std::move(tracksJson);
+        }
+
+        emittedIndex[fxEnt] = static_cast<int>(effectsJson.size());
+        effectsJson.push_back(std::move(fxJson));
     }
-    return effectsJson;
+    layerJson["effects"] = std::move(effectsJson);
+
+    // v29 — graph topology. Linear stacks (empty connections) keep clean
+    // files: no keys emitted, loader defaults reproduce today's behavior.
+    if (!chain->connections.empty()) {
+        // -1 = entt::null sentinel; -2 = node not in the emitted array
+        // (invalid entity or missing Effect component) — connection dropped.
+        auto nodeIndex = [&](entt::entity e) -> int {
+            if (e == entt::null) return -1;
+            auto it = emittedIndex.find(e);
+            return (it == emittedIndex.end()) ? -2 : it->second;
+        };
+        json connsJson = json::array();
+        for (const auto& c : chain->connections) {
+            const int src = nodeIndex(c.srcNode);
+            const int dst = nodeIndex(c.dstNode);
+            if (src == -2 || dst == -2) {
+                std::cerr << "[ProjectSerializer] Dropping effect connection "
+                             "referencing a node missing from the chain"
+                          << std::endl;
+                continue;
+            }
+            json cj;
+            cj["src"]       = src;
+            cj["dst"]       = dst;
+            cj["srcSocket"] = static_cast<int>(c.srcSocket);
+            cj["dstSocket"] = static_cast<int>(c.dstSocket);
+            connsJson.push_back(std::move(cj));
+        }
+        layerJson["effectConnections"] = std::move(connsJson);
+        const int outIdx = nodeIndex(chain->outputNode);
+        layerJson["effectOutputNode"] = (outIdx == -2) ? -1 : outIdx;
+    }
 }
 
 // Deserialize a layer's effect chain from JSON. Idempotent — skips
 // gracefully if the key is missing (pre-v16 projects). Creates new effect
 // entities, attaches Effect / EffectParameters / EffectAnimatedParameters,
-// and appends to the layer's EffectChain.
+// and appends to the layer's EffectChain. v29 additionally restores
+// animated tracks and graph topology; a params array of raw numbers is
+// the pre-v29 positional-Float format and loads unchanged.
 static void deserializeEffectChain(const json& entryJson,
                                     entt::registry& registry,
-                                    entt::entity layerEntity) {
+                                    entt::entity layerEntity,
+                                    const effects::EffectKindRegistry* kindReg) {
     if (!entryJson.contains("effects")) return;
     const auto& effectsJson = entryJson["effects"];
     if (!effectsJson.is_array() || effectsJson.empty()) return;
@@ -279,27 +378,172 @@ static void deserializeEffectChain(const json& entryJson,
     auto& chain = registry.get_or_emplace<EffectChain>(layerEntity);
     chain.nodes.reserve(chain.nodes.size() + effectsJson.size());
 
+    // Topology indices reference this entry's effects array; collect the
+    // entities created here (chain.nodes may already hold others).
+    std::vector<entt::entity> created;
+    created.reserve(effectsJson.size());
+
     for (const auto& fxJson : effectsJson) {
         const auto fxEnt = registry.create();
 
         Effect& fx = registry.emplace<Effect>(fxEnt);
-        fx.kindId     = fxJson.value("kindIdHash", std::uint32_t{0});
+        const std::string stableId = fxJson.value("stableId", std::string{});
+        fx.kindId     = !stableId.empty()
+                            ? effects::fnv1a32(stableId)
+                            : fxJson.value("kindIdHash", std::uint32_t{0});
         fx.enabled    = fxJson.value("enabled",    true);
         fx.graphX     = fxJson.value("graphX",     0.0f);
         fx.graphY     = fxJson.value("graphY",     0.0f);
         fx.ownerLayer = layerEntity;
 
+        const effects::EffectKind* kind = kindReg ? kindReg->find(fx.kindId) : nullptr;
+
         EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
         if (fxJson.contains("params") && fxJson["params"].is_array()) {
-            for (const auto& p : fxJson["params"]) {
-                // Float-only v1 — see serializeEffectChain.
-                params.values.push_back(ParamValue::makeFloat(p.get<float>()));
+            const auto& pj = fxJson["params"];
+            const bool legacyPositional = !pj.empty() && pj.front().is_number();
+            if (legacyPositional) {
+                // Pre-v29 flat Float array — positional by schema slot.
+                for (const auto& p : pj) {
+                    params.values.push_back(
+                        ParamValue::makeFloat(p.is_number() ? p.get<float>() : 0.0f));
+                }
+            } else if (kind) {
+                // Known kind: start from schema defaults (guarantees the
+                // slot count matches what commands/bake expect), then
+                // apply saved entries by name. A NAMELESS entry (the file
+                // was saved while this kind's pack was missing, so the
+                // serializer couldn't resolve names) falls back to its
+                // array position — otherwise restoring the pack would
+                // silently reset every param to defaults, destroying the
+                // very values the nameless degradation preserved.
+                // Unknown non-empty names log + drop.
+                for (const auto& schema : kind->params) {
+                    params.values.push_back(schema.defaultValue);
+                }
+                for (std::size_t pi = 0; pi < pj.size(); ++pi) {
+                    const auto& p = pj[pi];
+                    if (!p.is_object()) continue;
+                    const std::string name = p.value("name", std::string{});
+                    int slot = -1;
+                    if (name.empty()) {
+                        if (pi < params.values.size()) {
+                            slot = static_cast<int>(pi);  // positional fallback
+                        }
+                    } else {
+                        for (std::size_t i = 0; i < kind->params.size(); ++i) {
+                            if (kind->params[i].name == name) {
+                                slot = static_cast<int>(i);
+                                break;
+                            }
+                        }
+                    }
+                    if (slot < 0) {
+                        if (!name.empty()) {
+                            std::cerr << "[ProjectSerializer] Dropping unknown effect param '"
+                                      << name << "' on kind '" << kind->stableId << "'"
+                                      << std::endl;
+                        }
+                        continue;
+                    }
+                    if (p.contains("value")) {
+                        params.values[static_cast<std::size_t>(slot)] = jsonToParamValue(
+                            jsonToParamType(p.value("type", std::string{"float"})),
+                            p["value"]);
+                    }
+                }
+            } else {
+                // Unresolvable kind (user effect whose files are gone):
+                // best-effort positional restore so nothing is destroyed
+                // if the kind comes back before the next save.
+                for (const auto& p : pj) {
+                    if (!p.is_object()) continue;
+                    ParamValue v;
+                    if (p.contains("value")) {
+                        v = jsonToParamValue(
+                            jsonToParamType(p.value("type", std::string{"float"})),
+                            p["value"]);
+                    }
+                    params.values.push_back(v);
+                }
             }
         }
-        registry.emplace<EffectAnimatedParameters>(fxEnt);
+
+        auto& eap = registry.emplace<EffectAnimatedParameters>(fxEnt);
+        if (fxJson.contains("animatedParams") && fxJson["animatedParams"].is_array()) {
+            for (const auto& tj : fxJson["animatedParams"]) {
+                if (!tj.is_object()) continue;
+                EffectAnimatedParameters::NamedTrack nt;
+                const std::string paramName = tj.value("param", std::string{});
+                nt.paramKeyHash = !paramName.empty()
+                                      ? effects::fnv1a32(paramName)
+                                      : tj.value("paramHash", std::uint32_t{0});
+                nt.enabled = tj.value("enabled", true);
+                if (tj.contains("keyframes") && tj["keyframes"].is_array()) {
+                    for (const auto& kj : tj["keyframes"]) {
+                        Keyframe kf;
+                        kf.frame         = kj.value("frame", static_cast<FrameNumber>(0));
+                        kf.value         = kj.value("value", 0.0f);
+                        kf.interpolation = jsonToInterpolationType(
+                            kj.value("interpolation", std::string{"linear"}));
+                        kf.easeIn  = kj.value("easeIn",  0.42f);
+                        kf.easeOut = kj.value("easeOut", 0.58f);
+                        // Keep sorted by frame; last-wins on duplicates
+                        // (defensive for hand-edited files).
+                        auto it = std::lower_bound(
+                            nt.keyframes.begin(), nt.keyframes.end(), kf.frame,
+                            [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+                        if (it != nt.keyframes.end() && it->frame == kf.frame) {
+                            *it = kf;
+                        } else {
+                            nt.keyframes.insert(it, kf);
+                        }
+                    }
+                }
+                if (nt.paramKeyHash != 0 && !nt.keyframes.empty()) {
+                    eap.tracks.push_back(std::move(nt));
+                }
+            }
+        }
 
         chain.nodes.push_back(fxEnt);
+        created.push_back(fxEnt);
     }
+
+    // v29 — graph topology. Missing keys = linear stack (pre-v29 files
+    // and stacks never edited in the graph).
+    if (entryJson.contains("effectConnections")
+        && entryJson["effectConnections"].is_array()) {
+        auto entityAt = [&](int idx, entt::entity& out) -> bool {
+            if (idx == -1) { out = entt::null; return true; }
+            if (idx < 0 || idx >= static_cast<int>(created.size())) return false;
+            out = created[static_cast<std::size_t>(idx)];
+            return true;
+        };
+        for (const auto& cj : entryJson["effectConnections"]) {
+            if (!cj.is_object()) continue;
+            entt::entity src{entt::null};
+            entt::entity dst{entt::null};
+            if (!entityAt(cj.value("src", -1), src)
+                || !entityAt(cj.value("dst", -1), dst)) {
+                std::cerr << "[ProjectSerializer] Dropping effect connection "
+                             "with out-of-range node index"
+                          << std::endl;
+                continue;
+            }
+            EffectConnection c;
+            c.srcNode   = src;
+            c.dstNode   = dst;
+            c.srcSocket = static_cast<std::uint8_t>(cj.value("srcSocket", 0));
+            c.dstSocket = static_cast<std::uint8_t>(cj.value("dstSocket", 0));
+            chain.connections.push_back(c);
+        }
+    }
+    const int outIdx = entryJson.value("effectOutputNode", -1);
+    if (outIdx >= 0 && outIdx < static_cast<int>(created.size())) {
+        chain.outputNode = created[static_cast<std::size_t>(outIdx)];
+    }
+
     if (!chain.nodes.empty() && chain.outputNode == entt::null) {
         chain.outputNode = chain.nodes.back();
     }
@@ -367,6 +611,12 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
         }
 
         json project;
+
+        // v29 — effect kind catalog for stableId writing + param-name
+        // resolution. Null when saving without a ProjectManager (tests);
+        // the serializer degrades to hash-keyed, nameless entries.
+        const effects::EffectKindRegistry* kindReg =
+            projectMgr ? projectMgr->getEffectKindRegistry() : nullptr;
 
         // Project metadata
         project["version"] = PROJECT_VERSION;
@@ -498,6 +748,12 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                             transform->scale.y,
                             transform->scale.z
                         };
+                        // Uniform-scale lock. Only written when unlocked — absent
+                        // means locked, which is the default and what every project
+                        // saved before this component existed implies.
+                        if (const auto* lock = registry.try_get<ScaleLock>(layerEntity)) {
+                            if (!lock->uniform) clipJson["transform"]["scaleLock"] = false;
+                        }
                     }
 
                     // MediaLayer component (if exists)
@@ -513,10 +769,11 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                     const auto* ap = registry.try_get<AnimatedProperties>(layerEntity);
                     clipJson["animatedProperties"] = serializeAnimatedProperties(ap);
 
-                    // Effect chain (issue #54, v16+). Empty array when the
-                    // layer has no EffectChain component — forward/backward
-                    // compat free.
-                    clipJson["effects"] = serializeEffectChain(registry, layerEntity);
+                    // Effect chain (issue #54, v16+; v29 adds animated
+                    // tracks + topology). Empty array when the layer has
+                    // no EffectChain component — forward/backward compat
+                    // free.
+                    serializeEffectChainInto(clipJson, registry, layerEntity, kindReg);
 
                     // v23 — AudioSource (optional; only written when clip has audio).
                     const auto* audioSrc = registry.try_get<AudioSource>(layerEntity);
@@ -628,6 +885,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         genJson["transform"]["position"] = { t->position.x, t->position.y, t->position.z };
                         genJson["transform"]["rotation"] = { t->rotation.x, t->rotation.y, t->rotation.z };
                         genJson["transform"]["scale"]    = { t->scale.x,    t->scale.y,    t->scale.z    };
+                        if (const auto* lock = registry.try_get<ScaleLock>(layerEntity)) {
+                            if (!lock->uniform) genJson["transform"]["scaleLock"] = false;
+                        }
                     }
 
                     // MediaLayer
@@ -652,6 +912,14 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                         tsJson["bold"]       = tls.bold;
                         tsJson["italic"]     = tls.italic;
                         genJson["text_state"] = tsJson;
+                    } else if (registry.all_of<SolidLayerState>(layerEntity)) {
+                        // v29 — Solid sub-kind: flat fill color.
+                        genJson["sub_kind"] = "solid";
+                        const auto& sls = registry.get<SolidLayerState>(layerEntity);
+                        genJson["solid_state"] = {
+                            {"color", { sls.color[0], sls.color[1],
+                                        sls.color[2], sls.color[3] }}
+                        };
                     } else {
                         genJson["sub_kind"] = "muncher";
                         // MunchersGameState resets each session — no persistent fields.
@@ -664,6 +932,12 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
                             registry.try_get<AnimatedProperties>(layerEntity);
                         genJson["animatedProperties"] = serializeAnimatedProperties(ap);
                     }
+
+                    // v29 — effect chain. Generative layers can carry
+                    // EffectChain (ADR-0019) but pre-v29 only clip layers
+                    // persisted it; chains on generatives were silently
+                    // dropped on save.
+                    serializeEffectChainInto(genJson, registry, layerEntity, kindReg);
 
                     // v27 — RemotePatch (optional; only when layer is patched).
                     if (const auto* rp = registry.try_get<RemotePatch>(layerEntity)) {
@@ -1198,6 +1472,12 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
         // Clear existing timeline
         timeline.clear();
         auto& registry = timeline.getRegistry();
+
+        // v29 — effect kind catalog for stableId + param-name resolution.
+        // Null when loading without a ProjectManager (tests): typed params
+        // then restore positionally.
+        const effects::EffectKindRegistry* kindReg =
+            projectMgr ? projectMgr->getEffectKindRegistry() : nullptr;
 
         // Clear project-scoped entity types that we serialize. Without this,
         // reloading (or autosave-then-load) would pile up duplicates.
@@ -1899,6 +2179,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                     t.setRotation({ tj["rotation"][0], tj["rotation"][1], tj["rotation"][2] });
                                 if (tj.contains("scale") && tj["scale"].size() >= 3)
                                     t.setScale({ tj["scale"][0], tj["scale"][1], tj["scale"][2] });
+                                // Absent == locked (the pre-component default).
+                                registry.emplace_or_replace<ScaleLock>(
+                                    layerEntity, ScaleLock{tj.value("scaleLock", true)});
                             }
 
                             auto& ml = registry.emplace<MediaLayer>(layerEntity);
@@ -1930,6 +2213,19 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                     tls.italic    = ts.value("italic", false);
                                 }
                                 tls.dirty = true;  // force re-bake on first tick
+                            } else if (subKind == "solid") {
+                                // v29 — Solid sub-kind.
+                                auto& sls = registry.emplace<SolidLayerState>(layerEntity);
+                                if (entryJson.contains("solid_state")) {
+                                    const auto& ss = entryJson["solid_state"];
+                                    if (ss.contains("color") && ss["color"].is_array()
+                                        && ss["color"].size() >= 4) {
+                                        sls.color = { ss["color"][0].get<float>(),
+                                                      ss["color"][1].get<float>(),
+                                                      ss["color"][2].get<float>(),
+                                                      ss["color"][3].get<float>() };
+                                    }
+                                }
                             } else {
                                 // Muncher or unrecognised sub-kind — emplace Muncher state
                                 // (game state resets each session; no persistent fields)
@@ -1943,6 +2239,10 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 auto& ap = registry.emplace<AnimatedProperties>(layerEntity);
                                 deserializeAnimatedProperties(entryJson, ap);
                             }
+
+                            // v29 — effect chain (generative layers persist
+                            // chains from v29; pre-v29 files lack the key).
+                            deserializeEffectChain(entryJson, registry, layerEntity, kindReg);
 
                             // v25 — twirl-down collapsed group paths.
                             applyCollapsedGroupsJson(registry, layerEntity, entryJson);
@@ -2242,6 +2542,9 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                                 );
                             }
                             transform.dirty = true;
+                            // Absent == locked (the pre-component default).
+                            registry.emplace_or_replace<ScaleLock>(
+                                clipEntity, ScaleLock{transformJson.value("scaleLock", true)});
                         }
 
                         // Load MediaLayer if present
@@ -2279,9 +2582,10 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                             deserializeAnimatedProperties(clipJson, ap);
                         }
 
-                        // Restore effect chain (v16+, issue #54). Pre-v16
-                        // clips have no "effects" key — no-op.
-                        deserializeEffectChain(clipJson, registry, clipEntity);
+                        // Restore effect chain (v16+, issue #54; v29 adds
+                        // animated tracks + topology). Pre-v16 clips have
+                        // no "effects" key — no-op.
+                        deserializeEffectChain(clipJson, registry, clipEntity, kindReg);
 
                         // v23 — AudioSource gain/mute/solo. Only user-authored
                         // fields; hasAudioStream and source* are re-derived when

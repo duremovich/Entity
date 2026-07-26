@@ -161,6 +161,14 @@ struct ClipRenderState {
     // MediaLayer::zOrder; present on the bus so CompositorSystem can sort
     // without touching the registry.
     std::uint32_t zOrder{0};
+    // True when this clip is cycling through a section-break park (Normal
+    // sectionBehavior + ClipPlaybackPhase::inContinuation). The transport is
+    // Paused in that state, but the clip's mediaFrame is still advancing in
+    // wall-clock — so `playState` alone can't tell the renderer whether a clip
+    // is moving. PlaybackPresenter needs the distinction: its nearest-frame
+    // upload fallback is correct for a clip that's advancing and actively
+    // wrong for one parked under a scrub.
+    bool inContinuation{false};
 };
 
 // One frame the Renderer should warm into the FrameCache this tick.
@@ -271,11 +279,22 @@ struct SignalLayerSnapshot {
 //       this each render frame to drive the placeholder hue-cycle. Real
 //       game state (Muncher pos, ghosts, pellets, score) lands here in v2.
 struct GenerativeLayerSnapshot {
-    enum class Kind : int { Muncher = 0, Text = 1 };
+    enum class Kind : int { Muncher = 0, Text = 1, Solid = 2 };
 
     std::uint64_t entity{0};
     Kind          kind{Kind::Muncher};
     std::uint64_t targetScreen{UINT64_MAX};
+
+    // Layer render-target size, mirrored from GenerativeLayer::renderWidth/
+    // Height for every kind. PASS 1 sizes the layer's compose target from
+    // these (and PASS 1.5 sizes effect RTs from the matching
+    // ContentLayerSnapshot::sourceWidth/Height).
+    std::uint32_t renderWidth{1920};
+    std::uint32_t renderHeight{1080};
+
+    // Solid-specific baked state (meaningful only when kind == Solid):
+    // linear-light RGBA fill color from SolidLayerState.
+    std::array<float, 4> solidColor{1.0f, 1.0f, 1.0f, 1.0f};
 
     // Plane A content routing (ADR-0021). Same contract as
     // ClipCatalogEntry: editor-baked from the GenerativeLayer entity's
@@ -367,6 +386,12 @@ struct BakedEffectTrack {
     std::string                paramName;
     bool                       enabled{true};
     std::vector<BakedKeyframe> keyframes;
+    // Schema slot the track drives (paramBlob byte offset = slotIndex*16).
+    // Baked editor-side where the name→slot resolution already happened,
+    // so the show thread can re-evaluate registry-free during editor
+    // stalls (NEW-07 for effect params). -1 = unresolved (legacy payloads
+    // / unknown kind) — show side leaves the blob untouched.
+    std::int32_t               slotIndex{-1};
 };
 
 // One effect node baked into the snapshot. Carries the kind hash, a
@@ -384,6 +409,21 @@ struct EffectSnapshot {
     bool                           enabled{true};
     std::vector<std::uint8_t>      paramBlob;   // cbuffer-layout bytes
     std::vector<BakedEffectTrack>  tracks;
+    // Texture-input socket count baked from EffectKind::textureInputCount.
+    // 0 = generator (never samples its input — PASS 1.5 may run it with
+    // no source texture and drawEffectPass skips the SRV bind). Default 1
+    // (filter) matches every pre-upgrade payload.
+    std::uint8_t                   inputCount{1};
+
+    // Resolved DAG inputs, one entry per texture-input socket:
+    //   >= 0  index of the producing effect in this layer's effects vector
+    //   -1    the layer's source texture
+    //   -2    unconnected (renderer binds nothing / black)
+    // The editor bake emits effects pre-sorted in topological order with
+    // disabled nodes dropped (bypass-rewired), so the show thread executes
+    // this as a straight-line plan — zero graph logic. Empty = legacy
+    // linear payload: the executor synthesizes prev-feeds-next.
+    std::vector<std::int32_t>      inputs;
 };
 
 // Per-layer effects bundle. Side-table off SceneSnapshot — keyed by
@@ -395,14 +435,17 @@ struct EffectSnapshot {
 struct LayerEffectsSnapshot {
     std::uint64_t                  entity{0};
     std::vector<EffectSnapshot>    effects;
-    // Ping-pong compose-target slots allocated by PASS 1.5 via the R2D
-    // ack pattern (`EffectChainRenderTargetAllocated`). -1 until both
-    // sides are allocated; PASS 1.5 holds off running effects on this
-    // layer until both are valid.
+    // DEPRECATED (DAG executor, issue #54 Phase 4): PASS 1.5 now draws
+    // into a show-thread-local scratch pool instead of per-layer acked
+    // ping-pong slots. Fields kept wire-inert for one version per bus
+    // rule 3; the `EffectChainRenderTargetAllocated` ack is never sent.
     std::int32_t                   slotA{-1};
     std::int32_t                   slotB{-1};
     std::uint32_t                  width{0};
     std::uint32_t                  height{0};
+    // Index into `effects` whose output feeds PASS 2. -1 = last effect
+    // (legacy payloads / default).
+    std::int32_t                   outputIndex{-1};
 };
 
 // Unified content-layer snapshot — the only data the compositor's PASS 2
@@ -461,6 +504,15 @@ struct ContentLayerSnapshot {
     // leaving those TextureRefs on the default any-generation).
     std::uint32_t sourceGeneration{0};
 
+    // Source content dimensions in pixels: clip media size for Video
+    // sources, GenerativeLayer::renderWidth/Height for Compose sources.
+    // 0 = unknown (pre-upgrade payloads / media not probed yet) — effect
+    // RT sizing falls back to 1920x1080. Effects run in layer-content
+    // space before the UV transform, so RTs sized from these keep blur
+    // radii / pixelate cells texel-true to the source.
+    std::uint32_t sourceWidth{0};
+    std::uint32_t sourceHeight{0};
+
     // Optional colour-pipeline hints. PlaybackPresenter caches the
     // authoritative tags for clips; the compositor takes a best-effort
     // hint here and falls back to the presenter when bound to a video slot.
@@ -476,13 +528,13 @@ struct ContentLayerSnapshot {
     // Empty vector = no effects, PASS 2 reads sourceSlot directly.
     std::vector<EffectSnapshot> effects;
 
-    // Ping-pong compose-target slots for the effect chain (-1 = pending
-    // allocation, R2D ack still in flight). Editor side fills these from
-    // EffectChainRenderTargets on the layer entity during the buildRender-
-    // Frame fold-in step, so PASS 1.5 reads them directly off the cl
-    // entry without needing a side-table lookup.
+    // DEPRECATED — see LayerEffectsSnapshot: PASS 1.5 scratch-pools its
+    // RTs show-side now. Wire-inert for one version.
     std::int32_t  effectChainSlotA{-1};
     std::int32_t  effectChainSlotB{-1};
+
+    // Index into `effects` whose output feeds PASS 2 (-1 = last).
+    std::int32_t  effectsOutputIndex{-1};
 
     // Post-effects compose-target slot. -1 = no effects or PASS 1.5
     // hasn't produced output this frame yet (RT allocation pending).
@@ -582,6 +634,12 @@ struct ClipCatalogEntry {
     // thrashed past the fade window). ADR-0012 amendment 2026-05-23
     // follow-up.
     double        endingBreakFadeSeconds{0.0};
+
+    // Media pixel dimensions (Clip::width/height). 0 = unknown (media not
+    // probed / failed to open). Feeds ContentLayerSnapshot::sourceWidth/
+    // Height so effect RTs size to the source content.
+    std::uint32_t mediaWidth{0};
+    std::uint32_t mediaHeight{0};
 
     // VideoTexture
     int           descriptorSlot{-1};
@@ -829,6 +887,15 @@ struct EffectCompileFailed {
     std::string   errorMessage;
 };
 
+// Director → Renderer. A user effect kind's bytecode changed (hot
+// reload) or the kind was removed — the renderer must evict the cached
+// PSO for this hash so the next drawEffectPass rebuilds from the fresh
+// artifact. The old PSO parks in a frame-aged graveyard (in-flight
+// frames may still reference it). Issue #54 Phase 6.
+struct InvalidateEffectPso {
+    std::uint32_t kindIdHash{0};
+};
+
 // Director → Renderer. Toggles a physical output's swap chain.
 struct SetOutputEnabled {
     std::uint64_t entity{0};
@@ -914,6 +981,7 @@ using Message = std::variant<
     GenerativeLayerRenderTargetAllocated,
     EffectChainRenderTargetAllocated,
     EffectCompileFailed,
+    InvalidateEffectPso,
     OutputWindowSlotUpdated,
     SetOutputEnabled,
     ApplySettings,

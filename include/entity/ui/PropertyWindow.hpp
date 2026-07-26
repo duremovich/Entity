@@ -2,8 +2,10 @@
 
 #include "EditorWindow.hpp"
 #include "../components/AnimatedProperties.hpp"
+#include "../components/EffectParam.hpp"
 #include "../core/Types.hpp"
 #include <imgui.h>
+#include <array>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -15,6 +17,8 @@ namespace entity {
 class Timeline;
 class CommandDispatcher;
 class Engine;
+struct Clip;
+struct EffectParameters;
 namespace effects { class EffectKindRegistry; struct ParamSchema; }
 namespace remote { class RemoteControlStore; }
 
@@ -81,6 +85,13 @@ private:
      * Render clip info (read-only).
      */
     void renderClipInfo();
+
+    /**
+     * Live per-clip transport readout at the foot of Clip Info: mapped vs
+     * presented media frame, decoder worker position, cache hit, and
+     * section-break continuation state. Diagnostic — read-only.
+     */
+    void renderClipPlaybackReadout(entt::entity clipEntity, const Clip& clip);
 
     /**
      * Render timeline properties (when no clip selected).
@@ -268,15 +279,24 @@ private:
                                       const effects::ParamSchema& schema,
                                       float currentValue);
 
+    /**
+     * Widget row for a non-Float effect parameter (Vec2 / Vec3 / Color /
+     * Int / Bool / Enum). No stopwatch — only Float params have timeline
+     * lanes in v1 (per-channel tracks are a future data-model change).
+     * Drag widgets follow the optimistic-mutate + Activated/Deactivated
+     * undo idiom; Checkbox / Combo commit instantly.
+     */
+    void renderNonFloatEffectParam(entt::entity effectEntity,
+                                   const effects::ParamSchema& schema,
+                                   std::size_t slot,
+                                   EffectParameters& params);
+
 private:
     Timeline* m_timeline{nullptr};  // Non-owning pointer to Timeline
     CommandDispatcher* m_dispatcher{nullptr};  // Non-owning, optional
     const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};  // Non-owning, optional
     Engine* m_engine{nullptr};  // Non-owning, optional (for Media combo media-library access)
     remote::RemoteControlStore* m_remoteStore{nullptr};  // Non-owning, optional (ADR-0028)
-
-    // Per-entity UI state (prevents static variable leak between clips)
-    std::unordered_map<entt::entity, bool> m_uniformScaleState;  // Uniform scale checkbox state per clip
 
     // Pre-edit snapshot captured on IsItemActivated. If the property was
     // keyframed at drag start AND the playhead is inside the clip,
@@ -329,6 +349,7 @@ private:
     // active in ImGui at a time, so a single struct is enough.
     struct EffectPreEditState {
         float                scalarValue{0.0f};
+        ParamValue           paramValue{};             // full pre-edit value (non-Float widgets)
         bool                 wasKeyframed{false};      // dispatch Upsert vs scalar set
         FrameNumber          keyframeFrame{0};         // layer-local frame at drag start
         std::optional<float> keyframeValue;            // nullopt = no kf existed pre-edit
@@ -340,6 +361,9 @@ private:
     // Filter text for the Media combo dropdown. Cleared on dropdown open
     // (see IsWindowAppearing branch in renderPlaybackSection).
     char m_mediaFilterBuf[256]{0};
+
+    // Pre-edit capture for the Solid layer color picker.
+    std::array<float, 4> m_preEditSolidColor{1.0f, 1.0f, 1.0f, 1.0f};
 
     // Pre-edit captures for Text layer property DragFloat / InputTextMultiline.
     // Populated on IsItemActivated; consumed on IsItemDeactivatedAfterEdit.

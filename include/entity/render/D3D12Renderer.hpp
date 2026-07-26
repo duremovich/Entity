@@ -21,11 +21,13 @@
 #include <DirectXMath.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward declarations
@@ -70,7 +72,8 @@ public:
         m_deviceLostReason.store(reason, std::memory_order_release);
         m_deviceLost.store(true, std::memory_order_release);
     }
-    void waitForGpuForTesting()     { waitForGpu(); }
+    bool waitForGpuForTesting()        { return waitForGpu(); }
+    bool gpuIdleForDestroyForTesting() { return gpuIdleForDestroy(); }
 
     // Headless/CI device-lost policy (issue #69). When enabled,
     // handleDeviceLost() calls std::_Exit(kDeviceLostExitCode) right after the
@@ -179,7 +182,7 @@ public:
     uint32_t createOutputWindow(const char* title,
                                  int32_t x, int32_t y,
                                  uint32_t width, uint32_t height) override;
-    void     destroyOutputWindow(uint32_t outputSlot) override;
+    bool     destroyOutputWindow(uint32_t outputSlot) override;
     void     resizeOutputWindow(uint32_t outputSlot,
                                  uint32_t width, uint32_t height) override;
     uint32_t getOutputWindowWidth(uint32_t outputSlot) const override;
@@ -288,7 +291,9 @@ public:
                               const glm::vec2 uvs[3]);
 
     // Per-layer effect pass (issue #54). See IRenderer comment for contract.
-    void     drawEffectPass(TextureRef input,
+    using IRenderer::drawEffectPass;  // keep the single-input convenience visible
+    bool     drawEffectPass(const TextureRef* inputs,
+                            std::size_t inputCount,
                             std::uint32_t kindIdHash,
                             const std::uint8_t* paramBlob,
                             std::size_t paramBlobSize,
@@ -408,9 +413,22 @@ private:
     Result createCommandList();
     Result createCopyCommandList();   // Phase C.11: COPY queue cmd list + per-frame allocators
     Result createFence();
-    // Returns true only if all three drains (copy, show, editor fences)
-    // completed — i.e. the GPU is provably idle. See the definition (#89).
-    bool waitForGpu();
+    // Bare-flag early-out + drainGpuQueues(false); full contract lives above
+    // drainGpuQueues (below). (#89)
+    // [[nodiscard]] (#91): a discarded return at a destroy-after-drain site
+    // is exactly the bug class this issue closed — new callers must triage.
+    [[nodiscard]] bool waitForGpu();
+    // #91: the drain body. waitForGpu() = bare-flag early-out + drainGpuQueues(false).
+    // shutdown() calls drainGpuQueues(true) directly so a SPURIOUS device-lost
+    // latch (reason S_OK — device live, possibly executing) still drains;
+    // a CONFIRMED removal (reason != S_OK) aborts in either mode.
+    bool drainGpuQueues(bool drainOnSpuriousLatch);
+    // #91: the triage helper for destroy-after-drain sites. True = safe to
+    // destroy GPU resources: either the drain proved the GPU idle, or the
+    // removal is CONFIRMED (a dead device executes nothing). False = DEFER:
+    // drain abandoned on a live device (S_OK starvation) or a spurious latch —
+    // in-flight work may still reference the resources.
+    [[nodiscard]] bool gpuIdleForDestroy();
     void moveToNextFrame();
 
     // Helper methods for rendering pipeline
@@ -760,6 +778,9 @@ private:
     ComPtr<ID3D12RootSignature> m_effectRootSignature;
     ComPtr<ID3DBlob>            m_effectVsBlob;
     std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> m_effectPsoCache;
+    // Kinds already warned about as unknown (log-once; cleared when the
+    // kind appears, e.g. after a hot reload restores it).
+    std::unordered_set<uint32_t> m_effectKindWarned;
 
     static constexpr uint32_t MAX_EFFECT_DRAWS_PER_FRAME = 256;
     static constexpr uint32_t EFFECT_CBUFFER_SLOT_SIZE   = 256;
@@ -767,6 +788,36 @@ private:
     uint8_t*               m_effectCbufferRingMapped{nullptr};
     uint32_t               m_effectDrawIndex{0};      // resets each frame
     bool                   m_effectOverflowed{false}; // one-shot log
+    // Aesthetic clock for animated generator effects (g_timeSeconds patch
+    // in drawEffectPass). Renderer-local by design — see ADR-0025.
+    std::chrono::steady_clock::time_point m_effectTimeStart{
+        std::chrono::steady_clock::now()};
+    // 4x4 black texture bound to unconnected / absent effect inputs so
+    // every root-signature SRV table (t0-t3) always has a valid
+    // descriptor. Created lazily on the show thread (needs an open
+    // command list for the one-time clear); SRV lives at
+    // DescriptorHeapLayout::EFFECT_FALLBACK_SLOT.
+    ComPtr<ID3D12Resource>       m_effectFallbackTexture;
+    ComPtr<ID3D12DescriptorHeap> m_effectFallbackRtvHeap;
+    bool ensureEffectFallbackTexture();
+
+    // Hot-reload PSO eviction (InvalidateEffectPso D2R). Evicted PSOs
+    // park here for FRAME_COUNT+1 frames — an in-flight frame's command
+    // list may still reference them. Show-thread only; aged in
+    // endShowFrame.
+    struct RetiredEffectPso {
+        ComPtr<ID3D12PipelineState> pso;
+        uint32_t                    framesLeft{0};
+    };
+    std::vector<RetiredEffectPso> m_retiredEffectPsos;
+
+public:
+    // Show-thread handler for InvalidateEffectPso: evict the cached PSO
+    // for a user kind whose bytecode changed (or vanished); the next
+    // drawEffectPass rebuilds from the fresh registry artifact.
+    void invalidateEffectPso(uint32_t kindIdHash);
+
+private:
 
     // Mapping surface constant buffer structure (must match HLSL)
     struct MappingSurfaceConstants {
@@ -872,6 +923,13 @@ private:
         D3D12_GPU_DESCRIPTOR_HANDLE stableSrvHandle() const {
             const uint32_t idx = lastStableIndex.load(std::memory_order_acquire);
             return (idx != UINT32_MAX) ? srvHandles[idx % TRIPLE] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+        }
+
+        // SRV handle for the sub-resource being written THIS frame — for
+        // intra-frame producer→consumer sampling (TextureRef::composeWrite).
+        // Show-thread only.
+        D3D12_GPU_DESCRIPTOR_HANDLE writeSrvHandle() const {
+            return srvHandles[writeIndex % TRIPLE];
         }
 
         // Read-back copy for shader-blend modes (Overlay, Difference, etc.).
@@ -1070,6 +1128,7 @@ private:
         uint32_t height{0};
         uint32_t currentBackBufferIndex{0};
         bool active{false};                // false = freed slot, reusable
+        bool pendingDestroy{false};        // #91 review: destroy deferred (drain abandoned). Window hidden, Present skipped; slot stays active so it can't be reused until the retried destroy succeeds.
     };
     std::vector<OutputWindow> m_outputWindows;
     uint32_t m_currentOutputSlot{UINT32_MAX};  // Set during begin/endOutputFrame

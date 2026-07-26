@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "description": "Effect-keyframe persistence round-trip (load half). Loads the project saved by effect_anim_persistence_save.json and asserts the brightness track's 2 keyframes survived serialization (the pre-v29 bug loaded an empty track here). Then exercises RemoveEffectKeyframe via script index addressing and asserts the count drops to 1.",
+    "commands": [
+        {"type": "LoadProject", "filepath": "test_output/effect_anim_persistence/test.entity"},
+        {"type": "WaitSeconds", "count": 0.2},
+
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertEffectKeyframeCount", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "brightness", "count": 2},
+
+        {"type": "RemoveEffectKeyframe", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "brightness", "frame": 30},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertEffectKeyframeCount", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "brightness", "count": 1},
+
+        {"type": "Exit"}
+    ]
+}

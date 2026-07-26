@@ -18,6 +18,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/OutputSurface.hpp"
 #include "entity/components/Model.hpp"
@@ -29,6 +30,7 @@
 #include "entity/components/Transform.hpp"
 #include "entity/components/VideoTexture.hpp"
 #include "entity/director/CatalogClipMath.hpp"
+#include "entity/effects/EffectChainTopo.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/timeline/PlaybackWrap.hpp"
 #include "entity/timeline/SectionFade.hpp"
@@ -182,36 +184,24 @@ void marshalParamValueToSlot(const ParamValue& v, std::uint8_t* slotPtr) {
     }
 }
 
+// Bus-side keyframes are a wire mirror of entity::Keyframe, so the interpolation
+// itself delegates to the one implementation in AnimatedProperties.hpp. This used
+// to be a hand-copied duplicate of that math, which meant every easing change had
+// to be made twice or the projector output would silently diverge from what the
+// editor previewed.
 float interpolateBakedKeyframes(const bus::BakedKeyframe& a,
                                 const bus::BakedKeyframe& b,
                                 float t) {
-    // Step on `a` holds the start value across the interval.
-    if (static_cast<InterpolationType>(a.interpolation) == InterpolationType::Step) {
-        return a.value;
-    }
-    const float delta = b.value - a.value;
-    switch (static_cast<InterpolationType>(b.interpolation)) {
-        case InterpolationType::Step:      return a.value + delta * t;
-        case InterpolationType::EaseIn:    return a.value + delta * (t * t);
-        case InterpolationType::EaseOut: {
-            const float inv = 1.0f - t;
-            return a.value + delta * (1.0f - inv * inv);
-        }
-        case InterpolationType::EaseInOut: {
-            // Cubic bezier with P0=(0,0), P1=(easeIn,0), P2=(easeOut,1), P3=(1,1).
-            // Matches the simplified bezier in KeyframeTrack::cubicBezier
-            // — same omissions (P1.y = 0 zeroes its term).
-            const float mt  = 1.0f - t;
-            const float t2  = t * t;
-            const float t3  = t2 * t;
-            const float mt2 = mt * mt;
-            const float y   = 3.0f * mt  * t2 * 1.0f  // P2.y term
-                            + t3        * 1.0f;       // P3.y term
-            return a.value + delta * y;
-        }
-        case InterpolationType::Linear:
-        default:                           return a.value + delta * t;
-    }
+    auto toKeyframe = [](const bus::BakedKeyframe& k) {
+        Keyframe out;
+        out.frame         = k.frame;
+        out.value         = k.value;
+        out.interpolation = static_cast<InterpolationType>(k.interpolation);
+        out.easeIn        = k.easeIn;
+        out.easeOut       = k.easeOut;
+        return out;
+    };
+    return KeyframeTrack::interpolate(toKeyframe(a), toKeyframe(b), t);
 }
 
 float defaultValueForProperty(AnimatableProperty p) {
@@ -230,22 +220,23 @@ float defaultValueForProperty(AnimatableProperty p) {
     }
 }
 
-float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
-    const auto property = static_cast<AnimatableProperty>(track.property);
-    if (track.keyframes.empty()) return defaultValueForProperty(property);
-
-    const auto& first = track.keyframes.front();
-    const auto& last  = track.keyframes.back();
+// Evaluate a non-empty baked keyframe list at `frame`. Shared by the
+// transform-track evaluator below and the effect-param re-eval in
+// buildRenderFrame (both are the show side's stall-safe path).
+float evaluateBakedKeyframeList(const std::vector<bus::BakedKeyframe>& keyframes,
+                                FrameNumber frame) {
+    const auto& first = keyframes.front();
+    const auto& last  = keyframes.back();
     if (frame <= first.frame) return first.value;
     if (frame >= last.frame)  return last.value;
 
     // First keyframe with .frame >= frame; binary search.
     auto it = std::lower_bound(
-        track.keyframes.begin(), track.keyframes.end(), frame,
+        keyframes.begin(), keyframes.end(), frame,
         [](const bus::BakedKeyframe& k, FrameNumber f) { return k.frame < f; });
 
-    if (it != track.keyframes.end() && it->frame == frame) return it->value;
-    if (it == track.keyframes.begin() || it == track.keyframes.end()) {
+    if (it != keyframes.end() && it->frame == frame) return it->value;
+    if (it == keyframes.begin() || it == keyframes.end()) {
         return last.value;
     }
 
@@ -254,6 +245,36 @@ float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
     const float t = static_cast<float>(frame - prev.frame)
                   / static_cast<float>(next.frame - prev.frame);
     return interpolateBakedKeyframes(prev, next, t);
+}
+
+float evaluateBakedTrack(const bus::BakedTrack& track, FrameNumber frame) {
+    const auto property = static_cast<AnimatableProperty>(track.property);
+    if (track.keyframes.empty()) return defaultValueForProperty(property);
+    return evaluateBakedKeyframeList(track.keyframes, frame);
+}
+
+// Re-evaluate a layer's animated effect params at the live frame and
+// patch the results into each effect's paramBlob (Float slots only —
+// slotIndex*16 = the slot's .x). Registry-free: everything needed was
+// baked (NEW-07 for effect params — animation keeps moving on the
+// projector while the editor thread is stalled, and between editor
+// bake ticks the show side is a frame fresher than the blob).
+void reEvaluateEffectTracks(bus::ContentLayerSnapshot& c,
+                            FrameNumber layerStart,
+                            FrameNumber currentFrame) {
+    if (c.effects.empty()) return;
+    const FrameNumber localFrame =
+        (currentFrame >= layerStart) ? (currentFrame - layerStart)
+                                     : FrameNumber{0};
+    for (auto& fx : c.effects) {
+        for (const auto& t : fx.tracks) {
+            if (!t.enabled || t.slotIndex < 0 || t.keyframes.empty()) continue;
+            const std::size_t off = static_cast<std::size_t>(t.slotIndex) * 16;
+            if (off + sizeof(float) > fx.paramBlob.size()) continue;
+            const float v = evaluateBakedKeyframeList(t.keyframes, localFrame);
+            std::memcpy(fx.paramBlob.data() + off, &v, sizeof(float));
+        }
+    }
 }
 
 // Copy AnimatedProperties keyframe tracks into the bus BakedTrack form.
@@ -899,6 +920,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             m_timeline
                 ? timeline::sectionFadeSecondsAtBreak(*m_timeline, clipEndFrame)
                 : 0.0;
+        ce.mediaWidth      = clip.width;
+        ce.mediaHeight     = clip.height;
         ce.descriptorSlot  = static_cast<int>(videoTex.descriptorSlot);
         // #90: an unallocated VideoTexture keeps generation 0 (never stamped),
         // so this is unconditional — and harmless even if it weren't, since a
@@ -1053,6 +1076,8 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         // layer (R2D ack wrote it on the editor thread). -1 if not yet
         // allocated — PASS 2 compositor skips the blit until then.
         snap.renderTargetSlot = gen.renderTargetSlot;
+        snap.renderWidth      = gen.renderWidth;
+        snap.renderHeight     = gen.renderHeight;
 
         // Sub-kind dispatch by component composition (ADR-0016) — same rule
         // GenerativeSystem uses on the editor side.
@@ -1077,6 +1102,9 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             snap.textTextureGeneration = tls->textureGeneration;  // #90
             snap.textBakedWidth  = tls->bakedWidth;
             snap.textBakedHeight = tls->bakedHeight;
+        } else if (const auto* sls = m_registry.try_get<SolidLayerState>(entity)) {
+            snap.kind       = bus::GenerativeLayerSnapshot::Kind::Solid;
+            snap.solidColor = sls->color;
         } else {
             // No kind-specific state component → skip (defensive — the
             // editor-side creation paths always attach one).
@@ -1187,8 +1215,28 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                             : FrameNumber{0};
         }
 
-        lfx.effects.reserve(chain.nodes.size());
-        for (auto effectEnt : chain.nodes) {
+        // Resolve the chain to an enabled-only, topologically ordered
+        // execution plan (linear stacks are the degenerate case). The show
+        // thread executes the emitted vector as a straight line — all
+        // graph reasoning happens here on the editor thread.
+        const effects::EffectExecutionPlan plan =
+            effects::buildEffectExecutionPlan(m_registry, chain,
+                                              m_effectKindRegistry);
+        if (plan.linearFallback) {
+            // Throttled: once per layer per second at 60 editor fps.
+            static int s_fallbackLogCounter = 0;
+            if ((s_fallbackLogCounter++ % 60) == 0) {
+                std::cerr << "[EffectBake] Effect graph on layer "
+                          << lfx.entity
+                          << " rejected (cycle or too wide) — evaluating "
+                             "as a linear stack" << std::endl;
+            }
+        }
+        lfx.outputIndex = plan.outputIndex;
+
+        lfx.effects.reserve(plan.steps.size());
+        for (const auto& step : plan.steps) {
+            const auto effectEnt = step.node;
             if (!m_registry.valid(effectEnt)) continue;
             const auto* fx = m_registry.try_get<Effect>(effectEnt);
             if (!fx) continue;
@@ -1196,6 +1244,7 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             bus::EffectSnapshot es;
             es.kindIdHash = fx->kindId;
             es.enabled    = fx->enabled;
+            es.inputs.assign(step.inputs.begin(), step.inputs.end());
             es.paramBlob.assign(kEffectBlobBytes, std::uint8_t{0});
 
             // Look up the kind so we know each param's slot index +
@@ -1205,6 +1254,14 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
             const effects::EffectKind* kind = m_effectKindRegistry
                 ? m_effectKindRegistry->find(fx->kindId)
                 : nullptr;
+
+            // Role on the wire: 0 = generator, 1 = filter, 2+ = combiner.
+            // Unknown kind defaults to filter (input required) so PASS 1.5
+            // keeps its input-not-ready gate.
+            if (kind) {
+                es.inputCount = static_cast<std::uint8_t>(
+                    std::clamp(kind->textureInputCount(), 0, 4));
+            }
 
             if (kind) {
                 const auto* params =
@@ -1266,6 +1323,9 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
                         bus::BakedEffectTrack dst;
                         dst.paramName = schema.name;
                         dst.enabled   = src.enabled;
+                        // Slot resolved right here — bake it so the show
+                        // side can patch paramBlob registry-free (NEW-07).
+                        dst.slotIndex = static_cast<std::int32_t>(slotN);
                         dst.keyframes.reserve(src.keyframes.size());
                         for (const auto& sk : src.keyframes) {
                             bus::BakedKeyframe k;
@@ -1333,6 +1393,11 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder       = ce.zOrder;
         c.targetScreen = ce.targetScreen;
         c.sectionFadeMultiplier = computeSectionFadeMultiplier(clip);
+        // Same predicate mapToMediaFrameFromCatalogEx uses to take its
+        // continuation branch — keep the two in lockstep, or the renderer's
+        // idea of "is this clip moving" drifts from the frame math's.
+        c.inContinuation = ce.hasPhase && ce.phase_inContinuation
+            && clip.sectionBehavior == SectionBehavior::Normal;
 
         // NEW-07 + ADR-0028: re-evaluate animation tracks at the show thread's
         // current frame; apply engaged remote overlay on top. No-op for static
@@ -1518,18 +1583,30 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Video;
         c.sourceSlot            = ac.slot;
         c.sourceGeneration      = ac.slotGeneration;  // #90
+        if (ce) {
+            c.sourceWidth  = ce->mediaWidth;
+            c.sourceHeight = ce->mediaHeight;
+        }
         // Carry remoteSlot for diagnostics / future per-entry overlay.
         if (ce) c.remoteSlot   = ce->remoteSlot;
         // colorSpace/ocioColorSpace: compositor resolves via PlaybackPresenter
         // for Video-source layers (per-entity cached on the show side).
         if (const auto* le = findLayerEffects(ac.entity)) {
-            c.effects          = le->effects;
-            c.effectChainSlotA = le->slotA;
-            c.effectChainSlotB = le->slotB;
+            c.effects            = le->effects;
+            c.effectChainSlotA   = le->slotA;
+            c.effectChainSlotB   = le->slotB;
+            c.effectsOutputIndex = le->outputIndex;
             // postEffectsSlot stays -1 here — PASS 1.5 fills it after it
             // actually draws the chain.
+            // Animated effect params: re-evaluate at the live frame so
+            // they keep moving during editor stalls (NEW-07). Mutates
+            // only this per-frame copy, never the cached snapshot.
+            if (ce) reEvaluateEffectTracks(c, ce->startFrame, currentFrame);
         }
-        out.contentLayers.push_back(c);
+        // Move — `c` carries routes + effect paramBlobs/tracks; a copy
+        // here would double the per-frame allocation tax on the show
+        // thread for every effect-carrying layer.
+        out.contentLayers.push_back(std::move(c));
     }
 
     // Live re-filter, mirroring the isClipActiveAtFrame re-check on the clip
@@ -1584,14 +1661,19 @@ void PlaybackTimeAuthority::buildRenderFrame(bus::RenderFrame& out,
         c.zOrder                = gl.zOrder;
         c.sourceKind            = bus::ContentLayerSnapshot::SourceKind::Compose;
         c.sourceSlot            = gl.renderTargetSlot;
+        c.sourceWidth           = gl.renderWidth;
+        c.sourceHeight          = gl.renderHeight;
         c.remoteSlot            = gl.remoteSlot;
         // colorSpace stays Linear (default 0) — the PASS 1 RT is in linear-light.
         if (const auto* le = findLayerEffects(gl.entity)) {
-            c.effects          = le->effects;
-            c.effectChainSlotA = le->slotA;
-            c.effectChainSlotB = le->slotB;
+            c.effects            = le->effects;
+            c.effectChainSlotA   = le->slotA;
+            c.effectChainSlotB   = le->slotB;
+            c.effectsOutputIndex = le->outputIndex;
+            // NEW-07 for effect params — see the clip branch above.
+            reEvaluateEffectTracks(c, gl.startFrame, currentFrame);
         }
-        out.contentLayers.push_back(c);
+        out.contentLayers.push_back(std::move(c));  // see clip branch
     }
 
     std::sort(out.contentLayers.begin(), out.contentLayers.end(),

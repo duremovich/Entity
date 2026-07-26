@@ -21,6 +21,7 @@
 
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -348,7 +349,13 @@ void D3D12Renderer::shutdown() {
         m_deviceLost.load(std::memory_order_acquire) &&
         m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
     if (!confirmedRemoval) {
-        waitForGpu();
+        // #91: drainGpuQueues(true), NOT waitForGpu() — waitForGpu's bare-flag
+        // early-out returned false immediately on a spurious latch, so the
+        // drain this comment block promises never actually ran. The return is
+        // deliberately unused: shutdown cannot defer, and an abandoned drain
+        // (starved WARP, reason S_OK) leaves the same exposure as before —
+        // now minimized by having actually attempted the drain.
+        (void)drainGpuQueues(/*drainOnSpuriousLatch=*/true);
     }
 
     shutdownImGui();
@@ -510,8 +517,13 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
         return Result::Failure;
     }
 
-    // Wait for GPU to finish
-    waitForGpu();
+    // #91: an abandoned drain on a live device means in-flight lists may still
+    // reference the back buffers we're about to Reset (and ResizeBuffers
+    // requires all references released). Defer — the back buffers are untouched
+    // here, so Engine::render keeps the resize pending and retries next frame.
+    if (!gpuIdleForDestroy()) {
+        return Result::NotReady;
+    }
 
     // Release render targets
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
@@ -528,6 +540,10 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
     );
 
     if (FAILED(hr)) {
+        // Hard failure, NOT a deferral: the render targets above are already
+        // Reset() at this point, so the swap chain is in a torn-down state.
+        // Return Failure (not NotReady) so Engine gives up instead of retrying
+        // into null render targets.
         std::cerr << "Failed to resize swap chain buffers!" << std::endl;
         return Result::Failure;
     }
@@ -726,6 +742,18 @@ void D3D12Renderer::endShowFrame() {
     tl_showGpuZone = nullptr;
 #endif
 
+    // Age hot-reload-retired effect PSOs; release once every in-flight
+    // frame that could have referenced them has drained.
+    if (!m_retiredEffectPsos.empty()) {
+        for (auto& r : m_retiredEffectPsos) {
+            if (r.framesLeft > 0) --r.framesLeft;
+        }
+        m_retiredEffectPsos.erase(
+            std::remove_if(m_retiredEffectPsos.begin(), m_retiredEffectPsos.end(),
+                [](const RetiredEffectPso& r) { return r.framesLeft == 0; }),
+            m_retiredEffectPsos.end());
+    }
+
     // #89 liveness backstop, in a scope guard so the early returns below
     // (device lost, Close failures) can't skip it: a closed video-slot gate
     // must be re-asserted every tick by the free drain (slot still queued) or
@@ -802,7 +830,7 @@ void D3D12Renderer::endShowFrame() {
     // Present all active output swap chains. The ExecuteCommandLists above
     // has committed all their work.
     for (auto& ow : m_outputWindows) {
-        if (!ow.active || !ow.swapChain) continue;
+        if (!ow.active || !ow.swapChain || ow.pendingDestroy) continue;
         HRESULT ohr = ow.swapChain->Present(1, 0);
         if (FAILED(ohr)) {
             if (ohr == DXGI_ERROR_DEVICE_REMOVED || ohr == DXGI_ERROR_DEVICE_RESET ||
@@ -1654,18 +1682,40 @@ Result D3D12Renderer::createFence() {
     return Result::Success;
 }
 
+// Bare-flag early-out + drainGpuQueues(false). Contract: see drainGpuQueues below.
+bool D3D12Renderer::waitForGpu() {
+    // Top-level early-out: if the device is already lost, no fence is trusted
+    // to signal again. Return immediately without touching any D3D12 COM
+    // objects. shutdown() uses drainGpuQueues(true) to drain past a SPURIOUS
+    // latch; every other caller treats any latch as drain-failed. (#91)
+    if (m_deviceLost) return false;
+    return drainGpuQueues(/*drainOnSpuriousLatch=*/false);
+}
+
+bool D3D12Renderer::gpuIdleForDestroy() {
+    if (waitForGpu()) return true;
+    return m_deviceLost.load(std::memory_order_acquire) &&
+           m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
+}
+
 // Returns true only if all three drains (copy, show, editor fences) completed —
 // i.e. the GPU is provably idle. false = device lost mid-drain, or a healthy
 // device starved past the watchdog (drain abandoned). Callers that are about to
-// destroy resources MUST NOT proceed on false (except when m_deviceLost — a dead
-// device executes nothing, so destruction is safe). (#89)
-bool D3D12Renderer::waitForGpu() {
+// destroy resources MUST NOT proceed on false (except when the removal is
+// CONFIRMED — a dead device executes nothing, so destruction is safe). (#89/#91)
+bool D3D12Renderer::drainGpuQueues(bool drainOnSpuriousLatch) {
     ZoneScopedNC("GPU fence wait", 0xCC4444);
-    // Top-level early-out: if the device is already lost, no fence will ever
-    // signal again. Return immediately without touching any D3D12 COM objects.
-    // Also guards the nested per-branch checks below against the race where
-    // device-lost transitions while we're mid-drain.
-    if (m_deviceLost) return false;
+    // Abort points: a CONFIRMED removal (reason != S_OK) always aborts — the
+    // fences never signal. A spurious latch (flag set, reason S_OK) aborts
+    // only outside shutdown mode; in shutdown mode the device is live and may
+    // be executing, so we keep draining (bounded per branch). Re-evaluated at
+    // each branch to catch a device-lost transition mid-drain. (#91)
+    const auto drainAborted = [&]() -> bool {
+        if (!m_deviceLost.load(std::memory_order_acquire)) return false;
+        return !drainOnSpuriousLatch ||
+               m_deviceLostReason.load(std::memory_order_acquire) != S_OK;
+    };
+    if (drainAborted()) return false;
 
     // Use a function-local event so this call cannot race with concurrent
     // SetEventOnCompletion/WaitForSingleObject pairs on m_fenceEvent. Auto-reset
@@ -1685,7 +1735,7 @@ bool D3D12Renderer::waitForGpu() {
     // queue. The direct queue's Wait(uploadFence) inside endShowFrame() does NOT
     // help here because we may be called outside the per-frame loop.
     if (m_uploadFence && m_gpu && m_gpu->copyQueue()) {
-        if (m_deviceLost) { CloseHandle(localEvent); return false; }
+        if (drainAborted()) { CloseHandle(localEvent); return false; }
         uint64_t copyTarget = 0;
         {
             // Serialize increment+Signal with the other m_uploadFence signal
@@ -1728,7 +1778,7 @@ bool D3D12Renderer::waitForGpu() {
     // owned by endShowFrame / moveToNextFrame and must be left intact so the
     // per-frame allocator-reuse gate still works correctly after this call.
     if (m_showFence) {
-        if (m_deviceLost) { CloseHandle(localEvent); return false; }
+        if (drainAborted()) { CloseHandle(localEvent); return false; }
         // Floor above every already-enqueued signal, not just the completed
         // value: with 2+ frames in flight, GetCompletedValue()+1 can EQUAL an
         // in-flight per-frame signal, so the wait would fire when that earlier
@@ -1754,7 +1804,7 @@ bool D3D12Renderer::waitForGpu() {
     }
 
     if (m_editorFence) {
-        if (m_deviceLost) { CloseHandle(localEvent); return false; }
+        if (drainAborted()) { CloseHandle(localEvent); return false; }
         // Same floor rationale as the show-fence drain above.
         const uint64_t drainValue =
             std::max(m_editorFence->GetCompletedValue() + 1,
@@ -2383,8 +2433,12 @@ void* D3D12Renderer::uploadVideoFrame(const uint8_t* rgbaData, uint32_t width, u
 
     // Check if we need to recreate the texture (size changed)
     if (m_videoTexture && (m_videoTextureWidth != width || m_videoTextureHeight != height)) {
-        // Wait for GPU before releasing resources
-        waitForGpu();
+        // #91: defer on an abandoned drain — the old texture may still be
+        // GPU-referenced. (Legacy path, currently caller-less; guarded for
+        // contract completeness until it's deleted.)
+        if (!gpuIdleForDestroy()) {
+            return nullptr;
+        }
         m_videoTexture.Reset();
         m_videoUploadBuffer.Reset();
         m_videoTextureWidth = 0;
@@ -2653,11 +2707,9 @@ bool D3D12Renderer::uploadVideoFrameToSlot(uint32_t slot,
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
             return false;
         }
-        // Proceed on failure only for a CONFIRMED removal — m_deviceLost can
-        // latch spuriously (reason S_OK) on a live, still-executing device.
-        if (!waitForGpu() &&
-            !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
-            return false;  // couldn't prove idle — retry next tick
+        // Confirmed-removal bypass folded into gpuIdleForDestroy() (#91).
+        if (!gpuIdleForDestroy()) {
+            return false;  // couldn't prove idle — retry next tick (#89/#91)
         }
         if (!m_textureUploader->upload(m_copyCommandList.Get(), slot, data,
                                        width, height, format, expectedGeneration)) {
@@ -3491,29 +3543,37 @@ Result D3D12Renderer::createMappingSurfaceConstantBuffer() {
 
 Result D3D12Renderer::createEffectRootSignature() {
     // Root parameters:
-    // [0] Descriptor table for input texture SRV (t0)
-    // [1] CBV for EffectParams (b0) — points at a slot in the per-frame ring.
+    // [0..3] One single-descriptor SRV table per input register t0-t3.
+    //        Four SEPARATE tables (not one 4-wide range) because effect
+    //        inputs come from non-contiguous heap slots — compose targets,
+    //        video-pool textures, and the black fallback all live in
+    //        different heap regions, and a contiguous range would force
+    //        per-draw descriptor staging for nothing. 4 tables + 1 CBV =
+    //        5 DWORDs of root cost, fine.
+    // [4]    CBV for EffectParams (b0) — a slot in the per-frame ring.
     // Static sampler at s0 (LINEAR, CLAMP).
     //
     // Pixel-only SRV visibility (the shared VS is pure positional math).
 
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;
-    srvRange.RegisterSpace = 0;
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE srvRanges[4] = {};
+    D3D12_ROOT_PARAMETER rootParams[5] = {};
+    for (UINT i = 0; i < 4; ++i) {
+        srvRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRanges[i].NumDescriptors = 1;
+        srvRanges[i].BaseShaderRegister = i;  // t<i>
+        srvRanges[i].RegisterSpace = 0;
+        srvRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParams[2] = {};
-    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
-    rootParams[0].DescriptorTable.pDescriptorRanges = &srvRange;
-    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParams[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParams[i].DescriptorTable.NumDescriptorRanges = 1;
+        rootParams[i].DescriptorTable.pDescriptorRanges = &srvRanges[i];
+        rootParams[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
 
-    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParams[1].Descriptor.ShaderRegister = 0;  // b0
-    rootParams[1].Descriptor.RegisterSpace  = 0;
-    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[4].Descriptor.ShaderRegister = 0;  // b0
+    rootParams[4].Descriptor.RegisterSpace  = 0;
+    rootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -3529,7 +3589,7 @@ Result D3D12Renderer::createEffectRootSignature() {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc = {};
-    desc.NumParameters = 2;
+    desc.NumParameters = 5;
     desc.pParameters = rootParams;
     desc.NumStaticSamplers = 1;
     desc.pStaticSamplers = &sampler;
@@ -3617,12 +3677,26 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
                   << std::endl;
         return nullptr;
     }
-    const effects::EffectKind* kind = m_effectKindRegistry->find(kindIdHash);
-    if (!kind) {
-        std::cerr << "[drawEffectPass] Unknown effect kind 0x"
-                  << std::hex << kindIdHash << std::dec << std::endl;
+    // findCopy, not find(): this runs on the SHOW thread while hot
+    // reload mutates the registry's kind map on the editor thread — the
+    // copy is taken under the registry lock so we never hold a pointer
+    // into a map an erase/rehash can invalidate. Cold path (PSO-cache
+    // miss only), so the copy cost is irrelevant.
+    const std::optional<effects::EffectKind> kindCopy =
+        m_effectKindRegistry->findCopy(kindIdHash);
+    if (!kindCopy) {
+        // Once per hash — a project referencing a missing user pack
+        // would otherwise spam this every draw of every frame from the
+        // show thread.
+        if (m_effectKindWarned.insert(kindIdHash).second) {
+            std::cerr << "[drawEffectPass] Unknown effect kind 0x"
+                      << std::hex << kindIdHash << std::dec
+                      << " (logged once)" << std::endl;
+        }
         return nullptr;
     }
+    m_effectKindWarned.erase(kindIdHash);
+    const effects::EffectKind* kind = &*kindCopy;
 
     // Load PS bytecode. User-authored kinds register their compiled
     // bytecode in-memory via RuntimeShaderCompiler (Phase 6 — see
@@ -3632,10 +3706,13 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
     std::size_t         psSize  = 0;
     ComPtr<ID3DBlob>    psBlob;  // owns the bytes when loaded from disk
 
-    auto userView = m_effectKindRegistry->tryGetUserPsBytecode(kindIdHash);
-    if (userView.valid()) {
-        psBytes = userView.data;
-        psSize  = userView.size;
+    // Held across PSO creation: hot reload swaps the registry's map
+    // entry on the editor thread, but this shared_ptr keeps the vector
+    // we're reading alive (published vectors are immutable).
+    auto userBytecode = m_effectKindRegistry->tryGetUserPsBytecode(kindIdHash);
+    if (userBytecode && !userBytecode->empty()) {
+        psBytes = userBytecode->data();
+        psSize  = userBytecode->size();
     } else {
         std::wstring psPathW(kind->shaderPath.begin(), kind->shaderPath.end());
         if (loadCompiledShader(psPathW, &psBlob) != Result::Success) {
@@ -3681,13 +3758,95 @@ ID3D12PipelineState* D3D12Renderer::getOrBuildEffectPso(std::uint32_t kindIdHash
     return raw;
 }
 
-void D3D12Renderer::drawEffectPass(TextureRef input,
+void D3D12Renderer::invalidateEffectPso(uint32_t kindIdHash) {
+    auto it = m_effectPsoCache.find(kindIdHash);
+    if (it == m_effectPsoCache.end()) return;
+    // Park instead of destroy — FRAME_COUNT in-flight frames may still
+    // execute draws recorded with this PSO. Aged in endShowFrame.
+    m_retiredEffectPsos.push_back({std::move(it->second), FRAME_COUNT + 1});
+    m_effectPsoCache.erase(it);
+    std::cout << "[drawEffectPass] PSO invalidated for kind 0x" << std::hex
+              << kindIdHash << std::dec << " (hot reload)" << std::endl;
+}
+
+bool D3D12Renderer::ensureEffectFallbackTexture() {
+    if (m_effectFallbackTexture) return true;
+    if (!tl_activeCmdList || !m_gpu) return false;
+
+    // 4x4 R16G16B16A16_FLOAT (same as compose targets), cleared to opaque
+    // black once via a transient RTV, then parked in PIXEL_SHADER_RESOURCE
+    // forever. Created lazily here because the clear needs an open show
+    // command list.
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = 4;
+    desc.Height           = 4;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    // TRANSPARENT black — an unconnected combiner input contributes
+    // nothing (blend weight 0 keeps input A; a missing matte masks out).
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+    HRESULT hr = m_gpu->device()->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
+        IID_PPV_ARGS(&m_effectFallbackTexture));
+    if (FAILED(hr)) {
+        std::cerr << "[drawEffectPass] fallback texture create failed" << std::endl;
+        return false;
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.NumDescriptors = 1;
+    hr = m_gpu->device()->CreateDescriptorHeap(&rtvHeapDesc,
+                                               IID_PPV_ARGS(&m_effectFallbackRtvHeap));
+    if (FAILED(hr)) {
+        m_effectFallbackTexture.Reset();
+        return false;
+    }
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+        m_effectFallbackRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_gpu->device()->CreateRenderTargetView(m_effectFallbackTexture.Get(),
+                                            nullptr, rtv);
+
+    const float black[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    tl_activeCmdList->ClearRenderTargetView(rtv, black, 0, nullptr);
+
+    D3D12_RESOURCE_BARRIER toSrv = {};
+    toSrv.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toSrv.Transition.pResource   = m_effectFallbackTexture.Get();
+    toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    tl_activeCmdList->ResourceBarrier(1, &toSrv);
+
+    // Shader-visible SRV at the reserved heap slot.
+    m_gpu->device()->CreateShaderResourceView(
+        m_effectFallbackTexture.Get(), nullptr,
+        DescriptorHeapLayout::cpuHandle(m_imguiSrvHeap.Get(),
+                                        DescriptorHeapLayout::EFFECT_FALLBACK_SLOT,
+                                        m_srvDescriptorSize));
+    return true;
+}
+
+bool D3D12Renderer::drawEffectPass(const TextureRef* inputs,
+                                    std::size_t inputCount,
                                     std::uint32_t kindIdHash,
                                     const std::uint8_t* paramBlob,
                                     std::size_t paramBlobSize,
                                     std::uint32_t viewportWidth,
                                     std::uint32_t viewportHeight) {
-    if (!m_initialized || !tl_activeCmdList) return;
+    if (!m_initialized || !tl_activeCmdList) return false;
     if (m_effectDrawIndex >= MAX_EFFECT_DRAWS_PER_FRAME) {
         if (!m_effectOverflowed) {
             std::cerr << "[drawEffectPass] Effect draw limit ("
@@ -3696,14 +3855,31 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
                       << std::endl;
             m_effectOverflowed = true;
         }
-        return;
+        return false;
     }
 
-    auto srv = resolveTextureHandle(input);
-    if (srv.ptr == 0) return;  // Input texture not ready; skip the pass.
+    if (!ensureEffectFallbackTexture()) return false;
+    const D3D12_GPU_DESCRIPTOR_HANDLE fallbackSrv =
+        DescriptorHeapLayout::gpuHandle(m_imguiSrvHeap.Get(),
+                                        DescriptorHeapLayout::EFFECT_FALLBACK_SLOT,
+                                        m_srvDescriptorSize);
+
+    // Resolve every input register. Invalid refs (generators, unconnected
+    // DAG sockets) bind the black fallback; a VALID ref that fails to
+    // resolve means the texture isn't ready — skip the whole pass rather
+    // than sample a stale/unbound descriptor.
+    D3D12_GPU_DESCRIPTOR_HANDLE srvs[4] = {fallbackSrv, fallbackSrv,
+                                            fallbackSrv, fallbackSrv};
+    const std::size_t boundInputs = (inputCount > 4) ? 4 : inputCount;
+    for (std::size_t i = 0; i < boundInputs; ++i) {
+        if (!inputs[i].valid()) continue;  // fallback stays bound
+        auto srv = resolveTextureHandle(inputs[i]);
+        if (srv.ptr == 0) return false;    // real input, not ready yet
+        srvs[i] = srv;
+    }
 
     ID3D12PipelineState* pso = getOrBuildEffectPso(kindIdHash);
-    if (!pso) return;
+    if (!pso) return false;
 
     // Marshal the param blob into a per-frame cbuffer ring slot. Clamp the
     // copy to the slot size; the bake side promises ≤ 256 bytes.
@@ -3730,6 +3906,17 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
     };
     std::memcpy(m_effectCbufferRingMapped + slotOffset + 224,
                 viewportFloats, sizeof(viewportFloats));
+    // Patch g_timeSeconds (bytes 232-235) — an aesthetic clock for
+    // animated generators (plasma / noise scroll), anchored to renderer
+    // start. Deliberately NOT the timeline/timecode clock (ADR-0025 —
+    // this drives visual drift, not sync); goldens that capture animated
+    // generators must use static params or accept nondeterminism.
+    {
+        const float t = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - m_effectTimeStart).count();
+        std::memcpy(m_effectCbufferRingMapped + slotOffset + 232,
+                    &t, sizeof(float));
+    }
 
     const D3D12_GPU_VIRTUAL_ADDRESS cbufferGpuAddr =
         m_effectCbufferRing->GetGPUVirtualAddress() + slotOffset;
@@ -3744,14 +3931,17 @@ void D3D12Renderer::drawEffectPass(TextureRef input,
 
     tl_activeCmdList->SetPipelineState(pso);
     tl_activeCmdList->SetGraphicsRootSignature(m_effectRootSignature.Get());
-    tl_activeCmdList->SetGraphicsRootDescriptorTable(0, srv);
-    tl_activeCmdList->SetGraphicsRootConstantBufferView(1, cbufferGpuAddr);
+    for (UINT i = 0; i < 4; ++i) {
+        tl_activeCmdList->SetGraphicsRootDescriptorTable(i, srvs[i]);
+    }
+    tl_activeCmdList->SetGraphicsRootConstantBufferView(4, cbufferGpuAddr);
     tl_activeCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     // No vertex / index buffer — VS synthesises positions from SV_VertexID.
     tl_activeCmdList->IASetVertexBuffers(0, 0, nullptr);
     tl_activeCmdList->DrawInstanced(3, 1, 0, 0);
 
     ++m_effectDrawIndex;
+    return true;
 }
 
 void D3D12Renderer::drawOutputSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
@@ -4060,10 +4250,8 @@ bool D3D12Renderer::resizeComposeTarget(uint32_t slot, uint32_t width, uint32_t 
     // #89 review: a false return means the drain was abandoned on a live
     // device (S_OK starvation) — in-flight work may still sample the targets
     // we are about to Reset. Defer; CompositorSystem retries every tick.
-    // Proceed on device-lost only when the removal is CONFIRMED (a spurious
-    // latch leaves the device live and executing — see shutdown()).
-    if (!waitForGpu() &&
-        !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
+    // Confirmed-removal bypass folded into gpuIdleForDestroy() (#91).
+    if (!gpuIdleForDestroy()) {
         return false;
     }
 
@@ -4431,13 +4619,28 @@ uint32_t D3D12Renderer::createOutputWindow(const char* title,
     return slotIndex;
 }
 
-void D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
-    if (outputSlot >= m_outputWindows.size()) return;
+bool D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
+    if (outputSlot >= m_outputWindows.size()) return true;   // nothing to do
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active) return true;                             // nothing to do
 
-    // Wait for GPU so we don't yank back buffers still in flight.
-    waitForGpu();
+    // #91: don't yank back buffers still in flight. On an abandoned drain
+    // (live device) defer — slot stays active (so ensureOutputWindow can't
+    // reuse it) and the caller retries. Confirmed removal proceeds: a dead
+    // device executes nothing, and the swap chain must go regardless.
+    if (!gpuIdleForDestroy()) {
+        // Blackout/geometry changes must take visual effect NOW even though the
+        // GPU teardown waits — otherwise ESC-panic leaves a frozen frame on the
+        // projector, and a same-tick recreate shows two windows. Hide the window
+        // and mark it so Present + frame recording skip it until the retry
+        // succeeds. (glfw window calls run on this thread — see glfwDestroyWindow
+        // on the success path below.)
+        ow.pendingDestroy = true;
+        if (ow.window) {
+            glfwHideWindow(ow.window);
+        }
+        return false;
+    }
 
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         ow.renderTargets[i].Reset();
@@ -4451,11 +4654,13 @@ void D3D12Renderer::destroyOutputWindow(uint32_t outputSlot) {
     }
     ow.hwnd = nullptr;
     ow.active = false;
+    ow.pendingDestroy = false;
     ow.width = 0;
     ow.height = 0;
     ow.currentBackBufferIndex = 0;
 
     std::cout << "[OutputWindow] Destroyed slot " << outputSlot << std::endl;
+    return true;
 }
 
 void D3D12Renderer::resizeOutputWindow(uint32_t outputSlot,
@@ -4466,7 +4671,12 @@ void D3D12Renderer::resizeOutputWindow(uint32_t outputSlot,
     if (width == 0 || height == 0) return;
     if (width == ow.width && height == ow.height) return;
 
-    waitForGpu();
+    // #91: defer on an abandoned drain (currently caller-less — geometry
+    // changes go through destroy + recreate in OutputManager — but the
+    // contract holds for future callers).
+    if (!gpuIdleForDestroy()) {
+        return;
+    }
 
     for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
         ow.renderTargets[i].Reset();
@@ -4515,7 +4725,7 @@ uint32_t D3D12Renderer::getOutputWindowHeight(uint32_t outputSlot) const {
 void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active || ow.pendingDestroy) return;
 
     // Transition this back buffer to RENDER_TARGET.
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -4549,7 +4759,7 @@ void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
                                       float r, float g, float b, float a) {
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active || ow.pendingDestroy) return;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = ow.rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += ow.currentBackBufferIndex * m_rtvDescriptorSize;
@@ -4560,7 +4770,7 @@ void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
 void D3D12Renderer::endOutputFrame(uint32_t outputSlot) {
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
-    if (!ow.active) return;
+    if (!ow.active || ow.pendingDestroy) return;
 
     // Transition output back buffer to PRESENT state.
     // No back-buffer restore here — the show command list must not touch
@@ -4589,8 +4799,12 @@ bool D3D12Renderer::ensureScreenshotStagingBuffer(uint32_t width, uint32_t heigh
         return true;
     }
 
-    // Wait for GPU before modifying resources
-    waitForGpu();
+    // #91: defer on an abandoned drain — Reset()ing the allocator (or Mapping
+    // a copy that hasn't provably executed) races in-flight lists. Callers
+    // treat false as capture-failed and may retry.
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
     m_screenshotStagingBuffer.Reset();
 
     // Calculate row pitch (must be 256-byte aligned for D3D12)
@@ -4656,8 +4870,10 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
         return false;
     }
 
-    // Wait for any previous GPU work
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     // Reset command allocator and command list for this operation
     HRESULT hr = m_captureAllocator->Reset();
@@ -4725,8 +4941,10 @@ bool D3D12Renderer::readbackTextureToPixels(ID3D12Resource* sourceTexture,
     ID3D12CommandList* commandLists[] = { m_captureCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, commandLists);
 
-    // Wait for GPU to finish the copy
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     // Map staging buffer and read pixels
     void* mappedData = nullptr;
@@ -4893,6 +5111,14 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Renderer::resolveTextureHandle(TextureRef tex) 
                 return m_composeTargets[tex.slot].stableSrvHandle();
             }
             break;
+        case TextureRef::Kind::ComposeWrite:
+            // This-frame write sub — intra-frame producer→consumer reads
+            // (effect scratch). Barriers inserted by begin/endComposeTarget
+            // order the write before the sample on the GPU timeline.
+            if (tex.slot < m_composeTargets.size() && m_composeTargets[tex.slot].ready) {
+                return m_composeTargets[tex.slot].writeSrvHandle();
+            }
+            break;
         case TextureRef::Kind::Invalid:
         default:
             break;
@@ -5040,10 +5266,9 @@ bool D3D12Renderer::copyUploadBufferToVideoTextureSlot(
         if (!m_videoSlotGates[slot].mayMutate(m_editorFrameTracker)) {
             return false;
         }
-        // Confirmed removal only — see uploadVideoFrameToSlot's resize branch.
-        if (!waitForGpu() &&
-            !(m_deviceLost && m_deviceLostReason.load(std::memory_order_acquire) != S_OK)) {
-            return false;  // couldn't prove idle — retry next tick
+        // Confirmed-removal bypass folded into gpuIdleForDestroy() (#91).
+        if (!gpuIdleForDestroy()) {
+            return false;  // couldn't prove idle — retry next tick (#89/#91)
         }
         if (!m_textureUploader->recordDirectCopy(tl_activeCmdList, slot,
                                                  buf->resource.Get(), buf->footprint,
@@ -5306,7 +5531,10 @@ bool D3D12Renderer::ensureCaptureResource(uint32_t width, uint32_t height) {
         return true;
     }
 
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
     m_captureResource.Reset();
 
     if (!m_captureRtvHeap) {
@@ -5380,7 +5608,10 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
     if (!ensureCaptureResource(target.width, target.height)) return false;
     if (!ensureScreenshotStagingBuffer(target.width, target.height)) return false;
 
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     // Dedicated capture allocator + list — this path runs on the show thread
     // and must not Reset/record the editor thread's objects (see header note).
@@ -5468,7 +5699,10 @@ bool D3D12Renderer::tonemapAndReadbackComposeTarget(uint32_t slot,
 
     ID3D12CommandList* lists[] = { m_captureCmdList.Get() };
     m_gpu->commandQueue()->ExecuteCommandLists(1, lists);
-    waitForGpu();
+    // #91
+    if (!gpuIdleForDestroy()) {
+        return false;
+    }
 
     void* mapped = nullptr;
     D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(m_screenshotStagingRowPitch * target.height) };
@@ -5563,7 +5797,14 @@ bool D3D12Renderer::loadOcioShaderSources() {
 
 void D3D12Renderer::setOcioManager(OcioManager* mgr) {
     if (m_ocioManager == mgr) return;
-    waitForGpu();
+    // #91: clearing the PSO caches releases pipelines in-flight lists may
+    // still execute. Defer without swapping the manager — in practice this
+    // runs once during Renderer::initialize (GPU quiet), so a deferral is a
+    // pathological-case guard, not a real retry loop.
+    if (!gpuIdleForDestroy()) {
+        std::cerr << "[OCIO/PSO] setOcioManager deferred: GPU drain abandoned\n";
+        return;
+    }
 
     m_ocioManager = mgr;
     m_ocioCompositePsoCache.clear();
@@ -6460,7 +6701,12 @@ void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
     if (!m_stageTarget.ready ||
         m_stageTarget.width  != width ||
         m_stageTarget.height != height) {
-        waitForGpu();
+        // #91: createStageRenderTarget Resets the old RTs. Defer on an
+        // abandoned drain — Stage3DRenderer calls us every frame, so the
+        // retry is free (one blank preview frame).
+        if (!gpuIdleForDestroy()) {
+            return nullptr;
+        }
         if (!createStageRenderTarget(width, height)) return nullptr;
     }
 

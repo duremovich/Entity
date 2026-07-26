@@ -18,6 +18,7 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/SignalLayer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -64,6 +65,35 @@ renderFindClipIndices(Timeline* timeline, entt::entity entity) {
         }
     }
     return std::nullopt;
+}
+
+bool isScaleProp(AnimatableProperty p) {
+    return p == AnimatableProperty::ScaleX
+        || p == AnimatableProperty::ScaleY
+        || p == AnimatableProperty::ScaleZ;
+}
+
+float scaleAxis(const Transform& t, AnimatableProperty p) {
+    switch (p) {
+        case AnimatableProperty::ScaleX: return t.scale.x;
+        case AnimatableProperty::ScaleY: return t.scale.y;
+        case AnimatableProperty::ScaleZ: return t.scale.z;
+        default:                         return 1.0f;
+    }
+}
+
+// Uniform-scale lock state for an entity. An absent ScaleLock counts as locked —
+// that's the historical default the Properties panel has always used, and it
+// keeps projects saved before the component existed behaving as they did.
+bool isScaleLocked(entt::registry& registry, entt::entity e) {
+    const auto* lock = registry.try_get<ScaleLock>(e);
+    return lock == nullptr || lock->uniform;
+}
+
+// Scale vector, or identity when the entity has no Transform (OA layers).
+glm::vec3 transformScaleOr(entt::registry& registry, entt::entity e) {
+    const auto* t = registry.try_get<Transform>(e);
+    return t ? t->scale : glm::vec3(1.0f);
 }
 
 } // namespace
@@ -160,7 +190,7 @@ void TimelineWidget::drawKeyframeShape(ImDrawList* drawList,
 // Channels to show under an expanded layer. OA layers get the full 3D set
 // (9 channels — Pos/Rot/Scale × X/Y/Z); Clip-backed and Generative layers
 // keep the 2D set (6 channels). Shared by renderPropertyTracks (body),
-// renderClipPropertyPanel (header) and findKeyframeAtPosition so they all
+// renderClipPropertyPanel (header) and the keyframe glyph cache so they all
 // stay in lockstep.
 bool TimelineWidget::isGroupCollapsed(entt::entity layerEntity,
                                       const std::string& groupPath) const {
@@ -727,7 +757,9 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     case Layer::Kind::ObjectAnimation: ghostLabel = "OA Layer"; break;
                     case Layer::Kind::Clip:            ghostLabel = "Clip Layer"; break;
                     case Layer::Kind::Generative:
-                        ghostLabel = (subKind == 1) ? "Text Layer" : "Muncher Layer";
+                        ghostLabel = (subKind == 1) ? "Text Layer"
+                                   : (subKind == 2) ? "Solid Layer"
+                                   : "Muncher Layer";
                         break;
                     case Layer::Kind::Signal:          ghostLabel = "Signal Layer"; break;
                     default: ghostLabel = "Layer"; break;
@@ -784,6 +816,10 @@ void TimelineWidget::renderTrack(entt::entity trackEntity, int trackIndex, ImVec
                     if (subKind == 1) {
                         if (m_textLayerDropCallback) {
                             m_textLayerDropCallback(trackIndex, startFrame, defaultDuration);
+                        }
+                    } else if (subKind == 2) {
+                        if (m_solidLayerDropCallback) {
+                            m_solidLayerDropCallback(trackIndex, startFrame, defaultDuration);
                         }
                     } else {
                         if (m_generativeLayerDropCallback) {
@@ -1270,17 +1306,30 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
         const float size = 5.0f;
         const float keyframeY = rowY + PROPERTY_ROW_HEIGHT / 2.0f;
 
+        // Identity of this row, shared by every keyframe drawn on it.
+        KeyframeRef rowRef;
+        rowRef.clip     = clipEntity;
+        rowRef.isEffect = (row.source == TimelinePropertyDef::Source::EffectParam);
+        if (rowRef.isEffect) {
+            rowRef.effectEntity = row.effectEntity;
+            rowRef.paramHash    = row.paramHash;
+        } else {
+            rowRef.prop = row.prop;
+        }
+
         for (const auto& kf : *kfs) {
-            // Drag-preview only applies to Transform rows in v1
-            // (effect-keyframe drag-to-move lands in a follow-up).
+            KeyframeRef ref = rowRef;
+            ref.frame = kf.frame;
+
+            const bool isSelected = isKeyframeSelected(ref);
+
+            // A drag moves the WHOLE selection by one delta, so every selected
+            // keyframe previews at frame + delta. The TAB offset field drives the
+            // same delta, so the selection previews live as the user types.
             const bool isDragged =
-                row.source == TimelinePropertyDef::Source::Transform &&
-                m_isDraggingKeyframe &&
-                m_dragKeyframeClip == clipEntity &&
-                m_dragKeyframeProperty == row.prop &&
-                m_dragKeyframeOriginalFrame == kf.frame;
+                (m_isDraggingKeyframe || m_kfOffsetEntryActive) && isSelected;
             const FrameNumber drawFrame =
-                isDragged ? m_dragKeyframeCurrentFrame : kf.frame;
+                isDragged ? kf.frame + m_dragDelta : kf.frame;
 
             const float kfSeconds =
                 static_cast<float>(drawFrame) / static_cast<float>(timelineFrameRate);
@@ -1289,15 +1338,17 @@ float TimelineWidget::renderPropertyTracks(entt::entity clipEntity, int trackInd
             if (kfX >= clipX && kfX <= clipX + clipWidth) {
                 drawKeyframeShape(drawList, kf, kfX, keyframeY, size);
 
-                const bool isSelected =
-                    row.source == TimelinePropertyDef::Source::Transform &&
-                    m_selectedKeyframeClip == clipEntity &&
-                    m_selectedKeyframeProperty == row.prop &&
-                    m_selectedKeyframeFrame == kf.frame;
                 if (isSelected || isDragged) {
                     drawList->AddCircle(ImVec2(kfX, keyframeY), size + 3.0f,
                                         IM_COL32(255, 255, 255, 255), 0, 2.0f);
                 }
+
+                // Feed the per-frame glyph cache. The hit-test and box-select read
+                // this instead of re-deriving glyph geometry, so what you can click
+                // is exactly what was drawn. Cache the keyframe's REAL frame, not
+                // the drag preview — a drag is uncommitted.
+                m_keyframeGlyphs.push_back(
+                    KeyframeGlyph{ref, ImVec2(kfX, keyframeY), size});
             }
         }
     }
@@ -1837,6 +1888,23 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             const float arrowSize = 3.0f;
             const float diamondSize = 4.0f;
 
+            // Stopwatch (AE-style animation toggle), left of the prev-keyframe arrow.
+            // Lit == this property is animated. Clicking it OFF deletes every keyframe
+            // on the property; clicking it ON starts animating from the current value.
+            // The diamond next to it is still the single-keyframe add/remove.
+            const float stopwatchX = controlsX - 14.0f;
+            const float stopwatchR = 4.5f;
+            const ImU32 stopwatchCol = hasKeyframes
+                ? IM_COL32(255, 200, 50, 255) : IM_COL32(90, 90, 90, 255);
+            drawList->AddCircle(ImVec2(stopwatchX, centerY), stopwatchR, stopwatchCol, 10, 1.2f);
+            if (hasKeyframes) {
+                drawList->AddCircleFilled(ImVec2(stopwatchX, centerY), 1.8f, stopwatchCol, 8);
+            }
+            // The winding stem, so it reads as a stopwatch and not just a dot.
+            drawList->AddLine(ImVec2(stopwatchX, centerY - stopwatchR - 2.0f),
+                              ImVec2(stopwatchX, centerY - stopwatchR),
+                              stopwatchCol, 1.2f);
+
             const float leftArrowX = controlsX;
             ImVec2 leftArrow[3] = {
                 ImVec2(leftArrowX - arrowSize, centerY),
@@ -1940,6 +2008,42 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                 m_twirldownPreEdit.scalarValue  = currentValue;
                 m_twirldownPreEdit.wasKeyframed = false;
                 m_twirldownPreEdit.keyframeValue.reset();
+                m_twirldownPreEdit.linkedScaleAxes.clear();
+                // Reset unconditionally. The branches below only assign this when
+                // the dragged row is itself keyframed, but the linked-scale commit
+                // reads it even when the dragged axis is static — it would
+                // otherwise write a linked axis's keyframe at whatever frame a
+                // previous edit left here.
+                m_twirldownPreEdit.keyframeFrame = localFrame;
+                m_twirldownPreEdit.preDragScale  = transformScaleOr(registry, clipEntity);
+
+                // A locked scale drag writes the other two axes as well, so snapshot
+                // their pre-edit keyframe state now — the commit below emits one
+                // UpsertKeyframeCommand per animated axis, plus one
+                // SetClipScaleCommand covering the axes that are static.
+                m_twirldownPreEdit.scaleLockDrag =
+                    !isOA && row.source == TimelinePropertyDef::Source::Transform &&
+                    isScaleProp(row.prop) && isScaleLocked(registry, clipEntity);
+
+                if (m_twirldownPreEdit.scaleLockDrag && localFrame >= 0) {
+                    for (AnimatableProperty axis : {AnimatableProperty::ScaleX,
+                                                    AnimatableProperty::ScaleY,
+                                                    AnimatableProperty::ScaleZ})
+                    {
+                        if (axis == row.prop) continue;
+                        const KeyframeTrack* t = animProps ? animProps->getTrack(axis) : nullptr;
+                        if (!t || !t->hasKeyframes()) continue;  // static axis — no kf to undo
+
+                        TwirldownPreEdit::LinkedAxis linked;
+                        linked.prop         = axis;
+                        linked.wasKeyframed = true;
+                        const Keyframe* existing = t->getKeyframeAt(localFrame);
+                        linked.keyframeValue =
+                            existing ? std::optional<float>(existing->value) : std::nullopt;
+                        m_twirldownPreEdit.linkedScaleAxes.push_back(linked);
+                    }
+                }
+
                 if (isOA && row.source == TimelinePropertyDef::Source::Transform) {
                     // OA: every edit is a keyframe upsert regardless of whether
                     // a keyframe already exists at this frame. Capture the frame
@@ -2005,6 +2109,13 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                     } else {
                         auto* transform = registry.try_get<Transform>(clipEntity);
                         auto* ml        = registry.try_get<MediaLayer>(clipEntity);
+
+                        // Captured before the switch overwrites the axis — the
+                        // uniform-scale ratio below needs the pre-drag value.
+                        const float prevAxis =
+                            (transform && isScaleProp(row.prop))
+                                ? scaleAxis(*transform, row.prop) : 0.0f;
+
                         switch (row.prop) {
                             case AnimatableProperty::PositionX:
                                 if (transform) transform->setPosition(
@@ -2051,10 +2162,47 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                                 break;
                             default: break;
                         }
+
+                        // Properties this drag actually wrote. Normally just the
+                        // dragged row — but a scale edit under the uniform lock
+                        // drags the other two axes along, and each of those needs
+                        // its own keyframe upsert.
+                        std::vector<std::pair<AnimatableProperty, float>> written;
+                        written.emplace_back(row.prop, writtenVal);
+
+                        // Uniform-scale lock. The Properties panel has always
+                        // honored this; the twirl-down used to write the dragged
+                        // axis alone, silently breaking the lock.
+                        if (transform && isScaleProp(row.prop) && prevAxis > 0.0001f &&
+                            isScaleLocked(registry, clipEntity))
+                        {
+                            const float ratio = writtenVal / prevAxis;
+                            glm::vec3 s = transform->scale;  // dragged axis already written
+                            if (row.prop != AnimatableProperty::ScaleX) s.x *= ratio;
+                            if (row.prop != AnimatableProperty::ScaleY) s.y *= ratio;
+                            if (row.prop != AnimatableProperty::ScaleZ) s.z *= ratio;
+                            transform->setScale(s);
+
+                            if (row.prop != AnimatableProperty::ScaleX)
+                                written.emplace_back(AnimatableProperty::ScaleX, s.x);
+                            if (row.prop != AnimatableProperty::ScaleY)
+                                written.emplace_back(AnimatableProperty::ScaleY, s.y);
+                            if (row.prop != AnimatableProperty::ScaleZ)
+                                written.emplace_back(AnimatableProperty::ScaleZ, s.z);
+                        }
+
                         // Keyframe upsert during drag (animated non-OA channels).
-                        if (hasKeyframes && localFrame >= 0 && animProps) {
-                            animProps->addKeyframe(row.prop, localFrame, writtenVal,
-                                                   InterpolationType::Linear);
+                        // No interp arg: a value drag must not reset the keyframe's
+                        // easing (it upserts onto an existing keyframe whenever the
+                        // playhead sits on one). Only animated axes get a keyframe —
+                        // a static Scale Y stays static even when the lock scales it.
+                        if (localFrame >= 0 && animProps) {
+                            for (const auto& [prop, val] : written) {
+                                const KeyframeTrack* t = animProps->getTrack(prop);
+                                if (t && t->hasKeyframes()) {
+                                    animProps->addKeyframe(prop, localFrame, val);
+                                }
+                            }
                         }
                     }
                 } else { // EffectParam
@@ -2114,6 +2262,9 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             {
                 const float committedVal = isOpacity ? dragVal / 100.0f : dragVal;
                 auto idx = renderFindClipIndices(m_timeline, clipEntity);
+                // Post-drag transform — the linked scale axes commit the values the
+                // live-write already put here.
+                const auto* transformForCommit = registry.try_get<Transform>(clipEntity);
 
                 if (row.source == TimelinePropertyDef::Source::Transform) {
                     if (isOA) {
@@ -2168,6 +2319,38 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
                                 break;
                         }
                     }
+
+                    // Axes the uniform-scale lock dragged along. Emitted outside the
+                    // chain above because the dragged axis itself may be static while
+                    // a linked one is animated — that case takes the scalar branch,
+                    // which has no keyframe command, yet the linked keyframe was
+                    // still written live and needs to be undoable.
+                    if (idx && transformForCommit &&
+                        m_twirldownPreEdit.scaleLockDrag)
+                    {
+                        for (const auto& linked : m_twirldownPreEdit.linkedScaleAxes) {
+                            auto cmd = std::make_unique<UpsertKeyframeCommand>(
+                                idx->first, idx->second, linked.prop,
+                                m_twirldownPreEdit.keyframeFrame,
+                                scaleAxis(*transformForCommit, linked.prop));
+                            cmd->setPreviousValue(linked.keyframeValue);
+                            m_commandDispatcher->enqueue(std::move(cmd));
+                        }
+
+                        // The static axes have no keyframe to undo, so without this
+                        // an undo would restore the animated axes and leave the
+                        // static ones scaled — permanently skewing the layer.
+                        // Committing the whole vector keeps undo coherent whichever
+                        // axes happen to be animated.
+                        const glm::vec3& pre = m_twirldownPreEdit.preDragScale;
+                        auto scaleCmd = std::make_unique<SetClipScaleCommand>(
+                            idx->first, idx->second,
+                            transformForCommit->scale.x,
+                            transformForCommit->scale.y,
+                            transformForCommit->scale.z);
+                        scaleCmd->setPreviousScale(pre.x, pre.y, pre.z);
+                        m_commandDispatcher->enqueue(std::move(scaleCmd));
+                    }
                 } else { // EffectParam
                     if (m_twirldownPreEdit.wasKeyframed && registry.valid(row.effectEntity)) {
                         auto cmd = std::make_unique<UpsertEffectKeyframeCommand>(
@@ -2191,6 +2374,43 @@ float TimelineWidget::renderClipPropertyPanel(entt::entity clipEntity, float row
             // === HANDLE CLICKS ===
             if (ImGui::IsMouseClicked(0)) {
                 const ImVec2 mp = ImGui::GetMousePos();
+
+                // Stopwatch click — toggles animation on the whole property.
+                // OFF (currently animated): delete every keyframe, hold the value
+                // the property is showing right now. Destructive by design, AE-style;
+                // one undo brings the whole track back.
+                // ON: start animating by dropping a keyframe at the playhead.
+                if (m_commandDispatcher && localFrame >= 0 &&
+                    mp.x >= stopwatchX - stopwatchR - 4 && mp.x <= stopwatchX + stopwatchR + 4 &&
+                    mp.y >= centerY - stopwatchR - 4 && mp.y <= centerY + stopwatchR + 4)
+                {
+                    if (row.source == TimelinePropertyDef::Source::Transform) {
+                        if (auto clipIdx = renderFindClipIndices(m_timeline, clipEntity)) {
+                            if (hasKeyframes) {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<ClearPropertyKeyframesCommand>(
+                                        clipIdx->first, clipIdx->second, row.prop,
+                                        currentValue));
+                            } else {
+                                m_commandDispatcher->enqueue(
+                                    std::make_unique<UpsertKeyframeCommand>(
+                                        clipIdx->first, clipIdx->second, row.prop,
+                                        localFrame, currentValue));
+                            }
+                        }
+                    } else if (registry.valid(row.effectEntity)) {  // EffectParam
+                        if (hasKeyframes) {
+                            m_commandDispatcher->enqueue(
+                                std::make_unique<ClearEffectParamKeyframesCommand>(
+                                    row.effectEntity, row.paramName, currentValue));
+                        } else {
+                            m_commandDispatcher->enqueue(
+                                std::make_unique<UpsertEffectKeyframeCommand>(
+                                    row.effectEntity, row.paramName,
+                                    localFrame, currentValue));
+                        }
+                    }
+                }
 
                 // Left arrow click (prev keyframe)
                 if (hasKeyframes &&

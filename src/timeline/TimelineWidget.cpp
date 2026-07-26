@@ -37,6 +37,18 @@ TimelineWidget::TimelineWidget(Timeline* timeline)
 {
 }
 
+int TimelineWidget::framesPerTick() const {
+    const ZoomStop& stop = ZOOM_STOPS[std::clamp(m_zoomIndex, 0, ZOOM_LEVEL_COUNT - 1)];
+    if (stop.unit == ZoomStop::Unit::Frames) return stop.count;
+
+    // Seconds stop: resolve against the project frame rate. Rounded, so 1s at
+    // 29.97fps is a 30-frame division — the grid stays on whole frames and the
+    // labels stay honest, which is what counting seconds by eye needs.
+    const double fps = m_timeline ? m_timeline->getFrameRate() : 30.0;
+    const int frames = static_cast<int>(std::lround(fps * stop.count));
+    return std::max(1, frames);  // a 0 stride would hang every tick loop
+}
+
 void TimelineWidget::applyZoomIndex() {
     if (!m_timeline) return;
     // Tick spacing is fixed at TICK_PX. Zoom changes how much TIME a tick
@@ -100,6 +112,11 @@ void TimelineWidget::render() {
         m_ghost.active = false;
     }
 
+    // Rebuilt by renderPropertyTracks below, consumed by the keyframe hit-test and
+    // box-select in handleTracksInteraction — which runs after renderTracks() in
+    // the same frame, so it never reads a stale cache.
+    m_keyframeGlyphs.clear();
+
     // Clean up stale entity references in expansion state
     {
         auto& reg = m_timeline->getRegistry();
@@ -125,6 +142,20 @@ void TimelineWidget::render() {
     m_lastVisibleWidth = contentRegion.x - TRACK_HEADER_WIDTH - 4.0f;
     applyZoomIndex();
     float timelineWidth = durationSeconds * m_pixelsPerSecond;
+
+    // Follow the playhead during playback. Must run HERE, before the tracks child
+    // is submitted below: ensurePlayheadVisible() writes m_pendingScrollX, which is
+    // consumed by the SetNextWindowScroll ahead of that child's Begin(). Called any
+    // later and the scroll wouldn't land until the following frame.
+    const bool isPlaying = (m_timeline->getPlaybackState() == PlaybackState::Playing);
+    if (isPlaying && !m_wasPlaying) {
+        m_followSuspended = false;  // a fresh play re-arms following
+    }
+    m_wasPlaying = isPlaying;
+
+    if (isPlaying && m_followPlayhead && !m_followSuspended) {
+        ensurePlayheadVisible();
+    }
 
     // Build the per-frame track-row layout cache (Phase 9). This is the single
     // source of truth for which tracks are visible (shy tracks skipped when the
@@ -227,7 +258,18 @@ void TimelineWidget::render() {
     // value, so keep our target for that one frame (matches the documented
     // SetScroll-vs-GetScroll lag).
     if (!m_pendingScrollX) {
-        m_syncScrollX = ImGui::GetScrollX();
+        const float committedScrollX = ImGui::GetScrollX();
+        // A horizontal scroll we didn't ask for, mid-playback, is the user reaching
+        // for a different part of the timeline — stop following so the view doesn't
+        // yank straight back to the playhead. On frames where follow moved the
+        // scroll itself, m_pendingScrollX is set and this read-back is skipped
+        // entirely, so our own moves can't trip this.
+        if (isPlaying && m_followPlayhead && !m_followSuspended &&
+            std::fabs(committedScrollX - m_syncScrollX) > 2.0f)
+        {
+            m_followSuspended = true;
+        }
+        m_syncScrollX = committedScrollX;
     }
     if (!m_pendingScrollY) {
         m_syncScrollY = ImGui::GetScrollY();
@@ -446,10 +488,10 @@ void TimelineWidget::render() {
 
     // Discrete zoom ladder: dropdown + minus/plus + Alt+scroll all step the
     // same m_zoomIndex. Fixed division sizes instead
-    // of a continuous px/sec slider.
-    static const char* kZoomLabels[ZOOM_LEVEL_COUNT] = {
-        "1f", "2f", "5f", "10f", "20f", "50f", "100f", "200f", "500f"
-    };
+    // of a continuous px/sec slider. Labels come straight off the ladder so they
+    // can't drift out of sync with the stops.
+    const char* kZoomLabels[ZOOM_LEVEL_COUNT];
+    for (int i = 0; i < ZOOM_LEVEL_COUNT; ++i) kZoomLabels[i] = ZOOM_STOPS[i].label;
     ImGui::Text("Zoom:");
     ImGui::SameLine();
     if (ImGui::SmallButton("-##zoomOut")) setZoomIndex(m_zoomIndex + 1);  // larger frames/div = zoomed out
@@ -465,6 +507,21 @@ void TimelineWidget::render() {
     }
     ImGui::SameLine(0, 2);
     if (ImGui::SmallButton("+##zoomIn")) setZoomIndex(m_zoomIndex - 1);   // smaller frames/div = zoomed in
+
+    ImGui::SameLine();
+    ImGui::Separator();
+    ImGui::SameLine();
+
+    // Follow-playhead toggle. Re-arms the suspend so a scroll during the previous
+    // playback doesn't leave following silently dead after the user re-enables it.
+    if (ImGui::Checkbox("Follow", &m_followPlayhead)) {
+        m_followSuspended = false;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Scroll the timeline to keep the playhead in view during "
+                          "playback.\nScrolling by hand pauses following until the "
+                          "next play or seek.");
+    }
 
     ImGui::SameLine();
     ImGui::Separator();
@@ -536,6 +593,13 @@ entt::entity TimelineWidget::findClipAtPlayhead(entt::entity trackEntity) const 
 
 void TimelineWidget::ensurePlayheadVisible() {
     if (!m_timeline) return;
+
+    // Every explicit playhead jump (J/L, arrows, Home/End — see Engine.cpp) lands
+    // here, and deliberately moving the playhead is a statement that you want to
+    // look at it again. So re-arm following, which a manual scroll may have
+    // suspended. Follow's own per-frame call clears an already-clear flag: a no-op.
+    m_followSuspended = false;
+
     if (m_lastVisibleWidth <= 0.0f) return;
     applyZoomIndex();
 

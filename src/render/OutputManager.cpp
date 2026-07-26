@@ -75,10 +75,14 @@ void OutputManager::shutdown() {
     // may already be cleared at this point, and shutdown runs after the
     // show thread has joined so touching m_windowSlots here is safe.
     if (m_renderer) {
+        for (uint32_t slot : m_pendingWindowDestroys) {
+            (void)m_renderer->destroyOutputWindow(slot);
+        }
         for (const auto& [entity, rec] : m_windowSlots) {
-            m_renderer->destroyOutputWindow(rec.slot);
+            (void)m_renderer->destroyOutputWindow(rec.slot);
         }
     }
+    m_pendingWindowDestroys.clear();
     m_windowSlots.clear();
     m_disableTombstones.clear();
 
@@ -460,6 +464,17 @@ void OutputManager::renderOutputs(const bus::RenderFrame& rf) {
     // disable message out-ran the snapshot (the stale frame still says
     // enabled; with a stalled editor that staleness can last seconds — the
     // ESC-panic scenario).
+    // #91: retry destroys deferred by an abandoned GPU drain. Each failed
+    // attempt blocks the show thread up to the fence timeout, so cap the
+    // per-tick cost at one attempt: retry only the FRONT pending slot, and on
+    // failure leave it (and don't try the others this tick). The non-blocking
+    // fence-poll redesign is tracked in the #91 follow-up.
+    if (!m_pendingWindowDestroys.empty() && m_renderer) {
+        if (m_renderer->destroyOutputWindow(m_pendingWindowDestroys.front())) {
+            m_pendingWindowDestroys.erase(m_pendingWindowDestroys.begin());
+        }
+    }
+
     if (!m_windowSlots.empty() || !m_disableTombstones.empty()) {
         std::vector<entt::entity> stale;
         for (const auto& [ent, rec] : m_windowSlots) {
@@ -535,8 +550,10 @@ void OutputManager::destroyOutputWindowFor(entt::entity outputEntity) {
 
     const uint32_t slot = it->second.slot;
     m_windowSlots.erase(it);
-    if (m_renderer) {
-        m_renderer->destroyOutputWindow(slot);
+    if (m_renderer && !m_renderer->destroyOutputWindow(slot)) {
+        // #91: deferred — the renderer kept the slot active. Retry each tick;
+        // the map entry is already erased so the window is logically gone.
+        m_pendingWindowDestroys.push_back(slot);
     }
     // Clear the editor-side registry mirror via R2D (the entity may already
     // be destroyed — the editor drain validates before writing).

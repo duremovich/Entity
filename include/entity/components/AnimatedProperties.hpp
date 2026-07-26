@@ -5,6 +5,7 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace entity {
 
@@ -96,23 +97,33 @@ struct KeyframeTrack {
     /**
      * Add a keyframe, maintaining sorted order
      * Uses binary search for O(log n) insertion instead of O(n log n) sort
+     *
+     * `interp` is optional because this doubles as the update path for an
+     * existing keyframe. A caller that only means to change the VALUE (every
+     * value-drag in the UI) passes nullopt, and the keyframe's easing —
+     * interpolation type plus both bezier handles — is left alone. Passing an
+     * explicit type is the only way to overwrite the easing of a keyframe that
+     * already exists; a brand-new keyframe defaults to Linear.
      */
     void addKeyframe(FrameNumber frame, float value,
-                     InterpolationType interp = InterpolationType::Linear) {
+                     std::optional<InterpolationType> interp = std::nullopt) {
         // Find insertion point using binary search
         auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
             [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
 
         // Check if keyframe already exists at this frame
         if (it != keyframes.end() && it->frame == frame) {
-            // Update existing keyframe
+            // Update existing keyframe. Easing survives a value-only edit.
             it->value = value;
-            it->interpolation = interp;
+            if (interp.has_value()) {
+                it->interpolation = *interp;
+            }
             return;
         }
 
         // Insert at correct position (maintains sorted order)
-        keyframes.insert(it, Keyframe{frame, value, interp});
+        keyframes.insert(it, Keyframe{frame, value,
+                                      interp.value_or(InterpolationType::Linear)});
     }
 
     /**
@@ -281,24 +292,59 @@ public:
     }
 
     /**
-     * Cubic bezier easing function
-     * Control points: (0,0), (easeIn, 0), (easeOut, 1), (1,1)
+     * Cubic bezier easing function. Maps normalized time x -> eased progress y
+     * along the curve with control points (0,0), (easeIn, 0), (easeOut, 1), (1,1)
+     * — the same parameterization CSS cubic-bezier() and After Effects use.
+     *
+     * The handles only move the control points along X, so the curve is a
+     * function of x and has to be inverted: solve x(u) = x for the bezier
+     * parameter u, then evaluate y(u). Newton-Raphson converges in a handful of
+     * iterations here because x(u) is monotonic for handles in [0,1].
      */
-    static float cubicBezier(float t, float easeIn, float easeOut) {
-        // Simplified cubic bezier for ease curves
-        float t2 = t * t;
-        float t3 = t2 * t;
-        float mt = 1.0f - t;
-        float mt2 = mt * mt;
-        float mt3 = mt2 * mt;
+    static float cubicBezier(float x, float easeIn, float easeOut) {
+        const float x1 = std::clamp(easeIn, 0.0f, 1.0f);
+        const float x2 = std::clamp(easeOut, 0.0f, 1.0f);
+        x = std::clamp(x, 0.0f, 1.0f);
 
-        // Bezier formula: B(t) = (1-t)^3*P0 + 3*(1-t)^2*t*P1 + 3*(1-t)*t^2*P2 + t^3*P3
-        // P0 = 0, P1 = easeIn, P2 = easeOut, P3 = 1
-        float y = 3.0f * mt2 * t * 0.0f +      // P1.y = 0
-                  3.0f * mt * t2 * 1.0f +       // P2.y = 1
-                  t3 * 1.0f;                    // P3.y = 1
+        // x(u) and y(u) for P0=(0,0) P1=(x1,0) P2=(x2,1) P3=(1,1).
+        auto bezierX = [x1, x2](float u) {
+            const float mu = 1.0f - u;
+            return 3.0f * mu * mu * u * x1
+                 + 3.0f * mu * u  * u * x2
+                 + u * u * u;
+        };
+        auto bezierY = [](float u) {
+            const float mu = 1.0f - u;
+            return 3.0f * mu * u * u + u * u * u;  // P1.y = 0, P2.y = P3.y = 1
+        };
+        auto bezierDx = [x1, x2](float u) {
+            const float mu = 1.0f - u;
+            return 3.0f * mu * mu * x1
+                 + 6.0f * mu * u * (x2 - x1)
+                 + 3.0f * u * u * (1.0f - x2);
+        };
 
-        return y;
+        // Newton-Raphson from u = x (a good seed for near-diagonal curves).
+        float u = x;
+        for (int i = 0; i < 8; ++i) {
+            const float err = bezierX(u) - x;
+            if (std::fabs(err) < 1e-5f) return bezierY(u);
+            const float dx = bezierDx(u);
+            if (std::fabs(dx) < 1e-6f) break;  // flat spot — fall through to bisection
+            u = std::clamp(u - err / dx, 0.0f, 1.0f);
+        }
+
+        // Bisection fallback for the degenerate handles Newton can't crack
+        // (e.g. easeIn = easeOut = 0, which makes dx vanish at u = 0).
+        float lo = 0.0f, hi = 1.0f;
+        u = x;
+        for (int i = 0; i < 24; ++i) {
+            const float xu = bezierX(u);
+            if (std::fabs(xu - x) < 1e-5f) break;
+            if (xu < x) lo = u; else hi = u;
+            u = 0.5f * (lo + hi);
+        }
+        return bezierY(u);
     }
 };
 
@@ -349,7 +395,7 @@ struct AnimatedProperties {
      * Add a keyframe to a property track
      */
     void addKeyframe(AnimatableProperty property, FrameNumber frame, float value,
-                     InterpolationType interp = InterpolationType::Linear) {
+                     std::optional<InterpolationType> interp = std::nullopt) {
         getOrCreateTrack(property).addKeyframe(frame, value, interp);
     }
 

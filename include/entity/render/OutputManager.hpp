@@ -259,6 +259,10 @@ private:
     };
     std::unordered_map<entt::entity, WindowRecord> m_windowSlots;
 
+    // #91: slots whose destroyOutputWindow() deferred (GPU drain abandoned).
+    // Retried at the top of every update() tick. Show thread only.
+    std::vector<uint32_t> m_pendingWindowDestroys;
+
     // Disable tombstones (issue #76 review): a SetOutputEnabled(false)
     // message is consumed AFTER this tick's RenderFrame was built, so the
     // stale frame still shows the output enabled and lazy creation would

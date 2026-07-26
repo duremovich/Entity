@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "description": "Generator-on-solid integration test — the AE model end-to-end. Creates a Solid layer on a 64x64 screen, adds the core.gen.linear_gradient generator (zero-input effect that replaces the solid's content), sets its colors via the type-generic SetEffectParam command (color payloads) and angle via SetEffectFloatParam, then asserts the composited screen matches the golden. Covers generator kind registration -> inputCount bake -> PASS 1.5 generator-led chain -> SetEffectParam color marshalling -> PASS 2. Static params only (no g_timeSeconds dependence). Slot 1 = the 64x64 screen (slot 0 is the solid's own RT). Regenerate with scripts/integration/record_effect_generator_solid.json.",
+    "commands": [
+        {"type": "AddScreen", "name": "GenScreen", "width": 64, "height": 64},
+        {"type": "CreateSolidLayer", "trackIndex": 0, "startFrame": 0, "duration": 300},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.gen.linear_gradient"},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "colorA", "value": {"type": "color", "value": [1.0, 0.0, 0.0, 1.0]}},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "colorB", "value": {"type": "color", "value": [0.0, 0.0, 1.0, 1.0]}},
+        {"type": "SetEffectFloatParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "angle", "value": 90.0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_generator/gradient_screen.hash", "goldenFilepath": "tests/goldens/effect_generator/gradient_screen.hash", "composeSlot": 1},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

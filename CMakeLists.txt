@@ -177,6 +177,7 @@ target_sources(EntityMediaCore
     PRIVATE
         # Core
         src/core/Engine.cpp
+        src/core/ClipPlaybackDiagnostics.cpp
         src/core/Application.cpp
         src/core/Settings.cpp
         src/core/EnginePluginContext.cpp
@@ -219,6 +220,7 @@ target_sources(EntityMediaCore
         src/timeline/TimelineWidget.cpp
         src/timeline/TimelineWidgetRender.cpp
         src/timeline/TimelineWidgetInput.cpp
+        src/timeline/TimelineWidgetKeyframeSelection.cpp
         # src/timeline/Transport.cpp (to be implemented later)
         # src/timeline/TimeMapping.cpp (to be implemented later)
 
@@ -247,6 +249,7 @@ target_sources(EntityMediaCore
         src/ui/ShowControlWindow.cpp
         src/ui/LayersWindow.cpp
         src/ui/EffectGraphWindow.cpp
+        src/ui/EffectUiCommon.cpp
         src/ui/WorkspaceStore.cpp
 
         # Calibration
@@ -266,6 +269,8 @@ target_sources(EntityMediaCore
 
         # Effects (issue #54)
         src/effects/EffectKindRegistry.cpp
+        src/effects/EffectParamJson.cpp
+        src/effects/EffectChainTopo.cpp
 
         # Input
         src/input/InputBus.cpp
@@ -378,7 +383,9 @@ target_compile_features(EntityMediaCore PUBLIC cxx_std_20)
 
 # Compiler warnings
 if(MSVC)
-    target_compile_options(EntityMediaCore PRIVATE /W4 /WX-)
+    # /bigobj: Engine.cpp exceeds the default COFF section limit in Debug
+    # (no /O2 COMDAT folding) since the effects-system work landed.
+    target_compile_options(EntityMediaCore PRIVATE /W4 /WX- /bigobj)
 else()
     target_compile_options(EntityMediaCore PRIVATE -Wall -Wextra -Wpedantic)
 endif()

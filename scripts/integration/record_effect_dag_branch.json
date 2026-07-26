@@ -1,0 +1,22 @@
+{
+    "version": 1,
+    "description": "Record-pass for the two-branch effect DAG golden. Same steps as effect_dag_branch.json without golden comparison — emits test_output/effect_dag/branch_blend.hash for promotion into tests/goldens/effect_dag/. Sanity-check the capture shows a green circle over a red->blue gradient (CaptureScreenshot composeSlot 1) before promoting.",
+    "commands": [
+        {"type": "AddScreen", "name": "DagScreen", "width": 64, "height": 64},
+        {"type": "CreateSolidLayer", "trackIndex": 0, "startFrame": 0, "duration": 300},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.gen.linear_gradient"},
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.gen.shape"},
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.comb.blend"},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "colorA", "value": {"type": "color", "value": [1.0, 0.0, 0.0, 1.0]}},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "colorB", "value": {"type": "color", "value": [0.0, 0.0, 1.0, 1.0]}},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 1, "paramName": "color", "value": {"type": "color", "value": [0.0, 1.0, 0.0, 1.0]}},
+        {"type": "ConnectEffect", "trackIndex": 0, "clipIndex": 0, "srcEffectIndex": 0, "dstEffectIndex": 2, "srcSocket": 0, "dstSocket": 0},
+        {"type": "ConnectEffect", "trackIndex": 0, "clipIndex": 0, "srcEffectIndex": 1, "dstEffectIndex": 2, "srcSocket": 0, "dstSocket": 1},
+        {"type": "ConnectEffect", "trackIndex": 0, "clipIndex": 0, "srcEffectIndex": 2, "dstEffectIndex": -1, "srcSocket": 0, "dstSocket": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_dag/branch_blend.hash", "composeSlot": 1},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

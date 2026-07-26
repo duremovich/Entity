@@ -117,6 +117,7 @@ ojson encode(const ClipRenderState& c) {
     j["targetScreen"] = c.targetScreen;
     j["sectionFadeMultiplier"] = c.sectionFadeMultiplier;
     j["zOrder"] = c.zOrder;
+    j["inContinuation"] = c.inContinuation;
     return j;
 }
 
@@ -144,6 +145,9 @@ ClipRenderState decodeClipRenderState(const json& j) {
     // missing key is a no-op envelope rather than a parse failure.
     c.sectionFadeMultiplier = j.value("sectionFadeMultiplier", 1.0f);
     c.zOrder = j.value("zOrder", std::uint32_t{0});
+    // Absent key = not continuing, which is the pre-existing behavior for any
+    // payload written before the flag existed.
+    c.inContinuation = j.value("inContinuation", false);
     return c;
 }
 
@@ -443,6 +447,11 @@ ojson encode(const GenerativeLayerSnapshot& g) {
     j["textTextureGeneration"] = g.textTextureGeneration;
     j["textBakedWidth"]    = g.textBakedWidth;
     j["textBakedHeight"]   = g.textBakedHeight;
+    j["renderWidth"]       = g.renderWidth;
+    j["renderHeight"]      = g.renderHeight;
+    auto solidArr = ojson::array();
+    for (float v : g.solidColor) solidArr.push_back(v);
+    j["solidColor"]        = std::move(solidArr);
     auto xfArr = ojson::array();
     for (float v : g.transformMatrix) xfArr.push_back(v);
     j["transformMatrix"]   = std::move(xfArr);
@@ -469,9 +478,9 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     GenerativeLayerSnapshot g;
     g.entity            = j.value("entity",            std::uint64_t{0});
     int kindInt         = j.value("kind",              0);
-    g.kind              = (kindInt == 1)
-                            ? GenerativeLayerSnapshot::Kind::Text
-                            : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
+    g.kind              = (kindInt == 1) ? GenerativeLayerSnapshot::Kind::Text
+                        : (kindInt == 2) ? GenerativeLayerSnapshot::Kind::Solid
+                        : GenerativeLayerSnapshot::Kind::Muncher;  // forward-compat: unknown ↦ Muncher
     g.targetScreen      = j.value("targetScreen",      std::uint64_t{UINT64_MAX});
     int gModeRaw        = j.value("mode",              0);
     g.mode              = (gModeRaw == 1) ? 1 : 0;
@@ -532,6 +541,13 @@ GenerativeLayerSnapshot decodeGenerativeLayerSnapshot(const json& j) {
     g.textTextureGeneration = j.value("textTextureGeneration", UINT32_MAX);
     g.textBakedWidth    = j.value("textBakedWidth",    std::uint32_t{0});
     g.textBakedHeight   = j.value("textBakedHeight",   std::uint32_t{0});
+    g.renderWidth       = j.value("renderWidth",       std::uint32_t{1920});
+    g.renderHeight      = j.value("renderHeight",      std::uint32_t{1080});
+    if (j.contains("solidColor")) {
+        const auto& arr = j.at("solidColor");
+        for (std::size_t i = 0; i < g.solidColor.size() && i < arr.size(); ++i)
+            g.solidColor[i] = arr[i].get<float>();
+    }
     if (j.contains("transformMatrix")) {
         const auto& arr = j.at("transformMatrix");
         for (std::size_t i = 0; i < g.transformMatrix.size() && i < arr.size(); ++i)
@@ -586,6 +602,8 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["sourceKind"]            = static_cast<int>(c.sourceKind);
     j["sourceSlot"]            = c.sourceSlot;
     j["sourceGeneration"]      = c.sourceGeneration;
+    j["sourceWidth"]           = c.sourceWidth;
+    j["sourceHeight"]          = c.sourceHeight;
     j["colorSpace"]            = c.colorSpace;
     j["ocioColorSpace"]        = c.ocioColorSpace;
     auto fx = ojson::array();
@@ -593,6 +611,7 @@ ojson encode(const ContentLayerSnapshot& c) {
     j["effects"]               = std::move(fx);
     j["effectChainSlotA"]      = c.effectChainSlotA;
     j["effectChainSlotB"]      = c.effectChainSlotB;
+    j["effectsOutputIndex"]    = c.effectsOutputIndex;
     j["postEffectsSlot"]       = c.postEffectsSlot;
     j["remoteSlot"]            = c.remoteSlot;
     return j;
@@ -644,6 +663,8 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     // #90 F6: absent key = "generation unknown" → skip (UINT32_MAX), not 0
     // (instance-local generations; 0 would false-reject a peer's payload).
     c.sourceGeneration      = j.value("sourceGeneration",      UINT32_MAX);
+    c.sourceWidth           = j.value("sourceWidth",           std::uint32_t{0});
+    c.sourceHeight          = j.value("sourceHeight",          std::uint32_t{0});
     c.colorSpace            = j.value("colorSpace",            0);
     c.ocioColorSpace        = j.value("ocioColorSpace",        std::string{});
     if (j.contains("effects")) {
@@ -653,6 +674,7 @@ ContentLayerSnapshot decodeContentLayerSnapshot(const json& j) {
     }
     c.effectChainSlotA      = j.value("effectChainSlotA",      std::int32_t{-1});
     c.effectChainSlotB      = j.value("effectChainSlotB",      std::int32_t{-1});
+    c.effectsOutputIndex    = j.value("effectsOutputIndex",    std::int32_t{-1});
     c.postEffectsSlot       = j.value("postEffectsSlot",       std::int32_t{-1});
     c.remoteSlot            = j.value("remoteSlot",            std::int32_t{-1});
     return c;
@@ -765,6 +787,7 @@ ojson encode(const BakedEffectTrack& t) {
     auto kfs = ojson::array();
     for (const auto& k : t.keyframes) kfs.push_back(encode(k));
     j["keyframes"] = std::move(kfs);
+    j["slotIndex"] = t.slotIndex;
     return j;
 }
 
@@ -777,6 +800,7 @@ BakedEffectTrack decodeBakedEffectTrack(const json& j) {
             t.keyframes.push_back(decodeBakedKeyframe(kf));
         }
     }
+    t.slotIndex = j.value("slotIndex", std::int32_t{-1});
     return t;
 }
 
@@ -793,6 +817,10 @@ ojson encode(const EffectSnapshot& e) {
     auto tracks = ojson::array();
     for (const auto& t : e.tracks) tracks.push_back(encode(t));
     j["tracks"] = std::move(tracks);
+    j["inputCount"] = static_cast<int>(e.inputCount);
+    auto inputs = ojson::array();
+    for (std::int32_t in : e.inputs) inputs.push_back(in);
+    j["inputs"] = std::move(inputs);
     return j;
 }
 
@@ -800,6 +828,7 @@ EffectSnapshot decodeEffectSnapshot(const json& j) {
     EffectSnapshot e;
     e.kindIdHash = j.value("kindIdHash", std::uint32_t{0});
     e.enabled    = j.value("enabled",    true);
+    e.inputCount = static_cast<std::uint8_t>(j.value("inputCount", 1));
     if (j.contains("paramBlob")) {
         const auto& arr = j.at("paramBlob");
         e.paramBlob.reserve(arr.size());
@@ -810,6 +839,11 @@ EffectSnapshot decodeEffectSnapshot(const json& j) {
     if (j.contains("tracks")) {
         for (const auto& t : j.at("tracks")) {
             e.tracks.push_back(decodeBakedEffectTrack(t));
+        }
+    }
+    if (j.contains("inputs")) {
+        for (const auto& in : j.at("inputs")) {
+            e.inputs.push_back(in.get<std::int32_t>());
         }
     }
     return e;
@@ -825,6 +859,7 @@ ojson encode(const LayerEffectsSnapshot& l) {
     j["slotB"]   = l.slotB;
     j["width"]   = l.width;
     j["height"]  = l.height;
+    j["outputIndex"] = l.outputIndex;
     return j;
 }
 
@@ -840,6 +875,7 @@ LayerEffectsSnapshot decodeLayerEffectsSnapshot(const json& j) {
     l.slotB  = j.value("slotB",  std::int32_t{-1});
     l.width  = j.value("width",  std::uint32_t{0});
     l.height = j.value("height", std::uint32_t{0});
+    l.outputIndex = j.value("outputIndex", std::int32_t{-1});
     return l;
 }
 
@@ -856,6 +892,8 @@ ojson encode(const ClipCatalogEntry& e) {
     j["sectionBehavior"]      = e.sectionBehavior;
     j["endAlignsWithSectionBreak"] = e.endAlignsWithSectionBreak;
     j["endingBreakFadeSeconds"] = e.endingBreakFadeSeconds;
+    j["mediaWidth"]           = e.mediaWidth;
+    j["mediaHeight"]          = e.mediaHeight;
     j["descriptorSlot"]       = e.descriptorSlot;
     j["descriptorGeneration"] = e.descriptorGeneration;
     j["transformMatrix"]      = e.transformMatrix;
@@ -915,6 +953,8 @@ ClipCatalogEntry decodeClipCatalogEntry(const json& j) {
     // endAlignsWithSectionBreak is true, preserving prior single-clip
     // behavior. New payloads carry the actual fadeSeconds.
     e.endingBreakFadeSeconds = j.value("endingBreakFadeSeconds", 0.0);
+    e.mediaWidth      = j.value("mediaWidth",  std::uint32_t{0});
+    e.mediaHeight     = j.value("mediaHeight", std::uint32_t{0});
     e.descriptorSlot  = j.at("descriptorSlot").get<int>();
     e.descriptorGeneration = j.value("descriptorGeneration", std::uint32_t{0});  // #90; default 0 for old captures
     const auto& arr   = j.at("transformMatrix");
@@ -1301,6 +1341,18 @@ EffectCompileFailed decodeEffectCompileFailed(const json& j) {
     return m;
 }
 
+ojson encode(const InvalidateEffectPso& m) {
+    ojson j = ojson::object();
+    j["kindIdHash"] = m.kindIdHash;
+    return j;
+}
+
+InvalidateEffectPso decodeInvalidateEffectPso(const json& j) {
+    InvalidateEffectPso m;
+    m.kindIdHash = j.at("kindIdHash").get<std::uint32_t>();
+    return m;
+}
+
 ojson encode(const CreateOutputWindowRequest& m) {
     ojson j = ojson::object();
     j["entity"]     = m.entity;
@@ -1491,6 +1543,7 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, GenerativeLayerRenderTargetAllocated>) return "GenerativeLayerRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, EffectChainRenderTargetAllocated>) return "EffectChainRenderTargetAllocated";
         else if constexpr (std::is_same_v<T, EffectCompileFailed>)        return "EffectCompileFailed";
+        else if constexpr (std::is_same_v<T, InvalidateEffectPso>)        return "InvalidateEffectPso";
         else if constexpr (std::is_same_v<T, SetOutputEnabled>)            return "SetOutputEnabled";
         else if constexpr (std::is_same_v<T, ApplySettings>)               return "ApplySettings";
         else if constexpr (std::is_same_v<T, DeviceLost>)                  return "DeviceLost";
@@ -1539,6 +1592,7 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "GenerativeLayerRenderTargetAllocated") return Message{decodeGenerativeLayerRenderTargetAllocated(data)};
         if (type == "EffectChainRenderTargetAllocated") return Message{decodeEffectChainRenderTargetAllocated(data)};
         if (type == "EffectCompileFailed")            return Message{decodeEffectCompileFailed(data)};
+        if (type == "InvalidateEffectPso")            return Message{decodeInvalidateEffectPso(data)};
         if (type == "CreateOutputWindowRequest")     return Message{decodeCreateOutputWindowRequest(data)};
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
         if (type == "SectionBreakDetected")          return Message{decodeSectionBreakDetected(data)};

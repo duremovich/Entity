@@ -2,6 +2,7 @@
 
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/command/KeyframeAddr.hpp"
 #include <imgui.h>
 #include <algorithm>
 #include <functional>
@@ -46,6 +47,10 @@ using GenerativeLayerDropCallback = std::function<void(int, FrameNumber, FrameNu
 // Callback for when a Text generative layer is dropped onto a track.
 // Parameters: track index, start frame (timeline), duration in frames
 using TextLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
+
+// Callback for when a Solid generative layer is dropped onto a track.
+// Parameters: track index, start frame (timeline), duration in frames
+using SolidLayerDropCallback = std::function<void(int, FrameNumber, FrameNumber)>;
 
 // Callback for when a Signal Output layer is dropped onto a track.
 // Parameters: track index, start frame (timeline), duration in frames
@@ -100,14 +105,38 @@ public:
     Timeline* getTimeline() const { return m_timeline; }
 
     /**
-     * Discrete zoom ladder, in frames per tick. Single tier — the ladder
-     * value IS the tick spacing AND the snap increment AND the dropdown
-     * label. "10f" means: tick lines every 10 frames, scrub snaps to every
-     * 10 frames. No separate minor/major hierarchy (it confused users about
-     * what the snap actually was). Discrete-step zoom ladder.
+     * Discrete zoom ladder. Single tier — the ladder value IS the tick spacing
+     * AND the snap increment AND the dropdown label. "10f" means: tick lines
+     * every 10 frames, scrub snaps to every 10 frames. No separate minor/major
+     * hierarchy (it confused users about what the snap actually was).
+     *
+     * Stops are expressed in frames OR seconds. The seconds stops are the point:
+     * a pure frame ladder has no stop that lands on a second boundary at 30fps
+     * (or 23.976, or 59.94), so you can't count seconds off the grid to space
+     * keyframes by eye. A Seconds stop resolves against the project frame rate,
+     * so "1s" is 30 frames at 30fps and 24 at 24fps.
      */
-    static constexpr int FRAMES_PER_TICK[] = {1, 2, 5, 10, 20, 50, 100, 200, 500};
-    static constexpr int ZOOM_LEVEL_COUNT = 9;
+    struct ZoomStop {
+        enum class Unit { Frames, Seconds };
+        Unit        unit;
+        int         count;
+        const char* label;
+    };
+    static constexpr ZoomStop ZOOM_STOPS[] = {
+        {ZoomStop::Unit::Frames,   1, "1f"},
+        {ZoomStop::Unit::Frames,   2, "2f"},
+        {ZoomStop::Unit::Frames,   5, "5f"},
+        {ZoomStop::Unit::Frames,  10, "10f"},
+        {ZoomStop::Unit::Seconds,  1, "1s"},
+        {ZoomStop::Unit::Seconds,  2, "2s"},
+        {ZoomStop::Unit::Seconds,  5, "5s"},
+        {ZoomStop::Unit::Seconds, 10, "10s"},
+        {ZoomStop::Unit::Seconds, 30, "30s"},
+        {ZoomStop::Unit::Seconds, 60, "1m"},
+    };
+    static constexpr int ZOOM_LEVEL_COUNT =
+        static_cast<int>(sizeof(ZOOM_STOPS) / sizeof(ZOOM_STOPS[0]));
+    static constexpr int DEFAULT_ZOOM_INDEX = 4;  // "1s"
     static constexpr float TICK_PX = 20.0f;  // visual width of one tick division (fixed — zoom changes the time each tick represents, not the spacing)
 
     int getZoomIndex() const { return m_zoomIndex; }
@@ -118,7 +147,15 @@ public:
      * pixels and zoom changes the px/sec ratio.
      */
     void setZoomIndex(int idx);
-    int framesPerTick() const { return FRAMES_PER_TICK[m_zoomIndex]; }
+
+    /**
+     * Frames per tick division at the current zoom. The single seam every other
+     * consumer goes through — applyZoomIndex, snapTimeToTickGrid, the ruler tick
+     * loop, and the body gridlines. Seconds stops resolve against the timeline's
+     * frame rate here, and never resolve to 0 (a 0 stride would hang the tick
+     * loops).
+     */
+    int framesPerTick() const;
 
     /**
      * Derived pixels-per-second based on current zoom level + timeline framerate.
@@ -142,6 +179,7 @@ public:
     void setClipLayerDropCallback(ClipLayerDropCallback callback) { m_clipLayerDropCallback = std::move(callback); }
     void setGenerativeLayerDropCallback(GenerativeLayerDropCallback callback) { m_generativeLayerDropCallback = std::move(callback); }
     void setTextLayerDropCallback(TextLayerDropCallback callback) { m_textLayerDropCallback = std::move(callback); }
+    void setSolidLayerDropCallback(SolidLayerDropCallback callback) { m_solidLayerDropCallback = std::move(callback); }
     void setSignalLayerDropCallback(SignalLayerDropCallback callback) { m_signalLayerDropCallback = std::move(callback); }
 
     /**
@@ -181,6 +219,14 @@ public:
      * Vertical scroll is untouched.
      */
     void ensurePlayheadVisible();
+
+    /** True when one or more keyframes are selected. Engine checks this so the
+     *  Delete key deletes keyframes rather than the clip they live on. */
+    bool hasKeyframeSelection() const { return !m_selectedKeyframes.empty(); }
+
+    /** Delete every selected keyframe as one undoable step. No-op when the
+     *  selection is empty or the dispatcher isn't wired. */
+    void deleteSelectedKeyframes();
 
 private:
     /**
@@ -364,20 +410,40 @@ private:
      * A keyframe identified by its owning layer entity, animated property,
      * and clip-relative frame. `valid == false` means no keyframe was hit.
      */
-    struct KeyframeHit {
-        bool               valid{false};
-        entt::entity       clip{entt::null};
-        AnimatableProperty property{AnimatableProperty::PositionX};
-        FrameNumber        frame{0};
+    /**
+     * Identity of one keyframe, for multi-selection. Covers both track kinds:
+     * transform rows are keyed by (clip, prop), effect-param rows by
+     * (effectEntity, paramHash). `isEffect` picks which half is meaningful.
+     *
+     * Deliberately does NOT use TimelinePropertyDef::Source — that type is
+     * declared further down this header, and a plain bool keeps the ordering
+     * dependency out of the public section.
+     */
+    struct KeyframeRef {
+        entt::entity       clip{entt::null};   // owning layer, both kinds
+        bool               isEffect{false};
+        AnimatableProperty prop{AnimatableProperty::PositionX};  // !isEffect
+        entt::entity       effectEntity{entt::null};             // isEffect
+        std::uint32_t      paramHash{0};                         // isEffect
+        FrameNumber        frame{0};           // layer-local
+
+        bool operator==(const KeyframeRef& o) const {
+            if (isEffect != o.isEffect || frame != o.frame) return false;
+            if (isEffect) {
+                return effectEntity == o.effectEntity && paramHash == o.paramHash;
+            }
+            return clip == o.clip && prop == o.prop;
+        }
+        // Same track, ignoring the frame — "are these two on the same row".
+        bool sameTrack(const KeyframeRef& o) const {
+            if (isEffect != o.isEffect) return false;
+            if (isEffect) {
+                return effectEntity == o.effectEntity && paramHash == o.paramHash;
+            }
+            return clip == o.clip && prop == o.prop;
+        }
     };
 
-    /**
-     * Hit-test the expanded property-track rows for a keyframe diamond at
-     * mousePos. Walks tracks with the same cumulative-Y layout as
-     * findClipAtPosition; the keyframe screen math mirrors
-     * renderPropertyTracks so the hit zone matches what is drawn.
-     */
-    KeyframeHit findKeyframeAtPosition(ImVec2 mousePos, ImVec2 windowPos) const;
 
     /**
      * True if mousePos is inside any expanded track's property-panel Y band.
@@ -459,7 +525,7 @@ private:
     Timeline* m_timeline{nullptr};
 
     // View settings
-    int m_zoomIndex{3};                // index into FRAMES_PER_TICK; default 10f tick
+    int m_zoomIndex{DEFAULT_ZOOM_INDEX};  // index into ZOOM_STOPS; default 1s tick
     float m_pixelsPerSecond{100.0f};  // derived from zoom index + frame rate, refreshed each render()
     float m_scrollX{0.0f};             // Horizontal scroll position
     float m_syncScrollX{0.0f};         // Sync scroll between ruler and tracks
@@ -588,6 +654,15 @@ private:
     // area. Captured + floor-snapped to the active tick grid. Read by
     // the TrackContextMenu's Paste item.
     FrameNumber m_rightClickedTrackFrame{0};
+
+    // Follow-playhead. When on, render() scrolls the view to keep the playhead
+    // visible while the timeline is playing. m_followSuspended is set when the
+    // user scrolls by hand mid-playback — otherwise the view snaps back the
+    // instant they try to look ahead of the playhead — and is cleared on the next
+    // play, seek, or toggle.
+    bool m_followPlayhead{true};
+    bool m_followSuspended{false};
+    bool m_wasPlaying{false};       // play-edge detect, re-arms following on each play
 
     // Snapping
     static constexpr float SNAP_THRESHOLD_PIXELS = 10.0f;  // Pixels threshold for snapping
@@ -752,6 +827,25 @@ private:
         bool                  wasKeyframed{false};
         FrameNumber           keyframeFrame{0};
         std::optional<float>  keyframeValue;  // nullopt = no kf existed at frame
+
+        // Scale axes dragged along by the uniform-scale lock (ScaleLock). A
+        // locked Scale X drag also writes Scale Y and Z, so their pre-edit
+        // keyframe state is captured too and each animated axis commits its own
+        // UpsertKeyframeCommand. Empty when the row isn't a scale axis or the
+        // lock is off.
+        struct LinkedAxis {
+            AnimatableProperty   prop{AnimatableProperty::ScaleX};
+            bool                 wasKeyframed{false};
+            std::optional<float> keyframeValue;  // nullopt = no kf existed at frame
+        };
+        std::vector<LinkedAxis> linkedScaleAxes;
+
+        // Whole scale vector before the drag. A locked scale drag moves axes that
+        // may be static (no keyframe, so no UpsertKeyframeCommand to undo); the
+        // commit pairs a SetClipScaleCommand with this so undo restores every axis
+        // rather than only the animated ones.
+        glm::vec3 preDragScale{1.0f, 1.0f, 1.0f};
+        bool      scaleLockDrag{false};  // this drag is a locked scale edit
     };
     TwirldownPreEdit m_twirldownPreEdit;
 
@@ -784,6 +878,7 @@ private:
     ClipLayerDropCallback m_clipLayerDropCallback;
     GenerativeLayerDropCallback m_generativeLayerDropCallback;
     TextLayerDropCallback m_textLayerDropCallback;
+    SolidLayerDropCallback m_solidLayerDropCallback;
     SignalLayerDropCallback m_signalLayerDropCallback;
     MediaDurationLookup m_mediaDurationLookup;
 
@@ -878,7 +973,7 @@ private:
      *  are interleaved; rows inside collapsed groups are filtered out so
      *  all consumers iterate the same flat visible list. Shared by
      *  renderPropertyTracks (body), renderClipPropertyPanel (header) and
-     *  findKeyframeAtPosition. */
+     *  keyframeAddrFor (paramHash -> paramName recovery). */
     std::vector<TimelinePropertyDef> propertyListForEntity(entt::entity e) const;
 
     /** True iff the group at this canonical path is currently collapsed
@@ -889,26 +984,121 @@ private:
     void toggleGroupCollapsed(entt::entity layerEntity,
                               const std::string& groupPath);
 
+    // "Set value" field in the keyframe context menu. Seeded from the clicked
+    // keyframe while the field is idle; left alone while the user is typing so it
+    // doesn't get stomped mid-edit.
+    float m_kfValueEntry{0.0f};
+    bool  m_kfValueEntryActive{false};
+
     // Keyframe editing state
     entt::entity m_keyframeEditClip{entt::null};
     AnimatableProperty m_keyframeEditProperty{AnimatableProperty::PositionX};
     FrameNumber m_keyframeEditFrame{0};
     bool m_showKeyframeContextMenu{false};
 
-    // Keyframe selection (single-select). entt::null clip = nothing selected.
-    // The identity of a keyframe is (clip, property, clip-relative frame).
-    entt::entity       m_selectedKeyframeClip{entt::null};
-    AnimatableProperty m_selectedKeyframeProperty{AnimatableProperty::PositionX};
-    FrameNumber        m_selectedKeyframeFrame{0};
+    // Keyframe selection. Empty = nothing selected. Plain click replaces the
+    // selection; Ctrl/Shift+click toggles one in or out; a box drag inside the
+    // property-row band adds everything it covers.
+    std::vector<KeyframeRef> m_selectedKeyframes;
+
+    bool isKeyframeSelected(const KeyframeRef& ref) const;
+    void selectOnlyKeyframe(const KeyframeRef& ref);
+    void toggleKeyframeSelection(const KeyframeRef& ref);
+    void clearKeyframeSelection();
+
+    // Every keyframe glyph drawn this frame, with the rect it was drawn at.
+    // renderPropertyTracks appends; the hit-test and the box-select read it, so
+    // both agree with what's actually on screen instead of re-deriving the glyph
+    // geometry from scratch. Cleared at the top of each render().
+    //
+    // Safe to consume as input in the same frame: renderTracks() runs before
+    // handleTracksInteraction() inside the tracks child.
+    struct KeyframeGlyph {
+        KeyframeRef ref;
+        ImVec2      center;
+        float       radius{5.0f};
+    };
+    std::vector<KeyframeGlyph> m_keyframeGlyphs;
+
+    // Keyframes covered by a screen-space rect (box select).
+    std::vector<KeyframeRef> keyframesInRect(const ImVec2& a, const ImVec2& b) const;
+
+    // The keyframe glyph under a screen-space point, if any. Reads the same cache
+    // the renderer filled, so the clickable zone is exactly the drawn glyph.
+    // Unlike the geometry re-derivation this replaced, it sees effect-param
+    // keyframes too.
+    std::optional<KeyframeRef> findKeyframeGlyphAt(ImVec2 mousePos) const;
+
+    // Build the command-layer address for a selected keyframe. Returns nullopt if
+    // the owning layer is no longer in a track (stale selection).
+    std::optional<KeyframeAddr> keyframeAddrFor(const KeyframeRef& ref) const;
+    // Addresses for the whole current selection, stale entries dropped.
+    std::vector<KeyframeAddr> selectedKeyframeAddrs() const;
 
     // Keyframe drag-to-move state. The keyframe data is NOT mutated during the
-    // drag — m_dragKeyframeCurrentFrame drives a live preview, and a single
-    // undoable MoveKeyframeCommand is committed on release.
-    bool               m_isDraggingKeyframe{false};
-    entt::entity       m_dragKeyframeClip{entt::null};
-    AnimatableProperty m_dragKeyframeProperty{AnimatableProperty::PositionX};
-    FrameNumber        m_dragKeyframeOriginalFrame{0};  // clip-relative, fixed
-    FrameNumber        m_dragKeyframeCurrentFrame{0};   // clip-relative, live
+    // drag — m_dragDelta drives a live preview of the whole selection, and a
+    // single undoable MoveKeyframesCommand is committed on release.
+    //
+    // The drag moves EVERY selected keyframe by the same delta, so the clamp is a
+    // delta range computed once at drag start: the tightest window that keeps
+    // every selected keyframe between its nearest UNSELECTED neighbours. That's
+    // what stops a group drag from reordering or silently overwriting a keyframe
+    // it didn't select.
+    bool        m_isDraggingKeyframe{false};
+    KeyframeRef m_dragAnchor;                     // the keyframe under the cursor
+    FrameNumber m_dragKeyframeOriginalFrame{0};   // anchor's frame at drag start
+    FrameNumber m_dragDelta{0};                   // live, applied to all selected
+    FrameNumber m_dragDeltaMin{0};                // inclusive clamp, <= 0
+    FrameNumber m_dragDeltaMax{0};                // inclusive clamp, >= 0
+
+    // Compute the legal delta window for the current selection. Called at drag start.
+    void computeDragDeltaBounds();
+
+    /**
+     * Gap, in frames, from a keyframe at `atFrame` to its nearest neighbours on
+     * the same track that are NOT part of the selection. Unselected because a
+     * selected neighbour is moving by the same delta, so the gap to it never
+     * changes — it's not the distance the user is trying to judge.
+     * has* is false when there's no neighbour on that side.
+     */
+    struct KeyframeSpacing {
+        bool        hasPrev{false};
+        FrameNumber prevGap{0};
+        bool        hasNext{false};
+        FrameNumber nextGap{0};
+    };
+    KeyframeSpacing keyframeSpacingFor(const KeyframeRef& ref, FrameNumber atFrame) const;
+
+    // TAB numeric entry: type an exact offset in seconds from the previous
+    // keyframe, instead of eyeballing a drag. Reachable mid-drag (TAB hands the
+    // drag off to the field, keeping the live preview) or with a keyframe merely
+    // selected. m_dragDelta stays the single source of truth for the preview, so
+    // the keyframe moves as you type.
+    bool        m_kfOffsetEntryActive{false};
+    bool        m_kfOffsetFocusPending{false};  // steal keyboard focus on the first frame
+    char        m_kfOffsetEntryBuf[32]{};
+    ImVec2      m_kfOffsetEntryPos{0, 0};       // screen pos of the anchor glyph
+
+    // Open / drive / close the offset entry. Called from handleTracksInteraction,
+    // which runs inside the tracks child (so the field lands in the right window).
+    void beginKeyframeOffsetEntry();
+    void renderKeyframeOffsetEntry();
+    // Floating "1.40s (42f) from prev" readout drawn beside the dragged keyframe.
+    void renderKeyframeDragReadout();
+
+    // Keyframe rubber-band box select, inside the expanded property-row band.
+    // Armed on an empty mouse-down there; upgrades to active once the drag passes
+    // the threshold, so a plain click stays a deselect rather than a 0-size box.
+    // Mirrors the clip box-select (m_isBoxSelecting / m_boxSelectArmed) one band up.
+    bool   m_kfBoxArmed{false};
+    bool   m_kfBoxActive{false};
+    bool   m_kfBoxAdditive{false};   // ctrl/shift held: add to selection, don't replace
+    ImVec2 m_kfBoxAnchor{0, 0};
+    ImVec2 m_kfBoxCurrent{0, 0};
+    // Selection as it stood when the box drag began. The live selection is
+    // recomputed from this every frame, so shrinking the box releases keyframes
+    // instead of ratcheting them in.
+    std::vector<KeyframeRef> m_kfBoxBaseline;
 
     // Pre-edit snapshot for the bezier-tangent DragFloat sliders in the
     // keyframe context menu. Captured on ImGui::IsItemActivated so we can

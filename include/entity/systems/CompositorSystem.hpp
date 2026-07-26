@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace entity {
 
@@ -63,17 +64,16 @@ public:
     // ID (UINT32_MAX on failure). Called from PASS 1 of update().
     std::uint32_t ensureGenerativeRenderTarget(const bus::GenerativeLayerSnapshot& gl);
 
-    // Allocate or resize the two ping-pong compose targets used by PASS 1.5
-    // for a layer's effect chain (issue #54). Posts one
-    // EffectChainRenderTargetAllocated R2D ack per side on first allocation.
-    // Returns true when both slots are valid and ready to draw with.
-    bool ensureEffectPingPongTargets(std::uint64_t layerEntity,
-                                      std::int32_t snapshotSlotA,
-                                      std::int32_t snapshotSlotB,
-                                      std::uint32_t width,
-                                      std::uint32_t height,
-                                      std::uint32_t& outSlotA,
-                                      std::uint32_t& outSlotB);
+    // PASS 1.5 scratch pool (DAG executor). Effect intermediates are
+    // show-thread-local compose targets acquired per node and recycled by
+    // liveness — the editor never needs these slots, so the old per-layer
+    // ping-pong + EffectChainRenderTargetAllocated ack round-trip is gone
+    // (ADR-0019 amendment). Slots are retained at high-water and shared
+    // across layers; reset at the top of update() releases the previous
+    // frame's held outputs.
+    std::uint32_t acquireEffectScratch(std::uint32_t width, std::uint32_t height);
+    void          releaseEffectScratch(std::uint32_t slot);
+    void          resetEffectScratch();
 
     // V1 Muncher render: dim playfield + walls + pellets + ghosts + Muncher.
     // Draws in LAYER-LOCAL NDC into the active compose target — caller is
@@ -105,17 +105,20 @@ private:
     std::unordered_map<entt::entity, PendingAllocation> m_pendingAllocations;
     std::unordered_map<entt::entity, PendingAllocation> m_pendingGenerativeAllocations;
 
-    // Two slots per layer with effects (sideA + sideB) ping-pong through the
-    // chain. Filled in on first PASS 1.5 visit, mirrored back through the
-    // EffectChainRenderTargetAllocated R2D ack so the next snapshot carries
-    // them on the corresponding LayerEffectsSnapshot.
-    struct PendingEffectAllocation {
-        std::uint32_t slotA{UINT32_MAX};
-        std::uint32_t slotB{UINT32_MAX};
+    // PASS 1.5 scratch pool — show-thread-only. Exact-size reuse, else a
+    // fresh compose target; NEVER resize (a scratch slot may already be
+    // recorded into this frame's open show command list, and
+    // resizeComposeTarget's idle-drain only covers SUBMITTED work).
+    // Retained at high-water per size (no releaseComposeTarget exists —
+    // same bounded-growth posture as the rest of the compose pool).
+    struct EffectScratchSlot {
+        std::uint32_t slot{UINT32_MAX};
         std::uint32_t width{0};
         std::uint32_t height{0};
+        bool          inUse{false};
     };
-    std::unordered_map<entt::entity, PendingEffectAllocation> m_pendingEffectAllocations;
+    std::vector<EffectScratchSlot> m_effectScratchPool;
+    bool m_effectScratchExhaustedLogged{false};  // one-shot, resets on success
 };
 
 } // namespace entity

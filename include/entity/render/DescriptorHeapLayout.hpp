@@ -70,7 +70,10 @@ public:
     static constexpr uint32_t COMPOSE_TARGET_TRIPLE_BASE = OCIO_LUT_BASE + MAX_OCIO_LUT_SLOTS;
     // Stage render target color SRVs (one per frame, for the editor 3D preview).
     static constexpr uint32_t STAGE_TARGET_BASE    = COMPOSE_TARGET_TRIPLE_BASE + MAX_COMPOSE_TARGETS * 2;
-    static constexpr uint32_t TOTAL_SLOTS          = STAGE_TARGET_BASE + MAX_STAGE_TARGETS;
+    // Effect black-fallback texture SRV — bound to any unconnected /
+    // absent effect input socket (multi-input DAG, issue #54 Phase 5).
+    static constexpr uint32_t EFFECT_FALLBACK_SLOT = STAGE_TARGET_BASE + MAX_STAGE_TARGETS;
+    static constexpr uint32_t TOTAL_SLOTS          = EFFECT_FALLBACK_SLOT + 1;
 
     // Slot-index computation (the "2 + MAX_COMPOSE_TARGETS + slot" math)
     static constexpr uint32_t composeTargetSlot(uint32_t composeIndex) {

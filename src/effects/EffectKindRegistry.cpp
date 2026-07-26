@@ -6,6 +6,7 @@
 #include <dxcapi.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -74,6 +75,33 @@ ParamSchema makeFloatSchema(std::string name, std::string displayName,
     return p;
 }
 
+ParamSchema makeColorSchema(std::string name, std::string displayName,
+                             float r, float g, float b, float a) {
+    ParamSchema p;
+    p.name         = std::move(name);
+    p.displayName  = std::move(displayName);
+    p.type         = ParamValue::Type::Color;
+    p.defaultValue = ParamValue::makeColor(r, g, b, a);
+    p.min          = 0.0f;
+    p.max          = 1.0f;
+    p.uiHint       = 1;  // color picker
+    return p;
+}
+
+ParamSchema makeEnumSchema(std::string name, std::string displayName,
+                            std::vector<std::string> labels, int defaultIdx) {
+    ParamSchema p;
+    p.name         = std::move(name);
+    p.displayName  = std::move(displayName);
+    p.type         = ParamValue::Type::Enum;
+    p.defaultValue = ParamValue::makeEnum(defaultIdx);
+    p.min          = 0.0f;
+    p.max          = static_cast<float>(labels.empty() ? 0 : labels.size() - 1);
+    p.uiHint       = 2;  // dropdown
+    p.enumLabels   = std::move(labels);
+    return p;
+}
+
 SocketSchema textureInput(const char* name) {
     SocketSchema s;
     s.name      = name;
@@ -107,6 +135,36 @@ EffectKind makeBuiltinKind(const char* stableId,
     k.shaderPath  = std::string("shaders/") + psoFilename;
     k.passCount   = 1;
     k.builtin     = true;
+    return k;
+}
+
+// Generator variant: zero texture-input sockets — the kind's role marker
+// (EffectKind::textureInputCount() == 0). The PS never samples g_input;
+// PASS 1.5 may run a generator-led chain with no source texture at all.
+EffectKind makeGeneratorKind(const char* stableId,
+                              const char* displayName,
+                              const char* psoFilename,
+                              std::vector<ParamSchema> params)
+{
+    EffectKind k = makeBuiltinKind(stableId, displayName, "Generate",
+                                   psoFilename, std::move(params));
+    k.sockets = { textureOutput("out") };
+    return k;
+}
+
+// Combiner variant: two texture inputs (a = t0, b = t1). In a linear
+// stack the second input is unconnected (black fallback); the graph
+// editor wires branches into it.
+EffectKind makeCombinerKind(const char* stableId,
+                             const char* displayName,
+                             const char* psoFilename,
+                             const char* secondInputName,
+                             std::vector<ParamSchema> params)
+{
+    EffectKind k = makeBuiltinKind(stableId, displayName, "Combine",
+                                   psoFilename, std::move(params));
+    k.sockets = { textureInput("a"), textureInput(secondInputName),
+                  textureOutput("out") };
     return k;
 }
 
@@ -214,6 +272,108 @@ void EffectKindRegistry::registerBuiltins() {
             makeFloatSchema("amount", "Amount", 1.0f, 0.0f, 1.0f),
         }
     ));
+
+    // ---- Generators (zero texture inputs — replace the layer's content;
+    // the AE model: drop one on a Solid). ----
+
+    registerKind(makeGeneratorKind(
+        "core.gen.linear_gradient",
+        "Linear Gradient",
+        "gen_linear_gradient_ps.cso",
+        {
+            makeFloatSchema("angle", "Angle (deg)", 0.0f, -180.0f, 180.0f),
+            makeColorSchema("colorA", "Color A", 0.0f, 0.0f, 0.0f, 1.0f),
+            makeColorSchema("colorB", "Color B", 1.0f, 1.0f, 1.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.checkerboard",
+        "Checkerboard",
+        "gen_checkerboard_ps.cso",
+        {
+            makeFloatSchema("cols", "Columns", 8.0f, 1.0f, 128.0f),
+            makeFloatSchema("rows", "Rows",    8.0f, 1.0f, 128.0f),
+            makeColorSchema("colorA", "Color A", 0.0f, 0.0f, 0.0f, 1.0f),
+            makeColorSchema("colorB", "Color B", 1.0f, 1.0f, 1.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.fractal_noise",
+        "Fractal Noise",
+        "gen_fractal_noise_ps.cso",
+        {
+            makeFloatSchema("scale",    "Scale",    8.0f, 0.1f, 64.0f),
+            makeFloatSchema("octaves",  "Octaves",  4.0f, 1.0f, 8.0f),
+            makeFloatSchema("speed",    "Speed",    0.0f, 0.0f, 4.0f),
+            makeFloatSchema("contrast", "Contrast", 1.0f, 0.0f, 4.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.plasma",
+        "Plasma",
+        "gen_plasma_ps.cso",
+        {
+            makeFloatSchema("scale", "Scale", 8.0f, 0.1f, 64.0f),
+            makeFloatSchema("speed", "Speed", 0.0f, 0.0f, 4.0f),
+            makeColorSchema("colorA", "Color A", 0.0f, 0.0f, 0.2f, 1.0f),
+            makeColorSchema("colorB", "Color B", 1.0f, 0.4f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeGeneratorKind(
+        "core.gen.shape",
+        "Shape",
+        "gen_shape_ps.cso",
+        {
+            makeEnumSchema("shape", "Shape", {"Circle", "Rectangle", "Ring"}, 0),
+            makeFloatSchema("size",     "Size",     0.5f, 0.0f, 1.0f),
+            makeFloatSchema("softness", "Softness", 0.02f, 0.0f, 0.5f),
+            makeColorSchema("color", "Color", 1.0f, 1.0f, 1.0f, 1.0f),
+        }
+    ));
+
+    // ---- Combiners (two texture inputs — the graph editor wires a
+    // second branch into socket "b" / "mask" / "map"). ----
+
+    registerKind(makeCombinerKind(
+        "core.comb.blend",
+        "Blend",
+        "comb_blend_ps.cso",
+        "b",
+        {
+            makeEnumSchema("mode", "Mode",
+                           {"Normal", "Add", "Multiply", "Screen",
+                            "Overlay", "Difference"}, 0),
+            makeFloatSchema("opacity", "Opacity", 1.0f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeCombinerKind(
+        "core.comb.mask",
+        "Mask",
+        "comb_mask_ps.cso",
+        "mask",
+        {
+            makeEnumSchema("channel", "Channel",
+                           {"Luma", "Alpha", "R", "G", "B"}, 0),
+            makeEnumSchema("invert", "Invert", {"Off", "On"}, 0),
+            makeFloatSchema("softness", "Softness", 0.0f, 0.0f, 1.0f),
+        }
+    ));
+
+    registerKind(makeCombinerKind(
+        "core.comb.displace",
+        "Displace",
+        "comb_displace_ps.cso",
+        "map",
+        {
+            makeFloatSchema("amountX", "Amount X (px)", 16.0f, -256.0f, 256.0f),
+            makeFloatSchema("amountY", "Amount Y (px)", 16.0f, -256.0f, 256.0f),
+        }
+    ));
 }
 
 void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEffectsDir,
@@ -221,17 +381,34 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
                                           const std::filesystem::path& shaderIncludeDir) {
     namespace fs = std::filesystem;
 
-    // Drop previously-scanned user kinds so the call is idempotent.
-    // builtin=true entries stay; builtin=false get torn down. Their
-    // compiled-bytecode artifacts get evicted alongside.
-    for (auto it = m_kinds.begin(); it != m_kinds.end(); ) {
-        if (!it->second.builtin) {
-            m_userArtifacts.erase(it->first);
-            it = m_kinds.erase(it);
-        } else {
-            ++it;
+    // Remember the arguments so hotReload() can re-run the scan.
+    m_lastEffectsDir = projectEffectsDir;
+    m_lastIncludeDir = shaderIncludeDir;
+    m_lastCompiler   = &compiler;
+    m_lastScanTouchedKinds.clear();
+    m_compileErrors.clear();
+
+    // Snapshot the existing user kinds instead of dropping them up
+    // front: a kind whose recompile FAILS below must keep its last-good
+    // registration + bytecode (and must NOT land in the touched list,
+    // or the PSO invalidation would kill the running effect) — an
+    // operator saving a syntax error mid-show keeps yesterday's shader
+    // on the output, with the error surfaced in the UI. Kinds whose
+    // manifests vanished entirely are removed at the end.
+    std::unordered_map<std::uint32_t, EffectKind> previousUserKinds;
+    {
+        std::lock_guard<std::mutex> lk(m_kindsMutex);
+        for (auto it = m_kinds.begin(); it != m_kinds.end(); ) {
+            if (!it->second.builtin) {
+                previousUserKinds.emplace(it->first, std::move(it->second));
+                it = m_kinds.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
+    // Hashes seen in this scan (registered fresh OR kept as last-good).
+    std::vector<std::uint32_t> liveUserKinds;
 
     std::error_code ec;
     if (!fs::exists(projectEffectsDir, ec) || !fs::is_directory(projectEffectsDir, ec)) {
@@ -313,6 +490,20 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
         if (!result.success || !result.blob) {
             std::cerr << "[scanUserEffects] HLSL compile failed for "
                       << stableId << ":\n" << result.errors << std::endl;
+            // Surface in the UI (red badge on the stack header) and KEEP
+            // the last-good registration + bytecode + PSO: the hash is
+            // deliberately not added to the touched list, so no
+            // InvalidateEffectPso fires and the running effect renders
+            // yesterday's shader until the error is fixed.
+            const std::uint32_t failedHash = fnv1a32(stableId);
+            m_compileErrors[failedHash] = result.errors;
+            auto prevIt = previousUserKinds.find(failedHash);
+            if (prevIt != previousUserKinds.end()) {
+                std::lock_guard<std::mutex> lk(m_kindsMutex);
+                m_kinds.insert_or_assign(failedHash, std::move(prevIt->second));
+                previousUserKinds.erase(prevIt);
+                liveUserKinds.push_back(failedHash);
+            }
             continue;
         }
 
@@ -339,19 +530,45 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
             { "out", SocketSchema::Kind::Texture, SocketSchema::Direction::Output },
         };
 
-        // Snapshot bytecode into an owned byte vector so the IDxcBlob
-        // can be dropped without dangling pointers in the renderer's
-        // PSO creation path later.
-        UserArtifact artifact;
+        // Snapshot bytecode into an owned, immutable byte vector so the
+        // IDxcBlob can be dropped and the show thread can hold the
+        // shared_ptr across PSO creation while hot reload swaps the map.
         const std::uint8_t* bytes = static_cast<const std::uint8_t*>(
             result.blob->GetBufferPointer());
         const std::size_t bytesLen = result.blob->GetBufferSize();
-        artifact.psBytecode.assign(bytes, bytes + bytesLen);
-        m_userArtifacts.emplace(kind.kindIdHash, std::move(artifact));
+        auto artifact = std::make_shared<const std::vector<std::uint8_t>>(
+            bytes, bytes + bytesLen);
+        {
+            std::lock_guard<std::mutex> lk(m_userArtifactsMutex);
+            m_userArtifacts[kind.kindIdHash] = std::move(artifact);
+        }
+        m_lastScanTouchedKinds.push_back(kind.kindIdHash);
+        liveUserKinds.push_back(kind.kindIdHash);
 
         registerKind(std::move(kind));
         ++registered;
     }
+
+    // Kinds whose manifests vanished entirely: gone for real. Their
+    // artifacts drop and their stale PSOs get invalidated.
+    for (auto& [hash, kind] : previousUserKinds) {
+        if (std::find(liveUserKinds.begin(), liveUserKinds.end(), hash)
+            != liveUserKinds.end()) {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_userArtifactsMutex);
+            m_userArtifacts.erase(hash);
+        }
+        m_lastScanTouchedKinds.push_back(hash);
+    }
+
+    // Dedup touched hashes (a kind both dropped and re-registered
+    // appears twice).
+    std::sort(m_lastScanTouchedKinds.begin(), m_lastScanTouchedKinds.end());
+    m_lastScanTouchedKinds.erase(
+        std::unique(m_lastScanTouchedKinds.begin(), m_lastScanTouchedKinds.end()),
+        m_lastScanTouchedKinds.end());
 
     if (scanned > 0) {
         std::cout << "[scanUserEffects] " << projectEffectsDir.string()
@@ -360,13 +577,13 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
     }
 }
 
-void EffectKindRegistry::hotReload(const std::filesystem::path& /*changedFile*/) {
-    // Follow-up: re-scan the single changed file. Until ContentScanner
-    // integration lands, callers re-invoke scanUserEffects() for a full
-    // rescan of the project's effects dir.
+void EffectKindRegistry::hotReload() {
+    if (!m_lastCompiler || m_lastEffectsDir.empty()) return;
+    scanUserEffects(m_lastEffectsDir, *m_lastCompiler, m_lastIncludeDir);
 }
 
 void EffectKindRegistry::registerKind(EffectKind kind) {
+    std::lock_guard<std::mutex> lk(m_kindsMutex);
     m_kinds.insert_or_assign(kind.kindIdHash, std::move(kind));
 }
 

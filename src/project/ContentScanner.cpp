@@ -39,6 +39,14 @@ const std::unordered_set<std::string>& defaultObjectExts() {
     return kExts;
 }
 
+// User-authored effect pack files (issue #54 Phase 6 hot reload).
+const std::unordered_set<std::string>& defaultEffectExts() {
+    static const std::unordered_set<std::string> kExts = {
+        ".hlsl", ".hlsli", ".json",
+    };
+    return kExts;
+}
+
 std::string lowerExt(const fs::path& p) {
     std::string s = p.extension().string();
     std::transform(s.begin(), s.end(), s.begin(),
@@ -92,6 +100,11 @@ void ContentScanner::start(const fs::path& projectRoot) {
         DeltaSource::Object,
         projectRoot / "objects",
         &defaultObjectExts(),
+    });
+    m_roots.push_back(WatchRoot{
+        DeltaSource::EffectSource,
+        projectRoot / "effects",
+        &defaultEffectExts(),
     });
     m_files.clear();
     {
@@ -299,10 +312,15 @@ void ContentScanner::doScan() {
             known.sizeBytes  = currentStat.sizeBytes;
             known.mtimeUnix  = currentStat.mtimeUnix;
             known.stableTicks = 1;
-            // If we'd previously reported Added, don't re-emit; the
-            // existing entry will pick up the new content next decode
-            // open. (TranscodeManager's in-place replace per ADR-0009
-            // also lands in this branch — silent by design.)
+            // Media/Object: if we'd previously reported Added, don't
+            // re-emit; the existing entry will pick up the new content
+            // next decode open. (TranscodeManager's in-place replace per
+            // ADR-0009 also lands in this branch — silent by design.)
+            // EffectSource: re-arm so the edit re-emits Added once the
+            // write stabilizes — that Added IS the hot-reload trigger.
+            if (known.source == DeltaSource::EffectSource) {
+                known.reported = false;
+            }
         }
     }
 

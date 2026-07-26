@@ -29,6 +29,8 @@ namespace entity {
 class Timeline;
 class IRenderer;
 
+namespace effects { class EffectKindRegistry; }
+
 class ProjectManager {
 public:
     ProjectManager() = default;
@@ -604,11 +606,25 @@ public:
     void        setEditorLayoutJson(std::string json) { m_editorLayoutJson = std::move(json); }
     std::string getEditorLayoutJson() const { return m_editorLayoutJson; }
 
+    // --- Effect kind registry (schema v29) ----------------------------------
+    //
+    // Non-owning pointer to the engine's effect catalog, set once by Engine
+    // at init. ProjectSerializer needs it to write stable kind IDs and to
+    // resolve param-name <-> slot mappings without taking an Engine*. Same
+    // boundary idiom as the audio master state above. Editor-thread-only.
+    void setEffectKindRegistry(const effects::EffectKindRegistry* reg) {
+        m_effectKindRegistry = reg;
+    }
+    const effects::EffectKindRegistry* getEffectKindRegistry() const {
+        return m_effectKindRegistry;
+    }
+
 private:
     // Non-owning dependencies (Engine owns and outlives this)
     Timeline*        m_timeline{nullptr};
     entt::registry*  m_registry{nullptr};
     IRenderer*       m_renderer{nullptr};
+    const effects::EffectKindRegistry* m_effectKindRegistry{nullptr};
 
     // Guards m_projectPath and all per-project JSON string fields for
     // cross-thread reads by plugin worker threads (osc-sender, dmx-artnet).

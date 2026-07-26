@@ -12,6 +12,7 @@
 #include "entity/director/SectionScheduler.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/TimelineTrack.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Clip.hpp"
 #include "entity/components/ClipDecodeState.hpp"
 #include "entity/components/VideoTexture.hpp"
@@ -34,6 +35,7 @@
 #include "entity/components/ObjectAnimationLayer.hpp"
 #include "entity/components/ObjectAnimationOutput.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
 #include "entity/components/RemotePatch.hpp"
 #include "entity/components/AudioSource.hpp"
@@ -43,13 +45,17 @@
 #include "entity/audio/AudioEngine.hpp"
 #include "entity/audio/LoopbackDevice.hpp"
 #include "entity/systems/AudioSystem.hpp"
+#include "entity/effects/EffectChainTopo.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
+#include "entity/effects/EffectParamJson.hpp"
 #include "entity/input/InputBus.hpp"
 #include "entity/precomp/PrecompLibrary.hpp"
 #include "entity/media/Decoder.hpp"
 #include "entity/media/DecodedFrame.hpp"
 #include "entity/media/FrameCache.hpp"
 #include "entity/media/ObjLoader.hpp"
+#include "entity/core/ClipPlaybackDiagnostics.hpp"
+#include "entity/renderer/PlaybackPresenter.hpp"   // AssertClipPresentedFrame
 #include <imgui.h>
 #include <chrono>
 #include <cstring>
@@ -849,7 +855,8 @@ bool CaptureScreenshotCommand::execute(Engine& engine) {
         std::cerr << "[CaptureScreenshot] No capture broker available" << std::endl;
         return false;
     }
-    return broker->requestScreenshotCapture(/*slot*/0, m_filepath,
+    return broker->requestScreenshotCapture(static_cast<int>(m_composeSlot),
+                                            m_filepath,
                                             m_region == Region::FullWindow);
 }
 
@@ -873,7 +880,8 @@ CommandPtr CaptureScreenshotCommand::fromJson(const nlohmann::json& j) {
     if (regionStr == "fullWindow") {
         region = Region::FullWindow;
     }
-    return std::make_unique<CaptureScreenshotCommand>(filepath, region);
+    return std::make_unique<CaptureScreenshotCommand>(
+        filepath, region, j.value("composeSlot", 0u));
 }
 
 bool CaptureHashCommand::execute(Engine& engine) {
@@ -1479,6 +1487,60 @@ CommandPtr SelectTabCommand::fromJson(const nlohmann::json& j) {
 // SetClipRotationCommand
 // ============================================================================
 
+namespace {
+// Defined further down this file, in the same (anonymous) namespace.
+entt::entity resolveLayer(Engine& engine, int trackIndex, int clipIndex);
+}  // namespace
+
+bool SetClipScaleCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) {
+        std::cerr << "[SetClipScale] Invalid track/clip index" << std::endl;
+        return false;
+    }
+    auto* transform = registry.try_get<Transform>(layer);
+    if (!transform) return false;
+
+    if (!m_previousScale.has_value()) {
+        m_previousScale = std::array<float, 3>{
+            transform->scale.x, transform->scale.y, transform->scale.z};
+    }
+    transform->setScale(glm::vec3(m_x, m_y, m_z));
+    return true;
+}
+
+bool SetClipScaleCommand::undo(Engine& engine) {
+    if (!m_previousScale.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) return false;
+    auto* transform = registry.try_get<Transform>(layer);
+    if (!transform) return false;
+
+    const auto& p = *m_previousScale;
+    transform->setScale(glm::vec3(p[0], p[1], p[2]));
+    return true;
+}
+
+nlohmann::json SetClipScaleCommand::toJson() const {
+    return {{"type", "SetClipScale"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"x", m_x}, {"y", m_y}, {"z", m_z}};
+}
+
+std::string SetClipScaleCommand::getDescription() const {
+    return "Set clip scale to (" + std::to_string(m_x) + ", " + std::to_string(m_y)
+         + ", " + std::to_string(m_z) + ")";
+}
+
+CommandPtr SetClipScaleCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetClipScaleCommand>(
+        j.value("trackIndex", 0), j.value("clipIndex", 0),
+        j.value("x", 1.0f), j.value("y", 1.0f), j.value("z", 1.0f));
+}
+
 bool SetClipRotationCommand::execute(Engine& engine) {
     std::cout << "[SetClipRotation] Track " << m_trackIndex << ", Clip " << m_clipIndex
               << " -> (" << m_rotX << ", " << m_rotY << ", " << m_rotZ << ")" << std::endl;
@@ -1776,6 +1838,21 @@ bool UpsertKeyframeCommand::execute(Engine& engine) {
         m_hasPreviousState = true;
     }
 
+    // Easing is captured separately from the value: the UI's mouse-down snapshot
+    // (setPreviousValue) only records the value, and undo has to put the ease back
+    // too. Guarded by its own once-only flag so a redo doesn't re-capture the
+    // easing this command itself already applied.
+    if (!m_hasPreviousEasing) {
+        if (const KeyframeTrack* kfTrack = animProps.getTrack(m_property)) {
+            if (const Keyframe* existing = kfTrack->getKeyframeAt(m_frame)) {
+                m_previousInterp  = existing->interpolation;
+                m_previousEaseIn  = existing->easeIn;
+                m_previousEaseOut = existing->easeOut;
+            }
+        }
+        m_hasPreviousEasing = true;
+    }
+
     animProps.addKeyframe(m_property, m_frame, m_newValue, m_interp);
     return true;
 }
@@ -1796,7 +1873,14 @@ bool UpsertKeyframeCommand::undo(Engine& engine) {
     KeyframeTrack& kfTrack = animProps->getOrCreateTrack(m_property);
     if (m_previousValue.has_value()) {
         // Overwrite with the prior value — addKeyframe replaces at the same frame.
-        kfTrack.addKeyframe(m_frame, *m_previousValue);
+        // Restore the easing explicitly: execute() may have overwritten it (when
+        // m_interp was set), and addKeyframe only carries the interp type, not the
+        // bezier handles.
+        kfTrack.addKeyframe(m_frame, *m_previousValue, m_previousInterp);
+        if (Keyframe* restored = kfTrack.getKeyframeAt(m_frame)) {
+            restored->easeIn  = m_previousEaseIn;
+            restored->easeOut = m_previousEaseOut;
+        }
     } else {
         // No keyframe existed before — remove the one we just added.
         kfTrack.removeKeyframe(m_frame);
@@ -2120,6 +2204,182 @@ CommandPtr RemoveKeyframeCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// ClearPropertyKeyframesCommand
+//
+// The AE stopwatch's "toggle animation off": drop every keyframe on one
+// property and leave it static at the value it was showing.
+// ============================================================================
+
+namespace {
+
+// The property's static slot — the value AnimationSystem overwrites each tick
+// while the track is animated, and the value the property keeps once it isn't.
+// Opacity lives on MediaLayer, everything else on Transform.
+std::optional<float> readStaticSlot(entt::registry& registry, entt::entity e,
+                                    AnimatableProperty prop) {
+    if (prop == AnimatableProperty::Opacity) {
+        const auto* ml = registry.try_get<MediaLayer>(e);
+        return ml ? std::optional<float>(ml->opacity) : std::nullopt;
+    }
+    const auto* t = registry.try_get<Transform>(e);
+    if (!t) return std::nullopt;
+    switch (prop) {
+        case AnimatableProperty::PositionX: return t->position.x;
+        case AnimatableProperty::PositionY: return t->position.y;
+        case AnimatableProperty::PositionZ: return t->position.z;
+        case AnimatableProperty::RotationX: return t->rotation.x;
+        case AnimatableProperty::RotationY: return t->rotation.y;
+        case AnimatableProperty::Rotation:
+        case AnimatableProperty::RotationZ: return t->rotation.z;
+        case AnimatableProperty::ScaleX:    return t->scale.x;
+        case AnimatableProperty::ScaleY:    return t->scale.y;
+        case AnimatableProperty::ScaleZ:    return t->scale.z;
+        default:                            return std::nullopt;
+    }
+}
+
+void writeStaticSlot(entt::registry& registry, entt::entity e,
+                     AnimatableProperty prop, float value) {
+    if (prop == AnimatableProperty::Opacity) {
+        if (auto* ml = registry.try_get<MediaLayer>(e)) ml->opacity = value;
+        return;
+    }
+    auto* t = registry.try_get<Transform>(e);
+    if (!t) return;
+    glm::vec3 pos = t->position, rot = t->rotation, scl = t->scale;
+    switch (prop) {
+        case AnimatableProperty::PositionX: pos.x = value; t->setPosition(pos); break;
+        case AnimatableProperty::PositionY: pos.y = value; t->setPosition(pos); break;
+        case AnimatableProperty::PositionZ: pos.z = value; t->setPosition(pos); break;
+        case AnimatableProperty::RotationX: rot.x = value; t->setRotation(rot); break;
+        case AnimatableProperty::RotationY: rot.y = value; t->setRotation(rot); break;
+        case AnimatableProperty::Rotation:
+        case AnimatableProperty::RotationZ: rot.z = value; t->setRotation(rot); break;
+        case AnimatableProperty::ScaleX:    scl.x = value; t->setScale(scl);    break;
+        case AnimatableProperty::ScaleY:    scl.y = value; t->setScale(scl);    break;
+        case AnimatableProperty::ScaleZ:    scl.z = value; t->setScale(scl);    break;
+        default: break;
+    }
+}
+
+// Resolve (trackIndex, clipIndex) to a layer entity. Same guard chain the other
+// index-addressed keyframe commands use.
+entt::entity resolveLayer(Engine& engine, int trackIndex, int clipIndex) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) return entt::null;
+    const auto& tracks = timeline->getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return entt::null;
+    auto* track = engine.getRegistry().try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track || clipIndex < 0 || clipIndex >= static_cast<int>(track->layers.size())) {
+        return entt::null;
+    }
+    return track->layers[clipIndex];
+}
+
+// Resolve script-style {trackIndex, clipIndex, effectIndex} to (layer,
+// effect) entities via the layer's EffectChain node order. needEffect
+// false = caller only wants the layer (AddEffect). Logs and returns
+// false on any out-of-range component of the address.
+bool resolveEffectScriptAddr(Engine& engine, const EffectScriptAddr& addr,
+                             bool needEffect, entt::entity& layerOut,
+                             entt::entity& effectOut) {
+    layerOut = resolveLayer(engine, addr.trackIndex, addr.clipIndex);
+    if (layerOut == entt::null) {
+        std::cerr << "[EffectScriptAddr] no layer at track=" << addr.trackIndex
+                  << " clip=" << addr.clipIndex << std::endl;
+        return false;
+    }
+    if (!needEffect) return true;
+    const auto* chain = engine.getRegistry().try_get<EffectChain>(layerOut);
+    if (!chain || addr.effectIndex < 0
+        || addr.effectIndex >= static_cast<int>(chain->nodes.size())) {
+        std::cerr << "[EffectScriptAddr] no effect at index=" << addr.effectIndex
+                  << " (chain size=" << (chain ? chain->nodes.size() : 0) << ")"
+                  << std::endl;
+        return false;
+    }
+    effectOut = chain->nodes[static_cast<std::size_t>(addr.effectIndex)];
+    return true;
+}
+
+} // namespace
+
+bool ClearPropertyKeyframesCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) return false;
+
+    auto* animProps = registry.try_get<AnimatedProperties>(layer);
+    if (!animProps) return false;
+    KeyframeTrack* kfTrack = animProps->getTrack(m_property);
+    if (!kfTrack || kfTrack->keyframes.empty()) return false;  // nothing to clear
+
+    if (!m_hasPreviousState) {
+        m_removedKeyframes    = kfTrack->keyframes;
+        m_removedTrackEnabled = kfTrack->enabled;
+        m_previousSlotValue   = readStaticSlot(registry, layer, m_property);
+        m_hasPreviousState    = true;
+    }
+
+    // Erase the whole track, not just its keyframes — an empty track would still
+    // read as "this property is animated" to the stopwatch and the twirl-down.
+    auto& tracks = animProps->tracks;
+    tracks.erase(std::remove_if(tracks.begin(), tracks.end(),
+        [this](const KeyframeTrack& t) { return t.property == m_property; }),
+        tracks.end());
+
+    // Hold the value the property was showing. Without this the layer would snap
+    // to whatever stale value sat in the static slot.
+    if (m_holdValue.has_value()) {
+        writeStaticSlot(registry, layer, m_property, *m_holdValue);
+    }
+    return true;
+}
+
+bool ClearPropertyKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto& registry = engine.getRegistry();
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) return false;
+
+    auto& animProps = registry.get_or_emplace<AnimatedProperties>(layer);
+    KeyframeTrack& kfTrack = animProps.getOrCreateTrack(m_property);
+    kfTrack.keyframes = m_removedKeyframes;  // verbatim: values, interps, handles
+    kfTrack.enabled   = m_removedTrackEnabled;
+
+    if (m_previousSlotValue.has_value()) {
+        writeStaticSlot(registry, layer, m_property, *m_previousSlotValue);
+    }
+    return true;
+}
+
+nlohmann::json ClearPropertyKeyframesCommand::toJson() const {
+    nlohmann::json j = {
+        {"type", "ClearPropertyKeyframes"},
+        {"trackIndex", m_trackIndex},
+        {"clipIndex", m_clipIndex},
+        {"property", animatablePropertyName(m_property)}
+    };
+    if (m_holdValue.has_value()) j["holdValue"] = *m_holdValue;
+    return j;
+}
+
+std::string ClearPropertyKeyframesCommand::getDescription() const {
+    return std::string("Remove all keyframes on ") + animatablePropertyName(m_property);
+}
+
+CommandPtr ClearPropertyKeyframesCommand::fromJson(const nlohmann::json& j) {
+    const int trackIndex = j.value("trackIndex", 0);
+    const int clipIndex  = j.value("clipIndex", 0);
+    const AnimatableProperty prop =
+        parseAnimatableProperty(j.value("property", std::string{"Opacity"}))
+            .value_or(AnimatableProperty::Opacity);
+    std::optional<float> hold;
+    if (j.contains("holdValue")) hold = j["holdValue"].get<float>();
+    return std::make_unique<ClearPropertyKeyframesCommand>(trackIndex, clipIndex, prop, hold);
+}
+
+// ============================================================================
 // UpsertEffectKeyframeCommand / RemoveEffectKeyframeCommand
 //
 // Hash-keyed effect-param keyframe commands (Phase 3, 2026-05-25).
@@ -2148,16 +2408,19 @@ getOrCreateEffectTrack(EffectAnimatedParameters& anim, std::uint32_t hash) {
 
 void upsertKeyframeInTrack(EffectAnimatedParameters::NamedTrack& track,
                            FrameNumber frame, float value,
-                           InterpolationType interp) {
-    // Mirrors KeyframeTrack::addKeyframe: binary-search insert / replace.
+                           std::optional<InterpolationType> interp = std::nullopt) {
+    // Mirrors KeyframeTrack::addKeyframe, including its optional-interp contract:
+    // nullopt preserves an existing keyframe's easing so a value-only edit can't
+    // silently reset Easy Ease back to Linear.
     auto it = std::lower_bound(track.keyframes.begin(), track.keyframes.end(), frame,
         [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
     if (it != track.keyframes.end() && it->frame == frame) {
         it->value = value;
-        it->interpolation = interp;
+        if (interp.has_value()) it->interpolation = *interp;
         return;
     }
-    track.keyframes.insert(it, Keyframe{frame, value, interp});
+    track.keyframes.insert(it, Keyframe{frame, value,
+                                        interp.value_or(InterpolationType::Linear)});
 }
 
 bool removeKeyframeFromTrack(EffectAnimatedParameters::NamedTrack& track,
@@ -2179,9 +2442,61 @@ const Keyframe* findKeyframeAt(const EffectAnimatedParameters::NamedTrack& track
     return nullptr;
 }
 
+Keyframe* findKeyframeAt(EffectAnimatedParameters::NamedTrack& track,
+                         FrameNumber frame) {
+    for (auto& kf : track.keyframes) {
+        if (kf.frame == frame) return &kf;
+    }
+    return nullptr;
+}
+
+// Defined further down this file, in the same (anonymous) namespace.
+int findParamSlotByName(const effects::EffectKind& kind, const std::string& name);
+
+// An effect param's static slot — the EffectParameters value that holds when the
+// param isn't animated. Sibling of readStaticSlot/writeStaticSlot for transforms.
+// Both return/no-op cleanly on an unknown kind or a non-float param.
+std::optional<float> readEffectFloatParam(Engine& engine, entt::entity effectEntity,
+                                          const std::string& paramName) {
+    auto& registry = engine.getRegistry();
+    const auto* fx = registry.try_get<Effect>(effectEntity);
+    const auto* ep = registry.try_get<EffectParameters>(effectEntity);
+    const auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!fx || !ep || !kindRegistry) return std::nullopt;
+    const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
+    if (!kind) return std::nullopt;
+
+    const int slot = findParamSlotByName(*kind, paramName);
+    if (slot < 0 || static_cast<std::size_t>(slot) >= ep->values.size()) return std::nullopt;
+    if (ep->values[slot].type != ParamValue::Type::Float) return std::nullopt;
+    return ep->values[slot].f4[0];
+}
+
+void writeEffectFloatParam(Engine& engine, entt::entity effectEntity,
+                           const std::string& paramName, float value) {
+    auto& registry = engine.getRegistry();
+    const auto* fx = registry.try_get<Effect>(effectEntity);
+    auto* ep = registry.try_get<EffectParameters>(effectEntity);
+    const auto* kindRegistry = engine.getEffectKindRegistry();
+    if (!fx || !ep || !kindRegistry) return;
+    const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
+    if (!kind) return;
+
+    const int slot = findParamSlotByName(*kind, paramName);
+    if (slot < 0 || static_cast<std::size_t>(slot) >= ep->values.size()) return;
+    if (ep->values[slot].type != ParamValue::Type::Float) return;
+    ep->values[slot].f4[0] = value;
+}
+
 } // namespace
 
 bool UpsertEffectKeyframeCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity) || !registry.all_of<Effect>(m_effectEntity)) {
         std::cerr << "[UpsertEffectKeyframe] invalid effect entity" << std::endl;
@@ -2203,6 +2518,19 @@ bool UpsertEffectKeyframeCommand::execute(Engine& engine) {
         m_hasPreviousState = true;
     }
 
+    // Pre-edit easing, restored by undo alongside the value. Own once-only flag so
+    // a redo doesn't re-capture the easing this command itself applied.
+    if (!m_hasPreviousEasing) {
+        if (const auto* t = findEffectTrack(anim, hash)) {
+            if (const Keyframe* existing = findKeyframeAt(*t, m_frame)) {
+                m_previousInterp  = existing->interpolation;
+                m_previousEaseIn  = existing->easeIn;
+                m_previousEaseOut = existing->easeOut;
+            }
+        }
+        m_hasPreviousEasing = true;
+    }
+
     auto& track = getOrCreateEffectTrack(anim, hash);
     upsertKeyframeInTrack(track, m_frame, m_newValue, m_interp);
     return true;
@@ -2218,8 +2546,14 @@ bool UpsertEffectKeyframeCommand::undo(Engine& engine) {
     if (!track) return false;
 
     if (m_previousValue.has_value()) {
-        // Overwrite with the prior value.
-        upsertKeyframeInTrack(*track, m_frame, *m_previousValue, m_interp);
+        // Overwrite with the prior value, restoring the easing explicitly: execute()
+        // may have overwritten it (when m_interp was set), and upsertKeyframeInTrack
+        // carries the interp type but not the bezier handles.
+        upsertKeyframeInTrack(*track, m_frame, *m_previousValue, m_previousInterp);
+        if (Keyframe* restored = findKeyframeAt(*track, m_frame)) {
+            restored->easeIn  = m_previousEaseIn;
+            restored->easeOut = m_previousEaseOut;
+        }
     } else {
         // No keyframe existed before — remove the one we just added.
         removeKeyframeFromTrack(*track, m_frame);
@@ -2257,10 +2591,22 @@ CommandPtr UpsertEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
     auto paramName = j.value("paramName", std::string{});
     FrameNumber frame = j.value("frame", 0);
     float value = j.value("value", 0.0f);
-    return std::make_unique<UpsertEffectKeyframeCommand>(effEnt, std::move(paramName), frame, value);
+    auto cmd = std::make_unique<UpsertEffectKeyframeCommand>(
+        effEnt, std::move(paramName), frame, value);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
 bool RemoveEffectKeyframeCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity)) return false;
     auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity);
@@ -2327,7 +2673,545 @@ CommandPtr RemoveEffectKeyframeCommand::fromJson(const nlohmann::json& j) {
         j.value("effectEntity", std::uint32_t{0}));
     auto paramName = j.value("paramName", std::string{});
     FrameNumber frame = j.value("frame", 0);
-    return std::make_unique<RemoveEffectKeyframeCommand>(effEnt, std::move(paramName), frame);
+    auto cmd = std::make_unique<RemoveEffectKeyframeCommand>(
+        effEnt, std::move(paramName), frame);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+// ============================================================================
+// Plural (multi-select) keyframe commands
+//
+// MoveKeyframes / SetKeyframesInterpolation / SetKeyframesValue / RemoveKeyframes.
+// Each is ONE undo step for the whole selection. They resolve both track kinds
+// through resolveKeyframes() so there's no duplicate command family for effect
+// params.
+// ============================================================================
+
+namespace {
+
+// The keyframe vector a KeyframeAddr points into. Transform rows live in
+// AnimatedProperties (enum-keyed), effect params in EffectAnimatedParameters
+// (hash-keyed); past the lookup the two are the same std::vector<Keyframe>.
+// `create` is for undo, which may need to rebuild a track it emptied.
+std::vector<Keyframe>* resolveKeyframes(Engine& engine, const KeyframeAddr& addr,
+                                        bool create) {
+    auto& registry = engine.getRegistry();
+
+    if (addr.isEffect) {
+        if (!registry.valid(addr.effectEntity)) return nullptr;
+        const std::uint32_t hash = effects::fnv1a32(addr.paramName);
+        if (create) {
+            auto& anim = registry.get_or_emplace<EffectAnimatedParameters>(addr.effectEntity);
+            return &getOrCreateEffectTrack(anim, hash).keyframes;
+        }
+        auto* anim = registry.try_get<EffectAnimatedParameters>(addr.effectEntity);
+        if (!anim) return nullptr;
+        auto* track = findEffectTrack(*anim, hash);
+        return track ? &track->keyframes : nullptr;
+    }
+
+    entt::entity layer = resolveLayer(engine, addr.trackIndex, addr.clipIndex);
+    if (layer == entt::null) return nullptr;
+    if (create) {
+        auto& animProps = registry.get_or_emplace<AnimatedProperties>(layer);
+        return &animProps.getOrCreateTrack(addr.property).keyframes;
+    }
+    auto* animProps = registry.try_get<AnimatedProperties>(layer);
+    if (!animProps) return nullptr;
+    KeyframeTrack* track = animProps->getTrack(addr.property);
+    return track ? &track->keyframes : nullptr;
+}
+
+Keyframe* findKeyframeInVec(std::vector<Keyframe>& kfs, FrameNumber frame) {
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == frame) return &(*it);
+    return nullptr;
+}
+
+void insertKeyframeSorted(std::vector<Keyframe>& kfs, const Keyframe& kf) {
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), kf.frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == kf.frame) {
+        *it = kf;  // replace in place
+        return;
+    }
+    kfs.insert(it, kf);
+}
+
+void eraseKeyframeAt(std::vector<Keyframe>& kfs, FrameNumber frame) {
+    auto it = std::lower_bound(kfs.begin(), kfs.end(), frame,
+        [](const Keyframe& k, FrameNumber f) { return k.frame < f; });
+    if (it != kfs.end() && it->frame == frame) kfs.erase(it);
+}
+
+// Two addrs point at the same track when everything but the frame matches.
+bool sameTrack(const KeyframeAddr& a, const KeyframeAddr& b) {
+    if (a.isEffect != b.isEffect) return false;
+    if (a.isEffect) {
+        return a.effectEntity == b.effectEntity && a.paramName == b.paramName;
+    }
+    return a.trackIndex == b.trackIndex && a.clipIndex == b.clipIndex
+        && a.property == b.property;
+}
+
+nlohmann::json addrToJson(const KeyframeAddr& a) {
+    nlohmann::json j;
+    if (a.isEffect) {
+        j["effectEntity"] = static_cast<std::uint32_t>(a.effectEntity);
+        j["paramName"]    = a.paramName;
+    } else {
+        j["trackIndex"] = a.trackIndex;
+        j["clipIndex"]  = a.clipIndex;
+        j["property"]   = animatablePropertyName(a.property);
+    }
+    j["frame"] = a.frame;
+    return j;
+}
+
+KeyframeAddr addrFromJson(const nlohmann::json& j) {
+    KeyframeAddr a;
+    // An effectEntity key is what makes it an effect-param address; without one
+    // it's a transform row.
+    if (j.contains("effectEntity")) {
+        a.isEffect     = true;
+        a.effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+        a.paramName    = j.value("paramName", std::string{});
+    } else {
+        a.trackIndex = j.value("trackIndex", 0);
+        a.clipIndex  = j.value("clipIndex", 0);
+        a.property   = parseAnimatableProperty(j.value("property", std::string{"Opacity"}))
+                           .value_or(AnimatableProperty::Opacity);
+    }
+    a.frame = j.value("frame", 0);
+    return a;
+}
+
+std::vector<KeyframeAddr> addrsFromJson(const nlohmann::json& j) {
+    std::vector<KeyframeAddr> addrs;
+    if (!j.contains("keyframes") || !j["keyframes"].is_array()) return addrs;
+    for (const auto& e : j["keyframes"]) addrs.push_back(addrFromJson(e));
+    return addrs;
+}
+
+nlohmann::json addrsToJson(const std::vector<KeyframeAddr>& addrs) {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& a : addrs) arr.push_back(addrToJson(a));
+    return arr;
+}
+
+} // namespace
+
+bool MoveKeyframesCommand::execute(Engine& engine) {
+    if (m_addrs.empty() || m_delta == 0) return false;
+
+    // --- Validation pass. Nothing is mutated until every destination checks out,
+    // so a rejected group drag can't leave half the selection moved. ---
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        const KeyframeAddr& addr = m_addrs[i];
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, /*create=*/false);
+        if (!kfs) return false;
+        if (!findKeyframeInVec(*kfs, addr.frame)) return false;  // stale selection
+
+        const FrameNumber dest = addr.frame + m_delta;
+        if (dest < 0) return false;
+
+        // Landing on an existing keyframe is only OK if that keyframe is itself
+        // part of the selection (and therefore moving out of the way).
+        if (findKeyframeInVec(*kfs, dest)) {
+            bool destIsSelected = false;
+            for (const auto& other : m_addrs) {
+                if (sameTrack(other, addr) && other.frame == dest) {
+                    destIsSelected = true;
+                    break;
+                }
+            }
+            if (!destIsSelected) return false;
+        }
+    }
+
+    if (!m_hasPreviousState) {
+        m_originals.clear();
+        m_originals.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            m_originals.push_back(*findKeyframeInVec(*kfs, addr.frame));  // validated above
+        }
+        m_hasPreviousState = true;
+    }
+
+    // --- Mutation pass. Erase every selected keyframe first, THEN re-insert them
+    // shifted: doing it one at a time would let an earlier move clobber a keyframe
+    // a later one still needs to read. ---
+    for (const auto& addr : m_addrs) {
+        eraseKeyframeAt(*resolveKeyframes(engine, addr, false), addr.frame);
+    }
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        Keyframe moved = m_originals[i];
+        moved.frame = m_addrs[i].frame + m_delta;
+        insertKeyframeSorted(*resolveKeyframes(engine, m_addrs[i], /*create=*/true), moved);
+    }
+    return true;
+}
+
+bool MoveKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+
+    for (const auto& addr : m_addrs) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+        if (!kfs) return false;
+        eraseKeyframeAt(*kfs, addr.frame + m_delta);
+    }
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], /*create=*/true);
+        if (!kfs) return false;
+        insertKeyframeSorted(*kfs, m_originals[i]);
+    }
+    return true;
+}
+
+nlohmann::json MoveKeyframesCommand::toJson() const {
+    return {{"type", "MoveKeyframes"},
+            {"delta", m_delta},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string MoveKeyframesCommand::getDescription() const {
+    return "Move " + std::to_string(m_addrs.size()) + " keyframes by "
+         + std::to_string(m_delta) + " frames";
+}
+
+CommandPtr MoveKeyframesCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<MoveKeyframesCommand>(
+        addrsFromJson(j), j.value("delta", FrameNumber{0}));
+}
+
+bool SetKeyframesInterpolationCommand::execute(Engine& engine) {
+    if (m_addrs.empty()) return false;
+
+    if (!m_hasPreviousState) {
+        m_originals.clear();
+        m_originals.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+            if (!kf) return false;
+            m_originals.push_back(*kf);
+        }
+        m_hasPreviousState = true;
+    }
+
+    for (const auto& addr : m_addrs) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+        Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+        if (!kf) continue;
+        kf->interpolation = m_interp;
+        kf->easeIn        = m_easeIn;
+        kf->easeOut       = m_easeOut;
+    }
+    return true;
+}
+
+bool SetKeyframesInterpolationCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], false);
+        Keyframe* kf = kfs ? findKeyframeInVec(*kfs, m_addrs[i].frame) : nullptr;
+        if (!kf) continue;
+        kf->interpolation = m_originals[i].interpolation;
+        kf->easeIn        = m_originals[i].easeIn;
+        kf->easeOut       = m_originals[i].easeOut;
+    }
+    return true;
+}
+
+nlohmann::json SetKeyframesInterpolationCommand::toJson() const {
+    return {{"type", "SetKeyframesInterpolation"},
+            {"interpolation", interpName(m_interp)},
+            {"easeIn", m_easeIn},
+            {"easeOut", m_easeOut},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string SetKeyframesInterpolationCommand::getDescription() const {
+    return "Set " + std::to_string(m_addrs.size()) + " keyframes to "
+         + interpName(m_interp);
+}
+
+CommandPtr SetKeyframesInterpolationCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetKeyframesInterpolationCommand>(
+        addrsFromJson(j),
+        parseInterp(j.value("interpolation", std::string{"linear"})),
+        j.value("easeIn", 0.42f),
+        j.value("easeOut", 0.58f));
+}
+
+bool SetKeyframesValueCommand::execute(Engine& engine) {
+    if (m_addrs.empty()) return false;
+
+    if (!m_hasPreviousState) {
+        m_previousValues.clear();
+        m_previousValues.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+            if (!kf) return false;
+            m_previousValues.push_back(kf->value);
+        }
+        m_hasPreviousState = true;
+    }
+
+    // Value only — easing is left alone, same contract as a single-keyframe edit.
+    for (const auto& addr : m_addrs) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+        if (Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr) {
+            kf->value = m_value;
+        }
+    }
+    return true;
+}
+
+bool SetKeyframesValueCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], false);
+        if (Keyframe* kf = kfs ? findKeyframeInVec(*kfs, m_addrs[i].frame) : nullptr) {
+            kf->value = m_previousValues[i];
+        }
+    }
+    return true;
+}
+
+nlohmann::json SetKeyframesValueCommand::toJson() const {
+    return {{"type", "SetKeyframesValue"},
+            {"value", m_value},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string SetKeyframesValueCommand::getDescription() const {
+    return "Set " + std::to_string(m_addrs.size()) + " keyframes to "
+         + std::to_string(m_value);
+}
+
+CommandPtr SetKeyframesValueCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<SetKeyframesValueCommand>(
+        addrsFromJson(j), j.value("value", 0.0f));
+}
+
+bool RemoveKeyframesCommand::execute(Engine& engine) {
+    if (m_addrs.empty()) return false;
+
+    if (!m_hasPreviousState) {
+        m_originals.clear();
+        m_originals.reserve(m_addrs.size());
+        for (const auto& addr : m_addrs) {
+            std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false);
+            Keyframe* kf = kfs ? findKeyframeInVec(*kfs, addr.frame) : nullptr;
+            if (!kf) return false;
+            m_originals.push_back(*kf);
+        }
+        m_hasPreviousState = true;
+    }
+
+    for (const auto& addr : m_addrs) {
+        if (std::vector<Keyframe>* kfs = resolveKeyframes(engine, addr, false)) {
+            eraseKeyframeAt(*kfs, addr.frame);
+        }
+    }
+    return true;
+}
+
+bool RemoveKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    for (std::size_t i = 0; i < m_addrs.size(); ++i) {
+        // create=true: deleting the last keyframe may have left no track at all.
+        std::vector<Keyframe>* kfs = resolveKeyframes(engine, m_addrs[i], /*create=*/true);
+        if (!kfs) return false;
+        insertKeyframeSorted(*kfs, m_originals[i]);
+    }
+    return true;
+}
+
+nlohmann::json RemoveKeyframesCommand::toJson() const {
+    return {{"type", "RemoveKeyframes"},
+            {"keyframes", addrsToJson(m_addrs)}};
+}
+
+std::string RemoveKeyframesCommand::getDescription() const {
+    return "Delete " + std::to_string(m_addrs.size()) + " keyframes";
+}
+
+CommandPtr RemoveKeyframesCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<RemoveKeyframesCommand>(addrsFromJson(j));
+}
+
+// ============================================================================
+// AssertKeyframeInterpolationCommand
+//
+// Script-side gate for "editing a keyframe's value must not reset its easing".
+// AssertKeyframeCount (further down) already covers the stopwatch's track removal.
+// ============================================================================
+
+bool AssertKeyframeInterpolationCommand::execute(Engine& engine) {
+    entt::entity layer = resolveLayer(engine, m_trackIndex, m_clipIndex);
+    if (layer == entt::null) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: no layer at track "
+                  << m_trackIndex << ", clip " << m_clipIndex << std::endl;
+        return false;
+    }
+    auto* animProps = engine.getRegistry().try_get<AnimatedProperties>(layer);
+    const KeyframeTrack* kfTrack = animProps ? animProps->getTrack(m_property) : nullptr;
+    const Keyframe* kf = kfTrack ? kfTrack->getKeyframeAt(m_frame) : nullptr;
+    if (!kf) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: no keyframe on "
+                  << animatablePropertyName(m_property) << " at frame " << m_frame << std::endl;
+        return false;
+    }
+
+    if (kf->interpolation != m_interp) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: "
+                  << animatablePropertyName(m_property) << " @ " << m_frame
+                  << " expected " << interpName(m_interp)
+                  << ", got " << interpName(kf->interpolation) << std::endl;
+        return false;
+    }
+    const float kEps = 1e-4f;
+    if (m_easeIn.has_value() && std::fabs(kf->easeIn - *m_easeIn) > kEps) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: easeIn expected " << *m_easeIn
+                  << ", got " << kf->easeIn << std::endl;
+        return false;
+    }
+    if (m_easeOut.has_value() && std::fabs(kf->easeOut - *m_easeOut) > kEps) {
+        std::cerr << "[AssertKeyframeInterpolation] FAIL: easeOut expected " << *m_easeOut
+                  << ", got " << kf->easeOut << std::endl;
+        return false;
+    }
+
+    std::cout << "[AssertKeyframeInterpolation] OK "
+              << animatablePropertyName(m_property) << " @ " << m_frame
+              << " == " << interpName(kf->interpolation) << std::endl;
+    return true;
+}
+
+nlohmann::json AssertKeyframeInterpolationCommand::toJson() const {
+    nlohmann::json j = {{"type", "AssertKeyframeInterpolation"},
+                        {"trackIndex", m_trackIndex},
+                        {"clipIndex", m_clipIndex},
+                        {"property", animatablePropertyName(m_property)},
+                        {"frame", m_frame},
+                        {"interpolation", interpName(m_interp)}};
+    if (m_easeIn.has_value())  j["easeIn"]  = *m_easeIn;
+    if (m_easeOut.has_value()) j["easeOut"] = *m_easeOut;
+    return j;
+}
+
+std::string AssertKeyframeInterpolationCommand::getDescription() const {
+    return std::string("Assert ") + animatablePropertyName(m_property) + " @ frame "
+         + std::to_string(m_frame) + " is " + interpName(m_interp);
+}
+
+CommandPtr AssertKeyframeInterpolationCommand::fromJson(const nlohmann::json& j) {
+    const int trackIndex = j.value("trackIndex", 0);
+    const int clipIndex  = j.value("clipIndex", 0);
+    const AnimatableProperty prop =
+        parseAnimatableProperty(j.value("property", std::string{"Opacity"}))
+            .value_or(AnimatableProperty::Opacity);
+    const FrameNumber frame = j.value("frame", 0);
+    const InterpolationType interp =
+        parseInterp(j.value("interpolation", std::string{"linear"}));
+    std::optional<float> easeIn, easeOut;
+    if (j.contains("easeIn"))  easeIn  = j["easeIn"].get<float>();
+    if (j.contains("easeOut")) easeOut = j["easeOut"].get<float>();
+    return std::make_unique<AssertKeyframeInterpolationCommand>(
+        trackIndex, clipIndex, prop, frame, interp, easeIn, easeOut);
+}
+
+// ============================================================================
+// ClearEffectParamKeyframesCommand
+//
+// Effect-param sibling of ClearPropertyKeyframesCommand — the stopwatch on an
+// effect parameter row.
+// ============================================================================
+
+bool ClearEffectParamKeyframesCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+
+    auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity);
+    if (!anim) return false;
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    auto* track = findEffectTrack(*anim, hash);
+    if (!track || track->keyframes.empty()) return false;  // nothing to clear
+
+    if (!m_hasPreviousState) {
+        m_removedKeyframes  = track->keyframes;
+        m_previousSlotValue = readEffectFloatParam(engine, m_effectEntity, m_paramName);
+        m_hasPreviousState  = true;
+    }
+
+    anim->tracks.erase(std::remove_if(anim->tracks.begin(), anim->tracks.end(),
+        [hash](const EffectAnimatedParameters::NamedTrack& t) {
+            return t.paramKeyHash == hash;
+        }), anim->tracks.end());
+
+    if (m_holdValue.has_value()) {
+        writeEffectFloatParam(engine, m_effectEntity, m_paramName, *m_holdValue);
+    }
+    return true;
+}
+
+bool ClearEffectParamKeyframesCommand::undo(Engine& engine) {
+    if (!m_hasPreviousState) return false;
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_effectEntity)) return false;
+
+    auto& anim = registry.get_or_emplace<EffectAnimatedParameters>(m_effectEntity);
+    auto& track = getOrCreateEffectTrack(anim, effects::fnv1a32(m_paramName));
+    track.keyframes = m_removedKeyframes;  // verbatim: values, interps, handles
+
+    if (m_previousSlotValue.has_value()) {
+        writeEffectFloatParam(engine, m_effectEntity, m_paramName, *m_previousSlotValue);
+    }
+    return true;
+}
+
+nlohmann::json ClearEffectParamKeyframesCommand::toJson() const {
+    nlohmann::json j = {
+        {"type", "ClearEffectParamKeyframes"},
+        {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+        {"paramName", m_paramName}
+    };
+    if (m_holdValue.has_value()) j["holdValue"] = *m_holdValue;
+    return j;
+}
+
+std::string ClearEffectParamKeyframesCommand::getDescription() const {
+    return "Remove all keyframes on " + m_paramName;
+}
+
+CommandPtr ClearEffectParamKeyframesCommand::fromJson(const nlohmann::json& j) {
+    const auto effEnt = static_cast<entt::entity>(
+        j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    std::optional<float> hold;
+    if (j.contains("holdValue")) hold = j["holdValue"].get<float>();
+    auto cmd = std::make_unique<ClearEffectParamKeyframesCommand>(
+        effEnt, std::move(paramName), hold);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
 // ============================================================================
@@ -3870,6 +4754,160 @@ std::string AssertClipMediaFrameCommand::getDescription() const {
            ", clip " + std::to_string(m_clipIndex);
 }
 
+bool AssertClipPresentedFrameCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: timeline unavailable" << std::endl;
+        return false;
+    }
+    auto* presenter = engine.getPlaybackPresenter();
+    if (!presenter) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: no PlaybackPresenter" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+
+    const FrameNumber actual = presenter->presentedFrame(clipEntity);
+    if (actual < 0) {
+        std::cerr << "[AssertClipPresentedFrame] FAIL: track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " has never presented a frame (no upload reached its texture)"
+                  << std::endl;
+        return false;
+    }
+
+    const FrameNumber diff = actual >= m_expected ? (actual - m_expected)
+                                                  : (m_expected - actual);
+    const bool inBracket = (diff <= m_tolerance);
+    const bool pass = (m_mode == Mode::Equal) ? inBracket : !inBracket;
+    const char* op = (m_mode == Mode::Equal) ? "==" : "!=";
+    if (pass) {
+        std::cout << "[AssertClipPresentedFrame] OK track=" << m_trackIndex
+                  << " clip=" << m_clipIndex
+                  << " presentedFrame=" << actual
+                  << " (" << op << " " << m_expected << " +/-" << m_tolerance << ")"
+                  << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertClipPresentedFrame] FAIL: track=" << m_trackIndex
+              << " clip=" << m_clipIndex
+              << " expected " << op << " " << m_expected
+              << " (+/-" << m_tolerance << "), got=" << actual
+              << "  (texture is holding a stale frame)" << std::endl;
+    return false;
+}
+
+nlohmann::json AssertClipPresentedFrameCommand::toJson() const {
+    return {{"type", "AssertClipPresentedFrame"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"expected", m_expected},
+            {"tolerance", m_tolerance},
+            {"mode", (m_mode == Mode::Equal) ? "equal" : "notEqual"}};
+}
+
+std::string AssertClipPresentedFrameCommand::getDescription() const {
+    return "Assert clip presented frame for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr AssertClipPresentedFrameCommand::fromJson(const nlohmann::json& j) {
+    const auto modeStr = j.value("mode", std::string{"equal"});
+    return std::make_unique<AssertClipPresentedFrameCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex", 0),
+        j.value("expected", static_cast<FrameNumber>(0)),
+        j.value("tolerance", static_cast<FrameNumber>(0)),
+        modeStr == "notEqual" ? AssertClipPresentedFrameCommand::Mode::NotEqual
+                              : AssertClipPresentedFrameCommand::Mode::Equal);
+}
+
+bool LogClipPlaybackCommand::execute(Engine& engine) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) {
+        std::cerr << "[LogClipPlayback] FAIL: timeline unavailable" << std::endl;
+        return false;
+    }
+
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (m_trackIndex < 0 || static_cast<size_t>(m_trackIndex) >= tracks.size()) {
+        std::cerr << "[LogClipPlayback] FAIL: trackIndex " << m_trackIndex
+                  << " out of range (tracks=" << tracks.size() << ")" << std::endl;
+        return false;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[m_trackIndex]);
+    if (!track || m_clipIndex < 0 ||
+        static_cast<size_t>(m_clipIndex) >= track->layers.size()) {
+        std::cerr << "[LogClipPlayback] FAIL: clipIndex " << m_clipIndex
+                  << " out of range" << std::endl;
+        return false;
+    }
+    entt::entity clipEntity = track->layers[m_clipIndex];
+    const auto* clip = registry.try_get<Clip>(clipEntity);
+    if (!clip) {
+        std::cerr << "[LogClipPlayback] FAIL: no Clip component" << std::endl;
+        return false;
+    }
+
+    const ClipPlaybackDiagnostics d =
+        gatherClipPlaybackDiagnostics(engine, clipEntity, *clip);
+
+    std::cout << "[LogClipPlayback] " << (m_label.empty() ? "" : m_label + " ")
+              << "track=" << m_trackIndex << " clip=" << m_clipIndex
+              << " timeline=" << d.timelineFrame
+              << " local=" << d.localFrame
+              << " mapped=" << d.mapped
+              << " presented=" << d.presented
+              << " lag=" << d.lag()
+              << " stale=" << (d.stale() ? "YES" : "no")
+              << " active=" << (d.clipActive ? "yes" : "no")
+              << " decoder=" << (d.hasWorker ? std::to_string(d.decoderFrame)
+                                             : std::string("-"))
+              << " target=" << (d.hasWorker ? std::to_string(d.decoderTarget)
+                                            : std::string("-"))
+              << (d.seeking ? " seeking" : "")
+              << " cache=" << (d.cacheHit ? "HIT" : "MISS")
+              << " continuation=" << (d.inContinuation ? "ON" : "off")
+              << " phase=" << d.sourcePhaseFrames
+              << std::endl;
+    return true;
+}
+
+nlohmann::json LogClipPlaybackCommand::toJson() const {
+    return {{"type", "LogClipPlayback"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"label", m_label}};
+}
+
+std::string LogClipPlaybackCommand::getDescription() const {
+    return "Log clip playback state for track " + std::to_string(m_trackIndex) +
+           ", clip " + std::to_string(m_clipIndex);
+}
+
+CommandPtr LogClipPlaybackCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<LogClipPlaybackCommand>(
+        j.value("trackIndex", 0),
+        j.value("clipIndex", 0),
+        j.value("label", std::string{}));
+}
+
 CommandPtr AssertClipMediaFrameCommand::fromJson(const nlohmann::json& j) {
     int trackIndex = j.value("trackIndex", 0);
     int clipIndex  = j.value("clipIndex", 0);
@@ -4722,6 +5760,56 @@ CommandPtr CreateTextLayerCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// CreateSolidLayerCommand
+// ============================================================================
+
+bool CreateSolidLayerCommand::execute(Engine& engine) {
+    // Resolve target: first Screen entity in the registry. Same policy as
+    // CreateTextLayerCommand — the user retargets via Properties.
+    auto& registry = engine.getRegistry();
+    entt::entity targetEntity = entt::null;
+    auto screenView = registry.view<Screen>();
+    if (!screenView.empty()) {
+        targetEntity = *screenView.begin();
+    }
+
+    m_createdEntity = engine.createSolidLayer(targetEntity,
+                                              m_trackIndex,
+                                              m_startFrame,
+                                              m_duration);
+    if (m_createdEntity == entt::null) {
+        std::cerr << "[CreateSolidLayer] FAIL: createSolidLayer returned null" << std::endl;
+        return false;
+    }
+    std::cout << "[CreateSolidLayer] OK track=" << m_trackIndex
+              << " start=" << m_startFrame
+              << " duration=" << m_duration
+              << " entity=" << static_cast<uint32_t>(m_createdEntity)
+              << std::endl;
+    return true;
+}
+
+nlohmann::json CreateSolidLayerCommand::toJson() const {
+    return {{"type", "CreateSolidLayer"},
+            {"trackIndex", m_trackIndex},
+            {"startFrame", m_startFrame},
+            {"duration", m_duration}};
+}
+
+std::string CreateSolidLayerCommand::getDescription() const {
+    return "Create Solid layer on track " + std::to_string(m_trackIndex) +
+           " at " + std::to_string(m_startFrame) +
+           " dur=" + std::to_string(m_duration);
+}
+
+CommandPtr CreateSolidLayerCommand::fromJson(const nlohmann::json& j) {
+    int trackIndex       = j.value("trackIndex", 0);
+    FrameNumber start    = j.value("startFrame", static_cast<FrameNumber>(0));
+    FrameNumber duration = j.value("duration", static_cast<FrameNumber>(300));
+    return std::make_unique<CreateSolidLayerCommand>(trackIndex, start, duration);
+}
+
+// ============================================================================
 // SetInputChannelCommand
 // ============================================================================
 
@@ -4950,6 +6038,13 @@ int findParamSlotByName(const effects::EffectKind& kind, const std::string& name
 } // namespace
 
 bool AddEffectCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity effectUnused{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, false, m_layerEntity,
+                                     effectUnused)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_layerEntity)) {
         std::cerr << "[AddEffect] layerEntity invalid" << std::endl;
@@ -4973,8 +6068,8 @@ bool AddEffectCommand::execute(Engine& engine) {
     Effect& fx = registry.emplace<Effect>(fxEnt);
     fx.kindId     = kindHash;
     fx.enabled    = true;
-    fx.graphX     = 0.0f;
-    fx.graphY     = 0.0f;
+    fx.graphX     = m_graphX.value_or(0.0f);
+    fx.graphY     = m_graphY.value_or(0.0f);
     fx.ownerLayer = m_layerEntity;
 
     EffectParameters& params = registry.emplace<EffectParameters>(fxEnt);
@@ -5031,10 +6126,91 @@ CommandPtr AddEffectCommand::fromJson(const nlohmann::json& j) {
     const auto layerEntity = static_cast<entt::entity>(
         j.value("layerEntity", std::uint32_t{0}));
     auto kind = j.value("kindStableId", std::string{});
-    return std::make_unique<AddEffectCommand>(layerEntity, std::move(kind));
+    auto cmd = std::make_unique<AddEffectCommand>(layerEntity, std::move(kind));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0), 0});
+    }
+    if (j.contains("graphX") || j.contains("graphY")) {
+        cmd->setInitialGraphPos(j.value("graphX", 0.0f), j.value("graphY", 0.0f));
+    }
+    return cmd;
+}
+
+// ============================================================================
+// ReorderEffectCommand
+// ============================================================================
+
+bool ReorderEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    const int n = static_cast<int>(chain->nodes.size());
+    if (m_fromIndex < 0 || m_fromIndex >= n ||
+        m_toIndex   < 0 || m_toIndex   >= n || m_fromIndex == m_toIndex) {
+        return false;
+    }
+    // Declaration order IS evaluation order only for linear stacks; the
+    // UI disables reorder when connections exist, and scripts get the
+    // same guard here for consistency.
+    if (!chain->connections.empty()) {
+        std::cerr << "[ReorderEffect] chain has explicit graph topology — "
+                     "reorder via the Effect Graph instead" << std::endl;
+        return false;
+    }
+    entt::entity node = chain->nodes[static_cast<std::size_t>(m_fromIndex)];
+    chain->nodes.erase(chain->nodes.begin() + m_fromIndex);
+    chain->nodes.insert(chain->nodes.begin() + m_toIndex, node);
+    m_executed = true;
+    return true;
+}
+
+bool ReorderEffectCommand::undo(Engine& engine) {
+    if (!m_executed) return false;
+    auto* chain = engine.getRegistry().try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    const int n = static_cast<int>(chain->nodes.size());
+    if (m_toIndex < 0 || m_toIndex >= n || m_fromIndex < 0 || m_fromIndex >= n) {
+        return false;
+    }
+    entt::entity node = chain->nodes[static_cast<std::size_t>(m_toIndex)];
+    chain->nodes.erase(chain->nodes.begin() + m_toIndex);
+    chain->nodes.insert(chain->nodes.begin() + m_fromIndex, node);
+    return true;
+}
+
+nlohmann::json ReorderEffectCommand::toJson() const {
+    return {{"type", "ReorderEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"fromIndex", m_fromIndex},
+            {"toIndex", m_toIndex}};
+}
+
+std::string ReorderEffectCommand::getDescription() const {
+    return "Reorder effect " + std::to_string(m_fromIndex) + " -> "
+         + std::to_string(m_toIndex);
+}
+
+CommandPtr ReorderEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    auto cmd = std::make_unique<ReorderEffectCommand>(
+        layer, j.value("fromIndex", 0), j.value("toIndex", 0));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0));
+    }
+    return cmd;
 }
 
 bool RemoveEffectCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, m_layerEntity,
+                                     m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_layerEntity) || !registry.valid(m_effectEntity)) {
         return false;
@@ -5056,10 +6232,63 @@ bool RemoveEffectCommand::execute(Engine& engine) {
     if (auto* params = registry.try_get<EffectParameters>(m_effectEntity)) {
         m_savedParams = params->values;
     }
+    if (const auto* anim = registry.try_get<EffectAnimatedParameters>(m_effectEntity)) {
+        m_savedTracks.clear();
+        m_savedTrackEnabled.clear();
+        for (const auto& t : anim->tracks) {
+            m_savedTracks.emplace_back(t.paramKeyHash, t.keyframes);
+            m_savedTrackEnabled.push_back(t.enabled);
+        }
+    }
+    m_savedConnections = chain->connections;
+    m_savedOutputNode  = chain->outputNode;
+
+    // Heal the explicit graph: bridge the removed node's first-input
+    // producer through to every consumer of its output, then drop all
+    // links touching the node. A removed generator (no input link) just
+    // leaves its consumers unconnected.
+    entt::entity bridge = entt::null;
+    bool haveBridge = false;
+    if (!chain->connections.empty()) {
+        for (const auto& c : chain->connections) {
+            if (c.dstNode == m_effectEntity && c.dstSocket == 0) {
+                bridge = c.srcNode;
+                haveBridge = true;
+                break;
+            }
+        }
+        std::vector<EffectConnection> healed;
+        healed.reserve(chain->connections.size());
+        for (const auto& c : chain->connections) {
+            if (c.dstNode == m_effectEntity) continue;  // into the node — drop
+            if (c.srcNode == m_effectEntity) {
+                if (haveBridge) {
+                    EffectConnection b = c;
+                    b.srcNode   = bridge;
+                    b.srcSocket = 0;
+                    healed.push_back(b);
+                }
+                continue;
+            }
+            healed.push_back(c);
+        }
+        chain->connections = std::move(healed);
+    }
 
     chain->nodes.erase(it);
     if (chain->outputNode == m_effectEntity) {
-        chain->outputNode = chain->nodes.empty() ? entt::null : chain->nodes.back();
+        // Follow the heal: if the removed node fed the output and its
+        // input was bridged through, the bridge producer IS the new
+        // output — matching the healed link the graph now displays.
+        // (nodes.back() would silently re-point the render at an
+        // unrelated declaration-order node.) Bridge of entt::null =
+        // layer source feeds output directly → no effect output.
+        if (haveBridge && bridge != entt::null) {
+            chain->outputNode = bridge;
+        } else {
+            chain->outputNode = chain->nodes.empty() ? entt::null
+                                                     : chain->nodes.back();
+        }
     }
     registry.destroy(m_effectEntity);
     if (chain->nodes.empty()) {
@@ -5086,12 +6315,35 @@ bool RemoveEffectCommand::undo(Engine& engine) {
     fx.ownerLayer = m_layerEntity;
     auto& params = registry.emplace<EffectParameters>(fxEnt);
     params.values = m_savedParams;
-    registry.emplace<EffectAnimatedParameters>(fxEnt);
+    auto& anim = registry.emplace<EffectAnimatedParameters>(fxEnt);
+    for (std::size_t i = 0; i < m_savedTracks.size(); ++i) {
+        EffectAnimatedParameters::NamedTrack nt;
+        nt.paramKeyHash = m_savedTracks[i].first;
+        nt.keyframes    = m_savedTracks[i].second;
+        nt.enabled      = (i < m_savedTrackEnabled.size()) ? m_savedTrackEnabled[i] : true;
+        anim.tracks.push_back(std::move(nt));
+    }
 
     auto& chain = registry.get_or_emplace<EffectChain>(m_layerEntity);
     const std::size_t insertAt = std::min(m_savedPositionInChain, chain.nodes.size());
     chain.nodes.insert(chain.nodes.begin() + insertAt, fxEnt);
-    if (chain.outputNode == entt::null) chain.outputNode = fxEnt;
+
+    // Restore the pre-removal topology with the destroyed entity's ID
+    // remapped to the recreated one — without this the restored links
+    // reference a dead entity and silently drop on the next bake/save.
+    chain.connections = m_savedConnections;
+    for (auto& c : chain.connections) {
+        if (c.srcNode == m_effectEntity) c.srcNode = fxEnt;
+        if (c.dstNode == m_effectEntity) c.dstNode = fxEnt;
+    }
+    chain.outputNode = (m_savedOutputNode == m_effectEntity)
+        ? fxEnt
+        : m_savedOutputNode;
+    if (chain.outputNode == entt::null && !chain.nodes.empty()) {
+        chain.outputNode = chain.nodes.back();
+    }
+    // Keep the resurrected ID for a possible redo cycle.
+    m_effectEntity = fxEnt;
     return true;
 }
 
@@ -5108,10 +6360,357 @@ std::string RemoveEffectCommand::getDescription() const {
 CommandPtr RemoveEffectCommand::fromJson(const nlohmann::json& j) {
     const auto layerEntity  = static_cast<entt::entity>(j.value("layerEntity",  std::uint32_t{0}));
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
-    return std::make_unique<RemoveEffectCommand>(layerEntity, effectEntity);
+    auto cmd = std::make_unique<RemoveEffectCommand>(layerEntity, effectEntity);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+// ============================================================================
+// Effect graph topology commands (ConnectEffect / DisconnectEffect /
+// SetEffectGraphTopology). All three snapshot + restore the whole
+// {connections, outputNode} pair — the vectors are tiny and diff-undo of
+// implied edits (linear materialization, input replacement) is fiddly.
+// ============================================================================
+
+namespace {
+
+// Resolve a chain-node index to an entity (-1 = the entt::null sentinel).
+// Returns false for an out-of-range index.
+bool chainNodeAt(const EffectChain& chain, int index, entt::entity& out) {
+    if (index == -1) { out = entt::null; return true; }
+    if (index < 0 || index >= static_cast<int>(chain.nodes.size())) return false;
+    out = chain.nodes[static_cast<std::size_t>(index)];
+    return true;
+}
+
+} // namespace
+
+bool ConnectEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) {
+        std::cerr << "[ConnectEffect] layer has no effect chain" << std::endl;
+        return false;
+    }
+    if (m_addrTrack) {
+        if (!chainNodeAt(*chain, m_addrSrc, m_srcNode) ||
+            !chainNodeAt(*chain, m_addrDst, m_dstNode)) {
+            std::cerr << "[ConnectEffect] node index out of range" << std::endl;
+            return false;
+        }
+    }
+    if (m_srcNode == m_dstNode && m_srcNode != entt::null) {
+        std::cerr << "[ConnectEffect] refusing self-edge" << std::endl;
+        return false;
+    }
+
+    if (!m_hasSnapshot) {
+        m_prevConnections = chain->connections;
+        m_prevOutputNode  = chain->outputNode;
+        m_hasSnapshot     = true;
+    }
+
+    // First-ever graph edit: materialize the implicit linear stack so the
+    // user edits the topology they were already seeing.
+    if (chain->connections.empty()) {
+        chain->connections = effects::materializeLinearTopology(*chain);
+    }
+
+    // Cycle check against the post-materialization topology.
+    if (effects::topologyWouldCycle(*chain, m_srcNode, m_dstNode)) {
+        std::cerr << "[ConnectEffect] refused: would create a cycle" << std::endl;
+        chain->connections = m_prevConnections;  // roll back materialization
+        chain->outputNode  = m_prevOutputNode;
+        m_hasSnapshot = false;
+        return false;
+    }
+
+    // Single-input rule: a new link into an occupied (dst, dstSocket)
+    // replaces the incumbent.
+    chain->connections.erase(
+        std::remove_if(chain->connections.begin(), chain->connections.end(),
+            [&](const EffectConnection& c) {
+                return c.dstNode == m_dstNode && c.dstSocket == m_dstSocket;
+            }),
+        chain->connections.end());
+
+    chain->connections.push_back({m_srcNode, m_dstNode, m_srcSocket, m_dstSocket});
+
+    // Wiring into the final-output sentinel re-points the chain's output.
+    if (m_dstNode == entt::null && m_srcNode != entt::null) {
+        chain->outputNode = m_srcNode;
+    }
+    return true;
+}
+
+bool ConnectEffectCommand::undo(Engine& engine) {
+    if (!m_hasSnapshot) return false;
+    auto& registry = engine.getRegistry();
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    chain->connections = m_prevConnections;
+    chain->outputNode  = m_prevOutputNode;
+    return true;
+}
+
+nlohmann::json ConnectEffectCommand::toJson() const {
+    return {{"type", "ConnectEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"srcEffectEntity", static_cast<std::uint32_t>(m_srcNode)},
+            {"dstEffectEntity", static_cast<std::uint32_t>(m_dstNode)},
+            {"srcSocket", m_srcSocket},
+            {"dstSocket", m_dstSocket}};
+}
+
+std::string ConnectEffectCommand::getDescription() const {
+    return "Connect effects";
+}
+
+CommandPtr ConnectEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const auto src   = static_cast<entt::entity>(
+        j.value("srcEffectEntity", static_cast<std::uint32_t>(entt::null)));
+    const auto dst   = static_cast<entt::entity>(
+        j.value("dstEffectEntity", static_cast<std::uint32_t>(entt::null)));
+    auto cmd = std::make_unique<ConnectEffectCommand>(
+        layer, src, dst,
+        static_cast<std::uint8_t>(j.value("srcSocket", 0)),
+        static_cast<std::uint8_t>(j.value("dstSocket", 0)));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0),
+                              j.value("srcEffectIndex", -1),
+                              j.value("dstEffectIndex", -1));
+    }
+    return cmd;
+}
+
+bool DisconnectEffectCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain || chain->connections.empty()) return false;
+    if (m_addrTrack && !chainNodeAt(*chain, m_addrDst, m_dstNode)) return false;
+
+    if (!m_hasSnapshot) {
+        m_prevConnections = chain->connections;
+        m_prevOutputNode  = chain->outputNode;
+        m_hasSnapshot     = true;
+    }
+
+    const std::size_t before = chain->connections.size();
+    chain->connections.erase(
+        std::remove_if(chain->connections.begin(), chain->connections.end(),
+            [&](const EffectConnection& c) {
+                return c.dstNode == m_dstNode && c.dstSocket == m_dstSocket;
+            }),
+        chain->connections.end());
+    if (chain->connections.size() == before) {
+        m_hasSnapshot = false;
+        return false;  // nothing matched
+    }
+    // Deleting the link INTO the final-output sentinel must also clear
+    // outputNode — ConnectEffect keeps the two in sync when wiring the
+    // output, so Disconnect has to as well or the deletion is a visual
+    // no-op (the bake keeps rendering the old output; null falls back
+    // to the last node, the documented default).
+    if (m_dstNode == entt::null) {
+        chain->outputNode = entt::null;
+    }
+    return true;
+}
+
+bool DisconnectEffectCommand::undo(Engine& engine) {
+    if (!m_hasSnapshot) return false;
+    auto* chain = engine.getRegistry().try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    chain->connections = m_prevConnections;
+    chain->outputNode  = m_prevOutputNode;
+    return true;
+}
+
+nlohmann::json DisconnectEffectCommand::toJson() const {
+    return {{"type", "DisconnectEffect"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"dstEffectEntity", static_cast<std::uint32_t>(m_dstNode)},
+            {"dstSocket", m_dstSocket}};
+}
+
+std::string DisconnectEffectCommand::getDescription() const {
+    return "Disconnect effects";
+}
+
+CommandPtr DisconnectEffectCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const auto dst   = static_cast<entt::entity>(
+        j.value("dstEffectEntity", static_cast<std::uint32_t>(entt::null)));
+    auto cmd = std::make_unique<DisconnectEffectCommand>(
+        layer, dst, static_cast<std::uint8_t>(j.value("dstSocket", 0)));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0),
+                              j.value("dstEffectIndex", -1));
+    }
+    return cmd;
+}
+
+bool SetEffectGraphTopologyCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+    }
+    if (!registry.valid(m_layerEntity)) return false;
+    auto* chain = registry.try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+
+    if (m_addrTrack) {
+        // Resolve indexed connections against the live chain.
+        m_connections.clear();
+        for (const auto& ic : m_indexedConnections) {
+            entt::entity src{entt::null};
+            entt::entity dst{entt::null};
+            if (!chainNodeAt(*chain, ic.src, src) ||
+                !chainNodeAt(*chain, ic.dst, dst)) {
+                std::cerr << "[SetEffectGraphTopology] connection index out of range"
+                          << std::endl;
+                return false;
+            }
+            m_connections.push_back({src, dst, ic.srcSocket, ic.dstSocket});
+        }
+        if (!chainNodeAt(*chain, m_addrOutput, m_outputNode)) return false;
+    }
+
+    if (!m_hasSnapshot) {
+        m_prevConnections = chain->connections;
+        m_prevOutputNode  = chain->outputNode;
+        m_hasSnapshot     = true;
+    }
+
+    chain->connections = m_connections;
+    chain->outputNode  = (m_outputNode == entt::null && !chain->nodes.empty())
+        ? chain->nodes.back()
+        : m_outputNode;
+    return true;
+}
+
+bool SetEffectGraphTopologyCommand::undo(Engine& engine) {
+    if (!m_hasSnapshot) return false;
+    auto* chain = engine.getRegistry().try_get<EffectChain>(m_layerEntity);
+    if (!chain) return false;
+    chain->connections = m_prevConnections;
+    chain->outputNode  = m_prevOutputNode;
+    return true;
+}
+
+nlohmann::json SetEffectGraphTopologyCommand::toJson() const {
+    nlohmann::json conns = nlohmann::json::array();
+    for (const auto& c : m_connections) {
+        conns.push_back({{"srcEffectEntity", static_cast<std::uint32_t>(c.srcNode)},
+                         {"dstEffectEntity", static_cast<std::uint32_t>(c.dstNode)},
+                         {"srcSocket", c.srcSocket},
+                         {"dstSocket", c.dstSocket}});
+    }
+    return {{"type", "SetEffectGraphTopology"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"connectionsByEntity", std::move(conns)},
+            {"outputEntity", static_cast<std::uint32_t>(m_outputNode)}};
+}
+
+std::string SetEffectGraphTopologyCommand::getDescription() const {
+    return m_connections.empty() && !m_addrTrack
+        ? "Reset effect graph to linear stack"
+        : "Set effect graph topology";
+}
+
+CommandPtr SetEffectGraphTopologyCommand::fromJson(const nlohmann::json& j) {
+    const auto layer = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    // Live-session / replay form: entity-ID connections, matching what
+    // toJson() emits (recorded sessions must round-trip — without this
+    // branch a replayed SetEffectGraphTopology deserialized as an empty
+    // topology, i.e. a silent reset-to-linear-stack).
+    std::vector<EffectConnection> entityConnections;
+    if (j.contains("connectionsByEntity") && j["connectionsByEntity"].is_array()) {
+        for (const auto& cj : j["connectionsByEntity"]) {
+            EffectConnection c;
+            c.srcNode   = static_cast<entt::entity>(
+                cj.value("srcEffectEntity", static_cast<std::uint32_t>(entt::null)));
+            c.dstNode   = static_cast<entt::entity>(
+                cj.value("dstEffectEntity", static_cast<std::uint32_t>(entt::null)));
+            c.srcSocket = static_cast<std::uint8_t>(cj.value("srcSocket", 0));
+            c.dstSocket = static_cast<std::uint8_t>(cj.value("dstSocket", 0));
+            entityConnections.push_back(c);
+        }
+    }
+    const auto outputEntity = static_cast<entt::entity>(
+        j.value("outputEntity", static_cast<std::uint32_t>(entt::null)));
+    auto cmd = std::make_unique<SetEffectGraphTopologyCommand>(
+        layer, std::move(entityConnections), outputEntity);
+    if (j.contains("trackIndex")) {
+        std::vector<SetEffectGraphTopologyCommand::IndexedConnection> conns;
+        if (j.contains("connections") && j["connections"].is_array()) {
+            for (const auto& cj : j["connections"]) {
+                SetEffectGraphTopologyCommand::IndexedConnection ic;
+                ic.src       = cj.value("src", -1);
+                ic.dst       = cj.value("dst", -1);
+                ic.srcSocket = static_cast<std::uint8_t>(cj.value("srcSocket", 0));
+                ic.dstSocket = static_cast<std::uint8_t>(cj.value("dstSocket", 0));
+                conns.push_back(ic);
+            }
+        }
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0),
+                              std::move(conns), j.value("outputNode", -1));
+    }
+    return cmd;
+}
+
+bool SetScaleLockCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) return false;
+    auto& lock = registry.get_or_emplace<ScaleLock>(m_layerEntity);
+    if (!m_previousUniform.has_value()) m_previousUniform = lock.uniform;
+    lock.uniform = m_uniform;
+    return true;
+}
+
+bool SetScaleLockCommand::undo(Engine& engine) {
+    if (!m_previousUniform.has_value()) return false;
+    auto& registry = engine.getRegistry();
+    if (!registry.valid(m_layerEntity)) return false;
+    registry.get_or_emplace<ScaleLock>(m_layerEntity).uniform = *m_previousUniform;
+    return true;
+}
+
+nlohmann::json SetScaleLockCommand::toJson() const {
+    return {{"type", "SetScaleLock"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"uniform", m_uniform}};
+}
+
+std::string SetScaleLockCommand::getDescription() const {
+    return m_uniform ? "Lock uniform scale" : "Unlock uniform scale";
+}
+
+CommandPtr SetScaleLockCommand::fromJson(const nlohmann::json& j) {
+    const auto layerEntity = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    const bool uniform = j.value("uniform", true);
+    return std::make_unique<SetScaleLockCommand>(layerEntity, uniform);
 }
 
 bool SetEffectEnabledCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
     auto& registry = engine.getRegistry();
     if (!registry.valid(m_effectEntity)) return false;
     auto* fx = registry.try_get<Effect>(m_effectEntity);
@@ -5143,14 +6742,28 @@ std::string SetEffectEnabledCommand::getDescription() const {
 CommandPtr SetEffectEnabledCommand::fromJson(const nlohmann::json& j) {
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
     const bool enabled = j.value("enabled", true);
-    return std::make_unique<SetEffectEnabledCommand>(effectEntity, enabled);
+    auto cmd = std::make_unique<SetEffectEnabledCommand>(effectEntity, enabled);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
 }
 
-bool SetEffectFloatParamCommand::execute(Engine& engine) {
+namespace {
+
+// Shared body of SetEffectParam / SetEffectFloatParam: resolve the slot
+// by name via the kind schema, type-check against the schema (a Float
+// write into an Enum/Color/Bool slot would corrupt the tagged union —
+// the bake would read the float bits as an int and the UI would snap
+// the slot back to its default), capture the pre-edit value once, write.
+bool setEffectParamImpl(Engine& engine, entt::entity effectEntity,
+                        const std::string& paramName, const ParamValue& value,
+                        std::optional<ParamValue>& previousValue) {
     auto& registry = engine.getRegistry();
-    if (!registry.valid(m_effectEntity)) return false;
-    auto* fx = registry.try_get<Effect>(m_effectEntity);
-    auto* params = registry.try_get<EffectParameters>(m_effectEntity);
+    if (!registry.valid(effectEntity)) return false;
+    auto* fx = registry.try_get<Effect>(effectEntity);
+    auto* params = registry.try_get<EffectParameters>(effectEntity);
     if (!fx || !params) return false;
 
     auto* kindRegistry = engine.getEffectKindRegistry();
@@ -5158,7 +6771,7 @@ bool SetEffectFloatParamCommand::execute(Engine& engine) {
     const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
     if (!kind) return false;
 
-    const int slot = findParamSlotByName(*kind, m_paramName);
+    const int slot = findParamSlotByName(*kind, paramName);
     if (slot < 0) return false;
     if (static_cast<std::size_t>(slot) >= params->values.size()) {
         // Schema grew since the effect was created — extend with defaults.
@@ -5168,27 +6781,62 @@ bool SetEffectFloatParamCommand::execute(Engine& engine) {
             params->values[i] = kind->params[i].defaultValue;
         }
     }
-    if (!m_previousValue.has_value()) {
-        m_previousValue = params->values[slot].f4[0];
+    if (value.type != kind->params[slot].type) {
+        std::cerr << "[SetEffectParam] type mismatch on '" << paramName
+                  << "' of kind '" << kind->stableId << "' (schema "
+                  << static_cast<int>(kind->params[slot].type) << ", got "
+                  << static_cast<int>(value.type) << ")" << std::endl;
+        return false;
     }
-    params->values[slot] = ParamValue::makeFloat(m_value);
+    if (!previousValue.has_value()) {
+        previousValue = params->values[slot];
+    }
+    params->values[slot] = value;
     return true;
 }
 
-bool SetEffectFloatParamCommand::undo(Engine& engine) {
-    if (!m_previousValue.has_value()) return false;
+// Undo half: write a captured ParamValue back to the named slot.
+bool restoreEffectParamImpl(Engine& engine, entt::entity effectEntity,
+                            const std::string& paramName, const ParamValue& prev) {
     auto& registry = engine.getRegistry();
-    auto* fx = registry.try_get<Effect>(m_effectEntity);
-    auto* params = registry.try_get<EffectParameters>(m_effectEntity);
+    auto* fx = registry.try_get<Effect>(effectEntity);
+    auto* params = registry.try_get<EffectParameters>(effectEntity);
     if (!fx || !params) return false;
     auto* kindRegistry = engine.getEffectKindRegistry();
     if (!kindRegistry) return false;
     const effects::EffectKind* kind = kindRegistry->find(fx->kindId);
     if (!kind) return false;
-    const int slot = findParamSlotByName(*kind, m_paramName);
+    const int slot = findParamSlotByName(*kind, paramName);
     if (slot < 0 || static_cast<std::size_t>(slot) >= params->values.size()) return false;
-    params->values[slot] = ParamValue::makeFloat(*m_previousValue);
+    params->values[slot] = prev;
     return true;
+}
+
+} // namespace
+
+bool SetEffectFloatParamCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
+    std::optional<ParamValue> prev;
+    if (m_previousValue.has_value()) prev = ParamValue::makeFloat(*m_previousValue);
+    if (!setEffectParamImpl(engine, m_effectEntity, m_paramName,
+                            ParamValue::makeFloat(m_value), prev)) {
+        return false;
+    }
+    if (!m_previousValue.has_value() && prev.has_value()) {
+        m_previousValue = prev->f4[0];
+    }
+    return true;
+}
+
+bool SetEffectFloatParamCommand::undo(Engine& engine) {
+    if (!m_previousValue.has_value()) return false;
+    return restoreEffectParamImpl(engine, m_effectEntity, m_paramName,
+                                  ParamValue::makeFloat(*m_previousValue));
 }
 
 nlohmann::json SetEffectFloatParamCommand::toJson() const {
@@ -5206,8 +6854,116 @@ CommandPtr SetEffectFloatParamCommand::fromJson(const nlohmann::json& j) {
     const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
     auto paramName = j.value("paramName", std::string{});
     float value = j.value("value", 0.0f);
-    return std::make_unique<SetEffectFloatParamCommand>(
+    auto cmd = std::make_unique<SetEffectFloatParamCommand>(
         effectEntity, std::move(paramName), value);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+bool SetEffectParamCommand::execute(Engine& engine) {
+    if (m_scriptAddr) {
+        entt::entity layer{entt::null};
+        if (!resolveEffectScriptAddr(engine, *m_scriptAddr, true, layer, m_effectEntity)) {
+            return false;
+        }
+    }
+    return setEffectParamImpl(engine, m_effectEntity, m_paramName, m_value,
+                              m_previousValue);
+}
+
+bool SetEffectParamCommand::undo(Engine& engine) {
+    if (!m_previousValue.has_value()) return false;
+    return restoreEffectParamImpl(engine, m_effectEntity, m_paramName,
+                                  *m_previousValue);
+}
+
+nlohmann::json SetEffectParamCommand::toJson() const {
+    return {{"type", "SetEffectParam"},
+            {"effectEntity", static_cast<std::uint32_t>(m_effectEntity)},
+            {"paramName", m_paramName},
+            {"value", {{"type", effects::paramTypeToJson(m_value.type)},
+                       {"value", effects::paramValueToJson(m_value)}}}};
+}
+
+std::string SetEffectParamCommand::getDescription() const {
+    return "Set effect param " + m_paramName;
+}
+
+CommandPtr SetEffectParamCommand::fromJson(const nlohmann::json& j) {
+    const auto effectEntity = static_cast<entt::entity>(j.value("effectEntity", std::uint32_t{0}));
+    auto paramName = j.value("paramName", std::string{});
+    ParamValue value;
+    if (j.contains("value") && j["value"].is_object()) {
+        const auto& vj = j["value"];
+        value = effects::jsonToParamValue(
+            effects::jsonToParamType(vj.value("type", std::string{"float"})),
+            vj.contains("value") ? vj["value"] : nlohmann::json{});
+    } else if (j.contains("value") && j["value"].is_number()) {
+        // Bare-number convenience: treat as Float.
+        value = ParamValue::makeFloat(j["value"].get<float>());
+    }
+    auto cmd = std::make_unique<SetEffectParamCommand>(
+        effectEntity, std::move(paramName), value);
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress({j.value("trackIndex", 0), j.value("clipIndex", 0),
+                               j.value("effectIndex", 0)});
+    }
+    return cmd;
+}
+
+bool AssertEffectKeyframeCountCommand::execute(Engine& engine) {
+    entt::entity layer{entt::null};
+    entt::entity fxEnt{entt::null};
+    if (!resolveEffectScriptAddr(engine,
+                                 {m_trackIndex, m_clipIndex, m_effectIndex},
+                                 true, layer, fxEnt)) {
+        std::cerr << "[AssertEffectKeyframeCount] FAIL: bad address track="
+                  << m_trackIndex << " clip=" << m_clipIndex
+                  << " effect=" << m_effectIndex << std::endl;
+        return false;
+    }
+    const auto* anim =
+        engine.getRegistry().try_get<EffectAnimatedParameters>(fxEnt);
+    const std::uint32_t hash = effects::fnv1a32(m_paramName);
+    std::size_t actual = 0;
+    if (anim) {
+        for (const auto& t : anim->tracks) {
+            if (t.paramKeyHash == hash) { actual = t.keyframes.size(); break; }
+        }
+    }
+    if (actual == m_count) {
+        std::cout << "[AssertEffectKeyframeCount] OK effect=" << m_effectIndex
+                  << " " << m_paramName << " count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertEffectKeyframeCount] FAIL: effect=" << m_effectIndex
+              << " " << m_paramName << " expected=" << m_count
+              << " got=" << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertEffectKeyframeCountCommand::toJson() const {
+    return {{"type", "AssertEffectKeyframeCount"},
+            {"trackIndex", m_trackIndex},
+            {"clipIndex", m_clipIndex},
+            {"effectIndex", m_effectIndex},
+            {"paramName", m_paramName},
+            {"count", m_count}};
+}
+
+std::string AssertEffectKeyframeCountCommand::getDescription() const {
+    return "Assert effect " + std::to_string(m_effectIndex) + " " + m_paramName
+         + " has " + std::to_string(m_count) + " keyframe(s)";
+}
+
+CommandPtr AssertEffectKeyframeCountCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertEffectKeyframeCountCommand>(
+        j.value("trackIndex", 0), j.value("clipIndex", 0),
+        j.value("effectIndex", 0), j.value("paramName", std::string{}),
+        j.value("count", static_cast<std::size_t>(0)));
 }
 
 // ============================================================================
@@ -5853,6 +7609,54 @@ CommandPtr SetTextColorCommand::fromJson(const nlohmann::json& j) {
     return std::make_unique<SetTextColorCommand>(
         e,
         j.value("r", 1.0f), j.value("g", 1.0f), j.value("b", 1.0f), j.value("a", 1.0f));
+}
+
+// ----------------------------------------------------------------------------
+
+bool SetSolidColorCommand::execute(Engine& engine) {
+    if (m_addrTrack) {
+        m_layerEntity = resolveLayer(engine, *m_addrTrack, m_addrClip);
+        if (m_layerEntity == entt::null) {
+            std::cerr << "[SetSolidColor] no layer at track=" << *m_addrTrack
+                      << " clip=" << m_addrClip << std::endl;
+            return false;
+        }
+    }
+    auto* s = engine.getRegistry().try_get<SolidLayerState>(m_layerEntity);
+    if (!s) return false;
+    if (!m_prevR.has_value()) {
+        m_prevR = s->color[0]; m_prevG = s->color[1];
+        m_prevB = s->color[2]; m_prevA = s->color[3];
+    }
+    s->color = {m_r, m_g, m_b, m_a};
+    return true;
+}
+
+bool SetSolidColorCommand::undo(Engine& engine) {
+    if (!m_prevR.has_value()) return false;
+    auto* s = engine.getRegistry().try_get<SolidLayerState>(m_layerEntity);
+    if (!s) return false;
+    s->color = {*m_prevR, *m_prevG, *m_prevB, *m_prevA};
+    return true;
+}
+
+nlohmann::json SetSolidColorCommand::toJson() const {
+    return {{"type", "SetSolidColor"},
+            {"layerEntity", static_cast<std::uint32_t>(m_layerEntity)},
+            {"r", m_r}, {"g", m_g}, {"b", m_b}, {"a", m_a}};
+}
+
+std::string SetSolidColorCommand::getDescription() const { return "Set solid color"; }
+
+CommandPtr SetSolidColorCommand::fromJson(const nlohmann::json& j) {
+    const auto e = static_cast<entt::entity>(j.value("layerEntity", std::uint32_t{0}));
+    auto cmd = std::make_unique<SetSolidColorCommand>(
+        e,
+        j.value("r", 1.0f), j.value("g", 1.0f), j.value("b", 1.0f), j.value("a", 1.0f));
+    if (j.contains("trackIndex")) {
+        cmd->setScriptAddress(j.value("trackIndex", 0), j.value("clipIndex", 0));
+    }
+    return cmd;
 }
 
 // ----------------------------------------------------------------------------

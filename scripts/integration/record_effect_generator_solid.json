@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "description": "Record-pass for the generator-on-solid integration test. Same steps as effect_generator_solid.json without golden comparison — emits test_output/effect_generator/gradient_screen.hash for promotion into tests/goldens/effect_generator/. Before promoting, sanity-check the capture is a red-to-blue vertical gradient (screenshot slot 1 if unsure), not the plain solid.",
+    "commands": [
+        {"type": "AddScreen", "name": "GenScreen", "width": 64, "height": 64},
+        {"type": "CreateSolidLayer", "trackIndex": 0, "startFrame": 0, "duration": 300},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AddEffect", "trackIndex": 0, "clipIndex": 0, "kindStableId": "core.gen.linear_gradient"},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "colorA", "value": {"type": "color", "value": [1.0, 0.0, 0.0, 1.0]}},
+        {"type": "SetEffectParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "colorB", "value": {"type": "color", "value": [0.0, 0.0, 1.0, 1.0]}},
+        {"type": "SetEffectFloatParam", "trackIndex": 0, "clipIndex": 0, "effectIndex": 0, "paramName": "angle", "value": 90.0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/effect_generator/gradient_screen.hash", "composeSlot": 1},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

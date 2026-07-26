@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "description": "Record-pass for the Solid layer integration test. Same steps as solid_layer_create.json without golden comparison — emits test_output/solid_layer/solid_red.hash for promotion into tests/goldens/solid_layer/.",
+    "commands": [
+        {"type": "AddScreen", "name": "SolidScreen", "width": 64, "height": 64},
+        {"type": "CreateSolidLayer", "trackIndex": 0, "startFrame": 0, "duration": 300},
+        {"type": "SetSolidColor", "trackIndex": 0, "clipIndex": 0, "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/solid_layer/solid_red.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "CaptureHash", "hashFilepath": "test_output/solid_layer/solid_red_screen.hash", "composeSlot": 1},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "Exit"}
+    ]
+}

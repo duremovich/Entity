@@ -1,0 +1,202 @@
+{
+    "version": 1,
+    "description": "Group keyframe operations (multi-select), driven through the plural commands the timeline UI emits. Covers: MoveKeyframes shifts a whole selection (spanning two properties) as one undo step; a move whose destination is occupied by ANOTHER SELECTED keyframe still succeeds, because the command erases the whole selection before re-inserting it shifted (10,20 -> 20,30 would otherwise clobber); SetKeyframesInterpolation applies easing across a selection spanning two properties; SetKeyframesValue leaves easing alone; RemoveKeyframes deletes a selection and one Undo brings it all back.",
+    "commands": [
+        {
+            "type": "AddScreen",
+            "name": "MultiKfScreen",
+            "width": 192,
+            "height": 108
+        },
+        {
+            "type": "CreateTextLayer",
+            "trackIndex": 0,
+            "startFrame": 0,
+            "duration": 300
+        },
+        { "type": "WaitSeconds", "count": 0.1 },
+
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 10, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 20, "value": 2.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 90, "value": 3.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 10, "value": 1.0
+        },
+        {
+            "type": "AddKeyframe",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 20, "value": 0.5
+        },
+
+        {
+            "type": "MoveKeyframes",
+            "delta": 5,
+            "keyframes": [
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX",  "frame": 10},
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX",  "frame": 20},
+                {"trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 10},
+                {"trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 20}
+            ]
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 2
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 15,
+            "interpolation": "linear"
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 25,
+            "interpolation": "linear"
+        },
+
+        { "type": "Undo" },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 10,
+            "interpolation": "linear"
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+
+        {
+            "type": "MoveKeyframes",
+            "delta": 10,
+            "keyframes": [
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX", "frame": 10},
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX", "frame": 20}
+            ]
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 30,
+            "interpolation": "linear"
+        },
+        { "type": "Undo" },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+
+        {
+            "type": "SetKeyframesInterpolation",
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75,
+            "keyframes": [
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX",  "frame": 20},
+                {"trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 20}
+            ]
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 20,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "frame": 20,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 10,
+            "interpolation": "linear"
+        },
+
+        {
+            "type": "SetKeyframesValue",
+            "value": 7.5,
+            "keyframes": [
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX", "frame": 20}
+            ]
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 20,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+
+        {
+            "type": "RemoveKeyframes",
+            "keyframes": [
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX",  "frame": 10},
+                {"trackIndex": 0, "clipIndex": 0, "property": "ScaleX",  "frame": 20},
+                {"trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 10}
+            ]
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 1
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 1
+        },
+
+        { "type": "Undo" },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "count": 3
+        },
+        {
+            "type": "AssertKeyframeCount",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "Opacity", "count": 2
+        },
+        {
+            "type": "AssertKeyframeInterpolation",
+            "trackIndex": 0, "clipIndex": 0,
+            "property": "ScaleX", "frame": 20,
+            "interpolation": "ease_in_out",
+            "easeIn": 0.25, "easeOut": 0.75
+        },
+
+        { "type": "Exit" }
+    ]
+}

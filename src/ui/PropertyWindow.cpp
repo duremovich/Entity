@@ -21,12 +21,16 @@
 #include "entity/components/GenerativeLayer.hpp"
 #include "entity/components/MunchersGameState.hpp"
 #include "entity/components/SignalLayer.hpp"
+#include "entity/components/SolidLayerState.hpp"
 #include "entity/components/TextLayerState.hpp"
+#include "entity/effects/EffectChainTopo.hpp"
+#include "entity/ui/EffectUiCommon.hpp"
 #include "entity/components/AudioSource.hpp"
 #include "entity/components/RemotePatch.hpp"
 #include "entity/remote/RemoteControlStore.hpp"
 #include "entity/render/TextRasterizer.hpp"
 #include "entity/components/AnimatedProperties.hpp"
+#include "entity/components/ScaleLock.hpp"
 #include "entity/components/Effect.hpp"
 #include "entity/components/EffectAnimatedParameters.hpp"
 #include "entity/components/EffectChain.hpp"
@@ -40,6 +44,7 @@
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/command/Commands.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/core/ClipPlaybackDiagnostics.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include <imgui.h>
 #include <glm/glm.hpp>
@@ -382,10 +387,13 @@ void PropertyWindow::renderTransformSection() {
         ImGui::SetTooltip("Scale factor. 1.0 = fullscreen, 0.5 = half size");
     }
 
-    // Uniform scale checkbox - use per-entity state map to prevent static variable leak
-    auto [it, inserted] = m_uniformScaleState.try_emplace(selectedClip, true);
-    bool& uniformScale = it->second;
-    ImGui::Checkbox("Uniform Scale", &uniformScale);
+    // Uniform scale lock lives on the entity (ScaleLock) so the timeline's
+    // twirl-down scale rows honor the same flag and it survives a project reload.
+    bool uniformScale = registry.get_or_emplace<ScaleLock>(selectedClip).uniform;
+    if (ImGui::Checkbox("Uniform Scale", &uniformScale) && m_dispatcher) {
+        m_dispatcher->enqueue(
+            std::make_unique<SetScaleLockCommand>(selectedClip, uniformScale));
+    }
 
     // Scale X with keyframe controls
     renderKeyframeControls(AnimatableProperty::ScaleX, "Scale X", transform->scale.x);
@@ -928,6 +936,89 @@ void PropertyWindow::renderClipInfo() {
 
     // Media type (use helper function from Types.hpp)
     ImGui::Text("Media Type: %s", MediaTypeToString(clip->mediaType));
+
+    renderClipPlaybackReadout(selectedClip, *clip);
+}
+
+// Live transport readout for the selected clip. The point of this panel is
+// the Mapped-vs-Presented pair: "Mapped" is the source frame the engine has
+// decided the clip should be showing right now, "Presented" is the one that
+// actually reached its GPU texture. They track each other in steady state.
+// When they diverge the picture is frozen (or stale) even though every
+// upstream number keeps advancing — which is invisible from the mapped frame
+// alone, and is the failure this readout exists to make legible.
+void PropertyWindow::renderClipPlaybackReadout(entt::entity clipEntity,
+                                               const Clip& clip) {
+    ImGui::Separator();
+    ImGui::TextDisabled("Playback (live)");
+
+    if (!m_engine) {
+        ImGui::TextDisabled("(engine not bound)");
+        return;
+    }
+
+    const ClipPlaybackDiagnostics d =
+        gatherClipPlaybackDiagnostics(*m_engine, clipEntity, clip);
+
+    ImGui::Text("Timeline: %lld  (clip-local %lld)",
+                static_cast<long long>(d.timelineFrame),
+                static_cast<long long>(d.localFrame));
+
+    // Mapped - the source frame the engine wants on screen.
+    if (d.mapped >= 0) {
+        ImGui::Text("Mapped:   %lld / %lld",
+                    static_cast<long long>(d.mapped),
+                    static_cast<long long>(d.sourceLength));
+    } else {
+        ImGui::TextDisabled("Mapped:   n/a");
+    }
+
+    // Presented - the frame that actually reached the texture. Divergence from
+    // Mapped is the frozen-picture signature; a small lag is normal (see
+    // ClipPlaybackDiagnostics::kStaleLagFrames).
+    if (!d.everPresented()) {
+        ImGui::TextDisabled("Presented: (never uploaded)");
+    } else if (d.stale()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                           "Presented: %lld / %lld   STALE (%+lld)",
+                           static_cast<long long>(d.presented),
+                           static_cast<long long>(d.sourceLength),
+                           static_cast<long long>(-d.lag()));
+    } else {
+        ImGui::Text("Presented: %lld / %lld   (lag %+lld)%s",
+                    static_cast<long long>(d.presented),
+                    static_cast<long long>(d.sourceLength),
+                    static_cast<long long>(-d.lag()),
+                    d.clipActive ? "" : "  [inactive]");
+    }
+
+    // Decoder + cache. If Presented is stuck, these say why: either the worker
+    // isn't being steered toward the mapped frame, or it is and the frame just
+    // isn't in the cache yet.
+    if (d.hasWorker) {
+        ImGui::Text("Decoder:  decoded %lld  target %lld%s",
+                    static_cast<long long>(d.decoderFrame),
+                    static_cast<long long>(d.decoderTarget),
+                    d.seeking ? "  (seeking)" : "");
+    } else {
+        ImGui::TextDisabled("Decoder:  (no worker)");
+    }
+    if (d.mapped >= 0) {
+        ImGui::Text("Cache:    mapped frame %s", d.cacheHit ? "HIT" : "MISS");
+    }
+
+    // Section-break continuation. While parked at a break a Normal clip keeps
+    // walking sourcePhaseFrames in wall-clock; a Locked one holds.
+    if (d.inContinuation) {
+        ImGui::Text("Continuation: ON  phase %.1f", d.sourcePhaseFrames);
+    } else {
+        ImGui::TextDisabled("Continuation: off");
+    }
+
+    ImGui::Text("Extend: %s   Section: %s",
+                clip.playbackMode == PlaybackMode::Freeze ? "Freeze"
+                    : clip.playbackMode == PlaybackMode::Loop ? "Loop" : "Ping-Pong",
+                clip.sectionBehavior == SectionBehavior::Locked ? "Locked" : "Normal");
 }
 
 void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
@@ -935,43 +1026,19 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
     auto& registry = m_timeline->getRegistry();
     if (!registry.valid(layerEntity)) return;
 
-    // "Add Effect" button. Opens a popup populated from the registry.
+    // "Add Effect" button. Opens a popup populated from the registry
+    // (shared picker with the Effect Graph's context menu).
     if (ImGui::Button("+ Add Effect", ImVec2(-1, 0))) {
         ImGui::OpenPopup("AddEffectPopup");
     }
     if (ImGui::BeginPopup("AddEffectPopup")) {
-        if (!m_effectKindRegistry) {
-            ImGui::TextDisabled("(EffectKindRegistry not bound)");
-        } else {
-            // Group by category, stable order.
-            const auto& kinds = m_effectKindRegistry->kinds();
-            std::vector<const effects::EffectKind*> sorted;
-            sorted.reserve(kinds.size());
-            for (const auto& [_, k] : kinds) sorted.push_back(&k);
-            std::sort(sorted.begin(), sorted.end(),
-                [](const effects::EffectKind* a, const effects::EffectKind* b) {
-                    if (a->category != b->category) return a->category < b->category;
-                    return a->displayName < b->displayName;
-                });
-
-            std::string lastCategory;
-            for (const effects::EffectKind* k : sorted) {
-                if (k->category != lastCategory) {
-                    if (!lastCategory.empty()) ImGui::Separator();
-                    ImGui::TextDisabled("%s", k->category.c_str());
-                    lastCategory = k->category;
+        ui::renderEffectKindMenu(m_effectKindRegistry,
+            [&](const effects::EffectKind& k) {
+                if (m_dispatcher) {
+                    m_dispatcher->enqueue(std::make_unique<AddEffectCommand>(
+                        layerEntity, k.stableId));
                 }
-                if (ImGui::MenuItem(k->displayName.c_str())) {
-                    if (m_dispatcher) {
-                        m_dispatcher->enqueue(std::make_unique<AddEffectCommand>(
-                            layerEntity, k->stableId));
-                    }
-                }
-            }
-            if (sorted.empty()) {
-                ImGui::TextDisabled("(no effect kinds registered)");
-            }
-        }
+            });
         ImGui::EndPopup();
     }
 
@@ -983,12 +1050,43 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
 
     ImGui::Spacing();
 
+    // Stack order must always be truthful about evaluation. Linear stacks
+    // display (and reorder) in declaration order. Once the graph editor
+    // has written explicit connections, evaluation order is the topo sort
+    // — show that instead (via the SAME resolver the bake uses, so the
+    // stack and the engine can never disagree), lock the reorder buttons,
+    // and offer a reset back to a linear stack. Disabled / dead nodes
+    // (not in the enabled-only plan) trail at the end.
+    const bool graphDriven = !chain->connections.empty();
+    std::vector<entt::entity> displayOrder;
+    if (graphDriven) {
+        const auto plan = effects::buildEffectExecutionPlan(
+            registry, *chain, m_effectKindRegistry);
+        displayOrder.reserve(chain->nodes.size());
+        for (const auto& step : plan.steps) displayOrder.push_back(step.node);
+        for (auto fxEnt : chain->nodes) {
+            if (std::find(displayOrder.begin(), displayOrder.end(), fxEnt)
+                == displayOrder.end()) {
+                displayOrder.push_back(fxEnt);
+            }
+        }
+        ImGui::TextDisabled("Graph topology active (%d links)",
+                            static_cast<int>(chain->connections.size()));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset to linear stack") && m_dispatcher) {
+            m_dispatcher->enqueue(std::make_unique<SetEffectGraphTopologyCommand>(
+                layerEntity, std::vector<EffectConnection>{}, entt::null));
+        }
+    } else {
+        displayOrder = chain->nodes;
+    }
+
     // Walk the chain and render one collapsible header per effect.
     // Iterating by index so we can capture entities for delete commands
     // without invalidating during the render pass — commands enqueue
     // and apply on the next dispatcher tick.
-    for (std::size_t i = 0; i < chain->nodes.size(); ++i) {
-        const entt::entity fxEnt = chain->nodes[i];
+    for (std::size_t i = 0; i < displayOrder.size(); ++i) {
+        const entt::entity fxEnt = displayOrder[i];
         if (!registry.valid(fxEnt)) continue;
         auto* fx     = registry.try_get<Effect>(fxEnt);
         auto* params = registry.try_get<EffectParameters>(fxEnt);
@@ -1017,12 +1115,42 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
         ImGui::SetNextItemAllowOverlap();
         const bool open = ImGui::CollapsingHeader(displayName,
                                                    ImGuiTreeNodeFlags_DefaultOpen);
+        // Reorder buttons — meaningful only while the list order IS the
+        // evaluation order (implicit linear stack). Graph-driven chains
+        // reorder in the Effect Graph.
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 76.0f);
+        ImGui::BeginDisabled(graphDriven);
+        const bool moveUp = ImGui::SmallButton("^") && i > 0;
+        ImGui::SameLine();
+        const bool moveDown = ImGui::SmallButton("v") && i + 1 < displayOrder.size();
+        ImGui::EndDisabled();
+        if (graphDriven && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Ordering is edited in the Effect Graph for this layer");
+        }
+        if ((moveUp || moveDown) && m_dispatcher && !graphDriven) {
+            m_dispatcher->enqueue(std::make_unique<ReorderEffectCommand>(
+                layerEntity, static_cast<int>(i),
+                static_cast<int>(moveUp ? i - 1 : i + 1)));
+        }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 28.0f);
         const bool deleteClicked = ImGui::SmallButton("X");
 
         if (open) {
             if (!kind) {
                 ImGui::TextDisabled("Kind 0x%08x not registered", fx->kindId);
+                // Hot reload: if the last user-effect scan failed to
+                // compile this kind, surface the compiler output (the
+                // effect keeps rendering with its last-good PSO).
+                if (m_effectKindRegistry) {
+                    auto errIt = m_effectKindRegistry->compileErrors().find(fx->kindId);
+                    if (errIt != m_effectKindRegistry->compileErrors().end()) {
+                        ImGui::PushStyleColor(ImGuiCol_Text,
+                                              ImVec4(0.95f, 0.35f, 0.35f, 1.0f));
+                        ImGui::TextWrapped("[!] HLSL compile failed:\n%s",
+                                           errIt->second.c_str());
+                        ImGui::PopStyleColor();
+                    }
+                }
             } else if (!params) {
                 ImGui::TextDisabled("No EffectParameters component");
             } else {
@@ -1030,12 +1158,10 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
                 for (std::size_t slot = 0; slot < kind->params.size(); ++slot) {
                     const auto& schema = kind->params[slot];
 
-                    // Only Float params are editable in v1 (the only type
-                    // ParamSchema-defines for built-in effects today). When
-                    // other types ship the dispatch widens here.
+                    // Non-Float types get their own widget row (no
+                    // stopwatch — Float-only timeline lanes in v1).
                     if (schema.type != ParamValue::Type::Float) {
-                        ImGui::TextDisabled("%s: (non-Float types not editable yet)",
-                                            schema.displayName.c_str());
+                        renderNonFloatEffectParam(fxEnt, schema, slot, *params);
                         continue;
                     }
 
@@ -1186,6 +1312,124 @@ void PropertyWindow::renderEffectsSection(entt::entity layerEntity) {
 
         ImGui::PopID();
     }
+}
+
+void PropertyWindow::renderNonFloatEffectParam(entt::entity effectEntity,
+                                               const effects::ParamSchema& schema,
+                                               std::size_t slot,
+                                               EffectParameters& params) {
+    ImGui::PushID(static_cast<int>(slot));
+
+    // Ensure the slot exists and matches the schema type (stale saves /
+    // schema growth degrade to the default, same as the loader).
+    if (slot >= params.values.size()) {
+        params.values.resize(slot + 1);
+        params.values[slot] = schema.defaultValue;
+    }
+    ParamValue& stored = params.values[slot];
+    if (stored.type != schema.type) stored = schema.defaultValue;
+
+    ImGui::Text("%s", schema.displayName.c_str());
+    ImGui::SetNextItemWidth(-1);
+
+    // Drag/picker widgets edit a local copy; `stored` still holds the
+    // pre-edit value on the IsItemActivated frame, so the capture below
+    // reads the true prior state before the optimistic write.
+    ParamValue edited = stored;
+    bool changed = false;
+    bool instantCommit = false;   // Checkbox / Combo have no drag lifecycle
+
+    const float dragSpeed =
+        std::max(0.001f, (schema.max - schema.min) / 200.0f);
+
+    switch (schema.type) {
+        case ParamValue::Type::Vec2:
+            changed = entity::ui::DragFloat2("##param", edited.f4, dragSpeed,
+                                             schema.min, schema.max, "%.3f");
+            break;
+        case ParamValue::Type::Vec3:
+            if (schema.uiHint == 1) {
+                changed = ImGui::ColorEdit3("##param", edited.f4,
+                                            ImGuiColorEditFlags_Float);
+            } else {
+                changed = entity::ui::DragFloat3("##param", edited.f4, dragSpeed,
+                                                 schema.min, schema.max, "%.3f");
+            }
+            break;
+        case ParamValue::Type::Color:
+            changed = ImGui::ColorEdit4("##param", edited.f4,
+                                        ImGuiColorEditFlags_Float |
+                                        ImGuiColorEditFlags_AlphaBar);
+            break;
+        case ParamValue::Type::Int: {
+            int v = edited.i;
+            changed = entity::ui::DragInt("##param", &v, 1.0f,
+                                          static_cast<int>(schema.min),
+                                          static_cast<int>(schema.max));
+            edited.i = v;
+            break;
+        }
+        case ParamValue::Type::Bool: {
+            bool v = edited.b;
+            if (ImGui::Checkbox("##param", &v)) {
+                edited.b = v;
+                changed = true;
+                instantCommit = true;
+            }
+            break;
+        }
+        case ParamValue::Type::Enum: {
+            int v = edited.i;
+            std::vector<const char*> labels;
+            labels.reserve(schema.enumLabels.size());
+            for (const auto& s : schema.enumLabels) labels.push_back(s.c_str());
+            if (!labels.empty()
+                && ImGui::Combo("##param", &v, labels.data(),
+                                static_cast<int>(labels.size()))) {
+                edited.i = v;
+                changed = true;
+                instantCommit = true;
+            }
+            break;
+        }
+        case ParamValue::Type::Float:
+            break;  // handled by the slider path in renderEffectsSection
+    }
+
+    if (instantCommit) {
+        // No drag lifecycle: prev is the stored value right now, commit
+        // in one step.
+        if (m_dispatcher) {
+            auto cmd = std::make_unique<SetEffectParamCommand>(
+                effectEntity, schema.name, edited);
+            cmd->setPreviousValue(stored);
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+        stored = edited;
+    } else {
+        if (ImGui::IsItemActivated()) {
+            m_preEditEffect.paramValue   = stored;
+            m_preEditEffect.paramName    = schema.name;
+            m_preEditEffect.effectEntity = effectEntity;
+            m_preEditEffect.wasKeyframed = false;
+        }
+        if (changed) {
+            // Optimistic write so the widget tracks the drag without
+            // waiting for the dispatched command.
+            stored = edited;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+            auto cmd = std::make_unique<SetEffectParamCommand>(
+                effectEntity, schema.name, stored);
+            if (m_preEditEffect.effectEntity == effectEntity &&
+                m_preEditEffect.paramName == schema.name) {
+                cmd->setPreviousValue(m_preEditEffect.paramValue);
+            }
+            m_dispatcher->enqueue(std::move(cmd));
+        }
+    }
+
+    ImGui::PopID();
 }
 
 void PropertyWindow::renderTimelineProperties() {
@@ -1670,20 +1914,28 @@ void PropertyWindow::renderKeyframeControls(AnimatableProperty property, const c
     // Push unique ID for this property's controls
     ImGui::PushID(static_cast<int>(property));
 
-    // Stopwatch button (filled if has keyframes)
+    // Stopwatch button (filled if has keyframes). AE semantics: it toggles
+    // ANIMATION for the property, not a single keyframe — switching it off deletes
+    // every keyframe on the track and leaves the property static at the value it
+    // was showing. Destructive on purpose; one undo restores the whole track.
+    // The diamond below is still the single-keyframe add/remove.
     ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255) : IM_COL32(128, 128, 128, 255);
     ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
     if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
-        // Toggle animation - if no keyframes, add one at current frame
-        // If has keyframes, we could clear them (but let's just add at current frame for now)
-        if (clipFrame >= 0) {
+        if (hasKeyframes && m_dispatcher) {
+            if (auto idx = findClipIndices(m_timeline, selectedClip)) {
+                m_dispatcher->enqueue(std::make_unique<ClearPropertyKeyframesCommand>(
+                    idx->first, idx->second, property, currentValue));
+            }
+        } else if (clipFrame >= 0) {
             toggleKeyframeAtCurrentFrame(property, currentValue);
         }
     }
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(hasKeyframes ? "Animation enabled - click to toggle keyframe at current frame"
-                                       : "Click to add keyframe at current frame");
+        ImGui::SetTooltip(hasKeyframes
+            ? "Animation enabled - click to REMOVE ALL keyframes on this property"
+            : "Click to animate this property (adds a keyframe at the playhead)");
     }
 
     ImGui::SameLine();
@@ -1776,27 +2028,26 @@ void PropertyWindow::renderEffectKeyframeControls(
 
     ImGui::PushID(static_cast<int>(hash));
 
-    // Stopwatch — toggles a keyframe at the current frame (add if none
-    // exist, or remove if one exists at this exact frame).
+    // Stopwatch — toggles ANIMATION for the parameter (AE semantics). Switching it
+    // off deletes every keyframe on the param and holds the value it was showing.
+    // The diamond is still the single-keyframe add/remove.
     ImU32 stopwatchColor = hasKeyframes ? IM_COL32(255, 180, 50, 255)
                                         : IM_COL32(128, 128, 128, 255);
     ImGui::PushStyleColor(ImGuiCol_Text, stopwatchColor);
     if (ImGui::SmallButton(hasKeyframes ? "(*)" : "( )")) {
-        if (localFrame >= 0 && m_dispatcher) {
-            if (hasKeyframeAtCurrentFrame) {
-                m_dispatcher->enqueue(std::make_unique<RemoveEffectKeyframeCommand>(
-                    effectEntity, schema.name, localFrame));
-            } else {
-                m_dispatcher->enqueue(std::make_unique<UpsertEffectKeyframeCommand>(
-                    effectEntity, schema.name, localFrame, currentValue));
-            }
+        if (hasKeyframes && m_dispatcher) {
+            m_dispatcher->enqueue(std::make_unique<ClearEffectParamKeyframesCommand>(
+                effectEntity, schema.name, currentValue));
+        } else if (localFrame >= 0 && m_dispatcher) {
+            m_dispatcher->enqueue(std::make_unique<UpsertEffectKeyframeCommand>(
+                effectEntity, schema.name, localFrame, currentValue));
         }
     }
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(hasKeyframes
-            ? "Toggle keyframe at current frame"
-            : "Click to add keyframe at current frame");
+            ? "Animation enabled - click to REMOVE ALL keyframes on this parameter"
+            : "Click to animate this parameter (adds a keyframe at the playhead)");
     }
 
     ImGui::SameLine();
@@ -2680,6 +2931,7 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
     const char* subKind = "Generative";
     if (registry.all_of<MunchersGameState>(entity)) subKind = "Muncher";
     if (registry.all_of<TextLayerState>(entity))    subKind = "Text";
+    if (registry.all_of<SolidLayerState>(entity))   subKind = "Solid";
     ImGui::Text("%s Layer", subKind);
     ImGui::Separator();
 
@@ -2776,9 +3028,11 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             }
 
             ImGui::Spacing();
-            auto [it, inserted] = m_uniformScaleState.try_emplace(entity, true);
-            bool& uniformScale = it->second;
-            ImGui::Checkbox("Uniform Scale", &uniformScale);
+            bool uniformScale = registry.get_or_emplace<ScaleLock>(entity).uniform;
+            if (ImGui::Checkbox("Uniform Scale", &uniformScale) && m_dispatcher) {
+                m_dispatcher->enqueue(
+                    std::make_unique<SetScaleLockCommand>(entity, uniformScale));
+            }
 
             renderKeyframeControls(AnimatableProperty::ScaleX, "Scale X", t->scale.x);
             ImGui::SameLine();
@@ -2909,7 +3163,54 @@ void PropertyWindow::renderGenerativeLayerProperties(entt::entity entity) {
             cmd->setPreviousSize(gen->renderWidth, prevH);
             m_dispatcher->enqueue(std::move(cmd));
         }
+        // Size presets. "Match Screen" reads the target screen's pixel size.
+        {
+            auto applyPreset = [&](std::uint32_t w, std::uint32_t h) {
+                if ((gen->renderWidth == w && gen->renderHeight == h) || !m_dispatcher) return;
+                auto cmd = std::make_unique<SetGenerativeRenderSizeCommand>(entity, w, h);
+                cmd->setPreviousSize(gen->renderWidth, gen->renderHeight);
+                m_dispatcher->enqueue(std::move(cmd));
+                gen->renderWidth  = w;   // optimistic; command re-applies
+                gen->renderHeight = h;
+                if (auto* tls = registry.try_get<TextLayerState>(entity)) tls->dirty = true;
+            };
+            if (ImGui::SmallButton("1920x1080")) applyPreset(1920, 1080);
+            if (gen->targetScreen != entt::null && registry.valid(gen->targetScreen)) {
+                if (const auto* scr = registry.try_get<Screen>(gen->targetScreen)) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Match Screen")) {
+                        applyPreset(scr->width, scr->height);
+                    }
+                }
+            }
+        }
         ImGui::TextDisabled("Slot: %d", gen->renderTargetSlot);
+    }
+
+    // ---- Solid layer properties (Solid sub-kind only) ----
+    if (auto* sls = registry.try_get<SolidLayerState>(entity)) {
+        if (ImGui::CollapsingHeader("Solid", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float col[4] = {sls->color[0], sls->color[1], sls->color[2], sls->color[3]};
+            ImGui::SetNextItemWidth(-1);
+            const bool changed = ImGui::ColorEdit4("##solidcolor", col,
+                                                   ImGuiColorEditFlags_Float |
+                                                   ImGuiColorEditFlags_AlphaBar);
+            if (ImGui::IsItemActivated()) {
+                m_preEditSolidColor = sls->color;
+            }
+            if (changed) {
+                sls->color = {col[0], col[1], col[2], col[3]};
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && m_dispatcher) {
+                auto cmd = std::make_unique<SetSolidColorCommand>(
+                    entity, sls->color[0], sls->color[1], sls->color[2], sls->color[3]);
+                cmd->setPreviousColor(m_preEditSolidColor[0], m_preEditSolidColor[1],
+                                      m_preEditSolidColor[2], m_preEditSolidColor[3]);
+                m_dispatcher->enqueue(std::move(cmd));
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Color");
+        }
     }
 
     // ---- Text layer properties (Text sub-kind only) ----

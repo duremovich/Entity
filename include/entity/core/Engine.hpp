@@ -9,6 +9,7 @@
 #include "entity/media/TranscodeManager.hpp"
 #include <entt/entt.hpp>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -209,6 +210,18 @@ public:
      * Get the engine-global FrameCache (decoded frames for all active clips).
      */
     FrameCache* getFrameCache() { return m_frameCache; }
+
+    /**
+     * Get the DecodeSystem (per-clip decode workers). Used by the Clip Info
+     * playback readout to show the worker's decoded / target frame.
+     */
+    DecodeSystem* getDecodeSystem() { return m_decodeSystem; }
+
+    /**
+     * Get the PlaybackPresenter (GPU upload pass). Used by the Clip Info
+     * playback readout for the last frame actually presented to the texture.
+     */
+    PlaybackPresenter* getPlaybackPresenter() { return m_playbackPresenter; }
 
     // TODO: Implement this when class is ready
     // Transport* getTransport() { return m_transport.get(); }
@@ -1057,6 +1070,10 @@ private:
     // library, call addMediaFile / mark-missing on the main thread.
     void drainContentScannerDeltas();
 
+    // Send one InvalidateEffectPso per user kind the last effect scan
+    // touched (project-load rescan + hot reload share this).
+    void broadcastEffectPsoInvalidations();
+
     // ADR-0009 — current import mode + target subfolder. Default is Link
     // so legacy / script-driven flows keep their pre-launcher behavior;
     // MediaBin's toolbar flips it to Copy + "unsorted" on first render.
@@ -1332,6 +1349,11 @@ public:
                                  FrameNumber startFrame,
                                  FrameNumber duration);
 
+    entt::entity createSolidLayer(entt::entity targetScreen,
+                                  int trackIndex,
+                                  FrameNumber startFrame,
+                                  FrameNumber duration);
+
     // --- Clipboard + clip clone (timeline ergonomics) -----------------
     //
     // Unified deep-clone path for Duplicate, Cut/Copy/Paste, and any
@@ -1405,6 +1427,11 @@ private:
     bool m_initialized{false};
     bool m_running{false};
     bool m_resizePending{false};
+    // #91: deadline for retrying a deferred (NotReady) renderer resize. Each
+    // failed attempt can block up to 3x the fence timeout, so this bounds
+    // ATTEMPTS not total wall time — worst case is deadline + one overshooting
+    // attempt. (Re)armed only in onWindowResize when a new resize is requested.
+    std::chrono::steady_clock::time_point m_resizeRetryDeadline{};
     bool m_deviceLostPosted{false};  // Guard: post bus::DeviceLost at most once.
     bool m_relaunchRequested{false};         // Set on device-lost drain; checked by main.cpp.
     bool m_isRecoveryRelaunch{false};        // True when started via --device-lost-recovery; suppresses re-relaunch.

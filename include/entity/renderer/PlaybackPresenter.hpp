@@ -4,6 +4,7 @@
 #include "entity/core/Types.hpp"
 #include "entity/media/FrameCache.hpp"   // FrameLease (returned by value)
 #include <entt/entt.hpp>
+#include <mutex>
 #include <unordered_map>
 
 namespace entity {
@@ -40,7 +41,17 @@ struct DecodedFrame;
 class PlaybackPresenter {
 public:
     struct ClipDisplayState {
+        // The exact media frame this clip's texture is known-good for. Only
+        // an exact-hit upload sets it; the nearest-frame fallback deliberately
+        // leaves it alone so the next tick retries the frame we actually want.
+        // It is therefore NOT "what's on the texture" — see lastUploadedFrame.
         FrameNumber       lastDecodedFrame{UINT32_MAX};
+        // The media frame most recently uploaded to the texture by ANY path,
+        // exact or fallback. This is what a viewer is actually looking at.
+        // Diagnostics must read this one: during normal playback the fallback
+        // does most of the uploading, so lastDecodedFrame can sit many frames
+        // stale while the picture is moving perfectly well.
+        FrameNumber       lastUploadedFrame{INVALID_FRAME};
         TextureColorSpace colorSpace{TextureColorSpace::Linear};
         std::string       ocioColorSpace;
     };
@@ -89,11 +100,29 @@ public:
         return it != m_clipDisplayState.end() ? it->second : kDefault;
     }
 
+    // The media frame that last actually reached the clip's GPU texture.
+    // Editor-thread-safe: `m_clipDisplayState` is show-thread-owned (an
+    // off-thread read would race present()'s map inserts), so present()
+    // republishes a guarded mirror each tick for the Clip Info readout.
+    // Returns INVALID_FRAME if the clip has never been uploaded.
+    //
+    // This is deliberately the *presented* frame, not the *mapped* one: the
+    // two diverge whenever an upload is skipped (exact cache miss while
+    // paused), which is exactly the state that reads as a frozen picture.
+    FrameNumber presentedFrame(entt::entity entity) const;
+
 private:
     entt::registry& m_registry;
     IRenderer*      m_renderer{nullptr};
     FrameCache*     m_frameCache{nullptr};
     DecodeSystem*   m_decodeSystem{nullptr};
+
+    // Guarded mirror of m_clipDisplayState[e].lastUploadedFrame, refreshed
+    // once per present() so the editor thread can read it without touching
+    // show-thread state. Updated in place; entries are never erased (see the
+    // republish block in present()).
+    mutable std::mutex                            m_presentedMutex;
+    std::unordered_map<entt::entity, FrameNumber> m_presentedFrames;
 
     // Per-tick cache of fade multipliers from the bus payload; cleared
     // and repopulated at the top of each present() call.

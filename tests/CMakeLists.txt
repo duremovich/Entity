@@ -8,6 +8,8 @@ add_executable(EntityMediaTests
     unit/EditorReadGateTests.cpp
     unit/TextureUploaderGenerationTests.cpp
     unit/KeyframeRoundtripTests.cpp
+    unit/KeyframeEasingTests.cpp
+    unit/TimelineZoomLadderTests.cpp
     unit/RippleTimeTests.cpp
     unit/TrackInsertTests.cpp
     unit/DeleteClipUndoTests.cpp
@@ -27,6 +29,7 @@ add_executable(EntityMediaTests
     unit/OcioGpuProcessorTests.cpp
     unit/RuntimeShaderCompilerTests.cpp
     unit/EffectKindRegistryTests.cpp
+    unit/EffectChainTopoTests.cpp
     unit/DecoderColorSpaceTests.cpp
     unit/ProjectSerializerTests.cpp
     unit/ProjectManagerPathTests.cpp
@@ -169,6 +172,14 @@ entity_add_integration_test(mixed_fps          mixed_fps.json)
 entity_add_integration_test(ping_pong          ping_pong.json)
 entity_add_integration_test(blend              blend.json)
 entity_add_integration_test(blend_difference   blend_difference.json)
+# Effect render golden — first GPU coverage of PASS 1.5 (blur on a still).
+entity_add_integration_test(effect_blur        effect_blur.json)
+# Solid layer golden — PASS 1 Kind::Solid fill through the PASS 2 blit.
+entity_add_integration_test(solid_layer_create solid_layer_create.json)
+# Generator-on-solid golden — zero-input effect replaces the solid's content.
+entity_add_integration_test(effect_generator_solid effect_generator_solid.json)
+# Two-branch DAG golden — gradient + shape branches into a blend combiner.
+entity_add_integration_test(effect_dag_branch     effect_dag_branch.json)
 entity_add_integration_test(hap_roundtrip       hap_roundtrip.json)
 entity_add_integration_test(hap_basic_roundtrip  hap_basic_roundtrip.json)
 entity_add_integration_test(hap_q_roundtrip      hap_q_roundtrip.json)
@@ -176,6 +187,13 @@ entity_add_integration_test(hap_hdr_smoke        hap_hdr_smoke.json)
 entity_add_integration_test(aces_smoke           aces_smoke.json)
 entity_add_integration_test(cache_hit_after_seek cache_hit_after_seek.json)
 entity_add_integration_test(cache_budget_stress  cache_budget_stress.json)
+# Missing-media seek-sync gate: a clip whose media file fails to open
+# (loaded=false, no FrameBuffer) but carries a serialized AudioSource must
+# not hold the seek-sync gate. Before the fix, videoReady/audioReady waited
+# on that clip until the 3s preroll failsafe, freezing the playhead. The
+# assert catches a stuck playhead (gate held) vs. one that advanced (gate
+# released promptly).
+entity_add_integration_test(missing_media_gate missing_media_gate.json)
 # Parked-clip visibility: a clip dropped onto a PARKED (paused, never
 # played) playhead inside its range must resolve its GPU slot + decode the
 # parked source frame into FrameCache without a Play or seek. Guards the
@@ -225,6 +243,7 @@ entity_add_integration_test(section_manual_resume   section_manual_resume.json)
 # Phase C — Normal continuation phase (Loop / PingPong cycling at-break)
 # plus Locked-overrides-PlaybackMode regression guard.
 entity_add_integration_test(section_loop_normal     section_loop_normal.json)
+entity_add_integration_test(section_break_presented_frame_advances section_break_presented_frame_advances.json)
 entity_add_integration_test(section_pingpong_normal section_pingpong_normal.json)
 entity_add_integration_test(section_locked_clip     section_locked_clip.json)
 # Regression guard: flipping Normal -> Locked while parked at a break
@@ -492,6 +511,36 @@ set_tests_properties(integration_generative_layer_ops PROPERTIES
     TIMEOUT 60
 )
 
+# Group keyframe operations (multi-select): MoveKeyframes / SetKeyframesInterpolation
+# / SetKeyframesValue / RemoveKeyframes, each one undo step for the whole selection.
+add_test(
+    NAME integration_keyframe_multiselect
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/keyframe_multiselect.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_keyframe_multiselect PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+
+# Keyframe easing preservation + the AE stopwatch (remove-all-keyframes).
+# Gates that a value edit through UpsertKeyframe does NOT reset an EaseInOut
+# keyframe back to Linear (it used to), and that ClearPropertyKeyframes removes
+# exactly one property's track and is undoable as a single step.
+add_test(
+    NAME integration_keyframe_easing_and_stopwatch
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/keyframe_easing_and_stopwatch.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_keyframe_easing_and_stopwatch PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+
 # Generative-layer keyframe persistence round-trip. Save creates a Text layer,
 # adds Opacity + PositionX keyframes, moves one via MoveKeyframe; load asserts
 # the keyframe tracks survived serialization, then exercises RemoveKeyframe.
@@ -521,6 +570,36 @@ set_tests_properties(integration_generative_keyframe_persistence_save PROPERTIES
     FIXTURES_SETUP generative_keyframe_persistence_data)
 set_tests_properties(integration_generative_keyframe_persistence_load PROPERTIES
     FIXTURES_REQUIRED generative_keyframe_persistence_data)
+
+# Effect-keyframe persistence round-trip (v29 EffectAnimatedParameters
+# serialization — the pre-v29 bug silently dropped effect keyframes on
+# save/load). Save half keyframes 'brightness'; load half asserts survival.
+add_test(
+    NAME integration_effect_anim_persistence_save
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/effect_anim_persistence_save.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_effect_anim_persistence_save PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+add_test(
+    NAME integration_effect_anim_persistence_load
+    COMMAND $<TARGET_FILE:EntityMediaEditor>
+            --headless --script ${CMAKE_SOURCE_DIR}/scripts/integration/effect_anim_persistence_load.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+set_tests_properties(integration_effect_anim_persistence_load PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+    ENVIRONMENT "ENTITY_FORCE_WARP=1"
+)
+set_tests_properties(integration_effect_anim_persistence_save PROPERTIES
+    FIXTURES_SETUP effect_anim_persistence_data)
+set_tests_properties(integration_effect_anim_persistence_load PROPERTIES
+    FIXTURES_REQUIRED effect_anim_persistence_data)
 
 # Phase F audio tests — require tests/fixtures/audio/tone_1khz.mov.
 # Generate the fixture once with: .\scripts\perf\setup-audio-fixtures.ps1
