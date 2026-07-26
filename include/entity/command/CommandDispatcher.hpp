@@ -121,7 +121,9 @@ public:
     /**
      * Check if currently waiting (WaitFrames or WaitUntil active).
      */
-    bool isWaiting() const { return m_waitFramesRemaining > 0 || m_waitUntilActive; }
+    bool isWaiting() const {
+        return m_waitFramesRemaining > 0 || m_waitUntilActive || m_waitPredicateActive;
+    }
 
     /**
      * Get remaining wait frames.
@@ -142,6 +144,28 @@ public:
     void setWaitUntil(std::chrono::steady_clock::time_point deadline) {
         m_waitUntil = deadline;
         m_waitUntilActive = true;
+    }
+
+    /**
+     * Pause script execution until `predicate` returns true, or fail the
+     * script when `timeoutSeconds` elapses first. The predicate is polled
+     * once per editor drain (editor thread — registry reads are safe) and
+     * may write a human-readable observation ("playhead=69") into its
+     * second argument; the last observation is included in the timeout
+     * error. This is the machine-speed-independent replacement for
+     * fixed-WaitSeconds-then-assert sequences: on a fast machine the wait
+     * ends the first tick the condition holds, on a slow CI runner it
+     * simply takes more ticks. Called by WaitUntilCommand.
+     */
+    using WaitPredicate = std::function<bool(Engine&, std::string& observedOut)>;
+    void setWaitPredicate(std::string label, WaitPredicate predicate,
+                          double timeoutSeconds) {
+        m_waitPredicateLabel = std::move(label);
+        m_waitPredicate = std::move(predicate);
+        m_waitPredicateDeadline = std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(timeoutSeconds));
+        m_waitPredicateActive = true;
     }
 
     /**
@@ -224,6 +248,12 @@ private:
     // WaitUntil support (wall-clock pause; doesn't block the editor thread)
     bool m_waitUntilActive{false};
     std::chrono::steady_clock::time_point m_waitUntil{};
+
+    // WaitPredicate support (condition poll with timeout; editor drain only)
+    bool m_waitPredicateActive{false};
+    WaitPredicate m_waitPredicate;
+    std::chrono::steady_clock::time_point m_waitPredicateDeadline{};
+    std::string m_waitPredicateLabel;
 
     // Recording support
     bool m_recording{false};

@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Phase C — Normal continuation: Loop clip with sectionBehavior=Normal keeps cycling past the break. 16-frame PNG sequence (30fps source, 30fps timeline) extended to 200 timeline frames; section break at timeline frame 8. With Locked, the timeline-derived path would freeze the source frame at 8 (timeline frame 8 / 30fps * 30fps = source 8). With Normal+Loop, SectionScheduler seeds ClipPlaybackPhase=8 and advances it each at-break tick, so by the end of the at-break wait the source phase has drifted well past 8 -- mediaFrame is no longer 8. Asserts mediaFrame is NOT 8 (with a small tolerance) -- this is the differentiator vs. section_locked_clip.json, which asserts the same setup with sectionBehavior=Locked stays at 8.",
+    "description": "Phase C — Normal continuation: Loop clip with sectionBehavior=Normal keeps cycling past the break. 16-frame PNG sequence (30fps source, 30fps timeline) extended to 200 timeline frames; section break at timeline frame 8. With Locked, the timeline-derived path would freeze the source frame at 8 (timeline frame 8 / 30fps * 30fps = source 8). With Normal+Loop, SectionScheduler seeds ClipPlaybackPhase=8 and advances it through the at-break park, so the source phase drifts away from 8 -- mediaFrame leaves the [8±2] window. This is the differentiator vs. section_locked_clip.json, which asserts the same setup with sectionBehavior=Locked stays at 8. CI-robustness notes: WaitUntilPlaybackState replaces the fixed WaitSeconds-then-assert (the park happens whenever the slow runner actually reaches frame 8, not on a stopwatch), and WaitUntilClipMediaFrame polls until the phase has demonstrably drifted -- a Locked-style freeze regression parks at exactly 8 forever and fails the timeout.",
     "commands": [
         {"type": "AddScreen", "name": "LoopNormalScreen", "width": 64, "height": 64},
         {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
@@ -12,13 +12,11 @@
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 5},
         {"type": "Play"},
-        {"type": "WaitSeconds", "count": 1.5},
-        {"type": "AssertPlaybackState", "state": "Paused"},
+        {"type": "WaitUntilPlaybackState", "state": "Paused", "timeoutSeconds": 10},
         {"type": "AssertPlayheadAtFrame", "frame": 8, "tolerance": 2},
-        {"type": "AssertClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 2, "mode": "notEqual"},
+        {"type": "WaitUntilClipMediaFrame", "trackIndex": 0, "clipIndex": 0, "expected": 8, "tolerance": 2, "mode": "notEqual", "timeoutSeconds": 10},
         {"type": "SectionGo"},
-        {"type": "WaitFrames", "count": 30},
-        {"type": "AssertPlaybackState", "state": "Playing"},
+        {"type": "WaitUntilPlaybackState", "state": "Playing", "timeoutSeconds": 5},
         {"type": "Exit"}
     ]
 }

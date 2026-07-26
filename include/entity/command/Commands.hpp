@@ -513,6 +513,63 @@ private:
     double m_count;
 };
 
+/**
+ * WaitUntil* — condition-polling waits with a wall-clock timeout. The
+ * machine-speed-independent replacement for WaitSeconds/WaitFrames followed
+ * by a racy assert: the script resumes the first editor tick the condition
+ * holds (fast machines lose nothing) and fails the script with the last
+ * observed value if the timeout elapses (slow CI runners get slack without
+ * weakening the invariant). One class, five script-facing type names:
+ *
+ *   WaitUntilPlaybackState        {state, timeoutSeconds}
+ *   WaitUntilPlayheadAtLeast      {frame, timeoutSeconds}
+ *   WaitUntilShowFrameCountAtLeast{minCount, timeoutSeconds}
+ *   WaitUntilClipMediaFrame       {trackIndex, clipIndex, expected,
+ *                                  tolerance, mode: equal|notEqual,
+ *                                  timeoutSeconds}
+ *   WaitUntilClipPresentedFrame   {same as WaitUntilClipMediaFrame}
+ *
+ * timeoutSeconds defaults to 10. Clip-addressed kinds keep polling through
+ * "clip not resolvable yet" states rather than failing immediately, so they
+ * are safe to place right after an ImportVideo.
+ */
+class WaitUntilCommand : public Command {
+public:
+    enum class Kind {
+        PlaybackState,
+        PlayheadAtLeast,
+        ShowFrameCountAtLeast,
+        ClipMediaFrame,
+        ClipPresentedFrame,
+    };
+    enum class FrameMode { Equal, NotEqual };
+
+    WaitUntilCommand(Kind kind, double timeoutSeconds)
+        : m_kind(kind), m_timeoutSeconds(timeoutSeconds) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override;
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+    // Per-kind parameters (only the relevant subset is used per kind).
+    PlaybackState m_state{PlaybackState::Stopped};
+    FrameNumber   m_frame{0};
+    uint64_t      m_minCount{0};
+    int           m_trackIndex{0};
+    int           m_clipIndex{0};
+    FrameNumber   m_expected{0};
+    FrameNumber   m_tolerance{0};
+    FrameMode     m_frameMode{FrameMode::Equal};
+
+private:
+    Kind   m_kind;
+    double m_timeoutSeconds;
+};
+
 class CaptureScreenshotCommand : public Command {
 public:
     enum class Region {
@@ -2123,7 +2180,14 @@ private:
  */
 class AssertClipMediaFrameCommand : public Command {
 public:
-    enum class Mode { Equal, NotEqual };
+    // NotNatural: assert the mapped frame differs from the phase-discarding
+    // natural mapping evaluated at the same playhead instant. This is the
+    // machine-speed-independent form of "the anchor/continuation branch is
+    // steering": valid at any playhead, unlike notEqual against a
+    // hard-coded natural value that is only correct at one specific frame.
+    // `expected` is ignored in this mode; `tolerance` widens the exclusion
+    // bracket around the natural value.
+    enum class Mode { Equal, NotEqual, NotNatural };
 
     AssertClipMediaFrameCommand(int trackIndex, int clipIndex,
                                 FrameNumber expected,

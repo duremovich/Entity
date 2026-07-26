@@ -832,6 +832,211 @@ CommandPtr WaitSecondsCommand::fromJson(const nlohmann::json& j) {
 }
 
 // ============================================================================
+// WaitUntilCommand
+// ============================================================================
+
+namespace {
+
+const char* playbackStateName(PlaybackState s) {
+    switch (s) {
+        case PlaybackState::Stopped: return "Stopped";
+        case PlaybackState::Playing: return "Playing";
+        case PlaybackState::Paused:  return "Paused";
+    }
+    return "?";
+}
+
+// Resolve track/clip indexes to a clip entity, or entt::null with a reason.
+entt::entity resolveClipEntity(Engine& engine, int trackIndex, int clipIndex,
+                               std::string& reasonOut) {
+    auto* timeline = engine.getTimeline();
+    if (!timeline) { reasonOut = "timeline unavailable"; return entt::null; }
+    auto& registry = engine.getRegistry();
+    const auto& tracks = timeline->getTracks();
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= tracks.size()) {
+        reasonOut = "trackIndex out of range"; return entt::null;
+    }
+    auto* track = registry.try_get<TimelineTrack>(tracks[trackIndex]);
+    if (!track || clipIndex < 0 ||
+        static_cast<size_t>(clipIndex) >= track->layers.size()) {
+        reasonOut = "clipIndex out of range"; return entt::null;
+    }
+    return track->layers[clipIndex];
+}
+
+} // namespace
+
+bool WaitUntilCommand::execute(Engine& engine) {
+    auto* dispatcher = engine.getCommandDispatcher();
+    if (!dispatcher) return false;
+
+    const std::string label = getDescription();
+    std::cout << "[WaitUntil] Waiting (timeout " << m_timeoutSeconds << "s): "
+              << label << std::endl;
+
+    CommandDispatcher::WaitPredicate pred;
+    switch (m_kind) {
+    case Kind::PlaybackState: {
+        const PlaybackState want = m_state;
+        pred = [want](Engine& e, std::string& obs) {
+            auto* t = e.getTimeline();
+            if (!t) { obs = "timeline unavailable"; return false; }
+            const PlaybackState got = t->getPlaybackState();
+            obs = std::string("state=") + playbackStateName(got);
+            return got == want;
+        };
+        break;
+    }
+    case Kind::PlayheadAtLeast: {
+        const FrameNumber want = m_frame;
+        pred = [want](Engine& e, std::string& obs) {
+            auto* t = e.getTimeline();
+            if (!t) { obs = "timeline unavailable"; return false; }
+            const FrameNumber got = t->getCurrentFrame();
+            obs = "playhead=" + std::to_string(got);
+            return got >= want;
+        };
+        break;
+    }
+    case Kind::ShowFrameCountAtLeast: {
+        const uint64_t want = m_minCount;
+        pred = [want](Engine& e, std::string& obs) {
+            const uint64_t got = e.getShowFrameCount();
+            obs = "showFrames=" + std::to_string(got);
+            return got >= want;
+        };
+        break;
+    }
+    case Kind::ClipMediaFrame:
+    case Kind::ClipPresentedFrame: {
+        const bool presented = (m_kind == Kind::ClipPresentedFrame);
+        const int track = m_trackIndex;
+        const int clip = m_clipIndex;
+        const FrameNumber expected = m_expected;
+        const FrameNumber tolerance = m_tolerance;
+        const bool wantEqual = (m_frameMode == FrameMode::Equal);
+        pred = [presented, track, clip, expected, tolerance, wantEqual](
+                   Engine& e, std::string& obs) {
+            std::string reason;
+            const entt::entity entity = resolveClipEntity(e, track, clip, reason);
+            if (entity == entt::null) { obs = reason; return false; }
+            FrameNumber actual = -1;
+            if (presented) {
+                auto* presenter = e.getPlaybackPresenter();
+                if (!presenter) { obs = "no PlaybackPresenter"; return false; }
+                actual = presenter->presentedFrame(entity);
+                if (actual < 0) { obs = "no frame presented yet"; return false; }
+                obs = "presentedFrame=" + std::to_string(actual);
+            } else {
+                auto* timeline = e.getTimeline();
+                auto* director = e.getDirector();
+                auto* pta = director ? director->getTimeAuthority() : nullptr;
+                const auto* clipComp = e.getRegistry().try_get<Clip>(entity);
+                if (!timeline || !pta || !clipComp) {
+                    obs = "clip state unavailable";
+                    return false;
+                }
+                actual = pta->mapToMediaFrame(entity, *clipComp,
+                                              timeline->getCurrentFrame());
+                obs = "mediaFrame=" + std::to_string(actual);
+            }
+            const FrameNumber diff =
+                actual >= expected ? actual - expected : expected - actual;
+            const bool inBracket = diff <= tolerance;
+            return wantEqual ? inBracket : !inBracket;
+        };
+        break;
+    }
+    }
+
+    dispatcher->setWaitPredicate(label, std::move(pred), m_timeoutSeconds);
+    return true;
+}
+
+const char* WaitUntilCommand::getTypeName() const {
+    switch (m_kind) {
+        case Kind::PlaybackState:         return "WaitUntilPlaybackState";
+        case Kind::PlayheadAtLeast:       return "WaitUntilPlayheadAtLeast";
+        case Kind::ShowFrameCountAtLeast: return "WaitUntilShowFrameCountAtLeast";
+        case Kind::ClipMediaFrame:        return "WaitUntilClipMediaFrame";
+        case Kind::ClipPresentedFrame:    return "WaitUntilClipPresentedFrame";
+    }
+    return "WaitUntil";
+}
+
+nlohmann::json WaitUntilCommand::toJson() const {
+    nlohmann::json j{{"type", getTypeName()}, {"timeoutSeconds", m_timeoutSeconds}};
+    switch (m_kind) {
+        case Kind::PlaybackState:
+            j["state"] = playbackStateName(m_state);
+            break;
+        case Kind::PlayheadAtLeast:
+            j["frame"] = m_frame;
+            break;
+        case Kind::ShowFrameCountAtLeast:
+            j["minCount"] = m_minCount;
+            break;
+        case Kind::ClipMediaFrame:
+        case Kind::ClipPresentedFrame:
+            j["trackIndex"] = m_trackIndex;
+            j["clipIndex"] = m_clipIndex;
+            j["expected"] = m_expected;
+            j["tolerance"] = m_tolerance;
+            j["mode"] = (m_frameMode == FrameMode::Equal) ? "equal" : "notEqual";
+            break;
+    }
+    return j;
+}
+
+std::string WaitUntilCommand::getDescription() const {
+    switch (m_kind) {
+        case Kind::PlaybackState:
+            return std::string("Wait until playback state ") +
+                   playbackStateName(m_state);
+        case Kind::PlayheadAtLeast:
+            return "Wait until playhead >= " + std::to_string(m_frame);
+        case Kind::ShowFrameCountAtLeast:
+            return "Wait until show frame count >= " + std::to_string(m_minCount);
+        case Kind::ClipMediaFrame:
+        case Kind::ClipPresentedFrame: {
+            const char* what = (m_kind == Kind::ClipMediaFrame) ? "media" : "presented";
+            return std::string("Wait until clip ") + what + " frame " +
+                   (m_frameMode == FrameMode::Equal ? "== " : "!= ") +
+                   std::to_string(m_expected) + " (+/-" + std::to_string(m_tolerance) +
+                   ") for track " + std::to_string(m_trackIndex) +
+                   ", clip " + std::to_string(m_clipIndex);
+        }
+    }
+    return "WaitUntil";
+}
+
+CommandPtr WaitUntilCommand::fromJson(const nlohmann::json& j) {
+    const std::string type = j.value("type", std::string{});
+    Kind kind = Kind::PlaybackState;
+    if (type == "WaitUntilPlayheadAtLeast")            kind = Kind::PlayheadAtLeast;
+    else if (type == "WaitUntilShowFrameCountAtLeast") kind = Kind::ShowFrameCountAtLeast;
+    else if (type == "WaitUntilClipMediaFrame")        kind = Kind::ClipMediaFrame;
+    else if (type == "WaitUntilClipPresentedFrame")    kind = Kind::ClipPresentedFrame;
+
+    auto cmd = std::make_unique<WaitUntilCommand>(kind, j.value("timeoutSeconds", 10.0));
+
+    const std::string stateStr = j.value("state", std::string{"Stopped"});
+    if (stateStr == "Playing")     cmd->m_state = PlaybackState::Playing;
+    else if (stateStr == "Paused") cmd->m_state = PlaybackState::Paused;
+    else                           cmd->m_state = PlaybackState::Stopped;
+
+    cmd->m_frame      = j.value("frame", static_cast<FrameNumber>(0));
+    cmd->m_minCount   = j.value("minCount", uint64_t{1});
+    cmd->m_trackIndex = j.value("trackIndex", 0);
+    cmd->m_clipIndex  = j.value("clipIndex", 0);
+    cmd->m_expected   = j.value("expected", static_cast<FrameNumber>(0));
+    cmd->m_tolerance  = j.value("tolerance", static_cast<FrameNumber>(0));
+    cmd->m_frameMode  = (j.value("mode", std::string{"equal"}) == "notEqual")
+                          ? FrameMode::NotEqual : FrameMode::Equal;
+    return cmd;
+}
+
+// ============================================================================
 // AddTrackCommand
 // ============================================================================
 
@@ -4721,21 +4926,25 @@ bool AssertClipMediaFrameCommand::execute(Engine& engine) {
 
     FrameNumber currentFrame = timeline->getCurrentFrame();
     FrameNumber actual = timeAuthority->mapToMediaFrame(clipEntity, *clip, currentFrame);
-    FrameNumber diff = actual >= m_expected ? (actual - m_expected) : (m_expected - actual);
+    const FrameNumber reference = (m_mode == Mode::NotNatural)
+        ? timeAuthority->mapToMediaFrame(*clip, currentFrame)
+        : m_expected;
+    FrameNumber diff = actual >= reference ? (actual - reference) : (reference - actual);
     const bool inBracket = (diff <= m_tolerance);
     const bool pass = (m_mode == Mode::Equal) ? inBracket : !inBracket;
-    const char* op = (m_mode == Mode::Equal) ? "==" : "!=";
+    const char* op = (m_mode == Mode::Equal) ? "=="
+                   : (m_mode == Mode::NotNatural) ? "!= natural" : "!=";
     if (pass) {
         std::cout << "[AssertClipMediaFrame] OK track=" << m_trackIndex
                   << " clip=" << m_clipIndex
                   << " mediaFrame=" << actual
-                  << " (" << op << " " << m_expected << " +/-" << m_tolerance << ")"
+                  << " (" << op << " " << reference << " +/-" << m_tolerance << ")"
                   << std::endl;
         return true;
     }
     std::cerr << "[AssertClipMediaFrame] FAIL: track=" << m_trackIndex
               << " clip=" << m_clipIndex
-              << " expected " << op << " " << m_expected
+              << " expected " << op << " " << reference
               << " (+/-" << m_tolerance << "), got=" << actual << std::endl;
     return false;
 }
@@ -4746,7 +4955,8 @@ nlohmann::json AssertClipMediaFrameCommand::toJson() const {
             {"clipIndex", m_clipIndex},
             {"expected", m_expected},
             {"tolerance", m_tolerance},
-            {"mode", (m_mode == Mode::Equal) ? "equal" : "notEqual"}};
+            {"mode", (m_mode == Mode::Equal) ? "equal"
+                   : (m_mode == Mode::NotNatural) ? "notNatural" : "notEqual"}};
 }
 
 std::string AssertClipMediaFrameCommand::getDescription() const {
@@ -4914,9 +5124,9 @@ CommandPtr AssertClipMediaFrameCommand::fromJson(const nlohmann::json& j) {
     FrameNumber expected  = j.value("expected", static_cast<FrameNumber>(0));
     FrameNumber tolerance = j.value("tolerance", static_cast<FrameNumber>(0));
     std::string modeStr = j.value("mode", std::string{"equal"});
-    AssertClipMediaFrameCommand::Mode mode = (modeStr == "notEqual")
-        ? AssertClipMediaFrameCommand::Mode::NotEqual
-        : AssertClipMediaFrameCommand::Mode::Equal;
+    AssertClipMediaFrameCommand::Mode mode = AssertClipMediaFrameCommand::Mode::Equal;
+    if (modeStr == "notEqual")    mode = AssertClipMediaFrameCommand::Mode::NotEqual;
+    if (modeStr == "notNatural")  mode = AssertClipMediaFrameCommand::Mode::NotNatural;
     return std::make_unique<AssertClipMediaFrameCommand>(trackIndex, clipIndex,
                                                           expected, tolerance, mode);
 }

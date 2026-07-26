@@ -57,6 +57,25 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
             }
             m_waitUntilActive = false;
         }
+        if (m_waitPredicateActive) {
+            std::string observed;
+            if (m_waitPredicate && m_waitPredicate(engine, observed)) {
+                std::cout << "[WaitUntil] OK: " << m_waitPredicateLabel
+                          << (observed.empty() ? "" : " (" + observed + ")")
+                          << std::endl;
+                m_waitPredicateActive = false;
+                m_waitPredicate = nullptr;
+            } else if (std::chrono::steady_clock::now() >= m_waitPredicateDeadline) {
+                const std::string detail = observed.empty() ? "" : " (last: " + observed + ")";
+                std::cerr << "[WaitUntil] TIMEOUT: " << m_waitPredicateLabel
+                          << detail << std::endl;
+                addErrorToResults("WaitUntil timeout: " + m_waitPredicateLabel + detail);
+                m_waitPredicateActive = false;
+                m_waitPredicate = nullptr;
+            } else {
+                return 0;
+            }
+        }
     }
 
     size_t executed = 0;
@@ -123,7 +142,8 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
         executed++;
         m_scriptCommandsExecuted++;
 
-        if (affinity != Affinity::Show && (m_waitFramesRemaining > 0 || m_waitUntilActive)) {
+        if (affinity != Affinity::Show
+                && (m_waitFramesRemaining > 0 || m_waitUntilActive || m_waitPredicateActive)) {
             break;
         }
     }
@@ -134,7 +154,8 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
 bool CommandDispatcher::scriptReadyToFinish() const {
     std::lock_guard<std::mutex> lock(m_queueMutex);
     return m_scriptRunning && m_commandQueue.empty()
-        && m_waitFramesRemaining == 0 && !m_waitUntilActive;
+        && m_waitFramesRemaining == 0 && !m_waitUntilActive
+        && !m_waitPredicateActive;
 }
 
 void CommandDispatcher::registerFactory(const std::string& typeName, CommandFactory factory) {
@@ -177,6 +198,11 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Script control commands
     registerFactory("WaitFrames", WaitFramesCommand::fromJson);
     registerFactory("WaitSeconds", WaitSecondsCommand::fromJson);
+    registerFactory("WaitUntilPlaybackState", WaitUntilCommand::fromJson);
+    registerFactory("WaitUntilPlayheadAtLeast", WaitUntilCommand::fromJson);
+    registerFactory("WaitUntilShowFrameCountAtLeast", WaitUntilCommand::fromJson);
+    registerFactory("WaitUntilClipMediaFrame", WaitUntilCommand::fromJson);
+    registerFactory("WaitUntilClipPresentedFrame", WaitUntilCommand::fromJson);
     registerFactory("CaptureScreenshot", CaptureScreenshotCommand::fromJson);
     registerFactory("CaptureHash", CaptureHashCommand::fromJson);
 

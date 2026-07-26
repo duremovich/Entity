@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Regression gate for compose-target double-allocation bug. AddScreen triggers ensureScreenRenderTarget; if the show thread double-allocates on every tick before the editor acks the slot, the descriptor heap saturates, the GPU wedges, the engine posts DeviceLost and exits, and the show frame counter stalls below 10. A healthy run posts ScreenRenderTargetAllocated on the first tick, the editor writes the slot back, and subsequent ticks take path-1 (no alloc). 200 ms at 60 Hz yields >= 12 ticks.",
+    "description": "Regression gate for compose-target double-allocation bug. AddScreen triggers ensureScreenRenderTarget; if the show thread double-allocates on every tick before the editor acks the slot, the descriptor heap saturates, the GPU wedges, the engine posts DeviceLost and exits, and the show frame counter stalls. A healthy run posts ScreenRenderTargetAllocated on the first tick, the editor writes the slot back, and subsequent ticks take path-1 (no alloc). WaitUntilShowFrameCountAtLeast expresses the invariant directly: the counter either advances to 10 (healthy, passes as soon as it does regardless of machine speed) or stalls and the timeout fails the script (wedged). The old form -- SleepMs 200 then assert count >= 10 -- assumed 60 Hz show ticks and failed on slow WARP CI runners that present fewer than 10 frames in 200 ms.",
     "commands": [
         {
             "type": "AddScreen",
@@ -9,12 +9,9 @@
             "height": 1080
         },
         {
-            "type": "SleepMs",
-            "ms": 200
-        },
-        {
-            "type": "AssertShowFrameCountAtLeast",
-            "minCount": 10
+            "type": "WaitUntilShowFrameCountAtLeast",
+            "minCount": 10,
+            "timeoutSeconds": 15
         },
         {
             "type": "Exit"
