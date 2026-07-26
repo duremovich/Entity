@@ -169,6 +169,14 @@ public:
     }
 
     /**
+     * Show-frame-count mark for delta assertions
+     * (MarkShowFrameCount / AssertShowFrameCountAdvancedBy). Editor-drain
+     * only, like the wait state.
+     */
+    void markShowFrameCount(uint64_t value) { m_markedShowFrameCount = value; }
+    uint64_t markedShowFrameCount() const { return m_markedShowFrameCount; }
+
+    /**
      * Check if a script is currently running.
      */
     bool isScriptRunning() const { return m_scriptRunning; }
@@ -248,6 +256,9 @@ private:
     // WaitUntil support (wall-clock pause; doesn't block the editor thread)
     bool m_waitUntilActive{false};
     std::chrono::steady_clock::time_point m_waitUntil{};
+
+    // Show-frame-count mark (MarkShowFrameCount / AssertShowFrameCountAdvancedBy)
+    uint64_t m_markedShowFrameCount{0};
 
     // WaitPredicate support (condition poll with timeout; editor drain only)
     bool m_waitPredicateActive{false};

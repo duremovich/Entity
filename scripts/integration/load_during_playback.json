@@ -11,8 +11,7 @@
         {"type": "WaitSeconds", "count": 0.3},
         {"type": "AssertPlaybackState", "state": "Stopped"},
         {"type": "Play"},
-        {"type": "WaitSeconds", "count": 1.0},
-        {"type": "AssertShowFrameCountAtLeast", "minCount": 60},
+        {"type": "WaitUntilShowFrameCountAtLeast", "minCount": 60, "timeoutSeconds": 20},
         {"type": "Exit"}
     ]
 }

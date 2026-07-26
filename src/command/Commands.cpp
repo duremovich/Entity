@@ -5751,6 +5751,59 @@ CommandPtr AssertShowFrameCountAtLeastCommand::fromJson(const nlohmann::json& j)
     return std::make_unique<AssertShowFrameCountAtLeastCommand>(minCount);
 }
 
+bool MarkShowFrameCountCommand::execute(Engine& engine) {
+    const uint64_t now = engine.getShowFrameCount();
+    if (auto* dispatcher = engine.getCommandDispatcher()) {
+        dispatcher->markShowFrameCount(now);
+        std::cout << "[MarkShowFrameCount] marked at " << now << std::endl;
+        return true;
+    }
+    return false;
+}
+
+nlohmann::json MarkShowFrameCountCommand::toJson() const {
+    return {{"type", "MarkShowFrameCount"}};
+}
+
+std::string MarkShowFrameCountCommand::getDescription() const {
+    return "Mark show frame count";
+}
+
+CommandPtr MarkShowFrameCountCommand::fromJson(const nlohmann::json&) {
+    return std::make_unique<MarkShowFrameCountCommand>();
+}
+
+bool AssertShowFrameCountAdvancedByCommand::execute(Engine& engine) {
+    auto* dispatcher = engine.getCommandDispatcher();
+    if (!dispatcher) return false;
+    const uint64_t marked = dispatcher->markedShowFrameCount();
+    const uint64_t now = engine.getShowFrameCount();
+    const uint64_t advanced = now >= marked ? now - marked : 0;
+    if (advanced >= m_minAdvance) {
+        std::cout << "[AssertShowFrameCountAdvancedBy] PASS: advanced "
+                  << advanced << " >= " << m_minAdvance
+                  << " (marked " << marked << " -> " << now << ")" << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertShowFrameCountAdvancedBy] FAIL: advanced "
+              << advanced << " < " << m_minAdvance
+              << " (marked " << marked << " -> " << now << ")" << std::endl;
+    return false;
+}
+
+nlohmann::json AssertShowFrameCountAdvancedByCommand::toJson() const {
+    return {{"type", "AssertShowFrameCountAdvancedBy"}, {"minAdvance", m_minAdvance}};
+}
+
+std::string AssertShowFrameCountAdvancedByCommand::getDescription() const {
+    return "Assert show frame count advanced by >= " + std::to_string(m_minAdvance);
+}
+
+CommandPtr AssertShowFrameCountAdvancedByCommand::fromJson(const nlohmann::json& j) {
+    uint64_t minAdvance = j.value("minAdvance", uint64_t{1});
+    return std::make_unique<AssertShowFrameCountAdvancedByCommand>(minAdvance);
+}
+
 bool AddSyntheticModelCommand::execute(Engine& engine) {
     auto& registry = engine.getRegistry();
     entt::entity modelEntity = registry.create();

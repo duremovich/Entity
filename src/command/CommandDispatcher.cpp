@@ -305,6 +305,8 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("SleepMs", SleepMsCommand::fromJson);
     registerFactory("StallEditor", StallEditorCommand::fromJson);
     registerFactory("AssertShowFrameCountAtLeast", AssertShowFrameCountAtLeastCommand::fromJson);
+    registerFactory("MarkShowFrameCount", MarkShowFrameCountCommand::fromJson);
+    registerFactory("AssertShowFrameCountAdvancedBy", AssertShowFrameCountAdvancedByCommand::fromJson);
 
     // Mesh upload pacing gate
     registerFactory("AddSyntheticModel", AddSyntheticModelCommand::fromJson);

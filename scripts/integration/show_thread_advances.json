@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "Stage 3c gate: the show thread must keep advancing while the editor thread is stalled. Loads the gradient PNG sequence, starts playback, then blocks the editor thread for 500 ms via StallEditor (simulating a Win32 modal loop). The show thread paces itself at 60 Hz via QPC sleep_until, so 500 ms should yield >= 20 show-thread ticks. The assertion fails if the condvar gate (Stage 3b) is accidentally re-introduced or the show thread deadlocks. (Was SleepMs until issue #74 — SleepMs no longer blocks the editor thread, which had quietly weakened this test.)",
+    "description": "Stage 3c gate: the show thread must keep advancing while the editor thread is stalled. Loads the gradient PNG sequence, starts playback, then blocks the editor thread for 500 ms via StallEditor (simulating a Win32 modal loop). MarkShowFrameCount immediately before the stall and AssertShowFrameCountAdvancedBy in the first drain after it measure exactly the stall window: a re-introduced condvar gate (Stage 3b) or a deadlocked show thread yields ~0 frames in that window, while even a slow WARP CI runner (~10 Hz show ticks) yields ~5. The old cumulative AssertShowFrameCountAtLeast 20 mixed pre-stall frames into the count and assumed 60 Hz pacing — and, worse, a wait-based form would count post-stall recovery frames, missing exactly the blocks-only-while-editor-is-blocked regression this test exists to catch. (Was SleepMs until issue #74 — SleepMs no longer blocks the editor thread, which had quietly weakened this test.)",
     "commands": [
         {
             "type": "AddScreen",
@@ -22,12 +22,15 @@
             "type": "Play"
         },
         {
+            "type": "MarkShowFrameCount"
+        },
+        {
             "type": "StallEditor",
             "ms": 500
         },
         {
-            "type": "AssertShowFrameCountAtLeast",
-            "minCount": 20
+            "type": "AssertShowFrameCountAdvancedBy",
+            "minAdvance": 3
         },
         {
             "type": "Exit"

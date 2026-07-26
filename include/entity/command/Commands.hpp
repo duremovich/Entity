@@ -2858,6 +2858,45 @@ private:
 };
 
 /**
+ * MarkShowFrameCount / AssertShowFrameCountAdvancedBy — delta assertion on
+ * the show-thread frame counter. Cumulative AssertShowFrameCountAtLeast
+ * cannot distinguish frames produced during a window of interest (e.g. a
+ * StallEditor) from frames accrued before or after it, so it either bakes
+ * in a machine-speed assumption or misses resumes-after-stall regressions
+ * (the Stage 3b condvar-gate class: show thread blocks only while the
+ * editor is blocked, then recovers). Mark immediately before the window,
+ * assert the advance in the first drain after it — the measured span then
+ * covers exactly the window on any machine speed.
+ */
+class MarkShowFrameCountCommand : public Command {
+public:
+    MarkShowFrameCountCommand() = default;
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "MarkShowFrameCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+};
+
+class AssertShowFrameCountAdvancedByCommand : public Command {
+public:
+    explicit AssertShowFrameCountAdvancedByCommand(uint64_t minAdvance)
+        : m_minAdvance(minAdvance) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertShowFrameCountAdvancedBy"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    uint64_t m_minAdvance;
+};
+
+/**
  * Create a synthetic Model entity with a default screen-quad mesh (no OBJ file).
  * **Test-only** — intended exclusively for headless integration scripts; no UI
  * command surface exposes it.

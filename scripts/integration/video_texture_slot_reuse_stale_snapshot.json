@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "#90 cross-tick stale-cached-snapshot guard. The show thread caches a SceneSnapshot mapping clip A to video-texture slot S; the editor frees S (clip delete) and a replacement clip B first-fits the same index while the cached snapshot still maps A->S. Pre-fix, A's cached frames uploaded into B's slot (or A's stale TextureRef drew B's texture). The fix stamps a per-slot reuse generation into the snapshot; the renderer rejects any upload/draw whose captured generation no longer matches the slot's current one. This scenario forces that window: import + play clip A so it is decoding and uploading (cached snapshot maps A->S at generation G0); delete A (schedules the deferred slot free, but DecodeSystem's cache-evict + worker-retire run in Engine::update, which the StallEditor below blocks); StallEditor so the show thread keeps ticking on the stale cached snapshot AND drains the slot free (freeSlot bumps S's generation to G1) while A's surviving cache frames keep being uploaded with generation G0 -> rejected, bumping the stale-skip counter; then import B (first-fit reuses S at G1) and let the frees settle. Asserts: the show thread progressed across the stall (AssertShowFrameCountAtLeast), only one slot remains allocated (A freed, B allocated), and the generation guard actually fired at least once (AssertVideoTextureStaleGenerationSkips). Uses the same 150-frame tone fixture as video_texture_slot_leak; the 1.5s tail is the WARP retire-fence lag allowance.",
+    "description": "#90 cross-tick stale-cached-snapshot guard. The show thread caches a SceneSnapshot mapping clip A to video-texture slot S; the editor frees S (clip delete) and a replacement clip B first-fits the same index while the cached snapshot still maps A->S. Pre-fix, A's cached frames uploaded into B's slot (or A's stale TextureRef drew B's texture). The fix stamps a per-slot reuse generation into the snapshot; the renderer rejects any upload/draw whose captured generation no longer matches the slot's current one. This scenario forces that window: import + play clip A so it is decoding and uploading (cached snapshot maps A->S at generation G0); delete A (schedules the deferred slot free, but DecodeSystem's cache-evict + worker-retire run in Engine::update, which the StallEditor below blocks); StallEditor so the show thread keeps ticking on the stale cached snapshot AND drains the slot free (freeSlot bumps S's generation to G1) while A's surviving cache frames keep being uploaded with generation G0 -> rejected, bumping the stale-skip counter; then import B (first-fit reuses S at G1) and let the frees settle. Asserts: the show thread progressed across the stall (delta assert: MarkShowFrameCount before / AssertShowFrameCountAdvancedBy 5 right after the stall -- the old cumulative >= 60 assumed near-60 Hz show ticks and was borderline on slow WARP CI runners), only one slot remains allocated (A freed, B allocated), and the generation guard actually fired at least once (AssertVideoTextureStaleGenerationSkips). Uses the same 150-frame tone fixture as video_texture_slot_leak; the 1.5s tail is the WARP retire-fence lag allowance.",
     "commands": [
         {"type": "AddScreen", "name": "StaleSnapshotScreen", "width": 64, "height": 64},
 
@@ -16,13 +16,14 @@
         {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0},
         {"type": "DeleteClip"},
 
+        {"type": "MarkShowFrameCount"},
         {"type": "StallEditor", "ms": 1000},
+        {"type": "AssertShowFrameCountAdvancedBy", "minAdvance": 5},
 
         {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
 
         {"type": "WaitSeconds", "count": 1.5},
 
-        {"type": "AssertShowFrameCountAtLeast", "minCount": 60},
         {"type": "AssertVideoTextureSlotsAllocated", "count": 1},
         {"type": "AssertVideoTextureStaleGenerationSkips", "min": 1, "kind": "upload"},
 

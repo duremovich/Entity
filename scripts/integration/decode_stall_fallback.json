@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "NEW-09 (issue #74): the registry-free show-thread stall fallback must keep decode targets AND audio steering advancing while the editor thread is stalled. Imports the 5s tone fixture (150 video frames @30fps + 1kHz audio), plays ~0.3s, then StallEditor 1500 blocks the editor thread (heartbeat goes >50ms stale, DecodeSystem/AudioSystem tickFromSnapshot engage). AssertFrameCached at source frame 40: the playhead reaches ~54 during the stall, so frame 40 is decoded ONLY if the fallback steered targetFrame through the stall — without it the worker parks at ~frame 17 (pre-stall playhead + DECODE_AHEAD) and the assert fails (verified: disabling the fallback fails this assert). AssertAudioWorkerSeekCountAtMost guards the stall-entry seek-storm fix: the fallback handoff must not re-seek the audio worker (each seek is an audible ring-clear); only the initial positioning seek is expected. The asserts drain in the same processQueue pass as StallEditor, before Engine::update re-steers, so they observe stall-era state.",
+    "description": "NEW-09 (issue #74): the registry-free show-thread stall fallback must keep decode targets AND audio steering advancing while the editor thread is stalled. Imports the 5s tone fixture (150 video frames @30fps + 1kHz audio), plays ~0.3s, then StallEditor 1500 blocks the editor thread (heartbeat goes >50ms stale, DecodeSystem/AudioSystem tickFromSnapshot engage). AssertFrameCached at source frame 40: the playhead reaches ~54 during the stall, so frame 40 is decoded ONLY if the fallback steered targetFrame through the stall — without it the worker parks at ~frame 17 (pre-stall playhead + DECODE_AHEAD) and the assert fails (verified: disabling the fallback fails this assert). AssertAudioWorkerSeekCountAtMost guards the stall-entry seek-storm fix: the fallback handoff must not re-seek the audio worker (each seek is an audible ring-clear); only the initial positioning seek is expected. The asserts drain in the same processQueue pass as StallEditor, before Engine::update re-steers, so they observe stall-era state. Show-thread aliveness across the stall is a delta assert (MarkShowFrameCount before / AssertShowFrameCountAdvancedBy 10 after): the 1500 ms window yields ~15 frames even at slow WARP CI tick rates and ~0 if the show thread blocked with the editor — the old cumulative >= 60 assumed near-60 Hz pacing and failed on slow runners.",
     "commands": [
         {
             "type": "AddScreen",
@@ -26,12 +26,15 @@
             "count": 0.3
         },
         {
+            "type": "MarkShowFrameCount"
+        },
+        {
             "type": "StallEditor",
             "ms": 1500
         },
         {
-            "type": "AssertShowFrameCountAtLeast",
-            "minCount": 60
+            "type": "AssertShowFrameCountAdvancedBy",
+            "minAdvance": 10
         },
         {
             "type": "AssertFrameCached",
