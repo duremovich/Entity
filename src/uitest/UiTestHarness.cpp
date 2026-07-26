@@ -108,6 +108,8 @@ bool UiTestHarness::isSessionIdle() const {
 
 void UiTestHarness::runSession(void* testContext) {
     auto* ctx = static_cast<ImGuiTestContext*>(testContext);
+    if (!m_baseRef.empty())
+        ctx->SetRef(m_baseRef.c_str());
     while (!m_stopping.load()) {
         UiAction action;
         {
@@ -126,6 +128,7 @@ void UiTestHarness::runSession(void* testContext) {
         std::string err;
         switch (action.kind) {
         case UiAction::Kind::SetRef:
+            m_baseRef = action.ref;
             ctx->SetRef(action.ref.c_str());
             break;
         case UiAction::Kind::Click:

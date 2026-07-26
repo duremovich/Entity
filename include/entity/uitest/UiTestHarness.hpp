@@ -1,7 +1,8 @@
 #pragma once
 
-// UI test harness on Dear ImGui Test Engine (ENTITY_ENABLE_UI_TESTS builds
-// only; the .cpp is not compiled otherwise and Engine's pointer stays null).
+// UI test harness on Dear ImGui Test Engine. On builds without
+// ENTITY_ENABLE_UI_TESTS the .cpp compiles link-safe no-op stubs and
+// Engine never constructs the harness (pointer stays null).
 //
 // Model: one registered "session" test whose body drains a queue of
 // UiActions. Ui* script commands enqueue an action, (re-)queue the session
@@ -91,6 +92,13 @@ private:
     std::deque<UiAction> m_queue;
     bool m_sessionQueued{false};   // guarded by m_queueMutex
     std::atomic<bool> m_stopping{false};
+
+    // Last UiSetRef, re-applied at the start of every session run: each
+    // run gets a fresh stack-local ImGuiTestContext inside the engine, and
+    // the dispatcher drain means one Ui command per run — without this a
+    // SetRef would be forgotten before the next command. Coroutine-side
+    // only (editor thread is parked while the coroutine runs).
+    std::string m_baseRef;
 };
 
 } // namespace entity
