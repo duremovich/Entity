@@ -389,6 +389,10 @@ endif()
 if(ENTITY_ENABLE_UI_TESTS)
     target_compile_definitions(EntityMediaCore PUBLIC ENTITY_ENABLE_UI_TESTS)
 endif()
+# Always compiled: OFF builds get link-safe no-op stubs (Engine's member
+# destructor and UiActionCommand::execute reference the symbols either way);
+# the test-engine-dependent implementation is inside ENTITY_ENABLE_UI_TESTS.
+target_sources(EntityMediaCore PRIVATE src/uitest/UiTestHarness.cpp)
 
 target_compile_features(EntityMediaCore PUBLIC cxx_std_20)
 

@@ -137,7 +137,7 @@ if(IMGUI_TEST_ENGINE)
     # headers. Coroutine runs on the std::thread implementation.
     target_compile_definitions(${PROJECT_NAME} PUBLIC
         IMGUI_ENABLE_TEST_ENGINE
-        IMGUI_TEST_ENGINE_ENABLE_COROUTINE_STDTHREAD=1)
+        IMGUI_TEST_ENGINE_ENABLE_COROUTINE_STDTHREAD_IMPL=1)
     # The capture tool vendors stb_image_write; internal linkage keeps its
     # stbi_* symbols from colliding with a consumer's own stb implementation.
     target_compile_definitions(${PROJECT_NAME} PRIVATE STB_IMAGE_WRITE_STATIC)

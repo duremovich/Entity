@@ -1,5 +1,6 @@
 #include "entity/core/Engine.hpp"
 #include "entity/core/EnginePluginContext.hpp"
+#include "entity/uitest/UiTestHarness.hpp"
 #include "entity/profile/Tracy.hpp"
 #include "entity/bus/InMemoryMessageTransport.hpp"
 #include "entity/bus/Message.hpp"
@@ -239,6 +240,13 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
     m_decodeSystem   = m_rendererService->getDecodeSystem();
     std::cout << "  Renderer service initialized (D3D12 + OutputManager + "
                  "FrameCache + OcioManager + Compositor + Decode)" << std::endl;
+
+#if defined(ENTITY_ENABLE_UI_TESTS)
+    // UI test harness binds the ImGui Test Engine to the context the
+    // renderer just created. Editor thread; before any ImGui frame runs.
+    m_uiTestHarness = std::make_unique<UiTestHarness>();
+    m_uiTestHarness->initialize(*this);
+#endif
 
     // Headless runs (integration tests / CI) fast-exit the process the moment
     // device-loss is detected, right after the crash record is written —
@@ -951,6 +959,12 @@ void Engine::shutdown() {
     // Project::clear or registry destruction) must not reach scheduleVideoTextureSlotFree.
     m_registry.on_destroy<VideoTexture>().disconnect<&Engine::onVideoTextureDestroyed>(this);
 
+    // Stop the UI test harness (aborts any in-flight coroutine, fails
+    // pending actions) strictly before the renderer teardown below reaches
+    // shutdownImGui; the harness object itself is destroyed after, once
+    // ImGui::DestroyContext has run.
+    if (m_uiTestHarness) m_uiTestHarness->stop();
+
     // Tear down Renderer-service-owned subsystems explicitly. Order inside
     // Renderer::shutdown(): PlaybackPresenter -> DecodeSystem (joins
     // worker threads) -> TestSystem -> CompositorSystem -> OutputManager
@@ -963,6 +977,9 @@ void Engine::shutdown() {
     m_outputManager = nullptr;
     m_renderer      = nullptr;
     m_rendererService.reset();
+
+    // ImGui context is gone; safe to destroy the test-engine context.
+    m_uiTestHarness.reset();
 
     // ADR-0009 — Launcher reads ProjectManager + RecentProjects, so it
     // must be torn down before the Director (which owns ProjectManager).

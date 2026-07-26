@@ -37,6 +37,7 @@ namespace entity {
 
 // Forward declarations
 class IRenderer;
+class UiTestHarness;
 class Timeline;
 class WindowManager;
 class Decoder;
@@ -154,6 +155,12 @@ public:
      * Get the CommandDispatcher. Forwards to Director (Phase D entry).
      */
     CommandDispatcher* getCommandDispatcher() { return m_commandDispatcher; }
+
+    /**
+     * Get the UI test harness (ImGui Test Engine). Null unless the build
+     * has ENTITY_ENABLE_UI_TESTS — Ui* script commands fail cleanly then.
+     */
+    UiTestHarness* getUiTestHarness() { return m_uiTestHarness.get(); }
 
     /**
      * Get the Director (Phase D entry — owns Timeline, ProjectManager,
@@ -974,6 +981,14 @@ private:
     // m_director so it constructs first (Director's ProjectManager wants
     // an IRenderer*) and *before* the raw-pointer shortcuts below so the
     // shortcuts stay valid until shutdown explicitly nulls them.
+    // UI test harness (ImGui Test Engine). Only ever constructed on
+    // ENTITY_ENABLE_UI_TESTS builds; null otherwise. Declared *before*
+    // m_rendererService so implicit destruction (any path that skips
+    // shutdown()) tears the renderer down first: the test-engine context
+    // must be destroyed after ImGui::DestroyContext. Its ctor is trivial;
+    // real startup is the explicit initialize() after renderer init.
+    std::unique_ptr<UiTestHarness> m_uiTestHarness;
+
     std::unique_ptr<Renderer> m_rendererService;
 
     // Audio engine (Phase B): owns device + mixer + rate source. Stopped
