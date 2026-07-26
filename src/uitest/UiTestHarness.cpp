@@ -11,6 +11,7 @@ UiTestHarness::~UiTestHarness() = default;
 bool UiTestHarness::initialize(Engine&) { return false; }
 void UiTestHarness::stop() {}
 void UiTestHarness::submit(UiAction) {}
+bool UiTestHarness::isSessionIdle() const { return true; }
 void UiTestHarness::runSession(void*) {}
 } // namespace entity
 
@@ -99,6 +100,10 @@ void UiTestHarness::submit(UiAction action) {
     if (needQueue) {
         ImGuiTestEngine_QueueTest(m_engine, m_sessionTest, ImGuiTestRunFlags_None);
     }
+}
+
+bool UiTestHarness::isSessionIdle() const {
+    return !m_engine || ImGuiTestEngine_IsTestQueueEmpty(m_engine);
 }
 
 void UiTestHarness::runSession(void* testContext) {

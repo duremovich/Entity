@@ -70,6 +70,13 @@ public:
     // Editor thread only (called from command execute()).
     void submit(UiAction action);
 
+    // True when no session run is queued or winding down. Ui command wait
+    // predicates gate on this IN ADDITION to the action's done flag: after
+    // TestFunc returns, the engine runs two wind-down Yields before
+    // clearing its run queue, and a QueueTest issued in that window is
+    // silently dropped as "already running". Editor thread only.
+    bool isSessionIdle() const;
+
     bool isInitialized() const { return m_engine != nullptr; }
 
 private:

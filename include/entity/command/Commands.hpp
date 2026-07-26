@@ -570,6 +570,51 @@ private:
     double m_timeoutSeconds;
 };
 
+/**
+ * Ui* — drive real editor widgets through the ImGui Test Engine harness
+ * (ENTITY_ENABLE_UI_TESTS builds; on other builds these fail with a clear
+ * error). One class, seven type names:
+ *
+ *   UiSetRef            {ref}                 set path prefix for later ops
+ *   UiClick             {ref}                 click item by path
+ *   UiCheck             {ref, checked=true}   set a checkbox state
+ *   UiInputValue        {ref, value}          type into item; value is JSON
+ *                                             number (int/float) or string
+ *   UiMenuClick         {ref}                 e.g. "//MainMenuBar/File/Open"
+ *   UiFocusWindow       {ref}                 raise window (pair with
+ *                                             CaptureScreenshot fullWindow)
+ *   UiAssertItemExists  {ref}                 fail if item path unresolvable
+ *
+ * All accept optional timeoutSeconds (default 10). Completion rides the
+ * dispatcher wait-predicate: the command returns after enqueueing and the
+ * script drain resumes when the harness marks the action done; failures
+ * land in script_result.json errors.
+ */
+class UiActionCommand : public Command {
+public:
+    UiActionCommand(std::string typeName, double timeoutSeconds)
+        : m_typeName(std::move(typeName)), m_timeoutSeconds(timeoutSeconds) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return m_typeName.c_str(); }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+    std::string m_ref;
+    bool        m_checked{true};
+    // InputValue payload
+    int         m_valueKind{0};   // 0 none, 1 int, 2 float, 3 text
+    double      m_numericValue{0.0};
+    std::string m_textValue;
+
+private:
+    std::string m_typeName;
+    double      m_timeoutSeconds;
+};
+
 class CaptureScreenshotCommand : public Command {
 public:
     enum class Region {

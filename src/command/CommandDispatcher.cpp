@@ -203,6 +203,17 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("WaitUntilShowFrameCountAtLeast", WaitUntilCommand::fromJson);
     registerFactory("WaitUntilClipMediaFrame", WaitUntilCommand::fromJson);
     registerFactory("WaitUntilClipPresentedFrame", WaitUntilCommand::fromJson);
+
+    // UI test harness commands (ImGui Test Engine; ENTITY_ENABLE_UI_TESTS
+    // builds — on other builds they fail with a clear error at execute()).
+    registerFactory("UiSetRef", UiActionCommand::fromJson);
+    registerFactory("UiClick", UiActionCommand::fromJson);
+    registerFactory("UiCheck", UiActionCommand::fromJson);
+    registerFactory("UiInputValue", UiActionCommand::fromJson);
+    registerFactory("UiMenuClick", UiActionCommand::fromJson);
+    registerFactory("UiFocusWindow", UiActionCommand::fromJson);
+    registerFactory("UiAssertItemExists", UiActionCommand::fromJson);
+
     registerFactory("CaptureScreenshot", CaptureScreenshotCommand::fromJson);
     registerFactory("CaptureHash", CaptureHashCommand::fromJson);
 

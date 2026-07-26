@@ -1,6 +1,7 @@
 #include "entity/command/Commands.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/Engine.hpp"
+#include "entity/uitest/UiTestHarness.hpp"
 #include "entity/render/OutputManager.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/bus/Message.hpp"
@@ -1033,6 +1034,93 @@ CommandPtr WaitUntilCommand::fromJson(const nlohmann::json& j) {
     cmd->m_tolerance  = j.value("tolerance", static_cast<FrameNumber>(0));
     cmd->m_frameMode  = (j.value("mode", std::string{"equal"}) == "notEqual")
                           ? FrameMode::NotEqual : FrameMode::Equal;
+    return cmd;
+}
+
+// ============================================================================
+// UiActionCommand — Ui* script commands bridging to the UI test harness.
+// Talks only to UiTestHarness; test-engine headers never enter this TU.
+// ============================================================================
+
+bool UiActionCommand::execute(Engine& engine) {
+    auto* harness = engine.getUiTestHarness();
+    if (!harness || !harness->isInitialized()) {
+        std::cerr << "[" << m_typeName << "] FAIL: editor built without "
+                     "ENTITY_ENABLE_UI_TESTS (UI harness unavailable)" << std::endl;
+        return false;
+    }
+    auto* dispatcher = engine.getCommandDispatcher();
+    if (!dispatcher) return false;
+
+    UiAction action;
+    if      (m_typeName == "UiSetRef")           action.kind = UiAction::Kind::SetRef;
+    else if (m_typeName == "UiClick")            action.kind = UiAction::Kind::Click;
+    else if (m_typeName == "UiCheck")            action.kind = UiAction::Kind::Check;
+    else if (m_typeName == "UiInputValue")       action.kind = UiAction::Kind::InputValue;
+    else if (m_typeName == "UiMenuClick")        action.kind = UiAction::Kind::MenuClick;
+    else if (m_typeName == "UiFocusWindow")      action.kind = UiAction::Kind::FocusWindow;
+    else if (m_typeName == "UiAssertItemExists") action.kind = UiAction::Kind::AssertItemExists;
+    action.ref = m_ref;
+    action.checked = m_checked;
+    action.valueType = (m_valueKind == 1) ? UiAction::ValueType::Int
+                     : (m_valueKind == 2) ? UiAction::ValueType::Float
+                     : (m_valueKind == 3) ? UiAction::ValueType::Text
+                                          : UiAction::ValueType::None;
+    action.numericValue = m_numericValue;
+    action.textValue = m_textValue;
+
+    auto done = action.done;
+    auto succeeded = action.succeeded;
+    auto error = action.error;
+    harness->submit(std::move(action));
+
+    // Completion ends the wait; a failed action is routed into the script
+    // results by the harness itself (addErrorToResults on the editor-
+    // interleaved coroutine), so the predicate only reports observations.
+    // The isSessionIdle gate holds the drain through the engine's two
+    // wind-down frames after a run — a Ui command drained inside that
+    // window would have its QueueTest silently dropped as
+    // "already running" and hang until timeout.
+    dispatcher->setWaitPredicate(getDescription(),
+        [done, succeeded, error](Engine& eng, std::string& obs) {
+            if (!done->load()) { obs = "ui action pending"; return false; }
+            auto* h = eng.getUiTestHarness();
+            if (h && !h->isSessionIdle()) { obs = "ui session winding down"; return false; }
+            if (!succeeded->load()) obs = *error;
+            return true;
+        },
+        m_timeoutSeconds);
+    return true;
+}
+
+nlohmann::json UiActionCommand::toJson() const {
+    nlohmann::json j{{"type", m_typeName}, {"ref", m_ref},
+                     {"timeoutSeconds", m_timeoutSeconds}};
+    if (m_typeName == "UiCheck") j["checked"] = m_checked;
+    if (m_typeName == "UiInputValue") {
+        if (m_valueKind == 1) j["value"] = static_cast<int64_t>(m_numericValue);
+        else if (m_valueKind == 2) j["value"] = m_numericValue;
+        else if (m_valueKind == 3) j["value"] = m_textValue;
+    }
+    return j;
+}
+
+std::string UiActionCommand::getDescription() const {
+    return m_typeName + " " + m_ref;
+}
+
+CommandPtr UiActionCommand::fromJson(const nlohmann::json& j) {
+    auto cmd = std::make_unique<UiActionCommand>(
+        j.value("type", std::string{"UiClick"}),
+        j.value("timeoutSeconds", 10.0));
+    cmd->m_ref = j.value("ref", std::string{});
+    cmd->m_checked = j.value("checked", true);
+    if (j.contains("value")) {
+        const auto& v = j["value"];
+        if (v.is_number_integer())      { cmd->m_valueKind = 1; cmd->m_numericValue = v.get<double>(); }
+        else if (v.is_number_float())   { cmd->m_valueKind = 2; cmd->m_numericValue = v.get<double>(); }
+        else if (v.is_string())         { cmd->m_valueKind = 3; cmd->m_textValue = v.get<std::string>(); }
+    }
     return cmd;
 }
 
