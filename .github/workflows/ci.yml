@@ -214,6 +214,7 @@ jobs:
                 -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
                 -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON \
                 -DENTITY_ENABLE_TRACY=${{ matrix.tracy }} \
+                -DENTITY_ENABLE_UI_TESTS=ON \
                 -DDXC_EXECUTABLE="$DXC_EXECUTABLE"; then
               echo "=== cmake configure succeeded on attempt $attempt ==="
               exit 0

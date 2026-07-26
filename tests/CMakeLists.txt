@@ -378,6 +378,15 @@ entity_add_integration_test(screen_no_double_allocation screen_no_double_allocat
 # Asserts: import allocates 1 slot, delete + WaitSeconds reduces it back to 0.
 entity_add_integration_test(video_texture_slot_leak video_texture_slot_leak.json)
 
+# UI test harness smoke (ImGui Test Engine, ENTITY_ENABLE_UI_TESTS builds
+# only). Drives real editor windows headless: asserts Media Bin + Timeline
+# resolve by path, focuses both, captures a full-window screenshot artifact
+# (eyeball inspection only — never hash-compared; UI pixels vary by dock
+# state and font rasterization).
+if(ENTITY_ENABLE_UI_TESTS)
+    entity_add_integration_test(ui_smoke ui_smoke.json)
+endif()
+
 # #90 — cross-tick stale-cached-snapshot guard. A show tick built from a
 # SceneSnapshot cached across ticks must not upload/draw a freed-and-reused
 # video-texture slot: the per-slot generation guard rejects the stale upload.

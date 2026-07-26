@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "description": "UI harness smoke: the ImGui Test Engine can locate and drive real editor windows headless. Asserts the main windows exist, focuses two of them, and captures a full-window screenshot (artifact for human/AI inspection; deliberately NOT hash-compared -- UI pixels vary by ini/dock state and font rasterization, and a golden here would be pure flake). Window titles must match the ImGui::Begin strings; if a rename breaks this test, update the refs.",
+    "commands": [
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "UiAssertItemExists", "ref": "//Media Bin"},
+        {"type": "UiAssertItemExists", "ref": "//Timeline"},
+        {"type": "UiFocusWindow", "ref": "Timeline"},
+        {"type": "UiFocusWindow", "ref": "Media Bin"},
+        {"type": "CaptureScreenshot", "filepath": "test_output/ui_smoke.png", "region": "fullWindow"},
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "Exit"}
+    ]
+}
