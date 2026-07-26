@@ -54,6 +54,18 @@ this engine exclusively through the published plugin API and are not derived
 works of the core under the linking exception. Entity Pro plugins ship under
 their own commercial license, distinct from this repository.
 
+## Dear ImGui Test Engine (dev/test builds only)
+
+Builds configured with `-DENTITY_ENABLE_UI_TESTS=ON` compile
+[Dear ImGui Test Engine](https://github.com/ocornut/imgui_test_engine) into
+the imgui library. It is dual-licensed by upstream (free for open-source
+derivatives under OSI licenses and for entities under $2M turnover; paid
+otherwise — see the upstream LICENSE.txt). Entity's public GPLv3 build
+qualifies for the free license. The flag defaults OFF and is not part of
+release binaries. Combining it with `EXTRA_PLUGIN_DIRS` (proprietary
+plugins) is warned at configure time: that combination rests on the
+turnover criterion alone.
+
 ---
 
 For questions about commercial licensing or other licensing arrangements,
