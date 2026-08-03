@@ -1,0 +1,18 @@
+{
+    "version": 1,
+    "description": "UI harness + dispatcher split-queue acceptance (#109): clicking the armed AE stopwatch enqueues ClearPropertyKeyframes at runtime, and the script can observe its effect on the very next commands -- impossible before the runtime/script queue split. The **/ wildcard crosses PropertyWindow's PushID(entity) scope; '(*)' is the armed-stopwatch label, and Opacity is the only armed property so it is unambiguous.",
+    "commands": [
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "ImportVideo", "filepath": "test_media/basic_loop.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitSeconds", "count": 1.0},
+        {"type": "SelectClip", "trackIndex": 0, "clipIndex": 0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 0, "value": 0.0},
+        {"type": "AddKeyframe", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "frame": 60, "value": 1.0},
+        {"type": "AssertKeyframeCount", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "count": 2},
+        {"type": "UiFocusWindow", "ref": "Properties"},
+        {"type": "UiClick", "ref": "//Properties/**/(*)"},
+        {"type": "WaitSeconds", "count": 0.5},
+        {"type": "AssertKeyframeCount", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "count": 0},
+        {"type": "Exit"}
+    ]
+}

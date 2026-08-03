@@ -385,6 +385,9 @@ entity_add_integration_test(video_texture_slot_leak video_texture_slot_leak.json
 # state and font rasterization).
 if(ENTITY_ENABLE_UI_TESTS)
     entity_add_integration_test(ui_smoke ui_smoke.json)
+    # #109 acceptance: a UI click's enqueued command must be observable by
+    # the next script command (runtime/script queue split).
+    entity_add_integration_test(ui_stopwatch_clear ui_stopwatch_clear.json)
 endif()
 
 # #90 — cross-tick stale-cached-snapshot guard. A show tick built from a
