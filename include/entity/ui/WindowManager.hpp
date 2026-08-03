@@ -11,6 +11,7 @@
 #include <vector>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace entity {
@@ -348,6 +349,13 @@ private:
     // between dock nodes — that's the trade-off, and it matches what the
     // lock actually protects against (accidental undocking).
     bool m_layoutLocked{false};
+
+    // Constructor-default visibility per window, captured at registration.
+    // A pristine (empty-ini) workspace apply restores these instead of
+    // treating "not in hiddenWindows" as visible — an empty hidden list
+    // used to force EVERY window visible on first launch, floating the
+    // hidden-by-default ones (Feed Map Editor) over the docked layout.
+    std::unordered_map<std::string, bool> m_defaultVisibility;
 
     // Per-window floating state (windows explicitly undocked by user)
     std::unordered_set<std::string> m_floatingWindows;      // Currently floating windows

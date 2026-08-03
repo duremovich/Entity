@@ -436,6 +436,10 @@ void WindowManager::setSettingsAppliedCallback(SettingsAppliedCallback cb) {
 
 void WindowManager::registerWindow(std::unique_ptr<EditorWindow> window) {
     std::cout << "Registering window: " << window->getName() << std::endl;
+    // Constructor-set visibility is the window's default (e.g. Feed Map
+    // Editor hides until opened). Captured here so a pristine-workspace
+    // apply can restore defaults instead of showing everything.
+    m_defaultVisibility[window->getName()] = window->isVisible();
     m_windows.push_back(std::move(window));
 }
 
@@ -587,7 +591,19 @@ bool WindowManager::flushPendingIniApply() {
         const bool hidden = std::find(m_pendingHiddenWindows.begin(),
                                       m_pendingHiddenWindows.end(), n)
                             != m_pendingHiddenWindows.end();
-        window->setVisible(!hidden);
+        if (m_pendingIniBlob.empty()) {
+            // Pristine workspace (first launch / reset): each window keeps
+            // its constructor default. "Not listed in hiddenWindows" must
+            // not mean "visible" here — the pristine hidden list is empty,
+            // and forcing everything visible floated the hidden-by-default
+            // windows (Feed Map Editor) over the docked layout.
+            const auto it = m_defaultVisibility.find(n);
+            const bool defVisible =
+                it == m_defaultVisibility.end() || it->second;
+            window->setVisible(defVisible && !hidden);
+        } else {
+            window->setVisible(!hidden);
+        }
     }
 
     // Queue the focus restore for the NEXT render(): the windows need to
