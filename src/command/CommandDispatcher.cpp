@@ -41,6 +41,12 @@ bool CommandDispatcher::enqueue(const std::string& typeName, const nlohmann::jso
 }
 
 size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
+    // Runtime queue first, BEFORE the wait gates: commands enqueued by UI
+    // code / plugins execute on the next drain regardless of script pacing
+    // (#109). Without this, a script's WaitUntil could deadlock waiting for
+    // state that only the parked runtime command would produce.
+    size_t executed = drainQueue(engine, affinity, m_commandQueue, /*countAsScript=*/false);
+
     // Wait states only block the Editor-thread drain. The show thread's
     // Show-affinity drain skips them so transport commands stay responsive
     // during editor modal loops or script waits.
@@ -48,12 +54,12 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
         if (m_waitFramesRemaining > 0) {
             m_waitFramesRemaining--;
             if (m_waitFramesRemaining > 0) {
-                return 0;
+                return executed;
             }
         }
         if (m_waitUntilActive) {
             if (std::chrono::steady_clock::now() < m_waitUntil) {
-                return 0;
+                return executed;
             }
             m_waitUntilActive = false;
         }
@@ -73,11 +79,27 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
                 m_waitPredicateActive = false;
                 m_waitPredicate = nullptr;
             } else {
-                return 0;
+                return executed;
             }
         }
     }
 
+    // Never advance the script past a parked runtime command: if the runtime
+    // front is waiting for the OTHER thread's affinity, script command N+1
+    // must not execute before it (it may be script command N's UI effect).
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (!m_commandQueue.empty()) {
+            return executed;
+        }
+    }
+
+    executed += drainQueue(engine, affinity, m_scriptQueue, /*countAsScript=*/true);
+    return executed;
+}
+
+size_t CommandDispatcher::drainQueue(Engine& engine, Affinity affinity,
+                                     std::queue<CommandPtr>& queue, bool countAsScript) {
     size_t executed = 0;
 
     while (true) {
@@ -85,7 +107,7 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
 
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
-            if (m_commandQueue.empty()) {
+            if (queue.empty()) {
                 break;
             }
             // Peek the front. Only pop if affinity matches — otherwise the
@@ -99,13 +121,13 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
             // failure path: oa_section_freeze with WaitSeconds 2.0 hoisted
             // ahead of Play, so AssertPlaybackState ran without giving
             // Timeline+SectionScheduler time to park.
-            const Affinity cmdAffinity = m_commandQueue.front()->getAffinity();
+            const Affinity cmdAffinity = queue.front()->getAffinity();
             if (cmdAffinity != affinity && cmdAffinity != Affinity::Either
                     && affinity != Affinity::Either) {
                 break;
             }
-            command = std::move(m_commandQueue.front());
-            m_commandQueue.pop();
+            command = std::move(queue.front());
+            queue.pop();
         }
 
         const char* typeName = command->getTypeName();
@@ -140,7 +162,9 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
         }
 
         executed++;
-        m_scriptCommandsExecuted++;
+        if (countAsScript) {
+            m_scriptCommandsExecuted++;
+        }
 
         if (affinity != Affinity::Show
                 && (m_waitFramesRemaining > 0 || m_waitUntilActive || m_waitPredicateActive)) {
@@ -153,7 +177,7 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
 
 bool CommandDispatcher::scriptReadyToFinish() const {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    return m_scriptRunning && m_commandQueue.empty()
+    return m_scriptRunning && m_commandQueue.empty() && m_scriptQueue.empty()
         && m_waitFramesRemaining == 0 && !m_waitUntilActive
         && !m_waitPredicateActive;
 }
@@ -468,7 +492,10 @@ bool CommandDispatcher::loadScript(const std::string& filepath) {
     for (const auto& cmdJson : commands) {
         auto command = createFromJson(cmdJson);
         if (command) {
-            enqueue(std::move(command));
+            {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                m_scriptQueue.push(std::move(command));
+            }
             loaded++;
         } else {
             std::cerr << "[Script] Failed to parse command: " << cmdJson.dump() << std::endl;
@@ -499,7 +526,7 @@ void CommandDispatcher::clearRecording() {
 
 size_t CommandDispatcher::getPendingCount() const {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    return m_commandQueue.size();
+    return m_commandQueue.size() + m_scriptQueue.size();
 }
 
 void CommandDispatcher::finishScript() {

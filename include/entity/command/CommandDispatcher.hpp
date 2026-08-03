@@ -245,7 +245,17 @@ public:
     void clearHistory();
 
 private:
+    // Two FIFOs under one mutex (#109). m_commandQueue is the RUNTIME queue:
+    // UI clicks, plugins, bus handlers — anything enqueue()d while the app
+    // runs. m_scriptQueue holds preloaded --script commands. processQueue
+    // drains runtime first, before the wait gates, so script pacing
+    // (WaitFrames/WaitUntil/predicates) never defers a UI action's effect —
+    // that starvation made click-then-assert impossible for harness scripts.
+    // The script queue is only touched when the runtime queue is EMPTY, so a
+    // runtime command parked on the other thread's affinity is never
+    // overtaken by a later script command.
     std::queue<CommandPtr> m_commandQueue;
+    std::queue<CommandPtr> m_scriptQueue;
     mutable std::mutex m_queueMutex;
 
     std::unordered_map<std::string, CommandFactory> m_factories;
@@ -288,6 +298,15 @@ private:
      * Write script results to fixed path.
      */
     void writeScriptResults();
+
+    /**
+     * Drain one queue for this affinity: FIFO, peek-don't-pop on affinity
+     * mismatch (never reorder), stop when a wait state activates on the
+     * editor drain. countAsScript gates the m_scriptCommandsExecuted
+     * increment so the finished-count log reflects script commands only.
+     */
+    size_t drainQueue(Engine& engine, Affinity affinity,
+                      std::queue<CommandPtr>& queue, bool countAsScript);
 };
 
 } // namespace entity
