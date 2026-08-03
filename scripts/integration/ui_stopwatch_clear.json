@@ -1,6 +1,6 @@
 {
     "version": 1,
-    "description": "UI harness + dispatcher split-queue acceptance (#109): clicking the armed AE stopwatch enqueues ClearPropertyKeyframes at runtime, and the script can observe its effect on the very next commands -- impossible before the runtime/script queue split. The **/ wildcard crosses PropertyWindow's PushID(entity) scope; '(*)' is the armed-stopwatch label, and Opacity is the only armed property so it is unambiguous.",
+    "description": "UI harness + dispatcher split-queue acceptance (#109), two cases. Case 1: clicking the armed AE stopwatch enqueues ClearPropertyKeyframes at runtime, and the VERY NEXT script command observes its effect (no wait between click and assert -- the script drain may not overtake pending runtime work). Case 2: CutClip's execute() enqueues DeleteClip as a runtime command with no wait state; the immediately following assert must see the clip gone -- this pins the atomic in-drain gate (a once-per-call check let script command N+1 overtake it). The **/ wildcard crosses PropertyWindow's PushID(entity) scope; '(*)' is the armed-stopwatch label, and Opacity is the only armed property so it is unambiguous.",
     "commands": [
         {"type": "WaitSeconds", "count": 1.0},
         {"type": "ImportVideo", "filepath": "test_media/basic_loop.mov", "trackIndex": 0, "position": 0},
@@ -11,8 +11,9 @@
         {"type": "AssertKeyframeCount", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "count": 2},
         {"type": "UiFocusWindow", "ref": "Properties"},
         {"type": "UiClick", "ref": "//Properties/**/(*)"},
-        {"type": "WaitSeconds", "count": 0.5},
         {"type": "AssertKeyframeCount", "trackIndex": 0, "clipIndex": 0, "property": "Opacity", "count": 0},
+        {"type": "CutClip"},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 0},
         {"type": "Exit"}
     ]
 }

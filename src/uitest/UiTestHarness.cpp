@@ -181,6 +181,21 @@ void UiTestHarness::runSession(void* testContext) {
         if (ctx->IsError()) {
             ok = false;
             if (err.empty()) err = "UI op failed (see test engine log): " + action.ref;
+            // Dump the engine's error/warning lines to stdout so headless
+            // CI failures are diagnosable from the ctest log alone (the
+            // session test's log is unreachable otherwise). The log
+            // accumulates across the whole session, so earlier failures
+            // reappear here — read the tail.
+            {
+                ImGuiTextBuffer lines;
+                ctx->Test->TestLog.ExtractLinesForVerboseLevels(
+                    ImGuiTestVerboseLevel_Error, ImGuiTestVerboseLevel_Warning,
+                    &lines);
+                if (!lines.empty()) {
+                    std::cout << "[UiTest] engine log (errors/warnings):\n"
+                              << lines.c_str() << std::flush;
+                }
+            }
             if (ctx->Abort) {
                 *action.error = err;
                 action.succeeded->store(false);

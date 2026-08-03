@@ -133,7 +133,10 @@ public:
     /**
      * Set wait frames (called by WaitFramesCommand).
      */
-    void setWaitFrames(uint32_t frames) { m_waitFramesRemaining = frames; }
+    void setWaitFrames(uint32_t frames) {
+        if (refuseWaitOverwrite("WaitFrames")) return;
+        m_waitFramesRemaining = frames;
+    }
 
     /**
      * Pause script execution until the given time point passes.
@@ -142,6 +145,7 @@ public:
      * freely. Called by SleepMsCommand instead of a blocking sleep.
      */
     void setWaitUntil(std::chrono::steady_clock::time_point deadline) {
+        if (refuseWaitOverwrite("WaitUntil")) return;
         m_waitUntil = deadline;
         m_waitUntilActive = true;
     }
@@ -160,6 +164,7 @@ public:
     using WaitPredicate = std::function<bool(Engine&, std::string& observedOut)>;
     void setWaitPredicate(std::string label, WaitPredicate predicate,
                           double timeoutSeconds) {
+        if (refuseWaitOverwrite(label.c_str())) return;
         m_waitPredicateLabel = std::move(label);
         m_waitPredicate = std::move(predicate);
         m_waitPredicateDeadline = std::chrono::steady_clock::now() +
@@ -307,6 +312,16 @@ private:
      */
     size_t drainQueue(Engine& engine, Affinity affinity,
                       std::queue<CommandPtr>& queue, bool countAsScript);
+
+    /**
+     * True (and logs) if a wait state is already active, in which case
+     * the caller must NOT install a new one. Script commands never see
+     * an active wait (the gates clear before the script drain), so this
+     * only fires for runtime-enqueued Wait/Ui commands executing
+     * mid-script-wait (#109 drain reorder) — silently overwriting would
+     * corrupt script pacing and orphan the in-flight UI action.
+     */
+    bool refuseWaitOverwrite(const char* what);
 };
 
 } // namespace entity

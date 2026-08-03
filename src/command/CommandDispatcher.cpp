@@ -41,6 +41,13 @@ bool CommandDispatcher::enqueue(const std::string& typeName, const nlohmann::jso
 }
 
 size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
+    // Captured before the runtime drain (editor thread only — the wait
+    // members are editor-confined): a runtime WaitFrames(N) executed by
+    // this call's drain must not also be decremented by this call's gate,
+    // or it waits N-1 frames.
+    const bool waitFramesActiveOnEntry =
+        affinity != Affinity::Show && m_waitFramesRemaining > 0;
+
     // Runtime queue first, BEFORE the wait gates: commands enqueued by UI
     // code / plugins execute on the next drain regardless of script pacing
     // (#109). Without this, a script's WaitUntil could deadlock waiting for
@@ -52,7 +59,9 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
     // during editor modal loops or script waits.
     if (affinity != Affinity::Show) {
         if (m_waitFramesRemaining > 0) {
-            m_waitFramesRemaining--;
+            if (waitFramesActiveOnEntry) {
+                m_waitFramesRemaining--;
+            }
             if (m_waitFramesRemaining > 0) {
                 return executed;
             }
@@ -84,16 +93,10 @@ size_t CommandDispatcher::processQueue(Engine& engine, Affinity affinity) {
         }
     }
 
-    // Never advance the script past a parked runtime command: if the runtime
-    // front is waiting for the OTHER thread's affinity, script command N+1
-    // must not execute before it (it may be script command N's UI effect).
-    {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
-        if (!m_commandQueue.empty()) {
-            return executed;
-        }
-    }
-
+    // The script drain never advances past pending runtime work — that
+    // gate lives inside drainQueue, under the same lock as the pop, so
+    // it holds between consecutive script pops too (a script command's
+    // execute() may enqueue its effect as a runtime command).
     executed += drainQueue(engine, affinity, m_scriptQueue, /*countAsScript=*/true);
     return executed;
 }
@@ -108,6 +111,18 @@ size_t CommandDispatcher::drainQueue(Engine& engine, Affinity affinity,
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             if (queue.empty()) {
+                break;
+            }
+            // Script commands never overtake pending runtime work: script
+            // command N's execute() may have enqueued its UI effect as a
+            // runtime command (e.g. CutClip -> DeleteClip), and command
+            // N+1 must observe that effect (#109). Checked under the same
+            // lock as the pop so the gate is atomic — a once-per-call
+            // pre-check left a window where a script command that
+            // enqueues without setting a wait state was overtaken by its
+            // successor in the same drain, and raced the other thread's
+            // concurrent script pops.
+            if (&queue == &m_scriptQueue && !m_commandQueue.empty()) {
                 break;
             }
             // Peek the front. Only pop if affinity matches — otherwise the
@@ -173,6 +188,16 @@ size_t CommandDispatcher::drainQueue(Engine& engine, Affinity affinity,
     }
 
     return executed;
+}
+
+bool CommandDispatcher::refuseWaitOverwrite(const char* what) {
+    if (m_waitFramesRemaining == 0 && !m_waitUntilActive && !m_waitPredicateActive) {
+        return false;
+    }
+    std::cerr << "[Dispatcher] Refusing wait-state overwrite by \"" << what
+              << "\": a wait is already active (runtime-enqueued wait during "
+              << "a script wait?). The command is dropped." << std::endl;
+    return true;
 }
 
 bool CommandDispatcher::scriptReadyToFinish() const {
