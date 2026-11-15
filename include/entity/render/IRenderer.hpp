@@ -108,9 +108,17 @@ public:
     // Stage 1 A/B-list split.
     // Show role: copy-queue uploads, compositor draws, output-window Present.
     // Editor role: back-buffer transition, ImGui recording, editor Present.
-    virtual void beginShowFrame() = 0;
+    //
+    // begin*Frame returns false when the frame cannot be recorded — the
+    // device is lost (latched before or during the call; e.g. the show
+    // fence wait timing out). No command list is active on the calling
+    // thread then, so the caller must skip every render call for the rest
+    // of that tick, still call the matching end*Frame (it only runs its
+    // bookkeeping on a lost device), and let the device-lost recovery path
+    // (DeviceLost -> autosave -> relaunch) take over.
+    virtual bool beginShowFrame() = 0;
     virtual void endShowFrame() = 0;
-    virtual void beginEditorFrame() = 0;
+    virtual bool beginEditorFrame() = 0;
     virtual void endEditorFrame() = 0;
 
     // ------------------------------------------------------------------------

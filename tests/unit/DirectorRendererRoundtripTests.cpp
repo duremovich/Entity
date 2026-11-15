@@ -60,9 +60,9 @@ public:
     uint32_t getCurrentBackBufferIndex() const override { return 0; }
     void     beginImGuiFrame() override {}
     void     endImGuiFrame() override {}
-    void     beginShowFrame() override {}
+    bool     beginShowFrame() override { return true; }
     void     endShowFrame() override {}
-    void     beginEditorFrame() override {}
+    bool     beginEditorFrame() override { return true; }
     void     endEditorFrame() override {}
 
     uint32_t allocateVideoTextureSlot() override { return 0; }

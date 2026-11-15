@@ -73,6 +73,14 @@ public:
         m_deviceLost.store(true, std::memory_order_release);
     }
     bool waitForGpuForTesting()        { return waitForGpu(); }
+    // Make the NEXT beginShowFrame behave as if its show-fence wait had
+    // given up on the device: latch device-lost with reason S_OK (the
+    // unconfirmed, fence-budget-exhaustion form; the device stays live, so
+    // teardown still drains) and return false with no command list active.
+    // Drives ENTITY_FORCE_DEVICE_LOST_SITE=beginShowFrame.
+    void failNextShowFrameForTesting() {
+        m_failNextShowFrameForTesting.store(true, std::memory_order_release);
+    }
     bool gpuIdleForDestroyForTesting() { return gpuIdleForDestroy(); }
 
     // Headless/CI device-lost policy (issue #69). When enabled,
@@ -99,9 +107,9 @@ public:
     // Stage 1 A/B-list split. Show-side owns copy uploads + compositor +
     // output draws + output Present. Editor-side owns back-buffer setup,
     // ImGui recording, and editor swap-chain Present.
-    void beginShowFrame() override;
+    bool beginShowFrame() override;
     void endShowFrame() override;
-    void beginEditorFrame() override;
+    bool beginEditorFrame() override;
     void endEditorFrame() override;
 
     uint32_t   allocateVideoTextureSlot() override;
@@ -1148,6 +1156,8 @@ private:
     // Set once during Engine::initialize (headless only), read from whichever
     // thread wins the handleDeviceLost CAS. See setExitProcessOnDeviceLost().
     std::atomic<bool> m_exitProcessOnDeviceLost{false};
+    // See failNextShowFrameForTesting(). Consumed by beginShowFrame.
+    std::atomic<bool> m_failNextShowFrameForTesting{false};
     // GetDeviceRemovedReason() result; available via getDeviceLostReason() and
     // read (acquire) by the shutdown drain gate. Atomic because multiple
     // threads can hit device-lost concurrently and a third thread reads it.

@@ -59,6 +59,7 @@ add_executable(EntityMediaTests
     unit/DecodedFrameTests.cpp
     unit/CalibrationSolverTests.cpp
     unit/WaitForGpuEarlyOutTests.cpp
+    unit/DeviceLostFrameSkipTests.cpp
     unit/DmxMappingTests.cpp
     unit/OscEncodingTest.cpp
     unit/OscMappingTableTest.cpp
@@ -236,6 +237,17 @@ set_tests_properties(integration_duplicate_screens_load PROPERTIES
 # After a device-lost recovery load the project path is the real show file
 # (not the .autosave.entity), and device-lost autosave still works.
 entity_add_integration_test(device_lost_recovery_path device_lost_recovery_path.json)
+# Device loss reported by beginShowFrame (the fence-wait early return) must
+# skip the rest of the show tick instead of dereferencing a null command
+# list, so the recovery path (DeviceLost -> autosave) runs and the process
+# exits cleanly. The test hook arms the next beginShowFrame at show frame 30.
+# Passes on output only: the device-lost exit, the DeviceLost handler and a
+# normal process exit, in that order (an access violation never prints the
+# last line). Untitled project, so no autosave and no recovery relaunch.
+entity_add_integration_test(device_lost_show_frame device_lost_show_frame.json)
+set_tests_properties(integration_device_lost_show_frame PROPERTIES
+    ENVIRONMENT "ENTITY_FORCE_WARP=1;ENTITY_FORCE_DEVICE_LOST_AT_FRAME=30;ENTITY_FORCE_DEVICE_LOST_SITE=beginShowFrame"
+    PASS_REGULAR_EXPRESSION "exiting main loop.*bus::DeviceLost received.*Application exited normally")
 
 # Sections persistence round-trip (Phase B — break-points schema).
 entity_add_integration_test(sections_persistence_save sections_persistence_save.json)

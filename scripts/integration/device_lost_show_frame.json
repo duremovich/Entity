@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "description": "Device loss detected inside beginShowFrame must not crash. Run with ENTITY_FORCE_DEVICE_LOST_AT_FRAME=30 and ENTITY_FORCE_DEVICE_LOST_SITE=beginShowFrame (set by the ctest registration): at show frame 30 the next beginShowFrame reports device lost the way a fence wait that gives up does (latched, reason S_OK, no command list active). The show thread used to carry on into the compositor and output passes and dereference the null command list, an access violation that beat the designed recovery. Now it skips the frame and stops, the editor skips its own frame, posts DeviceLost and exits through the recovery path. The project is untitled, so no autosave is written and no recovery process is spawned. The ctest passes on the output: the main loop exited on device loss and the process shut down normally. Reaching the final assert means the loss never fired, which fails the script.",
+    "commands": [
+        {"type": "AddScreen", "name": "LostScreen", "width": 64, "height": 64},
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 20},
+        {"type": "AssertScreenCount", "count": 999},
+        {"type": "Exit"}
+    ]
+}

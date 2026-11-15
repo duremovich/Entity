@@ -1296,13 +1296,22 @@ void Engine::run() {
         // Set ENTITY_FORCE_DEVICE_LOST_AT_FRAME=N to simulate device removal
         // on show-thread frame N. Use N >= 10 so the show thread has presented
         // at least one frame (required for the cold-start gate to have passed).
+        // ENTITY_FORCE_DEVICE_LOST_SITE selects where the loss surfaces:
+        //   (unset)         latched here on the editor thread (reason HUNG)
+        //   beginShowFrame  the show thread's next beginShowFrame reports it,
+        //                   as if its fence wait gave up (reason S_OK): the
+        //                   mid-tick path that must skip the show frame
         {
             static int s_forceDeviceLostFrame = -1;
             static bool s_forceDeviceLostChecked = false;
+            static bool s_forceDeviceLostAtShowFrame = false;
             if (!s_forceDeviceLostChecked) {
                 s_forceDeviceLostChecked = true;
                 if (const char* v = std::getenv("ENTITY_FORCE_DEVICE_LOST_AT_FRAME")) {
                     s_forceDeviceLostFrame = std::atoi(v);
+                }
+                if (const char* site = std::getenv("ENTITY_FORCE_DEVICE_LOST_SITE")) {
+                    s_forceDeviceLostAtShowFrame = std::string(site) == "beginShowFrame";
                 }
             }
             if (s_forceDeviceLostFrame >= 0 && m_renderer) {
@@ -1310,9 +1319,17 @@ void Engine::run() {
                 if (sf >= static_cast<uint64_t>(s_forceDeviceLostFrame)) {
                     s_forceDeviceLostFrame = -1; // fire once
                     if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr) {
-                        d3d->setDeviceLostForTesting();
+                        if (s_forceDeviceLostAtShowFrame) {
+                            d3d->failNextShowFrameForTesting();
+                        } else {
+                            d3d->setDeviceLostForTesting();
+                        }
                         std::cerr << "[Engine] ENTITY_FORCE_DEVICE_LOST_AT_FRAME: "
-                                  << "synthetic device-lost set at show frame " << sf << std::endl;
+                                  << "synthetic device-lost "
+                                  << (s_forceDeviceLostAtShowFrame
+                                          ? "armed for the next beginShowFrame"
+                                          : "set")
+                                  << " at show frame " << sf << std::endl;
                     }
                 }
             }
@@ -1744,7 +1761,20 @@ void Engine::showThreadMain() {
         // Show frame: copy uploads + compositor + output draws + output Present.
         if (m_renderer) {
             drainCaptureRequestsPreFrame();
-            m_renderer->beginShowFrame();
+            if (!m_renderer->beginShowFrame()) {
+                // Device lost (latched before or during beginShowFrame's
+                // fence wait): no show command list is active, so the
+                // compositor / output draws / D2R uploads below would
+                // dereference a null list and crash before the editor's
+                // device-lost recovery (DeviceLost -> autosave -> relaunch)
+                // can run. Skip the rest of the tick; endShowFrame only runs
+                // its bookkeeping on a lost device. Leave the loop the way
+                // the top-of-loop isDeviceLost() check would next iteration.
+                m_renderer->endShowFrame();
+                std::cerr << "[Engine] Show frame skipped: device lost, "
+                             "stopping show thread." << std::endl;
+                break;
+            }
 
             // Drain D2R *after* beginShowFrame: PlaybackPresenter::present records
             // CopyTextureRegion onto m_copyCommandList, which beginShowFrame just
@@ -2480,7 +2510,10 @@ void Engine::render() {
         // the blocking load with that overlay still on the front
         // buffer. On failure, fall back to the launcher (recoverable).
         if (!m_pendingFileAssociationLoad.empty() && !m_showLauncher) {
-            m_renderer->beginEditorFrame();
+            if (!m_renderer->beginEditorFrame()) {
+                m_renderer->endEditorFrame();  // device lost: skip the frame
+                return;
+            }
             m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
             m_renderer->beginImGuiFrame();
             paintLauncherLoadingOverlay(m_pendingFileAssociationLoad);
@@ -2516,7 +2549,10 @@ void Engine::render() {
         // systems (CompositorSystem, OutputManager) before a project
         // exists.
         if (m_showLauncher) {
-            m_renderer->beginEditorFrame();
+            if (!m_renderer->beginEditorFrame()) {
+                m_renderer->endEditorFrame();  // device lost: skip the frame
+                return;
+            }
             m_renderer->clear(0.05f, 0.06f, 0.08f, 1.0f);
             m_renderer->beginImGuiFrame();
 
@@ -2569,7 +2605,16 @@ void Engine::render() {
         // Editor frame: back-buffer clear, ImGui, editor Present.
         // Show-side work (copy uploads, compositor, output draws, endShowFrame)
         // now runs in showThreadMain().
-        m_renderer->beginEditorFrame();
+        //
+        // On a lost device (latched by either thread) there is no editor
+        // command list: skip the whole frame (ImGui windows such as the
+        // Stage view would otherwise record into a null list) and let the
+        // device-lost check at the end of this loop iteration post
+        // DeviceLost and run the autosave.
+        if (!m_renderer->beginEditorFrame()) {
+            m_renderer->endEditorFrame();
+            return;
+        }
 
         // Clear back buffer to the editor background color.
         m_renderer->clear(0.0f, 0.5f, 0.6f, 1.0f);

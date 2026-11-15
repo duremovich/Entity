@@ -563,8 +563,26 @@ Result D3D12Renderer::resize(uint32_t width, uint32_t height) {
 // Stage 3 moves showXxxFrame onto a separate thread.
 // ---------------------------------------------------------------------------
 
-void D3D12Renderer::beginShowFrame() {
+bool D3D12Renderer::beginShowFrame() {
     ZoneScopedN("beginShowFrame");
+
+    // No list is active until this frame is set up below. An earlier
+    // endShowFrame that bailed out (Close failure, Present device-lost) can
+    // leave a stale pointer behind; never let a skipped frame record into it.
+    tl_activeCmdList = nullptr;
+
+    // Test hook: behave as if the fence wait below gave up on the device.
+    if (m_failNextShowFrameForTesting.exchange(false, std::memory_order_acq_rel)) {
+        setDeviceLostForTesting(S_OK);
+        std::cerr << "[D3D12] failNextShowFrameForTesting: beginShowFrame "
+                     "reports device lost (reason S_OK)" << std::endl;
+    }
+    // A device already latched lost (by either thread) has nothing to record
+    // into. Report it instead of resetting allocators on a dead device; the
+    // caller skips the tick and the device-lost recovery path runs.
+    if (m_deviceLost.load(std::memory_order_acquire)) {
+        return false;
+    }
 
     // Show thread rotates its own ring slot independently — never calls
     // GetCurrentBackBufferIndex(), which is not thread-safe to call
@@ -587,7 +605,10 @@ void D3D12Renderer::beginShowFrame() {
             if (!waitFenceOrDeviceLost(m_showFence.Get(), lastSignaled,
                                        m_showFenceEvent,
                                        "beginShowFrame show fence wait timeout")) {
-                return;
+                // Device-lost is latched (confirmed, or S_OK when the retry
+                // budget ran out on a live device). tl_activeCmdList stays
+                // null: the caller must skip the rest of the tick.
+                return false;
             }
         }
     }
@@ -729,6 +750,7 @@ void D3D12Renderer::beginShowFrame() {
     tl_showGpuZone = new tracy::D3D12ZoneScope(
         m_tracyD3D12Ctx, m_showCmdList.Get(), &kShowGpuSrcLoc, true);
 #endif
+    return true;
 }
 
 void D3D12Renderer::endShowFrame() {
@@ -888,13 +910,14 @@ void D3D12Renderer::endShowFrame() {
     // the top of this function so the early returns above can't skip it.)
 }
 
-void D3D12Renderer::beginEditorFrame() {
+bool D3D12Renderer::beginEditorFrame() {
     ZoneScopedN("beginEditorFrame");
     // #75: count the frame unconditionally (before any early return) so it
     // stays paired with endEditorFrame's endFrame() calls, which also fire
     // on every exit path. A skewed pair starves compose-target resizes.
     m_editorFrameTracker.beginFrame();
-    if (m_deviceLost) return;
+    tl_activeCmdList = nullptr;  // drop any stale list from a bailed-out endEditorFrame
+    if (m_deviceLost) return false;  // no list active; caller skips the frame
 
     // m_currentBackBufferIndex selects which RTV/back-buffer to draw into
     // (used by clear() and endEditorFrame()'s present-state barrier) — keep it.
@@ -935,6 +958,7 @@ void D3D12Renderer::beginEditorFrame() {
 
     tl_activeCmdList->RSSetViewports(1, &viewport);
     tl_activeCmdList->RSSetScissorRects(1, &scissorRect);
+    return true;
 }
 
 void D3D12Renderer::endEditorFrame() {
@@ -950,6 +974,9 @@ void D3D12Renderer::endEditorFrame() {
     } frameEndGuard{m_editorFrameTracker};
 
     if (m_deviceLost) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     // Transition back buffer to PRESENT state
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -988,6 +1015,9 @@ void D3D12Renderer::endEditorFrame() {
 
 void D3D12Renderer::clear(float r, float g, float b, float a) {
     if (m_deviceLost.load(std::memory_order_relaxed)) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     // Transition render target to RENDER_TARGET state
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -2184,6 +2214,9 @@ void D3D12Renderer::drawColoredQuad(const DirectX::XMMATRIX& transform, const Di
     if (!m_initialized) {
         return;
     }
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     // Build constants structure
     LayerConstants constants;
@@ -2406,6 +2439,9 @@ void D3D12Renderer::beginImGuiFrame() {
 
 void D3D12Renderer::endImGuiFrame() {
     if (m_deviceLost.load(std::memory_order_relaxed)) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     ImGui::Render();
 
@@ -3132,6 +3168,9 @@ void D3D12Renderer::drawTexturedQuad(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     if (!m_initialized || textureSrv.ptr == 0) {
         return;
     }
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     // Phase C.12 #6 — per-call OCIO input processor selection. The renderer
     // looks up an input transform from the per-clip OCIO color-space name
@@ -3954,6 +3993,9 @@ void D3D12Renderer::drawOutputSurface(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
     if (!m_initialized || textureSrv.ptr == 0) {
         return;
     }
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     // CRIT-04 fix: write to a unique per-draw slot in the ring buffer. Within a
     // single frame, each drawOutputSurface() call gets its own CB region so the
@@ -4349,6 +4391,9 @@ void D3D12Renderer::beginComposeTarget(uint32_t slot) {
     if (slot >= m_composeTargets.size() || !m_composeTargets[slot].ready) {
         return;
     }
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     ComposeTarget& target = m_composeTargets[slot];
     m_currentComposeTargetSlot = slot;
@@ -4390,6 +4435,9 @@ void D3D12Renderer::endComposeTarget() {
     if (m_currentComposeTargetSlot >= m_composeTargets.size() || !m_composeTargets[m_currentComposeTargetSlot].ready) {
         return;
     }
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     ComposeTarget& target = m_composeTargets[m_currentComposeTargetSlot];
 
@@ -4723,6 +4771,9 @@ uint32_t D3D12Renderer::getOutputWindowHeight(uint32_t outputSlot) const {
 }
 
 void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
     if (!ow.active || ow.pendingDestroy) return;
@@ -4757,6 +4808,9 @@ void D3D12Renderer::beginOutputFrame(uint32_t outputSlot) {
 
 void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
                                       float r, float g, float b, float a) {
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
     if (!ow.active || ow.pendingDestroy) return;
@@ -4768,6 +4822,9 @@ void D3D12Renderer::clearOutputFrame(uint32_t outputSlot,
 }
 
 void D3D12Renderer::endOutputFrame(uint32_t outputSlot) {
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
     if (outputSlot >= m_outputWindows.size()) return;
     OutputWindow& ow = m_outputWindows[outputSlot];
     if (!ow.active || ow.pendingDestroy) return;
@@ -6313,6 +6370,9 @@ void D3D12Renderer::drawMeshTriangle(D3D12_GPU_DESCRIPTOR_HANDLE textureSrv,
                                       const glm::vec2 verts[3],
                                       const glm::vec2 uvs[3]) {
     if (!m_initialized || textureSrv.ptr == 0) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
     if (!m_meshTriRootSignature || !m_meshTriPipelineState) {
         if (!createMeshTrianglePSO()) return;
     }
@@ -6738,6 +6798,9 @@ void* D3D12Renderer::ensureStageTarget(uint32_t width, uint32_t height) {
 
 void D3D12Renderer::beginStageTarget() {
     if (!m_stageTarget.ready) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     const uint32_t fi = m_currentBackBufferIndex;
     auto* cmdList = tl_activeCmdList;
@@ -6783,6 +6846,9 @@ void D3D12Renderer::beginStageTarget() {
 
 void D3D12Renderer::endStageTarget() {
     if (!m_stageTarget.ready) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     const uint32_t fi = m_currentBackBufferIndex;
     auto* cmdList = tl_activeCmdList;
@@ -7080,6 +7146,9 @@ void D3D12Renderer::drawStageMesh(uint32_t meshSlot,
                                    uint32_t textureSrvSlot,
                                    bool     transparent) {
     if (!m_initialized || !m_stageTarget.ready) return;
+    // No active command list on this thread: begin*Frame reported the frame
+    // could not be recorded (device lost). Skip instead of dereferencing.
+    if (!tl_activeCmdList) return;
 
     if (!m_stageMeshRootSignature || !m_stageMeshPipelineState
                                   || !m_stageMeshPipelineStateTransparent) {
