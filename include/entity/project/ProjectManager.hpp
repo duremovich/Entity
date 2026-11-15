@@ -100,9 +100,14 @@ public:
     /**
      * Save the current timeline to `filepath`. Empty path uses the currently
      * set project path, or "project.entity" if nothing has been saved yet.
-     * Updates the current project path on success.
+     * Updates the current project path on success. On failure the
+     * project path is unchanged and lastSaveError() says why.
      */
     bool save(const std::filesystem::path& filepath = "");
+
+    /// Reason for the most recent save()/autosave failure (empty after a
+    /// success).
+    const std::string& lastSaveError() const { return m_lastSaveError; }
 
     /**
      * Save-As-Bundle (ADR-0009). Creates a fully-structured project folder
@@ -165,8 +170,11 @@ public:
      * configured interval, writes the current timeline to
      *   <projectPath>.autosave   (or autosave.entity if no project is set).
      * Does not touch the "real" project path — autosave is a side channel.
+     * Returns whether a write was due and how it went; on Failed,
+     * lastSaveError() says why (Engine surfaces it as a toast).
      */
-    void tickAutosave(double deltaTime);
+    enum class AutosaveResult { NotDue, Saved, Failed };
+    AutosaveResult tickAutosave(double deltaTime);
 
     void   setAutosaveInterval(double seconds) { m_autosaveInterval = seconds; }
     double autosaveInterval() const            { return m_autosaveInterval; }
@@ -655,6 +663,7 @@ private:
     double m_autosaveAccumulator{0.0};
 
     std::string m_lastLoadError;
+    std::string m_lastSaveError;
     bool        m_lastLoadLeftPartialState{false};
 
     // Project-scoped DMX channel mapping table (#59). Empty -> plugin

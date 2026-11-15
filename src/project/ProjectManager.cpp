@@ -123,6 +123,7 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
 bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
                                    const std::string& projectName) {
     namespace fs = std::filesystem;
+    m_lastSaveError.clear();  // only the final save() below sets it
 
     if (projectName.empty()) {
         std::cerr << "[ProjectManager] saveAsBundle: projectName is empty" << std::endl;
@@ -211,7 +212,9 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
 }
 
 bool ProjectManager::save(const std::filesystem::path& filepath) {
+    m_lastSaveError.clear();
     if (!m_timeline) {
+        m_lastSaveError = "Project subsystem not initialized (no timeline).";
         std::cerr << "[ProjectManager] Cannot save: timeline not set" << std::endl;
         return false;
     }
@@ -231,6 +234,8 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
         std::error_code ec;
         std::filesystem::create_directories(savePath.parent_path(), ec);
         if (ec) {
+            m_lastSaveError = "Could not create folder \"" +
+                              entity::pathToUtf8(savePath.parent_path()) + "\": " + ec.message();
             std::cerr << "[ProjectManager] Failed to create parent directory '"
                       << entity::pathToUtf8(savePath.parent_path()) << "': " << ec.message() << std::endl;
             return false;
@@ -238,7 +243,9 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
     }
 
     if (!ProjectSerializer::save(*m_timeline, savePath, this)) {
-        std::cerr << "[ProjectManager] Save failed: " << ProjectSerializer::getLastError() << std::endl;
+        m_lastSaveError = ProjectSerializer::getLastError();
+        if (m_lastSaveError.empty()) m_lastSaveError = "unknown error";
+        std::cerr << "[ProjectManager] Save failed: " << m_lastSaveError << std::endl;
         return false;
     }
 
@@ -425,10 +432,10 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
     return true;
 }
 
-void ProjectManager::tickAutosave(double deltaTime) {
-    if (!m_timeline) return;
+ProjectManager::AutosaveResult ProjectManager::tickAutosave(double deltaTime) {
+    if (!m_timeline) return AutosaveResult::NotDue;
     m_autosaveAccumulator += deltaTime;
-    if (m_autosaveAccumulator < m_autosaveInterval) return;
+    if (m_autosaveAccumulator < m_autosaveInterval) return AutosaveResult::NotDue;
     m_autosaveAccumulator = 0.0;
 
     std::filesystem::path autosavePath =
@@ -458,9 +465,12 @@ void ProjectManager::tickAutosave(double deltaTime) {
     // touch m_projectPath. Operator still expects "Save" to write the real file.
     if (ProjectSerializer::save(*m_timeline, autosavePath, this)) {
         std::cout << "[Autosave] " << entity::pathToUtf8(autosavePath) << std::endl;
-    } else {
-        std::cerr << "[Autosave] Failed: " << ProjectSerializer::getLastError() << std::endl;
+        return AutosaveResult::Saved;
     }
+    m_lastSaveError = ProjectSerializer::getLastError();
+    if (m_lastSaveError.empty()) m_lastSaveError = "unknown error";
+    std::cerr << "[Autosave] Failed: " << m_lastSaveError << std::endl;
+    return AutosaveResult::Failed;
 }
 
 ProjectManager::MediaLibraryEntry&

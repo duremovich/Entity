@@ -6,7 +6,9 @@
  * failure paths and identity rules around save/load:
  *   - a bad file is rejected by ProjectSerializer::validate before any
  *     live state is touched (failed File > Open);
- *   - NoticeCenter queue semantics (how failures reach the UI).
+ *   - NoticeCenter queue semantics (how failures reach the UI);
+ *   - save failures are reported (lastSaveError / AutosaveResult) and
+ *     network text cannot make the project unsaveable.
  */
 
 #include <gtest/gtest.h>
@@ -17,6 +19,8 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
+#include "entity/core/Utf8Sanitize.hpp"
+#include "entity/remote/RemoteControlStore.hpp"
 #include "entity/ui/NoticeCenter.hpp"
 
 #include <nlohmann/json.hpp>
@@ -178,4 +182,108 @@ TEST(NoticeCenter, DismissById) {
     auto snap = nc.snapshot();
     ASSERT_EQ(snap.size(), 1u);
     EXPECT_EQ(snap[0].title, "B");
+}
+
+// --- Save failures + UTF-8 sanitizing ----------------------------------------
+
+TEST(Utf8Sanitize, ValidTextIsUnchanged) {
+    const std::string s = "B\xC3\xBChne \xE2\x80\x93 \xE8\x88\x9E\xE5\x8F\xB0 \xF0\x9F\x8E\xAD plain";
+    EXPECT_TRUE(entity::isValidUtf8(s));
+    EXPECT_EQ(entity::sanitizeUtf8(s), s);
+    EXPECT_EQ(entity::sanitizeUtf8(""), "");
+}
+
+TEST(Utf8Sanitize, InvalidBytesBecomeReplacementCharacters) {
+    const std::string fffd = "\xEF\xBF\xBD";
+    // Latin-1 'ü' (0xFC) as a lone byte — the OSC case from the review.
+    EXPECT_FALSE(entity::isValidUtf8("B\xFChne"));
+    EXPECT_EQ(entity::sanitizeUtf8("B\xFChne"), "B" + fffd + "hne");
+    // Truncated 3-byte sequence at end of input.
+    EXPECT_EQ(entity::sanitizeUtf8("ab\xE2\x82"), "ab" + fffd);
+    // Overlong encoding of '/' and a UTF-16 surrogate are both ill-formed.
+    EXPECT_FALSE(entity::isValidUtf8("\xC0\xAF"));
+    EXPECT_FALSE(entity::isValidUtf8("\xED\xA0\x80"));
+    EXPECT_TRUE(entity::isValidUtf8(entity::sanitizeUtf8("\xC0\xAF\xED\xA0\x80\xFF")));
+    // Stray continuation byte.
+    EXPECT_EQ(entity::sanitizeUtf8("x\x80y"), "x" + fffd + "y");
+}
+
+TEST(RemoteControlStoreText, NetworkTextIsSanitizedOnEntry) {
+    // TextSystem copies engaged remote text into TextLayerState, which the
+    // serializer writes; a raw 0xFC made every save throw type_error.316.
+    entity::remote::RemoteControlStore store;
+    const int slot = store.allocateSlot("lowerthird");
+    ASSERT_GE(slot, 0);
+    ASSERT_TRUE(store.setTextById("lowerthird", "B\xFChne"));
+    std::uint32_t seen = 0;
+    auto txt = store.consumeText(slot, seen);
+    ASSERT_TRUE(txt.has_value());
+    EXPECT_TRUE(entity::isValidUtf8(*txt));
+    EXPECT_EQ(*txt, "B\xEF\xBF\xBDhne");
+}
+
+TEST(ProjectSaveFailure, InvalidUtf8InProjectStateFailsWithAReason) {
+    // Documents the failure mode the sanitizer prevents: one bad byte
+    // anywhere in project state fails the whole save, with an error the
+    // caller can show. The previous file on disk is not touched.
+    TempFile tf("save_bad_utf8");
+    tf.write("previous good content");
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    auto e = registry.create();
+    registry.emplace<entity::Screen>(e).name = "B\xFChne";
+    EXPECT_FALSE(entity::ProjectSerializer::save(timeline, tf.path));
+    EXPECT_FALSE(entity::ProjectSerializer::getLastError().empty());
+    {
+        std::ifstream in(tf.path, std::ios::binary);
+        std::string body{std::istreambuf_iterator<char>(in), {}};
+        EXPECT_EQ(body, "previous good content");
+    }
+
+    registry.get<entity::Screen>(e).name = entity::sanitizeUtf8("B\xFChne");
+    EXPECT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+}
+
+TEST(ProjectSaveFailure, ManagerSaveReportsReasonAndKeepsPath) {
+    TempFile good("pm_save_good");
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    entity::ProjectManager pm;
+    pm.initialize(&timeline, &registry, nullptr);
+    ASSERT_TRUE(pm.save(good.path)) << pm.lastSaveError();
+    EXPECT_TRUE(pm.lastSaveError().empty());
+    const fs::path savedPath = pm.projectPath();
+
+    auto e = registry.create();
+    registry.emplace<entity::Screen>(e).name = "B\xFChne";
+    EXPECT_FALSE(pm.save());
+    EXPECT_FALSE(pm.lastSaveError().empty());
+    EXPECT_EQ(pm.projectPath(), savedPath);
+}
+
+TEST(ProjectSaveFailure, AutosaveReportsFailureThenRecovery) {
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    entity::ProjectManager pm;
+    pm.initialize(&timeline, &registry, nullptr);
+    pm.setAutosaveInterval(1.0);
+
+    // Project path inside a folder that does not exist: the autosave
+    // write cannot succeed.
+    const fs::path missingDir = makeTempPath("autosave_missing_dir");
+    pm.setProjectPath(missingDir / "Show.entity");
+    using R = entity::ProjectManager::AutosaveResult;
+    EXPECT_EQ(pm.tickAutosave(0.5), R::NotDue);
+    EXPECT_EQ(pm.tickAutosave(0.6), R::Failed);
+    EXPECT_FALSE(pm.lastSaveError().empty());
+
+    TempFile project("autosave_ok");
+    pm.setProjectPath(project.path);
+    EXPECT_EQ(pm.tickAutosave(1.0), R::Saved);
+    fs::path autosave = project.path;
+    autosave += ".autosave.entity";
+    EXPECT_TRUE(fs::exists(autosave));
+    std::error_code ec;
+    fs::remove(autosave, ec);
 }

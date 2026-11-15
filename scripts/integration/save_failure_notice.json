@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "description": "A failed save must tell the user. Saves a project, then saves to a path Windows cannot create ('|' is not allowed in file names): the save fails, a 'Could not save project' notice is queued with the reason, the project path still points at the good file, and a following plain save (Ctrl+S) to the real path succeeds.",
+    "commands": [
+        {"type": "AddScreen", "name": "Kept Screen"},
+        {"type": "SaveProject", "filepath": "test_output/save_failure/show.entity"},
+        {"type": "AssertNotice", "contains": "Could not save project", "present": false},
+        {"type": "SaveProject", "filepath": "test_output/save_failure/bad|name.entity", "expectFailure": true},
+        {"type": "AssertNotice", "contains": "Could not save project"},
+        {"type": "AssertNotice", "contains": "bad|name.entity"},
+        {"type": "AssertProjectPath", "endsWith": "test_output/save_failure/show.entity"},
+        {"type": "SaveProject"},
+        {"type": "LoadProject", "filepath": "test_output/save_failure/show.entity"},
+        {"type": "AssertScreenExists", "name": "Kept Screen"},
+        {"type": "Exit"}
+    ]
+}

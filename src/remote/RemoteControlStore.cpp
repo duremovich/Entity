@@ -1,4 +1,5 @@
 #include "entity/remote/RemoteControlStore.hpp"
+#include "entity/core/Utf8Sanitize.hpp"
 
 namespace entity::remote {
 
@@ -95,13 +96,18 @@ bool RemoteControlStore::setEngagedById(std::string_view patchId, bool e) {
 
 bool RemoteControlStore::setTextById(std::string_view patchId,
                                      std::string_view text) {
+    // Network text (OSC string args) is not guaranteed to be UTF-8. It is
+    // copied into TextLayerState and from there into the project file, and
+    // json::dump() throws on a bad byte, which would make every save and
+    // autosave fail. Repair it here, where it enters the editor.
+    const std::string clean = entity::sanitizeUtf8(text);
     std::lock_guard<std::mutex> lock(m_idMutex);
     const int slot = findSlotLocked(patchId);
     if (slot < 0) return false;
     Slot& s = m_slots[static_cast<std::size_t>(slot)];
     {
         std::lock_guard<std::mutex> tl(s.textMutex);
-        s.text.assign(text);
+        s.text = clean;
     }
     s.textGen.fetch_add(1, std::memory_order_release);
     return true;

@@ -474,7 +474,10 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             }
             if (!m_projectManager->saveAsBundle(parentDir, name)) {
                 if (errorOut) {
-                    *errorOut = "Bundle save failed (see console for details).";
+                    const std::string& why = m_projectManager->lastSaveError();
+                    *errorOut = why.empty()
+                        ? "Bundle save failed (see console for details)."
+                        : "Bundle save failed: " + why;
                 }
                 return false;
             }
@@ -1846,7 +1849,27 @@ IRenderer* Engine::getRenderer() {
 }
 
 void Engine::autoSaveTick(double deltaTime) {
-    if (m_projectManager) m_projectManager->tickAutosave(deltaTime);
+    if (!m_projectManager) return;
+    // Autosave runs during shows: report failure as a non-blocking toast
+    // (one, replaced on each failed attempt), and clear it as soon as an
+    // autosave succeeds again.
+    static constexpr const char* kAutosaveNoticeKey = "autosave";
+    switch (m_projectManager->tickAutosave(deltaTime)) {
+        case ProjectManager::AutosaveResult::Saved:
+            m_notices.dismissKey(kAutosaveNoticeKey);
+            break;
+        case ProjectManager::AutosaveResult::Failed:
+            m_notices.post(NoticeCenter::Severity::Warning,
+                           NoticeCenter::Presentation::Toast,
+                           "Autosave failed",
+                           m_projectManager->lastSaveError() +
+                           "\nRecent changes are not being autosaved. Save with "
+                           "Ctrl+S to keep them.",
+                           kAutosaveNoticeKey);
+            break;
+        case ProjectManager::AutosaveResult::NotDue:
+            break;
+    }
 }
 
 void Engine::pollProbeCompletions() {
@@ -4597,7 +4620,26 @@ bool Engine::saveProject(const std::filesystem::path& filepath) {
     captureEditorLayoutForSave();
 
     bool ok = m_projectManager->save(filepath);
-    if (ok) updateTranscodeCacheDir();
+    if (ok) {
+        updateTranscodeCacheDir();
+    } else {
+        // Every save entry point (Ctrl+S, Save As, scripts) lands here, and
+        // most of them drop the return value, so tell the user directly.
+        // The file on disk was not touched (the serializer writes to a temp
+        // file and renames only on success).
+        const std::filesystem::path target =
+            filepath.empty() ? m_projectManager->projectPath() : filepath;
+        std::string reason = m_projectManager->lastSaveError();
+        if (reason.empty()) reason = "unknown error";
+        m_notices.post(NoticeCenter::Severity::Error,
+                       NoticeCenter::Presentation::Modal,
+                       "Could not save project",
+                       "Saving to \"" + entity::pathToUtf8(target) + "\" failed:\n" +
+                       reason +
+                       "\n\nThe file on disk was not changed, and your work is still "
+                       "open. Fix the problem or use File > Save As to save "
+                       "somewhere else.");
+    }
     return ok;
 }
 
