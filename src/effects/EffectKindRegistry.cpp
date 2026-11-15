@@ -1,3 +1,4 @@
+#include "entity/core/PathUtf8.hpp"
 #include "entity/effects/EffectKindRegistry.hpp"
 
 #include "entity/render/RuntimeShaderCompiler.hpp"
@@ -446,7 +447,7 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
             manifest = json::parse(f);
         } catch (const std::exception& e) {
             std::cerr << "[scanUserEffects] Manifest parse failed: "
-                      << entry.path().string() << " (" << e.what() << ")"
+                      << entity::pathToUtf8(entry.path()) << " (" << e.what() << ")"
                       << std::endl;
             continue;
         }
@@ -454,22 +455,42 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
         if (!manifest.contains("stableId") || !manifest.contains("shader")) {
             std::cerr << "[scanUserEffects] Manifest missing required field "
                          "(stableId / shader): "
-                      << entry.path().string() << std::endl;
+                      << entity::pathToUtf8(entry.path()) << std::endl;
             continue;
         }
 
-        const auto stableId   = manifest.value("stableId", std::string{});
-        const auto displayName = manifest.value("displayName", stableId);
-        const auto category   = manifest.value("category",  std::string{"User"});
-        const auto shaderRel  = manifest.value("shader",    std::string{});
-        const auto entryPoint = manifest.value("entryPoint", std::string{"PSMain"});
-        const int  passCount  = manifest.value("passCount", 1);
+        // Field extraction throws nlohmann::json::type_error on a wrong-typed
+        // field (e.g. "passCount": "two"). A bad manifest is skipped with a
+        // logged error; other kinds still load.
+        std::string stableId, displayName, category, shaderRel, entryPoint;
+        int passCount = 1;
+        std::vector<ParamSchema> parsedParams;
+        try {
+            stableId    = manifest.value("stableId", std::string{});
+            displayName = manifest.value("displayName", stableId);
+            category    = manifest.value("category",  std::string{"User"});
+            shaderRel   = manifest.value("shader",    std::string{});
+            entryPoint  = manifest.value("entryPoint", std::string{"PSMain"});
+            passCount   = manifest.value("passCount", 1);
+            if (manifest.contains("params") && manifest["params"].is_array()) {
+                for (const auto& pj : manifest["params"]) {
+                    if (auto ps = parseParamSchemaJson(pj)) {
+                        parsedParams.push_back(std::move(*ps));
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[scanUserEffects] Manifest has an invalid field, skipping: "
+                      << entity::pathToUtf8(entry.path()) << " (" << e.what() << ")"
+                      << std::endl;
+            continue;
+        }
 
-        const fs::path shaderPath = projectEffectsDir / shaderRel;
+        const fs::path shaderPath = projectEffectsDir / entity::utf8ToPath(shaderRel);
         if (!fs::exists(shaderPath, ec)) {
             std::cerr << "[scanUserEffects] Shader not found: "
-                      << shaderPath.string() << " (referenced by "
-                      << entry.path().string() << ")" << std::endl;
+                      << entity::pathToUtf8(shaderPath) << " (referenced by "
+                      << entity::pathToUtf8(entry.path()) << ")" << std::endl;
             continue;
         }
 
@@ -481,7 +502,7 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
             source = ss.str();
         } catch (const std::exception& e) {
             std::cerr << "[scanUserEffects] Failed to read shader: "
-                      << shaderPath.string() << " (" << e.what() << ")"
+                      << entity::pathToUtf8(shaderPath) << " (" << e.what() << ")"
                       << std::endl;
             continue;
         }
@@ -513,16 +534,10 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
         kind.displayName = displayName;
         kind.category    = category;
         kind.backend     = EffectKind::Backend::HLSLPixel;
-        kind.shaderPath  = shaderPath.string();  // informational
+        kind.shaderPath  = entity::pathToUtf8(shaderPath);  // informational
         kind.passCount   = passCount;
         kind.builtin     = false;
-        if (manifest.contains("params") && manifest["params"].is_array()) {
-            for (const auto& pj : manifest["params"]) {
-                if (auto ps = parseParamSchemaJson(pj)) {
-                    kind.params.push_back(std::move(*ps));
-                }
-            }
-        }
+        kind.params = std::move(parsedParams);
         // v1 socket schema: one TextureInput + one TextureOutput. Custom
         // sockets arrive with the node graph editor (Phase 4).
         kind.sockets = {
@@ -571,7 +586,7 @@ void EffectKindRegistry::scanUserEffects(const std::filesystem::path& projectEff
         m_lastScanTouchedKinds.end());
 
     if (scanned > 0) {
-        std::cout << "[scanUserEffects] " << projectEffectsDir.string()
+        std::cout << "[scanUserEffects] " << entity::pathToUtf8(projectEffectsDir)
                   << ": scanned " << scanned << " manifest(s), registered "
                   << registered << " kind(s)" << std::endl;
     }
