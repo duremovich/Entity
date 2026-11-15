@@ -375,6 +375,11 @@ void CommandDispatcher::registerBuiltinFactories() {
     // Mesh upload pacing gate
     registerFactory("AddSyntheticModel", AddSyntheticModelCommand::fromJson);
     registerFactory("AssertMeshUploadCount", AssertMeshUploadCountCommand::fromJson);
+    // Projector mesh path / show-thread mesh store (ADR-0014)
+    registerFactory("AddProjectorOutput", AddProjectorOutputCommand::fromJson);
+    registerFactory("ReloadModelMesh", ReloadModelMeshCommand::fromJson);
+    registerFactory("DeleteModel", DeleteModelCommand::fromJson);
+    registerFactory("AssertShowMeshState", AssertShowMeshStateCommand::fromJson);
 
     // Per-layer effects (issue #54)
     registerFactory("AddEffect", AddEffectCommand::fromJson);

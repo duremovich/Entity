@@ -16,6 +16,7 @@
 #include "entity/renderer/Renderer.hpp"
 #include "entity/director/PlaybackTimeAuthority.hpp"
 #include "entity/director/SectionScheduler.hpp"
+#include "entity/director/ShowMeshProvisioning.hpp"
 #include "entity/renderer/PlaybackPresenter.hpp"
 #include "entity/render/IRenderer.hpp"
 #include "entity/render/D3D12Renderer.hpp"
@@ -1367,6 +1368,19 @@ void Engine::run() {
         // Output registry views and publish latest-wins on D2R.
         if (m_transport && m_timeAuthority) {
             ZoneScopedN("buildSceneSnapshot");
+            // Provision new/changed screen-model geometry to the show
+            // thread's mesh store BEFORE baking: the snapshot below names
+            // the revisions assigned here, and the show thread applies
+            // every FIFO message sent before a snapshot by the end of the
+            // drain that delivers it — i.e. before it renders it.
+            {
+                std::vector<bus::ProvisionMesh> meshes;
+                collectShowMeshProvisions(m_registry, m_nextShowMeshRevision, meshes);
+                for (auto& pm : meshes) {
+                    m_transport->send(bus::Direction::D2R,
+                                      bus::serialize(bus::Message{std::move(pm)}));
+                }
+            }
             bus::SceneSnapshot snap;
             m_timeAuthority->buildSceneSnapshot(snap);
             m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{snap}));
@@ -1625,15 +1639,25 @@ void Engine::showThreadMain() {
                     deferred.push_back(std::move(bytes));
                     return;
                 }
-                bool isSceneSnapshot = false;
-                std::visit([this, &isSceneSnapshot](auto& body) {
+                bool consumed = false;
+                std::visit([this, &consumed](auto& body) {
                     using T = std::decay_t<decltype(body)>;
                     if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
                         m_cachedSceneSnapshot = std::move(body);
-                        isSceneSnapshot = true;
+                        consumed = true;
+                    } else if constexpr (std::is_same_v<T, bus::ProvisionMesh>) {
+                        // Mesh store updates are CPU-only (no command list),
+                        // so apply them here: this drain also runs in
+                        // launcher mode, where the post-beginShowFrame drain
+                        // never does.
+                        if (m_outputManager) m_outputManager->provisionMeshOnShow(std::move(body));
+                        consumed = true;
+                    } else if constexpr (std::is_same_v<T, bus::ReleaseMesh>) {
+                        if (m_outputManager) m_outputManager->releaseMeshOnShow(body.meshId);
+                        consumed = true;
                     }
                 }, *msg);
-                if (!isSceneSnapshot) deferred.push_back(std::move(bytes));
+                if (!consumed) deferred.push_back(std::move(bytes));
             });
             for (auto& bytes : deferred) {
                 m_transport->send(bus::Direction::D2R, std::move(bytes));
@@ -1737,6 +1761,10 @@ void Engine::showThreadMain() {
                             lastRF = body;
                         } else if constexpr (std::is_same_v<T, bus::SceneSnapshot>) {
                             m_cachedSceneSnapshot = std::move(body);
+                        } else if constexpr (std::is_same_v<T, bus::ProvisionMesh>) {
+                            if (m_outputManager) m_outputManager->provisionMeshOnShow(std::move(body));
+                        } else if constexpr (std::is_same_v<T, bus::ReleaseMesh>) {
+                            if (m_outputManager) m_outputManager->releaseMeshOnShow(body.meshId);
                         } else if constexpr (std::is_same_v<T, bus::SetOutputEnabled>) {
                             if (m_outputManager) {
                                 // Show-thread half: window lifecycle only —
@@ -2404,6 +2432,14 @@ uint64_t Engine::getMeshUploadCount() const {
         return d3d->getMeshUploadCount();
     }
     return 0;
+}
+
+std::size_t Engine::getShowMeshCount() const {
+    return m_outputManager ? m_outputManager->showMeshCount() : 0;
+}
+
+std::uint64_t Engine::getProjectorMeshDraws() const {
+    return m_outputManager ? m_outputManager->projectorMeshDraws() : 0;
 }
 
 void Engine::render() {
@@ -3815,26 +3851,40 @@ void Engine::ingestObjectFile(const std::string& canonicalPath,
                   << "' (filepath=" << model.filepath << ", source="
                   << resolved << ")" << std::endl;
     } else {
-        // Existing Model for this group — hot-reload the mesh. Schedule
-        // the old GPU slot for deferred free (fence-gated so in-flight
-        // draws keep working) and invalidate so the editor-tick
-        // uploader allocates a fresh slot next frame.
-        auto& model = m_registry.get<Model>(modelEntity);
-        if (model.gpuResourcesValid && model.vertexBufferSlot != UINT32_MAX) {
-            if (auto* d3d = m_rendererService
-                                ? m_rendererService->getD3D12Renderer()
-                                : nullptr) {
-                d3d->scheduleMeshSlotFree(model.vertexBufferSlot);
-            }
-            model.vertexBufferSlot = UINT32_MAX;
-            model.indexBufferSlot  = UINT32_MAX;
-        }
-        model.mesh              = std::move(mesh);
-        model.gpuResourcesValid = false;
-        model.gpuUploadFailed   = false;
-        std::cout << "[Engine] Reloaded Model '" << model.name
+        // Existing Model for this group — hot-reload the mesh.
+        replaceModelMesh(modelEntity, std::move(mesh));
+        std::cout << "[Engine] Reloaded Model '"
+                  << m_registry.get<Model>(modelEntity).name
                   << "' from " << resolved << std::endl;
     }
+}
+
+bool Engine::replaceModelMesh(entt::entity modelEntity, MeshData&& mesh) {
+    if (!m_registry.valid(modelEntity)) return false;
+    auto* model = m_registry.try_get<Model>(modelEntity);
+    if (!model) return false;
+    // Schedule the old GPU slot for deferred free (fence-gated so in-flight
+    // editor stage draws keep working) and invalidate so the editor-tick
+    // uploader allocates a fresh slot next frame.
+    if (model->gpuResourcesValid && model->vertexBufferSlot != UINT32_MAX) {
+        if (auto* d3d = m_rendererService
+                            ? m_rendererService->getD3D12Renderer()
+                            : nullptr) {
+            d3d->scheduleMeshSlotFree(model->vertexBufferSlot);
+        }
+        model->vertexBufferSlot = UINT32_MAX;
+        model->indexBufferSlot  = UINT32_MAX;
+    }
+    // Frees the old vertex/index vectors. Safe: the show thread draws
+    // projector meshes from its own ShowMeshStore copy, never Model::mesh.
+    model->mesh              = std::move(mesh);
+    model->gpuResourcesValid = false;
+    model->gpuUploadFailed   = false;
+    // Re-provision to the show thread under a fresh revision before the
+    // next SceneSnapshot; until then snapshots keep naming the old revision
+    // the show-side store still holds.
+    model->showMeshRevision  = 0;
+    return true;
 }
 
 void Engine::onVideoFileSelected(const std::string& filePath) {
@@ -6108,6 +6158,14 @@ void Engine::postSignalEmit(const bus::SignalEmit& emit) noexcept {
 
 void Engine::onModelDestroyed(entt::registry& reg, entt::entity e) {
     const Model& m = reg.get<Model>(e);
+    // Show thread drops its copy of the geometry. Sent after every
+    // SceneSnapshot that could name this model, so a stale snapshot finds
+    // the id gone and skips the target (ShowMeshStore::find).
+    if (m.showMeshRevision != 0 && m_transport) {
+        bus::ReleaseMesh msg{};
+        msg.meshId = static_cast<std::uint64_t>(e);
+        m_transport->send(bus::Direction::D2R, bus::serialize(bus::Message{msg}));
+    }
     if (!m.gpuResourcesValid) return;
     if (auto* d3d = m_rendererService ? m_rendererService->getD3D12Renderer() : nullptr)
         d3d->scheduleMeshSlotFree(m.vertexBufferSlot);

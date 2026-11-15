@@ -180,6 +180,7 @@ ojson encode(const ScreenSnapshot& s) {
     j["rotation"]         = s.rotation;
     j["scale"]            = s.scale;
     j["modelEntity"]      = s.modelEntity;
+    j["meshRevision"]     = s.meshRevision;
     return j;
 }
 
@@ -199,6 +200,7 @@ ScreenSnapshot decodeScreenSnapshot(const json& j) {
     const auto& sc = j.at("scale");
     for (int i = 0; i < 3; ++i) s.scale[i] = sc[i].get<float>();
     s.modelEntity = j.at("modelEntity").get<std::uint64_t>();
+    s.meshRevision = j.value("meshRevision", std::uint32_t{0});
     return s;
 }
 
@@ -1407,6 +1409,38 @@ SectionBreakDetected decodeSectionBreakDetected(const json& j) {
     return m;
 }
 
+ojson encode(const ProvisionMesh& m) {
+    ojson j = ojson::object();
+    j["meshId"]    = m.meshId;
+    j["revision"]  = m.revision;
+    j["positions"] = m.positions;
+    j["texCoords"] = m.texCoords;
+    j["indices"]   = m.indices;
+    return j;
+}
+
+ProvisionMesh decodeProvisionMesh(const json& j) {
+    ProvisionMesh m;
+    m.meshId    = j.at("meshId").get<std::uint64_t>();
+    m.revision  = j.at("revision").get<std::uint32_t>();
+    m.positions = j.at("positions").get<std::vector<float>>();
+    m.texCoords = j.at("texCoords").get<std::vector<float>>();
+    m.indices   = j.at("indices").get<std::vector<std::uint32_t>>();
+    return m;
+}
+
+ojson encode(const ReleaseMesh& m) {
+    ojson j = ojson::object();
+    j["meshId"] = m.meshId;
+    return j;
+}
+
+ReleaseMesh decodeReleaseMesh(const json& j) {
+    ReleaseMesh m;
+    m.meshId = j.at("meshId").get<std::uint64_t>();
+    return m;
+}
+
 // ---------------------------------------------------------------------------
 // SignalArg / SignalEmit — transport-neutral signal event (Phase 1).
 // ---------------------------------------------------------------------------
@@ -1552,6 +1586,8 @@ const char* messageTypeName(const Message& msg) noexcept {
         else if constexpr (std::is_same_v<T, OutputWindowReady>)           return "OutputWindowReady";
         else if constexpr (std::is_same_v<T, SectionBreakDetected>)        return "SectionBreakDetected";
         else if constexpr (std::is_same_v<T, SignalEmit>)                  return "SignalEmit";
+        else if constexpr (std::is_same_v<T, ProvisionMesh>)               return "ProvisionMesh";
+        else if constexpr (std::is_same_v<T, ReleaseMesh>)                 return "ReleaseMesh";
         else return "Unknown";
     }, msg);
 }
@@ -1597,6 +1633,8 @@ std::optional<Message> deserialize(std::span<const std::uint8_t> bytes) {
         if (type == "OutputWindowReady")             return Message{decodeOutputWindowReady(data)};
         if (type == "SectionBreakDetected")          return Message{decodeSectionBreakDetected(data)};
         if (type == "SignalEmit")                    return Message{decodeSignalEmit(data)};
+        if (type == "ProvisionMesh")                 return Message{decodeProvisionMesh(data)};
+        if (type == "ReleaseMesh")                   return Message{decodeReleaseMesh(data)};
     } catch (const std::exception&) {
         return std::nullopt;
     }

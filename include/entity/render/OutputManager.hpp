@@ -5,7 +5,9 @@
 #include "../core/Types.hpp"
 #include "../components/OutputDisplay.hpp"
 #include "../render/IRenderer.hpp"
+#include "../render/ShowMeshStore.hpp"
 #include <entt/entt.hpp>
+#include <atomic>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -143,6 +145,27 @@ public:
     void handleSetOutputEnabledOnShow(entt::entity outputEntity, bool enabled);
 
     /**
+     * Show-thread halves of bus::ProvisionMesh / bus::ReleaseMesh: store or
+     * drop this thread's own copy of a Model's geometry (ShowMeshStore).
+     * The projector mesh path in renderToOutput reads ONLY this store —
+     * never the registry (ADR-0014). Show thread only.
+     */
+    void provisionMeshOnShow(bus::ProvisionMesh&& msg);
+    void releaseMeshOnShow(std::uint64_t meshId);
+
+    /**
+     * Test diagnostics, readable from any thread. showMeshCount: meshes in
+     * the show-side store. projectorMeshDraws: monotonic count of projector
+     * targets drawn through the per-triangle mesh path.
+     */
+    std::size_t showMeshCount() const {
+        return m_showMeshCount.load(std::memory_order_acquire);
+    }
+    std::uint64_t projectorMeshDraws() const {
+        return m_projectorMeshDraws.load(std::memory_order_acquire);
+    }
+
+    /**
      * Set output to fullscreen mode on its assigned display.
      */
     void setFullscreen(entt::entity outputEntity, bool fullscreen);
@@ -273,6 +296,13 @@ private:
     // when the tombstone is cleared. An enable message also clears it.
     // Same ownership as m_windowSlots: show thread only.
     std::unordered_set<entt::entity> m_disableTombstones;
+
+    // Show-thread copies of Model geometry for the projector mesh path,
+    // keyed by (model entity, revision). Show thread only; the atomics
+    // mirror it for test asserts on the editor thread.
+    ShowMeshStore m_showMeshes;
+    std::atomic<std::size_t>   m_showMeshCount{0};
+    std::atomic<std::uint64_t> m_projectorMeshDraws{0};
 
     // Full raster (composition canvas) size
     int32_t m_rasterWidth{1920};

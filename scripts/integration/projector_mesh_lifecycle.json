@@ -1,0 +1,39 @@
+{
+    "version": 1,
+    "description": "ADR-0014 / show-thread mesh store: a projector-mapped output renders its target screen's Model mesh per triangle on the show thread. That path used to read Model::mesh straight out of the registry while the editor freed it (mesh hot reload, model delete, project load), the #74 crash class on a path #74 missed. Now the show thread draws from its own copy (bus::ProvisionMesh / ReleaseMesh, keyed by model + revision). This drives every editor-side free while the projector output is live and playing: repeated hot reloads, a delete, then a project load that destroys the model and the output. Asserts the show-side store tracks each step (one mesh, then none after the delete) and that the mesh path actually drew. The race itself is probabilistic; strengthen locally with ctest --repeat until-fail:N. The output window is a small 320x180 window at the origin of display 0; with no display the output is created disabled and the draw check is skipped. Requires tests/fixtures/audio/tone_1khz.mov.",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "tests/fixtures/audio/tone_1khz.mov", "trackIndex": 0, "position": 0},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "SaveProject", "filepath": "test_output/projector_mesh_lifecycle/test.entity"},
+
+        {"type": "AddProjectorOutput", "screenName": "Main Screen", "displayIndex": 0, "width": 320, "height": 180},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 0.6},
+        {"type": "AssertShowMeshState", "meshCount": 1, "minProjectorMeshDraws": 1},
+
+        {"type": "ReloadModelMesh", "modelName": "Default 16:9 Plane", "subdivisions": 8},
+        {"type": "WaitFrames", "count": 1},
+        {"type": "ReloadModelMesh", "modelName": "Default 16:9 Plane", "subdivisions": 2},
+        {"type": "ReloadModelMesh", "modelName": "Default 16:9 Plane", "subdivisions": 16},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AssertShowMeshState", "meshCount": 1},
+
+        {"type": "DeleteModel", "modelName": "Default 16:9 Plane"},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AssertShowMeshState", "meshCount": 0},
+        {"type": "AssertPlaybackState", "state": "Playing"},
+
+        {"type": "LoadProject", "filepath": "test_output/projector_mesh_lifecycle/test.entity"},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AssertPlaybackState", "state": "Stopped"},
+        {"type": "AssertShowMeshState", "meshCount": 1},
+        {"type": "AddProjectorOutput", "screenName": "Main Screen", "displayIndex": 0, "width": 320, "height": 180},
+        {"type": "Play"},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "ReloadModelMesh", "modelName": "Default 16:9 Plane", "subdivisions": 4},
+        {"type": "WaitSeconds", "count": 0.3},
+        {"type": "AssertShowMeshState", "meshCount": 1},
+        {"type": "WaitUntilShowFrameCountAtLeast", "minCount": 60, "timeoutSeconds": 20},
+        {"type": "Exit"}
+    ]
+}

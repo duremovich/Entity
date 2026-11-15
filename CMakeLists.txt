@@ -217,6 +217,7 @@ target_sources(EntityMediaCore
         src/render/RuntimeShaderCompiler.cpp
         src/render/Stage3DRenderer.cpp
         src/render/MeshUploader.cpp
+        src/render/ShowMeshStore.cpp
         src/render/TextureUploader.cpp
         src/render/UploadHeapBufferPool.cpp
 
@@ -321,6 +322,7 @@ target_sources(EntityMediaCore
         src/director/SectionScheduler.cpp
         src/director/CaptureBroker.cpp
         src/director/SystemRateSource.cpp
+        src/director/ShowMeshProvisioning.cpp
 
         # Renderer service (Phase D entry — owns D3D12Renderer,
         # OutputManager, FrameCache, OcioManager, CompositorSystem,

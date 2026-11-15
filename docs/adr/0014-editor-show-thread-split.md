@@ -94,6 +94,31 @@
   on bake-size change and schedule-frees the old one). Same
   `endShowFrame` liveness backstop as compose targets, driven by the
   free drain and resize branches via `m_videoSlotGateDriven`.
+- **Amended:** 2026-11-15 — the last show-thread registry *read* removed.
+  `OutputManager::renderToOutput` resolved a projector target screen's
+  mesh with `valid`/`all_of<Model>`/`get<Model>` and walked `Model::mesh`
+  per triangle every frame, while the editor freed that storage on model
+  delete, mesh hot reload and project close/load: the #74 crash class on
+  a path #74 missed (no gate; `RegistryMutationScope` never covered it).
+  The projector path projects, lens-distorts and warps vertices on the
+  CPU, so it needs vertex data, not a `MeshUploader` slot (those stay
+  editor-only, drawn by the Stage view). The show thread now draws from
+  its own copy in a show-owned `ShowMeshStore` inside OutputManager: the
+  editor sends D2R `ProvisionMesh` (positions, UVs, indices) once per
+  geometry change, before the SceneSnapshot that names it
+  (`collectShowMeshProvisions`, called ahead of `buildSceneSnapshot`),
+  and `ReleaseMesh` from the `on_destroy<Model>` observer. Both are
+  applied in the show thread's D2R drains, before rendering. The snapshot
+  names the copy by `ScreenSnapshot::(modelEntity, meshRevision)`;
+  revisions are engine-wide monotonic (`Model::showMeshRevision`, reset
+  by `Engine::replaceModelMesh` on hot reload). A snapshot older than a
+  hot reload or delete finds no matching entry and skips that target for
+  the frame: never stale geometry, never freed memory. Show-thread
+  registry access is now **zero**. The two exceptions listed under
+  §Context were already gone (#74 deleted `renderOutputSurfaces`, the
+  last `OutputSurface`/MappingSurface reader; `VideoTexture` colorSpace
+  moved into PlaybackPresenter's show-local `ClipDisplayState`) and are
+  struck there.
 
 ## Context
 
@@ -131,12 +156,17 @@ and `entt::registry` is not designed for concurrent access.
 needed by the show thread into a plain-struct `SceneSnapshot` (no
 `entt::` types) delivered over the `D2R` channel. The show thread never
 writes the registry; it reads only the snapshot. Registry access on the
-show side is zero writes and zero reads except:
-- `MappingSurface` components (read for projection calibration, written
-  only by editor-thread commands).
-- `VideoTexture::colorSpace` / `ocioColorSpace` (written by
+show side is zero writes and zero reads. (The original design sanctioned
+two exceptions, both since removed:
+- ~~`MappingSurface` components (read for projection calibration, written
+  only by editor-thread commands).~~
+- ~~`VideoTexture::colorSpace` / `ocioColorSpace` (written by
   `PlaybackPresenter::present` on the show thread in the same tick,
-  before compositor reads them — no cross-thread race).
+  before compositor reads them).~~
+
+The projector mesh path's `Model` reads, never sanctioned here, were
+removed by the 2026-11-15 amendment. Show-side code that needs registry
+data gets it baked into the snapshot or delivered by a D2R message.)
 
 ## Decision
 

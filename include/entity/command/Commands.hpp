@@ -3068,6 +3068,112 @@ private:
     uint64_t m_expected;
 };
 
+/**
+ * Test fixture: build a projector-mapped physical output. Creates a Projector
+ * that targets the named Screen (so its Model mesh feeds the projector
+ * output's per-triangle path in OutputManager::renderToOutput) and a
+ * Physical OutputDisplay sourced from it, placed at the origin of display
+ * `displayIndex` with a small `width` x `height` window. With no display at
+ * that index the output is created disabled (no window) and the command
+ * still succeeds, like AssignScreenToDisplay. Not undoable.
+ *
+ * JSON: {"type":"AddProjectorOutput","screenName":"Main Screen",
+ *        "displayIndex":0,"width":320,"height":180}
+ */
+class AddProjectorOutputCommand : public Command {
+public:
+    AddProjectorOutputCommand(std::string screenName, int32_t displayIndex,
+                              int32_t width, int32_t height)
+        : m_screenName(std::move(screenName)), m_displayIndex(displayIndex),
+          m_width(width), m_height(height) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AddProjectorOutput"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_screenName;
+    int32_t m_displayIndex;
+    int32_t m_width;
+    int32_t m_height;
+};
+
+/**
+ * Test hook: replace a Model's mesh through the same path an OBJ hot reload
+ * takes (Engine::replaceModelMesh), with a synthetic `subdivisions` x
+ * `subdivisions` grid over the default 16:9 plane. Frees the old geometry on
+ * the editor thread while the show thread may be rendering the model.
+ *
+ * JSON: {"type":"ReloadModelMesh","modelName":"Default 16:9 Plane","subdivisions":4}
+ */
+class ReloadModelMeshCommand : public Command {
+public:
+    ReloadModelMeshCommand(std::string modelName, int subdivisions)
+        : m_modelName(std::move(modelName)), m_subdivisions(subdivisions) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "ReloadModelMesh"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_modelName;
+    int m_subdivisions;
+};
+
+/**
+ * Test hook: destroy the named Model entity, as the Model Bin's delete
+ * button does. Screens that referenced it keep the dangling id (the bake
+ * treats it as no model). Not undoable.
+ *
+ * JSON: {"type":"DeleteModel","modelName":"Default 16:9 Plane"}
+ */
+class DeleteModelCommand : public Command {
+public:
+    explicit DeleteModelCommand(std::string modelName) : m_modelName(std::move(modelName)) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "DeleteModel"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    std::string m_modelName;
+};
+
+/**
+ * Assert the show thread's mesh store (OutputManager / ShowMeshStore).
+ * `meshCount` (optional, exact): meshes the show thread holds.
+ * `minProjectorMeshDraws` (optional): the monotonic count of projector
+ * targets drawn through the per-triangle mesh path is at least this. Skipped
+ * (passes) when the machine has no display, since no output window exists.
+ *
+ * JSON: {"type":"AssertShowMeshState","meshCount":1,"minProjectorMeshDraws":1}
+ */
+class AssertShowMeshStateCommand : public Command {
+public:
+    AssertShowMeshStateCommand(int64_t meshCount, int64_t minProjectorMeshDraws)
+        : m_meshCount(meshCount), m_minProjectorMeshDraws(minProjectorMeshDraws) {}
+
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertShowMeshState"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    Affinity getAffinity() const override { return Affinity::Editor; }
+    static CommandPtr fromJson(const nlohmann::json& j);
+
+private:
+    int64_t m_meshCount;              // -1 = not checked
+    int64_t m_minProjectorMeshDraws;  // -1 = not checked
+};
+
 // ============================================================================
 // Object Animation Layer commands (Phase 3.3)
 // ============================================================================

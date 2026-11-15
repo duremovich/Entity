@@ -752,15 +752,24 @@ void PlaybackTimeAuthority::buildSceneSnapshot(bus::SceneSnapshot& out) const {
         // Convert Screen::size (meters) → effective vertex multiplier on the
         // editor side so the show thread / OutputManager can multiply
         // verts by ss.scale directly without needing mesh bounds across
-        // the bus (Model meshes are intentionally not snapshotted).
+        // the bus. Vertex data itself never rides the snapshot: it reaches
+        // the show thread once per change via bus::ProvisionMesh (sent by
+        // Engine just before this bake), and the snapshot names it by
+        // (modelEntity, meshRevision).
         const MeshData* mesh = nullptr;
+        std::uint32_t meshRevision = 0;
         if (screen.modelEntity != entt::null && m_registry.valid(screen.modelEntity)) {
-            if (const auto* m = m_registry.try_get<Model>(screen.modelEntity))
-                if (m->mesh.isValid()) mesh = &m->mesh;
+            if (const auto* m = m_registry.try_get<Model>(screen.modelEntity)) {
+                if (m->mesh.isValid()) {
+                    mesh = &m->mesh;
+                    meshRevision = m->showMeshRevision;
+                }
+            }
         }
         std::array<float, 3> effectiveSize = screen.size;
         ss.scale = computeEffectiveScale(effectiveSize, mesh);
         ss.modelEntity = entityToU64(screen.modelEntity);
+        ss.meshRevision = meshRevision;
 
         // Fold in ObjectAnimationOutput from active OA layers targeting this
         // screen. Precedence per ADR-0020: active layer beats after-end-Hold

@@ -25,8 +25,12 @@ enum class Direction { D2R, R2D };
 
 // One-frame snapshot of a Screen entity.
 // modelEntity is snapshotted as a uint64_t handle — the show thread never
-// needs to touch the registry for geometry; OutputManager uses it as a key
-// into a renderer-side Model store (Stage 4; for now it's informational).
+// touches the registry for geometry. (modelEntity, meshRevision) is the key
+// into OutputManager's show-thread-owned mesh store, filled by ProvisionMesh
+// and emptied by ReleaseMesh. The store owns its copy, so an editor-side
+// delete / hot reload / project close can never free geometry the show
+// thread is walking; a stale snapshot whose revision no longer matches the
+// store simply skips that target for the frame.
 struct ScreenSnapshot {
     std::uint64_t entity{0};
     std::string   name;
@@ -45,6 +49,10 @@ struct ScreenSnapshot {
     // include/entity/bus/CLAUDE.md rule 3.
     std::array<float, 3> scale{1.0f, 1.0f, 1.0f};
     std::uint64_t modelEntity{0}; // entt::entity cast to uint64; 0 = null
+    // Revision of the model geometry provisioned to the show thread
+    // (ProvisionMesh::revision). 0 = no provisioned mesh: the projector path
+    // draws the default flat quad. Optional on the wire (absent = 0).
+    std::uint32_t meshRevision{0};
 };
 
 // One-frame snapshot of an OutputSurface entity (renamed from MappingSurface
@@ -970,6 +978,31 @@ struct SignalEmit {
     std::vector<SignalArg> args;
 };
 
+// Director → Renderer (D2R, FIFO). Copy of one Model's projection geometry
+// for the show thread's mesh store (OutputManager). The projector output path
+// projects, lens-distorts and warps every vertex on the CPU, so it needs the
+// vertex data itself, not a GPU buffer slot. Sent by the editor only when a
+// screen-referenced Model's geometry is new or changed (hot reload), always
+// BEFORE the SceneSnapshot that first carries `revision`, so by the time the
+// show thread renders that snapshot the store holds the geometry. Replaces
+// any earlier revision for the same meshId.
+//   meshId    — Model entity cast to uint64 (matches ScreenSnapshot::modelEntity)
+//   revision  — engine-wide monotonic, never 0, never reused
+//   positions — xyz per vertex; texCoords — uv per vertex; indices — triangles
+struct ProvisionMesh {
+    std::uint64_t              meshId{0};
+    std::uint32_t              revision{0};
+    std::vector<float>         positions;
+    std::vector<float>         texCoords;
+    std::vector<std::uint32_t> indices;
+};
+
+// Director → Renderer (D2R, FIFO). The Model was destroyed (delete, project
+// close/load); the show thread drops its copy of the geometry.
+struct ReleaseMesh {
+    std::uint64_t meshId{0};
+};
+
 using Message = std::variant<
     RenderFrame,
     SceneSnapshot,
@@ -990,7 +1023,9 @@ using Message = std::variant<
     CreateOutputWindowRequest,
     OutputWindowReady,
     SectionBreakDetected,
-    SignalEmit
+    SignalEmit,
+    ProvisionMesh,
+    ReleaseMesh
 >;
 
 // Stable wire identifier. Mirrors the CommandDispatcher "type" string

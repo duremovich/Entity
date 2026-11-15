@@ -44,6 +44,7 @@ add_executable(EntityMediaTests
     unit/ContentScannerTests.cpp
     unit/OcioOdtTests.cpp
     unit/MessageBusSerializationTests.cpp
+    unit/ShowMeshStoreTests.cpp
     unit/InMemoryTransportTests.cpp
     unit/SceneStateTests.cpp
     unit/PlaybackTimeAuthorityTests.cpp
@@ -386,6 +387,13 @@ set_tests_properties(integration_load_during_playback_save PROPERTIES
     FIXTURES_SETUP load_during_playback_data)
 set_tests_properties(integration_load_during_playback PROPERTIES
     FIXTURES_REQUIRED load_during_playback_data)
+
+# Same crash class on the projector mesh path (ADR-0014 show-thread mesh
+# store): hot-reload, delete and project-load a model while a projector-mapped
+# output renders it per triangle during playback. Opens a 320x180 output
+# window at the origin of display 0 (skipped without a display).
+# Requires tests/fixtures/audio/tone_1khz.mov.
+entity_add_integration_test(projector_mesh_lifecycle projector_mesh_lifecycle.json)
 
 # Regression gate: AddScreen must not double-allocate compose targets.
 # If the bug recurs the GPU wedges, DeviceLost is posted, the show thread

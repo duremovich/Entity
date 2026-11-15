@@ -37,6 +37,13 @@ struct Model {
     bool gpuResourcesValid{false};
     bool gpuUploadFailed{false};  // Set on first slot-exhaustion; suppresses retry log spam
 
+    // Revision of the copy of `mesh` held by the show thread's mesh store
+    // (bus::ProvisionMesh, ADR-0014). 0 = not provisioned yet, or `mesh`
+    // changed since: the editor provisions (and assigns a fresh revision)
+    // before the next SceneSnapshot. Anything that replaces `mesh` on an
+    // existing Model must reset this to 0 (Engine::replaceModelMesh).
+    uint32_t showMeshRevision{0};
+
     bool isValid() const { return mesh.isValid(); }
 };
 

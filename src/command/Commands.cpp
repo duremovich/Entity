@@ -26,6 +26,7 @@
 #include "entity/components/Layer.hpp"
 #include "entity/components/MediaLayer.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/components/Transform.hpp"
 #include "entity/components/AnimatedProperties.hpp"
 #include "entity/components/Effect.hpp"
@@ -6077,6 +6078,214 @@ std::string AssertMeshUploadCountCommand::getDescription() const {
 CommandPtr AssertMeshUploadCountCommand::fromJson(const nlohmann::json& j) {
     uint64_t expected = j.value("expected", uint64_t{0});
     return std::make_unique<AssertMeshUploadCountCommand>(expected);
+}
+
+// ============================================================================
+// Projector mesh-path test fixtures (show-thread mesh store, ADR-0014)
+// ============================================================================
+
+namespace {
+entt::entity findModelByName(entt::registry& registry, const std::string& name) {
+    for (auto [e, m] : registry.view<Model>().each()) {
+        if (m.name == name) return e;
+    }
+    return entt::null;
+}
+} // namespace
+
+bool AddProjectorOutputCommand::execute(Engine& engine) {
+    auto* om = engine.getOutputManager();
+    if (!om) {
+        std::cerr << "[AddProjectorOutput] OutputManager not available" << std::endl;
+        return false;
+    }
+    auto& registry = engine.getRegistry();
+
+    entt::entity screenEntity = entt::null;
+    for (auto [e, s] : registry.view<Screen>().each()) {
+        if (s.name == m_screenName) { screenEntity = e; break; }
+    }
+    if (screenEntity == entt::null) {
+        std::cerr << "[AddProjectorOutput] Screen not found: " << m_screenName << std::endl;
+        return false;
+    }
+
+    const entt::entity projEntity = registry.create();
+    {
+        Projector& proj = registry.emplace<Projector>(projEntity);
+        proj.name = "Projector " + m_screenName;
+        proj.targetSurfaceCount = 1;
+        proj.targetSurfaces[0] = screenEntity;
+    }
+
+    const entt::entity outputEntity =
+        om->createOutput("ProjectorOutput_" + m_screenName, OutputType::Physical);
+    registry.get<Projector>(projEntity).linkedOutput = outputEntity;
+
+    const auto& displays = om->getAvailableDisplays();
+    const bool haveDisplay = m_displayIndex >= 0 &&
+                             m_displayIndex < static_cast<int32_t>(displays.size());
+    if (haveDisplay) {
+        om->assignDisplay(outputEntity, m_displayIndex);  // window at display origin
+    }
+    auto& od = registry.get<OutputDisplay>(outputEntity);
+    od.sourceProjector = projEntity;
+    od.sourceScreen    = entt::null;
+    od.width           = m_width;
+    od.height          = m_height;
+    od.enabled         = haveDisplay;
+
+    std::cout << "[AddProjectorOutput] Projector '" << registry.get<Projector>(projEntity).name
+              << "' -> screen '" << m_screenName << "', output "
+              << (haveDisplay ? "on display " + std::to_string(m_displayIndex)
+                              : std::string("disabled (no display at index ") +
+                                    std::to_string(m_displayIndex) + ")")
+              << " " << m_width << "x" << m_height << std::endl;
+    return true;
+}
+
+nlohmann::json AddProjectorOutputCommand::toJson() const {
+    return {{"type", "AddProjectorOutput"}, {"screenName", m_screenName},
+            {"displayIndex", m_displayIndex}, {"width", m_width}, {"height", m_height}};
+}
+
+std::string AddProjectorOutputCommand::getDescription() const {
+    return "Add projector output for screen: " + m_screenName;
+}
+
+CommandPtr AddProjectorOutputCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AddProjectorOutputCommand>(
+        j.value("screenName", std::string{"Main Screen"}),
+        j.value("displayIndex", int32_t{0}),
+        std::max(16, j.value("width", int32_t{320})),
+        std::max(16, j.value("height", int32_t{180})));
+}
+
+bool ReloadModelMeshCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const entt::entity modelEntity = findModelByName(registry, m_modelName);
+    if (modelEntity == entt::null) {
+        std::cerr << "[ReloadModelMesh] Model not found: " << m_modelName << std::endl;
+        return false;
+    }
+
+    // N x N grid over the default 16:9 plane (same bounds, so the screen's
+    // effective scale is unchanged), CCW facing +Z, UV (0,0) top-left.
+    const int n = std::clamp(m_subdivisions, 1, 64);
+    const float halfW = (16.0f / 9.0f) * 0.5f;
+    const float halfH = 0.5f;
+    MeshData mesh;
+    mesh.name = "Synthetic grid";
+    for (int y = 0; y <= n; ++y) {
+        for (int x = 0; x <= n; ++x) {
+            const float u = static_cast<float>(x) / n;
+            const float v = static_cast<float>(y) / n;
+            MeshVertex vert;
+            vert.position = {-halfW + u * 2.0f * halfW, -halfH + v * 2.0f * halfH, 0.0f};
+            vert.texCoord = {u, 1.0f - v};
+            mesh.vertices.push_back(vert);
+        }
+    }
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; x < n; ++x) {
+            const uint32_t bl = static_cast<uint32_t>(y * (n + 1) + x);
+            const uint32_t br = bl + 1;
+            const uint32_t tl = bl + static_cast<uint32_t>(n + 1);
+            const uint32_t tr = tl + 1;
+            mesh.indices.insert(mesh.indices.end(), {bl, br, tr, bl, tr, tl});
+        }
+    }
+    mesh.calculateBounds();
+
+    if (!engine.replaceModelMesh(modelEntity, std::move(mesh))) return false;
+    std::cout << "[ReloadModelMesh] '" << m_modelName << "' -> " << n << "x" << n
+              << " grid" << std::endl;
+    return true;
+}
+
+nlohmann::json ReloadModelMeshCommand::toJson() const {
+    return {{"type", "ReloadModelMesh"}, {"modelName", m_modelName},
+            {"subdivisions", m_subdivisions}};
+}
+
+std::string ReloadModelMeshCommand::getDescription() const {
+    return "Reload model mesh: " + m_modelName;
+}
+
+CommandPtr ReloadModelMeshCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<ReloadModelMeshCommand>(
+        j.value("modelName", std::string{"Default 16:9 Plane"}),
+        j.value("subdivisions", 4));
+}
+
+bool DeleteModelCommand::execute(Engine& engine) {
+    auto& registry = engine.getRegistry();
+    const entt::entity modelEntity = findModelByName(registry, m_modelName);
+    if (modelEntity == entt::null) {
+        std::cerr << "[DeleteModel] Model not found: " << m_modelName << std::endl;
+        return false;
+    }
+    registry.destroy(modelEntity);
+    std::cout << "[DeleteModel] Destroyed '" << m_modelName << "'" << std::endl;
+    return true;
+}
+
+nlohmann::json DeleteModelCommand::toJson() const {
+    return {{"type", "DeleteModel"}, {"modelName", m_modelName}};
+}
+
+std::string DeleteModelCommand::getDescription() const {
+    return "Delete model: " + m_modelName;
+}
+
+CommandPtr DeleteModelCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<DeleteModelCommand>(
+        j.value("modelName", std::string{"Default 16:9 Plane"}));
+}
+
+bool AssertShowMeshStateCommand::execute(Engine& engine) {
+    bool ok = true;
+    const std::size_t count = engine.getShowMeshCount();
+    if (m_meshCount >= 0 && count != static_cast<std::size_t>(m_meshCount)) {
+        std::cerr << "[AssertShowMeshState] FAIL: show-side mesh count " << count
+                  << " != expected " << m_meshCount << std::endl;
+        ok = false;
+    }
+    const std::uint64_t draws = engine.getProjectorMeshDraws();
+    if (m_minProjectorMeshDraws >= 0) {
+        auto* om = engine.getOutputManager();
+        const bool haveDisplay = om && !om->getAvailableDisplays().empty();
+        if (!haveDisplay) {
+            std::cout << "[AssertShowMeshState] No display - projector draw check skipped"
+                      << std::endl;
+        } else if (draws < static_cast<std::uint64_t>(m_minProjectorMeshDraws)) {
+            std::cerr << "[AssertShowMeshState] FAIL: projector mesh draws " << draws
+                      << " < expected minimum " << m_minProjectorMeshDraws << std::endl;
+            ok = false;
+        }
+    }
+    if (ok) {
+        std::cout << "[AssertShowMeshState] PASS: meshes=" << count
+                  << " projectorMeshDraws=" << draws << std::endl;
+    }
+    return ok;
+}
+
+nlohmann::json AssertShowMeshStateCommand::toJson() const {
+    nlohmann::json j = {{"type", "AssertShowMeshState"}};
+    if (m_meshCount >= 0) j["meshCount"] = m_meshCount;
+    if (m_minProjectorMeshDraws >= 0) j["minProjectorMeshDraws"] = m_minProjectorMeshDraws;
+    return j;
+}
+
+std::string AssertShowMeshStateCommand::getDescription() const {
+    return "Assert show-side mesh store state";
+}
+
+CommandPtr AssertShowMeshStateCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertShowMeshStateCommand>(
+        j.value("meshCount", int64_t{-1}),
+        j.value("minProjectorMeshDraws", int64_t{-1}));
 }
 
 // ============================================================================

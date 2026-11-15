@@ -6,6 +6,7 @@
 #include "entity/core/SceneState.hpp"
 #include "entity/project/ProjectManager.hpp"
 #include "entity/core/Settings.hpp"
+#include "entity/media/ObjLoader.hpp"
 #include "entity/media/TranscodeManager.hpp"
 #include "entity/ui/NoticeCenter.hpp"
 #include <entt/entt.hpp>
@@ -718,6 +719,16 @@ public:
                           ProjectManager::PathKind kind);
 
     /**
+     * Replace an existing Model's mesh (hot reload). Editor thread only.
+     * Schedules the old GPU slot for deferred free, invalidates the GPU
+     * upload, and resets Model::showMeshRevision so the next editor tick
+     * provisions the new geometry to the show thread under a fresh
+     * revision. The single place that may assign Model::mesh on a Model
+     * that already exists. Returns false if `modelEntity` has no Model.
+     */
+    bool replaceModelMesh(entt::entity modelEntity, MeshData&& mesh);
+
+    /**
      * Get the current decoder (for metadata access).
      * Returns nullptr if no media is loaded.
      */
@@ -1325,8 +1336,14 @@ private:
     // buildRenderFrame publishes via D2R; show thread merges it in.
     bus::SceneSnapshot    m_cachedSceneSnapshot;
 
+    // Next bus::ProvisionMesh revision (editor thread only). Monotonic and
+    // never 0 — see collectShowMeshProvisions.
+    std::uint32_t         m_nextShowMeshRevision{1};
+
     // EnTT signal: fires before a Model component is removed so we can
-    // schedule deferred GPU slot release before the component data is gone.
+    // schedule deferred GPU slot release before the component data is gone,
+    // and tell the show thread to drop its copy of the geometry
+    // (bus::ReleaseMesh).
     void onModelDestroyed(entt::registry& reg, entt::entity e);
 
     // EnTT signal: fires before a VideoTexture component is removed (clip
@@ -1347,6 +1364,10 @@ public:
     // tests (mesh_upload_paces.json) to verify the cold-start gate and
     // steady-state one-upload-per-tick cap.
     uint64_t getMeshUploadCount() const;
+
+    // Show-side mesh store diagnostics (OutputManager); 0 without one.
+    std::size_t getShowMeshCount() const;
+    std::uint64_t getProjectorMeshDraws() const;
 
     // Device-lost auto-relaunch. Set from the bus::DeviceLost R2D drain after
     // autosave completes. main.cpp checks these after engine.shutdown() to

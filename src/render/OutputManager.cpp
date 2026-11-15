@@ -11,7 +11,7 @@
 #include "entity/profile/Tracy.hpp"
 #include "entity/bus/Message.hpp"
 #include "entity/bus/Serialization.hpp"
-#include "entity/components/Model.hpp"
+#include "entity/media/ObjLoader.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -367,6 +367,16 @@ void OutputManager::handleSetOutputEnabledOnShow(entt::entity outputEntity,
               << static_cast<uint32_t>(outputEntity) << " "
               << (enabled ? "enable (lazy window creation)" : "disabled")
               << std::endl;
+}
+
+void OutputManager::provisionMeshOnShow(bus::ProvisionMesh&& msg) {
+    m_showMeshes.provision(std::move(msg));
+    m_showMeshCount.store(m_showMeshes.size(), std::memory_order_release);
+}
+
+void OutputManager::releaseMeshOnShow(std::uint64_t meshId) {
+    m_showMeshes.release(meshId);
+    m_showMeshCount.store(m_showMeshes.size(), std::memory_order_release);
 }
 
 void OutputManager::setFullscreen(entt::entity outputEntity, bool fullscreen) {
@@ -936,18 +946,22 @@ void OutputManager::renderToOutput(
 
                 // Resolve mesh — when present, render per-triangle so the
                 // projector output matches what the calibration window's
-                // right pane shows. Mesh data stays in the registry
-                // (read-only, read-mostly). Stage 4 will move this to a
-                // renderer-side mesh store via bus::ProvisionMesh.
-                const MeshData* mesh = nullptr;
-                {
-                    const entt::entity modelEnt = static_cast<entt::entity>(screen.modelEntity);
-                    if (screen.modelEntity != 0 &&
-                        m_registry.valid(modelEnt) &&
-                        m_registry.all_of<Model>(modelEnt)) {
-                        const auto& model = m_registry.get<Model>(modelEnt);
-                        if (model.mesh.isValid()) mesh = &model.mesh;
-                    }
+                // right pane shows. The geometry comes from this thread's
+                // own store (bus::ProvisionMesh), never the registry: the
+                // editor frees Model::mesh on delete, hot reload and
+                // project close while this loop could be walking it
+                // (ADR-0014). The store owns its copy, so nothing here can
+                // dangle. meshRevision == 0 means the screen has no mesh
+                // (flat-quad path below). A non-zero revision the store
+                // doesn't hold means this snapshot is stale against a hot
+                // reload or delete the editor already sent: skip the
+                // target for this frame rather than draw geometry the
+                // snapshot (pose, scale) wasn't baked against. The next
+                // snapshot catches up.
+                const ShowMeshStore::Mesh* mesh = nullptr;
+                if (screen.meshRevision != 0) {
+                    mesh = m_showMeshes.find(screen.modelEntity, screen.meshRevision);
+                    if (!mesh) continue;
                 }
 
                 if (mesh) {
@@ -964,17 +978,29 @@ void OutputManager::renderToOutput(
 
                     glm::mat4 mvp = vp * model_mat;
 
-                    const auto& verts   = mesh->vertices;
+                    // ShowMeshStore::provision validated the payload: whole
+                    // triangles, every index < vertexCount, 3 position and
+                    // 2 uv floats per vertex.
+                    const float* posData = mesh->positions.data();
+                    const float* uvData  = mesh->texCoords.data();
                     const auto& indices = mesh->indices;
+                    auto position = [posData](std::uint32_t i) {
+                        return glm::vec4(posData[i * 3], posData[i * 3 + 1], posData[i * 3 + 2], 1.0f);
+                    };
+                    auto texCoord = [uvData](std::uint32_t i) {
+                        return glm::vec2(uvData[i * 2], uvData[i * 2 + 1]);
+                    };
+
+                    m_projectorMeshDraws.fetch_add(1, std::memory_order_release);
 
                     for (size_t t = 0; t + 2 < indices.size(); t += 3) {
-                        const auto& v0 = verts[indices[t]];
-                        const auto& v1 = verts[indices[t + 1]];
-                        const auto& v2 = verts[indices[t + 2]];
+                        const std::uint32_t i0 = indices[t];
+                        const std::uint32_t i1 = indices[t + 1];
+                        const std::uint32_t i2 = indices[t + 2];
 
-                        glm::vec4 c0 = mvp * glm::vec4(v0.position[0], v0.position[1], v0.position[2], 1.0f);
-                        glm::vec4 c1 = mvp * glm::vec4(v1.position[0], v1.position[1], v1.position[2], 1.0f);
-                        glm::vec4 c2 = mvp * glm::vec4(v2.position[0], v2.position[1], v2.position[2], 1.0f);
+                        glm::vec4 c0 = mvp * position(i0);
+                        glm::vec4 c1 = mvp * position(i1);
+                        glm::vec4 c2 = mvp * position(i2);
 
                         if (c0.w < 1e-4f || c1.w < 1e-4f || c2.w < 1e-4f) continue;
 
@@ -1016,11 +1042,7 @@ void OutputManager::renderToOutput(
                                    - (ndc[1].y - ndc[0].y) * (ndc[2].x - ndc[0].x);
                         if (area <= 0.0f) continue;
 
-                        glm::vec2 uvs[3] = {
-                            glm::vec2(v0.texCoord[0], v0.texCoord[1]),
-                            glm::vec2(v1.texCoord[0], v1.texCoord[1]),
-                            glm::vec2(v2.texCoord[0], v2.texCoord[1]),
-                        };
+                        glm::vec2 uvs[3] = { texCoord(i0), texCoord(i1), texCoord(i2) };
 
                         m_renderer->drawMeshTriangle(screenTexture, ndc, uvs);
                     }
