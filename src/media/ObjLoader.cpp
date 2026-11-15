@@ -1,4 +1,5 @@
 #include "entity/media/ObjLoader.hpp"
+#include "entity/core/PathUtf8.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -56,7 +57,7 @@ ObjLoader::FaceVertex ObjLoader::parseFaceVertex(const std::string& str) {
 }
 
 MeshData ObjLoader::load(const std::string& filepath) {
-    std::ifstream file(filepath);
+    std::ifstream file(utf8ToPath(filepath));
     if (!file.is_open()) {
         std::cerr << "[ObjLoader] Failed to open file: " << filepath << std::endl;
         return MeshData{};
@@ -125,8 +126,18 @@ MeshData ObjLoader::loadFromString(const std::string& objData, const std::string
             // Face - can be triangle or quad
             std::vector<FaceVertex> faceVerts;
             std::string vertStr;
-            while (lineStream >> vertStr) {
-                faceVerts.push_back(parseFaceVertex(vertStr));
+            try {
+                while (lineStream >> vertStr) {
+                    faceVerts.push_back(parseFaceVertex(vertStr));
+                }
+            } catch (const std::exception& e) {
+                // std::stoi throws invalid_argument / out_of_range on a
+                // malformed index token. Fail this one load; never let it
+                // reach std::terminate.
+                std::cerr << "[ObjLoader] Malformed face index in '" << name
+                          << "' (" << e.what() << "): \"" << line
+                          << "\" - mesh rejected" << std::endl;
+                return MeshData{};
             }
 
             // Triangulate face (support quads and n-gons)
