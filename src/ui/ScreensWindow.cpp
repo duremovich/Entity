@@ -4,6 +4,7 @@
 #include "entity/components/Screen.hpp"
 #include "entity/components/Model.hpp"
 #include "entity/components/Projector.hpp"
+#include "entity/core/UniqueName.hpp"
 #include <algorithm>
 #include <cctype>
 #include <iostream>
@@ -111,7 +112,7 @@ void ScreensWindow::render() {
                 entt::entity newEntity = registry.create();
                 registry.emplace<Screen>(newEntity, screen);
                 Screen& newScreen = registry.get<Screen>(newEntity);
-                newScreen.name = screen.name + " Copy";
+                newScreen.name = makeUniqueComponentName<Screen>(registry, screen.name + " Copy");
                 if (timeline) {
                     timeline->setSelectedScreen(newEntity);
                     timeline->setSelectedClip(entt::null);
@@ -189,7 +190,7 @@ void ScreensWindow::render() {
                 entt::entity newEntity = registry.create();
                 registry.emplace<Projector>(newEntity, proj);
                 Projector& newProj = registry.get<Projector>(newEntity);
-                newProj.name = proj.name + " Copy";
+                newProj.name = makeUniqueComponentName<Projector>(registry, proj.name + " Copy");
                 if (timeline) {
                     timeline->setSelectedProjector(newEntity);
                     timeline->setSelectedClip(entt::null);
@@ -211,8 +212,12 @@ entt::entity ScreensWindow::createScreen(const char* name) {
     auto& registry = m_engine->getRegistry();
 
     entt::entity entity = registry.create();
+    // Unique among existing screens ("New Screen", "New Screen 2", ...):
+    // screens are referenced by name in the project file, so two "New
+    // Screen"s would be ambiguous on reload.
+    std::string uniqueName = makeUniqueComponentName<Screen>(registry, name);
     Screen& screen = registry.emplace<Screen>(entity);
-    screen.name = name;
+    screen.name = std::move(uniqueName);
 
     // Use first available model if any exist
     auto modelView = registry.view<Model>();
@@ -225,7 +230,7 @@ entt::entity ScreensWindow::createScreen(const char* name) {
     // the quad, so size.y/2 puts the bottom edge at world Y=0.
     screen.position[1] = screen.size[1] * 0.5f;
 
-    std::cout << "[Screens] Created screen: " << name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
+    std::cout << "[Screens] Created screen: " << screen.name << " (entity=" << static_cast<uint32_t>(entity) << ")" << std::endl;
     return entity;
 }
 
@@ -234,13 +239,23 @@ entt::entity ScreensWindow::createProjector() {
     entt::entity entity = registry.create();
     Projector& proj = registry.emplace<Projector>(entity);
 
-    // Auto-number: "Projector 1", "Projector 2", ...
-    int count = 1;
+    // Auto-number: "Projector 1", "Projector 2", ... skipping numbers in
+    // use (a deleted projector must not make the next one reuse a live
+    // name; outputs reference projectors by name in the project file).
+    int n = 0;
     for (auto e : registry.view<Projector>()) {
         (void)e;
-        count++;
+        n++;
     }
-    proj.name = "Projector " + std::to_string(count);
+    auto taken = [&](const std::string& candidate) {
+        for (auto [pe, p] : registry.view<Projector>().each()) {
+            if (pe != entity && p.name == candidate) return true;
+        }
+        return false;
+    };
+    std::string name = "Projector " + std::to_string(n);
+    while (taken(name)) name = "Projector " + std::to_string(++n);
+    proj.name = name;
 
     std::cout << "[Screens] Created projector: " << proj.name << std::endl;
     return entity;

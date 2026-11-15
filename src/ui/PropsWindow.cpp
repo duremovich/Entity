@@ -3,6 +3,7 @@
 #include "entity/timeline/Timeline.hpp"
 #include "entity/components/Prop.hpp"
 #include "entity/components/Model.hpp"
+#include "entity/core/UniqueName.hpp"
 #include <iostream>
 
 namespace entity {
@@ -84,7 +85,7 @@ void PropsWindow::render() {
                 entt::entity newEntity = registry.create();
                 registry.emplace<Prop>(newEntity, prop);
                 Prop& newProp = registry.get<Prop>(newEntity);
-                newProp.name = prop.name + " Copy";
+                newProp.name = makeUniqueComponentName<Prop>(registry, prop.name + " Copy");
                 if (timeline) {
                     timeline->setSelectedProp(newEntity);
                     timeline->setSelectedClip(entt::null);
@@ -106,17 +107,13 @@ void PropsWindow::render() {
 entt::entity PropsWindow::createProp(const char* name) {
     auto& registry = m_engine->getRegistry();
 
+    // Auto-number to keep the list legible and names unique: "Prop",
+    // "Prop 2", "Prop 3", … (props are referenced by name in the project
+    // file, so a count-based number could collide after a delete).
+    std::string uniqueName = makeUniqueComponentName<Prop>(registry, name);
     entt::entity entity = registry.create();
     Prop& prop = registry.emplace<Prop>(entity);
-
-    // Auto-number to keep the list legible: "Prop", "Prop 2", "Prop 3", …
-    int count = 0;
-    for (auto e : registry.view<Prop>()) {
-        (void)e;
-        count++;
-    }
-    prop.name = (count <= 1) ? std::string(name)
-                             : std::string(name) + " " + std::to_string(count);
+    prop.name = std::move(uniqueName);
 
     // Auto-assign first available Model (mirrors ScreensWindow behavior).
     auto modelView = registry.view<Model>();

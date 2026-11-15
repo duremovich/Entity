@@ -11,7 +11,9 @@
  *     network text cannot make the project unsaveable;
  *   - OutputDisplay::sourceProjector round-trips, and the calibration
  *     window's temporary route neither leaks into the file nor loses the
- *     output's own routing.
+ *     output's own routing;
+ *   - same-named Screens/Props survive a reload with their own settings,
+ *     Screen::type round-trips, and new names are unique.
  */
 
 #include <gtest/gtest.h>
@@ -19,6 +21,8 @@
 #include "entity/components/Clip.hpp"
 #include "entity/components/OutputDisplay.hpp"
 #include "entity/components/Projector.hpp"
+#include "entity/components/Prop.hpp"
+#include "entity/core/UniqueName.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -29,10 +33,12 @@
 #include "entity/ui/NoticeCenter.hpp"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -451,4 +457,146 @@ TEST(CalibrationRoute, SaveWhileRoutedWritesTheUsersRouting) {
         EXPECT_EQ(projectorName(registry, b.sourceProjector), "Users Projector");
         EXPECT_FALSE(registry.valid(b.sourceScreen));
     }
+}
+
+// --- Screen / Prop identity (v31) ---------------------------------------------
+
+namespace {
+
+std::vector<const entity::Screen*> screensNamed(entt::registry& reg, const std::string& name) {
+    std::vector<const entity::Screen*> out;
+    for (auto [e, s] : reg.view<entity::Screen>().each())
+        if (s.name == name) out.push_back(&s);
+    return out;
+}
+
+}  // namespace
+
+TEST(ScreenIdentity, SameNamedScreensBothSurviveReloadWithOwnSettings) {
+    TempFile tf("dup_screens");
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        auto a = registry.create();
+        auto& sa = registry.emplace<entity::Screen>(a);
+        sa.name = "New Screen"; sa.width = 1280; sa.position = {1.0f, 0.0f, 0.0f};
+        auto b = registry.create();
+        auto& sb = registry.emplace<entity::Screen>(b);
+        sb.name = "New Screen"; sb.width = 3840; sb.position = {-5.0f, 2.0f, 0.0f};
+        sb.type = entity::ScreenType::ProjectionSurface;
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+
+    // Fresh registry with the editor's default screen (the reopen case),
+    // and a registry already holding both (same-session reload).
+    for (int existing : {1, 2}) {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        if (existing == 1) {
+            registry.emplace<entity::Screen>(registry.create()).name = "Main Screen";
+        } else {
+            registry.emplace<entity::Screen>(registry.create()).name = "New Screen";
+            registry.emplace<entity::Screen>(registry.create()).name = "New Screen";
+        }
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+
+        EXPECT_EQ(registry.view<entity::Screen>().size(), 2u) << "existing=" << existing;
+        auto dups = screensNamed(registry, "New Screen");
+        ASSERT_EQ(dups.size(), 2u) << "existing=" << existing;
+        std::vector<uint32_t> widths{dups[0]->width, dups[1]->width};
+        std::sort(widths.begin(), widths.end());
+        EXPECT_EQ(widths, (std::vector<uint32_t>{1280u, 3840u}));
+        for (const auto* sc : dups) {
+            if (sc->width == 3840u) {
+                EXPECT_FLOAT_EQ(sc->position[0], -5.0f);
+                EXPECT_EQ(sc->type, entity::ScreenType::ProjectionSurface);
+            } else {
+                EXPECT_FLOAT_EQ(sc->position[0], 1.0f);
+                EXPECT_EQ(sc->type, entity::ScreenType::LEDWall);
+            }
+        }
+    }
+}
+
+TEST(ScreenIdentity, ScreenTypeRoundTripsAndDefaultsForOldFiles) {
+    TempFile tf("screen_type");
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        auto e = registry.create();
+        auto& s = registry.emplace<entity::Screen>(e);
+        s.name = "Cyc";
+        s.type = entity::ScreenType::ProjectionSurface;
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path));
+    }
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path));
+        auto cyc = screensNamed(registry, "Cyc");
+        ASSERT_EQ(cyc.size(), 1u);
+        EXPECT_EQ(cyc[0]->type, entity::ScreenType::ProjectionSurface);
+    }
+
+    TempFile old("screen_type_v30");
+    old.write(R"({"format": "entity_project", "version": 30,
+                 "screens": [{"name": "Legacy"}]})");
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, old.path));
+    auto legacy = screensNamed(registry, "Legacy");
+    ASSERT_EQ(legacy.size(), 1u);
+    EXPECT_EQ(legacy[0]->type, entity::ScreenType::LEDWall);
+}
+
+TEST(ScreenIdentity, ExtraExistingScreensAreStillRemoved) {
+    // One-to-one matching must keep the old "destroy unmatched" behavior:
+    // three live "X" screens and a file with one "X" end with one.
+    TempFile tf("dup_screens_trim");
+    tf.write(R"({"format": "entity_project", "version": 31,
+                "screens": [{"name": "X", "width": 640}]})");
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    for (int i = 0; i < 3; ++i)
+        registry.emplace<entity::Screen>(registry.create()).name = "X";
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path));
+    auto xs = screensNamed(registry, "X");
+    ASSERT_EQ(xs.size(), 1u);
+    EXPECT_EQ(xs[0]->width, 640u);
+}
+
+TEST(PropIdentity, SameNamedPropsBothSurviveReload) {
+    TempFile tf("dup_props");
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        auto a = registry.create();
+        auto& pa = registry.emplace<entity::Prop>(a);
+        pa.name = "Prop"; pa.position = {1.0f, 0.0f, 0.0f};
+        auto b = registry.create();
+        auto& pb = registry.emplace<entity::Prop>(b);
+        pb.name = "Prop"; pb.position = {9.0f, 0.0f, 0.0f};
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path));
+    }
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path));
+    std::vector<float> xs;
+    for (auto [e, p] : registry.view<entity::Prop>().each()) xs.push_back(p.position[0]);
+    std::sort(xs.begin(), xs.end());
+    EXPECT_EQ(xs, (std::vector<float>{1.0f, 9.0f}));
+}
+
+TEST(UniqueName, NewNamesSkipTakenOnes) {
+    entt::registry reg;
+    EXPECT_EQ(entity::makeUniqueComponentName<entity::Screen>(reg, "New Screen"), "New Screen");
+    reg.emplace<entity::Screen>(reg.create()).name = "New Screen";
+    EXPECT_EQ(entity::makeUniqueComponentName<entity::Screen>(reg, "New Screen"), "New Screen 2");
+    reg.emplace<entity::Screen>(reg.create()).name = "New Screen 2";
+    reg.emplace<entity::Screen>(reg.create()).name = "Wall Copy";
+    EXPECT_EQ(entity::makeUniqueComponentName<entity::Screen>(reg, "New Screen"), "New Screen 3");
+    EXPECT_EQ(entity::makeUniqueComponentName<entity::Screen>(reg, "Wall Copy"), "Wall Copy 2");
+    EXPECT_EQ(entity::makeUniqueComponentName<entity::Prop>(reg, "Prop"), "Prop");
 }

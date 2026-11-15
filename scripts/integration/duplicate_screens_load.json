@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "description": "Duplicate screen names (load half). Opens the file written by duplicate_screens_save.json in a fresh process and asserts both same-named screens load alongside Main Screen (they used to collapse into one on reload).",
+    "commands": [
+        {"type": "LoadProject", "filepath": "test_output/duplicate_screens/test.entity"},
+        {"type": "WaitFrames", "count": 4},
+        {"type": "AssertScreenCount", "count": 3},
+        {"type": "AssertScreenExists", "name": "Main Screen"},
+        {"type": "AssertScreenExists", "name": "New Screen"},
+        {"type": "Exit"}
+    ]
+}

@@ -194,7 +194,16 @@ public:
     //      the save writes the output's own routing (screen + projector),
     //      not the temporary route. Pre-v30 files load with no projector
     //      source (missing key = screen / first-visible routing).
-    static constexpr int PROJECT_VERSION = 30;
+    // v31: Screen "type" ("LEDWall" | "ProjectionSurface"); pre-v31 files
+    //      load as LEDWall (the component default). No format change, but
+    //      the loader now matches Screens and Props to existing entities
+    //      one-to-one by name, so two objects sharing a name both load
+    //      with their own settings (they used to collapse into one). The
+    //      editor gives new and duplicated Screens/Props/Projectors unique
+    //      names, since every reference in the file (outputs, projector
+    //      targets, routing, layer targets) is by name and resolves to the
+    //      first match.
+    static constexpr int PROJECT_VERSION = 31;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**

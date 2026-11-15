@@ -214,6 +214,9 @@ entity_add_integration_test(screen_persistence_save screen_persistence_save.json
 entity_add_integration_test(screen_persistence_load screen_persistence_load.json)
 set_tests_properties(integration_screen_persistence_save PROPERTIES
     FIXTURES_SETUP screen_persistence_data)
+set_tests_properties(integration_screen_persistence_load PROPERTIES
+    FIXTURES_REQUIRED screen_persistence_data)
+
 # A failed File > Open (newer version, truncated JSON, mid-parse throw,
 # missing file) must leave the open project's timeline, media library and
 # path intact, queue a user notice, and let Ctrl+S write the original file.
@@ -221,8 +224,14 @@ entity_add_integration_test(failed_open_keeps_project failed_open_keeps_project.
 # A failed save (here: a path Windows cannot create) must queue a visible
 # "Could not save project" notice and keep the project path on the good file.
 entity_add_integration_test(save_failure_notice save_failure_notice.json)
-set_tests_properties(integration_screen_persistence_load PROPERTIES
-    FIXTURES_REQUIRED screen_persistence_data)
+# Two screens sharing a name both survive save + reload (same session and
+# a fresh process); they used to collapse into one.
+entity_add_integration_test(duplicate_screens_save duplicate_screens_save.json)
+entity_add_integration_test(duplicate_screens_load duplicate_screens_load.json)
+set_tests_properties(integration_duplicate_screens_save PROPERTIES
+    FIXTURES_SETUP duplicate_screens_data)
+set_tests_properties(integration_duplicate_screens_load PROPERTIES
+    FIXTURES_REQUIRED duplicate_screens_data)
 
 # Sections persistence round-trip (Phase B — break-points schema).
 entity_add_integration_test(sections_persistence_save sections_persistence_save.json)

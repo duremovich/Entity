@@ -602,6 +602,47 @@ static BlendMode jsonToBlendMode(const std::string& str) {
     return BlendMode::Normal;
 }
 
+// Pair each saved entry (a JSON array of objects with a "name") with an
+// entity carrying `Component`, one-to-one: the k-th saved entry named N
+// reuses the k-th existing entity named N (keeping its GPU-side state,
+// e.g. a Screen's compose-target slot); entries with no partner get a new
+// entity; existing entities nobody claimed are destroyed. Returns one
+// entity per saved entry, in order. Unlike first-match-by-name, two
+// entries with the same name map to two entities.
+template <typename Component>
+static std::vector<entt::entity> matchEntitiesByName(entt::registry& registry,
+                                                     const json& savedArray,
+                                                     const char* defaultName) {
+    std::vector<entt::entity> existing;
+    for (auto [e, c] : registry.view<Component>().each()) existing.push_back(e);
+    std::vector<bool> claimed(existing.size(), false);
+
+    std::vector<entt::entity> result;
+    result.reserve(savedArray.size());
+    for (const auto& entry : savedArray) {
+        const std::string name = entry.value("name", std::string{defaultName});
+        entt::entity match = entt::null;
+        for (std::size_t i = 0; i < existing.size(); ++i) {
+            if (!claimed[i] && registry.get<Component>(existing[i]).name == name) {
+                claimed[i] = true;
+                match = existing[i];
+                break;
+            }
+        }
+        result.push_back(match);
+    }
+    for (std::size_t i = 0; i < existing.size(); ++i) {
+        if (!claimed[i] && registry.valid(existing[i])) registry.destroy(existing[i]);
+    }
+    for (auto& e : result) {
+        if (e == entt::null) {
+            e = registry.create();
+            registry.emplace<Component>(e);
+        }
+    }
+    return result;
+}
+
 bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::path& filepath,
                               const ProjectManager* projectMgr) {
     try {
@@ -1176,6 +1217,9 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             sj["visible"] = screen.visible;
             sj["opacity"] = screen.opacity;
             sj["zOrder"]  = screen.zOrder;
+            // v31: LED wall vs projection surface (PropertyWindow "Type").
+            sj["type"] = (screen.type == ScreenType::ProjectionSurface)
+                             ? "ProjectionSurface" : "LEDWall";
 
             std::string modelName;
             if (screen.modelEntity != entt::null &&
@@ -1605,35 +1649,19 @@ bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path
         // Screens that match a saved name keep their renderTargetSlot intact
         // (compose-target slots currently can't be released, so destroying
         // and recreating would leak).
+        //
+        // Matching is one-to-one: each saved entry claims at most one
+        // existing entity, and each entity is claimed at most once, so the
+        // k-th saved "New Screen" pairs with the k-th existing one. (A plain
+        // first-match by name collapsed two same-named screens into one.)
         if (project.contains("screens")) {
-            std::unordered_set<std::string> savedScreenNames;
-            for (const auto& sj : project["screens"]) {
-                savedScreenNames.insert(sj.value("name", ""));
-            }
+            const std::vector<entt::entity> screenEntities = matchEntitiesByName<Screen>(
+                registry, project["screens"], "Screen");
 
-            std::vector<entt::entity> toDestroy;
-            auto existing = registry.view<Screen>();
-            for (auto [e, s] : existing.each()) {
-                if (savedScreenNames.find(s.name) == savedScreenNames.end()) {
-                    toDestroy.push_back(e);
-                }
-            }
-            for (auto e : toDestroy) {
-                if (registry.valid(e)) registry.destroy(e);
-            }
-
-            for (const auto& sj : project["screens"]) {
+            for (std::size_t si = 0; si < project["screens"].size(); ++si) {
+                const auto& sj = project["screens"][si];
                 std::string name = sj.value("name", "Screen");
-
-                entt::entity screenEntity = entt::null;
-                auto view = registry.view<Screen>();
-                for (auto [e, s] : view.each()) {
-                    if (s.name == name) { screenEntity = e; break; }
-                }
-                if (screenEntity == entt::null) {
-                    screenEntity = registry.create();
-                    registry.emplace<Screen>(screenEntity);
-                }
+                const entt::entity screenEntity = screenEntities[si];
                 auto& screen = registry.get<Screen>(screenEntity);
 
                 screen.name    = name;
@@ -1642,6 +1670,9 @@ bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path
                 screen.visible = sj.value("visible", true);
                 screen.opacity = sj.value("opacity", 1.0f);
                 screen.zOrder  = sj.value("zOrder",  0);
+                // v31; missing (older files) = the component default.
+                screen.type = (sj.value("type", std::string{"LEDWall"}) == "ProjectionSurface")
+                                  ? ScreenType::ProjectionSurface : ScreenType::LEDWall;
 
                 if (sj.contains("position") && sj["position"].is_array() && sj["position"].size() >= 3) {
                     screen.position = {sj["position"][0].get<float>(),
@@ -1805,32 +1836,14 @@ bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path
         // via per-component handling — props never showed up before this
         // version so there's nothing legacy to clean).
         if (project.contains("props")) {
-            std::unordered_set<std::string> savedPropNames;
-            for (const auto& pj : project["props"]) {
-                savedPropNames.insert(pj.value("name", ""));
-            }
+            // One-to-one by name, same as Screens (duplicates survive).
+            const std::vector<entt::entity> propEntities = matchEntitiesByName<Prop>(
+                registry, project["props"], "Prop");
 
-            std::vector<entt::entity> toDestroy;
-            for (auto [e, p] : registry.view<Prop>().each()) {
-                if (savedPropNames.find(p.name) == savedPropNames.end()) {
-                    toDestroy.push_back(e);
-                }
-            }
-            for (auto e : toDestroy) {
-                if (registry.valid(e)) registry.destroy(e);
-            }
-
-            for (const auto& pj : project["props"]) {
+            for (std::size_t pi = 0; pi < project["props"].size(); ++pi) {
+                const auto& pj = project["props"][pi];
                 std::string name = pj.value("name", "Prop");
-
-                entt::entity propEntity = entt::null;
-                for (auto [e, p] : registry.view<Prop>().each()) {
-                    if (p.name == name) { propEntity = e; break; }
-                }
-                if (propEntity == entt::null) {
-                    propEntity = registry.create();
-                    registry.emplace<Prop>(propEntity);
-                }
+                const entt::entity propEntity = propEntities[pi];
                 auto& prop = registry.get<Prop>(propEntity);
 
                 prop.name    = name;

@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "description": "Duplicate screen names (save half). Adds two screens that share the name 'New Screen' (what '+ Add Screen' produced before names were made unique), saves, reloads in the same session and asserts all three screens (Main Screen + both duplicates) survived. The load script reopens the file in a fresh process.",
+    "commands": [
+        {"type": "AddScreen", "name": "New Screen", "width": 1280, "height": 720},
+        {"type": "AddScreen", "name": "New Screen", "width": 3840, "height": 2160},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "SaveProject", "filepath": "test_output/duplicate_screens/test.entity"},
+        {"type": "LoadProject", "filepath": "test_output/duplicate_screens/test.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertScreenCount", "count": 3},
+        {"type": "Exit"}
+    ]
+}
