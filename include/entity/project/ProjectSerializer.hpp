@@ -7,6 +7,7 @@
 namespace entity {
 
 class ProjectManager;  // forward-declared; optional save/load argument
+namespace effects { class EffectKindRegistry; }
 
 /**
  * ProjectSerializer - Save and load Entity project files.
@@ -214,11 +215,31 @@ public:
                      ProjectManager* projectMgr = nullptr);
 
     /**
+     * Dry-run a load of `filepath` into a throwaway registry, timeline and
+     * ProjectManager, touching no live state. Returns false (with
+     * getLastError() set) for anything load() would fail on: missing or
+     * unreadable file, invalid JSON, wrong format, unsupported version, or
+     * a malformed value that throws partway through parsing. Mesh files
+     * are not read (models get an empty mesh) and no media is opened.
+     *
+     * ProjectManager::load calls this before it clears anything, so a bad
+     * file is rejected while the open project is still intact.
+     * `kindReg` (optional) is the effect catalog, same as the live load.
+     */
+    static bool validate(const std::filesystem::path& filepath,
+                         const effects::EffectKindRegistry* kindReg = nullptr);
+
+    /**
      * Get the last error message (if save/load failed).
      */
     static const std::string& getLastError() { return s_lastError; }
 
 private:
+    // Shared body of load() and validate(). dryRun skips mesh-file I/O.
+    static bool loadImpl(Timeline& timeline, const std::filesystem::path& filepath,
+                         MediaLoadCallback mediaLoadCallback,
+                         ProjectManager* projectMgr, bool dryRun);
+
     static std::string s_lastError;
 };
 

@@ -1,0 +1,51 @@
+{
+    "version": 1,
+    "description": "A failed File > Open must leave the open project intact. Builds a project with one clip and one media-library entry, saves it, then opens four bad files (newer schema version, truncated JSON, a value that throws mid-parse, a missing file). After each: the clip, the media library, the default screen and the project path are unchanged and a 'could not be opened' notice is queued. Finally a plain SaveProject (Ctrl+S) writes the original file, and reopening it shows the clip and library entry are still there.",
+    "commands": [
+        {"type": "ImportVideo", "filepath": "test_media/gradient_seq/frame_000.png", "trackIndex": 0, "position": 0},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "SaveProject", "filepath": "test_output/failed_open/show.entity"},
+        {"type": "AssertProjectPath", "endsWith": "test_output/failed_open/show.entity"},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertMediaLibraryCount", "count": 1},
+        {"type": "AssertNotice", "contains": "could not be opened", "present": false},
+
+        {"type": "LoadProject", "filepath": "scripts/integration/failed_open_newer_version.entity", "expectFailure": true},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertMediaLibraryCount", "count": 1},
+        {"type": "AssertScreenExists", "name": "Main Screen"},
+        {"type": "AssertProjectPath", "endsWith": "test_output/failed_open/show.entity"},
+        {"type": "AssertNotice", "contains": "could not be opened"},
+        {"type": "AssertNotice", "contains": "newer than supported"},
+
+        {"type": "LoadProject", "filepath": "scripts/integration/failed_open_truncated.entity", "expectFailure": true},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertMediaLibraryCount", "count": 1},
+        {"type": "AssertScreenExists", "name": "Main Screen"},
+        {"type": "AssertProjectPath", "endsWith": "test_output/failed_open/show.entity"},
+
+        {"type": "LoadProject", "filepath": "scripts/integration/failed_open_midparse.entity", "expectFailure": true},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertMediaLibraryCount", "count": 1},
+        {"type": "AssertScreenExists", "name": "Main Screen"},
+        {"type": "AssertScreenCount", "count": 1},
+        {"type": "AssertProjectPath", "endsWith": "test_output/failed_open/show.entity"},
+
+        {"type": "LoadProject", "filepath": "scripts/integration/does_not_exist.entity", "expectFailure": true},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertMediaLibraryCount", "count": 1},
+        {"type": "AssertProjectPath", "endsWith": "test_output/failed_open/show.entity"},
+
+        {"type": "SaveProject"},
+        {"type": "LoadProject", "filepath": "test_output/failed_open/show.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertTrackLayerCount", "trackIndex": 0, "count": 1},
+        {"type": "AssertMediaLibraryCount", "count": 1},
+        {"type": "AssertScreenExists", "name": "Main Screen"},
+        {"type": "Exit"}
+    ]
+}

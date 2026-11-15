@@ -263,16 +263,33 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
 
     std::cout << "[ProjectManager] Loading project from " << entity::pathToUtf8(filepath) << "..." << std::endl;
 
+    m_lastLoadError.clear();
+    m_lastLoadLeftPartialState = false;
+
+    // Phase 1 — validate before touching anything. A full dry-run parse into
+    // scratch state catches a missing file, bad JSON, a non-Entity file, a
+    // newer schema version, and malformed values that would throw halfway
+    // through the real load. On failure the open project (timeline, media
+    // and object libraries, decoders, path) is exactly as it was.
+    std::cout << "[ProjectManager] Validating " << entity::pathToUtf8(filepath)
+              << " (dry run)..." << std::endl;
+    if (!ProjectSerializer::validate(filepath, m_effectKindRegistry)) {
+        m_lastLoadError = ProjectSerializer::getLastError();
+        std::cerr << "[ProjectManager] Load rejected, open project left unchanged: "
+                  << m_lastLoadError << std::endl;
+        return false;
+    }
+
+    // Phase 2 — destructive load.
     // #34 — m_projectPath must be set BEFORE the serializer fires the
     // per-clip media-load callback. The callback resolves clip.filepath
     // through decoderPathFor → resolveMediaPath, which joins Managed
     // (project-relative) paths against m_projectPath.parent_path(). With
     // m_projectPath empty during the callback, every Managed clip would
     // get a relative path back, fail the existence check, and never get
-    // a ClipDecodeState — symptom: black screen on reload. Save the prior
-    // value so a failed load doesn't leave the field pinned to a broken
-    // file.
-    const std::filesystem::path previousProjectPath = m_projectPath;
+    // a ClipDecodeState — symptom: black screen on reload. If the load
+    // fails past this point the path is cleared (see below), never left
+    // pointing at either file.
     { std::unique_lock lk(m_stateMutex); m_projectPath = filepath; }
 
     // Clear existing clip decode state (destructors release decoders + frames).
@@ -283,8 +300,12 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
     // Per-clip callback: detect media type, open a decoder, attach the
     // ECS components a fully-loaded clip needs (VideoTexture, FrameBuffer,
     // ClipDecodeState).
+    // A throw from here (filesystem error on an odd path, decoder open) is
+    // contained to the one clip: it stays unloaded like a missing file,
+    // instead of failing the whole load after the open project was cleared.
     ProjectSerializer::MediaLoadCallback loadCallback =
         [this](entt::entity clipEntity, const std::string& mediaPath) {
+      try {
         // clip.filepath is the canonical original path; if the library
         // has a transcoded HAP file for it, open that instead. Falls
         // through to the original when no transcode exists (yet).
@@ -381,11 +402,22 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         addMediaFile(mediaPath);
 
         std::cout << "[ProjectManager] Loaded media: " << openPath << std::endl;
+      } catch (const std::exception& e) {
+        std::cerr << "[ProjectManager] Skipping media " << mediaPath
+                  << " after error: " << e.what() << std::endl;
+      }
     };
 
     if (!ProjectSerializer::load(*m_timeline, filepath, loadCallback, this)) {
-        std::cerr << "[ProjectManager] Load failed: " << ProjectSerializer::getLastError() << std::endl;
-        { std::unique_lock lk(m_stateMutex); m_projectPath = previousProjectPath; }  // restore (#34)
+        // Validation passed but the live load still failed (e.g. the file
+        // changed on disk in between). The registry now holds a mix of the
+        // old and new project, so it must not be saved over either file:
+        // leave the project untitled. Engine::loadProject closes it.
+        m_lastLoadError = ProjectSerializer::getLastError();
+        m_lastLoadLeftPartialState = true;
+        std::cerr << "[ProjectManager] Load failed after clearing the open project: "
+                  << m_lastLoadError << std::endl;
+        { std::unique_lock lk(m_stateMutex); m_projectPath.clear(); }
         return false;
     }
 

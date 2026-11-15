@@ -2465,6 +2465,9 @@ void Engine::render() {
                         break;
                 }
             }
+            // A failed open lands here (launcher Open, file association,
+            // or a partial load that closed the project): say why.
+            m_notices.render();
             m_renderer->endImGuiFrame();
             m_renderer->endEditorFrame();
             return;
@@ -2499,6 +2502,9 @@ void Engine::render() {
         // exclusive (renderIndexingToast bails if the modal is active).
         renderProjectLoadModal();
         renderIndexingToast();
+
+        // Open/save/autosave failure notices (modal or toast).
+        m_notices.render();
 
         // End ImGui frame and render UI
         m_renderer->endImGuiFrame();
@@ -4622,7 +4628,32 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // sweep destroys their windows on the show thread a frame later.
 
     bool ok = m_projectManager->load(filepath);
-    if (!ok) return false;
+    if (!ok) {
+        const std::string fileName = entity::pathToUtf8(filepath.filename());
+        std::string reason = m_projectManager->lastLoadError();
+        if (reason.empty()) reason = "unknown error";
+        if (m_projectManager->lastLoadLeftPartialState()) {
+            // The live load failed after the open project was cleared, so
+            // the registry is a half-loaded mix. Close it (back to the
+            // launcher) rather than leave something Ctrl+S could write
+            // over a good show file. ProjectManager already cleared the path.
+            closeProject();
+            m_notices.post(NoticeCenter::Severity::Error,
+                           NoticeCenter::Presentation::Modal,
+                           "Could not open project",
+                           "\"" + fileName + "\" could not be opened:\n" + reason +
+                           "\n\nThe file failed partway through loading, so the project "
+                           "that was open has been closed. No file on disk was changed; "
+                           "reopen your project from the Recent list.");
+        } else {
+            m_notices.post(NoticeCenter::Severity::Error,
+                           NoticeCenter::Presentation::Modal,
+                           "Could not open project",
+                           "\"" + fileName + "\" could not be opened:\n" + reason +
+                           "\n\nThe project that was open has not been changed.");
+        }
+        return false;
+    }
 
     // ADR-0028: rebind RemotePatch components to RemoteControlStore slots.
     // storeSlot is runtime-only and not persisted; the serializer leaves it

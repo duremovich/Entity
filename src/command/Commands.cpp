@@ -737,10 +737,14 @@ CommandPtr ImportVideoCommand::fromJson(const nlohmann::json& j) {
 // ============================================================================
 
 bool SaveProjectCommand::execute(Engine& engine) {
-    if (m_filepath.empty()) {
-        return engine.saveProject();
+    const bool ok = m_filepath.empty()
+        ? engine.saveProject()
+        : engine.saveProject(entity::utf8ToPath(m_filepath));
+    if (m_expectFailure) {
+        if (ok) std::cerr << "[SaveProject] expected failure, but the save succeeded" << std::endl;
+        return !ok;
     }
-    return engine.saveProject(entity::utf8ToPath(m_filepath));
+    return ok;
 }
 
 nlohmann::json SaveProjectCommand::toJson() const {
@@ -748,44 +752,139 @@ nlohmann::json SaveProjectCommand::toJson() const {
     if (!m_filepath.empty()) {
         j["filepath"] = m_filepath;
     }
+    if (m_expectFailure) j["expectFailure"] = true;
     return j;
 }
 
 std::string SaveProjectCommand::getDescription() const {
-    if (m_filepath.empty()) {
-        return "Save project";
-    }
-    return "Save project to: " + m_filepath;
+    std::string d = m_filepath.empty() ? "Save project" : "Save project to: " + m_filepath;
+    if (m_expectFailure) d += " (expect failure)";
+    return d;
 }
 
 CommandPtr SaveProjectCommand::fromJson(const nlohmann::json& j) {
     std::string filepath = j.value("filepath", "");
-    return std::make_unique<SaveProjectCommand>(filepath);
+    return std::make_unique<SaveProjectCommand>(filepath, j.value("expectFailure", false));
 }
 
 bool LoadProjectCommand::execute(Engine& engine) {
     const std::filesystem::path loadPath = entity::utf8ToPath(m_filepath);
-    if (!std::filesystem::exists(loadPath)) {
+    if (!m_expectFailure && !std::filesystem::exists(loadPath)) {
         std::cerr << "[LoadProject] File not found: " << m_filepath << std::endl;
         return false;
     }
-    return engine.loadProject(loadPath);
+    const bool ok = engine.loadProject(loadPath);
+    if (m_expectFailure) {
+        if (ok) std::cerr << "[LoadProject] expected failure, but the load succeeded" << std::endl;
+        return !ok;
+    }
+    return ok;
 }
 
 nlohmann::json LoadProjectCommand::toJson() const {
-    return {
+    nlohmann::json j = {
         {"type", "LoadProject"},
         {"filepath", m_filepath}
     };
+    if (m_expectFailure) j["expectFailure"] = true;
+    return j;
 }
 
 std::string LoadProjectCommand::getDescription() const {
-    return "Load project: " + m_filepath;
+    std::string d = "Load project: " + m_filepath;
+    if (m_expectFailure) d += " (expect failure)";
+    return d;
 }
 
 CommandPtr LoadProjectCommand::fromJson(const nlohmann::json& j) {
     std::string filepath = j.value("filepath", "");
-    return std::make_unique<LoadProjectCommand>(filepath);
+    return std::make_unique<LoadProjectCommand>(filepath, j.value("expectFailure", false));
+}
+
+// --- Project-state asserts ---------------------------------------------------
+
+bool AssertNoticeCommand::execute(Engine& engine) {
+    size_t matches = 0;
+    for (const auto& n : engine.notices().snapshot()) {
+        if (n.title.find(m_contains) != std::string::npos ||
+            n.message.find(m_contains) != std::string::npos) {
+            ++matches;
+            std::cout << "[AssertNotice] found: " << n.title << " | " << n.message << std::endl;
+        }
+    }
+    const bool ok = m_present ? matches > 0 : matches == 0;
+    if (!ok) {
+        std::cerr << "[AssertNotice] FAIL: expected " << (m_present ? "a" : "no")
+                  << " notice containing \"" << m_contains << "\", found "
+                  << matches << " (of " << engine.notices().count() << " queued)" << std::endl;
+    }
+    return ok;
+}
+
+nlohmann::json AssertNoticeCommand::toJson() const {
+    return {{"type", "AssertNotice"}, {"contains", m_contains}, {"present", m_present}};
+}
+
+std::string AssertNoticeCommand::getDescription() const {
+    return std::string("Assert ") + (m_present ? "" : "no ") + "notice containing: " + m_contains;
+}
+
+CommandPtr AssertNoticeCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertNoticeCommand>(j.value("contains", std::string{}),
+                                                 j.value("present", true));
+}
+
+bool AssertMediaLibraryCountCommand::execute(Engine& engine) {
+    auto* pm = engine.getProjectManager();
+    const size_t actual = pm ? pm->loadedMediaFiles().size() : 0;
+    if (actual == m_count) {
+        std::cout << "[AssertMediaLibraryCount] OK count=" << actual << std::endl;
+        return true;
+    }
+    std::cerr << "[AssertMediaLibraryCount] FAIL: expected " << m_count
+              << ", got " << actual << std::endl;
+    return false;
+}
+
+nlohmann::json AssertMediaLibraryCountCommand::toJson() const {
+    return {{"type", "AssertMediaLibraryCount"}, {"count", m_count}};
+}
+
+std::string AssertMediaLibraryCountCommand::getDescription() const {
+    return "Assert media library count == " + std::to_string(m_count);
+}
+
+CommandPtr AssertMediaLibraryCountCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertMediaLibraryCountCommand>(
+        j.value("count", static_cast<size_t>(0)));
+}
+
+bool AssertProjectPathCommand::execute(Engine& engine) {
+    auto* pm = engine.getProjectManager();
+    const std::string actual = pm ? entity::pathToUtf8Generic(pm->projectPath()) : std::string{};
+    const bool ok = m_endsWith.empty()
+        ? actual.empty()
+        : (actual.size() >= m_endsWith.size() &&
+           actual.compare(actual.size() - m_endsWith.size(), m_endsWith.size(), m_endsWith) == 0);
+    if (ok) {
+        std::cout << "[AssertProjectPath] OK path=" << actual << std::endl;
+    } else {
+        std::cerr << "[AssertProjectPath] FAIL: expected path ending \"" << m_endsWith
+                  << "\", got \"" << actual << "\"" << std::endl;
+    }
+    return ok;
+}
+
+nlohmann::json AssertProjectPathCommand::toJson() const {
+    return {{"type", "AssertProjectPath"}, {"endsWith", m_endsWith}};
+}
+
+std::string AssertProjectPathCommand::getDescription() const {
+    return "Assert project path ends with: " + m_endsWith;
+}
+
+CommandPtr AssertProjectPathCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<AssertProjectPathCommand>(j.value("endsWith", std::string{}));
 }
 
 // ============================================================================

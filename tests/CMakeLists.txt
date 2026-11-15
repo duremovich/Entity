@@ -37,6 +37,7 @@ add_executable(EntityMediaTests
     unit/ProjectManagerBundleTests.cpp
     unit/ProjectManagerRecoveryTests.cpp
     unit/ProjectManagerCloseTests.cpp
+    unit/ProjectFileIntegrityTests.cpp
     unit/RecentProjectsTests.cpp
     unit/Utf8PathAndCrashGuardTests.cpp
     unit/MediaVersioningTests.cpp
@@ -213,6 +214,10 @@ entity_add_integration_test(screen_persistence_save screen_persistence_save.json
 entity_add_integration_test(screen_persistence_load screen_persistence_load.json)
 set_tests_properties(integration_screen_persistence_save PROPERTIES
     FIXTURES_SETUP screen_persistence_data)
+# A failed File > Open (newer version, truncated JSON, mid-parse throw,
+# missing file) must leave the open project's timeline, media library and
+# path intact, queue a user notice, and let Ctrl+S write the original file.
+entity_add_integration_test(failed_open_keeps_project failed_open_keeps_project.json)
 set_tests_properties(integration_screen_persistence_load PROPERTIES
     FIXTURES_REQUIRED screen_persistence_data)
 

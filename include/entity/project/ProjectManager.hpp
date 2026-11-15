@@ -134,8 +134,22 @@ public:
     /**
      * Load a project file, clearing and re-populating clip decode state via
      * the renderer. Updates the current project path on success.
+     *
+     * The file is validated with a full dry-run parse (ProjectSerializer::
+     * validate) before anything is cleared, so a missing, corrupt,
+     * non-Entity or newer-version file returns false with the open project
+     * untouched. If the live load still fails after validation passed,
+     * lastLoadLeftPartialState() is true and the project path is cleared,
+     * so the half-loaded state can't be saved over either file; the caller
+     * is expected to close the project.
      */
     bool load(const std::filesystem::path& filepath);
+
+    /// Reason for the most recent load() failure (empty after a success).
+    const std::string& lastLoadError() const { return m_lastLoadError; }
+    /// True when the most recent load() failed after clearing the open
+    /// project (registry holds partial state; path already cleared).
+    bool lastLoadLeftPartialState() const { return m_lastLoadLeftPartialState; }
 
     /**
      * ADR-0009 — drop all project-scoped state owned by ProjectManager:
@@ -639,6 +653,9 @@ private:
 
     double m_autosaveInterval{30.0};
     double m_autosaveAccumulator{0.0};
+
+    std::string m_lastLoadError;
+    bool        m_lastLoadLeftPartialState{false};
 
     // Project-scoped DMX channel mapping table (#59). Empty -> plugin
     // uses its baked defaults. ProjectSerializer round-trips this as

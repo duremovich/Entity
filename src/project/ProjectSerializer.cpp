@@ -1440,6 +1440,27 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
 bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& filepath,
                               MediaLoadCallback mediaLoadCallback,
                               ProjectManager* projectMgr) {
+    return loadImpl(timeline, filepath, std::move(mediaLoadCallback), projectMgr,
+                    /*dryRun=*/false);
+}
+
+bool ProjectSerializer::validate(const std::filesystem::path& filepath,
+                                 const effects::EffectKindRegistry* kindReg) {
+    // Scratch state only: a fresh registry + timeline + ProjectManager that
+    // are thrown away on return. The full parse runs, so a value that
+    // throws partway through (a null where a number belongs, a truncated
+    // array) is caught here instead of after the live timeline is cleared.
+    entt::registry scratchRegistry;
+    Timeline scratchTimeline(scratchRegistry);
+    ProjectManager scratchPm;
+    scratchPm.setProjectPath(filepath);
+    scratchPm.setEffectKindRegistry(kindReg);
+    return loadImpl(scratchTimeline, filepath, nullptr, &scratchPm, /*dryRun=*/true);
+}
+
+bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path& filepath,
+                                 MediaLoadCallback mediaLoadCallback,
+                                 ProjectManager* projectMgr, bool dryRun) {
     try {
         // Check file exists
         if (!std::filesystem::exists(filepath)) {
@@ -1552,7 +1573,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                     if (projectMgr && !modelFilepath.empty()) {
                         resolved = projectMgr->meshPathFor(modelFilepath);
                     }
-                    if (!resolved.empty() && std::filesystem::exists(resolved)) {
+                    if (!dryRun && !resolved.empty() && std::filesystem::exists(resolved)) {
                         model.mesh = ObjLoader::load(resolved);
                     } else {
                         model.mesh = createDefaultScreenMesh();

@@ -7,6 +7,7 @@
 #include "entity/project/ProjectManager.hpp"
 #include "entity/core/Settings.hpp"
 #include "entity/media/TranscodeManager.hpp"
+#include "entity/ui/NoticeCenter.hpp"
 #include <entt/entt.hpp>
 #include <atomic>
 #include <chrono>
@@ -772,6 +773,13 @@ public:
     const MediaProbeWorker* probeWorker() const { return m_probeWorker.get(); }
 
     /**
+     * User-facing failure notices (project open/save/autosave). Rendered
+     * every ImGui frame in editor and launcher mode; see NoticeCenter.hpp.
+     */
+    NoticeCenter& notices() { return m_notices; }
+    const NoticeCenter& notices() const { return m_notices; }
+
+    /**
      * ADR-0009 — close the current project and return to the launcher.
      * Tears down physical output windows, joins in-flight transcodes,
      * clears the timeline (clips + tracks + sections + selection),
@@ -1048,6 +1056,9 @@ private:
     std::unique_ptr<RecentProjects>  m_recentProjects;
     std::unique_ptr<ContentScanner>  m_contentScanner;
     std::unique_ptr<MediaProbeWorker> m_probeWorker;
+
+    // User-facing failure notices (open/save/autosave). Editor thread renders.
+    NoticeCenter m_notices;
     // Written on the editor thread (launcher enter/exit, project open),
     // read every tick by the show loop — which since issue #76 gates
     // output-window teardown on it (the launcher-idle branch destroys all

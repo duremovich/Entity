@@ -427,9 +427,13 @@ private:
 // Project Commands
 // ============================================================================
 
+// `expectFailure: true` inverts the result: the command succeeds only if
+// the save/load FAILS. Used by persistence tests that drive a bad file or
+// path on purpose and then assert the editor state survived.
 class SaveProjectCommand : public Command {
 public:
-    explicit SaveProjectCommand(std::string filepath = "") : m_filepath(std::move(filepath)) {}
+    explicit SaveProjectCommand(std::string filepath = "", bool expectFailure = false)
+        : m_filepath(std::move(filepath)), m_expectFailure(expectFailure) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "SaveProject"; }
@@ -440,11 +444,13 @@ public:
 
 private:
     std::string m_filepath;
+    bool        m_expectFailure{false};
 };
 
 class LoadProjectCommand : public Command {
 public:
-    explicit LoadProjectCommand(std::string filepath) : m_filepath(std::move(filepath)) {}
+    explicit LoadProjectCommand(std::string filepath, bool expectFailure = false)
+        : m_filepath(std::move(filepath)), m_expectFailure(expectFailure) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "LoadProject"; }
@@ -455,6 +461,54 @@ public:
 
 private:
     std::string m_filepath;
+    bool        m_expectFailure{false};
+};
+
+/**
+ * Test asserts on project-level state (no undo).
+ *   AssertNotice            { contains, [present=true] } - a queued user
+ *                           notice (NoticeCenter) whose title or message
+ *                           contains `contains`; present=false asserts none.
+ *   AssertMediaLibraryCount { count } - ProjectManager media library size.
+ *   AssertProjectPath       { endsWith } - current project path ends with
+ *                           `endsWith` (forward slashes); "" asserts untitled.
+ */
+class AssertNoticeCommand : public Command {
+public:
+    AssertNoticeCommand(std::string contains, bool present)
+        : m_contains(std::move(contains)), m_present(present) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertNotice"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    std::string m_contains;
+    bool        m_present{true};
+};
+
+class AssertMediaLibraryCountCommand : public Command {
+public:
+    explicit AssertMediaLibraryCountCommand(size_t count) : m_count(count) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertMediaLibraryCount"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    size_t m_count{0};
+};
+
+class AssertProjectPathCommand : public Command {
+public:
+    explicit AssertProjectPathCommand(std::string endsWith) : m_endsWith(std::move(endsWith)) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "AssertProjectPath"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    std::string m_endsWith;
 };
 
 // ============================================================================
