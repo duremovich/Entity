@@ -1447,6 +1447,10 @@ private:
     // ATTEMPTS not total wall time — worst case is deadline + one overshooting
     // attempt. (Re)armed only in onWindowResize when a new resize is requested.
     std::chrono::steady_clock::time_point m_resizeRetryDeadline{};
+    // Script-driven Exit waits for pending captures (hash/screenshot) before
+    // leaving the loop; deadline bounds the wait so a wedged capture can't hang.
+    bool m_exitDeferred{false};
+    std::chrono::steady_clock::time_point m_exitDeferDeadline{};
     bool m_deviceLostPosted{false};  // Guard: post bus::DeviceLost at most once.
     bool m_relaunchRequested{false};         // Set on device-lost drain; checked by main.cpp.
     bool m_isRecoveryRelaunch{false};        // True when started via --device-lost-recovery; suppresses re-relaunch.

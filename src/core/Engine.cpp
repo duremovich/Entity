@@ -1358,6 +1358,20 @@ void Engine::run() {
             }
         }
 
+        // Deferred script Exit: leave once captures drain, or fail on timeout.
+        if (m_exitDeferred) {
+            auto* broker = m_director ? m_director->getCaptureBroker() : nullptr;
+            if (!broker || !broker->hasPending()) {
+                m_running = false;
+            } else if (std::chrono::steady_clock::now() >= m_exitDeferDeadline) {
+                if (m_commandDispatcher) {
+                    m_commandDispatcher->addErrorToResults(
+                        "Exit timed out waiting for pending capture(s) to complete");
+                }
+                m_running = false;
+            }
+        }
+
         // Bail on GPU device-lost.
         // Send bus::DeviceLost, then drain immediately so the autosave +
         // relaunch-flag fire before we leave the loop. A second drain here is
@@ -1808,6 +1822,19 @@ void Engine::showThreadMain() {
 }
 
 void Engine::requestExit() {
+    // Script-driven runs: a CaptureHash/CaptureScreenshot queued just before
+    // Exit is serviced by the show thread a frame or more later. Defer the
+    // loop exit until the broker drains (bounded; see the main-loop check).
+    auto* broker = m_director ? m_director->getCaptureBroker() : nullptr;
+    if (m_commandDispatcher && m_commandDispatcher->isScriptRunning()
+        && broker && broker->hasPending()) {
+        if (!m_exitDeferred) {
+            m_exitDeferred = true;
+            m_exitDeferDeadline = std::chrono::steady_clock::now()
+                                + std::chrono::seconds(10);
+        }
+        return;
+    }
     m_running = false;
 }
 
