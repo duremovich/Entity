@@ -12,11 +12,13 @@
             "type": "WaitFrames",
             "count": 10
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "CaptureHash",
             "hashFilepath": "test_output/smoke/cleared_frame.hash",
             "composeSlot": 0
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "Exit"
         }

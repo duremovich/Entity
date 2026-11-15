@@ -6,6 +6,7 @@
         {"type": "ImportVideo", "filepath": "test_media/blend_bg/frame_000.png", "trackIndex": 0, "position": 0},
         {"type": "WaitFrames", "count": 20},
 
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/effect_blur/effect_off.hash", "goldenFilepath": "tests/goldens/effect_blur/effect_off.hash", "composeSlot": 0},
         {"type": "WaitSeconds", "count": 0.5},
 

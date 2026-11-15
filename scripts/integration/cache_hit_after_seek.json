@@ -60,12 +60,14 @@
             "clipIndex":  0,
             "sourceFrame": 8
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "CaptureHash",
             "hashFilepath":   "test_output/cache_hit_after_seek/frame_8.hash",
             "goldenFilepath": "tests/goldens/png_sequence_seek/frame_8.hash",
             "composeSlot": 0
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "Exit"
         }

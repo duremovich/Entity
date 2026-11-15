@@ -10,10 +10,14 @@
         {"type": "WaitFrames", "count": 20},
         {"type": "SeekToFrame", "frame": 8},
         {"type": "WaitFrames", "count": 30},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/ping_pong/frame_forward_8.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "SeekToFrame", "frame": 24},
         {"type": "WaitFrames", "count": 45},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/ping_pong/frame_reverse_24.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "Exit"}
     ]
 }

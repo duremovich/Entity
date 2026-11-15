@@ -9,19 +9,27 @@
 
         {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Normal"},
         {"type": "WaitFrames", "count": 5},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_normal.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
 
         {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Add"},
         {"type": "WaitFrames", "count": 5},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_add.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
 
         {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Multiply"},
         {"type": "WaitFrames", "count": 5},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_multiply.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
 
         {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Screen"},
         {"type": "WaitFrames", "count": 5},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_screen.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
 
         {"type": "Exit"}
     ]

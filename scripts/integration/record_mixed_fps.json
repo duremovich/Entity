@@ -9,10 +9,14 @@
         {"type": "WaitFrames", "count": 20},
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 30},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/mixed_fps/frame_0.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "SeekToFrame", "frame": 10},
         {"type": "WaitFrames", "count": 30},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/mixed_fps/frame_10.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "Exit"}
     ]
 }

@@ -26,12 +26,14 @@
             "type": "WaitFrames",
             "count": 30
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "CaptureHash",
             "hashFilepath": "test_output/png_sequence_seek/frame_0.hash",
             "goldenFilepath": "tests/goldens/png_sequence_seek/frame_0.hash",
             "composeSlot": 0
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "SeekToFrame",
             "frame": 8
@@ -40,12 +42,14 @@
             "type": "WaitFrames",
             "count": 30
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "CaptureHash",
             "hashFilepath": "test_output/png_sequence_seek/frame_8.hash",
             "goldenFilepath": "tests/goldens/png_sequence_seek/frame_8.hash",
             "composeSlot": 0
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "Exit"
         }

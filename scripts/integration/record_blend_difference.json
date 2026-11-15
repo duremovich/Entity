@@ -9,7 +9,9 @@
 
         {"type": "SetClipBlendMode", "trackIndex": 0, "clipIndex": 0, "blendMode": "Difference"},
         {"type": "WaitFrames", "count": 5},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/blend/blend_difference.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
 
         {"type": "Exit"}
     ]

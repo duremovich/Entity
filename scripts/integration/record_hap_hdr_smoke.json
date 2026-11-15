@@ -8,7 +8,9 @@
         {"type": "SeekToFrame", "frame": 0},
         {"type": "WaitFrames", "count": 30},
         {"type": "CaptureScreenshot", "filepath": "test_output/hap_hdr_smoke/frame_0.png", "region": "composeTarget"},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "CaptureHash", "hashFilepath": "test_output/hap_hdr_smoke/frame_0.hash", "composeSlot": 0},
+        {"type": "WaitSeconds", "count": 0.5},
         {"type": "Exit"}
     ]
 }

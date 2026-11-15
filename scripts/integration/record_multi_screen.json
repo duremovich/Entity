@@ -18,16 +18,19 @@
             "type": "WaitFrames",
             "count": 10
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "CaptureHash",
             "hashFilepath": "test_output/multi_screen/slot0.hash",
             "composeSlot": 0
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "CaptureHash",
             "hashFilepath": "test_output/multi_screen/slot1.hash",
             "composeSlot": 1
         },
+        {"type": "WaitSeconds", "count": 0.5},
         {
             "type": "Exit"
         }
