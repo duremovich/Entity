@@ -6,6 +6,7 @@
  * dispatch + geometry helpers stay in TimelineWidget.cpp.
  */
 
+#include "entity/core/PathUtf8.hpp"
 #include "entity/timeline/TimelineWidget.hpp"
 #include "entity/timeline/Timeline.hpp"
 #include "entity/timeline/CueTag.hpp"
@@ -2477,7 +2478,7 @@ void TimelineWidget::renderChangeMediaPopup() {
     if (ImGui::BeginChild("##change_media_list", ImVec2(420, 280), true)) {
         for (const auto& entry : mediaFiles) {
             std::filesystem::path p{entry.originalPath};
-            const std::string leaf = p.filename().string();
+            const std::string leaf = entity::pathToUtf8(p.filename());
             if (!filter.empty() && !icontains(leaf, filter)) continue;
             const bool isCurrent = (clip && entry.originalPath == clip->filepath);
             ImGui::PushID(entry.originalPath.c_str());

@@ -1,3 +1,4 @@
+#include "entity/core/PathUtf8.hpp"
 #include "entity/ui/ModelBinWindow.hpp"
 #include "entity/ui/WindowManager.hpp"
 #include "entity/core/Engine.hpp"
@@ -261,14 +262,14 @@ void ModelBinWindow::render() {
                 std::stable_sort(versionMembers.begin(), versionMembers.end(),
                     [](const auto* a, const auto* b) {
                         const std::string aTag = parseVersion(
-                            std::filesystem::path(a->originalPath).stem().string()).tag;
+                            entity::pathToUtf8(std::filesystem::path(a->originalPath).stem())).tag;
                         const std::string bTag = parseVersion(
-                            std::filesystem::path(b->originalPath).stem().string()).tag;
+                            entity::pathToUtf8(std::filesystem::path(b->originalPath).stem())).tag;
                         return compareVersionTags(aTag, bTag) < 0;
                     });
                 if (!versionMembers.empty()) {
                     latestTag = parseVersion(
-                        std::filesystem::path(versionMembers.back()->originalPath).stem().string()).tag;
+                        entity::pathToUtf8(std::filesystem::path(versionMembers.back()->originalPath).stem())).tag;
                 }
             }
 
@@ -306,7 +307,7 @@ void ModelBinWindow::render() {
                     ImGui::Text("Versions (%zu):", versionMembers.size());
                     for (const auto* m : versionMembers) {
                         const std::string tag = parseVersion(
-                            std::filesystem::path(m->originalPath).stem().string()).tag;
+                            entity::pathToUtf8(std::filesystem::path(m->originalPath).stem())).tag;
                         const char* marker = (m == versionMembers.back()) ? " (latest)" : "";
                         if (tag.empty()) {
                             ImGui::Text("  %s%s", m->originalPath.c_str(), marker);

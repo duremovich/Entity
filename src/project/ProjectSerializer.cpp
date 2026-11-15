@@ -4,6 +4,7 @@
  * Saves and loads Entity project files in JSON format.
  */
 
+#include "entity/core/PathUtf8.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/core/AtomicFile.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -1426,7 +1427,7 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             return false;
         }
 
-        std::cout << "[ProjectSerializer] Saved project to " << savePath.string() << std::endl;
+        std::cout << "[ProjectSerializer] Saved project to " << entity::pathToUtf8(savePath) << std::endl;
         return true;
 
     } catch (const std::exception& e) {
@@ -1442,14 +1443,14 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
     try {
         // Check file exists
         if (!std::filesystem::exists(filepath)) {
-            s_lastError = "File not found: " + filepath.string();
+            s_lastError = "File not found: " + entity::pathToUtf8(filepath);
             return false;
         }
 
         // Read file
         std::ifstream file(filepath);
         if (!file.is_open()) {
-            s_lastError = "Failed to open file for reading: " + filepath.string();
+            s_lastError = "Failed to open file for reading: " + entity::pathToUtf8(filepath);
             return false;
         }
 
@@ -2901,7 +2902,7 @@ bool ProjectSerializer::load(Timeline& timeline, const std::filesystem::path& fi
                       << " cues" << std::endl;
         }
 
-        std::cout << "[ProjectSerializer] Loaded project from " << filepath.string() << std::endl;
+        std::cout << "[ProjectSerializer] Loaded project from " << entity::pathToUtf8(filepath) << std::endl;
         return true;
 
     } catch (const json::parse_error& e) {

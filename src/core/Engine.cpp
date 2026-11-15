@@ -1,5 +1,6 @@
 #include "entity/core/Engine.hpp"
 #include "entity/core/EnginePluginContext.hpp"
+#include "entity/core/PathUtf8.hpp"
 #include "entity/uitest/UiTestHarness.hpp"
 #include "entity/profile/Tracy.hpp"
 #include "entity/bus/InMemoryMessageTransport.hpp"
@@ -110,8 +111,8 @@ std::filesystem::path nextNonCollidingPath(const std::filesystem::path& dir,
     std::error_code ec;
     if (!fs::exists(target, ec)) return target;
 
-    const std::string stem = source.stem().string();
-    const std::string ext  = source.extension().string();
+    const std::string stem = entity::pathToUtf8(source.stem());
+    const std::string ext  = entity::pathToUtf8(source.extension());
     for (int i = 1; i < 1000; ++i) {
         fs::path candidate = dir / (stem + " (" + std::to_string(i) + ")" + ext);
         if (!fs::exists(candidate, ec)) return candidate;
@@ -459,8 +460,8 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
         std::string parent, name;
         if (m_projectManager && !m_projectManager->projectPath().empty()) {
             const auto& p = m_projectManager->projectPath();
-            parent = p.parent_path().parent_path().string();  // grandparent (the bundle's typical parentDir)
-            name   = p.parent_path().filename().string();     // current root dir name
+            parent = entity::pathToUtf8(p.parent_path().parent_path());  // grandparent (the bundle's typical parentDir)
+            name   = entity::pathToUtf8(p.parent_path().filename());     // current root dir name
         }
         return std::make_pair(parent, name);
     });
@@ -481,7 +482,7 @@ Result Engine::initialize(uint32_t windowWidth, uint32_t windowHeight, const cha
             // Recent panel — it's the new "current project" the editor is
             // working in.
             if (m_recentProjects) {
-                m_recentProjects->touch(m_projectManager->projectPath().string());
+                m_recentProjects->touch(entity::pathToUtf8(m_projectManager->projectPath()));
                 m_recentProjects->save();
             }
             return true;
@@ -1054,7 +1055,7 @@ void Engine::showLauncher() {
 }
 
 void Engine::paintLauncherLoadingOverlay(const std::filesystem::path& path) {
-    const std::string projectName = path.filename().string();
+    const std::string projectName = entity::pathToUtf8(path.filename());
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(),
         ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1104,7 +1105,7 @@ void Engine::renderProjectLoadModal() {
             ImGuiWindowFlags_AlwaysAutoResize |
             ImGuiWindowFlags_NoSavedSettings)) {
         const std::filesystem::path& projPath = getProjectPath();
-        const std::string projName = projPath.filename().string();
+        const std::string projName = entity::pathToUtf8(projPath.filename());
         if (!projName.empty()) {
             ImGui::TextDisabled("%s", projName.c_str());
             ImGui::Spacing();
@@ -1168,12 +1169,12 @@ void Engine::onLauncherOpenProject(const std::filesystem::path& path) {
         m_showLauncher = false;
     } else {
         std::cerr << "[Engine] Project failed to load from launcher: "
-                  << path.string() << std::endl;
+                  << entity::pathToUtf8(path) << std::endl;
         // Treat a failed load as a stale Recent entry: drop it so the user
         // doesn't keep clicking a broken row. They can re-open via "Open
         // Project..." if the file recovers. Stay in launcher mode.
         if (m_recentProjects) {
-            m_recentProjects->remove(path.string());
+            m_recentProjects->remove(entity::pathToUtf8(path));
             m_recentProjects->save();
         }
     }
@@ -1954,7 +1955,7 @@ void Engine::removeMediaFromLibrary(const std::string& originalPath) {
     // doesn't throw.
     if (!transcoded.empty()) {
         std::error_code ec;
-        std::filesystem::remove(std::filesystem::path(transcoded), ec);
+        std::filesystem::remove(entity::utf8ToPath(transcoded), ec);
         if (ec) {
             std::cerr << "[Engine] Failed to delete cached HAP " << transcoded
                       << ": " << ec.message() << std::endl;
@@ -2032,8 +2033,8 @@ void Engine::resolvePendingImport(ImportMode mode,
             projectRoot / ProjectManager::kContentDir;
         const fs::path targetDir = subfolder.empty()
             ? contentDir
-            : (contentDir / subfolder);
-        const fs::path source(p.sourceFilePath);
+            : (contentDir / entity::utf8ToPath(subfolder));
+        const fs::path source = entity::utf8ToPath(p.sourceFilePath);
         const fs::path target = targetDir / source.filename();
 
         std::error_code ec;
@@ -2046,14 +2047,14 @@ void Engine::resolvePendingImport(ImportMode mode,
             PendingMediaDuplicate dup;
             dup.sourceFilePath    = p.sourceFilePath;
             dup.subfolder         = subfolder;
-            dup.targetFilename    = source.filename().string();
-            dup.suggestedRenamed  = suggested.filename().string();
+            dup.targetFilename    = entity::pathToUtf8(source.filename());
+            dup.suggestedRenamed  = entity::pathToUtf8(suggested.filename());
             dup.mediaType         = p.mediaType;
             dup.transcodeEligible = p.transcodeEligible;
             dup.transcode         = transcode;
             m_pendingMediaDuplicate = std::move(dup);
             std::cout << "[Engine] Media import collision at "
-                      << target.string() << "; awaiting user decision."
+                      << entity::pathToUtf8(target) << "; awaiting user decision."
                       << std::endl;
             return;
         }
@@ -3300,8 +3301,8 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
 
     // Managed: archive original, transcode replaces source at canonical path.
     const fs::path projectRoot = m_projectManager->projectPath().parent_path();
-    const fs::path canonicalRel(canonicalPath);
-    const fs::path srcAbsPath(srcAbs);
+    const fs::path canonicalRel = entity::utf8ToPath(canonicalPath);
+    const fs::path srcAbsPath = entity::utf8ToPath(srcAbs);
 
     const fs::path archiveDirRel =
         canonicalRel.parent_path() / ProjectManager::kArchiveDir;
@@ -3312,7 +3313,7 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
     fs::create_directories(archiveDirAbs, ec);
     if (ec) {
         std::cerr << "[Engine] scheduleTranscode: failed to create archive dir "
-                  << archiveDirAbs.string() << ": " << ec.message() << std::endl;
+                  << entity::pathToUtf8(archiveDirAbs) << ": " << ec.message() << std::endl;
         return false;
     }
 
@@ -3322,7 +3323,7 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
     fs::copy_file(srcAbsPath, archiveAbs, fs::copy_options::overwrite_existing, ec);
     if (ec) {
         std::cerr << "[Engine] scheduleTranscode: failed to archive "
-                  << srcAbsPath.string() << " -> " << archiveAbs.string()
+                  << entity::pathToUtf8(srcAbsPath) << " -> " << entity::pathToUtf8(archiveAbs)
                   << ": " << ec.message() << std::endl;
         return false;
     }
@@ -3332,7 +3333,7 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
     // the original is. originalCodec records the pre-transcode media type.
     fs::path archiveRel = fs::relative(archiveAbs, projectRoot, ec);
     entry->archivedOriginal =
-        ec ? archiveAbs.generic_string() : archiveRel.generic_string();
+        ec ? entity::pathToUtf8Generic(archiveAbs) : entity::pathToUtf8Generic(archiveRel);
     entry->originalCodec = MediaTypeToString(sourceMediaType);
 
     // Worker reads from the archive copy and writes to the canonical
@@ -3341,7 +3342,7 @@ bool Engine::scheduleTranscode(const std::string& canonicalPath,
     // than archiveAbs — that keeps statusOf / remove / pollTranscodes
     // calls in MediaBin and Engine working off entry.originalPath the
     // same way they do for Linked entries.
-    m_transcodeManager->enqueue(archiveAbs.string(), variant, srcFps,
+    m_transcodeManager->enqueue(entity::pathToUtf8(archiveAbs), variant, srcFps,
                                 /*explicitDstPath=*/srcAbs,
                                 /*explicitKey=*/canonicalPath);
     std::cout << "[Engine] Queued Managed transcode for " << canonicalPath
@@ -3398,17 +3399,17 @@ std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
     // field (or after-the-fact via Explorer / drag — both pick up via
     // ContentScanner).
     const fs::path targetDir = subfolder.empty() ? contentDir
-                                                  : (contentDir / subfolder);
+                                                  : (contentDir / entity::utf8ToPath(subfolder));
     fs::create_directories(targetDir, ec);
     if (ec) {
         std::cerr << "[Engine] Failed to create import subfolder "
-                  << targetDir.string() << ": " << ec.message()
+                  << entity::pathToUtf8(targetDir) << ": " << ec.message()
                   << "; falling back to Link." << std::endl;
         setKind(ProjectManager::PathKind::Linked);
         return sourceAbsolutePath;
     }
 
-    const fs::path source(sourceAbsolutePath);
+    const fs::path source = entity::utf8ToPath(sourceAbsolutePath);
     fs::path target = targetDir / source.filename();
 
     // Collision handling per resolution. The modal path checks for the
@@ -3425,8 +3426,8 @@ std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
 
     fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        std::cerr << "[Engine] Failed to copy " << source.string() << " -> "
-                  << target.string() << ": " << ec.message()
+        std::cerr << "[Engine] Failed to copy " << entity::pathToUtf8(source) << " -> "
+                  << entity::pathToUtf8(target) << ": " << ec.message()
                   << "; falling back to Link." << std::endl;
         setKind(ProjectManager::PathKind::Linked);
         return sourceAbsolutePath;
@@ -3436,11 +3437,11 @@ std::string Engine::applyImportMode(const std::string& sourceAbsolutePath,
     // Windows native filesystem APIs accept either, JSON readers see a
     // stable representation).
     fs::path relative = fs::relative(target, projectRoot, ec);
-    std::string canonical = ec ? target.string() : relative.generic_string();
+    std::string canonical = ec ? entity::pathToUtf8(target) : entity::pathToUtf8Generic(relative);
 
     std::cout << "[Engine] Imported (Copy"
               << (resolution == DuplicateResolution::Replace ? ", Replace" : "")
-              << ") " << source.filename().string()
+              << ") " << entity::pathToUtf8(source.filename())
               << " -> " << canonical << std::endl;
     setKind(ProjectManager::PathKind::Managed);
     return canonical;
@@ -3487,17 +3488,17 @@ std::string Engine::applyObjectImportMode(const std::string& sourceAbsolutePath,
     }
 
     const fs::path targetDir = subfolder.empty() ? objectsDir
-                                                  : (objectsDir / subfolder);
+                                                  : (objectsDir / entity::utf8ToPath(subfolder));
     fs::create_directories(targetDir, ec);
     if (ec) {
         std::cerr << "[Engine] Failed to create object subfolder "
-                  << targetDir.string() << ": " << ec.message()
+                  << entity::pathToUtf8(targetDir) << ": " << ec.message()
                   << "; falling back to Link." << std::endl;
         setKind(ProjectManager::PathKind::Linked);
         return sourceAbsolutePath;
     }
 
-    const fs::path source(sourceAbsolutePath);
+    const fs::path source = entity::utf8ToPath(sourceAbsolutePath);
     fs::path target = targetDir / source.filename();
 
     // Collision handling per resolution. The modal path checks for the
@@ -3514,19 +3515,19 @@ std::string Engine::applyObjectImportMode(const std::string& sourceAbsolutePath,
 
     fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        std::cerr << "[Engine] Failed to copy object " << source.string()
-                  << " -> " << target.string() << ": " << ec.message()
+        std::cerr << "[Engine] Failed to copy object " << entity::pathToUtf8(source)
+                  << " -> " << entity::pathToUtf8(target) << ": " << ec.message()
                   << "; falling back to Link." << std::endl;
         setKind(ProjectManager::PathKind::Linked);
         return sourceAbsolutePath;
     }
 
     fs::path relative = fs::relative(target, projectRoot, ec);
-    std::string canonical = ec ? target.string() : relative.generic_string();
+    std::string canonical = ec ? entity::pathToUtf8(target) : entity::pathToUtf8Generic(relative);
 
     std::cout << "[Engine] Imported object (Copy"
               << (resolution == DuplicateResolution::Replace ? ", Replace" : "")
-              << ") " << source.filename().string()
+              << ") " << entity::pathToUtf8(source.filename())
               << " -> " << canonical << std::endl;
     setKind(ProjectManager::PathKind::Managed);
     return canonical;
@@ -3570,8 +3571,8 @@ void Engine::resolvePendingObjectImport(ImportMode mode,
             projectRoot / ProjectManager::kObjectsDir;
         const fs::path targetDir = subfolder.empty()
             ? objectsDir
-            : (objectsDir / subfolder);
-        const fs::path source(p.sourceFilePath);
+            : (objectsDir / entity::utf8ToPath(subfolder));
+        const fs::path source = entity::utf8ToPath(p.sourceFilePath);
         const fs::path target = targetDir / source.filename();
 
         std::error_code ec;
@@ -3583,11 +3584,11 @@ void Engine::resolvePendingObjectImport(ImportMode mode,
             PendingObjectDuplicate dup;
             dup.sourceFilePath   = p.sourceFilePath;
             dup.subfolder        = subfolder;
-            dup.targetFilename   = source.filename().string();
-            dup.suggestedRenamed = suggested.filename().string();
+            dup.targetFilename   = entity::pathToUtf8(source.filename());
+            dup.suggestedRenamed = entity::pathToUtf8(suggested.filename());
             m_pendingObjectDuplicate = std::move(dup);
             std::cout << "[Engine] Object import collision at "
-                      << target.string() << "; awaiting user decision."
+                      << entity::pathToUtf8(target) << "; awaiting user decision."
                       << std::endl;
             return;
         }
@@ -3634,7 +3635,7 @@ void Engine::onModelFileSelected(const std::string& filePath) {
     std::cout << "[Engine] Model file selected: " << filePath << std::endl;
 
     // Only OBJ today. The scanner's extension whitelist matches.
-    const std::string ext = std::filesystem::path(filePath).extension().string();
+    const std::string ext = entity::pathToUtf8(entity::utf8ToPath(filePath).extension());
     std::string extLower = ext;
     std::transform(extLower.begin(), extLower.end(), extLower.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -3725,7 +3726,7 @@ void Engine::ingestObjectFile(const std::string& canonicalPath,
     // latest version member at parse time.
     const std::string logicalPath = toLogicalPath(canonicalPath);
     const std::string logicalStem =
-        fs::path(logicalPath).stem().string();
+        entity::pathToUtf8(entity::utf8ToPath(logicalPath).stem());
 
     // Find or create the Model entity for this group.
     entt::entity modelEntity = entt::null;
@@ -4396,7 +4397,7 @@ void Engine::onMediaDroppedOnTimeline(const std::string& filePath, int trackInde
     // a drop fires for a path that wasn't registered via the import flow.
     if (m_projectManager) {
         const ProjectManager::PathKind kind =
-            std::filesystem::path(filePath).is_absolute()
+            entity::utf8ToPath(filePath).is_absolute()
                 ? ProjectManager::PathKind::Linked
                 : ProjectManager::PathKind::Managed;
         m_projectManager->addMediaFile(filePath, kind);
@@ -4714,7 +4715,7 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // OpenProject commands flow through here too, so this is the right
     // place to centralize the touch.
     if (m_recentProjects) {
-        m_recentProjects->touch(filepath.string());
+        m_recentProjects->touch(entity::pathToUtf8(filepath));
         m_recentProjects->save();
     }
 
@@ -4757,38 +4758,43 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
                 ec);
             for (; !ec && it != std::filesystem::recursive_directory_iterator{};
                  it.increment(ec)) {
-                const auto& entry = *it;
-                if (entry.is_directory(ec)) {
-                    if (ContentScanner::shouldSkipDirStatic(entry.path())) {
-                        it.disable_recursion_pending();
+                try {
+                    const auto& entry = *it;
+                    if (entry.is_directory(ec)) {
+                        if (ContentScanner::shouldSkipDirStatic(entry.path())) {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                if (!entry.is_regular_file(ec)) continue;
-                if (ContentScanner::shouldSkipFileStatic(entry.path())) continue;
-                if (!ContentScanner::isMediaExtensionStatic(entry.path().extension())) continue;
+                    if (!entry.is_regular_file(ec)) continue;
+                    if (ContentScanner::shouldSkipFileStatic(entry.path())) continue;
+                    if (!ContentScanner::isMediaExtensionStatic(entry.path().extension())) continue;
 
-                std::error_code relEc;
-                std::filesystem::path rel =
-                    std::filesystem::relative(entry.path(), projectRoot, relEc);
-                if (relEc) continue;
-                const std::string relStr = rel.generic_string();  // forward slashes
+                    std::error_code relEc;
+                    std::filesystem::path rel =
+                        std::filesystem::relative(entry.path(), projectRoot, relEc);
+                    if (relEc) continue;
+                    const std::string relStr = entity::pathToUtf8Generic(rel);  // forward slashes
 
-                if (m_projectManager->findEntry(relStr) != nullptr) continue;
-                auto& libEntry = m_projectManager->addMediaFile(
-                    relStr, ProjectManager::PathKind::Managed);
-                libEntry.missingOnDisk = false;
-                // Brand-new entry (no probe yet) — enqueueOrSeed falls
-                // through to the enqueue branch since lastProbeSizeBytes
-                // is 0. Using the same call site here keeps the gating
-                // logic in one place.
-                if (m_probeWorker) {
-                    m_probeWorker->enqueueOrSeed(relStr,
-                                                 libEntry.lastProbeSizeBytes,
-                                                 libEntry.lastProbeMtimeUnix,
-                                                 libEntry.cachedProbe);
+                    if (m_projectManager->findEntry(relStr) != nullptr) continue;
+                    auto& libEntry = m_projectManager->addMediaFile(
+                        relStr, ProjectManager::PathKind::Managed);
+                    libEntry.missingOnDisk = false;
+                    // Brand-new entry (no probe yet) — enqueueOrSeed falls
+                    // through to the enqueue branch since lastProbeSizeBytes
+                    // is 0. Using the same call site here keeps the gating
+                    // logic in one place.
+                    if (m_probeWorker) {
+                        m_probeWorker->enqueueOrSeed(relStr,
+                                                     libEntry.lastProbeSizeBytes,
+                                                     libEntry.lastProbeMtimeUnix,
+                                                     libEntry.cachedProbe);
+                    }
+                    std::cout << "[Engine] initial scan discovered " << relStr << std::endl;
+
+                } catch (const std::exception& ex) {
+                    std::cerr << "[Engine] initial scan: skipping entry: " << ex.what() << std::endl;
                 }
-                std::cout << "[Engine] initial scan discovered " << relStr << std::endl;
             }
         }
 
@@ -4806,39 +4812,44 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
                 oec);
             for (; !oec && it != std::filesystem::recursive_directory_iterator{};
                  it.increment(oec)) {
-                const auto& entry = *it;
-                if (entry.is_directory(oec)) {
-                    if (ContentScanner::shouldSkipDirStatic(entry.path())) {
-                        it.disable_recursion_pending();
+                try {
+                    const auto& entry = *it;
+                    if (entry.is_directory(oec)) {
+                        if (ContentScanner::shouldSkipDirStatic(entry.path())) {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                if (!entry.is_regular_file(oec)) continue;
-                if (ContentScanner::shouldSkipFileStatic(entry.path())) continue;
-                if (!ContentScanner::isObjectExtensionStatic(entry.path().extension())) continue;
+                    if (!entry.is_regular_file(oec)) continue;
+                    if (ContentScanner::shouldSkipFileStatic(entry.path())) continue;
+                    if (!ContentScanner::isObjectExtensionStatic(entry.path().extension())) continue;
 
-                std::error_code relEc;
-                std::filesystem::path rel =
-                    std::filesystem::relative(entry.path(), projectRoot, relEc);
-                if (relEc) continue;
-                const std::string relStr = rel.generic_string();
+                    std::error_code relEc;
+                    std::filesystem::path rel =
+                        std::filesystem::relative(entry.path(), projectRoot, relEc);
+                    if (relEc) continue;
+                    const std::string relStr = entity::pathToUtf8Generic(rel);
 
-                // ProjectSerializer may have populated the library from
-                // the saved `objectLibrary` — skip if so, but hot-reload
-                // when disk size diverges from the cached probe.
-                if (auto* e = m_projectManager->findObjectEntry(relStr)) {
-                    std::error_code sec;
-                    const auto diskSize = static_cast<std::int64_t>(
-                        std::filesystem::file_size(entry.path(), sec));
-                    if (!sec && diskSize != e->lastProbeSizeBytes) {
-                        ingestObjectFile(relStr, ProjectManager::PathKind::Managed);
+                    // ProjectSerializer may have populated the library from
+                    // the saved `objectLibrary` — skip if so, but hot-reload
+                    // when disk size diverges from the cached probe.
+                    if (auto* e = m_projectManager->findObjectEntry(relStr)) {
+                        std::error_code sec;
+                        const auto diskSize = static_cast<std::int64_t>(
+                            std::filesystem::file_size(entry.path(), sec));
+                        if (!sec && diskSize != e->lastProbeSizeBytes) {
+                            ingestObjectFile(relStr, ProjectManager::PathKind::Managed);
+                        }
+                        e->missingOnDisk = false;
+                        continue;
                     }
-                    e->missingOnDisk = false;
-                    continue;
+                    ingestObjectFile(relStr, ProjectManager::PathKind::Managed);
+                    std::cout << "[Engine] initial scan discovered object "
+                              << relStr << std::endl;
+
+                } catch (const std::exception& ex) {
+                    std::cerr << "[Engine] initial scan: skipping object: " << ex.what() << std::endl;
                 }
-                ingestObjectFile(relStr, ProjectManager::PathKind::Managed);
-                std::cout << "[Engine] initial scan discovered object "
-                          << relStr << std::endl;
             }
         }
     }
@@ -5164,7 +5175,7 @@ void Engine::saveProjectAsInteractive() {
     if (!m_windowManager || !m_projectManager) return;
     std::string suggested = m_projectManager->projectPath().empty()
                                 ? std::string{}
-                                : m_projectManager->projectPath().string();
+                                : entity::pathToUtf8(m_projectManager->projectPath());
     m_windowManager->saveProjectFileDialog(
         suggested,
         [this](const std::string& chosen) {
@@ -5920,9 +5931,9 @@ void Engine::drainRendererToDirector() {
                     // extension check passes without double-appending.
                     std::filesystem::path autosavePath =
                         projectPath.parent_path() /
-                        (projectPath.stem().string() + ".autosave.entity");
+                        (entity::pathToUtf8(projectPath.stem()) + ".autosave.entity");
                     if (ProjectSerializer::save(*m_timeline, autosavePath, m_projectManager)) {
-                        std::cerr << "[Engine] Device-lost autosave: " << autosavePath.string() << std::endl;
+                        std::cerr << "[Engine] Device-lost autosave: " << entity::pathToUtf8(autosavePath) << std::endl;
                         m_relaunchProjectPath  = autosavePath;
                         m_relaunchRequested    = true;
                     } else {

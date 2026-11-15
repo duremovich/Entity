@@ -1,3 +1,4 @@
+#include "entity/core/PathUtf8.hpp"
 #include "entity/command/Commands.hpp"
 #include "entity/command/CommandDispatcher.hpp"
 #include "entity/core/Engine.hpp"
@@ -739,7 +740,7 @@ bool SaveProjectCommand::execute(Engine& engine) {
     if (m_filepath.empty()) {
         return engine.saveProject();
     }
-    return engine.saveProject(m_filepath);
+    return engine.saveProject(entity::utf8ToPath(m_filepath));
 }
 
 nlohmann::json SaveProjectCommand::toJson() const {
@@ -763,11 +764,12 @@ CommandPtr SaveProjectCommand::fromJson(const nlohmann::json& j) {
 }
 
 bool LoadProjectCommand::execute(Engine& engine) {
-    if (!std::filesystem::exists(m_filepath)) {
+    const std::filesystem::path loadPath = entity::utf8ToPath(m_filepath);
+    if (!std::filesystem::exists(loadPath)) {
         std::cerr << "[LoadProject] File not found: " << m_filepath << std::endl;
         return false;
     }
-    return engine.loadProject(m_filepath);
+    return engine.loadProject(loadPath);
 }
 
 nlohmann::json LoadProjectCommand::toJson() const {

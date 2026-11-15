@@ -1,3 +1,4 @@
+#include "entity/core/PathUtf8.hpp"
 #include "entity/media/TranscodeManager.hpp"
 
 #include <cstdint>
@@ -59,8 +60,8 @@ void TranscodeManager::setCacheDir(const std::filesystem::path& dir) {
 
 std::filesystem::path TranscodeManager::deriveDstPath(const std::string& absSrcPath,
                                                        const std::string& variant) const {
-    const std::filesystem::path src(absSrcPath);
-    std::string stem = src.stem().string();
+    const std::filesystem::path src = entity::utf8ToPath(absSrcPath);
+    std::string stem = entity::pathToUtf8(src.stem());
     // Image-sequence sources contain '%' — that's not a legal Windows filename
     // char, replace with something harmless so the cache file opens.
     for (char& c : stem) if (c == '%') c = '_';
@@ -68,7 +69,7 @@ std::filesystem::path TranscodeManager::deriveDstPath(const std::string& absSrcP
     name << stem << "_" << shortHashOfPath(absSrcPath) << "." << variant << ".mov";
 
     const std::filesystem::path dir = m_cacheDir.empty() ? defaultCacheDir() : m_cacheDir;
-    return dir / name.str();
+    return dir / entity::utf8ToPath(name.str());
 }
 
 std::string TranscodeManager::enqueue(const std::string& absSrcPath,
@@ -100,18 +101,18 @@ std::string TranscodeManager::enqueue(const std::string& absSrcPath,
     } else {
         // Caller-controlled destination: ensure parent directory exists
         // before the worker starts writing into it.
-        dst = std::filesystem::path(explicitDstPath);
+        dst = entity::utf8ToPath(explicitDstPath);
         if (dst.has_parent_path()) {
             std::filesystem::create_directories(dst.parent_path(), ec);
             if (ec) {
                 std::cerr << "TranscodeManager: failed to create dst dir "
-                          << dst.parent_path() << ": " << ec.message() << std::endl;
+                          << entity::pathToUtf8(dst.parent_path()) << ": " << ec.message() << std::endl;
             }
         }
     }
 
     auto worker = std::make_unique<TranscodeWorker>(
-        absSrcPath, dst.string(), variant, srcFps);
+        absSrcPath, entity::pathToUtf8(dst), variant, srcFps);
     std::string dstStr = worker->dstPath();
     m_workers.emplace(key, std::move(worker));
     return dstStr;

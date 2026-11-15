@@ -3,6 +3,7 @@
  */
 
 #include "entity/project/ProjectManager.hpp"
+#include "entity/core/PathUtf8.hpp"
 #include "entity/project/MediaVersioning.hpp"
 #include "entity/project/ProjectSerializer.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -22,33 +23,6 @@
 #ifdef _WIN32
 #include <Windows.h>
 #endif
-
-namespace {
-
-// Inverse of WindowManager::pathToUtf8. The std::string -> filesystem::path
-// constructor on Windows interprets the bytes as the active narrow codepage
-// (typically Windows-1252), so a UTF-8 path with characters outside that
-// page (fullwidth colon, CJK, emoji, curly quotes...) gets garbled before it
-// reaches std::filesystem::exists. Convert UTF-8 -> wide -> path so the
-// native API sees the right bytes.
-std::filesystem::path utf8ToPath(const std::string& utf8) {
-    if (utf8.empty()) return {};
-#ifdef _WIN32
-    const int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
-                                          static_cast<int>(utf8.size()),
-                                          nullptr, 0);
-    if (wlen <= 0) return std::filesystem::path(utf8);  // best-effort
-    std::wstring w(static_cast<size_t>(wlen), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
-                        static_cast<int>(utf8.size()),
-                        w.data(), wlen);
-    return std::filesystem::path(w);
-#else
-    return std::filesystem::path(utf8);
-#endif
-}
-
-}  // namespace
 
 namespace entity {
 
@@ -96,11 +70,11 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
         // hint so the user knows it's not a name/path problem.
         if (ec == std::errc::permission_denied) {
             return fail("This location requires administrator rights to "
-                        "write to (cannot create '" + dir.string() +
+                        "write to (cannot create '" + entity::pathToUtf8(dir) +
                         "'). Pick a different folder, or relaunch Entity "
                         "as administrator.");
         }
-        return fail("Failed to create '" + dir.string() + "': " + ec.message());
+        return fail("Failed to create '" + entity::pathToUtf8(dir) + "': " + ec.message());
     };
 
     // Build the subdirectory tree. create_directories cascades, so
@@ -134,7 +108,7 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
         // the same name doesn't trip the "already exists" guard.
         std::error_code rmEc;
         std::filesystem::remove_all(projectRoot, rmEc);
-        return fail("Failed to write project file '" + projectFile.string() +
+        return fail("Failed to write project file '" + entity::pathToUtf8(projectFile) +
                     "': " +
                     (serializerErr.empty() ? std::string("unknown error")
                                            : serializerErr));
@@ -142,7 +116,7 @@ bool ProjectManager::createNew(const std::filesystem::path& parentDir,
 
     { std::unique_lock lk(m_stateMutex); m_projectPath = projectFile; }
     std::cout << "[ProjectManager] Created new project at "
-              << projectFile.string() << std::endl;
+              << entity::pathToUtf8(projectFile) << std::endl;
     return true;
 }
 
@@ -175,7 +149,7 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
     std::error_code ec;
     if (fs::exists(newRoot, ec)) {
         std::cerr << "[ProjectManager] saveAsBundle: target already exists: "
-                  << newRoot.string() << std::endl;
+                  << entity::pathToUtf8(newRoot) << std::endl;
         return false;
     }
 
@@ -184,7 +158,7 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
     fs::create_directories(newRoot, ec);
     if (ec) {
         std::cerr << "[ProjectManager] saveAsBundle: failed to create root "
-                  << newRoot.string() << ": " << ec.message() << std::endl;
+                  << entity::pathToUtf8(newRoot) << ": " << ec.message() << std::endl;
         return false;
     }
 
@@ -208,7 +182,7 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
         fs::copy(srcDir, dstDir, copyOptions, ec);
         if (ec) {
             std::cerr << "[ProjectManager] saveAsBundle: failed to copy "
-                      << srcDir.string() << " -> " << dstDir.string()
+                      << entity::pathToUtf8(srcDir) << " -> " << entity::pathToUtf8(dstDir)
                       << ": " << ec.message() << std::endl;
             // Best-effort cleanup of the half-written destination so a
             // retry isn't blocked by the "target exists" guard.
@@ -232,7 +206,7 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
         return false;
     }
 
-    std::cout << "[ProjectManager] Saved bundle to " << newFile.string() << std::endl;
+    std::cout << "[ProjectManager] Saved bundle to " << entity::pathToUtf8(newFile) << std::endl;
     return true;
 }
 
@@ -248,7 +222,7 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
                                          : m_projectPath;
     }
 
-    std::cout << "[ProjectManager] Saving project to " << savePath.string() << "..." << std::endl;
+    std::cout << "[ProjectManager] Saving project to " << entity::pathToUtf8(savePath) << "..." << std::endl;
 
     // Create the parent directory if needed — without this, scripted Save
     // commands writing to fresh test_output/ subdirs hit ofstream::open
@@ -258,7 +232,7 @@ bool ProjectManager::save(const std::filesystem::path& filepath) {
         std::filesystem::create_directories(savePath.parent_path(), ec);
         if (ec) {
             std::cerr << "[ProjectManager] Failed to create parent directory '"
-                      << savePath.parent_path().string() << "': " << ec.message() << std::endl;
+                      << entity::pathToUtf8(savePath.parent_path()) << "': " << ec.message() << std::endl;
             return false;
         }
     }
@@ -287,7 +261,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         return false;
     }
 
-    std::cout << "[ProjectManager] Loading project from " << filepath.string() << "..." << std::endl;
+    std::cout << "[ProjectManager] Loading project from " << entity::pathToUtf8(filepath) << "..." << std::endl;
 
     // #34 — m_projectPath must be set BEFORE the serializer fires the
     // per-clip media-load callback. The callback resolves clip.filepath
@@ -316,7 +290,7 @@ bool ProjectManager::load(const std::filesystem::path& filepath) {
         // through to the original when no transcode exists (yet).
         const std::string openPath = decoderPathFor(mediaPath);
 
-        if (!std::filesystem::exists(utf8ToPath(openPath))) {
+        if (!std::filesystem::exists(entity::utf8ToPath(openPath))) {
             std::cerr << "[ProjectManager] Media file not found: " << openPath << std::endl;
             return;
         }
@@ -451,7 +425,7 @@ void ProjectManager::tickAutosave(double deltaTime) {
     // Write directly via the serializer — autosave is a side channel, don't
     // touch m_projectPath. Operator still expects "Save" to write the real file.
     if (ProjectSerializer::save(*m_timeline, autosavePath, this)) {
-        std::cout << "[Autosave] " << autosavePath.string() << std::endl;
+        std::cout << "[Autosave] " << entity::pathToUtf8(autosavePath) << std::endl;
     } else {
         std::cerr << "[Autosave] Failed: " << ProjectSerializer::getLastError() << std::endl;
     }
@@ -516,7 +490,7 @@ ProjectManager::findLatestInGroup(const std::string& storedPath) const {
         if (e.missingOnDisk) continue;
 
         // Re-derive tag (cheap; group is small).
-        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string stem = entity::pathToUtf8(entity::utf8ToPath(e.originalPath).stem());
         const std::string tag  = parseVersion(stem).tag;
         if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
             best    = &e;
@@ -532,7 +506,7 @@ ProjectManager::findLatestInGroup(const std::string& storedPath) const {
     for (const auto& e : m_loadedMediaFiles) {
         if (groupKeyOf(e.originalPath) != targetGroup) continue;
         if (kindKnown && e.pathKind != scopeKind) continue;
-        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string stem = entity::pathToUtf8(entity::utf8ToPath(e.originalPath).stem());
         const std::string tag  = parseVersion(stem).tag;
         if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
             best    = &e;
@@ -567,8 +541,7 @@ std::string ProjectManager::resolveMediaPath(const std::string& storedPath) cons
     // back to the relative string. Caller must treat that as "can't
     // open until a project is loaded."
     if (m_projectPath.empty()) return storedPath;
-    return (m_projectPath.parent_path() /
-            std::filesystem::path(storedPath)).string();
+    return entity::pathToUtf8(m_projectPath.parent_path() / entity::utf8ToPath(storedPath));
 }
 
 bool ProjectManager::restoreOriginal(const std::string& canonicalPath) {
@@ -596,13 +569,13 @@ bool ProjectManager::restoreOriginal(const std::string& canonicalPath) {
     }
 
     const fs::path projectRoot = m_projectPath.parent_path();
-    const fs::path archiveAbs  = projectRoot / fs::path(entry->archivedOriginal);
-    const fs::path canonicalAbs = projectRoot / fs::path(canonicalPath);
+    const fs::path archiveAbs  = projectRoot / entity::utf8ToPath(entry->archivedOriginal);
+    const fs::path canonicalAbs = projectRoot / entity::utf8ToPath(canonicalPath);
 
     std::error_code ec;
     if (!fs::exists(archiveAbs, ec)) {
         std::cerr << "[ProjectManager] restoreOriginal: archive file missing on disk: "
-                  << archiveAbs.string() << std::endl;
+                  << entity::pathToUtf8(archiveAbs) << std::endl;
         return false;
     }
 
@@ -612,7 +585,7 @@ bool ProjectManager::restoreOriginal(const std::string& canonicalPath) {
         fs::remove(canonicalAbs, ec);
         if (ec) {
             std::cerr << "[ProjectManager] restoreOriginal: failed to remove "
-                      << canonicalAbs.string() << ": " << ec.message() << std::endl;
+                      << entity::pathToUtf8(canonicalAbs) << ": " << ec.message() << std::endl;
             return false;
         }
     }
@@ -628,7 +601,7 @@ bool ProjectManager::restoreOriginal(const std::string& canonicalPath) {
                       fs::copy_options::overwrite_existing, ec);
         if (ec) {
             std::cerr << "[ProjectManager] restoreOriginal: failed to relocate archive "
-                      << archiveAbs.string() << " -> " << canonicalAbs.string()
+                      << entity::pathToUtf8(archiveAbs) << " -> " << entity::pathToUtf8(canonicalAbs)
                       << ": " << ec.message() << std::endl;
             return false;
         }
@@ -675,14 +648,14 @@ int ProjectManager::rebuildStructure() {
         fs::create_directories(p, ec);
         if (ec) {
             std::cerr << "[ProjectManager] rebuildStructure: failed to create "
-                      << p.string() << ": " << ec.message() << std::endl;
+                      << entity::pathToUtf8(p) << ": " << ec.message() << std::endl;
             continue;
         }
         ++created;
     }
 
     std::cout << "[ProjectManager] rebuildStructure: created "
-              << created << " directories under " << root.string() << std::endl;
+              << created << " directories under " << entity::pathToUtf8(root) << std::endl;
     return created;
 }
 
@@ -698,7 +671,7 @@ ProjectManager::findMissingManagedMedia(const std::filesystem::path& searchDir) 
     std::error_code ec;
     if (!fs::exists(searchDir, ec) || !fs::is_directory(searchDir, ec)) {
         std::cerr << "[ProjectManager] findMissingMedia: search dir not found: "
-                  << searchDir.string() << std::endl;
+                  << entity::pathToUtf8(searchDir) << std::endl;
         return result;
     }
 
@@ -712,11 +685,11 @@ ProjectManager::findMissingManagedMedia(const std::filesystem::path& searchDir) 
     std::vector<Missing> missing;
     for (const auto& e : m_loadedMediaFiles) {
         if (e.pathKind != PathKind::Managed) continue;
-        const fs::path canonicalAbs = projectRoot / fs::path(e.originalPath);
+        const fs::path canonicalAbs = projectRoot / entity::utf8ToPath(e.originalPath);
         if (fs::exists(canonicalAbs, ec)) continue;
         Missing m;
         m.canonical = e.originalPath;
-        m.filename  = fs::path(e.originalPath).filename().string();
+        m.filename  = entity::pathToUtf8(entity::utf8ToPath(e.originalPath).filename());
         missing.push_back(std::move(m));
     }
     result.missingBefore = static_cast<int>(missing.size());
@@ -741,13 +714,13 @@ ProjectManager::findMissingManagedMedia(const std::filesystem::path& searchDir) 
                                          ec);
     if (ec) {
         std::cerr << "[ProjectManager] findMissingMedia: failed to iterate "
-                  << searchDir.string() << ": " << ec.message() << std::endl;
+                  << entity::pathToUtf8(searchDir) << ": " << ec.message() << std::endl;
         return result;
     }
     for (; it != fs::recursive_directory_iterator{}; it.increment(ec)) {
         if (ec) { ec.clear(); continue; }
         if (!it->is_regular_file(ec)) continue;
-        const std::string fname = it->path().filename().string();
+        const std::string fname = entity::pathToUtf8(it->path().filename());
         if (wantedFilenames.find(fname) == wantedFilenames.end()) continue;
         // First-encounter wins.
         found.emplace(fname, it->path());
@@ -762,12 +735,12 @@ ProjectManager::findMissingManagedMedia(const std::filesystem::path& searchDir) 
         }
         ++result.matched;
 
-        const fs::path target = projectRoot / fs::path(m.canonical);
+        const fs::path target = projectRoot / entity::utf8ToPath(m.canonical);
         if (target.has_parent_path()) {
             fs::create_directories(target.parent_path(), ec);
             if (ec) {
                 std::cerr << "[ProjectManager] findMissingMedia: failed to create "
-                          << target.parent_path().string() << ": " << ec.message()
+                          << entity::pathToUtf8(target.parent_path()) << ": " << ec.message()
                           << std::endl;
                 ++result.stillMissing;
                 continue;
@@ -777,14 +750,14 @@ ProjectManager::findMissingManagedMedia(const std::filesystem::path& searchDir) 
                       fs::copy_options::overwrite_existing, ec);
         if (ec) {
             std::cerr << "[ProjectManager] findMissingMedia: copy failed "
-                      << hit->second.string() << " -> " << target.string()
+                      << entity::pathToUtf8(hit->second) << " -> " << entity::pathToUtf8(target)
                       << ": " << ec.message() << std::endl;
             ++result.stillMissing;
             continue;
         }
         std::cout << "[ProjectManager] findMissingMedia: restored "
                   << m.canonical << " from "
-                  << hit->second.string() << std::endl;
+                  << entity::pathToUtf8(hit->second) << std::endl;
         ++result.copied;
     }
 
@@ -818,7 +791,7 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
     fs::create_directories(targetDirAbs, ec);
     if (ec) {
         std::cerr << "[ProjectManager] collect: failed to create target dir "
-                  << targetDirAbs.string() << ": " << ec.message() << std::endl;
+                  << entity::pathToUtf8(targetDirAbs) << ": " << ec.message() << std::endl;
         return result;
     }
 
@@ -858,8 +831,8 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
         // Choose target filename, collision-suffixed.
         fs::path target = targetDirAbs / src.filename();
         if (fs::exists(target, ec)) {
-            const std::string stem = src.stem().string();
-            const std::string ext  = src.extension().string();
+            const std::string stem = entity::pathToUtf8(src.stem());
+            const std::string ext  = entity::pathToUtf8(src.extension());
             for (int i = 1; i < 1000; ++i) {
                 fs::path candidate = targetDirAbs /
                     (stem + " (" + std::to_string(i) + ")" + ext);
@@ -871,7 +844,7 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
         }
 
         const bool hasTranscode = !p.transcodedPath.empty()
-                                  && fs::exists(fs::path(p.transcodedPath), ec);
+                                  && fs::exists(entity::utf8ToPath(p.transcodedPath), ec);
 
         std::string newArchivedOriginalRel;
         std::string newOriginalCodec;
@@ -880,7 +853,7 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
             fs::create_directories(archiveDirAbs, ec);
             if (ec) {
                 std::cerr << "[ProjectManager] collect: failed to create archive dir "
-                          << archiveDirAbs.string() << ": " << ec.message() << std::endl;
+                          << entity::pathToUtf8(archiveDirAbs) << ": " << ec.message() << std::endl;
                 continue;
             }
             const fs::path archiveTarget = archiveDirAbs / target.filename();
@@ -888,7 +861,7 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
                           fs::copy_options::overwrite_existing, ec);
             if (ec) {
                 std::cerr << "[ProjectManager] collect: failed to archive "
-                          << src.string() << " -> " << archiveTarget.string()
+                          << entity::pathToUtf8(src) << " -> " << entity::pathToUtf8(archiveTarget)
                           << ": " << ec.message() << std::endl;
                 continue;
             }
@@ -902,7 +875,7 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
                               fs::copy_options::overwrite_existing, ec);
                 if (ec) {
                     std::cerr << "[ProjectManager] collect: failed to relocate transcode "
-                              << transSrc.string() << " -> " << target.string()
+                              << entity::pathToUtf8(transSrc) << " -> " << entity::pathToUtf8(target)
                               << ": " << ec.message() << std::endl;
                     continue;
                 }
@@ -910,14 +883,14 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
             }
             fs::path archiveRel = fs::relative(archiveTarget, projectRoot, ec);
             newArchivedOriginalRel =
-                ec ? archiveTarget.generic_string() : archiveRel.generic_string();
+                ec ? entity::pathToUtf8Generic(archiveTarget) : entity::pathToUtf8Generic(archiveRel);
             newOriginalCodec = MediaTypeToString(p.detectedMediaType);
         } else {
             fs::copy_file(src, target,
                           fs::copy_options::overwrite_existing, ec);
             if (ec) {
                 std::cerr << "[ProjectManager] collect: failed to copy "
-                          << src.string() << " -> " << target.string()
+                          << entity::pathToUtf8(src) << " -> " << entity::pathToUtf8(target)
                           << ": " << ec.message() << std::endl;
                 continue;
             }
@@ -925,7 +898,7 @@ ProjectManager::collectLinkedIntoProject(const std::string& subfolder) {
 
         const fs::path canonicalRelPath = fs::relative(target, projectRoot, ec);
         const std::string canonical =
-            ec ? target.generic_string() : canonicalRelPath.generic_string();
+            ec ? entity::pathToUtf8Generic(target) : entity::pathToUtf8Generic(canonicalRelPath);
 
         // Rebuild the entry as Managed. removeMediaFile + addMediaFile
         // is the cleanest way given the library is keyed by originalPath.
@@ -996,7 +969,7 @@ ProjectManager::findLatestObjectInGroup(const std::string& storedPath) const {
         if (groupKeyOf(e.originalPath) != targetGroup) continue;
         if (kindKnown && e.pathKind != scopeKind) continue;
         if (e.missingOnDisk) continue;
-        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string stem = entity::pathToUtf8(entity::utf8ToPath(e.originalPath).stem());
         const std::string tag  = parseVersion(stem).tag;
         if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
             best    = &e;
@@ -1011,7 +984,7 @@ ProjectManager::findLatestObjectInGroup(const std::string& storedPath) const {
     for (const auto& e : m_loadedObjectFiles) {
         if (groupKeyOf(e.originalPath) != targetGroup) continue;
         if (kindKnown && e.pathKind != scopeKind) continue;
-        const std::string stem = std::filesystem::path(e.originalPath).stem().string();
+        const std::string stem = entity::pathToUtf8(entity::utf8ToPath(e.originalPath).stem());
         const std::string tag  = parseVersion(stem).tag;
         if (best == nullptr || compareVersionTags(bestTag, tag) < 0) {
             best    = &e;
@@ -1035,14 +1008,13 @@ std::string ProjectManager::resolveObjectPath(const std::string& storedPath) con
     if (!entry) return storedPath;
     if (entry->pathKind == PathKind::Linked) return storedPath;
     if (m_projectPath.empty()) return storedPath;
-    return (m_projectPath.parent_path() /
-            std::filesystem::path(storedPath)).string();
+    return entity::pathToUtf8(m_projectPath.parent_path() / entity::utf8ToPath(storedPath));
 }
 
 std::string ProjectManager::meshPathFor(const std::string& originalPath) const {
     if (originalPath.empty()) return originalPath;
 
-    const std::string stem = std::filesystem::path(originalPath).stem().string();
+    const std::string stem = entity::pathToUtf8(entity::utf8ToPath(originalPath).stem());
     const ParsedVersion pv = parseVersion(stem);
 
     if (pv.tag.empty()) {
@@ -1066,17 +1038,16 @@ std::string ProjectManager::decoderPathFor(const std::string& originalPath) cons
     // `_v<tag>` suffix the resolver auto-rolls to the latest version in
     // the group. If it does carry a tag, we treat the path as pinned and
     // require an exact-match library entry.
-    const std::string stem = std::filesystem::path(originalPath).stem().string();
+    const std::string stem = entity::pathToUtf8(entity::utf8ToPath(originalPath).stem());
     const ParsedVersion pv = parseVersion(stem);
 
     auto resolveEntry = [this](const MediaLibraryEntry& e) -> std::string {
         if (!e.transcodedPath.empty()) {
             std::string transcodeAbs = e.transcodedPath;
             if (e.pathKind == PathKind::Managed && !m_projectPath.empty()) {
-                transcodeAbs = (m_projectPath.parent_path() /
-                                std::filesystem::path(e.transcodedPath)).string();
+                transcodeAbs = entity::pathToUtf8(m_projectPath.parent_path() / entity::utf8ToPath(e.transcodedPath));
             }
-            if (std::filesystem::exists(utf8ToPath(transcodeAbs))) {
+            if (std::filesystem::exists(entity::utf8ToPath(transcodeAbs))) {
                 return transcodeAbs;
             }
         }
@@ -1110,7 +1081,7 @@ std::string ProjectManager::decoderPathFor(const std::string& originalPath) cons
 
 std::string ProjectManager::getProjectName() const {
     std::shared_lock lock(m_stateMutex);
-    return m_projectPath.stem().string();
+    return entity::pathToUtf8(m_projectPath.stem());
 }
 
 void ProjectManager::setDmxMappingsJson(std::string json) {

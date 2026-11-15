@@ -4,6 +4,7 @@
  * Displays and allows editing of selected clip properties.
  */
 
+#include "entity/core/PathUtf8.hpp"
 #include "entity/ui/PropertyWindow.hpp"
 #include "entity/ui/MathInput.hpp"
 #include "entity/timeline/Timeline.hpp"
@@ -700,7 +701,7 @@ void PropertyWindow::renderPlaybackSection() {
             picks.reserve(mediaFiles.size());
             for (const auto& entry : mediaFiles) {
                 std::filesystem::path p{entry.originalPath};
-                picks.push_back({p.filename().string(), entry.originalPath});
+                picks.push_back({entity::pathToUtf8(p.filename()), entry.originalPath});
             }
             std::sort(picks.begin(), picks.end(),
                        [](const MediaPick& a, const MediaPick& b) {

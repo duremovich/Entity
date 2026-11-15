@@ -1,5 +1,6 @@
 #pragma once
 
+#include "entity/core/PathUtf8.hpp"
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -31,14 +32,14 @@ inline bool writeFileAtomic(const std::filesystem::path& path,
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
-            if (err) *err = "Failed to open file for writing: " + tmp.string();
+            if (err) *err = "Failed to open file for writing: " + entity::pathToUtf8(tmp);
             return false;
         }
         out.write(contents.data(),
                   static_cast<std::streamsize>(contents.size()));
         out.flush();
         if (!out.good()) {
-            if (err) *err = "Write failed (disk full?): " + tmp.string();
+            if (err) *err = "Write failed (disk full?): " + entity::pathToUtf8(tmp);
             out.close();
             std::error_code removeEc;
             fs::remove(tmp, removeEc);
@@ -49,7 +50,7 @@ inline bool writeFileAtomic(const std::filesystem::path& path,
     fs::rename(tmp, path, renameEc);
     if (renameEc) {
         if (err) {
-            *err = "Failed to move " + tmp.string() + " into place: "
+            *err = "Failed to move " + entity::pathToUtf8(tmp) + " into place: "
                  + renameEc.message();
         }
         std::error_code removeEc;

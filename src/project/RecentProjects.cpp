@@ -2,6 +2,7 @@
  * RecentProjects implementation. See header for the rationale.
  */
 
+#include "entity/core/PathUtf8.hpp"
 #include "entity/project/RecentProjects.hpp"
 #include "entity/core/AtomicFile.hpp"
 
@@ -111,7 +112,7 @@ bool RecentProjects::saveTo(const fs::path& file) const {
         fs::create_directories(file.parent_path(), ec);
         if (ec) {
             std::cerr << "[RecentProjects] Failed to create "
-                      << file.parent_path().string() << ": " << ec.message() << std::endl;
+                      << entity::pathToUtf8(file.parent_path()) << ": " << ec.message() << std::endl;
             return false;
         }
     }
@@ -127,7 +128,7 @@ bool RecentProjects::saveTo(const fs::path& file) const {
     // Write-temp-then-rename so a crash mid-save can never destroy the
     // previous good file. See entity/core/AtomicFile.hpp.
     std::string err;
-    if (!writeFileAtomic(file, doc.dump(2), &err)) {
+    if (!writeFileAtomic(file, doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), &err)) {
         std::cerr << "[RecentProjects] " << err << std::endl;
         return false;
     }

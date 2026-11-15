@@ -1,4 +1,5 @@
 #include "entity/core/Engine.hpp"
+#include "entity/core/PathUtf8.hpp"
 #include "entity/core/Types.hpp"
 #include "entity/core/EnginePluginContext.hpp"
 #include "entity/core/CrashLogger.hpp"
@@ -86,7 +87,7 @@ static bool shouldSkipAutoLoad(const std::filesystem::path& projectPath) {
         if (content.find("\"device-lost\"") == std::string::npos) continue;
 
         // Match project path: the JSON field stores the path as a UTF-8 string.
-        std::string projStr = projectPath.string();
+        std::string projStr = entity::pathToUtf8(projectPath);
         // Strip the ".autosave.entity" suffix to match the base project path
         // stored in context.json (setProjectPath is called with the real path,
         // not the autosave path).
@@ -111,7 +112,7 @@ static bool shouldSkipAutoLoad(const std::filesystem::path& projectPath) {
     return false;
 }
 
-int main(int argc, char** argv) {
+static int editorMain(int argc, char** argv) {
 #ifdef _WIN32
     // Declare per-monitor DPI awareness BEFORE GLFW creates a window. Without
     // this, Windows silently virtualizes the app at display-scale != 100%
@@ -360,4 +361,18 @@ int main(int argc, char** argv) {
 
     std::cout << "Application exited normally." << std::endl;
     return EXIT_SUCCESS;
+}
+
+// Last-resort barrier: log an escaped exception with context and exit
+// non-zero instead of reaching std::terminate. Narrow by design - the render
+// loops and workers have their own handling.
+int main(int argc, char** argv) {
+    try {
+        return editorMain(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "[main] Fatal: unhandled exception: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[main] Fatal: unhandled non-standard exception" << std::endl;
+    }
+    return EXIT_FAILURE;
 }

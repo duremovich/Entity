@@ -1,3 +1,4 @@
+#include "entity/core/PathUtf8.hpp"
 #include "entity/ui/WindowManager.hpp"
 #include "entity/ui/FileDialog.hpp"
 #include "entity/ui/WorkspaceStore.hpp"
@@ -10,21 +11,6 @@
 #include <iostream>
 #include <sstream>
 #include <utility>
-
-namespace {
-
-// std::filesystem::path::string() uses the system ANSI codepage on Windows
-// and throws std::filesystem::filesystem_error when the native wide path
-// contains characters outside that codepage — fullwidth punctuation, curly
-// quotes, emoji, CJK, etc. Since IFileDialog lets users pick any file, we
-// must not crash on such paths. Convert to UTF-8 instead; modern FFmpeg on
-// Windows decodes UTF-8 path arguments correctly.
-std::string pathToUtf8(const std::filesystem::path& p) {
-    auto u8 = p.u8string();
-    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
-}
-
-}  // namespace
 
 namespace entity {
 
@@ -308,11 +294,11 @@ void WindowManager::renderSaveBundleModal() {
         if (seedParent.empty()) {
 #ifdef _WIN32
             if (const char* userprofile = std::getenv("USERPROFILE")) {
-                seedParent = (fs::path(userprofile) / "Documents" / "Entity").string();
+                seedParent = entity::pathToUtf8(fs::path(userprofile) / "Documents" / "Entity");
             }
 #else
             if (const char* home = std::getenv("HOME")) {
-                seedParent = (fs::path(home) / "Entity").string();
+                seedParent = entity::pathToUtf8(fs::path(home) / "Entity");
             }
 #endif
         }
@@ -373,7 +359,7 @@ void WindowManager::renderSaveBundleModal() {
 
         if (!m_saveBundleName.empty() && !m_saveBundleParentDir.empty()) {
             fs::path preview = fs::path(m_saveBundleParentDir) / m_saveBundleName;
-            ImGui::TextDisabled("Will create: %s", preview.string().c_str());
+            ImGui::TextDisabled("Will create: %s", entity::pathToUtf8(preview).c_str());
         }
 
         if (!m_saveBundleError.empty()) {
@@ -1089,7 +1075,7 @@ void WindowManager::renderMenuBar() {
                         int n = m_findMissingMediaCallback(pathToUtf8(picked));
                         std::cout << "[WindowManager] Restored " << n
                                   << " missing media files from "
-                                  << picked.string() << std::endl;
+                                  << entity::pathToUtf8(picked) << std::endl;
                     });
             }
             if (ImGui::IsItemHovered()) {

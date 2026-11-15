@@ -1,4 +1,5 @@
 #include "entity/project/ContentScanner.hpp"
+#include "entity/core/PathUtf8.hpp"
 #include "entity/profile/Tracy.hpp"
 
 #include <algorithm>
@@ -48,7 +49,7 @@ const std::unordered_set<std::string>& defaultEffectExts() {
 }
 
 std::string lowerExt(const fs::path& p) {
-    std::string s = p.extension().string();
+    std::string s = entity::pathToUtf8(p.extension());
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
@@ -61,7 +62,7 @@ std::string toRelativeForward(const fs::path& abs, const fs::path& projectRoot) 
     std::error_code ec;
     fs::path rel = fs::relative(abs, projectRoot, ec);
     if (ec) return {};
-    std::string s = rel.generic_string();  // forward slashes
+    std::string s = entity::pathToUtf8Generic(rel);  // forward slashes
     return s;
 }
 
@@ -154,7 +155,17 @@ void ContentScanner::runLoop() {
             });
         }
         if (m_stop.load(std::memory_order_acquire)) break;
-        doScan();
+        // Exception barrier: an uncaught throw on this thread would call
+        // std::terminate. Log and try again on the next poll.
+        try {
+            doScan();
+        } catch (const std::exception& e) {
+            std::cerr << "[ContentScanner] scan failed, will retry next poll: "
+                      << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[ContentScanner] scan failed (unknown exception), "
+                         "will retry next poll" << std::endl;
+        }
     }
 }
 
@@ -167,13 +178,13 @@ bool ContentScanner::shouldSkipFile(const fs::path& filename) const {
 }
 
 bool ContentScanner::shouldSkipDirStatic(const fs::path& dirname) {
-    const std::string s = dirname.filename().string();
+    const std::string s = entity::pathToUtf8(dirname.filename());
     if (s.empty()) return false;
     return s.front() == '.';  // .archive/, .cache/, .anything
 }
 
 bool ContentScanner::shouldSkipFileStatic(const fs::path& filename) {
-    const std::string s = filename.filename().string();
+    const std::string s = entity::pathToUtf8(filename.filename());
     if (s.empty()) return true;
     if (s.front() == '.') return true;
     if (s.front() == '~') return true;
@@ -183,14 +194,14 @@ bool ContentScanner::shouldSkipFileStatic(const fs::path& filename) {
 }
 
 bool ContentScanner::isMediaExtensionStatic(const fs::path& ext) {
-    std::string s = ext.string();
+    std::string s = entity::pathToUtf8(ext);
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return extInSet(s, defaultMediaExts());
 }
 
 bool ContentScanner::isObjectExtensionStatic(const fs::path& ext) {
-    std::string s = ext.string();
+    std::string s = entity::pathToUtf8(ext);
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return extInSet(s, defaultObjectExts());
@@ -233,7 +244,7 @@ void ContentScanner::scanRoot(const WatchRoot& root,
         fs::directory_options::skip_permission_denied,
         ec);
     if (ec) {
-        std::cerr << "[ContentScanner] iterate failed (" << root.absoluteDir
+        std::cerr << "[ContentScanner] iterate failed (" << pathToUtf8(root.absoluteDir)
                   << "): " << ec.message() << std::endl;
         return;
     }
@@ -243,29 +254,33 @@ void ContentScanner::scanRoot(const WatchRoot& root,
             ec.clear();
             continue;
         }
-        const fs::directory_entry& entry = *it;
-        if (entry.is_directory(ec)) {
-            if (shouldSkipDir(entry.path())) {
-                it.disable_recursion_pending();
+        try {
+            const fs::directory_entry& entry = *it;
+            if (entry.is_directory(ec)) {
+                if (shouldSkipDir(entry.path())) {
+                    it.disable_recursion_pending();
+                }
+                continue;
             }
-            continue;
+            if (!entry.is_regular_file(ec)) continue;
+            if (shouldSkipFile(entry.path())) continue;
+            if (!extInSet(lowerExt(entry.path()), *root.extensions)) continue;
+
+            const std::string rel = toRelativeForward(entry.path(), m_projectRoot);
+            if (rel.empty()) continue;
+
+            FileState st;
+            st.source = root.source;
+            std::error_code statEc;
+            st.sizeBytes  = static_cast<std::int64_t>(fs::file_size(entry.path(), statEc));
+            if (statEc) continue;
+            auto ftt = fs::last_write_time(entry.path(), statEc);
+            if (statEc) continue;
+            st.mtimeUnix = toUnix(ftt);
+            seen.emplace(rel, st);
+        } catch (const std::exception& e) {
+            std::cerr << "[ContentScanner] skipping entry: " << e.what() << std::endl;
         }
-        if (!entry.is_regular_file(ec)) continue;
-        if (shouldSkipFile(entry.path())) continue;
-        if (!extInSet(lowerExt(entry.path()), *root.extensions)) continue;
-
-        const std::string rel = toRelativeForward(entry.path(), m_projectRoot);
-        if (rel.empty()) continue;
-
-        FileState st;
-        st.source = root.source;
-        std::error_code statEc;
-        st.sizeBytes  = static_cast<std::int64_t>(fs::file_size(entry.path(), statEc));
-        if (statEc) continue;
-        auto ftt = fs::last_write_time(entry.path(), statEc);
-        if (statEc) continue;
-        st.mtimeUnix = toUnix(ftt);
-        seen.emplace(rel, st);
     }
 }
 
@@ -298,7 +313,7 @@ void ContentScanner::doScan() {
             known.stableTicks = std::min(known.stableTicks + 1, 1000);
             if (!known.reported && known.stableTicks >= 2) {
                 // Third signal: try opening exclusively.
-                fs::path absolute = m_projectRoot / rel;
+                fs::path absolute = m_projectRoot / utf8ToPath(rel);
                 if (isOpenableForRead(absolute)) {
                     enqueue({DeltaKind::Added, known.source, rel});
                     known.reported = true;

@@ -2,6 +2,7 @@
  * ProjectLauncher implementation. See header for the rationale.
  */
 
+#include "entity/core/PathUtf8.hpp"
 #include "entity/ui/ProjectLauncher.hpp"
 
 #include "entity/project/ProjectManager.hpp"
@@ -118,11 +119,11 @@ ProjectLauncher::Result ProjectLauncher::render() {
 #ifdef _WIN32
             if (const char* userprofile = std::getenv("USERPROFILE")) {
                 fs::path docs = fs::path(userprofile) / "Documents" / "Entity";
-                m_newProjectParentDir = docs.string();
+                m_newProjectParentDir = entity::pathToUtf8(docs);
             }
 #else
             if (const char* home = std::getenv("HOME")) {
-                m_newProjectParentDir = (fs::path(home) / "Entity").string();
+                m_newProjectParentDir = entity::pathToUtf8(fs::path(home) / "Entity");
             }
 #endif
         }
@@ -287,7 +288,7 @@ void ProjectLauncher::renderNewProjectModal() {
                     L"Choose parent directory for the new project", initial),
                 [this](fs::path picked) {
                     if (!picked.empty()) {
-                        m_newProjectParentDir = picked.string();
+                        m_newProjectParentDir = entity::pathToUtf8(picked);
                     }
                 });
         }
@@ -295,7 +296,7 @@ void ProjectLauncher::renderNewProjectModal() {
 
         if (!m_newProjectName.empty() && !m_newProjectParentDir.empty()) {
             fs::path preview = fs::path(m_newProjectParentDir) / m_newProjectName;
-            ImGui::TextDisabled("Will create: %s", preview.string().c_str());
+            ImGui::TextDisabled("Will create: %s", entity::pathToUtf8(preview).c_str());
         }
 
         if (!m_newProjectError.empty()) {
@@ -359,7 +360,7 @@ bool ProjectLauncher::tryCreateProject(std::string* errorOut) {
                                 "relaunch Entity as administrator.";
                 } else {
                     *errorOut = "Cannot create parent directory '" +
-                                parent.string() + "': " + ec.message();
+                                entity::pathToUtf8(parent) + "': " + ec.message();
                 }
             }
             return false;

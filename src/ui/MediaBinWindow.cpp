@@ -1,3 +1,4 @@
+#include "entity/core/PathUtf8.hpp"
 #include "entity/ui/MediaBinWindow.hpp"
 #include "entity/core/Engine.hpp"
 #include "entity/color/OcioManager.hpp"
@@ -104,14 +105,14 @@ std::vector<VersionGroup> buildGroups(
         std::stable_sort(g.members.begin(), g.members.end(),
             [](const auto* a, const auto* b) {
                 const std::string aTag = parseVersion(
-                    std::filesystem::path(a->originalPath).stem().string()).tag;
+                    entity::pathToUtf8(std::filesystem::path(a->originalPath).stem())).tag;
                 const std::string bTag = parseVersion(
-                    std::filesystem::path(b->originalPath).stem().string()).tag;
+                    entity::pathToUtf8(std::filesystem::path(b->originalPath).stem())).tag;
                 return compareVersionTags(aTag, bTag) < 0;
             });
         g.primary = g.members.back();
         g.latestTag = parseVersion(
-            std::filesystem::path(g.primary->originalPath).stem().string()).tag;
+            entity::pathToUtf8(std::filesystem::path(g.primary->originalPath).stem())).tag;
     }
     return out;
 }

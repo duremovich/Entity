@@ -1,5 +1,6 @@
 ﻿#include "entity/ui/ContentRoutingWindow.hpp"
 
+#include "entity/core/PathUtf8.hpp"
 #include "entity/ui/ContentRoutingCanvas.hpp"
 #include "entity/ui/FeedMapEditorWindow.hpp"
 #include "entity/command/CommandDispatcher.hpp"
@@ -173,7 +174,7 @@ bool exportFeedMapSvg(entt::registry& reg, const ContentRoutingAsset& asset,
             c == '"' || c == '<' || c == '>' || c == '|') c = '_';
     }
     fs::path path = dir / (safeName + ".svg");
-    outPath = path.string();
+    outPath = entity::pathToUtf8(path);
 
     std::ofstream out(path);
     if (!out.is_open()) return false;
