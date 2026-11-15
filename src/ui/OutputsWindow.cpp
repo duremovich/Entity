@@ -776,9 +776,13 @@ void OutputsWindow::renderOutputsPanel() {
                 if (ImGui::BeginCombo("##src", sourcePreview)) {
                     bool autoSelected = (output->sourceScreen == entt::null &&
                                         output->sourceProjector == entt::null);
+                    // An explicit pick here is the user's real routing, even
+                    // if the calibration window has the output temporarily
+                    // routed: drop its backup so closing it won't undo this.
                     if (ImGui::Selectable("(first visible screen)", autoSelected)) {
                         output->sourceScreen    = entt::null;
                         output->sourceProjector = entt::null;
+                        output->calibrationRouteBackup = {};
                     }
                     if (autoSelected) ImGui::SetItemDefaultFocus();
 
@@ -793,6 +797,7 @@ void OutputsWindow::renderOutputsPanel() {
                         if (ImGui::Selectable(label, sel)) {
                             output->sourceScreen    = se;
                             output->sourceProjector = entt::null;
+                            output->calibrationRouteBackup = {};
                         }
                         if (sel) ImGui::SetItemDefaultFocus();
                         ImGui::PopID();
@@ -806,6 +811,7 @@ void OutputsWindow::renderOutputsPanel() {
                         if (ImGui::Selectable(proj.name.c_str(), sel)) {
                             output->sourceProjector = pe;
                             output->sourceScreen    = entt::null;
+                            output->calibrationRouteBackup = {};
                             // Bidirectional link: lets the calibration window
                             // auto-route to this output when opened later.
                             proj.linkedOutput = m_selectedOutput;

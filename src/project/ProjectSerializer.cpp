@@ -1314,15 +1314,31 @@ bool ProjectSerializer::save(const Timeline& timeline, const std::filesystem::pa
             ir["height"] = out.inputRegion.height;
             oj["inputRegion"] = ir;
 
+            // While the calibration window has this output temporarily
+            // routed to its projector, the user's own routing lives in the
+            // backup; save that, not the temporary route.
+            const entt::entity srcScreen    = userSourceScreen(out);
+            const entt::entity srcProjector = userSourceProjector(out);
+
             // Persist sourceScreen by name (entt::entity values aren't stable
             // across save/load). Empty string = "first visible screen" fallback.
             std::string sourceName;
-            if (out.sourceScreen != entt::null &&
-                registry.valid(out.sourceScreen) &&
-                registry.all_of<Screen>(out.sourceScreen)) {
-                sourceName = registry.get<Screen>(out.sourceScreen).name;
+            if (srcScreen != entt::null &&
+                registry.valid(srcScreen) &&
+                registry.all_of<Screen>(srcScreen)) {
+                sourceName = registry.get<Screen>(srcScreen).name;
             }
             oj["sourceScreenName"] = sourceName;
+
+            // v30: sourceProjector by Projector name (same indirection as
+            // Projector.linkedOutputName). Empty = not projector-driven.
+            std::string sourceProjectorName;
+            if (srcProjector != entt::null &&
+                registry.valid(srcProjector) &&
+                registry.all_of<Projector>(srcProjector)) {
+                sourceProjectorName = registry.get<Projector>(srcProjector).name;
+            }
+            oj["sourceProjectorName"] = sourceProjectorName;
 
             outputsJson.push_back(oj);
         }
@@ -2696,7 +2712,9 @@ bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path
             }
         }
 
-        // Load output displays
+        // Load output displays. sourceProjector (v30) names a Projector,
+        // which loads after outputs; collect and resolve after that pass.
+        std::vector<std::pair<entt::entity, std::string>> pendingOutputProjectors;
         if (project.contains("outputs")) {
             for (const auto& oj : project["outputs"]) {
                 entt::entity outEntity = registry.create();
@@ -2750,6 +2768,12 @@ bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path
                             break;
                         }
                     }
+                }
+
+                out.sourceProjector = entt::null;
+                std::string sourceProjectorName = oj.value("sourceProjectorName", std::string{});
+                if (!sourceProjectorName.empty()) {
+                    pendingOutputProjectors.emplace_back(outEntity, std::move(sourceProjectorName));
                 }
 
                 std::cout << "[ProjectSerializer] Loaded output: " << out.name
@@ -2868,6 +2892,18 @@ bool ProjectSerializer::loadImpl(Timeline& timeline, const std::filesystem::path
                           << " (" << proj.calibrationPoints.size() << " cal points"
                           << (proj.isCalibrated ? ", calibrated" : ", uncalibrated")
                           << (proj.useResidualWarp ? ", warp on" : "") << ")" << std::endl;
+            }
+        }
+
+        // v30: resolve each output's sourceProjector by Projector name now
+        // that projectors exist. A name that no longer resolves leaves the
+        // output on its screen / first-visible fallback.
+        for (const auto& [outEntity, projName] : pendingOutputProjectors) {
+            if (!registry.valid(outEntity)) continue;
+            auto* out = registry.try_get<OutputDisplay>(outEntity);
+            if (!out) continue;
+            for (auto [pe, p] : registry.view<Projector>().each()) {
+                if (p.name == projName) { out->sourceProjector = pe; break; }
             }
         }
 

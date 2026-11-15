@@ -102,7 +102,9 @@ private:
     bool              m_isOpen{false};
     entt::entity      m_projectorEntity{entt::null};
     entt::entity      m_routedOutputEntity{entt::null};
-    entt::entity      m_savedSourceScreen{entt::null}; // restored on exit
+    // The routed output's own routing is kept on the component
+    // (OutputDisplay::calibrationRouteBackup), not here, so a save made
+    // while routed can write the real routing.
 
     // 3D scene renderer (left pane, interactive camera)
     Stage3DRenderer   m_renderer;

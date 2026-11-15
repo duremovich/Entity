@@ -97,6 +97,11 @@ ProjectorCalibrationWindow::~ProjectorCalibrationWindow() {
 }
 
 void ProjectorCalibrationWindow::open(entt::entity projectorEntity) {
+    // Switching projectors from the toolbar combo re-enters open() without
+    // close(): hand the previous output back first, whether or not the new
+    // projector resolves to an output (otherwise it stayed routed to the
+    // old projector with a stale backup).
+    unrouteOutput();
     m_projectorEntity = projectorEntity;
     m_isOpen          = true;
     m_points.clear();
@@ -1255,13 +1260,14 @@ void ProjectorCalibrationWindow::routeToOutput(entt::entity outputEntity) {
     if (!od) return;
 
     m_routedOutputEntity = outputEntity;
-    m_savedSourceScreen  = od->sourceScreen;
 
     // Route the projector to this output: OutputManager will render the
     // projector's target screen content fullscreen to the physical display,
     // then draw the calibration crosshair overlay on top (show thread).
-    od->sourceProjector = m_projectorEntity;
-    od->sourceScreen    = entt::null;
+    // The output's own routing (screen AND projector — it may already be
+    // projector-sourced from the Outputs window) is kept in its
+    // calibrationRouteBackup for unrouteOutput and for saves.
+    beginCalibrationRoute(*od, m_projectorEntity);
 
     m_outputSize = glm::uvec2(od->width, od->height);
     syncOverlayPoints();
@@ -1272,17 +1278,16 @@ void ProjectorCalibrationWindow::unrouteOutput() {
         m_routedOutputEntity = entt::null;
         return;
     }
-    // Restore saved source and clear projector link + overlay state.
+    // Restore exactly the routing the output had before routeToOutput
+    // (screen AND projector), then clear the overlay. If the backup is no
+    // longer active the user re-picked the source in the Outputs window
+    // while calibrating; that choice stands.
     auto& reg = m_engine->getRegistry();
     if (auto* od = reg.try_get<OutputDisplay>(m_routedOutputEntity)) {
-        od->sourceScreen                 = m_savedSourceScreen;
-        od->sourceProjector              = entt::null;
-        od->calibrationOverlay.enabled   = false;
-        od->calibrationOverlay.numPoints = 0;
+        endCalibrationRoute(*od);
     }
 
     m_routedOutputEntity = entt::null;
-    m_savedSourceScreen  = entt::null;
 }
 
 void ProjectorCalibrationWindow::activatePoint(int idx) {

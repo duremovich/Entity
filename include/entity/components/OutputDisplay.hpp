@@ -170,6 +170,20 @@ struct OutputDisplay {
     // directly onto the projector output RTV.
     CalibrationOverlay calibrationOverlay{};
 
+    // The user's own routing, held while ProjectorCalibrationWindow has
+    // temporarily routed this output to the projector being calibrated
+    // (sourceProjector/sourceScreen then hold the temporary values).
+    // active=false: no temporary route; sourceScreen/sourceProjector are
+    // the user's routing. The window restores these on unroute, and
+    // ProjectSerializer saves them instead of the temporary route, so a
+    // save made mid-calibration writes the real routing. Runtime only.
+    struct CalibrationRouteBackup {
+        bool         active{false};
+        entt::entity sourceScreen{entt::null};
+        entt::entity sourceProjector{entt::null};
+    };
+    CalibrationRouteBackup calibrationRouteBackup{};
+
     /**
      * Get the aspect ratio of the output.
      */
@@ -204,5 +218,46 @@ struct OutputDisplay {
         }
     }
 };
+
+// Temporary calibration routing (ProjectorCalibrationWindow). Free helpers
+// so every route/unroute path shares one implementation and the rules are
+// unit-testable without the window.
+//
+// beginCalibrationRoute: remember the output's own routing (screen AND
+// projector) unless a backup is already active, then drive the output from
+// `projector`.
+inline void beginCalibrationRoute(OutputDisplay& od, entt::entity projector) {
+    if (!od.calibrationRouteBackup.active) {
+        od.calibrationRouteBackup.active          = true;
+        od.calibrationRouteBackup.sourceScreen    = od.sourceScreen;
+        od.calibrationRouteBackup.sourceProjector = od.sourceProjector;
+    }
+    od.sourceProjector = projector;
+    od.sourceScreen    = entt::null;
+}
+
+// endCalibrationRoute: put back exactly what beginCalibrationRoute saved and
+// turn the overlay off. With no active backup (the user re-picked the
+// source while calibrating) the current routing is the user's and stays.
+inline void endCalibrationRoute(OutputDisplay& od) {
+    if (od.calibrationRouteBackup.active) {
+        od.sourceScreen    = od.calibrationRouteBackup.sourceScreen;
+        od.sourceProjector = od.calibrationRouteBackup.sourceProjector;
+        od.calibrationRouteBackup = {};
+    }
+    od.calibrationOverlay.enabled   = false;
+    od.calibrationOverlay.numPoints = 0;
+}
+
+// The routing the user configured, ignoring any temporary calibration
+// route — what a save must write.
+inline entt::entity userSourceScreen(const OutputDisplay& od) {
+    return od.calibrationRouteBackup.active ? od.calibrationRouteBackup.sourceScreen
+                                            : od.sourceScreen;
+}
+inline entt::entity userSourceProjector(const OutputDisplay& od) {
+    return od.calibrationRouteBackup.active ? od.calibrationRouteBackup.sourceProjector
+                                            : od.sourceProjector;
+}
 
 } // namespace entity

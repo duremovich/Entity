@@ -8,12 +8,17 @@
  *     live state is touched (failed File > Open);
  *   - NoticeCenter queue semantics (how failures reach the UI);
  *   - save failures are reported (lastSaveError / AutosaveResult) and
- *     network text cannot make the project unsaveable.
+ *     network text cannot make the project unsaveable;
+ *   - OutputDisplay::sourceProjector round-trips, and the calibration
+ *     window's temporary route neither leaks into the file nor loses the
+ *     output's own routing.
  */
 
 #include <gtest/gtest.h>
 
 #include "entity/components/Clip.hpp"
+#include "entity/components/OutputDisplay.hpp"
+#include "entity/components/Projector.hpp"
 #include "entity/components/Screen.hpp"
 #include "entity/components/TimelineTrack.hpp"
 #include "entity/project/ProjectManager.hpp"
@@ -286,4 +291,164 @@ TEST(ProjectSaveFailure, AutosaveReportsFailureThenRecovery) {
     EXPECT_TRUE(fs::exists(autosave));
     std::error_code ec;
     fs::remove(autosave, ec);
+}
+
+// --- OutputDisplay::sourceProjector (v30) -------------------------------------
+
+namespace {
+
+entt::entity findOutput(entt::registry& reg, const std::string& name) {
+    for (auto [e, o] : reg.view<entity::OutputDisplay>().each())
+        if (o.name == name) return e;
+    return entt::null;
+}
+
+std::string projectorName(entt::registry& reg, entt::entity e) {
+    if (!reg.valid(e) || !reg.all_of<entity::Projector>(e)) return "<none>";
+    return reg.get<entity::Projector>(e).name;
+}
+
+std::string screenName(entt::registry& reg, entt::entity e) {
+    if (!reg.valid(e) || !reg.all_of<entity::Screen>(e)) return "<none>";
+    return reg.get<entity::Screen>(e).name;
+}
+
+}  // namespace
+
+TEST(OutputSourceProjector, RoundTripsByProjectorName) {
+    TempFile tf("source_projector_roundtrip");
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        auto s = registry.create();
+        registry.emplace<entity::Screen>(s).name = "Wall";
+        auto p1 = registry.create();
+        registry.emplace<entity::Projector>(p1).name = "Projector 1";
+        auto p2 = registry.create();
+        registry.emplace<entity::Projector>(p2).name = "Projector 2";
+
+        auto o1 = registry.create();
+        auto& out1 = registry.emplace<entity::OutputDisplay>(o1);
+        out1.name = "Beamer A";
+        out1.sourceProjector = p2;          // picked in the Outputs window
+        auto o2 = registry.create();
+        auto& out2 = registry.emplace<entity::OutputDisplay>(o2);
+        out2.name = "LED feed";
+        out2.sourceScreen = s;
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+        auto o1 = findOutput(registry, "Beamer A");
+        auto o2 = findOutput(registry, "LED feed");
+        ASSERT_TRUE(registry.valid(o1));
+        ASSERT_TRUE(registry.valid(o2));
+        const auto& out1 = registry.get<entity::OutputDisplay>(o1);
+        const auto& out2 = registry.get<entity::OutputDisplay>(o2);
+        EXPECT_EQ(projectorName(registry, out1.sourceProjector), "Projector 2");
+        EXPECT_FALSE(registry.valid(out1.sourceScreen));
+        EXPECT_FALSE(registry.valid(out2.sourceProjector));
+        EXPECT_EQ(screenName(registry, out2.sourceScreen), "Wall");
+    }
+}
+
+TEST(OutputSourceProjector, PreV30FileLoadsWithoutProjectorSource) {
+    TempFile tf("source_projector_v29");
+    tf.write(R"({
+      "format": "entity_project", "version": 29,
+      "outputs": [{"name": "Out", "sourceScreenName": ""}],
+      "projectors": [{"name": "Projector 1", "linkedOutputName": "Out"}]
+    })");
+    entt::registry registry;
+    entity::Timeline timeline(registry);
+    ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+        << entity::ProjectSerializer::getLastError();
+    auto o = findOutput(registry, "Out");
+    ASSERT_TRUE(registry.valid(o));
+    EXPECT_FALSE(registry.valid(registry.get<entity::OutputDisplay>(o).sourceProjector));
+}
+
+TEST(CalibrationRoute, UnrouteRestoresProjectorSourcedOutput) {
+    // ui.md X-1: an output already sourced from a projector lost it when
+    // the calibration window closed (only the screen was saved, and
+    // sourceProjector was nulled unconditionally).
+    entt::registry reg;
+    auto p1 = reg.create(); reg.emplace<entity::Projector>(p1).name = "P1";
+    auto p2 = reg.create(); reg.emplace<entity::Projector>(p2).name = "P2";
+    entity::OutputDisplay od;
+    od.sourceProjector = p1;
+
+    entity::beginCalibrationRoute(od, p2);
+    EXPECT_EQ(projectorName(reg, od.sourceProjector), "P2");
+    EXPECT_EQ(projectorName(reg, entity::userSourceProjector(od)), "P1");
+
+    entity::endCalibrationRoute(od);
+    EXPECT_EQ(projectorName(reg, od.sourceProjector), "P1");
+    EXPECT_FALSE(reg.valid(od.sourceScreen));
+    EXPECT_FALSE(od.calibrationRouteBackup.active);
+    EXPECT_FALSE(od.calibrationOverlay.enabled);
+}
+
+TEST(CalibrationRoute, UnrouteRestoresScreenSourcedOutputAndRerouteKeepsFirstBackup) {
+    entt::registry reg;
+    auto s = reg.create(); reg.emplace<entity::Screen>(s).name = "Wall";
+    auto p1 = reg.create(); reg.emplace<entity::Projector>(p1).name = "P1";
+    auto p2 = reg.create(); reg.emplace<entity::Projector>(p2).name = "P2";
+    entity::OutputDisplay od;
+    od.sourceScreen = s;
+
+    entity::beginCalibrationRoute(od, p1);
+    entity::beginCalibrationRoute(od, p2);   // re-route without unroute
+    EXPECT_EQ(screenName(reg, entity::userSourceScreen(od)), "Wall");
+    entity::endCalibrationRoute(od);
+    EXPECT_EQ(screenName(reg, od.sourceScreen), "Wall");
+    EXPECT_FALSE(reg.valid(od.sourceProjector));
+
+    // A second unroute (window X after "Route to: Off") changes nothing.
+    entity::endCalibrationRoute(od);
+    EXPECT_EQ(screenName(reg, od.sourceScreen), "Wall");
+}
+
+TEST(CalibrationRoute, SaveWhileRoutedWritesTheUsersRouting) {
+    TempFile tf("source_projector_routed_save");
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        auto s = registry.create();
+        registry.emplace<entity::Screen>(s).name = "Wall";
+        auto pUser = registry.create();
+        registry.emplace<entity::Projector>(pUser).name = "Users Projector";
+        auto pCal = registry.create();
+        registry.emplace<entity::Projector>(pCal).name = "Being Calibrated";
+
+        auto oa = registry.create();
+        registry.emplace<entity::OutputDisplay>(oa).name = "Screen-sourced";
+        registry.get<entity::OutputDisplay>(oa).sourceScreen = s;
+        auto ob = registry.create();
+        registry.emplace<entity::OutputDisplay>(ob).name = "Projector-sourced";
+        registry.get<entity::OutputDisplay>(ob).sourceProjector = pUser;
+
+        // Calibration window routes both (one at a time in practice; the
+        // component state is what the serializer sees).
+        entity::beginCalibrationRoute(registry.get<entity::OutputDisplay>(oa), pCal);
+        entity::beginCalibrationRoute(registry.get<entity::OutputDisplay>(ob), pCal);
+        ASSERT_TRUE(entity::ProjectSerializer::save(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+    }
+    {
+        entt::registry registry;
+        entity::Timeline timeline(registry);
+        ASSERT_TRUE(entity::ProjectSerializer::load(timeline, tf.path))
+            << entity::ProjectSerializer::getLastError();
+        const auto& a = registry.get<entity::OutputDisplay>(findOutput(registry, "Screen-sourced"));
+        const auto& b = registry.get<entity::OutputDisplay>(findOutput(registry, "Projector-sourced"));
+        EXPECT_EQ(screenName(registry, a.sourceScreen), "Wall");
+        EXPECT_FALSE(registry.valid(a.sourceProjector));
+        EXPECT_EQ(projectorName(registry, b.sourceProjector), "Users Projector");
+        EXPECT_FALSE(registry.valid(b.sourceScreen));
+    }
 }

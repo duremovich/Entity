@@ -186,7 +186,15 @@ public:
     //      Also "solid" generative sub-kind. Pre-v29 files load
     //      unchanged: a numeric params array is read positionally as
     //      Floats; missing keys mean empty tracks / linear stack.
-    static constexpr int PROJECT_VERSION = 29;
+    // v30: OutputDisplay "sourceProjectorName" — the Projector whose
+    //      calibrated view drives the output (Outputs window "Projectors"
+    //      source, or the calibration window's route). Resolved by
+    //      Projector name after projectors load, like linkedOutputName.
+    //      While the calibration window has an output temporarily routed,
+    //      the save writes the output's own routing (screen + projector),
+    //      not the temporary route. Pre-v30 files load with no projector
+    //      source (missing key = screen / first-visible routing).
+    static constexpr int PROJECT_VERSION = 30;
     static constexpr const char* FILE_EXTENSION = ".entity";
 
     /**
