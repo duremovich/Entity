@@ -211,6 +211,26 @@ bool ProjectManager::saveAsBundle(const std::filesystem::path& parentDir,
     return true;
 }
 
+std::filesystem::path ProjectManager::deviceLostAutosavePathFor(
+        const std::filesystem::path& projectPath) {
+    if (projectPath.empty()) return {};
+    std::filesystem::path name = projectPath.stem();
+    name += ".autosave.entity";
+    return projectPath.parent_path() / name;
+}
+
+std::filesystem::path ProjectManager::projectPathForDeviceLostAutosave(
+        const std::filesystem::path& autosavePath) {
+    // "<stem>.autosave.entity": extension ".entity", stem ends ".autosave".
+    if (autosavePath.extension() != ".entity") return {};
+    const std::filesystem::path inner = autosavePath.stem();   // "<stem>.autosave"
+    if (inner.extension() != ".autosave") return {};
+    std::filesystem::path name = inner.stem();                 // "<stem>"
+    if (name.empty()) return {};
+    name += ".entity";
+    return autosavePath.parent_path() / name;
+}
+
 bool ProjectManager::save(const std::filesystem::path& filepath) {
     m_lastSaveError.clear();
     if (!m_timeline) {

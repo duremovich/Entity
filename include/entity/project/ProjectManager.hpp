@@ -182,7 +182,24 @@ public:
     // --- Project path --------------------------------------------------------
 
     const std::filesystem::path& projectPath() const { return m_projectPath; }
-    void setProjectPath(const std::filesystem::path& p) { m_projectPath = p; }
+    void setProjectPath(const std::filesystem::path& p) {
+        std::unique_lock lk(m_stateMutex);
+        m_projectPath = p;
+    }
+
+    // --- Device-lost recovery file naming ------------------------------------
+    //
+    // On device loss Engine writes "<dir>/<stem>.autosave.entity" next to the
+    // project and relaunches with it. These map between the two names; the
+    // recovery session loads the autosave but adopts the real project path,
+    // so the user's next save goes to the show file, not the autosave.
+    static std::filesystem::path deviceLostAutosavePathFor(
+        const std::filesystem::path& projectPath);
+    // Best-effort inverse ("<stem>.autosave.entity" -> "<stem>.entity") for a
+    // recovery launch that wasn't told the original path. Empty if the name
+    // doesn't have the autosave shape.
+    static std::filesystem::path projectPathForDeviceLostAutosave(
+        const std::filesystem::path& autosavePath);
 
     // Thread-safe project name (stem of projectPath). Returns empty string
     // when no project is loaded. Safe to call from plugin worker threads.

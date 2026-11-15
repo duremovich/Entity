@@ -246,6 +246,7 @@ void CommandDispatcher::registerBuiltinFactories() {
     registerFactory("AssertNotice", AssertNoticeCommand::fromJson);
     registerFactory("AssertMediaLibraryCount", AssertMediaLibraryCountCommand::fromJson);
     registerFactory("AssertProjectPath", AssertProjectPathCommand::fromJson);
+    registerFactory("WriteDeviceLostAutosave", WriteDeviceLostAutosaveCommand::fromJson);
 
     // Script control commands
     registerFactory("WaitFrames", WaitFramesCommand::fromJson);

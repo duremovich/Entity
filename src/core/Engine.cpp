@@ -1080,7 +1080,36 @@ void Engine::paintLauncherLoadingOverlay(const std::filesystem::path& path) {
 void Engine::requestProjectLoad(const std::filesystem::path& filepath) {
     // Stage the path; render() runs the two-frame handshake.
     m_pendingFileAssociationLoad = filepath;
+    m_pendingRecoveryOriginalPath.clear();
     m_fileAssocPhase = FileAssocPhase::Idle;
+}
+
+void Engine::requestRecoveryProjectLoad(const std::filesystem::path& autosavePath,
+                                        const std::filesystem::path& originalPath) {
+    m_pendingFileAssociationLoad = autosavePath;
+    m_pendingRecoveryOriginalPath = originalPath;
+    m_fileAssocPhase = FileAssocPhase::Idle;
+}
+
+bool Engine::loadRecoveredProject(const std::filesystem::path& autosavePath,
+                                  const std::filesystem::path& originalPath) {
+    m_isRecoveryRelaunch = true;  // one relaunch per crash chain; autosave still runs
+    std::filesystem::path adopt = originalPath;
+    if (adopt.empty()) adopt = ProjectManager::projectPathForDeviceLostAutosave(autosavePath);
+    if (adopt.empty()) adopt = autosavePath;  // unknown shape: old behavior
+    m_loadAdoptPath = adopt;
+    const bool ok = loadProject(autosavePath);
+    m_loadAdoptPath.clear();
+    if (ok) {
+        m_notices.post(NoticeCenter::Severity::Info,
+                       NoticeCenter::Presentation::Toast,
+                       "Recovered after a graphics device loss",
+                       "Loaded the state saved at the moment of the device loss (" +
+                       entity::pathToUtf8(autosavePath.filename()) + "). Saving writes to " +
+                       entity::pathToUtf8(adopt.filename()) + ".",
+                       "device-lost-recovery");
+    }
+    return ok;
 }
 
 void Engine::renderProjectLoadModal() {
@@ -2431,8 +2460,13 @@ void Engine::render() {
             // Frame N+1 — overlay is on the front buffer. Run the load.
             auto path = std::move(m_pendingFileAssociationLoad);
             m_pendingFileAssociationLoad.clear();
+            auto recoveryOriginal = std::move(m_pendingRecoveryOriginalPath);
+            m_pendingRecoveryOriginalPath.clear();
             m_fileAssocPhase = FileAssocPhase::Idle;
-            if (!loadProject(path)) {
+            const bool loaded = recoveryOriginal.empty()
+                ? loadProject(path)
+                : loadRecoveredProject(path, recoveryOriginal);
+            if (!loaded) {
                 std::cerr << "[Engine] file-association load failed for "
                           << path << " — falling back to launcher." << std::endl;
                 showLauncher();
@@ -4697,6 +4731,15 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
         return false;
     }
 
+    // Device-lost recovery: the content came from the autosave, but the
+    // project is the real show file. Adopt it before anything below reads
+    // the path (crash context, Recent, effects dir, content scanner) so the
+    // next save goes to the show file instead of the autosave.
+    if (!m_loadAdoptPath.empty()) {
+        m_projectManager->setProjectPath(m_loadAdoptPath);
+    }
+    const std::filesystem::path projectFile = m_projectManager->projectPath();
+
     // ADR-0028: rebind RemotePatch components to RemoteControlStore slots.
     // storeSlot is runtime-only and not persisted; the serializer leaves it
     // at -1 on load. This call resets the store and allocates fresh slots.
@@ -4788,7 +4831,7 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // OpenProject commands flow through here too, so this is the right
     // place to centralize the touch.
     if (m_recentProjects) {
-        m_recentProjects->touch(entity::pathToUtf8(filepath));
+        m_recentProjects->touch(entity::pathToUtf8(projectFile));
         m_recentProjects->save();
     }
 
@@ -4819,8 +4862,8 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // have been on disk for a while; they're not mid-write) so the bins
     // are fully populated by the time the editor renders. ContentScanner
     // still starts below and handles drops that happen later.
-    if (!filepath.empty() && m_projectManager) {
-        const std::filesystem::path projectRoot = filepath.parent_path();
+    if (!projectFile.empty() && m_projectManager) {
+        const std::filesystem::path projectRoot = projectFile.parent_path();
         const std::filesystem::path contentDir = projectRoot / "content";
         std::error_code ec;
         if (std::filesystem::exists(contentDir, ec) &&
@@ -4951,8 +4994,8 @@ bool Engine::loadProject(const std::filesystem::path& filepath) {
     // root. Files that already exist in content/ but aren't in the
     // library (because the user copied them in via Explorer / sync
     // tools while the app was closed) will appear within a few ticks.
-    if (m_contentScanner && !filepath.empty()) {
-        m_contentScanner->start(filepath.parent_path());
+    if (m_contentScanner && !projectFile.empty()) {
+        m_contentScanner->start(projectFile.parent_path());
     }
     return true;
 }
@@ -5997,28 +6040,40 @@ void Engine::drainRendererToDirector() {
                 std::cerr << "[Engine] bus::DeviceLost received on R2D drain "
                           << "(HRESULT=0x" << std::hex << body.hresult << std::dec
                           << "): " << body.reason << std::endl;
-                if (!m_isRecoveryRelaunch && m_projectManager &&
-                    !m_projectManager->projectPath().empty() && m_timeline) {
-                    std::filesystem::path projectPath = m_projectManager->projectPath();
-                    // Name: <stem>.autosave.entity so ProjectSerializer's
-                    // extension check passes without double-appending.
-                    std::filesystem::path autosavePath =
-                        projectPath.parent_path() /
-                        (entity::pathToUtf8(projectPath.stem()) + ".autosave.entity");
-                    if (ProjectSerializer::save(*m_timeline, autosavePath, m_projectManager)) {
-                        std::cerr << "[Engine] Device-lost autosave: " << entity::pathToUtf8(autosavePath) << std::endl;
-                        m_relaunchProjectPath  = autosavePath;
-                        m_relaunchRequested    = true;
-                    } else {
-                        std::cerr << "[Engine] Device-lost autosave failed: "
-                                  << ProjectSerializer::getLastError() << std::endl;
-                    }
+                // The autosave always runs (a recovery session must not
+                // lose work on a second device loss); only the relaunch is
+                // latched to once per crash chain.
+                const std::filesystem::path autosavePath = writeDeviceLostAutosave();
+                if (!autosavePath.empty() && !m_isRecoveryRelaunch) {
+                    m_relaunchProjectPath         = autosavePath;
+                    m_relaunchOriginalProjectPath = m_projectManager->projectPath();
+                    m_relaunchRequested           = true;
+                } else if (!autosavePath.empty()) {
+                    std::cerr << "[Engine] Recovery session: autosave written, "
+                                 "not relaunching again." << std::endl;
                 }
             }
             // FrameDropped, CreateOutputWindowRequest, OutputWindowReady:
             // informational or deferred — no action needed in this path.
         }, *msg);
     });
+}
+
+std::filesystem::path Engine::writeDeviceLostAutosave() {
+    if (!m_projectManager || !m_timeline) return {};
+    const std::filesystem::path projectPath = m_projectManager->projectPath();
+    if (projectPath.empty()) return {};
+    // "<stem>.autosave.entity" so ProjectSerializer's extension check passes
+    // without double-appending.
+    const std::filesystem::path autosavePath =
+        ProjectManager::deviceLostAutosavePathFor(projectPath);
+    if (ProjectSerializer::save(*m_timeline, autosavePath, m_projectManager)) {
+        std::cerr << "[Engine] Device-lost autosave: " << entity::pathToUtf8(autosavePath) << std::endl;
+        return autosavePath;
+    }
+    std::cerr << "[Engine] Device-lost autosave failed: "
+              << ProjectSerializer::getLastError() << std::endl;
+    return {};
 }
 
 void Engine::postSignalEmit(const entity::plugin::SignalEmitPod& emit) noexcept {

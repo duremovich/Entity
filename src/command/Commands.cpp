@@ -773,7 +773,9 @@ bool LoadProjectCommand::execute(Engine& engine) {
         std::cerr << "[LoadProject] File not found: " << m_filepath << std::endl;
         return false;
     }
-    const bool ok = engine.loadProject(loadPath);
+    const bool ok = m_recoverAs.empty()
+        ? engine.loadProject(loadPath)
+        : engine.loadRecoveredProject(loadPath, entity::utf8ToPath(m_recoverAs));
     if (m_expectFailure) {
         if (ok) std::cerr << "[LoadProject] expected failure, but the load succeeded" << std::endl;
         return !ok;
@@ -787,18 +789,53 @@ nlohmann::json LoadProjectCommand::toJson() const {
         {"filepath", m_filepath}
     };
     if (m_expectFailure) j["expectFailure"] = true;
+    if (!m_recoverAs.empty()) j["recoverAs"] = m_recoverAs;
     return j;
 }
 
 std::string LoadProjectCommand::getDescription() const {
     std::string d = "Load project: " + m_filepath;
+    if (!m_recoverAs.empty()) d += " (device-lost recovery as " + m_recoverAs + ")";
     if (m_expectFailure) d += " (expect failure)";
     return d;
 }
 
 CommandPtr LoadProjectCommand::fromJson(const nlohmann::json& j) {
     std::string filepath = j.value("filepath", "");
-    return std::make_unique<LoadProjectCommand>(filepath, j.value("expectFailure", false));
+    return std::make_unique<LoadProjectCommand>(filepath, j.value("expectFailure", false),
+                                                j.value("recoverAs", std::string{}));
+}
+
+bool WriteDeviceLostAutosaveCommand::execute(Engine& engine) {
+    const std::filesystem::path written = engine.writeDeviceLostAutosave();
+    if (written.empty()) {
+        std::cerr << "[WriteDeviceLostAutosave] FAIL: nothing written" << std::endl;
+        return false;
+    }
+    const std::string actual = entity::pathToUtf8Generic(written);
+    if (!m_endsWith.empty() &&
+        (actual.size() < m_endsWith.size() ||
+         actual.compare(actual.size() - m_endsWith.size(), m_endsWith.size(), m_endsWith) != 0)) {
+        std::cerr << "[WriteDeviceLostAutosave] FAIL: wrote \"" << actual
+                  << "\", expected a path ending \"" << m_endsWith << "\"" << std::endl;
+        return false;
+    }
+    std::cout << "[WriteDeviceLostAutosave] wrote " << actual << std::endl;
+    return true;
+}
+
+nlohmann::json WriteDeviceLostAutosaveCommand::toJson() const {
+    nlohmann::json j = {{"type", "WriteDeviceLostAutosave"}};
+    if (!m_endsWith.empty()) j["endsWith"] = m_endsWith;
+    return j;
+}
+
+std::string WriteDeviceLostAutosaveCommand::getDescription() const {
+    return "Write device-lost autosave";
+}
+
+CommandPtr WriteDeviceLostAutosaveCommand::fromJson(const nlohmann::json& j) {
+    return std::make_unique<WriteDeviceLostAutosaveCommand>(j.value("endsWith", std::string{}));
 }
 
 // --- Project-state asserts ---------------------------------------------------

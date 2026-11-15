@@ -600,3 +600,26 @@ TEST(UniqueName, NewNamesSkipTakenOnes) {
     EXPECT_EQ(entity::makeUniqueComponentName<entity::Screen>(reg, "Wall Copy"), "Wall Copy 2");
     EXPECT_EQ(entity::makeUniqueComponentName<entity::Prop>(reg, "Prop"), "Prop");
 }
+
+// --- Device-lost recovery file naming -----------------------------------------
+
+TEST(DeviceLostRecoveryPaths, AutosaveNameRoundTripsToTheProject) {
+    const fs::path project = fs::path("C:/Shows/IIWY") / "IIWY.entity";
+    const fs::path autosave = entity::ProjectManager::deviceLostAutosavePathFor(project);
+    EXPECT_EQ(autosave, fs::path("C:/Shows/IIWY") / "IIWY.autosave.entity");
+    EXPECT_EQ(entity::ProjectManager::projectPathForDeviceLostAutosave(autosave), project);
+
+    // Dotted stems survive both directions.
+    const fs::path dotted = fs::path("D:/x") / "Show v1.2.entity";
+    EXPECT_EQ(entity::ProjectManager::projectPathForDeviceLostAutosave(
+                  entity::ProjectManager::deviceLostAutosavePathFor(dotted)),
+              dotted);
+}
+
+TEST(DeviceLostRecoveryPaths, NonAutosaveNamesDoNotMapBack) {
+    EXPECT_TRUE(entity::ProjectManager::projectPathForDeviceLostAutosave(
+                    fs::path("C:/Shows/Show.entity")).empty());
+    EXPECT_TRUE(entity::ProjectManager::projectPathForDeviceLostAutosave(
+                    fs::path("C:/Shows/.autosave.entity")).empty());
+    EXPECT_TRUE(entity::ProjectManager::deviceLostAutosavePathFor(fs::path{}).empty());
+}

@@ -28,6 +28,11 @@
  *   --script <path>                Run a JSON script file after initialization
  *   --device-lost-recovery <path>  Recovery launch: load autosave path with
  *                                  ERROR_SHARING_VIOLATION retry logic
+ *   --recovery-project <path>      With --device-lost-recovery: the real
+ *                                  project the autosave belongs to; it
+ *                                  becomes the project path so saves go
+ *                                  there (derived from the autosave name
+ *                                  when absent)
  *   --headless                     Run with a hidden window (for tests / CI)
  *   --help                         Show help message
  */
@@ -138,6 +143,7 @@ static int editorMain(int argc, char** argv) {
     std::string scriptPath;
     std::string projectPath;         // Positional <project.entity> for OS file-association open
     std::string recoveryAutosavePath; // --device-lost-recovery <path>
+    std::string recoveryProjectPath;  // --recovery-project <path>
     bool headless = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -163,6 +169,14 @@ static int editorMain(int argc, char** argv) {
                 recoveryAutosavePath = argv[++i];
             } else {
                 std::cerr << "Error: --device-lost-recovery requires a path argument" << std::endl;
+                return EXIT_FAILURE;
+            }
+        }
+        else if (arg == "--recovery-project") {
+            if (i + 1 < argc) {
+                recoveryProjectPath = argv[++i];
+            } else {
+                std::cerr << "Error: --recovery-project requires a path argument" << std::endl;
                 return EXIT_FAILURE;
             }
         }
@@ -275,8 +289,14 @@ static int editorMain(int argc, char** argv) {
                       << autosavePath << " — falling through to launcher." << std::endl;
             engine.showLauncher();
         } else {
-            std::cerr << "[main] --device-lost-recovery: loading " << autosavePath << std::endl;
-            engine.requestProjectLoad(autosavePath);
+            // Load the autosave's content but keep the real project as the
+            // project path, so the user's next save goes to the show file.
+            fs::path originalPath = recoveryProjectPath.empty()
+                ? entity::ProjectManager::projectPathForDeviceLostAutosave(autosavePath)
+                : fs::path(recoveryProjectPath);
+            std::cerr << "[main] --device-lost-recovery: loading " << autosavePath
+                      << " as " << originalPath << std::endl;
+            engine.requestRecoveryProjectLoad(autosavePath, originalPath);
         }
     } else if (!projectPath.empty()) {
         // OS file-association / "open with" flow. Skip the launcher and
@@ -332,9 +352,14 @@ static int editorMain(int argc, char** argv) {
             std::wstring exePath(exePathBuf);
 
             // Build command line: "<exe>" --device-lost-recovery "<autosave>"
+            //   --recovery-project "<original>"
             // cmd.data() (not c_str()) — OS writes a null terminator into the buffer.
             std::wstring cmd = L"\"" + exePath + L"\" --device-lost-recovery \""
                                + autosavePath.wstring() + L"\"";
+            const std::filesystem::path originalPath = engine.relaunchOriginalProjectPath();
+            if (!originalPath.empty()) {
+                cmd += L" --recovery-project \"" + originalPath.wstring() + L"\"";
+            }
 
             STARTUPINFOW si{};
             si.cb = sizeof(si);

@@ -1,0 +1,33 @@
+{
+    "version": 1,
+    "description": "Device-lost recovery must keep the real project path. Saves Show.entity, adds a screen, writes the device-lost autosave (Show.autosave.entity), then loads it the way the recovery process does (LoadProject recoverAs). The recovered screen is in memory but the project path is Show.entity, so a plain SaveProject (Ctrl+S) writes the show file. A second device-lost autosave in the recovery session still writes Show.autosave.entity with the latest state.",
+    "commands": [
+        {"type": "AddScreen", "name": "Original Screen"},
+        {"type": "SaveProject", "filepath": "test_output/device_lost_recovery/Show.entity"},
+        {"type": "AddScreen", "name": "Recovered Screen"},
+        {"type": "WriteDeviceLostAutosave", "endsWith": "test_output/device_lost_recovery/Show.autosave.entity"},
+
+        {"type": "LoadProject", "filepath": "test_output/device_lost_recovery/Show.autosave.entity",
+         "recoverAs": "test_output/device_lost_recovery/Show.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertProjectPath", "endsWith": "test_output/device_lost_recovery/Show.entity"},
+        {"type": "AssertScreenExists", "name": "Recovered Screen"},
+        {"type": "AssertNotice", "contains": "Recovered after a graphics device loss"},
+
+        {"type": "AddScreen", "name": "After Recovery"},
+        {"type": "SaveProject"},
+        {"type": "AssertProjectPath", "endsWith": "test_output/device_lost_recovery/Show.entity"},
+        {"type": "AddScreen", "name": "Second Loss"},
+        {"type": "WriteDeviceLostAutosave", "endsWith": "test_output/device_lost_recovery/Show.autosave.entity"},
+
+        {"type": "LoadProject", "filepath": "test_output/device_lost_recovery/Show.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertScreenExists", "name": "Recovered Screen"},
+        {"type": "AssertScreenExists", "name": "After Recovery"},
+
+        {"type": "LoadProject", "filepath": "test_output/device_lost_recovery/Show.autosave.entity"},
+        {"type": "WaitFrames", "count": 2},
+        {"type": "AssertScreenExists", "name": "Second Loss"},
+        {"type": "Exit"}
+    ]
+}

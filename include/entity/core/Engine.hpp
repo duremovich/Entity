@@ -751,6 +751,27 @@ public:
     bool loadProject(const std::filesystem::path& filepath);
 
     /**
+     * Device-lost recovery load: load the autosave the crashed session wrote
+     * (`autosavePath`), then adopt `originalPath` as the project path so the
+     * recovered content is what's in memory but Ctrl+S / Save writes the real
+     * show file, not the autosave. Marks this process as a recovery session
+     * (no further auto-relaunch; device-lost autosave still runs). Shows a
+     * non-blocking notice. Returns false (with the usual open-failure
+     * notice) if the autosave can't be loaded.
+     */
+    bool loadRecoveredProject(const std::filesystem::path& autosavePath,
+                              const std::filesystem::path& originalPath);
+
+    /**
+     * Write the device-lost autosave for the current project
+     * (ProjectManager::deviceLostAutosavePathFor). Returns the path written,
+     * or empty on failure / no project. Used by the bus::DeviceLost handler
+     * (which then requests a relaunch unless this is already a recovery
+     * session) and by the WriteDeviceLostAutosave script command.
+     */
+    std::filesystem::path writeDeviceLostAutosave();
+
+    /**
      * Stage a project to be loaded on the next render frame, with the
      * "Loading…" overlay painted in between so the user doesn't stare
      * at a blank window during deserialize. Used by the file-association
@@ -762,6 +783,11 @@ public:
      * recovery path as the previous synchronous call site).
      */
     void requestProjectLoad(const std::filesystem::path& filepath);
+
+    /// Staged form of loadRecoveredProject() for main.cpp's
+    /// --device-lost-recovery launch (same two-frame overlay handshake).
+    void requestRecoveryProjectLoad(const std::filesystem::path& autosavePath,
+                                    const std::filesystem::path& originalPath);
 
     /**
      * Off-thread FFmpeg metadata probe. Returns nullptr before
@@ -1083,6 +1109,12 @@ private:
     // or run the actual load.
     enum class FileAssocPhase { Idle, OverlayStaged };
     std::filesystem::path m_pendingFileAssociationLoad{};
+    // Set with m_pendingFileAssociationLoad by requestRecoveryProjectLoad:
+    // the real project path the staged autosave load should adopt.
+    std::filesystem::path m_pendingRecoveryOriginalPath{};
+    // Inside loadProject(): adopt this path after a successful load
+    // (device-lost recovery). Empty for normal loads.
+    std::filesystem::path m_loadAdoptPath{};
     FileAssocPhase        m_fileAssocPhase{FileAssocPhase::Idle};
 
     // Set at the end of loadProject() if the probe worker has work
@@ -1321,6 +1353,9 @@ public:
     // decide whether to spawn a recovery process.
     bool shouldRelaunch() const { return m_relaunchRequested; }
     std::filesystem::path relaunchProjectPath() const { return m_relaunchProjectPath; }
+    // The real project the relaunch autosave belongs to (passed to the
+    // recovery process as --recovery-project).
+    std::filesystem::path relaunchOriginalProjectPath() const { return m_relaunchOriginalProjectPath; }
 
     // Mark this process as a recovery relaunch (started via --device-lost-recovery).
     // Suppresses setting m_relaunchRequested on a subsequent device-loss so we
@@ -1466,6 +1501,7 @@ private:
     bool m_relaunchRequested{false};         // Set on device-lost drain; checked by main.cpp.
     bool m_isRecoveryRelaunch{false};        // True when started via --device-lost-recovery; suppresses re-relaunch.
     std::filesystem::path m_relaunchProjectPath;  // Autosave path to load in the recovery process.
+    std::filesystem::path m_relaunchOriginalProjectPath;  // Real project it belongs to.
     uint32_t m_pendingWidth{0};
     uint32_t m_pendingHeight{0};
 

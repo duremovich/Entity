@@ -447,10 +447,15 @@ private:
     bool        m_expectFailure{false};
 };
 
+// LoadProject `recoverAs: <path>` runs the device-lost recovery load:
+// load `filepath` (the autosave) and adopt `recoverAs` as the project path
+// (Engine::loadRecoveredProject).
 class LoadProjectCommand : public Command {
 public:
-    explicit LoadProjectCommand(std::string filepath, bool expectFailure = false)
-        : m_filepath(std::move(filepath)), m_expectFailure(expectFailure) {}
+    explicit LoadProjectCommand(std::string filepath, bool expectFailure = false,
+                                std::string recoverAs = {})
+        : m_filepath(std::move(filepath)), m_expectFailure(expectFailure),
+          m_recoverAs(std::move(recoverAs)) {}
 
     bool execute(Engine& engine) override;
     const char* getTypeName() const override { return "LoadProject"; }
@@ -462,6 +467,26 @@ public:
 private:
     std::string m_filepath;
     bool        m_expectFailure{false};
+    std::string m_recoverAs;
+};
+
+/**
+ * WriteDeviceLostAutosave { [endsWith] } — diagnostic: run the same
+ * autosave the bus::DeviceLost handler writes (Engine::
+ * writeDeviceLostAutosave) without losing the device or requesting a
+ * relaunch. Fails if nothing was written or, with `endsWith`, if the
+ * written path doesn't end with it (forward slashes).
+ */
+class WriteDeviceLostAutosaveCommand : public Command {
+public:
+    explicit WriteDeviceLostAutosaveCommand(std::string endsWith) : m_endsWith(std::move(endsWith)) {}
+    bool execute(Engine& engine) override;
+    const char* getTypeName() const override { return "WriteDeviceLostAutosave"; }
+    nlohmann::json toJson() const override;
+    std::string getDescription() const override;
+    static CommandPtr fromJson(const nlohmann::json& j);
+private:
+    std::string m_endsWith;
 };
 
 /**

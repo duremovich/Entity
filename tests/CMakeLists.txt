@@ -232,6 +232,9 @@ set_tests_properties(integration_duplicate_screens_save PROPERTIES
     FIXTURES_SETUP duplicate_screens_data)
 set_tests_properties(integration_duplicate_screens_load PROPERTIES
     FIXTURES_REQUIRED duplicate_screens_data)
+# After a device-lost recovery load the project path is the real show file
+# (not the .autosave.entity), and device-lost autosave still works.
+entity_add_integration_test(device_lost_recovery_path device_lost_recovery_path.json)
 
 # Sections persistence round-trip (Phase B — break-points schema).
 entity_add_integration_test(sections_persistence_save sections_persistence_save.json)
