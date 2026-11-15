@@ -7,6 +7,12 @@ add_executable(EntityMediaEditor
     # editor/EventHandler.cpp # To be implemented
 )
 
+# Application manifest: activeCodePage=UTF-8 (narrow path strings are UTF-8 on
+# Windows 10 1903+). MSVC generators embed .manifest sources via mt.exe.
+if(WIN32)
+    target_sources(EntityMediaEditor PRIVATE editor/EntityMediaEditor.manifest)
+endif()
+
 target_link_libraries(EntityMediaEditor
     PRIVATE
         EntityMediaCore
